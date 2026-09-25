@@ -362,7 +362,7 @@ class ToolServerRegistry:
         in the stage that stops building at start -- and all six move with
         them. They are, in ``src/agent_system/``:
 
-            app.py (twice), agent_cli.py,
+            app.py, agent_cli.py, servers/agent/entry.py,
             servers/agent/components/tool_execution.py (three times)
 
         No line numbers on purpose, they rot. The whole set is

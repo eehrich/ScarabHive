@@ -25,6 +25,17 @@ from .session_service import SessionService
 logger = logging.getLogger(__name__)
 
 
+def apply_ssl_verify_to_environment(config: AgentSystemConfig) -> None:
+    """``network.ssl_verify: false`` for what reads the environment instead of
+    our clients' flag (requests, curl, subprocesses). Nothing when it is true."""
+    if config.network.ssl_verify:
+        return
+    os.environ["PYTHONHTTPSVERIFY"] = "0"
+    for name in ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
+        os.environ.setdefault(name, "")
+    logger.info("SSL verification disabled - set environment variables for global SSL bypass")
+
+
 class InitializationService:
     """Centralized initialization for all AgentSystem entry points.
     

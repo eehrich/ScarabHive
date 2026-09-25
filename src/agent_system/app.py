@@ -30,7 +30,8 @@ from .tools.base import ToolServerRegistry
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
 from .runtime import ServerView
-from .utils.logging import setup_logging
+from .utils.logging import setup_role_logging
+from .services.initialization_service import apply_ssl_verify_to_environment
 from .tools.status import get_status_metrics
 from .tools.integration import initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
@@ -317,30 +318,22 @@ async def _validate_client_request_id(client_request_id: str) -> str:
 
 
 def _build_entry_agent(entry_name: str, config, registry, session_service):
-    """Build the entry agent when bootstrap did not register one under that
-    name, from its MERGED server config, and register it.
-
-    Merged means default_config plus the ``type:`` chain -- what bootstrap
-    gives every other agent. This used to read plugins.default_config alone,
-    so the entry agent ran with that block's max_steps and profile no matter
-    what its own entry said (measured 01.09.2026: 133 of 203 agents carry a
-    raw max_steps of 20 where the merged value is 100 or 30). The branch
-    before it, ``_config_service.get_agent_config``, could never contribute:
-    AgentSystemConfig has no ``agents`` field, so it raises on every call.
+    """The API's entry agent: servers.agent.entry.entry_agent -- the registered
+    one, or a build from its MERGED server config -- and, when the name is no
+    agent here, one from plugins.default_config: the API cannot exit over a
+    config mistake the way the command line does.
     """
     from .servers.agent.server import Agent as CoreAgent
-    from .config.settings import get_tool_server_config
+    from .servers.agent.entry import NotAnAgent, entry_agent
 
-    server_cfg = get_tool_server_config(entry_name, config)
-
-    if not server_cfg:
+    try:
+        return entry_agent(entry_name, config, registry, session_service)
+    except NotAnAgent as e:
         logging.getLogger(__name__).warning(
-            "No server configuration found for agent '%s', falling back to plugins.default_config",
-            entry_name
-        )
-        # Read from the config that was passed in, not from the module-global
-        # ConfigService: that global belongs to whichever build_app ran last.
-        server_cfg = config.plugins.default_config if config.plugins else None
+            "%s\nThe API runs a generic entry agent from plugins.default_config.", e)
+    # Read from the config that was passed in, not from the module-global
+    # ConfigService: that global belongs to whichever build_app ran last.
+    server_cfg = config.plugins.default_config if config.plugins else None
 
     if not server_cfg:
         from .config.models import ToolServerConfig, AgentConfig, ToolConfig
@@ -876,48 +869,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         static_files = StaticFiles(directory=str(static_path))
         app.mount("/static", revalidated(static_files) if app.state.revalidate_static else static_files, name="static")
 
-    # Initialize logging with role-specific logfile
-    def _role_logfile(base: str, role: str) -> str:
-        p = Path(base)
-        stem = p.stem or "agent"
-        suffix = "".join(p.suffixes) or ".log"
-        return str(p.with_name(f"{stem}-{role}{suffix}"))
-
-    # Use file_api config or generate from default file
-    if not config.logging.file_api:
-        default_log = _role_logfile(config.logging.file or "logs/agent.log", "api")
-        logging.getLogger(__name__).warning(
-            "No file_api configured in logging settings, falling back to default: %s", default_log
-        )
-        log_path = default_log
-    else:
-        log_path = config.logging.file_api
-
     # Check for environment variable override
     env_level = os.getenv("AGENT_LOG_LEVEL")
-    level_to_use = env_level if env_level else config.logging.level
     if env_level:
         logging.getLogger(__name__).info("Overriding log level from environment: %s", env_level)
         config.logging.level = env_level
 
-    log_file = setup_logging(
-        config.logging.enabled, 
-        level_to_use, 
-        log_path,
-        rotation_enabled=config.logging.rotation_enabled,
-        max_bytes=config.logging.max_bytes,
-        backup_count=config.logging.backup_count
-    )
+    log_file = setup_role_logging(config.logging, "api")
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
-
-    # Disable SSL verification if configured
-    if not config.network.ssl_verify:
-        os.environ["PYTHONHTTPSVERIFY"] = "0"
-        os.environ.setdefault("SSL_CERT_FILE", "")
-        os.environ.setdefault("CURL_CA_BUNDLE", "")
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
-        logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
+    apply_ssl_verify_to_environment(config)
 
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
@@ -936,7 +897,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     else:
         # Servers already bootstrapped by initialize_tools, just populate local registry
         # by copying from plugin_registry and inject sessions
-        from .servers.agent.server import Agent as _Agent
         for server_name in _tool_integration.plugin_registry.list_servers():
             server_adapter = _tool_integration.plugin_registry.get_server(server_name)
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
@@ -951,44 +911,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     entry_name = config.default_agent or 'agent'
     logging.getLogger(__name__).debug(f"Using entry agent: '{entry_name}'")
 
-    # Reuse existing agent from registry if available
-    selected_agent = None
-    try:
-        if entry_name in registry.list():
-            candidate = registry.get(entry_name)
-            from .servers.agent.server import Agent as _Agent
-            if isinstance(candidate, _Agent):
-                selected_agent = candidate
-                # CRITICAL: Inject _session_service into existing agent (same as CLI does)
-                # Agents from bootstrap_servers were created without session_service
-                # ALWAYS inject, even if attribute exists, to refresh the reference
-                selected_agent._session_service = _session_service
-                # No server overrides are applied here on purpose. The
-                # block that used to stand here could never run: its first
-                # statement, ConfigService.get_agent_config, raises
-                # AttributeError on every call (AgentSystemConfig has no
-                # `agents` field) and a debug-level except swallowed it.
-                # Nothing is missing: the Runtime built this agent from the
-                # MERGED server config (default_config + the type: chain),
-                # which is where those very overrides come from.
-    except Exception as e:
-        logger.debug(f"Failed to get entry agent from registry: {e}")
-        selected_agent = None
-
-    # Create new agent if not found in registry
-    if selected_agent is None:
-        selected_agent = _build_entry_agent(entry_name, config, registry, _session_service)
-    else:
-        # Bind reused agent to current registry and update session_service
-        try:
-            selected_agent.registry = registry
-            # Update session_service for existing agent
-            if _session_service and hasattr(selected_agent, '_session_service'):
-                selected_agent._session_service = _session_service
-        except Exception as e:
-            logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
-
-    agent = selected_agent
+    # The registered agent, rewired to this registry and session service
+    # (bootstrap built it without one), or a build. No server overrides are
+    # applied on top: the Runtime built it from the MERGED server config,
+    # which is where those overrides come from.
+    agent = _build_entry_agent(entry_name, config, registry, _session_service)
 
     # Wire the BackgroundJobManager with the registry + default agent
     # so cancel_job can walk every Agent-typed server that may own a
