@@ -1133,7 +1133,7 @@ async def test_the_panel_hands_a_sub_agent_to_the_instance_that_spawned_it(tmp_p
     assert states(listed) == states(mapped) == {own: "idle", theirs: "running"}
     assert info["status"] == "running"
     assert archived["status"] == "archived"
-    assert other.server._async_jobs[theirs].get("_archived") is True  # marked in the instance that holds the job
+    assert other.server._async_jobs[theirs].get("_ended_by_caller") is True  # marked in the instance that holds the job
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.session_service import SessionService
 
@@ -83,7 +81,6 @@ class SubAgentManager:
         max_sub_agents_per_type: int = 3,
         max_sub_agents_per_session: int = 10,
         auto_archive_on_limit: bool = False,
-        on_archived: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         """Initialize SubAgentManager.
 
@@ -97,11 +94,6 @@ class SubAgentManager:
             max_sub_agents_per_session: Maximum total number of active sub-agents per session
             auto_archive_on_limit: If True, automatically archive the oldest sub-agent when
                 a limit is reached instead of returning limit_reached error.
-            on_archived: Told which instance was archived, right after it was. Auto-archiving
-                happens down here, while what an archived instance leaves behind lives in the
-                server above (its background jobs), which never sees the id otherwise. Called
-                with the parent's lock held (`_make_room`): it must not write that parent's
-                sub-agents, or it waits on itself.
         """
         self._session_service = session_service
         self._registry = registry
@@ -109,7 +101,6 @@ class SubAgentManager:
         self.max_sub_agents_per_type = max_sub_agents_per_type
         self.max_sub_agents_per_session = max_sub_agents_per_session
         self.auto_archive_on_limit = auto_archive_on_limit
-        self._on_archived = on_archived
 
         # Activity update tracking: only save when activity actually changes
         # to avoid excessive session saves during streaming
@@ -656,6 +647,7 @@ class SubAgentManager:
                 status="active",
                 current_activity=None,
                 activity_updated_at=None,
+                error=None,  # an earlier run's: a later failure that stores none would report it
             )
 
     async def update_sub_session_metadata(
@@ -806,15 +798,6 @@ class SubAgentManager:
             logger.warning(f"Could not archive sub-agent {sub_session_id} in parent {parent_session_id}")
             return False
         logger.debug(f"Archived sub-agent {sub_session_id} in parent {parent_session_id}")
-
-        if self._on_archived is not None:
-            # Never at the cost of the archiving itself: it is done and written by now, and the
-            # caller is a create that is making room. A slip here leaves a job behind, which is
-            # what this call is against -- failing the create over it would be the worse trade.
-            try:
-                await self._on_archived(sub_session_id)
-            except Exception as e:
-                logger.warning(f"on_archived for {sub_session_id} failed: {e}", exc_info=True)
         return True
 
     async def _generate_instance_id(

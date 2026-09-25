@@ -124,7 +124,16 @@ archiving to make room — both happen behind the caller's back, and it is aslee
 over a job it has not heard the end of.
 
 A wake that cannot be delivered is logged and costs the caller a poll, never the
-job: the run's ending is recorded before anyone is told about it. And the bell
+job: the run's ending is recorded before anyone is told about it. A caller woken
+into a process of its own reads that stored ending, so the job's entry in this
+process goes once the ring has a run of the session on its way (started by this
+ring or another) -- held on, it kept the result for the life of the process, one
+per woken job. A caller whose turn outlasts the ringing is woken at its release
+instead; that run reads the stored ending too, and the entry here stays until
+this process ends or reads it.
+An archiving to make room changes nothing about the job: it dropped a finished
+job's entry, which could then no longer say the ending is unread, and the ringing
+stopped for a caller asleep over it. And the bell
 rings outside what turns a cancel into an ending: a shutdown that cancels a job
 while it rings — up to five minutes, while the caller's session is held — used
 to record a second ending, *cancelled* over the finished one, and ring again.

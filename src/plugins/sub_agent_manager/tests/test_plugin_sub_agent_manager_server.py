@@ -2119,6 +2119,8 @@ class TestCancelReachesABlockingRun:
 
         assert any(fields.get("status") == "active" and "current_activity" in fields
                    and fields["current_activity"] is None for fields in written), written
+        # nor an earlier run's error: a later failure that stores none would report it
+        assert any("error" in fields and fields["error"] is None for fields in written), written
 
     @pytest.mark.asyncio
     async def test_a_continue_refused_as_already_running_touches_nothing(self, server):
@@ -2437,7 +2439,9 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         await self.run_to_end(server, agent)
 
         assert told == [("parent1", "u1")]
-        assert server._async_jobs["sub_slow"]["status"] == "failed"
+        # what the woken run reads: it runs in a process of its own
+        stored = [call.kwargs.get("status") for call in server._get_manager().update_sub_session_metadata.await_args_list]
+        assert stored[-1] == "failed", stored
 
     @pytest.mark.asyncio
     async def test_a_failed_job_holds_its_slot_until_its_ending_is_stored(self, server):
@@ -2609,6 +2613,64 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert rings == ["parent1"], "rung again for it"
 
     @pytest.mark.asyncio
+    async def test_a_run_that_answered_an_error_stores_what_went_wrong(self, server, monkeypatch):
+        """A reader of the stored state -- a caller woken into a process of its own -- was told
+        "Sub-agent failed" about a run that had said what went wrong."""
+        self.presence(monkeypatch)
+        answer = "Error: the provider refused -- " + "details " * 1000  # an answer that only starts so
+        agent = SlowAgent(answer=answer)
+        TestCancelReachesABlockingRun.wire(server, agent)
+        await self.start(server)
+        await self.run_to_end(server, agent)
+
+        stored = server._get_manager().update_sub_session_metadata.await_args_list[-1].kwargs
+        assert stored["status"] == "failed" and answer.startswith(stored.get("error") or "-"), stored
+        assert "the provider refused" in stored["error"] and len(stored["error"]) < len(answer), \
+            "the whole answer went into the parent's session file"
+
+    @pytest.mark.asyncio
+    async def test_an_archiving_to_make_room_leaves_an_unread_ending_ringing(self, server):
+        """At a limit the manager archives the oldest sub-agent by itself, behind the caller's back.
+        It dropped a finished job's entry with it -- and with the entry the guard's "unread": the
+        ringing stopped for an ending nobody had read, and the caller slept over it for good.
+
+        The manager the server really builds, archiving the way a create at the limit does."""
+        TestCancelReachesABlockingRun.wire(server, SlowAgent())
+        server._async_jobs["sub_slow"] = {
+            "instance_id": "sub_slow", "status": "completed", "result": "done", "_awaiting_poll": True,
+            "parent_session_id": "parent1", "task_handle": None}
+        manager = SubAgentManagerServer._get_manager(server, Mock())
+        manager._write_sub_agent = AsyncMock(return_value=True)
+
+        assert await manager._archive_sub_agent("parent1", "sub_slow") is True, "fixture archived nothing"
+
+        assert server._ending_is_unread("sub_slow")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state, stored, kept", [
+        ("woke_session", True, False),
+        ("being_woken", True, False),
+        # held: the run that holds the session may be this process's own, and reads the entry
+        ("delivered_next_step", True, True),
+        # the user stopped the run that asked: nobody was woken
+        ("queued", True, True),
+        # an ending that could not be stored has no other answer than the entry
+        ("woke_session", False, True),
+    ], ids=["woken", "being-woken", "held", "stopped", "unstored"])
+    async def test_a_caller_woken_into_a_process_of_its_own_takes_the_entry(self, server, monkeypatch,
+                                                                             state, stored, kept):
+        """That run reads the ending from the stored state; nothing here reads the entry any more.
+        Held on, it kept the result for the life of this process, one per woken job."""
+        self.presence(monkeypatch, state=state)
+        agent = SlowAgent()
+        TestCancelReachesABlockingRun.wire(server, agent)
+        server._get_manager().update_sub_session_metadata = AsyncMock(return_value=stored)
+        await self.start(server, wake_when_done=True)
+        await self.run_to_end(server, agent)
+
+        assert ("sub_slow" in server._async_jobs) is kept, server._async_jobs
+
+    @pytest.mark.asyncio
     async def test_a_job_cancelled_from_elsewhere_wakes_it(self, server, monkeypatch):
         """The guard is "the caller ended it", and nothing wider: a task cancelled without the
         tool being asked -- the request tree it hangs in going down, the process shutting down --
@@ -2619,12 +2681,14 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         TestCancelReachesABlockingRun.wire(server, agent)
         await self.start(server, wake_when_done=True)
         await agent.started(1)
-        server._async_jobs["sub_slow"]["task_handle"].cancel()  # nothing recorded the ending first
+        handle = server._async_jobs["sub_slow"]["task_handle"]
+        handle.cancel()  # nothing recorded the ending first
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(server._async_jobs["sub_slow"]["task_handle"], 5)
+            await asyncio.wait_for(handle, 5)
 
         assert told == [("parent1", "u1")]
-        assert server._async_jobs["sub_slow"]["status"] == "cancelled"
+        stored = [call.kwargs.get("status") for call in server._get_manager().update_sub_session_metadata.await_args_list]
+        assert stored[-1] == "cancelled", stored
 
     @pytest.mark.parametrize("failure", [
         OSError("the sessions directory is gone"),
@@ -2855,7 +2919,8 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         The guard is the bookkeeping the manager already keeps: the ending sits in `_async_jobs`
         marked `_awaiting_poll` until somebody reads it, and a poll takes the job with it."""
         guards = []
-        self.presence(monkeypatch, guards=guards)
+        # held by the caller's own turn: the one case the guard is asked in at all
+        self.presence(monkeypatch, guards=guards, state="delivered_next_step")
         agent = SlowAgent()
         TestCancelReachesABlockingRun.wire(server, agent)
         await self.start(server, wake_when_done=True)
@@ -2875,22 +2940,6 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         # over it, and that second ring starts a second woken run.
         server._async_jobs["sub_slow"] = {"instance_id": "sub_slow", "status": "running"}
         assert still_needed() is False, "any job under that id counted as an ending nobody read"
-
-    @pytest.mark.asyncio
-    async def test_an_archived_job_hands_over_no_guard_at_all(self, server, monkeypatch):
-        """Archived while it ran, the job is dropped from `_async_jobs` the moment it ends -- so
-        the guard would answer "already read" on the first ring and stop it, for an ending nobody
-        has seen. Nothing here can tell, and saying so is what makes the core ring its budget."""
-        guards = []
-        self.presence(monkeypatch, guards=guards)
-        agent = SlowAgent()
-        TestCancelReachesABlockingRun.wire(server, agent)
-        await self.start(server, wake_when_done=True)
-        await agent.started(1)
-        await server._archive_job("sub_slow")
-        await self.run_to_end(server, agent)
-
-        assert guards == [None], "a guard that cannot see the job must not be handed over"
 
     @pytest.mark.asyncio
     async def test_a_wait_hands_back_no_bookkeeping_of_ours(self, server, monkeypatch):
@@ -3311,13 +3360,13 @@ class TestAFinishedJobDoesNotStayInMemory:
 
     @pytest.mark.asyncio
     async def test_archiving_a_running_instance_drops_its_job_when_the_run_ends(self, server):
-        """The entry stays while it runs -- a cancel needs its handle -- but nobody polls an
-        archived instance, so its ending takes it out instead of leaving the result for good."""
+        """The entry stays while it runs -- a cancel needs its handle -- but the caller that deleted
+        it is done with it, so its ending takes it out instead of leaving the result for good."""
         TestCancelReachesABlockingRun.wire(server, SlowAgent())
         self.job(server, "sub_busy", "running")
 
         await self.archive(server, "sub_busy")
-        assert server._async_jobs["sub_busy"]["_archived"] is True, "kept, and marked"
+        assert server._async_jobs["sub_busy"]["_ended_by_caller"] is True, "kept, and marked"
 
         await server._finish_job("sub_busy", {"_session_id": "parent1"}, "completed",
                                  stored={"status": "active"}, manager=server._get_manager(),
@@ -3593,25 +3642,6 @@ class TestAFinishedJobDoesNotStayInMemory:
         assert stored_kwargs["status"] == "active", stored_kwargs
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("job_status", ["failed", "cancelled"])
-    async def test_an_archived_run_that_ended_badly_keeps_its_verdict(self, server, job_status):
-        """The other half of the rule above, and the one that hides a dead fan-out if it is
-        wrong: "failed" and "cancelled" are the run's verdict and they say themselves that it is
-        over. Stored as "archived" they read as an orderly end -- poll would answer "completed"
-        for a sub-agent that never finished, and wait_all would count it among the good ones."""
-        stored_kwargs = {}
-        manager = AsyncMock()
-        manager.update_sub_session_metadata = AsyncMock(
-            side_effect=lambda **kw: stored_kwargs.update(kw))
-        self.job(server, "sub_bad", "running", _archived=True)
-
-        await server._finish_job("sub_bad", {"_session_id": "parent1"}, job_status,
-                                 stored={"status": job_status, "error": "it broke"},
-                                 manager=manager)
-
-        assert stored_kwargs["status"] == job_status, stored_kwargs
-
-    @pytest.mark.asyncio
     async def test_an_archiving_that_wrote_nothing_is_not_reported_as_done(self, server):
         """The metadata write gives up quietly -- parent unreadable, no sub_agents metadata, id
         not among them -- and raises nothing. Told "archived" anyway, the caller believes an
@@ -3626,17 +3656,6 @@ class TestAFinishedJobDoesNotStayInMemory:
 
         assert answer["status"] == "error", answer
         assert "sub_done" in server._async_jobs, "its result is still the caller's to read"
-
-    def test_the_manager_it_builds_reports_what_it_archived_itself(self, server):
-        """The second way to archive, and the one that skips this server: at the limit the
-        manager archives the oldest sub-agent to make room, down where the id never surfaces
-        here. Its job would keep the whole result text for the life of the process.
-
-        The real factory, not the one a fixture stubs -- what is asserted is the wiring.
-        """
-        manager = SubAgentManagerServer._get_manager(server, Mock())
-
-        assert manager._on_archived == server._archive_job
 
     @pytest.mark.asyncio
     async def test_wait_all_waits_once_per_instance(self, server):

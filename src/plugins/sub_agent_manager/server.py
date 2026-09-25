@@ -488,10 +488,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             self.max_sub_agents_per_type,
             self.max_sub_agents,
             auto_archive_on_limit=self.auto_archive_on_limit,
-            # The manager archives the oldest sub-agent by itself when a limit is reached, and
-            # the id never reaches this server otherwise -- its background job would keep its
-            # result for the life of the process.
-            on_archived=self._archive_job,
         )
 
     def _extract_registry(self, params: dict[str, Any]):
@@ -1483,7 +1479,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         })
                         continue
 
-                    await self._archive_job(sub_id, by_caller=True)
+                    await self._archive_job(sub_id)
 
                     results.append({
                         "instance_id": sub_id,
@@ -1837,20 +1833,17 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return None
         return None
 
-    async def _archive_job(self, instance_id: str, *, by_caller: bool = False) -> None:
-        """What an archived instance leaves behind in memory -- for every way of archiving one.
+    async def _archive_job(self, instance_id: str) -> None:
+        """What the caller's own `delete` does to the instance's background job: the caller is
+        awake and done with it. A finished job goes -- nobody comes back for its entry. A running
+        one keeps it, for its task handle is what a cancel needs, and is marked as called off by
+        the caller, the same as a cancel of its own: its ending rings nobody, and goes once stored.
 
-        An archived instance has no reader left for its background job -- and none is coming:
-        `list_sub_sessions` keeps only active and interrupted ones, so once the entry is gone a
-        poll answers "not found" and the text is in the transcript only (`info`). A running one
-        keeps its job -- that is the task handle a cancel needs -- and is marked instead, so its
-        ending drops it rather than leaving the result behind for good.
-
-        The tool's `delete` is one way here, and it passes `by_caller`. The other is the manager
-        archiving the oldest sub-agent by itself to make room (`auto_archive_on_limit`), which
-        never passes through this server at all: it is handed this method as `on_archived` when
-        the manager is built. The two differ in exactly one thing at the ending -- whether the
-        caller should be woken for it -- and `_finish_job` cannot tell them apart without this.
+        An archiving that makes room at a limit (`auto_archive_on_limit`) changes nothing about the
+        job. It happens behind the caller's back, which may be asleep over that very ending: it
+        dropped a finished job's entry, which could then no longer say the ending is unread, and
+        the ringing stopped; and a running one's at its ending, ringing without a guard. A poll
+        finds an archived instance still, and a woken caller takes the entry (`_wake_parent`).
         """
         async with self._async_jobs_lock:
             job = self._async_jobs.get(instance_id)
@@ -1859,10 +1852,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             if job.get("status") in ("completed", "failed", "cancelled"):
                 del self._async_jobs[instance_id]
             else:
-                job["_archived"] = True
-                if by_caller:
-                    # deleted by the caller, awake: the same as a cancel of its own for the bell
-                    job["_ended_by_caller"] = True
+                job["_ended_by_caller"] = True
 
     @staticmethod
     async def _limit_reached(error: SubAgentLimitReached, status: Any, **fields: Any) -> dict[str, Any]:
@@ -1917,9 +1907,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         metadata of the sub-session, and a status that stays "active" there sends a coordinator
         into a polling loop over a job that nobody runs any more.
 
-        The job is kept, marked `_awaiting_poll`, until a poll has read its ending -- dropping it
-        here would send a `wait` running meanwhile to the stored state, which may still say active.
-        One the caller called off itself goes once that state is written: nobody reads it later.
+        The job is kept, marked `_awaiting_poll`, until a poll has read its ending, or the caller
+        was woken into a process of its own (`_wake_parent`) -- dropping it here would send a
+        `wait` running meanwhile to the stored state, which may still say active. One the caller
+        called off itself goes once that state is written: nobody reads it later.
         `stored` is what the sub-session's metadata records; the ways differ in that, so each
         caller says it.
         """
@@ -1929,7 +1920,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # The cost is a window: between here and the stored write below, a poll reads the ending
         # and takes the job away, and a second one in the same window falls back to metadata that
         # still says active and reads as completed. It closes itself when the write lands.
-        was_archived = False
         ended_by_caller = False
         try:
             async with self._async_jobs_lock:
@@ -1940,12 +1930,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     # terminal here too when an earlier call of this method was cut short by a cancel
                     # from elsewhere -- and that caller is asleep, and waits for its bell.
                     ended_by_caller = bool(job.get("_ended_by_caller"))
-                    if job.get("_archived"):
-                        # archived while it ran: nobody polls an archived instance, and the entry
-                        # would keep its result for the life of the process
-                        was_archived = True
-                        del self._async_jobs[instance_id]
-                        job = None
                 if job is not None:
                     job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
                                _awaiting_poll=True, **fields)
@@ -2004,19 +1988,14 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         #   * the caller CALLED IT OFF -- a `cancel` or a `delete` of its own marked it, awake, in
         #     a turn of its own;
         #   * it is GONE -- a poll, a wait, a `continue` or a delete of a finished job took it, and
-        #     each of those is a caller awake and handling the ending itself. An archiving to make
-        #     room is the exception below: it drops the entry AT the ending, behind the caller's
-        #     back, with nobody having read anything.
+        #     each of those is a caller awake and handling the ending itself.
         # Ringing anyway is not free even once: the marker a ring leaves behind turns into a whole
         # woken run when the caller's turn ends.
         if params.get("wake_when_done") and parent_session_id and not ended_by_caller \
-                and (job is not None or was_archived):
+                and job is not None:
             return functools.partial(
-                self._wake_parent, instance_id, parent_session_id, manager, params,
-                # A job archived to make room while it RAN is dropped the moment it ends, so a
-                # guard would answer "already read" on the first ring for an ending nobody has
-                # seen. That one hands over no guard and rings the budget.
-                still_needed=None if was_archived else (lambda: self._ending_is_unread(instance_id)))
+                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written,
+                still_needed=lambda: self._ending_is_unread(instance_id))
         return None
 
     async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
@@ -2076,9 +2055,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         """Whether this job's ending is still waiting for somebody to read it.
 
         The ending sits in the job marked `_awaiting_poll` until somebody takes it, and whoever
-        takes it takes the job with it -- a poll, a wait, a `continue` on the instance, or
-        archiving a job that has already ended. So the answer is "is it still there", not "did a
-        poll happen": the three others each mean the caller is awake and handling it itself.
+        takes it takes the job with it -- a poll, a wait, a `continue` on the instance, or the
+        caller's own `delete` of it. So the answer is "is it still there", not "did a poll
+        happen": the three others each mean the caller is awake and handling it itself.
 
         The id is enough to ask with, and nothing here needs to hold the entry itself: an
         instance_id is minted once per spawn and checked against every session on disk
@@ -2096,7 +2075,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
 
     async def _wake_parent(self, instance_id: str, parent_session_id: str,
                            manager: Optional[SubAgentManager], params: dict[str, Any],
-                           *, still_needed: Optional[Callable[[], bool]]) -> None:
+                           *, still_needed: Callable[[], bool], stored: bool = False) -> None:
         """Tell the session that started this job to look: it may have ended its turn over it.
 
         Waking is core (`core/session_presence.wake_session`), and so is the REPEATING, which is
@@ -2111,12 +2090,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         `still_needed` says the ending is still in hand. It answers "no" once a poll or a wait has
         handed it over -- and also once the job is simply GONE, which is what the core's own
         wording covers ("read by its caller, or gone from the registry"): a `continue` on the
-        instance takes it too, and so does archiving a job that has already ended. In each of
-        those the caller is demonstrably awake and working, which is when the ringing should
-        stop.
+        instance takes it too, and so does the caller's own `delete`. In each of those the caller
+        is demonstrably awake and working, which is when the ringing should stop.
 
-        Which guard, or none at all, is decided by `_finish_job`: it is the one place that has
-        the job entry as the ending left it.
+        The guard is handed over by `_finish_job`: it is the one place that has the job entry as
+        the ending left it.
 
         A background job lives in the process that started it. That is the API, where the job runs
         on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
@@ -2136,7 +2114,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 logger.warning("Cannot wake %s for sub-agent %s: no user for the session",
                                parent_session_id, instance_id)
                 return
-            await wake_session(
+            state = await wake_session(
                 self.system_config, parent_session_id, user_id,
                 what=f"sub-agent {instance_id}",
                 still_needed=still_needed,
@@ -2145,6 +2123,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 # there, and a stopped sub-agent read as a stopped caller that is never woken.
                 started_by=str(params.get("_request_id") or ""),
             )
+            if stored and state in ("woke_session", "being_woken"):
+                # Woken into a process of its own (`notify` starts an agent-cli run): that run reads
+                # the ending from the stored state, and nothing here reads this entry any more. Held
+                # on, it kept the result for the life of this process, one per woken job. Only a
+                # stored ending: unstored, the entry is the only answer there is.
+                async with self._async_jobs_lock:
+                    job = self._async_jobs.get(instance_id)
+                    if job is not None and job.get("status") in ("completed", "failed", "cancelled"):
+                        del self._async_jobs[instance_id]
         except Exception as e:
             # The job is done and recorded; a wake that fails costs the caller a poll, not the run.
             logger.warning("Could not wake %s for finished sub-agent %s: %s",
@@ -2234,7 +2221,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             bell = await self._finish_job(
                 instance_id, params, job_status, manager=manager,
                 stored={"last_used": datetime.now(UTC).isoformat(),
-                        "status": "active" if job_status == "completed" else job_status},
+                        "status": "active" if job_status == "completed" else job_status,
+                        # what a reader of the stored state gets -- a woken caller in its own
+                        # process; it answered "Sub-agent failed" without it. Cut, for it goes into
+                        # the parent's session file: the whole answer is in the transcript (`info`).
+                        **({} if job_status == "completed" else {"error": result_text[:2000]})},
                 outcome=outcome, result=result_text,
             )
 
