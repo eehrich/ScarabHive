@@ -19,7 +19,7 @@ try:
 except Exception:
     tabulate = None
 
-from .config.settings import get_tool_server_config, load_settings
+from .config.settings import load_settings
 from .paths import enter_project, user_path
 from .config.models import AgentSystemConfig
 from .core.cancellation import get_cancellation_manager
@@ -30,8 +30,9 @@ from .tools.base import ToolServerRegistry
 from .tools.status import status_bus
 from .tools.integration import ToolServerIntegration, initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
-from .utils.logging import setup_logging
+from .utils.logging import setup_role_logging
 from .servers.agent.server import Agent
+from .servers.agent.entry import NotAnAgent, entry_agent
 
 # Import services
 from .services import ToolServerService, ToolService
@@ -149,87 +150,6 @@ def parse_llm_params_args(raw_items: Optional[List[str]]) -> Optional[Dict[str, 
                 f"Valid keys: {', '.join(sorted(valid_keys))}"
             )
     return params or None
-
-
-def agent_entry_names(config: Any) -> list[str]:
-    """Names this configuration can build an entry agent for, sorted.
-
-    The RAW ``plugins.servers`` entry with an ``agent_config`` -- the same gate
-    _build_entry_agent applies below, and the reason both read it here: a
-    listing that offers a name the factory then rejects is worse than none.
-
-    Raw on purpose. plugins.default_config carries an agent_config, so every
-    MERGED config has one and a merged gate would wave through any tool server
-    (measured on the real config: 96 of 219 servers have no raw agent_config,
-    all of them tool servers, no agent among them).
-    """
-    servers = getattr(getattr(config, "plugins", None), "servers", None) or {}
-    return sorted(name for name, entry in servers.items()
-                  if getattr(entry, "agent_config", None))
-
-
-def entry_agent(entry_name: str, config: AgentSystemConfig, registry: ToolServerRegistry,
-                session_service) -> Agent:
-    """The agent for *entry_name*: the registered one, or a fresh build.
-
-    A registered agent is rewired to THIS process's registry and session
-    service -- bootstrap injects both, but an agent picked up later (the
-    chat's /agent) would otherwise save into whatever service built it.
-
-    Exits the process when the name belongs to something that is not an agent,
-    or cannot be built at all. A caller that must survive mid-conversation
-    catches SystemExit.
-    """
-    from .servers.agent.server import Agent as _Agent
-
-    if entry_name in registry.list():
-        existing = registry.get(entry_name)
-        if not isinstance(existing, _Agent):
-            # The name belongs to a plugin or tool server, not an agent.
-            logger.error(f"'{entry_name}' is registered as {type(existing).__name__}, not an Agent")
-            print(f"Error: '{entry_name}' is not an agent. It's a {type(existing).__name__}.",
-                  file=sys.stderr)
-            print("\nAvailable agents:", file=sys.stderr)
-            for name in registry.list():
-                if isinstance(registry.get(name), _Agent):
-                    print(f"  - {name}", file=sys.stderr)
-            sys.exit(1)
-        existing.registry = registry  # type: ignore[attr-defined]
-        existing._session_service = session_service  # type: ignore[attr-defined]
-        return existing
-    return _build_entry_agent(entry_name, config, registry, session_service)
-
-
-def _build_entry_agent(entry_name: str, config: AgentSystemConfig, registry: ToolServerRegistry,
-                       session_service) -> Agent:
-    """Build the entry agent when bootstrap did not register it, from its
-    MERGED server config, and register it.
-
-    This used to read the raw ``plugins.servers[name]`` entry -- without
-    default_config and the ``type:`` inheritance chain that bootstrap applies
-    to every other agent. Measured 2026-09-01 on the real config: 133 of 203
-    agents carry a raw ``max_steps`` of 20 where the merged value is 100 or
-    30, so an agent built here ran a quietly downgraded configuration.
-
-    Exits with a listing of the available agents when the name has no
-    agent config at all (unchanged behaviour) -- the gate is
-    agent_entry_names above, which is also what /agent offers.
-    """
-    logger.info("Creating new Agent instance '%s'", entry_name)
-    if entry_name not in agent_entry_names(config):
-        logger.error(f"Cannot create agent '{entry_name}': no agent_config found in tool server config")
-        print(f"Error: Agent '{entry_name}' not found and cannot be created (no agent_config in plugins.yaml).", file=sys.stderr)
-        print("\nAvailable agents:", file=sys.stderr)
-        for name in registry.list():
-            server = registry.get(name)
-            if isinstance(server, Agent):
-                print(f"  - {name}", file=sys.stderr)
-        sys.exit(1)
-
-    server_config = get_tool_server_config(entry_name, config)
-    agent = Agent(entry_name, config, server_config, registry, session_service=session_service)
-    registry.register(entry_name, agent)
-    return agent
 
 
 logger = logging.getLogger(__name__)
@@ -472,15 +392,14 @@ def close_cli_loop() -> None:
 
 
 def _exit_on_unknown_profile(config: AgentSystemConfig, profile: str) -> None:
-    """Exit 1 with the available profiles when `profile` is not configured."""
+    """Exit 1 with the available profiles when `profile` is not configured --
+    before the bootstrap, which is slow; the message is the factory's own."""
+    from .llm.factory import UnknownLLMProfile
+
     profiles = config.llm_system.profiles if config.llm_system else {}
-    if profile in profiles:
-        return
-    error_msg = f"ERROR: LLM profile '{profile}' not found in configuration."
-    if profiles:
-        error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(sorted(profiles))
-    print(error_msg, file=sys.stderr)
-    sys.exit(1)
+    if profile not in profiles:
+        print(f"ERROR: {UnknownLLMProfile(profile, profiles)}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
@@ -1157,32 +1076,10 @@ def main() -> None:
             sys.exit(1)
         return
 
-    # Setup logging from config; file handler is created here. Console level is adjusted below.
-    # Use a role-specific logfile so concurrent processes (cli vs api) don't
-    # clobber the same file. If the configured file is `logs/agent.log` this
-    # will create `logs/agent-cli.log` for the CLI.
-    def _role_logfile(base: str, role: str) -> str:
-        try:
-            p = Path(base)
-            stem = p.stem or "agent"
-            # preserve all suffixes (e.g. .log)
-            suffix = "".join(p.suffixes) or ".log"
-            return str(p.with_name(f"{stem}-{role}{suffix}"))
-        except Exception as e:
-            # fallback to a simple role-specific name in logs/
-            logger.debug(f"Failed to construct role-specific logfile from {base}: {e}")
-            return str(Path("logs") / f"agent-{role}.log")
-
-    # Determine logfile: prefer explicit per-role setting if provided in config.
-    log_path = config.logging.file_cli or _role_logfile(config.logging.file or "logs/agent.log", "cli")
-    log_file = setup_logging(
-        config.logging.enabled, 
-        config.logging.level, 
-        log_path,
-        rotation_enabled=config.logging.rotation_enabled,
-        max_bytes=config.logging.max_bytes,
-        backup_count=config.logging.backup_count
-    )
+    # Setup logging from config -- the CLI's own file (logs/agent.log becomes
+    # logs/agent-cli.log), so it and the API do not write into one. Console
+    # level is adjusted below.
+    log_file = setup_role_logging(config.logging, "cli")
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:
@@ -1193,12 +1090,8 @@ def main() -> None:
                 h.setLevel(logging.WARNING)
     if log_file:
         logger.info("Logging initialized, file=%s", log_file)
-    # Apply SSL bypass if configured
-    if not config.network.ssl_verify:
-        os.environ["PYTHONHTTPSVERIFY"] = "0"
-        os.environ.setdefault("SSL_CERT_FILE", "")
-        os.environ.setdefault("CURL_CA_BUNDLE", "")
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
+    from .services.initialization_service import apply_ssl_verify_to_environment
+    apply_ssl_verify_to_environment(config)
     registry = ToolServerRegistry()
     vprint("[cli] bootstrapping servers...")
     logger.info("Bootstrapping servers")
@@ -1277,9 +1170,14 @@ def main() -> None:
     if stored_agent and entry_name == stored_agent:
         vprint(f"[cli] continuing session with its own agent: {entry_name}")
 
-    # Get or create the agent -- the same way /agent does it mid-chat.
+    # Get or create the agent -- the one factory the API and /agent use too.
     was_registered = entry_name in registry.list()
-    agent = entry_agent(entry_name, config, registry, session_service)
+    try:
+        agent = entry_agent(entry_name, config, registry, session_service)
+    except NotAnAgent as e:
+        logger.error("No agent '%s': %s", entry_name, e)
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     if not was_registered:
         vprint(f"[cli] created agent: {entry_name}")
 
@@ -1367,17 +1265,18 @@ def main() -> None:
             llm_profile_override or agent.agent_config.default_llm_profile
         )
         if config.llm_system and config.llm_system.profiles:
-            # An explicit --llm was checked before the bootstrap already; this
-            # catches the agent's own default profile.
-            _exit_on_unknown_profile(config, effective_profile)
+            from .llm.factory import UnknownLLMProfile, override_for_profile
 
             try:
-                from .llm.factory import override_for_profile
-
                 llm_override, llm_profile_info = override_for_profile(
                     config, agent.agent_config, effective_profile, llm_params_override)
                 logger.info(f"Using LLM override: {llm_profile_info}")
                 vprint(f"[cli] Using LLM profile: {llm_profile_info}")
+            except UnknownLLMProfile as e:
+                # An explicit --llm was checked before the bootstrap already;
+                # this is the agent's own default profile.
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 print(f"ERROR: Failed to apply LLM profile '{effective_profile}': {str(e)}", file=sys.stderr)
@@ -1401,79 +1300,22 @@ def main() -> None:
         if hint:
             print(f"Error: {hint}", file=sys.stderr)
         sys.exit(1)
-    has_images = sorted_attachments["image"]
-    has_audio = sorted_attachments["audio"]
-    has_text_files = sorted_attachments["text"]
-
     # Chat sends them with its first message, through the same path /attach
-    # takes (capability check included) -- there may be no message yet.
-    if (has_images or has_audio or has_text_files) and args.subcommand != "chat":
-        attachment_counts = []
-        if has_images:
-            attachment_counts.append(f"{len(has_images)} image(s)")
-        if has_audio:
-            attachment_counts.append(f"{len(has_audio)} audio(s)")
-        if has_text_files:
-            attachment_counts.append(f"{len(has_text_files)} text file(s)")
-        vprint(f"[cli] processing attachments: {', '.join(attachment_counts)}")
+    # takes -- there may be no message yet.
+    if any(sorted_attachments.values()) and args.subcommand != "chat":
+        from .utils.multimodal_processor import AttachmentRejected, message_with_attachments
 
-        # Same check the HTTP API does, against the model this run will use:
-        # the --llm override wins over the agent's default. Without it the
-        # picture went to whatever model the chain picked, and the complaint
-        # came back from the provider.
-        from .llm.capabilities import capability_model_name, ensure_model_supports
-        model_name = capability_model_name(llm_override, agent)
-        problem = ensure_model_supports(
-            model_name, images=len(has_images or []), audio=len(has_audio or []))
-        if problem:
-            print(f"Error: {problem}", file=sys.stderr)
-            sys.exit(1)
-
+        # Checked against the model this run will use -- the --llm override
+        # wins over the agent's default, one rule with the HTTP API and the
+        # chat. sys.exit(1), not return: a caller that checks the code -- the
+        # writer runners do -- read a refused run as a finished one with empty
+        # output.
         try:
-            from .utils.multimodal_processor import (
-                create_multimodal_message_extended,
-                ImageProcessingError,
-                AudioProcessingError,
-                TextFileProcessingError
-            )
-
-            # Convert string paths to lists of Path objects
-            image_paths = [Path(p) for p in has_images] if has_images else None
-            audio_paths = [Path(p) for p in has_audio] if has_audio else None
-            text_file_paths = [Path(p) for p in has_text_files] if has_text_files else None
-
-            # Create multimodal message with all attachment types
-            task_input = create_multimodal_message_extended(
-                text=args.task,
-                image_paths=image_paths,
-                audio_paths=audio_paths,
-                text_file_paths=text_file_paths,
-            )
-
-            vprint("[cli] created multimodal message")
-
-        # sys.exit(1), not return: these printed to stderr and left with 0,
-        # so a caller that checks the exit code -- the writer runners do --
-        # read a failed run as a successful one with empty output. A missing
-        # file already exits 1 a few lines up; a corrupt one has no business
-        # exiting differently.
-        except ImageProcessingError as e:
-            print(f"Error processing image: {e}", file=sys.stderr)
+            task_input = message_with_attachments(args.task, sorted_attachments, llm_override, agent)
+        except AttachmentRejected as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-        except AudioProcessingError as e:
-            print(f"Error processing audio: {e}", file=sys.stderr)
-            sys.exit(1)
-        except TextFileProcessingError as e:
-            print(f"Error processing text file: {e}", file=sys.stderr)
-            sys.exit(1)
-        except ImportError as e:
-            print(f"Error: Multimodal processing requires Pillow: {e}", file=sys.stderr)
-            print("Install with: pip install Pillow", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            print(f"Error processing attachments: {e}", file=sys.stderr)
-            logger.exception("Unexpected error in multimodal processing")
-            sys.exit(1)
+        vprint("[cli] created multimodal message")
 
     vprint(f"[cli] running task: {args.task}")
     logger.info("Running task: %s", args.task)
@@ -1492,61 +1334,32 @@ def main() -> None:
     # Parsed --vars, hoisted so chat mode can re-apply them on /new
     parsed_cli_vars: dict[str, str] = {}
 
-    # Helper async function for session operations
     async def handle_session_operations():
-        nonlocal actual_session_id
-        was_new_session = False  # Track if we're creating a new session
-
-        # Load existing session if --session provided
-        session_exists = False
-        if session_id:
-            vprint(f"[cli] loading session: {session_id}")
-            try:
-                session_exists, msg_count = await session_service.load_and_restore_session(
-                    agent, session_user, session_id
-                )
-                if session_exists:
-                    vprint(f"[cli] loaded session with {msg_count} messages")
-                    logger.info(f"Loaded session {session_id} with {msg_count} messages")
-                    was_new_session = False
-                else:
-                    # Session ID provided but doesn't exist - create it
-                    logger.info(f"Session '{session_id}' not found, creating new session with this ID")
-                    # stderr: stdout traegt das Task-Ergebnis (Redirects sauber halten)
-                    print(f"Creating new session '{session_id}'", file=sys.stderr)
-                    was_new_session = True  # Will be saved at end
-                    # Initialize empty session in agent ONLY when it doesn't exist.
-                    # MUST stay inside the else: when the session WAS restored,
-                    # load_and_restore_session already populated the tracker -
-                    # clearing it here wipes the restored history and the
-                    # subsequent save permanently destroys it on disk.
-                    if hasattr(agent, '_session_tracker'):
-                        agent._session_tracker.set_session_messages(actual_session_id, [])
-            except SessionPermissionError as e:
-                # User trying to access session they don't own
-                logger.error(f"Permission denied for session {session_id}: {e}")
-                print(f"Error: {e}", file=sys.stderr)
-                print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
-                return False, was_new_session  # Signal to exit
-            except Exception as e:
-                logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
-                print(f"Error loading session: {e}", file=sys.stderr)
-                return False, was_new_session  # Signal to exit
-        else:
-            # No session ID provided - create new one with auto-generated ID
-            logger.debug(f"Creating new session: {actual_session_id}")
-            was_new_session = True
-            if hasattr(agent, '_session_tracker'):
-                agent._session_tracker.set_session_messages(actual_session_id, [])
-
-        # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
-        # This ensures initial values (like workflow_phase: "planning") are available
-        # without requiring explicit set_context calls
-        if was_new_session and hasattr(agent, '_session_tracker') and hasattr(agent, 'agent_config'):
-            if agent.agent_config and agent.agent_config.template_vars:
-                initial_vars = agent.agent_config.template_vars.copy()
-                agent._session_tracker.set_session_template_vars(actual_session_id, initial_vars)
-                logger.debug(f"[cli] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
+        """Open the session for this run the way the API does
+        (SessionService.open_for_run), then lay --vars over its template vars.
+        Returns (continue, was_new_session)."""
+        try:
+            exists = await session_service.open_for_run(
+                agent, session_user, actual_session_id,
+                profile_for_record(llm_profile_override, agent.agent_config.default_llm_profile))
+        except SessionPermissionError as e:
+            logger.error(f"Permission denied for session {actual_session_id}: {e}")
+            print(f"Error: {e}", file=sys.stderr)
+            print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
+            return False, False
+        except Exception as e:
+            logger.error(f"Failed to load session {actual_session_id}: {e}", exc_info=True)
+            print(f"Error loading session: {e}", file=sys.stderr)
+            return False, False
+        was_new_session = not exists
+        if exists:
+            count = len(agent._session_tracker.get_session_messages(actual_session_id) or [])
+            vprint(f"[cli] loaded session with {count} messages")
+            logger.info(f"Loaded session {actual_session_id} with {count} messages")
+        elif session_id:
+            logger.info(f"Session '{session_id}' not found, creating new session with this ID")
+            # stderr: stdout carries the task result (redirects stay clean)
+            print(f"Creating new session '{session_id}'", file=sys.stderr)
 
         # Merge CLI --vars overrides into session template_vars
         cli_vars_raw = getattr(args, 'template_vars', None)
@@ -1636,6 +1449,8 @@ def main() -> None:
     # sub-agents.
     run_request_id = short_id()
     run_stopped = []
+    # The errors the stream showed as they came; the block after the run names the rest (an exception has no event).
+    streamed_errors: list = []
 
     def _stop_the_run() -> None:
         run_stopped.append(True)
@@ -1651,282 +1466,150 @@ def main() -> None:
     async def _stream_and_run_with_status(
         agent: Agent,
         task: Union[str, ChatMessage],
-        session_id: str,  # Add session_id parameter
         show_tools: bool = False,
         show_status: bool = True,
         llm_override=None,
         llm_profile_info: Optional[str] = None
     ) -> dict:
-        """Stream and run agent with status display.
+        """Run *task* and show it as it goes: status lines, tool calls, thinking.
 
-        Args:
-            agent: The agent to run
-            task: Either a string task or ChatMessage with multimodal content
-            show_tools: Whether to show tool call details
-            show_status: Whether to show status events
-            llm_override: Optional LLM client to override agent's default
-            llm_profile_info: Optional profile info string for logging
+        The run is collected by collect_final_result, as --raw's is -- the one
+        consumer of run_events. This mode kept its own copy of that loop, and
+        the copy left the errors out of the result: a run that ended in one
+        looked finished. The answer and the errors show as they arrive -- a
+        Ctrl-C mostly lands out of the event loop, and after the run only the
+        stop is printed then.
         """
-        # Extract task text for logging
-        if isinstance(task, ChatMessage):
-            if isinstance(task.content, str):
-                task_text = task.content
-            elif isinstance(task.content, list):
-                # Content items are Pydantic models, use attribute access
-                text_parts = [getattr(item, "text", "") for item in task.content if hasattr(item, "type") and getattr(item, "type") == "text"]
-                task_text = " ".join(text_parts) if text_parts else "[multimodal input]"
-            else:
-                task_text = "[multimodal input]"
-        else:
-            task_text = task
+        phase_colours = {"start": "36", "progress": "34", "end": "32", "error": "31"}
 
-        final_result: Dict[str, Any] = {"task": task_text, "calls": []}
+        def _print_status(event: Any) -> None:
+            # The enum's value: the raw StatusPhase printed as "[StatusPhase.END]"
+            # and never matched the colours.
+            phase = getattr(event, "phase", "progress")
+            phase = phase.value if hasattr(phase, "value") else str(phase)
+            colour = _supports_color()
+            shown = _colorize(phase, phase_colours.get(phase, "34")) if colour else phase
+            line = f"[{shown}] {event.server}: {event.message}"
+            if colour and (phase == "error" or event.level == "error"):
+                line = _colorize(line, "31")
+            elif colour and event.level == "warning":
+                line = _colorize(line, "33")
+            print(line)
 
-        # Subscribe to status events if enabled
-        status_queue = None
-        if show_status:
-            status_queue = await status_bus.subscribe()
+        status_queue = await status_bus.subscribe() if show_status else None
 
-        async def _status_subscriber():
-            """Subscribe to local status events and display them"""
-            if not status_queue:
-                return
+        async def _status_subscriber() -> None:
             try:
                 while True:
-                    event = await status_queue.get()
-                    # Display status event in a clean format using new StatusEvent format
-                    phase = event.phase.value if hasattr(event.phase, 'value') else str(event.phase)
-                    phase_disp = phase
-                    if _supports_color():
-                        phase_color_map = {
-                            "start": "36",      # cyan
-                            "progress": "34",   # blue
-                            "end": "32",        # green
-                            "error": "31",      # red
-                        }
-                        c = phase_color_map.get(phase, "34")
-                        phase_disp = _colorize(phase, c)
-
-                    server_col = event.server
-                    txt = event.message
-                    status_line = f"[{phase_disp}] {server_col}: {txt}"
-
-                    # Error phase should be red
-                    if phase == "error" and _supports_color():
-                        status_line = _colorize(status_line, "31")
-                    print(status_line)
+                    _print_status(await status_queue.get())
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 logger.debug(f"Status subscriber error: {e}")
-                return
 
-        # Start status subscriber task if enabled
-        status_task = None
-        if show_status and status_queue:
-            status_task = asyncio.create_task(_status_subscriber())
+        status_task = asyncio.create_task(_status_subscriber()) if status_queue else None
 
-        # Track whether thinking/reasoning tokens were actually streamed this step.
-        # The terminating newline on thinking_complete must only print when content
-        # was streamed - non-streaming LLMs emit thinking_complete with no thinking_delta,
-        # which would otherwise produce a stray blank line per LLM call.
+        # Whether thinking tokens were streamed this step: a non-streaming LLM
+        # emits thinking_complete without any thinking_delta, and closing the
+        # block then printed a stray blank line per call.
         thinking_streamed = False
 
         def _close_thinking_block() -> None:
             """Reset the colour and end the streamed line of a thinking block."""
-            if _supports_color():
-                print("\x1b[0m", end="")
-            print()
+            nonlocal thinking_streamed
+            if thinking_streamed:
+                if _supports_color():
+                    print("\x1b[0m", end="")
+                print()
+            thinking_streamed = False
 
-        try:
-            async for ev in agent.run_events(task, request_id=run_request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
-                t = ev.get("type")
-                if t in ("tool_call", "mcp_call") and show_tools:  # the old name until every deployed side is new (rename 17.09.2026)
-                    srv = ev.get("server")
-                    action = ev.get("action")
-                    params = ev.get("params") or {}
-                    # Human readable print
-                    header = f"TOOL CALL -> server={srv} action={action}"
-                    if _supports_color():
-                        header = _colorize(header, "36")
-                    print(header)
-                    print(json.dumps(params, indent=2, ensure_ascii=False))
-                elif t in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
-                    srv = ev.get("server")
-                    action = ev.get("action")
-                    res = ev.get("result")
-                    # Append to final_result calls for JSON output
-                    final_result.setdefault("calls", []).append({"server": srv, "action": action, "result": res})
-                    if show_tools:
-                        header = f"TOOL RESULT <- server={srv} action={action}"
+        async def _show(ev: Dict[str, Any]) -> None:
+            nonlocal thinking_streamed
+            t = ev.get("type")
+            # "mcp_*" is the old name until every deployed side is new (rename 17.09.2026)
+            if t in ("tool_call", "mcp_call") and show_tools:
+                header = f"TOOL CALL -> server={ev.get('server')} action={ev.get('action')}"
+                print(_colorize(header, "36") if _supports_color() else header)
+                print(json.dumps(ev.get("params") or {}, indent=2, ensure_ascii=False, default=str))
+            elif t in ("tool_result", "mcp_result") and show_tools:
+                header = f"TOOL RESULT <- server={ev.get('server')} action={ev.get('action')}"
+                print(_colorize(header, "32") if _supports_color() else header)
+                print(json.dumps(ev.get("result"), indent=2, ensure_ascii=False, default=str))
+            elif t == "thinking_delta":
+                # Gated on show_status: with --no-status stdout carries the
+                # result only (`>out.json` stays clean).
+                delta = ev.get("delta", "")
+                if delta and show_status:
+                    # Open the grey block once, not around every token: one
+                    # escape pair per delta buried the text in ESC[90m/ESC[0m.
+                    if not thinking_streamed:
+                        thinking_streamed = True
                         if _supports_color():
-                            header = _colorize(header, "32")
-                        print(header)
-                        try:
-                            print(json.dumps(res, indent=2, ensure_ascii=False))
-                        except Exception as e:
-                            logger.debug(f"Failed to JSON dump tool result: {e}")
-                            print(str(res))
-                elif t == "thinking_delta":
-                    # Show thinking/reasoning content as it streams (like WebUI).
-                    # Gated auf show_status: bei --no-status traegt stdout NUR das
-                    # Ergebnis (`>out.json` bleibt sauber, gleiche Klasse wie
-                    # die Session-saved-Zeile).
-                    delta = ev.get("delta", "")
-                    if delta and show_status:
-                        # Open the grey block once, not around every token: one
-                        # escape pair per delta buried the text in ESC[90m/ESC[0m.
-                        if not thinking_streamed:
-                            thinking_streamed = True
-                            if _supports_color():
-                                print("\x1b[90m", end="", flush=True)  # Dark gray
-                        # Print without newline for streaming effect
-                        print(delta, end="", flush=True)
-                elif t == "thinking_complete":
-                    # Thinking finished - terminate the streamed line, but only if
-                    # thinking content was actually printed this step
-                    if thinking_streamed:
-                        _close_thinking_block()
-                    thinking_streamed = False
-                elif t == "thinking":
-                    # New step starting - close any block left open by a step that
-                    # ended without thinking_complete, or the grey leaks onward.
-                    if thinking_streamed:
-                        _close_thinking_block()
-                    thinking_streamed = False
-                    # Optionally show LLM progress when verbose (backward compatibility)
-                    if args.verbose:
-                        step = ev.get("step")
-                        print(f"[LLM] thinking (step {step})")
-                elif t == "final":
-                    # Store final summary in result AND print it immediately for streaming
-                    summary = ev.get("summary")
-                    if summary:
-                        final_result["summary"] = summary
-                        # Print summary immediately during streaming (don't wait for end)
-                        print("", flush=True)  # Newline before summary
-                        try:
-                            # Use the formatting function for consistent ANSI output
-                            formatted_summary, content_format = await format_output_with_hooks(
-                                output=summary,
-                                agent_instance=agent,
-                                session_id=actual_session_id,
-                                request_id="cli_display",
-                                output_format='ansi'  # Request ANSI format for terminal display
-                            )
-                            if content_format == 'ansi':
-                                render_with_rich(formatted_summary)
-                            else:
-                                line = f"{formatted_summary}"
-                                print(line, flush=True)
-                        except Exception as e:
-                            # Fallback to plain text
-                            logger.debug(f"Failed to format summary: {e}")
-                            print(f"{summary}", flush=True)
-                elif t == "error":
-                    err = f"ERROR: {ev.get('message')}"
-                    if _supports_color():
-                        err = _colorize(err, "31")
-                    print(err)
-                elif t == "cancelled":
-                    # Agent was cancelled (Ctrl-C or timeout)
-                    msg = "\n✋ Cancelled by user"
-                    if _supports_color():
-                        msg = _colorize(msg, "33")  # yellow
-                    print(msg)
-                    final_result["cancelled"] = True
-                elif t == "done":
-                    # run_events may emit a final aggregated result
-                    fr = ev.get("result")
-                    if isinstance(fr, dict):
-                        final_result = fr
-                # keep looping until 'end'
+                            print("\x1b[90m", end="", flush=True)  # Dark gray
+                    print(delta, end="", flush=True)
+            elif t == "thinking_complete":
+                _close_thinking_block()
+            elif t == "thinking":
+                # A new step: close a block the last one left open, or the grey
+                # leaks onward.
+                _close_thinking_block()
+                if args.verbose:
+                    print(f"[LLM] thinking (step {ev.get('step')})")
+            elif t == "error":
+                # As it comes: a Ctrl-C after it (the run still saves and runs
+                # its hooks) would otherwise leave a failed run without a word.
+                streamed_errors.append(ev.get("message"))
+                err = f"ERROR: {ev.get('message')}"
+                print(_colorize(err, "31") if _supports_color() else err)
+            elif t == "final" and ev.get("summary"):
+                print("", flush=True)
+                try:
+                    formatted_summary, content_format = await format_output_with_hooks(
+                        output=ev["summary"],
+                        agent_instance=agent,
+                        session_id=actual_session_id,
+                        request_id="cli_display",
+                        output_format='ansi'  # Request ANSI format for terminal display
+                    )
+                    if content_format == 'ansi':
+                        render_with_rich(formatted_summary)
+                    else:
+                        print(formatted_summary, flush=True)
+                except Exception as e:
+                    logger.debug(f"Failed to format summary: {e}")
+                    print(ev["summary"], flush=True)
 
-            return final_result
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            _stop_the_run()
-            # Close an open thinking block first, or the exit message is grey
-            if thinking_streamed:
-                _close_thinking_block()
-                thinking_streamed = False
-            # User pressed Ctrl-C: provide clean exit message
-            msg = "\n✋ Cancelled by user"
-            if _supports_color():
-                msg = _colorize(msg, "33")  # yellow
-            print(msg)
-            return {"task": task, "cancelled": True, "summary": final_result.get("summary", "")}
-        except Exception as e:
-            # Fallback: surface exception as result
-            return {"task": task, "errors": [str(e)]}
+        from .servers.agent.result_utils import collect_final_result
+        try:
+            result = await collect_final_result(
+                agent, task, request_id=run_request_id, session_id=actual_session_id,
+                llm_override=llm_override, llm_profile_info_override=llm_profile_info,
+                on_event=_show)
+        except asyncio.CancelledError:
+            result = {"task": task, "cancelled": True}
         finally:
-            # Safety net: a block left open by an exception would bleed grey
-            # into the shell prompt after we exit.
-            if thinking_streamed:
-                _close_thinking_block()
-                thinking_streamed = False
-            # Cleanup background tasks
-            # Drain any queued status events deterministically before cancelling
-            # the background status subscriber. This avoids a race where the
-            # final PHASE_END is published but the subscriber is cancelled
-            # before it can process the queued event.
+            # A block left open would bleed grey into the shell prompt.
+            _close_thinking_block()
+            # Drain what is queued before the subscriber goes: the final
+            # PHASE_END can be published and not yet printed.
             if status_queue:
                 try:
                     while not status_queue.empty():
-                        try:
-                            event = status_queue.get_nowait()
-                        except Exception as e:
-                            logger.debug(f"Failed to get status event from queue: {e}")
-                            break
-                        # Reuse the same display logic as _status_subscriber —
-                        # including the enum normalization: the raw StatusPhase
-                        # enum printed as "[StatusPhase.END]" and never matched
-                        # the color map.
-                        phase = getattr(event, "phase", "progress")
-                        phase = phase.value if hasattr(phase, "value") else str(phase)
-                        phase_disp = phase
-                        if _supports_color():
-                            phase_color_map = {
-                                "start": "36",
-                                "progress": "34",
-                                "end": "32",
-                                "error": "31",
-                            }
-                            c = phase_color_map.get(phase, "34")
-                            phase_disp = _colorize(phase, c)
-
-                        server_col = event.server
-                        txt = event.message
-                        status_line = f"[{phase_disp}] {server_col}: {txt}"
-
-                        if event.level == "error" and _supports_color():
-                            status_line = _colorize(status_line, "31")
-                        elif event.level == "warning" and _supports_color():
-                            status_line = _colorize(status_line, "33")
-                        print(status_line)
+                        _print_status(status_queue.get_nowait())
                 except Exception as e:
-                    # If anything goes wrong while draining, continue to cancel tasks
                     logger.debug(f"Exception while draining status queue: {e}")
             if status_task and not status_task.done():
-                try:
-                    status_task.cancel()
-                except Exception as e:
-                    logger.debug(f"Failed to cancel status task: {e}")
+                status_task.cancel()
+
+        if result.get("cancelled"):
+            _stop_the_run()   # a Ctrl-C collect_final_result caught, or the run's own stop
+            msg = "\n✋ Cancelled by user"
+            print(_colorize(msg, "33") if _supports_color() else msg)
+        return result
 
     # Execute with new status-aware streaming
     show_tools = getattr(args, "show_tools", False)
     show_status = not getattr(args, "no_status", False)
-
-    # Set session metadata for tool execution context (enables _user_id, _agent injection)
-    if hasattr(agent, '_session_tracker'):
-        # Determine effective LLM profile (override or agent default)
-        effective_llm_profile = profile_for_record(
-            llm_profile_override, agent.agent_config.default_llm_profile)
-
-        agent._session_tracker.set_session_metadata(actual_session_id, {
-            "user_id": session_user,
-            "agent_name": entry_name,
-            "llm_profile": effective_llm_profile
-        })
 
     # Chat mode: hand over to the REPL instead of the one-shot execution.
     # Everything above (bootstrap, agent, session ops, LLM override) is shared.
@@ -1970,7 +1653,7 @@ def main() -> None:
             if result.get("cancelled"):
                 run_stopped.append(True)   # a Ctrl-C collect_final_result caught
         else:
-            result = _run_stoppable(_stream_and_run_with_status(agent, task_input, actual_session_id, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
+            result = _run_stoppable(_stream_and_run_with_status(agent, task_input, show_tools=show_tools, show_status=show_status, llm_override=llm_override, llm_profile_info=llm_profile_info))
 
         # Chat saved its own sessions per turn and prints its own output.
         if is_chat:
@@ -2044,7 +1727,7 @@ def main() -> None:
     # Human-readable final output
     def _pretty_print_result(res: dict, show_tools: bool = False) -> None:
         """Tool calls and errors after the run. The summary is not repeated:
-        the stream printed it when the final event arrived."""
+        the stream printed it as it arrived."""
         # Calls (print first so summary appears at the end, only when show_tools is True)
         calls = res.get("calls", []) or []
         if calls and show_tools:
@@ -2073,8 +1756,8 @@ def main() -> None:
                         logger.debug(f"Failed to JSON dump result: {e2}")
                         print(f"    {str(result_obj)}")
 
-        # Errors
-        errors = res.get("errors") or []
+        # Errors the stream did not show already
+        errors = [e for e in res.get("errors") or [] if e not in streamed_errors]
         if errors:
             print("")
             print(_colorize("Errors:", "31") if _supports_color() else "Errors:")

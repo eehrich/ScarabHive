@@ -4748,18 +4748,19 @@ class TestSwitchAgent:
         out = capsys.readouterr().out
         assert "Unknown agent" in out and "writer" in out, "no suggestion offered"
 
-    def test_a_factory_that_exits_does_not_end_the_chat(self, monkeypatch, capsys):
+    def test_a_name_the_factory_refuses_does_not_end_the_chat(self, monkeypatch, capsys):
         import agent_system.cli_utils.chat as chat
+        from agent_system.servers.agent.entry import NotAnAgent
 
-        def exits(ctx, name):
-            raise SystemExit(1)
+        def refuses(ctx, name):
+            raise NotAnAgent(f"'{name}' is a tool server, not an agent.", ["coder"])
 
-        monkeypatch.setattr(chat, "_agent_for", exits)
+        monkeypatch.setattr(chat, "_agent_for", refuses)
         ctx = _completion_ctx(monkeypatch)
 
         assert chat._switch_agent(ctx, "writer") is False
         assert ctx.entry_name == "coder"
-        assert "Could not build agent" in capsys.readouterr().out
+        assert "Could not switch to 'writer'" in capsys.readouterr().out
 
     def test_the_repl_starts_a_new_session_for_it(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
@@ -4813,26 +4814,31 @@ class TestSwitchAgent:
         ctx = _completion_ctx(monkeypatch)
         ctx.agent.registry = registry
         built = []
-        import agent_system.agent_cli as agent_cli
-        monkeypatch.setattr(agent_cli, "_build_entry_agent",
-                            lambda *a: built.append(a) or "fresh")
+        import agent_system.servers.agent.entry as entry
+        monkeypatch.setattr(entry, "get_tool_server_config",
+                            lambda *a: built.append(a) or "cfg")
 
         assert chat._agent_for(ctx, "writer") is registered
         assert built == [], "the registered agent was rebuilt"
 
     def test_an_agent_that_is_not_registered_yet_is_built(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
-        import agent_system.agent_cli as agent_cli
+        import agent_system.servers.agent.entry as entry
 
-        registry = SimpleNamespace(list=lambda: [], get=lambda name: None)
+        registered = {}
+        registry = SimpleNamespace(list=lambda: [], get=lambda name: None,
+                                   register=registered.__setitem__)
         ctx = _completion_ctx(monkeypatch)
         ctx.agent.registry = registry
         built = []
-        monkeypatch.setattr(agent_cli, "_build_entry_agent",
-                            lambda name, config, reg, service: built.append(name) or "fresh")
+        fresh = SimpleNamespace(agent_config=None)
+        monkeypatch.setattr(entry, "get_tool_server_config", lambda name, config: "cfg")
+        monkeypatch.setattr(entry, "Agent", lambda name, config, server_config, reg, session_service=None:
+                            built.append(name) or fresh)
 
-        assert chat._agent_for(ctx, "writer") == "fresh"
+        assert chat._agent_for(ctx, "writer") is fresh
         assert built == ["writer"]
+        assert registered == {"writer": fresh}
 
 
 def _sessions_of(entries):

@@ -238,47 +238,44 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     sys.exit(1)
                 print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
 
-        # Load existing session if --session provided, otherwise initialize empty
-        session_exists = False
-        was_new_session = False
-
-        if session_id:
-            logger.info(f"Loading session: {session_id}")
-            try:
-                session_exists, msg_count = await session_service.load_and_restore_session(
-                    agent, session_user, session_id
-                )
-                if session_exists:
-                    logger.info(f"Loaded session {session_id} with {msg_count} messages")
-                    print(f"Continuing session '{session_id}' ({msg_count} messages)")
-                    was_new_session = False
-                else:
-                    # Session ID provided but doesn't exist - create it
-                    logger.info(f"Session '{session_id}' not found, creating new session with this ID")
-                    print(f"Creating new session '{session_id}'")
-                    agent._session_tracker.set_session_messages(actual_session_id, [])
-                    was_new_session = True  # Will be saved at end
-            except SessionPermissionError as e:
-                # User trying to access session they don't own
-                logger.error(f"Permission denied for session {session_id}: {e}")
-                print(f"Error: {e}", file=sys.stderr)
-                print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
-                return
-            except Exception as e:
-                logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
-                print(f"Error loading session: {e}", file=sys.stderr)
-                return
-        else:
-            # No session ID provided - create new one with auto-generated ID
-            logger.debug(f"Creating new session: {actual_session_id}")
-            agent._session_tracker.set_session_messages(actual_session_id, [])
-            was_new_session = True
-
         # Continue on the model the session was started with (see
         # choose_llm_profile for what that does and does not outrank).
         llm_profile = choose_llm_profile(
             llm_profile, stored_llm, stored_agent, agent_name,
             agent.agent_config.default_llm_profile)
+        record_profile = profile_for_record(llm_profile, agent.agent_config.default_llm_profile)
+
+        # Open the session the way the API and agent-cli do.
+        if session_service is not None:
+            try:
+                session_exists = await session_service.open_for_run(
+                    agent, session_user, actual_session_id, record_profile)
+            except SessionPermissionError as e:
+                # Exit 1, not return: a refused run is not a finished one.
+                logger.error(f"Permission denied for session {actual_session_id}: {e}")
+                print(f"Error: {e}", file=sys.stderr)
+                print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
+                sys.exit(1)
+        elif session_id:
+            # The degraded bootstrap (initialize_system) has no store: a session
+            # named to continue would run without its history and not be saved.
+            print(f"Error: cannot continue session '{session_id}' -- the session store did not "
+                  f"start (see the log).", file=sys.stderr)
+            sys.exit(1)
+        else:
+            # The degraded bootstrap without a session to continue: the run
+            # still answers, and still names its user to the tools.
+            session_exists = False
+            agent._session_tracker.set_session_metadata(actual_session_id, {
+                "user_id": session_user, "agent_name": agent.name, "llm_profile": record_profile})
+        was_new_session = not session_exists
+        if session_exists:
+            count = len(agent._session_tracker.get_session_messages(actual_session_id) or [])
+            logger.info(f"Loaded session {actual_session_id} with {count} messages")
+            print(f"Continuing session '{actual_session_id}' ({count} messages)")
+        elif session_id:
+            logger.info(f"Session '{session_id}' not found, creating new session with this ID")
+            print(f"Creating new session '{session_id}'")
 
         # Create LLM override if profile specified
         llm_override = None
@@ -295,16 +292,6 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
 
-        # Set session metadata for tool execution context (AFTER LLM override logic)
-        # This ensures user_id is available when tools are called
-        effective_llm_profile = profile_for_record(
-            llm_profile, agent.agent_config.default_llm_profile)
-        agent._session_tracker.set_session_metadata(actual_session_id, {
-            "user_id": session_user,
-            "agent_name": agent.name,
-            "llm_profile": effective_llm_profile
-        })
-
         # Process multimodal attachments (images, audio, text files)
         from typing import Union
         task_input: Union[str, ChatMessage] = request
@@ -312,69 +299,13 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         sorted_attachments, attachment_problems = sort_attachments(attachments or [])
         if attachment_problems:
             raise ValueError("; ".join(attachment_problems))
-        image_paths = sorted_attachments["image"]
-        audio_paths = sorted_attachments["audio"]
-        text_file_paths = sorted_attachments["text"]
-
-        if image_paths or audio_paths or text_file_paths:
-            attachment_counts = []
-            if image_paths:
-                attachment_counts.append(f"{len(image_paths)} image(s)")
-            if audio_paths:
-                attachment_counts.append(f"{len(audio_paths)} audio(s)")
-            if text_file_paths:
-                attachment_counts.append(f"{len(text_file_paths)} text file(s)")
-            logger.info(f"Processing attachments: {', '.join(attachment_counts)}")
-
-            # Same check as the HTTP API and the CLI, against the model this run
-            # will use: the --llm override wins over the agent's default.
-            from .llm.capabilities import capability_model_name, ensure_model_supports
-            problem = ensure_model_supports(
-                capability_model_name(llm_override, agent),
-                images=len(image_paths or []), audio=len(audio_paths or []))
-            if problem:
-                raise ValueError(problem)
-
-            try:
-                from pathlib import Path as PathLib
-                from .utils.multimodal_processor import (
-                    create_multimodal_message_extended,
-                    ImageProcessingError,
-                    AudioProcessingError,
-                    TextFileProcessingError
-                )
-
-                # Convert string paths to Path objects
-                images = [PathLib(p) for p in image_paths] if image_paths else None
-                audios = [PathLib(p) for p in audio_paths] if audio_paths else None
-                texts = [PathLib(p) for p in text_file_paths] if text_file_paths else None
-
-                # Create multimodal message with all attachment types
-                task_input = create_multimodal_message_extended(
-                    text=request,
-                    image_paths=images,
-                    audio_paths=audios,
-                    text_file_paths=texts,
-                )
-
-                logger.info("Created multimodal message")
-
-            # sys.exit(1), not return: these printed to stderr and left with
-            # 0, so publish_pipeline and the writer runners read a failed run
-            # as a successful one with empty output.
-            except ImageProcessingError as e:
-                print(f"Error processing image: {e}", file=sys.stderr)
-                sys.exit(1)
-            except AudioProcessingError as e:
-                print(f"Error processing audio: {e}", file=sys.stderr)
-                sys.exit(1)
-            except TextFileProcessingError as e:
-                print(f"Error processing text file: {e}", file=sys.stderr)
-                sys.exit(1)
-            except Exception as e:
-                print(f"Error processing attachments: {e}", file=sys.stderr)
-                logger.exception("Unexpected error in multimodal processing")
-                sys.exit(1)
+        if any(sorted_attachments.values()):
+            # Checked against the model this run will use -- the --llm override
+            # wins. AttachmentRejected is a ValueError: the handler below says
+            # it and exits 1 -- publish_pipeline and the writer runners read
+            # the code.
+            from .utils.multimodal_processor import message_with_attachments
+            task_input = message_with_attachments(request, sorted_attachments, llm_override, agent)
 
         # Subscribe to status events if enabled
         status_queue = None

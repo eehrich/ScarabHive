@@ -72,7 +72,7 @@ def cli(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(agent_cli, "load_settings", lambda path=None: config)
-    monkeypatch.setattr(agent_cli, "setup_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_cli, "setup_role_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(InitializationService, "initialize_for_cli", initialize_for_cli)
     monkeypatch.setattr(InitializationService, "session_manager", property(lambda self: manager))
     for name in ("initialize_tools", "init_batch_system", "shutdown_tools", "shutdown_batch_system"):

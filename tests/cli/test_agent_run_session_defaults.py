@@ -37,11 +37,10 @@ class _DummyAgent:
         # fake that invents its own default profile would make every
         # assertion about the fake instead of about the decision under test.
         self.agent_config = agent_config
-        # The real Agent carries one, and agent_run writes the session
-        # metadata through it before the run.
-        self._session_tracker = SimpleNamespace(
-            set_session_messages=lambda sid, messages: None,
-            set_session_metadata=lambda sid, meta: None)
+        # The real Agent carries one, and agent_run opens the session through
+        # it before the run.
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+        self._session_tracker = SessionTracker()
 
 
 @pytest.fixture
@@ -360,3 +359,39 @@ class TestAnUnknownProfile:
         assert "LLM profile 'gone' not found" in err, err
         assert "Failed to apply" not in err, err
         assert STORED_PROFILE in err and AGENT_DEFAULT_PROFILE in err, err
+
+
+class TestARefusedRunExits1:
+    """The callers read the code (publish_pipeline, the writer runners), and
+    agent-run left with 0 on a session it could not open."""
+
+    def test_another_users_session(self, run_env, monkeypatch, capsys):
+        from agent_system.services.session_manager import SessionPermissionError
+
+        async def refused(agent, user_id, session_id):
+            raise SessionPermissionError("owned by u2")
+
+        monkeypatch.setattr(run_env.service, "load_and_restore_session", refused)
+
+        with pytest.raises(SystemExit) as failed:
+            _run(session_id="s1")
+
+        assert failed.value.code == 1
+        assert "belongs to a different user" in capsys.readouterr().err
+        assert run_env.seen["saved"] == {}, "it ran the session anyway"
+
+    def test_a_session_to_continue_without_a_store(self, run_env, monkeypatch, capsys):
+        """The degraded bootstrap has no session service: the run would go on
+        without the session's history and save nothing."""
+        from agent_system.tools.base import ToolServerRegistry
+
+        async def degraded(cfg):
+            return ToolServerRegistry(), None
+
+        monkeypatch.setattr(agent_run, "initialize_system", degraded)
+
+        with pytest.raises(SystemExit) as failed:
+            _run(session_id="s1")
+
+        assert failed.value.code == 1
+        assert "cannot continue session 's1'" in capsys.readouterr().err

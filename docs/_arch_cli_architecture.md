@@ -85,16 +85,21 @@ In dieser Reihenfolge, alles in `main`:
 3. **Session-Defaults**: wird `--session` fortgesetzt, gelten Agent und
    LLM-Profil, mit denen sie begonnen wurde — `--agent`/`--llm` schlagen sie
    (`cli_utils/session_defaults.py`).
-4. **Einstiegs-Agent**: aus der Registry oder über `_build_entry_agent` aus der
-   *aufgelösten* Config (`get_tool_server_config`); der rohe Eintrag trüge
-   Pydantic-Defaults statt geerbter Werte.
+4. **Einstiegs-Agent**: aus der Registry oder gebaut aus der *aufgelösten*
+   Config (`get_tool_server_config`); der rohe Eintrag trüge Pydantic-Defaults
+   statt geerbter Werte. Eine Fabrik für alle: `servers/agent/entry.py`
+   (`entry_agent`) — die API, `/agent` im Chat und `create_and_register_agent`
+   (agent-run, Writer-Audio) bauen dort. Ist der Name kein Agent → die Liste
+   der Agenten, Exit 1.
 5. `--max-steps` (Kopie der `agent_config`, nur dieser Prozess),
    `--list-sessions` (listet und endet, noch vor dem LLM-Override).
 6. **LLM-Override** aus `--llm`/`--llm-params` — vor den Anhängen, damit die
    Fähigkeitsprüfung das tatsächlich genutzte Modell sieht. `--llm-params`
    selbst prüft schon der Parser (Exit 2, vor dem Bootstrap).
 7. **Anhänge** (`cli_utils/attachments.py`): die Art kommt aus der Datei, nicht
-   aus dem Flag; Bild/Audio gegen die Modellfähigkeit geprüft; Fehler → Exit 1.
+   aus dem Flag. Nachricht und Fähigkeitsprüfung baut
+   `message_with_attachments` (`utils/multimodal_processor.py`), dieselbe
+   Stelle wie für API und Chat; Fehler → Exit 1.
 8. **Session-Presence** (`core/session_presence.py`): die Session wird
    *gehalten, bevor* sie geladen wird. Belegt → Fehler (Exit 1), `--force`
    übergeht einen verwaisten Halt, `--woken` (vom Weck-Befehl gesetzt) tritt
@@ -133,11 +138,16 @@ In dieser Reihenfolge, alles in `main`:
    das ist ohnehin der umgeleitete Fall, in dem niemand vor dem Prompt sitzt.
    Anhänge aus `/attach` gehen mit einem geweckten Zug nicht mit: sie gehören
    der Nachricht, die der Nutzer gerade schreibt.
-9. Session laden oder anlegen, `template_vars` aus der Agent-Config und `--vars`.
-10. **Lauf**: `chat` übergibt an `cli_utils/chat.py:run_chat_loop`; `--raw`
-    sammelt über `collect_final_result`; sonst streamt
-    `_stream_and_run_with_status` die Events von `agent.run_events`
-    (Denken grau, Statuszeilen, Zusammenfassung sobald `final` kommt).
+9. **Session öffnen** über `SessionService.open_for_run`, wie `/run` und
+   agent-run: eine gespeicherte wird wiederhergestellt, eine neue beginnt mit
+   den `template_vars` der Agent-Config; darüber `--vars`.
+10. **Lauf**: `chat` übergibt an `cli_utils/chat.py:run_chat_loop`. `--raw` und
+    der Stream-Modus sammeln beide über `collect_final_result`. Der
+    Stream-Modus zeigt dabei über `on_event` Tool-Aufrufe (`--show-tools`),
+    das Denken (grau), Fehler (`ERROR:`) und die Antwort, sobald sie kommen —
+    ein Ctrl+C landet meist außerhalb der Event-Loop, und nach dem Lauf
+    erscheint dann nur noch die Abbruch-Zeile. Die Statuszeilen kommen über
+    `status_bus`.
 11. Session speichern (nicht bei Abbruch), im `finally` Halt freigeben und
     Batch-System und MCP herunterfahren.
 
@@ -182,8 +192,8 @@ laufen immer über `dispatch_tool_call`).
 - `--format table|json` gibt es pro Subcommand (`plugins`, `mcp`-Aktionen,
   `hooks`, `reload`).
 - Exit-Codes: 0 Erfolg, 1 Fehler (auch fachliche von `plugins`, `mcp`,
-  `hooks`, `reload`, `users`), 2 falscher Aufruf. `ERROR:`-Events des Agenten
-  während eines Laufs ändern den Code nicht. Die `_mcp_*`-Helfer und
+  `hooks`, `reload`, `users`), 2 falscher Aufruf. Fehler, die der Agent
+  während eines Laufs meldet (`error`-Events), ändern den Code nicht. Die `_mcp_*`-Helfer und
   `handle_hooks_command` melden dafür Erfolg als `bool`.
 
 ---

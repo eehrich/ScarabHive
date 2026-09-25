@@ -36,11 +36,14 @@ AGENT_DEFAULT_PROFILE = "profile_agent_default"
 class _DummyAgent:
     """Enough Agent for main() to reach the save."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, name=STORED_AGENT, *args, **kwargs):
+        self.name = name
         self.agent_config = AgentConfig(system_prompt="x",
                                         llm_profile=AGENT_DEFAULT_PROFILE)
         self.registry = None
         self.llm = SimpleNamespace(model="m")
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+        self._session_tracker = SessionTracker()
 
     async def run(self, task):
         return {"task": task, "summary": "done", "calls": []}
@@ -86,7 +89,7 @@ def cli_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
     monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
-    monkeypatch.setattr("agent_system.agent_cli.Agent", _DummyAgent)
+    monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _DummyAgent)
 
     saved = {}
 

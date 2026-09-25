@@ -1,6 +1,7 @@
 """
 Utility functions for agent execution and result collection.
 """
+import inspect
 import uuid
 from typing import Any, Callable, Dict, Optional, Union
 from .server import Agent
@@ -64,7 +65,9 @@ async def collect_final_result(
         llm_override: Optional LLM client to use instead of agent's default
         llm_profile_info_override: Optional profile info string for status display
         on_event: Called with every event as it passes, before it is collected --
-            for a caller that shows the run while it collects it (POST /run's job).
+            for a caller that shows the run while it collects it (POST /run's job,
+            agent-cli's stream). What it returns is awaited when it is awaitable:
+            agent-cli prints the answer through async output hooks as it arrives.
 
     Returns:
         Dict containing task, calls, summary, and optionally errors
@@ -108,7 +111,9 @@ async def collect_final_result(
     try:
         async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
             if on_event is not None:
-                on_event(event)
+                shown = on_event(event)
+                if inspect.isawaitable(shown):
+                    await shown
             event_type = event.get("type")
             
             # Collect MCP calls for the result

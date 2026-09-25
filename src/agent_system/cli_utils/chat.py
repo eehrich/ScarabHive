@@ -2393,24 +2393,25 @@ def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
 
 
 def _agent_names(ctx: "_ChatContext") -> list[str]:
-    """Agents this configuration defines -- the CLI's own gate, not a copy.
+    """Agents this configuration defines -- the factory's own gate, not a copy.
 
     Reading it a second time here is how a listing and its factory drift
-    apart: /agent would offer a name that _build_entry_agent then rejects.
+    apart: /agent would offer a name that the factory then rejects.
     """
-    from ..agent_cli import agent_entry_names
+    from ..servers.agent.entry import agent_entry_names
 
     return agent_entry_names(getattr(ctx.agent, "system_config", None))
 
 
 def _agent_for(ctx: "_ChatContext", name: str) -> Any:
-    """The agent object for *name*, through the CLI's own factory.
+    """The agent object for *name*, through the one factory
+    (servers/agent/entry.py). Raises NotAnAgent.
 
     Not a second copy of it: that one applies the MERGED server config, and
     the copy this chat would grow instead is how an agent ends up with a
     quietly downgraded max_steps.
     """
-    from ..agent_cli import entry_agent
+    from ..servers.agent.entry import entry_agent
 
     config: Any = getattr(ctx.agent, "system_config", None)
     registry: Any = getattr(ctx.agent, "registry", None)
@@ -2452,11 +2453,6 @@ def _switch_agent(ctx: "_ChatContext", payload: str) -> bool:
 
     try:
         agent = _agent_for(ctx, wanted)
-    except SystemExit:
-        # The factory exits the process when it cannot build one. Not from
-        # inside a REPL: the person is mid-conversation.
-        print(f"Could not build agent '{wanted}'.")
-        return False
     except Exception as e:
         logger.error("Could not switch to agent %s: %s", wanted, e, exc_info=True)
         print(f"Could not switch to '{wanted}': {e}")
@@ -3153,8 +3149,7 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
     can fix the problem (switch profile, drop a file) without re-attaching;
     it is cleared only when the message actually goes out.
     """
-    from ..llm.capabilities import capability_model_name, ensure_model_supports
-    from ..utils.multimodal_processor import create_multimodal_message_extended
+    from ..utils.multimodal_processor import AttachmentRejected, message_with_attachments
 
     # /attach already refused what cannot be sent, so a problem here means the
     # file changed under us since it was queued -- say which one, keep the rest.
@@ -3166,20 +3161,12 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
 
     # The per-request override wins over the agent's default -- one rule for
     # the HTTP API, the chat and both command-line entry points.
-    problem = ensure_model_supports(
-        capability_model_name(ctx.llm_override, ctx.agent),
-        images=len(kinds["image"]), audio=len(kinds["audio"]))
-    if problem:
-        print(f"Not sent: {problem}")
+    try:
+        message = message_with_attachments(task, kinds, ctx.llm_override, ctx.agent)
+    except AttachmentRejected as e:
+        print(f"Not sent: {e}")
         print(renderer._colored(f"(kept text: {task})", "90"))
         return None
-    try:
-        message = create_multimodal_message_extended(
-            text=task,
-            image_paths=kinds["image"] or None,
-            audio_paths=kinds["audio"] or None,
-            text_file_paths=kinds["text"] or None,
-        )
     except Exception as e:
         print(f"Attachment failed, nothing sent: {e}")
         return None
