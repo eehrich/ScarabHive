@@ -12,7 +12,7 @@ import asyncio
 import logging
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -512,6 +512,65 @@ class TestAMistakenCallIsNoErrorInTheLog:
         assert "Agent type 'web_research_agent' not found" in result["error"], result
         refusals, faults = self.logged(caplog)
         assert refusals == [] and len(faults) == 1 and "Error in continue_sub_agent" in faults[0], caplog.text
+
+
+class TestListCountsFromTheSubIndex:
+    """`list` loaded every sub-agent's whole transcript to count its messages; the parent's sub-index
+    holds the count, as of each save, in one small file."""
+
+    @pytest.mark.asyncio
+    async def test_the_count_is_the_transcripts_without_reading_it(self, server, session_service, session_manager,
+                                                                    sub_agent_manager, sub_session, monkeypatch):
+        sub_id, total = sub_session
+        # spawned by this instance, which `list` shows only its own of
+        await sub_agent_manager.update_sub_session_metadata(
+            parent_session_id=PARENT_ID, sub_session_id=sub_id, creator_plugin=server.name)
+        read = []
+        load = session_manager.load_session
+
+        async def counting(user_id, session_id, *args, **kwargs):
+            read.append(session_id)
+            return await load(user_id, session_id, *args, **kwargs)
+        monkeypatch.setattr(session_manager, "load_session", counting)
+
+        listed = await server._handle_list({"_session_id": PARENT_ID, "_session_service": session_service,
+                                            "_user_id": USER})
+
+        assert [(entry["instance_id"], entry["message_count"]) for entry in listed["instances"]] == [(sub_id, total)]
+        assert sub_id not in read, "the transcript was read for its length"
+
+    @pytest.mark.asyncio
+    async def test_a_sub_agent_the_index_does_not_hold_is_counted_from_its_transcript(
+            self, server, session_service, sub_agent_manager, sub_session, monkeypatch):
+        """A sub-session older than its parent's index, or one whose index update failed: the count in
+        the parent's entry is no substitute, it lags a run behind."""
+        from plugins.sub_agent_manager import server as sam_server
+
+        sub_id, total = sub_session
+        await sub_agent_manager.update_sub_session_metadata(
+            parent_session_id=PARENT_ID, sub_session_id=sub_id, creator_plugin=server.name)
+        monkeypatch.setattr(sam_server, "message_counts", AsyncMock(return_value={}))
+
+        listed = await server._handle_list({"_session_id": PARENT_ID, "_session_service": session_service,
+                                            "_user_id": USER})
+
+        assert [entry["message_count"] for entry in listed["instances"]] == [total], listed
+
+
+class TestTheHintNamesTheMostRecentIds:
+    @pytest.mark.asyncio
+    async def test_a_session_with_many_names_the_most_recent_ones(self, server):
+        """A writer session has hundreds of sub-agents, and every id went into the model's context."""
+        from plugins.sub_agent_manager.server import HINT_IDS
+
+        ids = [f"sub_worker_{number}" for number in range(HINT_IDS + 10)]  # most recently used first
+        manager = Mock()
+        manager.list_sub_sessions = AsyncMock(return_value=[{"instance_id": one} for one in ids])
+
+        hint = await server._known_instance_hint(manager, PARENT_ID)
+
+        assert ", ".join(ids[:HINT_IDS]) in hint and ids[HINT_IDS] not in hint, hint
+        assert "and 10 more" in hint, hint
 
 
 class TestInfoSaysWhatTheSubAgentIsDoing:

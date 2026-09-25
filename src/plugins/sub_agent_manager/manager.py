@@ -45,6 +45,19 @@ def _first_counter() -> int:
     return random.randrange(10_000_000)
 
 
+async def message_counts(sessions, user_id: str, parent_id: str) -> dict[str, int]:
+    """The message count of each sub-session of ``parent_id``, from the parent's sub-index: one small
+    file, rewritten at every save of a sub-session with the transcript's length as of that save -- no
+    transcript read for it. The count in the parent's entry is no substitute: it lags a run behind and
+    was measured wrong besides (0, 2 or 9 where the transcripts held 4 to 27)."""
+    try:
+        rows = await sessions.list_child_sessions(user_id, parent_id, annotate_children=False)
+    except Exception as error:  # a figure must not fail the listing it stands in
+        logger.debug("No sub-index for %s: %s", parent_id, error)
+        return {}
+    return {row["session_id"]: int(row.get("message_count") or 0) for row in rows if row.get("session_id")}
+
+
 class CallerMistake(ValueError):
     """A call naming a sub-agent that is not there, not the caller's, or busy, or an agent that
     cannot be spawned. The model is answered and can correct it; the manager did nothing wrong.

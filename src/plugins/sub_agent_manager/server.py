@@ -21,7 +21,7 @@ from agent_system.llm.token_utils import extract_text_from_content
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
 
-from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager, message_counts
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,9 @@ def _blocking_ending(result_text: str) -> str:
     which leaves one archived while it ran archived (the manager's rule, `_write_sub_agent`).
     Left "active" after an abort, the instance read as idle: done, the answer ready."""
     return _ABORTED_AS.get(_outcome_status(result_text)) or "active"
+
+#: How many instance ids a 'not found' names -- the most recently used ones.
+HINT_IDS = 30
 
 #: The longest a `wait` waits between two looks at a sub-agent this process has no job for --
 #: reached by doubling from half a second. Each of those looks reads the parent's session file
@@ -141,14 +144,10 @@ def _injector_options(server_config: Any) -> dict:
 class SubAgentManagerServer(SchemaBasedHookToolServer):
     """tool server for sub-agent management with hook support.
 
-    Provides a unified tool `manage_sub_agent` with 5 operations:
-    - create: Create and execute new sub-agent
-    - continue: Continue existing sub-agent with new message
-    - list: List active sub-agents
-    - info: Get detailed status
-    - delete: Archive sub-agent
+    Provides a unified tool `manage_sub_agent`: create, continue, list, info, delete, and for
+    background runs poll, wait, wait_all and cancel.
 
-    Also implements pre_llm_call hook to inject sub-agent context into system prompt.
+    Also implements a pre_llm_call hook that appends the session's sub-agents as a turn at the end.
     """
 
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
@@ -167,7 +166,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         self.max_sub_agents = int(getattr(server_config, 'max_sub_agents_per_session', 10))
         self.max_nesting_depth = int(getattr(server_config, 'max_nesting_depth', 5))
         self.max_history = int(getattr(server_config, 'max_message_history', 100))
-        self.max_nesting_depth = int(getattr(server_config, 'max_nesting_depth', 5))
         self.max_sub_agents_per_type = int(getattr(server_config, 'max_sub_agents_per_type', 3))
         
         # Auto-archive oldest sub-agent when limit is reached
@@ -1301,9 +1299,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 if include_completed or metadata.get("status") != "archived"
             ]
 
-            # Format response - load actual message count from each sub-session
             session_manager = session_service.session_manager
             user_id = manager._extract_user_id(parent_session_id, params)
+            # From the parent's sub-index, as the panel counts: it loaded every transcript for it.
+            counts = await message_counts(session_manager, user_id, parent_session_id)
 
             instances = []
             for metadata in sub_sessions:
@@ -1344,13 +1343,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                             continue
                         sub_status = await self._shown_status(metadata, lambda: user_id)
 
-                # Get actual message count from sub-session (not from cached metadata)
-                try:
-                    sub_session_data = await session_manager.load_session(user_id, instance_id)
-                    actual_message_count = len(sub_session_data.get("messages", []))
-                except Exception:
-                    # Fallback to metadata if sub-session can't be loaded
-                    actual_message_count = metadata.get("message_count", 0)
+                actual_message_count = counts.get(instance_id)
+                if actual_message_count is None:  # no row: a sub-session older than its index, or a failed update
+                    try:
+                        actual_message_count = len(
+                            (await session_manager.load_session(user_id, instance_id)).get("messages", []))
+                    except Exception:
+                        actual_message_count = metadata.get("message_count", 0)
                 
                 instances.append({
                     "instance_id": instance_id,
@@ -1553,8 +1552,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return "Could not look up this session's sub-agents either."
         if not known:
             return "This session has no sub-agents at all -- 'create' one first."
-        ids = ", ".join(sorted(m["instance_id"] for m in known if m.get("instance_id")))
-        return f"This session's sub-agents are: {ids}. Use the instance_id exactly as returned, never assembled from a label and a guessed number."
+        # The most recently used first, as `list_sub_sessions` sorts them, and not all of them: a
+        # writer session has hundreds, and every one of them went into the model's context.
+        ids = [m["instance_id"] for m in known if m.get("instance_id")]
+        named = ", ".join(ids[:HINT_IDS]) + (
+            f" and {len(ids) - HINT_IDS} more ('list' with include_completed names them)"
+            if len(ids) > HINT_IDS else "")
+        return f"This session's sub-agents are: {named}. Use the instance_id exactly as returned, never assembled from a label and a guessed number."
 
     async def _callers_sub_session(self, manager: SubAgentManager, user_id: str, parent_session_id: str,
                                    instance_id: str) -> dict[str, Any]:

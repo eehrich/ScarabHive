@@ -55,7 +55,9 @@ in one prompt.
 `merge_parent_context_vars` resolves it by provenance: a key whose value
 differs from the inherited snapshot was set by the sub-agent itself and wins;
 every other key follows the parent, whose tracker is the live source of truth;
-keys only the sub-agent has are kept. Sessions predating
+keys only the sub-agent has are kept. A key the parent no longer has stays too:
+an empty read of the parent's vars cannot be told from a failed one, and taking
+it for a removal would wipe every inherited var on a tracker that did not answer. Sessions predating
 `context_vars_inherited` are treated as fully inherited, which lets the
 parent's current values through — the intended behaviour for old sessions.
 
