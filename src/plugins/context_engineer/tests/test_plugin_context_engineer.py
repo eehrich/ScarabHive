@@ -2828,6 +2828,21 @@ class TestPreLayerPRecoverability:
 
         archival.index_batch = spy
 
+        # The task is caught where it is made. Asking `_index_tasks` after
+        # compact() returns bets on nothing awaiting in between: a task that
+        # already finished has left the set through its done callback, and the
+        # test would call a correct run a missing one.
+        started: list[asyncio.Task] = []
+        schedule = strat._index_in_background
+
+        def catch(*args):
+            schedule(*args)
+            # No await since create_task, so the new one is still in the set;
+            # only new ones, in case one compaction schedules twice.
+            started.extend(t for t in strat._index_tasks if t not in started)
+
+        monkeypatch.setattr(strat, "_index_in_background", catch)
+
         result = await strat.compact(self._conversation(12), current_tokens=100)
 
         assert result.messages_pruned > 0
@@ -2839,9 +2854,9 @@ class TestPreLayerPRecoverability:
         # the next suspension point, which may well be inside this same
         # compaction -- the docstring of _index_in_background says so. What must
         # hold is that a TASK does the work, not the caller's critical path.
-        assert strat._index_tasks, "nothing was scheduled to index the batch"
+        assert started, "nothing was scheduled to index the batch"
 
-        await asyncio.gather(*strat._index_tasks)
+        await asyncio.gather(*started)
 
         assert len(indexed) == stored, (
             f"{stored} archived, {len(indexed)} indexed -- a similarity search "
