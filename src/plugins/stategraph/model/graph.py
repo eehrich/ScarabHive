@@ -14,11 +14,9 @@ from typing import Any, Optional
 
 from plugins.stategraph.kinds import kind_of, parse_activity
 from .loader import MachineTree, dotted, line_of, to_plain
-from .spec import TRIGGER_DONE, TRIGGER_ERROR
+from .spec import TRIGGER_DONE, is_wait_state
 
 STATE_TYPES = ("state", "choice", "junction", "final")
-#: Triggers a wait state does not wait for: a state with one of these transitions completes.
-_NOT_EVENTS = (TRIGGER_DONE, TRIGGER_ERROR)
 
 
 def empty_graph(machine_id: Optional[str] = None) -> dict[str, Any]:
@@ -66,9 +64,7 @@ def _walk(doc: Any, states: dict[Any, Any], parent: Optional[str], prefix: list[
             "kind": kind,
             "label": label,
             "icon": icon,
-            # waits for named events: no activity, no children, and nothing that completes it
-            "wait": (state_type == "state" and kind is None and not children and bool(triggers)
-                     and not any(trigger in _NOT_EVENTS for trigger in triggers)),
+            "wait": is_wait_state(state_type, bool(children), body.get("do") is not None, triggers),
             "entry": _text(body.get("entry")),
             "exit": _text(body.get("exit")),
             "max_visits": body.get("max_visits") if isinstance(body.get("max_visits"), int) else None,

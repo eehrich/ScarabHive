@@ -1,5 +1,5 @@
 # The example of docs/stategraph_design.md §2.1. One change: the writer is
-# chat_agent, an agent every installation has -- the validator refuses an agent
+# stategraph_example_agent, the plain agent this plugin ships -- the validator refuses an agent
 # that is not configured (SG007).
 #
 # Offline test (every agent and decision state mocked, the loop via $visits):
@@ -11,7 +11,7 @@
 stategraph: 1
 id: scene_review
 title: Scene review loop
-description: Write a scene, critique it, let Jev judge readiness, revise until ready.
+description: Write a scene, critique it, let the decision model judge readiness, revise until ready.
 python: scene_review.py          # companion module: its public names are in scope
 imports:
   critique_round: ./critique_round.yaml
@@ -35,7 +35,7 @@ states:
     entry: ctx["round"] += 1
     max_visits: 5                # the 6th entry raises loop_limit in this state
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "{{ writer_task(ctx, params) }}"
       retry: {attempts: 2, backoff: 5s}
     transitions:

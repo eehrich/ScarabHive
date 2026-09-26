@@ -18,7 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 FORMAT_VERSION = 1
 
-#: State names, machine ids, import aliases and parameter names.
+#: State names, machine ids, import aliases and parameter names. Check with ``fullmatch``: ``$`` alone would pass
+#: a trailing newline (``"m\n"``).
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 _NAME = re.compile(NAME_PATTERN)
 
@@ -53,7 +54,7 @@ def parse_duration(value: Optional[Duration]) -> Optional[float]:
 
 
 def check_name(value: str, what: str) -> str:
-    if not isinstance(value, str) or not _NAME.match(value):
+    if not isinstance(value, str) or not _NAME.fullmatch(value):
         raise ValueError(f"{what} {value!r} must match {NAME_PATTERN} (lowercase, digits, underscore)")
     return value
 
@@ -175,6 +176,12 @@ class TransitionSpec(Strict):
     def _trigger(cls, value: str) -> str:
         return check_name(value, "trigger")
 
+    @field_validator("guard")
+    @classmethod
+    def _guard(cls, value: Optional[str]) -> Optional[str]:
+        """A blank guard is no guard -- for the validator and the engine alike."""
+        return value if value is None or value.strip() else None
+
 
 class StateSpec(Strict):
     """A state or pseudostate. Which keys apply depends on ``type`` (checked by the validator)."""
@@ -212,6 +219,19 @@ class StateSpec(Strict):
     def is_composite(self) -> bool:
         return bool(self.states)
 
+    @property
+    def is_wait(self) -> bool:
+        return is_wait_state(self.type, bool(self.states), self.do is not None, [t.trigger for t in self.transitions])
+
+
+def is_wait_state(state_type: str, composite: bool, has_activity: bool, triggers: list[str]) -> bool:
+    """A state that waits for named events: a simple state with no do-activity and no completion transition.
+
+    The one definition for the engine, the validator and the editor's graph. An error transition does not make a
+    state complete, and a state with no transition at all waits too (the validator says it waits forever).
+    """
+    return state_type == "state" and not composite and not has_activity and TRIGGER_DONE not in triggers
+
 
 class ResourceSpec(Strict):
     """External state that belongs to one machine frame (docs/stategraph_design.md §2.8)."""
@@ -242,6 +262,8 @@ class MachineSpec(Strict):
     id: str
     title: str = ""
     description: str = ""
+    group: str = Field("", description="its folder in the panel's machine list, nested by / (Writer/v6); empty: "
+                                       "the folder of where it comes from")
     python: Optional[str] = Field(None, description="companion module, relative to this file")
     imports: dict[str, str] = Field(default_factory=dict, description="alias -> ./relative.yaml or machine id")
     params: dict[str, ParamSpec] = Field(default_factory=dict)
@@ -264,6 +286,12 @@ class MachineSpec(Strict):
     @classmethod
     def _id(cls, value: str) -> str:
         return check_name(value, "machine id")
+
+    @field_validator("group")
+    @classmethod
+    def _group(cls, value: str) -> str:
+        """Folder names without the blanks around them; a slash with nothing between is no folder."""
+        return "/".join(part.strip() for part in value.split("/") if part.strip())
 
     @field_validator("imports")
     @classmethod

@@ -52,7 +52,7 @@ INSTANCE = "stategraph"
 AUTHOR_TOOLS = {"catalog", "list_machines", "get_machine", "validate_machine", "save_machine",
                 "run_machine", "get_run", "control_run", "send_event"}
 # Instance names that share the tools' prefix; the docs name them, they are not tools.
-NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design"}
+NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design", "example_agent"}
 _TOOL_REF = re.compile(r"\bstategraph_([a-z_]+)\b")
 _FENCE = re.compile(r"```(\w+)\n(.*?)```", re.S)
 
@@ -242,3 +242,20 @@ def test_every_machine_in_the_docs_validates(config, label, text, companions):
     tree = validate_tree(load_tree(path, FileSources(machine_store(config), overrides)), config_check(config))
     assert tree.files[path].spec is not None, problems_of(tree)
     assert not tree.problems, problems_of(tree)
+
+
+def test_the_examples_name_agents_that_answer_in_plain_text(config):
+    """A machine reads an agent's answer as data: the markdown formatter would hand it HTML (chat_agent)."""
+    texts = [path.read_text(encoding="utf-8") for path in (PLUGIN / "machines").glob("*.yaml")]
+    for doc in [SKILL / "SKILL.md", *sorted((SKILL / "references").glob("*.md")), PLUGIN / "docs" / "format.md"]:
+        texts += [body for lang, body in _FENCE.findall(doc.read_text(encoding="utf-8")) if lang == "yaml"]  # fragments too
+    names = {name for text in texts for name in re.findall(r"\b(?:agent|by): ([a-z_]+)\b", text)}
+    assert "stategraph_example_agent" in names, names
+    formatting = []
+    for name in sorted(names):
+        hooks = resolved(config, name).agent_config.hooks
+        override = (hooks.overrides or {}).get("markdown_formatter.format_markdown_output") if hooks else None
+        enabled = override.get("enabled") if isinstance(override, dict) else getattr(override, "enabled", None)
+        if hooks and hooks.enabled and enabled:
+            formatting.append(name)
+    assert formatting == [], f"examples name agents whose answer the markdown formatter turns into HTML: {formatting}"

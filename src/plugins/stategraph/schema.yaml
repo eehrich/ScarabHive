@@ -58,7 +58,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_run_machine"
-      description: "Run a machine. mocks {state path: out} answer instead of the activity ({\"$visits\": [out1, out2]} per use of the path in the run, {\"$error\": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key attaches to an unfinished run with the same key instead of starting a second one."
+      description: "Run a machine. mocks {state path: out} answer instead of the activity ({\"$visits\": [out1, out2]} per use of the path in the run, {\"$error\": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key makes it the same request again: the run with that key is attached to while it runs, resumed when interrupted, and answered again (ended: its status) once it ended; only a transient failure starts a new run."
       parameters:
         type: object
         properties:
@@ -68,7 +68,7 @@ tools:
           mock_only: {type: boolean, default: false, description: "refuse every unmocked agent, tool or decision"}
           breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
-          run_key: {type: string, description: "attach to (or resume) an unfinished run with this key instead of starting another"}
+          run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (only a transient failure starts a new run)"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits; background: return at once"}
           max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish before returning status running"}
         required: [machine_id]
@@ -103,6 +103,7 @@ tools:
           watchpoints: {type: array, items: {}, description: "set_watchpoints: Python expressions, or {expr, condition}"}
           expr: {type: string, description: "evaluate / set: a read-only Python expression over the paused scope"}
           path: {type: string, description: "set: the ctx path to assign, e.g. ctx.draft"}
+          steps: {type: integer, minimum: 1, maximum: 200, description: "how many of the run's last journal rows the answer carries (as get_run); without it, none"}
         required: [run_id, action]
         additionalProperties: false
 
@@ -143,6 +144,7 @@ web_ui:
     - {path: "/api/machines", method: POST, handler: api_create_machine, response_type: json}
     - {path: "/api/machines/{machine_id}", method: GET, handler: api_get_machine, response_type: json}
     - {path: "/api/machines/{machine_id}", method: PUT, handler: api_save_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}", method: DELETE, handler: api_delete_machine, response_type: json}
     - {path: "/api/machines/{machine_id}/edit", method: POST, handler: api_edit_machine, response_type: json}
     - {path: "/api/machines/{machine_id}/layout", method: PUT, handler: api_save_layout, response_type: json}
     - {path: "/api/validate", method: POST, handler: api_validate, response_type: json}

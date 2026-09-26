@@ -14,7 +14,7 @@ title: Fan-out review
 description: >-
   Three critics read a text at the same time (parallel, joined when all are
   done), then each chapter is summarised (map, two at a time, results in
-  chapter order). Live, it runs chat_agent.
+  chapter order). Live, it runs stategraph_example_agent.
 
 params:
   text:     {type: string, required: true, description: The whole text}
@@ -34,13 +34,13 @@ states:
     do:
       parallel:
         style:
-          agent: chat_agent
+          agent: stategraph_example_agent
           task: "Judge only the style of this text, in at most five bullet points.\n\n{{ params.text }}"
         logic:
-          agent: chat_agent
+          agent: stategraph_example_agent
           task: "List only logic and continuity errors in this text, as bullet points.\n\n{{ params.text }}"
         reader:
-          agent: chat_agent
+          agent: stategraph_example_agent
           task: "Read this as a first-time reader: where did you get bored or lost? Bullet points.\n\n{{ params.text }}"
       fail: collect              # out[branch] = {status, out} or {status, error}; nothing is raised
     transitions:
@@ -56,7 +56,7 @@ states:
       as: chapter
       concurrency: 2
       each:
-        agent: chat_agent
+        agent: stategraph_example_agent
         task: "Summarise chapter {{ index + 1 }} in two sentences.\n\n{{ chapter }}"
     transitions:
       - target: done

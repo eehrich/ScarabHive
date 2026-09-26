@@ -20,7 +20,9 @@ A machine is one YAML file `<id>.yaml` in a machine root. Next to it may sit:
 
 Machine roots, searched in order (the first root that has an id wins):
 `data/stategraph/machines` (writable, where `stategraph_save_machine` writes, not
-versioned) and `src/plugins*/*/machines` (shipped with a plugin, versioned).
+versioned) and `src/plugins*/*/machines` (shipped with a plugin, versioned). A save writes
+the whole tree or nothing, as UTF-8 with LF line endings on every OS; the versions it returns
+are those a later `stategraph_get_machine` reports.
 
 Unknown keys are errors everywhere, so a typo never silently drops behaviour. There is
 no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
@@ -31,11 +33,12 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 
 | Key | Type | Req. | Meaning |
 |---|---|---|---|
-| `stategraph` | `1` | yes | Format version. Other values are refused. |
+| `stategraph` | `1` | yes | Format version: the integer `1`. Other values are refused, `true` and `1.0` too. |
 | `id` | name | yes | Machine id, unique across all roots; the file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
-| `python` | path | | Companion module, relative to this file. |
-| `imports` | alias → ref | | Submachines: `./file.yaml` (relative) or a machine id. |
+| `group` | string | | Its folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of where it comes from ("My machines" for the writable root, else the plugin that ships it). |
+| `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
+| `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |
 | `params` | name → field | | The machine's parameters (run input, or a submachine's `params:`). |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§7). |
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
@@ -120,7 +123,7 @@ states:
     transitions:
       - target: work
   work:                          # completes when the agent answers
-    do: {agent: chat_agent, task: "Say hello."}
+    do: {agent: stategraph_example_agent, task: "Say hello."}
     transitions:
       - target: wait_for_ok
         effect: ctx.greeting = out
@@ -151,7 +154,7 @@ transition on it is offered while any state inside waits.
     initial: critique
     states:
       critique:
-        do: {agent: chat_agent, task: "Critique: {{ ctx.draft }}"}
+        do: {agent: stategraph_example_agent, task: "Critique: {{ ctx.draft }}"}
         transitions:
           - target: reviewed
             effect: ctx.notes = out
@@ -233,7 +236,7 @@ transitions:
   `error` catches errors (§8). Any other trigger must be declared under `events:`.
 - `guard: else` always holds. It must be the last transition of its trigger within
   the state; a transition after an unguarded one of the same trigger never fires
-  (SG104).
+  (SG104). A blank guard (`guard: ""`, only spaces) is no guard.
 - A transition **without `target`** is an **internal transition**: its effect runs,
   no state is exited or entered. It needs a named-event trigger. Completion and error
   transitions always need a target.
@@ -266,6 +269,14 @@ transitions:
 Transitions are external: a self-transition exits and re-enters its state (entry,
 activity and `max_visits` count again). A transition from a composite to one of its
 own descendants exits and re-enters the composite.
+
+A transition through junctions or choices runs **segment by segment**: each segment exits
+up to the domain of its own source and target and runs its effect; the entries come last.
+So a junction outside a composite exits that composite and re-enters it, even when the
+source and the final target both lie inside it: its `exit` and `entry` run again and the
+visit counts inside it reset. (UML takes the domain of the whole transition here; the
+validator and the engine both follow the segments.) Keep a junction inside the composite
+whose states it connects.
 
 A transition is **atomic**. If an exit action, the effect, a choice guard or an entry
 action raises, `ctx`, the active states and the visit counts are restored to where
@@ -308,7 +319,7 @@ rules apply:
 
 ```yaml
     do:
-      agent: research_agent
+      agent: research_worker
       task: "Find three sources on {{ params.topic }}."
       timeout: 15m
       retry: {attempts: 3, backoff: {initial: 10s, factor: 2, max: 2m}, errors: [agent_failed, timeout]}
@@ -326,7 +337,7 @@ instance session of its own; there is no list of spawnable agents to add it to.
 |---|---|
 | `agent` | Agent name. A literal, or `"{{ params.x }}"` where parameter `x` has an `enum` (every value is checked). Required, also with `continue`. |
 | `task` | The message (template). Required. |
-| `schema` | JSON schema: the answer is parsed as JSON and validated. |
+| `schema` | JSON schema: the answer is parsed as JSON and validated. One that is not a valid JSON schema is SG005. |
 | `parse` | A companion function name (or `package.module:function`), called as `fn(text)`; its return value is `out`. Raising `ValueError` sends the message back to the same instance as feedback. |
 | `parse_retries` | Feedback rounds for `schema`/`parse` failures (default 1, at most 5). |
 | `vars` | Template vars for this call (templates), over the machine's (§11). |
@@ -341,7 +352,7 @@ feedback rounds, a still unusable answer raises `parse_failed` (with `parse`) or
 ```yaml
   rate:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: |
         Rate this text from 1 to 5 and name its biggest problem.
         Answer with JSON only: {"score": <1-5>, "problem": "<one sentence>"}
@@ -378,7 +389,7 @@ def parse_verdict(text):
 
 ```yaml
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "Is the plan below complete? Explain briefly, then end with VERDICT: yes or VERDICT: no.\n\n{{ ctx.plan }}"
       parse: parse_verdict
       parse_retries: 2
@@ -389,7 +400,7 @@ Following up the same instance:
 ```yaml
   shorten:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       continue: "{{ ctx.rater }}"
       task: "Now rewrite the text so that its biggest problem is gone. Answer with the text only."
 ```
@@ -430,21 +441,46 @@ never appear in a machine file. A tool activity is not idempotent by default.
 
 ### decide
 
-Asks a calibrated decision model (default profile: Jev) -- one call, no prose.
+Asks a decision model -- one call, no prose -- or, with `by:`, an agent. Which model
+decides is configuration, never part of the machine: `llm_system.default_decision_profile`,
+or a `profile` of `llm_system.decision_profiles` (`stategraph_catalog` lists them).
 
 | Key | Meaning |
 |---|---|
 | `decide` | `noul` (probability of yes), `choice` (one option), `score` (a point on a scale), or `questions` (several named questions in one call) |
 | `question` | What to decide (template). Required for noul/choice/score. |
 | `criteria` | choice: `{option: meaning}` with ≥ 2 options; score: `[lowest, …, highest]` with ≥ 2 entries; noul: optional `{"true": …, "false": …}` (quote the keys: unquoted, YAML reads them as booleans) |
-| `input` | The content to judge (template, text or object). Required and not empty. |
+| `input` | The content to judge (template, text or object). Required and not empty (empty: `template_failed`). |
 | `questions` | For `decide: questions`: `{name: {type, question, criteria}}` |
-| `profile` | Decision profile; default: the configured one. |
+| `profile` | Decision profile (`llm_system.decision_profiles`); default: the configured default. |
+| `by` | An agent that decides instead of a decision model: a literal, or `{{ params.x }}` with an enum -- checked like an `agent:` (SG005/SG007). Not together with `profile`. |
+| `advanced` | With `by`: `true` uses the agent's advanced model profile. |
+| `parse_retries` | With `by`: feedback rounds when its answer is not usable (default 1, at most 5). |
 
 `out` is `{value, confidence, probabilities}`; `confidence` and `probabilities` may be
 `null`. `value` is a probability 0–1 (noul), the option name (choice), or a position
 on the scale counted from 0 (score; it may fall between points, e.g. `2.96`). For
 `decide: questions`, `out` is `{name: {value, confidence, probabilities}}`.
+
+With `by:` the agent gets every question with the form of its answer (a probability, one of
+the options, one of the levels) and the content, and answers in JSON; an answer outside the
+form goes back to the same instance as feedback, and after `parse_retries` rounds raises
+`schema_invalid`. The questions reach it as JSON, as a decision model gets them: a choice
+option is a string (`2` becomes `"2"`). It runs on an instance of its own with the machine's vars, like an agent
+activity. `out` has the same shape: `value` as above (a score is the position of the level it
+names, a whole number), `confidence` and `probabilities` are `null`. `activity.instance_id` is
+the agent's instance. Criteria that a template renders into the wrong shape raise
+`template_failed` before the agent is asked. A mock is the same `out` either way.
+
+```yaml
+  ending:
+    do:
+      decide: choice
+      by: stategraph_example_agent                     # an agent judges instead of a decision model
+      question: Which ending fits this story?
+      criteria: {open: leaves the question open, closed: resolves it, twist: turns it around}
+      input: "{{ ctx.story }}"
+```
 
 ```yaml
   ready:
@@ -521,6 +557,13 @@ named `sg` -- it then receives the read-only scope (`sg.ctx`, `sg.params`, `sg.r
 It may be sync or async. `out` is its return value, normalised to JSON. An exception
 raises `call_failed`.
 
+A sync function runs in a worker thread (the plugin's own pool of 8), so terminate and
+`timeout` take effect while it works. A hung call holds its thread; once all 8 are held, the
+next sync call waits, and the wait counts against its `timeout`. A thread cannot be killed: on a timeout or terminate the activity ends at once and the
+thread's late result is dropped, but the thread runs on to its end. `sg.tool()` works only on
+the run's event loop: make a function that calls tools `async` (a sync one may only
+`return sg.tool(...)`, which is then awaited).
+
 A `call` activity is the place for deterministic computation that is too big for an
 effect, and for reading the outside world (a file, a database row): its result is
 journaled, so a resumed run gets the same value without calling again. Unlike code
@@ -591,8 +634,8 @@ Runs several activities at once and joins when all are done.
   opinions:
     do:
       parallel:
-        style: {agent: chat_agent, task: "Judge the style only:\n\n{{ ctx.text }}"}
-        facts: {agent: research_agent, task: "Check the facts only:\n\n{{ ctx.text }}"}
+        style: {agent: stategraph_example_agent, task: "Judge the style only:\n\n{{ ctx.text }}"}
+        facts: {agent: research_worker, task: "Check the facts only:\n\n{{ ctx.text }}"}
       fail: collect
     transitions:
       - target: merge
@@ -619,6 +662,10 @@ Runs one activity per item of a list.
 `out` is a list in item order (`[]` for no items), whatever order the items finish
 in. Inside `each`, the item variable and `index` (0-based) are in scope.
 
+`error.branch` and `error.index` always name the failed child of the state's own join: a
+`map` or `parallel` nested in that child set them first, and each join on the way out
+overwrites its key with its own child and drops the other one.
+
 ```yaml
   translate:
     do:
@@ -626,7 +673,7 @@ in. Inside `each`, the item variable and `index` (0-based) are in scope.
       as: paragraph
       concurrency: 4
       each:
-        agent: chat_agent
+        agent: stategraph_example_agent
         task: "Translate paragraph {{ index + 1 }} into German. Answer with the translation only.\n\n{{ paragraph }}"
     transitions:
       - target: done
@@ -700,7 +747,7 @@ literal text `ctx.draft` -- warning SG107.
 | `error` | `type`, `message`, `state`, `data`, `cause` (and `branch` / `index` from parallel / map) | error transitions |
 | `event` | `name`, `data` | event transitions |
 | item variable, `index` | the map variables (name set by `as`) | inside `map.each` |
-| `resources` | `resources.<name>`: what each resource's `open` (or `fork`) returned, read-only | everywhere, in a machine that declares `resources` |
+| `resources` | `resources.<name>`: what each resource's `open` (or `fork`) returned, read-only; `null` while it is not opened (its `open` failed, or has not run yet) | everywhere, in a machine that declares `resources` |
 | `ending` | `reason` (`transition`, `finished`, `failed`, `cancelled`), `state`, `error` | `finally` activities and resource `close` |
 | `fork_source` | the source run's value of this resource | a resource's `fork` |
 
@@ -719,7 +766,10 @@ strings, numbers -- so use item access: `ctx.critique["notes"]`,
 **Writing ctx.** Only `effect`, `entry` and `exit` may change `ctx`:
 `ctx.x = …`, `ctx["x"] = …`, `ctx.items.append(…)`, `ctx.count += 1`, `del ctx.x`.
 Guards, templates, `map`, `error_if` and debugger expressions are read-only; a change
-there raises `guard_failed` ("ctx mutated").
+there raises `guard_failed` ("ctx mutated"). The other namespaces are read-only
+everywhere: assigning or deleting a field of `params`, `run`, `resources`, `error`,
+`event`, `activity` or `ending` (`error.message = …`) is SG004 -- unless the code has a
+local variable of that name (`for event in ctx.events: ...`).
 
 ### The companion module
 
@@ -729,10 +779,20 @@ python: review_loop.py
 
 Every public name of the module (not starting with `_`) is in scope in all code and
 templates of this machine file, and its functions can be `parse` and `call` targets.
-The module is not executed to validate a machine -- its names come from a scan of its
-top-level definitions -- so define functions with `def` at the top level. Companion
-functions used by code fields and templates must be pure (§9). An imported machine
-has its own companion module; names do not leak between files.
+The module is not executed to validate a machine -- its names come from a scan of what it
+binds at the top level, also inside top-level `if`/`try`/`with`/`for` blocks (an import
+with a fallback). The scan takes as a function a `def`, a class, a name imported with
+`from … import`, and a name assigned anything but data (`build = partial(...)`, a
+lambda) -- data being a literal, arithmetic or a comparison of data, or an `and`/`or` of
+data (`LIMIT = -1` is data); `a, b = 1, f` pairs each name with its own value, and a name
+unpacked from anything else (`a, b = make()`), or bound by a loop, a `with` or a walrus, counts as a function;
+a star import's names are unknown to it, so with one it takes any name and the run decides. Companion functions used by code
+fields and templates must be pure (§9). An imported machine has its own companion module;
+names do not leak between files.
+
+For a run the module is executed as a real module of its own (in `sys.modules` while the
+run holds it), so dataclasses, pydantic models -- also with `from __future__ import
+annotations` -- and `typing.get_type_hints` work as in any module.
 
 ---
 
@@ -748,7 +808,8 @@ events:
 ```
 
 - **Declaration.** Every named trigger must be declared under `events:` (SG002).
-  `data` is an optional JSON schema for the payload.
+  `data` is an optional JSON schema for the payload; one that is not a valid JSON schema
+  is SG001.
 - **Sending.** `stategraph_send_event(run_id, name, data?, frame?)` (or the panel)
   records the event before it returns, so it survives a restart.
 - **Routing.** Without `frame`, the event goes to the frame whose active states
@@ -793,10 +854,20 @@ events:
   raised; selection walks outward (the state, then each enclosing composite). Filter
   with a guard: `guard: error.type in ("tool_failed", "timeout")`.
 - An error raised while an error transition is selected or executed ends the frame;
-  it is not handled twice.
+  it is not handled twice. That includes a `loop_limit` raised by entering the
+  transition's target past its `max_visits` (`error.cause` is the error the transition
+  handled). So a state entered by an error transition cannot catch its own `loop_limit`:
+  bound the loop in that transition's guard, e.g. `run.visits.get("repair", 0) < 2`, and
+  let the next error transition take the end (patterns §3).
 - **Unhandled errors** end their frame as failed. For a submachine, the calling state
-  then receives `submachine_failed` with `error.cause` = the inner error. Only a
-  failing root frame fails the run.
+  then receives `submachine_failed` with `error.cause` = the inner error; its message
+  ends with the cause, `<alias> ended in <state> (failed): <cause type>: <cause
+  message>` (the cause cut at 500 characters). Only a failing root frame fails the run.
+- A `CancelledError` that the run did not cause -- a library cancelled a future inside
+  an agent, tool, decide or call activity -- fails the activity (`agent_failed`,
+  `tool_failed`, `decision_failed`, `call_failed`), and its error transition fires. Only
+  the run's own cancel (terminate, the run's `limits.timeout`, a failing fast sibling)
+  ends an activity without an error.
 - **Not catchable** -- these end the run: more than `limits.max_steps` dispatches in
   a frame (`step_limit`), the run timeout (`timed_out`), terminate (`cancelled`), and a
   replay divergence (`diverged`).
@@ -825,7 +896,8 @@ SG106 warns about calls into `random`, `time`, `uuid`, `secrets`,
 tests with tuples: `x in ("a", "b")`.
 
 **Data is JSON.** `ctx` must hold JSON data; a value that is not (a set, an object)
-raises `not_serialisable`. Every value that crosses a boundary -- activity results,
+raises `not_serialisable`. So does a final `output` that renders to something that is not
+JSON (a dict with tuple keys): the frame fails, and its `finally` activities run. Every value that crosses a boundary -- activity results,
 submachine params, map items, final outputs, event data, debugger edits -- goes
 through a canonical JSON round trip: tuples become lists, dict keys become strings,
 and every activity result is a fresh copy (dataclasses and pydantic models are dumped
@@ -866,7 +938,7 @@ vars_from: v6_story_coordinator         # that agent's configured template_vars
 states:
   write:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "..."
       vars: {tone: "{{ ctx.tone }}"}    # only for this call
 ```
@@ -913,13 +985,13 @@ any state inside waits.
 
 | Code | Level | Check |
 |---|---|---|
-| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), schema (unknown key, wrong type, a param default that does not fit its type or enum), a machine whose file is not `<id>.yaml` |
+| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
 | SG002 | error | Unknown or duplicate state name; unknown target or `initial`; an undeclared event trigger |
 | SG003 | error | Structure: a choice without `else`; `else` not last; triggers on choice/junction; a final with other keys; `status` on a nested final; a composite with `do` or without `initial`; an internal completion or error transition; a wait state that accepts no event; a cycle of pseudostates only |
-| SG004 | error | Python does not compile; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); a companion function that does not exist; `python:`/`imports:` outside the machine roots |
-| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name), a computed `agent:`/`tool:` other than `{{ params.<name> }}` with an enum |
-| SG006 | error | Submachine: unknown alias, import cycle, missing required or unknown parameter |
-| SG007 | error | Configuration: an agent that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
+| SG004 | error | Python does not compile, or is nested too deeply for Python's parser; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); assigning or deleting a field of `params`, `run`, `resources`, `error`, `event`, `activity` or `ending`; a companion function that does not exist; `python:`/`imports:` outside the machine roots |
+| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name, `by` together with `profile`), a `schema` that is not a valid JSON schema, a computed `agent:`/`tool:`/`by:` other than `{{ params.<name> }}` with an enum |
+| SG006 | error | Submachine: unknown alias, import cycle, an absolute import path, missing required or unknown parameter |
+| SG007 | error | Configuration: an agent (`agent:`, `decide`'s `by:`) that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
 | SG103 | warning | A loop without `max_visits` on any of its states |
@@ -935,8 +1007,9 @@ known, the line.
 
 ## 14. Multi-call steps, cleanup, external state
 
-**`sg.tool()` in a call.** A companion function whose first parameter is `sg` may call
-tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`.
+**`sg.tool()` in a call.** An `async` companion function whose first parameter is `sg` may
+call tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`. A sync
+function runs in a worker thread: it can only return `sg.tool(...)`, not run it (§5 `call`).
 
 - Each call is journaled as a child tool activity (`<key>/t.<n>`, path
   `<call path>/<tool>`, e.g. `review/store_read`: mocks answer by that path, `$visits` for
@@ -951,17 +1024,21 @@ tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`.
 **`finally`.** An activity on a state or on the machine.
 
 - It runs once per exit of its state, however the state is left: a transition (after it
-  committed), an unhandled error, terminate, the run timeout, a failing parallel sibling.
-  The machine's `finally` runs when the frame ends. Innermost first.
+  committed, before the target's `do` -- also on the initial entry), an unhandled error,
+  terminate, the run timeout, a failing parallel sibling. The machine's `finally` runs when
+  the frame ends. Innermost first.
 - It reads `ending.reason` (`transition`, `finished`, `failed`, `cancelled`),
-  `ending.state` and `ending.error`; it cannot change `ctx`; its result is dropped.
+  `ending.state` and `ending.error`; it cannot change `ctx`; its result is dropped. A root
+  final with `status: failed` ends the frame with reason `failed` and `ending.error` =
+  `{type: final, message: "ended in the failed final state <name>"}`.
 - A failing `finally` is journaled and traced (`finally_failed`); the exit goes on.
 - It does not run when the process stops -- the run is `interrupted`, and the resume
   completes the ending. After a terminate it runs although the run is cancelled (60 s unless it
   has a `timeout`, counted from the terminate; one the bound cuts ends `timeout` and is not run
   again after a crash); agents and decisions there are called without the run's cancellation token.
-  Under a cancelled caller (the agent facade) the platform still stops the caller's requests
-  after its cleanup timeout (10 s by default): prefer a tool or a call, and keep it short.
+  Under a cancelled caller (the agent facade's request, or one above it) a `finally` has 10 s,
+  not 60: the platform then force-cancels the caller's request tree, the `finally`'s tool
+  calls and agent runs included. Keep it short.
 - A terminate that arrives while a `finally` runs lets it finish (and the rest, within the
   60 s); a second terminate is ignored, and the run's timeout no longer fires. Nothing pauses
   an ending run: breakpoints stay silent, a held pause lets go. After a crash each frame ends
@@ -982,7 +1059,8 @@ vars: {json_namespace: "{{ resources.store }}"}
 ```
 
 - `open` runs when the frame starts (before `vars`), in declaration order; its result is
-  `resources.<name>` everywhere in the machine. A resume replays it.
+  `resources.<name>` everywhere in the machine. A resume replays it. A resource that was
+  never opened (its `open` failed) reads as `null`: a `finally` can check it.
 - `fork` runs instead of `open` in a forked run's root frame; without it a fork opens
   afresh. `close` runs when the frame ends, in reverse order, like a `finally`.
 - Replay compares hashes with each resource value replaced by a token, so a fork with its

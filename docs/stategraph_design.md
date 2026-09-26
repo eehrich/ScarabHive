@@ -56,7 +56,7 @@ silently drops behaviour.
 stategraph: 1
 id: scene_review
 title: Scene review loop
-description: Write a scene, critique it, let Jev judge readiness, revise until ready.
+description: Write a scene, critique it, let the decision model judge readiness, revise until ready.
 python: scene_review.py          # companion module: its public names are in scope
 imports:
   critique_round: ./critique_round.yaml
@@ -135,13 +135,14 @@ def writer_task(ctx, params):
 
 | Key | Type | Req. | Meaning |
 |---|---|---|---|
-| `stategraph` | `1` | yes | Format version. The loader refuses unknown versions. |
+| `stategraph` | `1` | yes | Format version: the integer `1`. The loader refuses anything else, `true` and `1.0` included (SG001). |
 | `id` | name | yes | Machine id, unique across all machine roots. The file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
-| `python` | path | | Companion module, relative to the file. Its public names are in scope for all code of this machine. |
-| `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`) or a machine id. `do: {machine: …}` names an alias, never an id. |
+| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the writable root, else the plugin folder that holds its `machines/` directory. |
+| `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
+| `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
 | `params` | name → field | | The machine's parameters. For a top-level run they are the run input; for a submachine, the `params:` of the calling activity. Field keys: `type` (`string`, `integer`, `number`, `boolean`, `object`, `array`, `any`), `required`, `default`, `enum`, `description`. |
-| `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload. |
+| `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload; one that is not a valid JSON schema is SG001. |
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
 | `vars` | name → template | | Agent template vars (§3.9) for every agent this machine spawns. Submachines inherit them. |
 | `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
@@ -192,6 +193,7 @@ transitions:
 - A transition **without `target`** is an internal transition: its effect runs with no
   exit and no entry. It is allowed only with a named-event trigger.
 - `else` holds always. It must be the last transition of its trigger within the state.
+- A blank or whitespace-only `guard` is no guard, for the validator and the engine alike.
 - `choice` and `junction` transitions have no trigger (they are taken immediately), need a
   target, and a choice must end with `else`.
 
@@ -215,16 +217,35 @@ common keys.
 |---|---|---|
 | `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `vars` (template map, over the machine's vars); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
 | `tool: <flat tool name>` | `args` (template map); `error_if` (Python expression over `out`) | the tool's result. An error-shaped result (the core predicate `tools/base.py::_error_result_message`) or a true `error_if` raises `tool_failed` with `error.data` = the full result. |
-| `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
-| `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` | `{name: {value, confidence, probabilities}}`, from one call. |
-| `call: <companion function>` or `module:func` | `args` (template map) | The return value of `fn(**args)`, or `fn(sg, **args)` if its first parameter is named `sg`, which then receives the read-only scope, `sg.tool()` and `sg.Error`. Sync or async. |
+| `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` (a decision profile of `llm_system.decision_profiles`; default: `llm_system.default_decision_profile`); or `by` (an agent decides instead of a decision model; not together with `profile`) with `advanced` and `parse_retries` (default 1) | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
+| `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` or `by` | `{name: {value, confidence, probabilities}}`, from one call. |
+| `call: <companion function>` or `module:func` | `args` (template map) | The return value of `fn(**args)`, or `fn(sg, **args)` if its first parameter is named `sg`, which then receives the read-only scope, `sg.tool()` and `sg.Error`. Sync or async; a sync function runs in a worker thread (below). |
 | `machine: <import alias>` | `params` (template map) | The output of the final the submachine ends in. A `failed` final raises `submachine_failed` with `error.data` = that output. |
 | `parallel: {branch: <activity>}` | `fail: fast\|collect` | `{branch: out}`. `fast`: the first failure cancels the other branches and is raised (with `error.branch`). `collect`: all branches run to the end, and `out[branch]` = `{status, out}` or `{status, error}`. Nothing is raised. |
-| `map: <Python expression>` | `each` (an activity); `as` (item variable, default `item`); `concurrency` (default 1 = strictly in list order); `fail` | A list in item order (`[]` for no items). `item`/`index` are in scope in `each`. |
+| `map: <Python expression>` | `each` (an activity); `as` (item variable, default `item`); `concurrency` (default 1 = strictly in list order); `fail` | A list in item order (`[]` for no items). `item`/`index` are in scope in `each`; a fast failure carries `error.index`. |
 
-A kind value (`agent`, `tool`) is a literal, or `{{ params.<name> }}` where that parameter
-has an `enum`. The validator then checks every enum value (§4). `machine` is always a
-literal alias.
+A kind value (`agent`, `tool`) and `decide`'s `by` are a literal, or `{{ params.<name> }}` where
+that parameter has an `enum`. The validator then checks every enum value (§4); `by` gets the
+checks of an `agent:` (SG005, SG007). `machine` is always a literal alias.
+
+- **`error.branch` / `error.index`** name the failed child of the state's own join: a join
+  nested in that child set the key first, and each join on the way out overwrites it with its
+  own child and drops the other key (a `map` inside a `parallel` branch leaves no `index`).
+- **`decide` with `by:`.** The agent gets every question with the form of its answer (a
+  probability, one of the options, one of the levels) and the content, and answers in JSON; an
+  answer outside that form goes back to the same instance as feedback (`parse_retries` rounds,
+  then `schema_invalid`). The questions reach it as JSON, as they reach a decision model: a
+  choice option is a string (`2` becomes `"2"`). `out` has the decision model's shape: `value` as above -- a score is
+  the position of the level the agent named, a whole number -- and `confidence` and
+  `probabilities` are `null`. `activity.instance_id` is the agent's instance. Without `by:`,
+  which model is behind a decision profile is configuration, never named in a machine.
+- **A sync `call` function** runs in a worker thread of the plugin's own pool (8 threads named
+  `stategraph-call`; context variables copied), so the event
+  loop -- terminate, timeouts, the lease heartbeat -- goes on meanwhile. A thread cannot be
+  killed: on a timeout or terminate the activity ends at once and the thread's late result is
+  dropped. `sg.tool()` works only on the event loop: a sync function may return
+  `sg.tool(...)`, which is then awaited there, but not run it itself; an async function awaits
+  it as usual.
 
 ### 2.6 Python and templates
 
@@ -232,7 +253,7 @@ literal alias.
 `entry`, `exit` (statements), `map` and `error_if` (expressions).
 
 **Template fields** are exactly these: `task`, `args`, `params`, `vars`, `question`,
-`criteria`, `input`, `continue`, `output`, and a kind value of the form
+`criteria`, `input`, `continue`, `output`, and a kind value or `decide`'s `by` of the form
 `{{ params.<name> }}`. A template value is literal unless it contains `{{ }}`.
 
 - A value that is exactly one `{{ expr }}` keeps the expression's type.
@@ -257,7 +278,24 @@ Everything else (kind keys other than the parameter form, `schema`, `retry`,
 | `item`, `index` | the map variables (name set by `as`) | inside `map.each` |
 | companion names | every public name of the companion module | everywhere |
 
-A name used where it is not bound (e.g. `out` in an error transition) is SG004.
+A name used where it is not bound (e.g. `out` in an error transition) is SG004. `ctx` is the
+only namespace code writes: assigning or deleting a field of `params`, `run`, `resources`,
+`error`, `event`, `activity` or `ending` is SG004 too, unless the code has a local variable of
+that name (`for event in ...`).
+
+**The companion module** is executed only for a run, as a real module under a name of its own
+(`stategraph_machine_<n>_<stem>`) that sits in `sys.modules` for as long as the loaded machine
+lives: dataclasses, pydantic models with `from __future__ import annotations` and
+`typing.get_type_hints` work as in any module, and two versions of one machine never shadow each
+other. Validation never executes it; its names come from a scan of what it binds at the top
+level, also inside top-level `if`/`try`/`with`/`for` blocks (an import with a fallback). A
+function, for `call` and `parse`, is a `def`, a class, a name imported with `from … import`, or a
+name assigned anything but data (`build = partial(...)`, a lambda): the scan cannot tell those
+apart, the run can. Data is a literal, arithmetic or a comparison of data (`LIMIT = -1`,
+`HOUR = 60 * 60`), and an `and`/`or` of data. `a, b = 1, f` pairs each name with its own
+value; a name unpacked from anything else (`a, b = make()`), and a name a loop, a `with` or a
+walrus binds, counts as a function. A star import's names are unknown to the scan: with one, it
+takes any name, and the run decides.
 
 ### 2.7 Reuse and hierarchy
 
@@ -278,7 +316,8 @@ A name used where it is not bound (e.g. `out` in an error transition) is SG004.
 
 ### 2.8 Multi-call steps, cleanup and external state
 
-**`sg.tool()`.** A `call` function makes tool calls with `await sg.tool(name, args, idempotent=False)`.
+**`sg.tool()`.** An async `call` function makes tool calls with `await sg.tool(name, args, idempotent=False)`
+(a sync one runs in a worker thread and can only return `sg.tool(...)`, §2.5).
 
 - Each call is a child `tool` activity of the call: key `<call key>/t.<n>` (n counts the calls of one
   attempt, in call order), path `<call path>/<tool name>` -- the call activity's path, e.g.
@@ -307,14 +346,17 @@ finally: {call: report_end}
 - Paths (for mocks): a state's is `<state path>/finally`, the machine's `<frame path>/<machine id>.finally`.
 - It reads the scope read-only plus `ending`: `reason` (`transition`, `finished`, `failed`,
   `cancelled`), `state`, `error` (the error that caused the exit, or null). Its `out` is
-  discarded; it cannot change `ctx`.
+  discarded; it cannot change `ctx`. A root final with `status: failed` ends its frame with
+  reason `failed` and `ending.error` = `{type: final, message: "ended in the failed final state
+  <name>"}`.
 - A failing `finally` is journaled and traced (`finally_failed`); the exit goes on.
 - It does not run when the process stops (the run is `interrupted` and resumes) or in a process
   that lost the run.
 - It calls agents and decisions without the run's cancellation token, so a terminate does not
-  refuse them. Under a caller whose own request was cancelled (the agent facade), the platform
-  still force-cancels the caller's request tree after its cleanup timeout (10 s by default): keep
-  a `finally` short, or make it a tool or a call.
+  refuse them. A cancel from above is different (§5.8): when the caller of a facade run is
+  cancelled, the platform force-cancels every task under the caller's request id prefix after its
+  cleanup timeout (10 s by default) -- the `finally` activities' tool calls and agent runs
+  included. On that path a `finally` has 10 s, not the 60 s of §3.10: keep it short.
 
 **`resources`.** External state that belongs to one frame of a machine, such as a store
 namespace or a forum group per run.
@@ -330,7 +372,9 @@ vars:
 ```
 
 - `open` runs when the frame starts, before `vars` are rendered, in declaration order. Its `out`
-  is `resources.<name>` in every code field and template of the machine (read-only).
+  is `resources.<name>` in every code field and template of the machine (read-only). A resource
+  that was never opened -- its `open` failed, or has not run yet -- reads as `null`, so a
+  `finally` can check it.
 - `fork`, when present, runs instead of `open` in the root frame of a forked run, with
   `fork_source` = the source run's value. Without it, a fork opens the resource afresh.
 - `close` runs when the frame ends (after the `finally` activities, in reverse order), reads
@@ -381,6 +425,13 @@ raised by an action or guard. Each dispatch increments the frame's step `N` by o
      target. Entering a composite continues into its `initial`.
    - A **choice** evaluates its guards after the incoming effect, so they see the updated
      `ctx`.
+   - A **compound transition** (through junctions or choices) executes segment by segment:
+     each segment exits up to the domain of its own source and target and runs its effect; the
+     entries come last. For junctions this is a known deviation from UML,
+     which takes the domain of the whole compound transition (first source, final target); the
+     validator (visit counts, SG103) and the engine agree on it. So a junction outside a
+     composite exits that composite and re-enters it even when source and final target both lie
+     inside: its `exit` and `entry` run, and the visit counts inside it reset.
 4. The debugger's `enter` hook runs on the new leaf, then its activity starts.
 
 A transition is **atomic**. If an exit action, effect, choice guard or entry action raises,
@@ -429,7 +480,11 @@ impossible: a state waits only if it is a wait state (§2.3).
 
 - **Handling.** An error is dispatched as the `error` event of the state where it was
   raised, and selection walks outward (§3.2). An error raised while an error transition is
-  selected or executed ends the frame. It is not handled twice.
+  selected or executed ends the frame -- also a `loop_limit` raised by entering its target past
+  `max_visits` (its `error.cause` is the error the transition handled). It is not handled twice.
+  So a state entered by an error transition cannot catch its own `loop_limit`: bound such a
+  repair loop in that transition's guard (`run.visits.get("repair", 0) < 2`) and let the next
+  error transition take the end; `max_visits` stays as the declared bound.
 - **Unhandled errors** end their frame as failed. For a submachine, the calling state then
   receives `submachine_failed` with `error.cause` = the inner error. Only a failing root
   frame fails the run.
@@ -456,7 +511,9 @@ SG106 warns about the obvious violations.
   - final outputs, event data and debugger `set` values.
 
   Dataclasses and pydantic models are dumped first. `ctx` must stay JSON; after every
-  action the engine checks it (`not_serialisable`).
+  action the engine checks it (`not_serialisable`). A final `output` that is not JSON data (a
+  dict with tuple keys) fails the frame with `not_serialisable`, and its ending runs as for any
+  failure -- the machine's `finally` included.
 
 ### 3.7 Counters and limits
 
@@ -503,7 +560,8 @@ not race.
 
 - **After a transition.** The `finally` of each state a transition left runs once that
   transition has committed and its step is journaled, innermost first, before the target's
-  `do`. A transition that fails and rolls back (§3.2) has left nothing, so nothing runs.
+  `do`. That holds for the initial entry too, whose initial pseudostate can lead out of a
+  composite. A transition that fails and rolls back (§3.2) has left nothing, so nothing runs.
 - **When a frame ends** (final state, unhandled error, cancel): the pending `finally`
   activities, then the `finally` of every still active state (innermost first), then the
   machine's `finally`, then `close` of each opened resource in reverse order. Each runs once per
@@ -519,7 +577,9 @@ not race.
   reached an end of its own (finished, failed) completes that ending without the bound, as the
   crashed run would have; the others end as cancelled, within it. A `finally` that is a submachine gets that for each of its own activities
   too, so nesting adds up. One the bound cuts ends `timeout`; that is journaled as its outcome, so a
-  resume does not run it again.
+  resume does not run it again. A cancel from above (the caller of a facade run is cancelled,
+  §5.8) has a shorter bound it does not set: the platform force-cancels the caller's request tree
+  after 10 s, the `finally` activities' tool calls and agent runs included.
 - **A terminate that arrives while they run** does not cut the running one: it finishes, and so do
   the rest, each within the 60 s. A root frame that had already finished or failed keeps that
   outcome; a nested frame passes the terminate on to its parent. A `step_limit` abort that came
@@ -573,22 +633,24 @@ not race.
   another way, and then runs that ending's `finally` activities under their own keys.
 - **Terminate of a run no process runs** (`interrupted`) resumes it into its termination the
   same way; `control_run` waits up to 10 s for the run to end before it answers. A timeout
-  journaled before the crash still counts: the run ends `failed` (`timed_out`).
+  journaled before the crash still counts: the run ends `failed` (`timed_out`). If its definition
+  snapshot no longer loads, the run is marked `cancelled` without its `finally` activities, and
+  its error says so ("its finally activities did not run: its definition does not load").
 
 ## 4. Validation
 
 `stategraph_validate_machine`, the panel on every edit, and every save and run run the same
 checks. The companion module is **not executed** for validation. Its public names come
-from an AST scan.
+from an AST scan (§2.6).
 
 | Code | Level | Check |
 |---|---|---|
-| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), schema (unknown key, wrong type, a param default that does not fit its type or enum), a machine whose file is not `<id>.yaml` |
+| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
 | SG002 | error | Unknown or duplicate state name; unknown target or `initial`; an undeclared event trigger |
 | SG003 | error | Pseudostate and structure rules: a choice without `else`; `else` not last; triggers on choice/junction; a final with anything but type/status/output/description; `status` on a nested final; a composite with `do` or without `initial`; an internal completion or error transition; a wait state that accepts no event; a cycle of pseudostates only |
-| SG004 | error | Python does not compile; unknown name; a name that is not bound at that place; `{{ }}` in a code field; `params.<name>` that is not declared; access that always fails on plain data (`out.value` instead of `out["value"]`, `ctx.a.b` instead of `ctx.a["b"]`, dict methods on a namespace such as `ctx.get(...)`); a companion function that does not exist; `python:`/`imports:` outside the machine roots |
-| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name), a computed `agent:`/`tool:` value other than `{{ params.<name> }}` with an enum |
-| SG006 | error | Submachine: unknown alias, import cycle, missing required or unknown parameter |
+| SG004 | error | Python does not compile, or is nested too deeply for Python's parser; an absolute `python:` path; unknown name; a name that is not bound at that place; `{{ }}` in a code field; `params.<name>` that is not declared; access that always fails on plain data (`out.value` instead of `out["value"]`, `ctx.a.b` instead of `ctx.a["b"]`, dict methods on a namespace such as `ctx.get(...)`); assigning or deleting a field of a read-only namespace (`params`, `run`, `resources`, `error`, `event`, `activity`, `ending`) unless the code has a local variable of that name; a companion function that does not exist; `python:`/`imports:` outside the machine roots |
+| SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name, `by` together with `profile`), a `do.schema` that is not a valid JSON schema, a computed `agent:`/`tool:`/`by:` value other than `{{ params.<name> }}` with an enum |
+| SG006 | error | Submachine: unknown alias, import cycle, an absolute import path, missing required or unknown parameter |
 | SG007 | error | Configuration: the agent is not configured, not enabled or not an agent, or it reaches machines (the runner, a machine facade, an agent whose allowlist reaches a non-read-only stategraph tool, or one that can start such an agent through a SAM), the tool is not in the runner's allowlist, the tool is a SAM's (agents start through agent activities), the tool belongs to stategraph itself, an unknown decision profile, a `vars_from` agent that is not configured; enum values of a parametrised agent/tool are checked one by one (the tool check runs again at run time) |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
@@ -624,9 +686,14 @@ store.py   machine roots, versions   server.py  web_endpoints.py
 `data/stategraph/runs.db` holds:
 
 - `runs`: id, machine id, status, definition snapshot, params, mocks, debug state,
-  `user_id`, `session_id` (`sg_<run id>`, the parent of the run's sub-agents), `owner`,
-  `lease_until`, `run_key`, `parent_run`, `fork_step`, `journal_format` (1), output,
-  error, and the display view.
+  `user_id`, `session_id` (`sg_<run id>`, the run's own session and the parent of its agent
+  instances, §5.8), `owner`, `lease_until`, `run_key`, `parent_run`, `fork_step`,
+  `journal_format` (1), `nesting` (the caller's place in a sub-agent tree: `{depth,
+  depth_budget, session}`, §5.8), output, error, and the display view. A runs.db from before a
+  column gets it added when it is opened.
+- The **definition snapshot** holds the machine tree's texts with keys relative to the root
+  file's folder, with `/` separators, so a run resumes on another OS. A snapshot stored before
+  that (absolute host paths, e.g. Windows keys) is rewritten the same way when it is read.
 - `journal`: rows `(run_id, seq, kind, key, state, status, data)`, unique on
   `(run_id, kind, key)`. `seq` is append order, for display only.
 
@@ -663,11 +730,12 @@ frame := "" | frame "s" N "/" ("m" | "b." NAME | "i." INDEX) "/"
 | `event` | `pending:<id>`, then `<frame>s<N>:event` once consumed | name and data (the inbox) |
 | `edit` | `<frame>s<N>:<hook>:<n>` | a debugger `set`: path and the evaluated JSON value |
 | `timer` | `<frame>s<N>:timer` | a fired wait timeout |
-| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records, the `ctx_hash` after each dispatch, the wait deadline, `finally_failed`; unkeyed by step: `cancel` (a journaled terminate) and `resource_sources` (a fork's source values) |
+| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records, the `ctx_hash` after each dispatch, the wait deadline, `finally_failed`; unkeyed by step: `cancel` (a journaled terminate), `resource_sources` (a fork's source values) and `request_seq` (the counter of the run's request ids, written before each id is used, so the ids `<run>_NNN` stay unique across resumes -- an agent run in flight at a crash left no outcome that names its id) |
 
 ### 5.3 Resume
 
-A resume re-runs the interpreter from the start against the run's own definition snapshot.
+A resume re-runs the interpreter from the start against the run's own definition snapshot
+(portable across OSes, §5.2).
 
 - **Activities.** Every activity renders its inputs and looks up its key first. A recorded
   outcome is returned without executing. Only activities without an outcome run.
@@ -675,6 +743,9 @@ A resume re-runs the interpreter from the start against the run's own definition
 - **Side channels are silent** until the replay reaches the last recorded step: no debugger
   hooks, no watch comparisons (watches are primed with their value at the frontier), and
   no status events.
+- **The debugger's state survives the stop** (§6): its points, and what held the run -- a run
+  that stopped while paused pauses again at its first live hook; a pending pause, step or
+  `run_to` still applies.
 
 ### 5.4 Divergence
 
@@ -684,7 +755,9 @@ the recorded one. Both hashes are taken with every resource value of the frame a
 replaced by a token (`⟨resources.store⟩`), so a fork with its own resources replays its source's
 prefix; the inputs themselves keep the real values. Both hashes must match, so a changed guard that leads into another state diverges at once. Any mismatch stops the run
 with status `failed`, error type `diverged`, and names the first diverging key. A diverged
-run never continues on a different path.
+run never continues on a different path. One recorded difference is not a divergence: a journal
+from before a failed final ended its frame `failed` recorded `finished` there; the recorded end
+is kept, so such a run still resumes and its `end.finished.*` keys match.
 
 ### 5.5 In-flight activities and idempotency
 
@@ -706,6 +779,11 @@ flight at the crash.
   count: it belongs to that attempt's frame, and the retry's frame has its own ending. For writer
   tools that create things (a story row), the error path reconciles, e.g. by looking the object
   up by `run.id`.
+- **A retry's backoff** rewrites the `started` row before it sleeps: attempt n+1 and
+  `backoff_until`, the time it is due. Nothing is in flight then, so a resume inside the backoff
+  neither raises `interrupted` nor runs an attempt over the budget: it waits out the rest of the
+  backoff and continues with attempt n+1 -- unless the run is ending (a terminate came during the
+  backoff): then the next attempt never began, and none starts, composites included.
 
 ### 5.6 Fork
 
@@ -714,8 +792,16 @@ A fork starts a new run from **top-level step N** of an existing run.
 - **Journal.** It copies every journal row whose top-level step is below N; rows nested
   under those steps come with them.
 - **Definition.** `definition: snapshot` (the default) reuses the source run's definition.
-  `definition: current` loads the current files: the "fix the guard and fork" case. A
-  divergence in the replayed prefix aborts the fork and names the key.
+  `definition: current` loads the current files -- exactly the tree that was validated: the "fix
+  the guard and fork" case. A divergence in the replayed prefix aborts the fork and names the key.
+- **User.** A fork is a new run of the user who forks (without auth: the source's user). It never
+  continues an agent instance of its source (below), so no conversation of the source's user runs
+  on under another; its new instances are the fork's user's. It takes no `nesting` from its
+  source: it is started from the panel or a tool, not by the source's caller, so its session sits
+  at the top of the forking user's list.
+- **Waits start afresh.** A wait's deadline is absolute and is not copied: a wait state the fork
+  reaches at the fork point gets a new deadline, not the source's (which may have expired long
+  ago).
 - **External state is not forked** unless a resource says how: its `fork` hook runs in the
   fork's root frame with `fork_source` = the source's value (§2.8), e.g. to copy a store
   namespace. It sees the source's external state as the source left it, not as it was at step N.
@@ -740,7 +826,17 @@ A run executes as an asyncio task in the process that started it (usually the AP
 - **Resume** takes the lease with one conditional update (only an expired lease, or our
   own), so two processes can never run the same run. It reads the run row again once it
   holds the lease: breakpoints stored meanwhile apply, and a run that succeeded or was
-  cancelled meanwhile is not started again.
+  cancelled meanwhile is not started again. A resume that fails after taking the lease (the
+  run ended meanwhile, its definition does not load) releases it, so another process may take
+  the run at once.
+- **Stopping.** While the process stops, it starts, resumes and forks no run: such a run would
+  be neither stopped nor marked `interrupted`.
+- **The end is stored.** The run's end status is written with retries (after 0.5, 1, 2, 4 and
+  8 s): unlike the view, a lost end write would leave the run `running` until its lease runs out
+  and the sweep calls it `interrupted`. Should every try fail, a resume of that interrupted run
+  replays to the same end. While the process stops, the end gets one try (the sweep marks what is
+  left). The run's session hears of the end only after it was stored, and the heartbeat no
+  longer renews a finished run's lease.
 - **Fencing.** Every write of an owner -- the run row, every journal row, the heartbeat --
   is conditional on still being the owner (checked and written in one transaction). A
   process whose write is refused has lost the run: it stops its local copy without
@@ -752,20 +848,33 @@ A run executes as an asyncio task in the process that started it (usually the AP
   unchanged. Breakpoints of a run that no process holds a live lease on are stored in its
   row and apply when it is resumed; while another process holds it they are refused with
   that owner's name.
-- **`run_key`.** A caller may pass a `run_key` (e.g. its request id). A second
-  `run_machine` with the same key attaches to the unfinished run, or resumes it, instead
-  of starting a duplicate.
+- **`run_key`.** A caller may pass a `run_key` (e.g. its request id): the same request again
+  gets the run of that key instead of a duplicate. Every call looks up the newest run of the key:
+  - live here: attached to (`attached: true`);
+  - held by another process's live lease: `attached: false`, nothing started;
+  - `interrupted`: resumed (`resumed: true`);
+  - ended: `{run_id, ended: <status>}` -- the same answer, the same failure, the same cancel.
+    Only a failed run whose error, or one of its unhandled causes, is transient
+    (`runner.TRANSIENT_ERRORS`: `interrupted`, `timeout`, `agent_failed`, `decision_failed`,
+    `internal` -- e.g. a journal write refused by a locked database --, and `diverged`, which only
+    a resume can cause) starts a new run. Not transient: the run's own `timed_out` (a new run
+    would spend the same budget), `schema_invalid`/`parse_failed` (the agent had its feedback
+    rounds) and `tool_failed` (a tool's own refusal).
+
+  A key that belongs to another user's run is refused (409).
 
 ### 5.8 ScarabHive integration
 
 | Need | Primitive |
 |---|---|
-| agent call | The registered agent (`runner.registry.get(name)`), run with `run_events(task, request_id=<run>_NNN, session_id=<instance>)` per attempt; the answer is the final event's summary, an `error` event or an empty answer is `agent_failed`. A create first makes the instance session with `session_manager.create_session(parent_session_id=sg_<run>)` (a sub-session: not in the session list); a continue checks that the instance's parent is this run's session and its agent the one named. `open_for_run` before and `save_session` after the run keep the instance's conversation on disk, so a continue after a resume sees it. One run per instance at a time. The run is awaited as a task of its own: a timeout or terminate cancels the run's request (its token) before the task -- a cancel that lands in one of the agent's tool calls becomes a "cancelled" tool result and the agent would run on -- and the run gets until the CancellationManager would force-cancel it (its cleanup timeout plus one monitor round, and a second: 12 s by default; `AGENT_STOP_GRACE`) to stop -- also when a terminate follows a timeout meanwhile. A run that outlives it keeps its instance busy until it ends. |
+| agent call | The registered agent (`runner.registry.get(name)`), run with `run_events(task, request_id=<run>_NNN, session_id=<instance>)` per attempt (`NNN` counts on across resumes, §5.2); the answer is the final event's summary, an `error` event or an empty answer is `agent_failed`. A create first makes the instance session with `session_manager.create_session(parent_session_id=sg_<run>)` (a sub-session of the run's own session, shown below it); with a `nesting` (an agent started the run: the facade, a tool call) the instance sits at the caller's `depth` + 1 with its `depth_budget` - 1, where the caller's SAM would have put it, and a budget below 1 fails the activity with `config`. A continue checks that the instance's parent is this run's session and its agent the one named. `open_for_run` before and `save_session` after the run keep the instance's conversation on disk, so a continue after a resume sees it. One run per instance at a time. The run is awaited as a task of its own: a timeout or terminate cancels the run's request (its token) before the task -- a cancel that lands in one of the agent's tool calls becomes a "cancelled" tool result and the agent would run on -- and the run gets until the CancellationManager would force-cancel it (its cleanup timeout plus one monitor round, and a second: 12 s by default; `AGENT_STOP_GRACE`) to stop -- also when a terminate follows a timeout meanwhile. A run that outlives it keeps its instance busy until it ends. |
 | tool call | `runner.dispatch_tool_call(tool, args, …)`. Configured `inject_params` (fnmatch pattern → params, as in tool_script) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
 | decision | `create_decisions_from_profile(system_config, profile).decide(input, questions)` |
 | vars | `session_manager.replace_session_context_vars(user, <instance>, vars)` (a save merges into the stored vars, and a sub-agent of the instance inherits them) and `agent._session_tracker.set_session_template_vars(<instance>, vars)` after clearing, both before the run |
-| cancellation | `get_cancellation_manager()`: the run's backend holds a token under the run id. Terminate calls `cancel_sub_requests(<run id>)`, which reaches every `<run>_NNN` sub-run in flight -- not the run's own token: a cancelled token has the platform force-cancel its whole request tree after the cleanup timeout, and the `finally` activities start sub-runs after the terminate. They call agents and decisions without the token (§2.8). A cancel from outside that reaches the run's token -- a caller whose request id prefixes the run id, e.g. a book cancel above the agent facade -- terminates the run the same way, so its `finally` activities run. An activity that ends because the run was cancelled is not journaled as an error, and no error transition fires. |
+| cancellation | `get_cancellation_manager()`: the run's backend holds a token under the run id. Terminate calls `cancel_sub_requests(<run id>)`, which reaches every `<run>_NNN` sub-run in flight -- not the run's own token: a cancelled token has the platform force-cancel its whole request tree after the cleanup timeout, and the `finally` activities start sub-runs after the terminate. They call agents and decisions without the token (§2.8). A cancel from outside that reaches the run's token -- a caller whose request id prefixes the run id, e.g. a book cancel above the agent facade -- terminates the run the same way, so its `finally` activities run; but that cancel is the caller's own, so the platform force-cancels every task under the caller's request id prefix after the cleanup timeout (10 s), the `finally` activities' tool calls and agent runs included: on this path a `finally` has 10 s, not 60. An activity that ends because the run was cancelled is not journaled as an error, and no error transition fires. The run's cancel is: its task being cancelled (terminate, halt, `limits.timeout`, a timeout above the activity, a fail-fast sibling), the run ending, or its token cancelled from outside. Any other `CancelledError` out of an attempt -- a future some library cancelled -- fails the activity (`agent_failed`, `tool_failed`, `decision_failed`, `call_failed`, else `activity_failed`), and its error transition fires. |
 | status | The run task sets `current_request_id` to the run id. The tool that started the run ends with one end line naming the result. |
+| user | A run runs as its row's `user_id`: its agents run, and their instance sessions are found, as that user -- also when someone else resumes or terminates it, which only triggers that. A fork is a new run of the forking user (§5.6). |
+| run session | A run with a backend creates its own session `sg_<run id>` when it begins (a resume finds it there): title `<machine title> · <run id>`, agent = the runner agent, at the top level of its user's session list -- or, with a `nesting`, below the session of the agent that started it (the facade, a tool call with `_session_id`). It holds a user message with the params and, when the run ends (not when it is interrupted), an assistant message with status, final state, and output or error; both carry `injected_by: stategraph`. Its agents' instance sessions are its sub-sessions. A mock-only run has none. It carries a `depth` (the caller's + 1, or 1), so the chat opens it read-only (the runner agent is private). It is a view: a run never fails over it. |
 
 ### 5.9 Run status
 
@@ -787,17 +896,29 @@ across resumes. The terminal statuses are `succeeded`, `failed` and `cancelled`;
 | step | Continue until the next hook. |
 | run_to | A temporary breakpoint on a state's `enter`. |
 | terminate | Cancel the run (§5.8). |
-| evaluate | A read-only Python expression against the paused scope. |
+| evaluate | A read-only Python expression against the paused scope. The answer is JSON data; a value that is not (a function, a module) comes as its `repr` -- as do watch values. |
 | set | `ctx.<path> = <expr>` while paused. The evaluated JSON value is journaled as an `edit`; several edits at one hook replay in `seq` order. |
 | fork | New run from a top-level step (§5.6). |
 
-- **Storage.** Breakpoints and watchpoints belong to the run and are stored with it.
+- **Storage.** Breakpoints and watchpoints belong to the run and are stored with it, and so is
+  the debugger's state -- pause, step, `run_to`, mode -- which survives a stop and resume
+  (§5.3). Points are type-checked when they are set (a list; `state`, `at`, `expr`, `condition`,
+  `machine`, `id` strings, `enabled` a boolean), so a wrong one fails the call, not the run. A
+  stored point that no longer parses (one kept from before those checks) is dropped with a log
+  warning, so it cannot block a resume, terminate or fork.
+- **Arguments.** `control_run` checks every argument's type -- `steps` included -- before it acts
+  (a wrong one is 422); `run_to` needs a `state`. Its answer is the run as `get_run` gives it;
+  `steps` (REST and tool) sets how many journal rows it carries (the tool's answer carries none
+  without it).
 - **Watchpoints** compare values between dispatches: the first value is taken after the
   first dispatch of a frame, so the initial context never counts as a change.
 - **After a resume** a breakpoint at the last recorded step may pause again: that step is
   where the run was when it stopped.
 - **Panel.** The panel polls `GET /runs/{id}` and sends commands with
-  `POST /runs/{id}/control`.
+  `POST /runs/{id}/control`. A failed poll keeps polling, and the debug bar says "not
+  refreshed" until one gets through; the run list follows what a control answered (a
+  terminate). An interrupted run can be terminated there too: its `finally` activities run and
+  it ends cancelled (§3.10).
 - **Scope.** Only runs of the API process can be paused from the panel. Runs of other
   processes are visible through the journal.
 
@@ -826,6 +947,14 @@ src/plugins/stategraph/
 - `data/stategraph/machines` is writable and not versioned.
 - `src/plugins*/*/machines` is versioned; writer machines live next to their plugin.
 - The first root that has an id wins, and writable roots come first.
+- **Saves** write a machine tree all or nothing: each file goes into a temp file next to its
+  target first, then the temp files replace the targets; if one replace fails, the files
+  replaced so far get their old bytes back (a new one is removed) and the error says so. Files
+  are written as UTF-8 with LF line endings on every OS, and the versions a save returns are of
+  the text as a read gives it back.
+- **Folders.** The panel lists machines in folders: a machine's `group` (§2.2), else the folder
+  of its origin ("My machines" for the writable root, else the plugin folder that holds its
+  `machines/`).
 
 ---
 
@@ -840,10 +969,13 @@ src/plugins/stategraph/
 | `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
-| `run_machine` | `machine_id`, `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, status, state, output, error, accepts}`. `wait: finish` also returns when the run pauses or waits for an event. |
+| `run_machine` | `machine_id`, `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, status, state, output, error, accepts}`, with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
 | `get_run` | `run_id`, `steps?` | status, frames, context, recent journal rows |
-| `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args | run state |
+| `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args, `steps?` | run state (with `steps`: its journal rows) |
 | `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not |
+
+`get_run`, `control_run` and `send_event` answer another user's run as missing unless the asker
+is an admin or auth is off (§8.3).
 
 Slash command: `/stategraph-run <id>`, with `wait: background`.
 
@@ -852,10 +984,37 @@ Slash command: `/stategraph-run <id>`, with `wait: background`.
 - `GET /` is the panel.
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations); `PUT /api/machines/{id}/layout`.
+  `POST /api/machines/{id}/edit` (graph operations); `PUT /api/machines/{id}/layout`;
+  `DELETE /api/machines/{id}` with `{expected_version}`.
+- **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
+  the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
+  another machine uses that module or it lies outside the writable roots. A machine outside the
+  writable roots is refused (403); one that another machine imports is refused (409) until
+  those imports are gone. Its runs keep their definition snapshot and stay readable.
 - **Palette.** `GET /api/kinds`.
-- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}`; `GET /api/runs/{id}/journal`;
-  `POST /api/runs/{id}/control`; `POST /api/runs/{id}/events`.
+- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`); `GET /api/runs/{id}/journal`;
+  `POST /api/runs/{id}/control` (`steps`: the journal rows of the answer);
+  `POST /api/runs/{id}/events`. `GET /api/runs/{id}`, control and events follow the owner rule
+  (§8.3); the run list and the journal endpoint do not filter.
+
+**The panel.** The machine list shows collapsible folders by group (the open ones are
+remembered; a search opens every folder it finds something in). The machines pane and the
+inspector fold away (toolbar buttons). A writable machine has a delete button. Double-click on
+a state renames it. The YAML tab adds a companion module to a writable machine that has none
+(`python: <id>.py` and the file, as drafts saved with the next Save) and colours `.py` files as
+Python. Inspector edits not yet applied are asked about before a selection, an
+edit or another machine drops them. Each run has a **Result** card: its output or error, the
+end state of every frame, and every finished activity folded, with its full answer when opened;
+an agent's instance session and the run's own session (§5.8) open in the chat.
+
+**Graph edits and YAML anchors.** An edit changes only the state's own text. It is refused where
+another place would see the change: a transitions list the state inherits through its own `<<:`
+merge or that another state merges, a state that is aliased or lies inside an aliased region.
+A merge key on the state alone does not block a transition edit. A state's text in the inspector is read in
+its place in the file, so it may use an alias of an anchor elsewhere; it is refused where it would
+change anything but that state (a value under an anchor another state aliases, an anchor name the
+file has already, a quote or indentation that runs past the state). Text of comments alone makes
+an empty state (`name: {}`), never a null the machine would not load.
 
 ### 8.3 Security
 
@@ -866,11 +1025,16 @@ Machines contain Python and run agents and tools.
   `params['_user_id']` in its handler: the user must be an active admin, or listed in the
   instance's `allowed_users`. `catalog`, `list_machines`, `get_machine` and `get_run` are
   read-only.
+- **Runs belong to their user.** `get_run`, `control_run` and `send_event` (tools and REST)
+  answer another user's run as missing (404) unless the asker is an admin or auth is off; a run
+  of nobody (no `user_id`) is visible to all (`server.sees_run`). Whoever resumes or terminates
+  a run only triggers it: it runs as its row's user (§5.8). A fork is a new run of the forking
+  user and never continues the source's instances (§5.6).
 - **Recursion.** The runner's allowlist must never contain stategraph's own tools (SG007
   refuses them), so a machine cannot rewrite or start machines.
-- **Agents.** A machine runs the agents its file names -- literal names, or a parameter with an
-  enum, so validation sees every one (SG005); SG007 checks that each is configured, enabled and an
-  agent. There is no second list: machines are admin work (see above). But no agent that reaches
+- **Agents.** A machine runs the agents its file names (`agent:` and `decide`'s `by:`) -- literal
+  names, or a parameter with an enum, so validation sees every one (SG005); SG007 checks that each
+  is configured, enabled and an agent. There is no second list: machines are admin work (see above). But no agent that reaches
   machines: not the runner, not a machine facade (`type: stategraph_machine` -- a machine uses
   another as a submachine), not an agent whose tool allowlist reaches a stategraph tool beyond the
   read-only ones, and no agent that can start one of those through a SAM it may call (followed
@@ -941,17 +1105,19 @@ covered by tests.
    controls these runs) and answers with the output as a JSON object; `promote` copies output keys
    onto the final event.
    - Run key = `<agent>:<request id>`, bound to the user who started the run; run id =
-     `<request id>_sg<n>`: a re-dispatch attaches, resumes, or answers a succeeded run again; cancel,
-     status lines and cost attribution stay under the caller.
+     `<request id>_sg<n>`: a re-dispatch attaches, resumes, or answers an ended run's outcome again
+     (§5.7); cancel, status lines and cost attribution stay under the caller. The run's own session
+     sits below the facade's session (§5.8).
    - Which run a session belongs to is kept in runs.db (table `callers`), so a `continue` in any
      process finds it. As another agent's tool, every call is a request of its own.
    - A cancel of the request (or any request above it) terminates the run -- its `finally` runs; a
      bare task cancel (the process stops, the client leaves) leaves it `interrupted`.
    - A `continue` answers the output again, resumes an interrupted run, and never starts a second one.
-   - The same request id again from a new session attaches, resumes, or answers a succeeded run
-     again -- but after a `failed` or `cancelled` run it starts a new one. Whether a re-dispatch
-     should get the failure again instead is open (a retry wants a new run, a duplicate delivery
-     the old answer).
+   - The same request id again from a new session attaches, resumes, or answers the ended run's
+     outcome again: its output, its failure, its cancel. Only a failure that is transient
+     (`interrupted`, `timeout`, `agent_failed`, `decision_failed`, `internal`, `diverged` as the
+     error or an unhandled cause, §5.7) starts a new run: a duplicate delivery gets the old answer, a retry after a
+     provider failure a new run.
    - Failures are `error` events, never a `final` (writer_jobs counts any `final` as success).
 2. **`finally:`** (§2.8, §3.10).
 3. **`resources:`** (§2.8): `open`/`fork`/`close`; hashes take resource values as tokens (§5.4).
@@ -976,9 +1142,10 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 - **Cross-process debugging.** Runs of other processes cannot be paused from the panel.
   Commands would go through the run row, polled at hooks. That is the next step once runs
   execute in writer_jobs.
-- **Browser tests.** This Mac has no Chromium, so the panel is checked for syntax and logic
-  with JavaScriptCore (`jsc`), not in a browser. The first real browser session is a manual
-  check in both themes.
+- **Browser tests.** The panel is checked for syntax and logic with JavaScriptCore (`jsc`), or
+  with node where `jsc` is missing (`tests/js/node_jsc.mjs` gives node jsc's `print`, `load` and
+  `readFile`, so one test source serves both), not in a browser. The first real browser session
+  is a manual check in both themes.
 - **The v6 machine has not run live yet.** It is tested against a simulated v6 world (store
   semantics, forum, story row, agents as fakes, a crash and resume in the beats); its first run
   with real panels is a manual step, best with a breakpoint after the worlds.

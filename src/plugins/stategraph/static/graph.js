@@ -56,6 +56,11 @@ export function edgeText(transition) {
   return parts.join(' ');
 }
 
+/** The width a composite's title band needs: icon, name (as drawState draws it, at most 30 characters), handle. */
+export function compositeTitleWidth(state) {
+  return textWidth(shorten(state.name, 30), 13) + (state.icon ? 44 : 24) + 8;
+}
+
 /** [width, height] of a state that is drawn as one box or shape. */
 export function nodeSize(state) {
   if (SHAPES[state.type]) return SHAPES[state.type];
@@ -64,9 +69,14 @@ export function nodeSize(state) {
   return [clamp(Math.max(name, label, 96), 96, 280), state.label ? 50 : 34];
 }
 
+/** The states by parent name, in document order. A name seen before is left out: the validator reports it, and a
+ * composite holding a state of its own name would otherwise be laid out inside itself without end. */
 function childrenOf(graph) {
   const byParent = new Map();
+  const seen = new Set();
   for (const state of graph.states || []) {
+    if (seen.has(state.name)) continue;
+    seen.add(state.name);
     const key = state.parent || '';
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key).push(state);
@@ -91,7 +101,12 @@ export function elkInput(graph) {
     if (state.composite && byParent.has(state.name)) {
       return {
         id: stateId(state.name),
-        layoutOptions: { 'elk.padding': `[top=${PAD.top},left=${PAD.left},bottom=${PAD.bottom},right=${PAD.right}]` },
+        layoutOptions: {
+          'elk.padding': `[top=${PAD.top},left=${PAD.left},bottom=${PAD.bottom},right=${PAD.right}]`,
+          // ELK sizes a composite from its children: the title band needs room of its own
+          'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+          'elk.nodeSize.minimum': `(${compositeTitleWidth(state)}, ${PAD.top + PAD.bottom})`,
+        },
         children: region(state.name, state.initial),
       };
     }
@@ -199,6 +214,11 @@ export function pathData(points) {
   return points.map(([x, y], i) => `${i ? 'L' : 'M'}${Math.round(x * 10) / 10} ${Math.round(y * 10) / 10}`).join(' ');
 }
 
+/** A file path with forward slashes: a server on Windows names files with backslashes. */
+export function posixPath(path) {
+  return path ? String(path).replace(/\\/g, '/') : path;
+}
+
 function prefixOf(path, prefix) {
   return Boolean(prefix) && (path === prefix || path.startsWith(`${prefix}.`) || path.startsWith(`${prefix}[`));
 }
@@ -209,7 +229,8 @@ function prefixOf(path, prefix) {
  * and of the machine as a whole, stay in `machine`.
  */
 export function problemIndex(graph, problems, rootFile) {
-  const index = { states: {}, transitions: {}, machine: [] };
+  // keyed by state names: without a prototype, so a state named constructor is a state like any other
+  const index = { states: Object.create(null), transitions: Object.create(null), machine: [] };
   const states = [...(graph.states || [])].sort((a, b) => (b.path || '').length - (a.path || '').length);
   const transitions = [...(graph.transitions || [])].sort((a, b) => (b.path || '').length - (a.path || '').length);
   const byLine = [...(graph.states || [])].filter((s) => s.line).sort((a, b) => b.line - a.line);
@@ -219,7 +240,8 @@ export function problemIndex(graph, problems, rootFile) {
     bucket[key].problems.push(problem);
   };
   for (const problem of problems || []) {
-    const inRoot = !problem.file || !rootFile || problem.file === rootFile || problem.file.endsWith(`/${rootFile}`);
+    const file = posixPath(problem.file);
+    const inRoot = !file || !rootFile || file === posixPath(rootFile) || file.endsWith(`/${posixPath(rootFile)}`);
     const path = problem.path || '';
     if (!inRoot) {
       index.machine.push(problem);
@@ -248,7 +270,7 @@ export function runOverlay(run) {
   return {
     active: new Set(root?.config || []),
     current: root?.state || null,
-    visits: { ...(root?.visits || {}) },
+    visits: Object.assign(Object.create(null), root?.visits || {}),  // by state name: see problemIndex
     paused: paused && !paused.frame ? paused.state : null,
     submachines: new Set(frames.filter((frame) => frame.prefix && frame.path).map((frame) => frame.path.split('/')[0])),
     lastEdge: lastTransition && Number.isInteger(lastTransition.data?.index)
@@ -301,9 +323,9 @@ export function stateFragment(text, line) {
 /** Why the inspector cannot apply a state's YAML ('' when it can): set_state refuses these key lines. */
 export function fragmentLock(text, line) {
   const value = valueAt(text, line);
-  if (!value?.rest) return '';
-  if (/^[&!*]/.test(value.rest)) return 'It has an anchor, a tag or an alias on its key line';
-  return value.continued ? 'It starts on its key line and goes on below it' : '';
+  if (!value) return '';
+  if (value.rest && /^[&!*]/.test(value.rest)) return 'It has an anchor, a tag or an alias on its key line';
+  return value.rest && value.continued ? 'It starts on its key line and goes on below it' : '';
 }
 
 /** Relative position of a box inside its parent (what the layout sidecar stores). */
@@ -549,7 +571,7 @@ export class Canvas {
       };
       if (pinned?.errors) badge(`${pinned.errors} err`, 'sg-badge--danger');
       else if (pinned?.warnings) badge(`${pinned.warnings} warn`, 'sg-badge--warn');
-      const visits = run?.visits?.[name];
+      const visits = run && Object.hasOwn(run.visits, name) ? run.visits[name] : 0;
       if (visits) badge(`×${visits}`, 'sg-badge--info');
       if (breakpoints.has(name)) el('circle', { cx: Number(badges.dataset.left), cy: top, r: 5, class: 'sg-breakpoint' }, badges);
     }
@@ -656,6 +678,7 @@ export class Canvas {
       }
       const [x, y] = this.toCanvas(event);
       if (gesture.type === 'connect') {
+        gesture.moved ||= (Math.abs(x - gesture.x) + Math.abs(y - gesture.y)) * this.view.k > 4;
         const box = this.nodes[stateId(gesture.source)];
         this.dragLayer.replaceChildren();
         const from = box ? clipToBox(box, x, y) : [gesture.x, gesture.y];
@@ -664,7 +687,8 @@ export class Canvas {
       }
       const dx = x - gesture.x;
       const dy = y - gesture.y;
-      if (!gesture.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      // screen pixels, not canvas units: zoomed out, 4 units are less than a pixel and a click became a drag
+      if (!gesture.moved && (Math.abs(dx) + Math.abs(dy)) * this.view.k < 4) return;
       gesture.moved = true;
       const id = stateId(gesture.name);
       const spot = relativeSpot(applyPositions(this.auto, this.positions).nodes, id);
@@ -681,8 +705,9 @@ export class Canvas {
       if (done.type === 'pan') {
         if (!done.moved) this.select(null, { quiet: false });
       } else if (done.type === 'connect') {
+        // a click on the handle is no connection: a self-transition takes a drag out and back
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sg-node');
-        if (target && event.type === 'pointerup') this.handlers.onConnect?.(done.source, target.dataset.state);
+        if (target && done.moved && event.type === 'pointerup') this.handlers.onConnect?.(done.source, target.dataset.state);
       } else if (done.type === 'move') {
         if (done.moved) {
           const { nodes } = applyPositions(this.auto, this.positions);
@@ -695,8 +720,11 @@ export class Canvas {
     svg.addEventListener('pointerup', finish);
     svg.addEventListener('pointercancel', finish);
     svg.addEventListener('dblclick', (event) => {
-      const node = event.target.closest?.('.sg-node');
-      const link = event.target.closest?.('.sg-link');
+      // pointerdown captured the pointer for the svg, and a click goes where the pointer is captured: what was
+      // clicked is what lies under the pointer
+      const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
+      const node = hit.closest?.('.sg-node');
+      const link = hit.closest?.('.sg-link');
       if (node) this.handlers.onOpen?.({ kind: 'state', id: node.dataset.state });
       else if (link) this.handlers.onOpen?.({ kind: 'transition', id: link.dataset.transition });
     });

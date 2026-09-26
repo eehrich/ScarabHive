@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
+import functools
 import importlib
 import inspect
+import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from plugins.stategraph.model.code import jsonable
 from plugins.stategraph.model.spec import check_name
 from plugins.stategraph.model.spec import Strict
 
@@ -91,18 +96,28 @@ class AgentKind(ActivityKind):
         if spec.schema_ is None and spec.parse is None:
             return text
         parser = resolve_callable(spec.parse, act, "parse") if spec.parse else None
-        for round_ in range(spec.parse_retries + 1):
-            value, problem = parse_answer(text, parser, spec.schema_)
-            if problem is None:
-                return value
-            if round_ == spec.parse_retries or not instance:
-                raise ActivityError("parse_failed" if parser else "schema_invalid", f"{agent}: {problem}",
-                                    data={"text": text[:4000], "instance_id": instance})
-            act.meta["feedback_rounds"] = round_ + 1
-            text = await act.backend.agent_continue(
-                act, agent=agent, instance_id=instance, advanced=spec.advanced, vars=variables,
-                message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.")
-        raise AssertionError("unreachable")
+        return await usable_answer(act, agent=agent, instance=instance, text=text, parser=parser,
+                                   schema=spec.schema_, retries=spec.parse_retries, advanced=spec.advanced,
+                                   variables=variables)
+
+
+async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[str], text: str, parser: Any,
+                        schema: Optional[dict[str, Any]], retries: int, advanced: bool,
+                        variables: dict[str, Any]) -> Any:
+    """An agent's answer parsed (``parser``, else JSON) and checked against ``schema``; what fails goes back to the
+    same instance as feedback, ``retries`` times, then fails the activity."""
+    for round_ in range(retries + 1):
+        value, problem = parse_answer(text, parser, schema)
+        if problem is None:
+            return value
+        if round_ == retries or not instance:
+            raise ActivityError("parse_failed" if parser else "schema_invalid", f"{agent}: {problem}",
+                                data={"text": text[:4000], "instance_id": instance})
+        act.meta["feedback_rounds"] = round_ + 1
+        text = await act.backend.agent_continue(
+            act, agent=agent, instance_id=instance, advanced=advanced, vars=variables,
+            message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.")
+    raise AssertionError("unreachable")
 
 
 def parse_answer(text: str, parser: Any, schema: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
@@ -176,10 +191,22 @@ class DecideSpec(KindSpec):
     question: Any = Field(None, description="single question (template)")
     criteria: Any = Field(None, description="single question: its criteria")
     questions: Optional[dict[str, QuestionSpec]] = Field(None, description="decide: questions -> name: question")
-    profile: Optional[str] = Field(None, description="decision profile; default: the configured one (jev)")
+    profile: Optional[str] = Field(
+        None, description="decision profile (llm_system.decision_profiles); default: the configured default")
+    by: Optional[str] = Field(
+        None, description="an agent that decides instead of a decision model: a literal, or {{ params.x }} with an "
+                          "enum; it answers in JSON, checked like a schema (confidence and probabilities are null)")
+    advanced: bool = Field(False, description="with by: use the agent's advanced model profile")
+    parse_retries: int = Field(1, ge=0, le=5, description="with by: feedback rounds for an unusable answer")
 
     @model_validator(mode="after")
     def _shape(self) -> "DecideSpec":
+        if self.by is not None:
+            if self.profile is not None:
+                raise ValueError("decide takes a decision profile or an agent (by:), not both")
+            if "{{" in self.by and not param_ref(self.by):
+                raise ValueError("by: a literal or {{ params.<name> }} with an enum -- a computed name would "
+                                 "bypass the configuration check")
         if self.decide == "questions":
             if not self.questions:
                 raise ValueError("decide: questions needs questions: {name: {type, question, criteria}}")
@@ -214,32 +241,105 @@ class DecideKind(ActivityKind):
     key = "decide"
     external = True
     spec_model = DecideSpec
-    template_fields = ("question", "criteria", "input", "questions")
+    template_fields = ("question", "criteria", "input", "questions", "by")
     title = "Decision"
     icon = "gauge"
-    summary = ("Ask a calibrated decision model (Jev); out = {value, confidence, probabilities} "
-               "(confidence/probabilities may be null), or {name: answer} for decide: questions")
+    summary = ("Ask the configured decision model (or a decision profile), or an agent (by:); out = {value, "
+               "confidence, probabilities} (confidence/probabilities may be null), or {name: answer} for "
+               "decide: questions")
 
     def label(self, spec: DecideSpec) -> str:
         if spec.decide == "questions":
-            return f"questions: {', '.join(spec.questions or {})}"[:80]
-        question = spec.question if isinstance(spec.question, str) else ""
-        return f"{spec.decide}: {question}"[:80]
+            text = f"questions: {', '.join(spec.questions or {})}"
+        else:
+            text = f"{spec.decide}: {spec.question if isinstance(spec.question, str) else ''}"
+        return (f"{spec.by} · {text}" if spec.by else text)[:80]
 
     def references(self, spec: DecideSpec) -> dict[str, str]:
+        if spec.by is not None:  # the agent activity's checks: configured, enabled, reaching no machine
+            return {"agent_param": param_ref(spec.by) or ""} if "{{" in spec.by else {"agent": spec.by}
         return {"profile": spec.profile} if spec.profile else {}
+
+    def extra_inputs(self, spec: DecideSpec, act: "ActivityRun") -> dict[str, Any]:
+        return {"frame_vars": act.frame_vars()} if spec.by is not None else {}
 
     async def run(self, spec: DecideSpec, act: "ActivityRun") -> Any:
         state = act.plain(act.render(spec.input, "input"))
         if state in (None, "", [], {}):
-            raise ActivityError("decision_failed", "input is empty: a decision needs content to judge")
+            # the machine's own content, the same on every try: not a decision that failed (transient, retried)
+            raise ActivityError("template_failed", "input is empty: a decision needs content to judge")
         if spec.decide == "questions":
             questions = {name: _question(act, q.type, q.question, q.criteria, f"questions.{name}")
                          for name, q in (spec.questions or {}).items()}
         else:
             questions = {"decision": _question(act, spec.decide, spec.question, spec.criteria, "question")}
-        answers = await act.backend.decide(act, questions=questions, input=state, profile=spec.profile)
+        if spec.by is not None:
+            answers = await _decide_by_agent(act, spec, questions, state)
+        else:
+            answers = await act.backend.decide(act, questions=questions, input=state, profile=spec.profile)
         return answers if spec.decide == "questions" else answers["decision"]
+
+
+async def _decide_by_agent(act: "ActivityRun", spec: DecideSpec, questions: dict[str, dict[str, Any]],
+                           content: Any) -> dict[str, dict[str, Any]]:
+    """The questions as a task for an agent, its answer checked like a schema: the same out as a decision model's,
+    without the confidence and the probabilities an agent cannot give."""
+    agent = str(act.render(spec.by, "by"))
+    # the criteria as a decision model gets them, JSON: an option `1:` or `true:` is "1" / "true" on both paths
+    questions = jsonable(questions)
+    schema = _decision_schema(questions)  # before the agent runs: criteria a template broke cost no call
+    variables = act.frame_vars()
+    act.meta["agent"] = agent
+    text, instance = await act.backend.agent_create(act, agent=agent, task=_decision_task(questions, content),
+                                                    advanced=spec.advanced, vars=variables)
+    act.meta["instance_id"] = instance
+    answer = await usable_answer(act, agent=agent, instance=instance, text=text, parser=None, schema=schema,
+                                 retries=spec.parse_retries, advanced=spec.advanced, variables=variables)
+
+    def value(name: str, question: dict[str, Any]) -> Any:
+        # a decision model's score is the position on the scale, counted from 0: the agent names a level
+        return question["criteria"].index(answer[name]) if question["type"] == "score" else answer[name]
+
+    return {name: {"value": value(name, question), "confidence": None, "probabilities": None}
+            for name, question in questions.items()}
+
+
+def _decision_task(questions: dict[str, dict[str, Any]], content: Any) -> str:
+    """What the agent is asked: every question with the form of its answer, then the content."""
+    lines = ["Decide the following about the content below. Answer with one JSON object and nothing else, "
+             "one key per question: {" + ", ".join(f'"{name}": ...' for name in questions) + "}", ""]
+    for name, question in questions.items():
+        criteria = question.get("criteria")
+        lines.append(f'"{name}": {question["instructions"]}')
+        if question["type"] == "noul":
+            lines.append("  Answer: the probability that the answer is yes, a number from 0 to 1.")
+            if isinstance(criteria, dict):
+                lines.extend(f"  {key}: {meaning}" for key, meaning in criteria.items())
+        elif question["type"] == "choice":
+            lines.append("  Answer: exactly one of these options, as written:")
+            lines.extend(f"  {json.dumps(option, ensure_ascii=False)}: {meaning}" for option, meaning in criteria.items())
+        else:
+            lines.append("  Answer: exactly one of these levels, as written (lowest first): "
+                         + ", ".join(json.dumps(level, ensure_ascii=False) for level in criteria))
+    body = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+    return "\n".join([*lines, "", "Content:", body])
+
+
+def _decision_schema(questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The answer's schema: a probability for a noul, one of the options or levels (criteria rendered: a template
+    can make them) otherwise."""
+    def one(name: str, question: dict[str, Any]) -> dict[str, Any]:
+        if question["type"] == "noul":
+            return {"type": "number", "minimum": 0, "maximum": 1}
+        criteria = question.get("criteria")
+        shape = dict if question["type"] == "choice" else list
+        if not isinstance(criteria, shape) or len(criteria) < 2:
+            raise ActivityError("template_failed", f"{name}: the rendered criteria of a {question['type']} are not "
+                                                   f"a {'mapping of options' if shape is dict else 'list of levels'}")
+        return {"enum": list(criteria)}
+
+    return {"type": "object", "required": list(questions), "additionalProperties": False,
+            "properties": {name: one(name, question) for name, question in questions.items()}}
 
 
 def _question(act: "ActivityRun", kind: str, question: Any, criteria: Any, where: str) -> dict[str, Any]:
@@ -273,19 +373,42 @@ class CallKind(ActivityKind):
                "return value")
 
     async def run(self, spec: CallSpec, act: "ActivityRun") -> Any:
+        """A sync function runs in a worker thread of ``_CALL_POOL``, so the loop -- terminate, timeouts, the lease
+        heartbeat -- goes on meanwhile. A thread cannot be stopped: on a timeout or terminate the activity ends at
+        once and the thread's late result is dropped, while the thread keeps its worker until it returns. Its
+        ``sg`` works there except ``sg.tool()``, which a sync function can only return (it is awaited on the
+        loop), not run."""
         fn = resolve_callable(spec.call, act, "call")
         args = act.render(spec.args, "args")
         params = list(inspect.signature(fn).parameters)
-        if params[:1] != ["sg"]:
-            result = fn(**args)
-            return await result if inspect.isawaitable(result) else result
-        sg = act.sg_api()
+        sg = act.sg_api() if params[:1] == ["sg"] else None
+        head = () if sg is None else (sg,)
         try:
-            result = fn(sg, **args)
+            if inspect.iscoroutinefunction(fn):
+                result = fn(*head, **args)
+            else:  # the context vars go along (the run's request id and user), as with asyncio.to_thread
+                run = functools.partial(contextvars.copy_context().run, _in_thread, fn, *head, **args)
+                result = await asyncio.get_running_loop().run_in_executor(_CALL_POOL, run)
             return await result if inspect.isawaitable(result) else result
         finally:
-            sg._close()
+            if sg is not None:
+                sg._close()
 
+
+def _in_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """``fn`` in a worker thread. A StopIteration it raises never reaches the awaiting future -- asyncio cannot set
+    it there, and the run would wait forever -- so it leaves as a coroutine turns it: a RuntimeError."""
+    try:
+        return fn(*args, **kwargs)
+    except StopIteration as exc:
+        raise RuntimeError(f"{getattr(fn, '__name__', 'the function')} raised StopIteration") from exc
+
+
+#: Sync call functions run here, not in the loop's default executor, which the app shares (auth and others): a
+#: hung call keeps one of these workers, never one of the app's.
+# ponytail: one pool of 8 for every run of the process -- 8 hung calls make every further sync call wait (its
+# timeout counts the wait); a pool per run, or a bigger one, if runs starve each other.
+_CALL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="stategraph-call")
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MODULE_REF = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
@@ -446,8 +569,7 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
         for label, _, _ in children:
             error = act.recorded_error(label)
             if error is not None:
-                error.extra.setdefault("branch" if label.startswith("b.") else "index",
-                                       label[2:] if label.startswith("b.") else int(label[2:]))
+                _name_child(error, label)
                 await _end_branches(act, [child for child in children if child[0] != label])
                 raise error
     gate = asyncio.Semaphore(concurrency)
@@ -461,8 +583,7 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
                 try:
                     results[index] = await act.child(label, raw, extra)
                 except ActivityError as exc:
-                    exc.extra.setdefault("branch" if label.startswith("b.") else "index",
-                                         label[2:] if label.startswith("b.") else int(label[2:]))
+                    _name_child(exc, label)
                     raise
                 return
             try:
@@ -492,6 +613,14 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
                     raise
         raise exc
     return results
+
+
+def _name_child(error: ActivityError, label: str) -> None:
+    """``error.branch`` / ``error.index``: the child of THIS join that failed -- set, not defaulted, and the other
+    one dropped, so a join nested in a branch or an item leaves no name of its own for the outer state to read."""
+    branch = label.startswith("b.")
+    error.extra.pop("index" if branch else "branch", None)
+    error.extra["branch" if branch else "index"] = label[2:] if branch else int(label[2:])
 
 
 async def _end_branches(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]]) -> None:

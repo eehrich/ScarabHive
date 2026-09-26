@@ -12,9 +12,10 @@ The contract behind them is `docs/stategraph_design.md` (§2 format, §3 semanti
 ## Cheat sheet
 
 ```yaml
-stategraph: 1                       # format version
+stategraph: 1                       # format version: the integer 1
 id: my_machine                      # = file name; names match [a-z][a-z0-9_]*
 title: My machine
+# group: Writer/v6                  # folder in the panel's machine list
 # python: my_machine.py             # companion module: its public functions are in scope
 # imports: {sub: ./sub.yaml}        # submachines, by alias: do: {machine: sub, params: {...}}
 params:                             # run input / submachine parameters
@@ -32,7 +33,7 @@ states:
     entry: ctx.round += 1           # Python statements
     max_visits: 5                   # 6th entry raises loop_limit here
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "Write about {{ params.text }}"      # a template
       retry: {attempts: 2, backoff: 5s}
       timeout: 10m                  # per attempt
@@ -61,9 +62,9 @@ states:
 |---|---|---|
 | `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
-| `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` | `{value, confidence, probabilities}` |
-| `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {...}}` |
-| `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls) and `sg.Error` |
+| `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` -- or `by` (an agent decides), `advanced`, `parse_retries` | `{value, confidence, probabilities}` |
+| `decide: questions` | `questions: {name: {type, question, criteria}}`, `input`, `profile` or `by` | `{name: {...}}` |
+| `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls) and `sg.Error`; a sync function runs in a worker thread (a timeout or terminate drops its late result; `sg.tool()` only from an async one, or returned) |
 | `machine: <alias>` | `params` | the submachine's final output |
 | `parallel: {branch: activity}` | `fail: fast\|collect` | `{branch: out}` |
 | `map: <expression>` | `each`, `as`, `concurrency`, `fail` | list in item order |
@@ -72,8 +73,8 @@ Common keys: `retry {attempts, backoff, errors}`, `timeout`, `idempotent`, `desc
 
 Cleanup and external state: `finally: <activity>` on a state or the machine runs once on every
 exit (reads `ending.reason/state/error`); `resources: {name: {open, fork, close}}` gives each
-frame its own external state as `resources.<name>`. `vars` may be one template that renders to
-an object.
+frame its own external state as `resources.<name>` (`null` until it is opened). `vars` may be
+one template that renders to an object.
 
 | Field kind | Fields | Syntax |
 |---|---|---|
@@ -90,8 +91,9 @@ an object.
 
 Access: `ctx.draft`, `params.text`, `error.type` at the top level; below it item
 access -- `ctx.notes["x"]`, `out["value"]`, `event.data["reason"]`. Only `effect`,
-`entry` and `exit` write `ctx`. Code and templates are pure: no I/O, clock,
-randomness, environment, sets or `hash()`.
+`entry` and `exit` write `ctx`; `params`, `run`, `resources`, `error`, `event`, `activity`
+and `ending` are read-only (SG004). A blank guard is no guard. Code and templates are pure:
+no I/O, clock, randomness, environment, sets or `hash()`.
 
 Error types: `agent_failed`, `schema_invalid`, `parse_failed`, `tool_failed`,
 `tool_denied`, `decision_failed`, `call_failed`, `submachine_failed`, `activity_failed`, `timeout`,

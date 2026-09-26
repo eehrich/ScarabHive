@@ -21,6 +21,7 @@ export const setDirty = (v) => { globalThis.DIRTY = Boolean(v); };
 export const setTitle = (t) => { globalThis.TITLE = t; };
 export const setQuery = (q) => { globalThis.QUERY = new URLSearchParams(q).toString(); };
 export const navigate = () => {};
+export const openSession = (id) => { (globalThis.OPENED ||= []).push(id); return true; };
 export const selectTab = (list, name) => { globalThis.TABS[list.id] = name; return true; };
 export const toast = (m, { kind = 'info' } = {}) => { globalThis.TOASTS.push([kind, String(m)]); };
 export const copyText = async () => true;
@@ -28,7 +29,7 @@ export async function withBusy(controls, fn) { return fn(); }
 export function autoRefresh(fn, ms) { let on = false; return { get running() { return on; }, start() { on = true; }, stop() { on = false; } }; }
 export const confirm = async (m) => { globalThis.ASKED.push(['confirm', m]); return globalThis.ANSWERS.confirm ?? true; };
 export const prompt = async (m) => { globalThis.ASKED.push(['prompt', m]); return globalThis.ANSWERS.prompt.shift() ?? null; };
-export const dialog = async (spec) => { globalThis.ASKED.push(['dialog', spec.title]); return globalThis.ANSWERS.dialog ?? null; };
+export const dialog = async (spec) => { globalThis.ASKED.push(['dialog', spec.title, spec.message]); return globalThis.ANSWERS.dialog ?? null; };
 export class ApiError extends Error { constructor(status, detail) { super(String(detail)); this.status = status; this.detail = detail; } }
 export async function api(path, { method = 'GET', json } = {}) {
   globalThis.CALLS.push([method, path, json]);

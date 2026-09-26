@@ -100,7 +100,9 @@ returns the activity's result -- `out` for the machine -- or raises `ActivityErr
   becomes `error.data`. Any other exception is caught and turned into an error too, but
   with a generic type -- raise your own.
 - **Leave cancellation alone.** Do not catch `asyncio.CancelledError`; terminate and
-  per-attempt timeouts cancel `run`. A timeout becomes error `timeout`.
+  per-attempt timeouts cancel `run`. A timeout becomes error `timeout`. A `CancelledError`
+  the run did not cause (a library cancelled a future you awaited) fails the activity with
+  `activity_failed`, and its error transition fires.
 - **No retries of your own.** `retry:` on the activity is the only retry layer.
 - **Reach the outside only through `act.backend`.** It is the ScarabHive backend in a
   live run and a backend that refuses everything (`no_backend`) in a mock-only run.

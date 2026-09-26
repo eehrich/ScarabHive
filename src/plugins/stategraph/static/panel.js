@@ -3,15 +3,18 @@
 // panel redraws from what the server answers. Runs are polled while they are alive.
 import {
   abandon, api, autoRefresh, confirm, copyText, dialog, emptyState, errorText, html, icon, isAborted, jsonView,
-  localTime, navigate, notice, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast, update,
-  withBusy, yamlCode,
+  localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast,
+  trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
-import { Canvas, fragmentLock, problemIndex, runOverlay, shorten, stateFragment } from './graph.js';
+import { Canvas, fragmentLock, posixPath, problemIndex, runOverlay, shorten, stateFragment } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
 const $ = (id) => document.getElementById(id);
 const enc = encodeURIComponent;
 const NAME = /^[a-z][a-z0-9_]*$/;
+/** Who looks ('' without auth): a run's sessions are its user's, and the chat opens only the viewer's own. */
+const VIEWER = document.querySelector?.('.sg-layout')?.dataset.viewer || '';
+const ownSessions = (run) => !VIEWER || run?.user_id === VIEWER;
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const STATUS_KIND = { running: 'info', paused: 'warn', waiting: 'info', succeeded: 'ok', failed: 'danger', cancelled: '', interrupted: 'warn' };
 const PSEUDO = [
@@ -28,11 +31,14 @@ const S = {
   selection: null,      // {kind: 'state' | 'transition', id}
   problems: { states: {}, transitions: {}, machine: [] },
   drafts: {},           // YAML tab: path -> unsaved text
+  inspectorDrafts: new Set(),  // the inspector's forms with text typed and not applied: 'state', 'transition:<id>'
   yamlFile: null,
   runs: [],
   runId: null,
   run: null,            // get_run of the selected run
   evaluation: null,     // {expr, value} | {expr, error}
+  result: null,         // loadResult: {runId, rows, after, complete}
+  resultOpen: new Set(),  // indexes of the result's activities the author opened
   nextBreakpoints: [],  // [{state, at, machine}] for the next run of this machine
   nextWatch: [],        // [expr] for the next run, watched in this machine's frames
 };
@@ -42,6 +48,10 @@ const statusBadge = (status) => badge(status || 'unknown', STATUS_KIND[status] ?
 const stateOf = (name) => S.machine?.graph?.states?.find((state) => state.name === name) || null;
 const transitionOf = (id) => S.machine?.graph?.transitions?.find((t) => t.id === id) || null;
 const hasDrafts = () => Object.keys(S.drafts).length > 0;
+const unsaved = () => hasDrafts() || S.inspectorDrafts.size > 0;
+/** The inspector form an input belongs to, as S.inspectorDrafts names it. */
+const draftKey = (form) => (form?.dataset.form === 'set-state' ? 'state'
+  : form?.dataset.transition ? `transition:${form.dataset.transition}` : null);
 const liveRun = () => (S.run && !TERMINAL.has(S.run.status) && S.run.active ? S.run : null);
 /** Breakpoints of the live run, else those the next run starts with. */
 const shownBreakpoints = () => (liveRun() ? (liveRun().debug?.breakpoints || []) : S.nextBreakpoints);
@@ -57,6 +67,9 @@ const preview = (value, max = 90) => {
 
 function remember(key, value) {
   try { localStorage.setItem(`stategraph:${key}`, JSON.stringify(value)); } catch { /* a convenience only */ }
+}
+function forget(key) {
+  try { localStorage.removeItem(`stategraph:${key}`); } catch { /* nothing kept */ }
 }
 function recall(key, fallback) {
   try {
@@ -96,9 +109,10 @@ async function drawGraph({ fit = false } = {}) {
     fitPending = !$('canvas').getBoundingClientRect().width;  // hidden now: fit once the graph tab shows
     canvas.fit();
   }
+  const parses = !S.machine.problems.some((p) => p.level === 'error' && !p.path);
   $('canvasHint').textContent = S.machine.graph.states.length
-    ? 'Drag a state to move it, from its handle to another state to connect; double-click to rename.'
-    : 'The file does not parse: fix it in the YAML tab.';
+    ? 'Drag a state to move it, from its handle to another state to connect; double-click a state to rename it.'
+    : parses ? 'No states yet: add one from the bar above.' : 'The file does not parse: fix it in the YAML tab.';
 }
 
 async function savePositions(spots) {
@@ -126,26 +140,71 @@ async function loadMachines() {
   drawMachineList();
 }
 
-function drawMachineList() {
-  const needle = $('search').value.trim().toLowerCase();
-  const shown = S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description}`.toLowerCase().includes(needle));
-  update($('machineList'), shown.length ? shown.map((m) => html`
-    <button type="button" class="pk-btn pk-btn--ghost sg-item" data-machine="${m.id}" aria-current="${String(m.id === S.machine?.id)}">
+/** Folders the author closed, by path ("Writer/v6"): kept for the next visit. */
+const closedFolders = new Set(recall('closed-folders', []));
+
+/** The machines as a folder tree: a machine's group ("Writer/v6", set in its file, else where it comes from) is its
+ * folder path. Folders keep the order the server lists their first machine in. */
+function folderTree(machines) {
+  const root = { path: '', children: new Map(), machines: [] };
+  for (const m of machines) {
+    let folder = root;
+    for (const name of String(m.group || 'Machines').split('/').map((part) => part.trim()).filter(Boolean)) {
+      const path = folder.path ? `${folder.path}/${name}` : name;
+      if (!folder.children.has(name)) folder.children.set(name, { name, path, children: new Map(), machines: [] });
+      folder = folder.children.get(name);
+    }
+    folder.machines.push(m);
+  }
+  return root;
+}
+
+const folderSize = (folder) => folder.machines.length + [...folder.children.values()].reduce((sum, f) => sum + folderSize(f), 0);
+
+function machineItem(m) {
+  return html`<button type="button" class="pk-btn pk-btn--ghost sg-item" data-machine="${m.id}" aria-current="${String(m.id === S.machine?.id)}">
       <span class="sg-item-top"><span class="sg-item-name">${m.title || m.id}</span>
         ${m.errors ? badge(`${m.errors} err`, 'danger') : m.warnings ? badge(`${m.warnings} warn`, 'warn') : badge('valid', 'ok')}
         ${m.writable ? '' : badge('read-only')}</span>
       <span class="sg-item-sub pk-mono">${m.id}</span>
       ${m.description ? html`<span class="sg-item-sub">${shorten(m.description, 120)}</span>` : ''}
-    </button>`)
+    </button>`;
+}
+
+/** A folder, open unless the author closed it -- a search opens every folder it finds something in. */
+function folderView(folder, searching) {
+  const open = searching || !closedFolders.has(folder.path);
+  return html`<details class="sg-folder" data-folder="${folder.path}" ${open ? 'open' : ''}>
+    <summary class="sg-folder-name">${icon('folder', { size: 'sm' })}<span class="pk-grow">${folder.name}</span><span class="pk-muted">${folderSize(folder)}</span></summary>
+    <div class="sg-folder-body">${[...folder.children.values()].map((child) => folderView(child, searching))}${folder.machines.map(machineItem)}</div>
+  </details>`;
+}
+
+function drawMachineList() {
+  const needle = $('search').value.trim().toLowerCase();
+  const shown = S.machines.filter((m) => !needle || `${m.id} ${m.title} ${m.description} ${m.group || ''}`.toLowerCase().includes(needle));
+  const tree = folderTree(shown);
+  update($('machineList'), shown.length
+    ? [...[...tree.children.values()].map((folder) => folderView(folder, Boolean(needle))), ...tree.machines.map(machineItem)]
     : emptyState('workflow', S.machines.length ? 'No machine matches' : 'No machines yet', S.machines.length ? '' : 'Create one with New.'));
 }
+
+// details fire toggle on themselves only: caught on the way down. A search's open folders are not the author's choice.
+$('machineList').addEventListener('toggle', (event) => {
+  const folder = event.target.closest?.('[data-folder]');
+  if (!folder || $('search').value.trim()) return;
+  if (folder.open) closedFolders.delete(folder.dataset.folder);
+  else closedFolders.add(folder.dataset.folder);
+  remember('closed-folders', [...closedFolders]);
+}, true);
 
 /** Open (or reload) a machine. Unsaved YAML is discarded only after the author agreed, or when the caller has
  * dealt with it already (discard: a reload after a conflict or a save). */
 async function openMachine(id, { keepRun = false, discard = false } = {}) {
-  if (hasDrafts() && !discard && !await confirm(id === S.machine?.id
-    ? 'The YAML tab has unsaved changes. Reload the machine and discard them?'
-    : 'The YAML tab has unsaved changes. Open another machine and discard them?', { danger: true, confirmLabel: 'Discard' })) {
+  const where = hasDrafts() ? 'The YAML tab has unsaved changes' : 'The inspector has changes that are not applied';
+  if (unsaved() && !discard && !await confirm(id === S.machine?.id
+    ? `${where}. Reload the machine and discard them?`
+    : `${where}. Open another machine and discard them?`, { danger: true, confirmLabel: 'Discard' })) {
     return;
   }
   abandon('machine-refresh');  // a refresh in flight would answer for the machine this one replaces
@@ -157,6 +216,7 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
   }
   const switched = machine.id !== S.machine?.id;
   S.drafts = {};
+  S.inspectorDrafts.clear();
   setDirty(false);
   if (switched) {
     S.selection = null;
@@ -205,7 +265,8 @@ function drawHead() {
     ${errors ? badge(`${errors} error${errors > 1 ? 's' : ''}`, 'danger') : badge('valid', 'ok')}
     ${warnings ? badge(`${warnings} warning${warnings > 1 ? 's' : ''}`, 'warn') : ''}
     ${m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="copy-id" title="Copy the machine id">${icon('copy', { size: 'sm' })}</button>`);
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="copy-id" title="Copy the machine id">${icon('copy', { size: 'sm' })}</button>
+    ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="delete-machine" title="Delete the machine" aria-label="Delete the machine">${icon('trash-2', { size: 'sm' })}</button>` : ''}`);
   $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
 }
 
@@ -222,13 +283,19 @@ function drawPalette() {
 // ------------------------------------------------------------------ edits
 
 /** One graph edit on the saved file; the answer is the machine as it is now. */
-async function edit(op) {
+async function edit(op, { from = null } = {}) {
   const m = S.machine;
   if (!m?.writable) {
     toast('This machine is read-only: it is not in a writable machine root.', { kind: 'warn' });
     return null;
   }
   if (hasDrafts() && !await confirm('The YAML tab has unsaved changes, and graph edits change the saved file. Discard the unsaved changes?',
+    { danger: true, confirmLabel: 'Discard' })) {
+    return null;
+  }
+  // the edit redraws the inspector: text typed there and not applied would go with it -- but the form the edit
+  // comes from (`from`, a draftKey) is what it applies
+  if ([...S.inspectorDrafts].some((key) => key !== from) && !await confirm('The inspector has changes that are not applied. Discard them?',
     { danger: true, confirmLabel: 'Discard' })) {
     return null;
   }
@@ -243,10 +310,13 @@ async function edit(op) {
   } catch (error) {
     if (isAborted(error)) return null;
     if (error.status === 409) {
+      // the form the edit came from keeps its text only without a reload: say so, so it can be copied first
+      const typed = from && S.inspectorDrafts.has(from);
       const choice = await dialog({
         title: 'The file changed',
-        message: 'The machine file changed since this panel loaded it (another editor, or an agent). Reload it and make the edit again.',
-        actions: [{ label: 'Cancel', value: null }, { label: 'Reload', value: 'reload', primary: true }],
+        message: 'The machine file changed since this panel loaded it (another editor, or an agent). Reload it and make the edit again.'
+          + (typed ? ' Reload drops what you typed in the inspector; Cancel keeps it, so you can copy it first.' : ''),
+        actions: [{ label: 'Cancel', value: null }, { label: 'Reload', value: 'reload', primary: !typed, danger: typed }],
       });
       if (choice === 'reload') await openMachine(m.id, { keepRun: true, discard: true });  // agreed to above
     } else {
@@ -313,7 +383,7 @@ async function renameState(old) {
   const name = await askName(`New name for ${old} (every transition to it and every initial naming it follows):`, old);
   if (!name || name === old) return;
   if (!await edit({ op: 'rename_state', old, new: name })) return;
-  if (positions()[old]) {
+  if (Object.hasOwn(positions(), old)) {
     const moved = { ...positions(), [name]: positions()[old] };
     delete moved[old];
     S.machine.layout = { version: 1, positions: {} };
@@ -347,7 +417,17 @@ async function removeTransition(id) {
 
 // ------------------------------------------------------------------ selection and inspector
 
-function choose(selection) {
+async function choose(selection) {
+  const same = selection?.kind === S.selection?.kind && selection?.id === S.selection?.id;
+  if (same && S.inspectorDrafts.size) {  // chosen again (a click, Enter, a problem link): keep what was typed
+    canvas.select(selection);
+    return;
+  }
+  if (!same && S.inspectorDrafts.size && !await confirm('The inspector has changes that are not applied. Discard them?',
+    { danger: true, confirmLabel: 'Discard' })) {
+    canvas.select(S.selection);  // the canvas marked the click already
+    return;
+  }
   S.selection = selection;
   canvas.select(selection);
   if (selection?.kind === 'state') canvas.reveal(selection.id);
@@ -420,6 +500,8 @@ function transitionEditor(t) {
 function drawInspector() {
   const pane = $('side-inspect');
   const m = S.machine;
+  S.inspectorDrafts.clear();  // the forms are drawn anew: what was typed into them is gone (callers asked first)
+  setDirty(hasDrafts());
   if (!m) {
     render(pane, emptyState('workflow', 'Nothing open'));
     return;
@@ -555,7 +637,7 @@ $('side-inspect').addEventListener('submit', async (event) => {
   const button = form.querySelector('[type="submit"]');
   await withBusy(button, async () => {
     if (form.dataset.form === 'set-state' && S.selection?.kind === 'state') {
-      await edit({ op: 'set_state', name: S.selection.id, yaml: form.elements.yaml.value });
+      await edit({ op: 'set_state', name: S.selection.id, yaml: form.elements.yaml.value }, { from: 'state' });
     } else if (form.dataset.form === 'add-transition' && S.selection?.kind === 'state') {
       await connect(S.selection.id, form.elements.target.value);
     } else if (form.dataset.transition) {
@@ -565,7 +647,7 @@ $('side-inspect').addEventListener('submit', async (event) => {
       const trigger = value('trigger');
       const fields = { trigger: trigger === 'done' ? null : trigger, target: value('target'), guard: value('guard'),
         effect: form.elements.effect.value.replace(/\s+$/, '') || null };
-      await edit({ op: 'update_transition', source: t.source, index: t.index, fields });
+      await edit({ op: 'update_transition', source: t.source, index: t.index, fields }, { from: draftKey(form) });
     }
   });
 });
@@ -577,7 +659,14 @@ $('side-inspect').addEventListener('change', async (event) => {
 });
 
 // paint() and followScroll() no-op for anything but the coloured YAML box: harmless on every other field here
-$('side-inspect').addEventListener('input', (event) => paint(event.target));
+$('side-inspect').addEventListener('input', (event) => {
+  paint(event.target);
+  const key = draftKey(event.target.closest('[data-form="set-state"], [data-transition]'));
+  if (key) {
+    S.inspectorDrafts.add(key);
+    setDirty(true);
+  }
+});
 $('side-inspect').addEventListener('scroll', (event) => followScroll(event.target), true);
 
 /** A breakpoint of the open machine: it stops in that machine's frames only, not in a submachine's same-named state. */
@@ -605,10 +694,15 @@ const padded = (text) => `${text}${text.endsWith('\n') || !text ? ' ' : ''}`;
  * own value changes without a fresh render (typing, a revert, a reload). */
 const codeBox = (text, textarea) => html`<div class="sg-code"><pre class="sg-code-view" aria-hidden="true">${yamlCode(padded(text))}</pre>${textarea}</div>`;
 
+/** Python coloured by the vendored Prism the page loads (it escapes the text); plain where it is missing. */
+const pythonCode = (text) => (globalThis.Prism?.languages?.python
+  ? trusted(globalThis.Prism.highlight(text, globalThis.Prism.languages.python, 'python')) : html`${text}`);
+
 function paint(area) {
   const view = area.previousElementSibling;
   if (!view?.classList.contains('sg-code-view')) return;
-  render(view, yamlCode(padded(area.value)));
+  const text = padded(area.value);
+  render(view, area.dataset.lang === 'python' ? pythonCode(text) : yamlCode(text));
   followScroll(area);
 }
 
@@ -630,14 +724,27 @@ function yamlText(path) {
   return path in S.drafts ? S.drafts[path] : S.machine.files[path] ?? '';
 }
 
+const isPython = (path) => /\.py$/i.test(path || '');
+const PYTHON_KEY = /^python[ \t]*:/m;
+
+/** The open file into the text box, coloured as what it is. */
+function showFile() {
+  const area = $('yamlText');
+  const lang = isPython(S.yamlFile) ? 'python' : 'yaml';
+  if (area.value === yamlText(S.yamlFile) && area.dataset.lang === lang) return;
+  area.dataset.lang = lang;
+  setCode(area, yamlText(S.yamlFile));
+}
+
 function drawYaml() {
   const m = S.machine;
-  const files = Object.keys(m.files);
+  const files = [...new Set([...Object.keys(m.files), ...Object.keys(S.drafts)])];  // a new module is a draft first
   if (!files.includes(S.yamlFile)) S.yamlFile = m.root_file;
   render($('yamlFile'), files.map((path) => html`<option value="${path}" ${path === S.yamlFile ? 'selected' : ''}>${path}${path in S.drafts ? ' (unsaved)' : ''}</option>`));
+  showFile();
   const area = $('yamlText');
-  if (area.value !== yamlText(S.yamlFile)) setCode(area, yamlText(S.yamlFile));
   area.readOnly = !m.writable;
+  $('yamlAddModule').hidden = !m.writable || PYTHON_KEY.test(yamlText(m.root_file));
   $('yamlSave').disabled = !m.writable || !hasDrafts();
   $('yamlRevert').disabled = !hasDrafts();
   $('yamlState').textContent = !m.writable ? 'read-only' : hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved` : 'saved';
@@ -653,13 +760,40 @@ function drawProblems(element, problems, label) {
   render(element, html`<div class="pk-help">${label}: ${problems.length} problem${problems.length > 1 ? 's' : ''}. Click one to go there.</div>
     ${problems.map((p, i) => html`<button type="button" class="pk-btn pk-btn--ghost sg-problem" data-problem="${i}">
       ${badge(p.code, p.level === 'error' ? 'danger' : 'warn')}<span class="pk-grow">${p.message}
-      <span class="sg-problem-where">${[p.file?.split('/').pop(), p.line && `line ${p.line}`, p.path].filter(Boolean).join(' · ')}</span></span></button>`)}`);
+      <span class="sg-problem-where">${[posixPath(p.file)?.split('/').pop(), p.line && `line ${p.line}`, p.path].filter(Boolean).join(' · ')}</span></span></button>`)}`);
   element.problems = problems;
 }
 
 $('yamlFile').addEventListener('change', () => {
   S.yamlFile = $('yamlFile').value;
-  setCode($('yamlText'), yamlText(S.yamlFile));
+  showFile();
+});
+
+const MODULE_TEXT = (id) => `"""Companion module of ${id}.yaml.
+
+Its public names (not starting with _) are in scope in this machine's code fields and templates, and its
+functions can be \`call\` and \`parse\` targets. A function that code fields or templates use must be pure:
+a run replays them. A \`call\` function runs as an activity; a first parameter named \`sg\` gets
+\`sg.tool()\` and \`sg.Error\`.
+"""
+`;
+
+/** A companion module as two drafts, saved like any other change: `python: <id>.py` after the id line, and the file. */
+$('yamlAddModule').addEventListener('click', () => {
+  const m = S.machine;
+  const root = yamlText(m.root_file);
+  const idLine = root.match(/^id[ \t]*:[ \t]*[^\s#].*$/m);  // with its value: `id:` over two lines takes no line after it
+  const module = `${m.id}.py`;
+  if (!idLine || PYTHON_KEY.test(root)) {
+    toast(`Add "python: ${module}" to the YAML yourself: there is no top-level id line to put it after.`, { kind: 'warn' });
+    return;
+  }
+  const at = idLine.index + idLine[0].length;
+  S.drafts[m.root_file] = `${root.slice(0, at)}\npython: ${module}${root.slice(at)}`;
+  if (!(module in m.files) && !(module in S.drafts)) S.drafts[module] = MODULE_TEXT(m.id);
+  setDirty(unsaved());
+  S.yamlFile = module;
+  drawYaml();
 });
 
 $('yamlText').addEventListener('input', () => {
@@ -667,7 +801,7 @@ $('yamlText').addEventListener('input', () => {
   const text = $('yamlText').value;
   if (text === S.machine.files[S.yamlFile]) delete S.drafts[S.yamlFile];
   else S.drafts[S.yamlFile] = text;
-  setDirty(hasDrafts());
+  setDirty(unsaved());
   $('yamlSave').disabled = !S.machine.writable || !hasDrafts();
   $('yamlRevert').disabled = !hasDrafts();
   $('yamlState').textContent = hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved` : 'saved';
@@ -678,9 +812,10 @@ $('yamlText').addEventListener('scroll', () => followScroll($('yamlText')));
 
 $('yamlText').addEventListener('keydown', (event) => {
   if (event.key !== 'Tab' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
-  event.preventDefault();  // YAML is indented with spaces: Tab types two of them
+  if (event.target.readOnly) return;  // setRangeText ignores readonly; Tab then moves on, as on any field
+  event.preventDefault();  // indented with spaces: Tab types two of them in YAML, four in Python
   const area = event.target;
-  area.setRangeText('  ', area.selectionStart, area.selectionEnd, 'end');
+  area.setRangeText(isPython(S.yamlFile) ? '    ' : '  ', area.selectionStart, area.selectionEnd, 'end');
   area.dispatchEvent(new Event('input'));
 });
 
@@ -699,7 +834,8 @@ function goToProblem(problem) {
     choose(transition ? { kind: 'transition', id: transition } : { kind: 'state', id: state });
     return;
   }
-  const path = Object.keys(S.machine.files).find((p) => problem.file && (problem.file === p || problem.file.endsWith(`/${p}`)));
+  const file = posixPath(problem.file);
+  const path = Object.keys(S.machine.files).find((p) => file && (file === p || file.endsWith(`/${p}`)));
   if (path && problem.line) {
     S.yamlFile = path;
     drawYaml();
@@ -725,7 +861,7 @@ $('yamlValidate').addEventListener('click', () => withBusy($('yamlValidate'), as
 $('yamlRevert').addEventListener('click', async () => {
   if (!await confirm('Discard every unsaved change in the YAML tab?', { danger: true, confirmLabel: 'Discard' })) return;
   S.drafts = {};
-  setDirty(false);
+  setDirty(unsaved());
   drawYaml();
 });
 
@@ -733,13 +869,28 @@ $('yamlSave').addEventListener('click', () => withBusy($('yamlSave'), () => save
 
 async function saveYaml(force) {
   const m = S.machine;
+  if (!force && S.inspectorDrafts.size && !await confirm('The inspector has changes that are not applied: saving '
+    + 'reloads the machine and drops them. Save anyway?', { danger: true, confirmLabel: 'Save' })) return;
   const files = { ...S.drafts };
   const expected = Object.fromEntries(Object.keys(files).filter((p) => p in m.versions).map((p) => [p, m.versions[p]]));
   try {
     await api(`${API}/machines/${enc(m.id)}`, { method: 'PUT', json: { files, expected_versions: expected, force }, quiet: true });
   } catch (error) {
     if (isAborted(error)) return;
-    if (error.status === 409) {
+    // a new file (the module button's) whose name another file has already: not a change, nothing to reload
+    const inTheWay = error.status === 409
+      && Object.keys(files).find((p) => !(p in m.versions) && String(error.detail ?? '').startsWith(`${p} exists already`));
+    if (inTheWay) {
+      const choice = await dialog({
+        title: 'The file exists already',
+        message: `${inTheWay} exists already next to the machine but is not one of its files: an earlier module, or one another machine uses. Use it as it is (your new text for it is dropped), or cancel and give the new file another name in the YAML.`,
+        actions: [{ label: 'Cancel', value: null }, { label: 'Use the existing file', value: 'use', primary: true }],
+      });
+      if (choice === 'use') {
+        delete S.drafts[inTheWay];
+        await saveYaml(force);
+      }
+    } else if (error.status === 409) {
       const choice = await dialog({
         title: 'The file changed',
         message: `${errorText(error)}. Reload shows the file as it is now, and your unsaved text is gone. Cancel keeps your text, so you can copy it first.`,
@@ -900,14 +1051,20 @@ $('runList').addEventListener('rowselect', (event) => selectRun(event.detail.id)
 
 const poller = autoRefresh(() => loadRun({ tick: true }), 1000);
 let runRequests = 0;  // GETs of the selected run that are out
+/** Journal rows a run answer carries: the poll's and every control's alike, so the history does not jump. */
+const HISTORY_STEPS = 200;
 
 function selectRun(id) {
   S.runId = id || null;
   S.run = null;
   S.evaluation = null;
+  S.pollError = null;
+  S.result = null;
+  S.resultOpen = new Set();
   poller.stop();
   if (S.machine) setQuery(S.runId ? { machine: S.machine.id, run: S.runId } : { machine: S.machine.id });
   drawRunList();
+  drawResult();  // the run left takes its result along at once: a read of the next one may fail
   if (!S.runId) {
     drawRun();
     return;
@@ -925,27 +1082,46 @@ async function loadRun({ tick = false } = {}) {
   let run;
   runRequests += 1;
   try {
-    run = await api(`${API}/runs/${enc(id)}?steps=200`, { latest: 'run', quiet: true });
+    run = await api(`${API}/runs/${enc(id)}?steps=${HISTORY_STEPS}`, { latest: 'run', quiet: true });
   } catch (error) {
-    if (isAborted(error)) return;
-    poller.stop();
-    if (error.status === 404) selectRun(null);
-    else toast(`Run not refreshed: ${errorText(error)}`, { kind: 'warn' });
+    if (isAborted(error) || id !== S.runId) return;
+    if (error.status === 404) {
+      poller.stop();
+      selectRun(null);
+      return;
+    }
+    // a blip (a restart, a 5xx) must not freeze the view on a state that is long gone: the poll goes on, and the
+    // bar says the run is not refreshed until a poll gets through
+    if (!S.pollError) toast(`Run not refreshed: ${errorText(error)}`, { kind: 'warn' });
+    S.pollError = errorText(error);
+    drawDebugBar();
     return;
   } finally {
     runRequests -= 1;
   }
   if (id !== S.runId) return;
-  const before = S.run?.status;
+  S.pollError = null;
+  showRun(run);
+}
+
+/** A run answer (a poll, a control) for the selected run: shown, polled while alive, and its row in the list kept. */
+function showRun(run) {
   S.run = run;
   if (!TERMINAL.has(run.status) && run.status !== 'interrupted') poller.start();
   else poller.stop();
-  if (before && before !== run.status) {
-    const listed = S.runs.find((r) => r.id === run.id);
-    if (listed) Object.assign(listed, { status: run.status, final_state: run.final_state, finished_at: run.finished_at });
+  keepListed(run);
+  drawRun();
+  followResult(run);
+}
+
+/** The run's row in the list says what the answer says. Compared with the row, not with the run shown before: a
+ * control answer that ended the run was shown already, and the row still said running. */
+function keepListed(run) {
+  const listed = S.runs.find((r) => r.id === run.id);
+  if (listed && (listed.status !== run.status || listed.final_state !== run.final_state)) {
+    Object.assign(listed, { status: run.status, final_state: run.final_state, finished_at: run.finished_at });
     drawRunList();
   }
-  drawRun();
 }
 
 function drawRun() {
@@ -979,7 +1155,8 @@ function drawDebugBar() {
     pause: live && run.status === 'running',
     resume: live && run.status === 'paused',
     runTo: live && ['running', 'paused'].includes(run.status),
-    terminate: live && !TERMINAL.has(run.status),
+    // an interrupted run is live nowhere: terminating it runs its finally here and ends it (service: terminate)
+    terminate: (live && !TERMINAL.has(run.status)) || run.status === 'interrupted',
     restart: run.status === 'interrupted',
   };
   update(bar, html`
@@ -988,6 +1165,7 @@ function drawDebugBar() {
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
     ${!live && !TERMINAL.has(run.status) && run.status !== 'interrupted' ? html`<span class="pk-muted" title="Runs of other processes are shown from their journal; they cannot be paused from here">not in this process</span>` : ''}
+    ${S.pollError ? html`<span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span>` : ''}
     <span class="pk-grow"></span>
     <button type="button" class="pk-btn pk-btn--sm" data-control="continue" ${can.resume ? '' : 'disabled'} title="Continue">${icon('play', { size: 'sm' })} Continue</button>
     <button type="button" class="pk-btn pk-btn--sm" data-control="step" ${can.resume ? '' : 'disabled'} title="Run to the next hook">${icon('step-forward', { size: 'sm' })} Step</button>
@@ -1006,7 +1184,9 @@ $('debugBar').addEventListener('click', async (event) => {
   if (!button || button.disabled) return;
   const action = button.dataset.control;
   if (action === 'close') return selectRun(null);
-  if (action === 'terminate' && !await confirm('Terminate the run? A running agent call is cancelled.', { danger: true, confirmLabel: 'Terminate' })) return;
+  if (action === 'terminate' && !await confirm(S.run?.status === 'interrupted'
+    ? 'Terminate the interrupted run? It is not resumed: its finally activities run, and it ends as cancelled.'
+    : 'Terminate the run? A running agent call is cancelled.', { danger: true, confirmLabel: 'Terminate' })) return;
   const extra = {};
   if (action === 'run_to') Object.assign(extra, { state: $('runToState').value, machine: S.machine?.id });
   if (action === 'fork') {
@@ -1025,7 +1205,7 @@ async function control(action, extra = {}) {
   const id = S.runId;
   if (!id) return null;
   try {
-    const answer = await api(`${API}/runs/${enc(id)}/control`, { method: 'POST', json: { action, ...extra } });
+    const answer = await api(`${API}/runs/${enc(id)}/control`, { method: 'POST', json: { action, steps: HISTORY_STEPS, ...extra } });
     if (action === 'fork' && answer.run_id) {
       toast(`Forked as ${answer.run_id}`, { kind: 'ok' });
       await loadRuns();
@@ -1033,13 +1213,14 @@ async function control(action, extra = {}) {
       return answer;
     }
     if (action === 'evaluate' || action === 'set') return answer;
-    if (answer && answer.id === id) {
-      S.run = answer;
-      if (!TERMINAL.has(answer.status)) poller.start();
-      drawRun();
-    } else {
-      await loadRun();
+    if (id !== S.runId) {
+      // another run was picked while this answer was out (a terminate waits for the run to stop): the view is
+      // that run's now; only the list learns what became of this one
+      if (answer?.id === id) keepListed(answer);
+      return answer;
     }
+    if (answer && answer.id === id) showRun(answer);
+    else await loadRun();
     return answer;
   } catch (error) {
     return null;  // toasted
@@ -1069,25 +1250,24 @@ function drawDebugPane() {
       </dl></div>`
     : emptyState('bug', 'No run selected', 'Start a run in the Runs tab, or pick one there.'));
 
-  // watch: the live run's watchpoints, else the list the next run starts with
-  const watching = run ? (debug.watchpoints || []) : S.nextWatch.map((expr) => ({ expr }));
-  const values = debug.watch || {};
-  const editable = !run || Boolean(live);
-  $('dbgWatchScope').textContent = run ? (live ? '' : '(this run cannot be changed from here)') : '(next run)';
+  // watch and breakpoints: the live run's, else the lists the next run starts with -- the same the inspector shows
+  // and edits (shownBreakpoints); a run that ended keeps its lists in its journal, not here
+  const watching = live ? (debug.watchpoints || []) : S.nextWatch.map((expr) => ({ expr }));
+  const values = live ? (debug.watch || {}) : {};
+  $('dbgWatchScope').textContent = live ? `(run ${shorten(live.id, 12)})` : '(next run)';
   update($('dbgWatch'), watching.length ? html`<ul class="sg-plain-list">${watching.map((p, i) => {
     const seen = values[p.id];
     return html`<li class="sg-watch"><span class="sg-watch-expr">${otherMachine(p)}${p.expr}</span>
       <span class="pk-grow">${seen ? ('error' in seen ? html`<span class="pk-text--danger">${seen.error}</span>`
         : html`<span class="pk-mono">${preview(seen.value, 120)}</span>`) : ''}${seen ? html` <span class="pk-muted">(${seen.frame}, step ${seen.step})</span>` : ''}</span>
-      ${editable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-watch="${i}" aria-label="Stop watching">${icon('x', { size: 'sm' })}</button>` : ''}</li>`;
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-watch="${i}" aria-label="Stop watching">${icon('x', { size: 'sm' })}</button></li>`;
   })}</ul>` : html`<p class="pk-help">A watch pauses the run when its value changes.</p>`);
-  for (const control of $('watchForm').elements) control.disabled = !editable;
 
-  const points = run ? (debug.breakpoints || []) : S.nextBreakpoints;
-  $('dbgPointsScope').textContent = run ? '' : '(next run)';
+  const points = shownBreakpoints();
+  $('dbgPointsScope').textContent = live ? `(run ${shorten(live.id, 12)})` : '(next run)';
   update($('dbgPoints'), points.length ? html`<ul class="sg-plain-list">${points.map((p, i) => html`<li class="sg-watch">
       <span class="sg-watch-expr">${otherMachine(p)}${p.state}@${p.at || 'enter'}</span>${p.condition ? html`<span class="pk-mono">if ${p.condition}</span>` : ''}
-      <span class="pk-grow"></span>${editable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-breakpoint="${i}" aria-label="Remove breakpoint">${icon('x', { size: 'sm' })}</button>` : ''}</li>`)}</ul>`
+      <span class="pk-grow"></span><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-drop-breakpoint="${i}" aria-label="Remove breakpoint">${icon('x', { size: 'sm' })}</button></li>`)}</ul>`
     : html`<p class="pk-help">None. Set them on a state in the inspector.</p>`);
 
   $('dbgEvalHint').textContent = paused ? '' : '(while paused)';
@@ -1117,7 +1297,7 @@ $('side-debug').addEventListener('click', async (event) => {
   if (target.dataset.act === 'copy-run' && S.run) return copyText(S.run.id);
   if (target.dataset.dropBreakpoint !== undefined) {
     const index = Number(target.dataset.dropBreakpoint);
-    if (!S.run) {
+    if (!liveRun()) {
       S.nextBreakpoints = S.nextBreakpoints.filter((_, i) => i !== index);
       remember(`breakpoints:${S.machine?.id}`, S.nextBreakpoints);
       drawStartForm();
@@ -1129,7 +1309,7 @@ $('side-debug').addEventListener('click', async (event) => {
   }
   if (target.dataset.dropWatch !== undefined) {
     const index = Number(target.dataset.dropWatch);
-    if (!S.run) {
+    if (!liveRun()) {
       S.nextWatch = S.nextWatch.filter((_, i) => i !== index);
       remember(`watch:${S.machine?.id}`, S.nextWatch);
       drawStartForm();
@@ -1150,7 +1330,7 @@ function onSubmit(form, fn) {
 onSubmit($('watchForm'), async (fields) => {
   const expr = fields.expr.value.trim();
   if (!expr) return;
-  if (!S.run) {
+  if (!liveRun()) {
     S.nextWatch = [...S.nextWatch, expr];
     remember(`watch:${S.machine?.id}`, S.nextWatch);
     fields.expr.value = '';
@@ -1251,6 +1431,193 @@ function drawHistory() {
   </div>` : '');
 }
 
+// ------------------------------------------------------------------ runs: result
+
+/** Journal rows the result reads per request, and at most how many requests: a longer run shows its first rows. */
+const RESULT_PAGE = 500;
+const RESULT_PAGES = 20;
+/** What the result shows of the journal: finished activities and the finals frames ended in. */
+const resultRow = (row) => (row.kind === 'activity' && (row.status === 'done' || row.status === 'error'))
+  || (row.kind === 'trace' && row.status === 'final');
+
+let resultLoad = null;   // the run whose result is being read: a poll meanwhile leaves the read alone
+let resultAgain = null;  // ... and asks for another look once it is done
+
+/**
+ * The selected run's result: every activity's answer (an agent's text, a tool's result, a decision) and the final
+ * state each frame ended in. `S.result` holds the rows of S.runId read up to `after`. An activity's row is written
+ * as started and rewritten in place when it ends -- the same seq -- so the activities read while they ran are kept
+ * in `running`, and `ended` (seqs of those that ended since) are read again one by one: a composite that runs for
+ * hours while its children end must not make every poll read everything after it.
+ */
+async function loadResult({ ended = [], more = true } = {}) {
+  const id = S.runId;
+  if (!id) return;
+  const kept = S.result?.runId === id ? S.result : { runId: id, rows: [], after: 0, running: new Set(), complete: true };
+  let { after } = kept;
+  let complete = true;
+  const rows = new Map(kept.rows.map((row) => [row.seq, row]));
+  const running = new Set(kept.running);
+  const take = (row) => {
+    if (resultRow(row)) {
+      rows.set(row.seq, row);
+      running.delete(row.seq);
+    } else if (row.kind === 'activity') {
+      running.add(row.seq);
+    }
+  };
+  resultLoad = id;
+  try {
+    for (const seq of ended) {
+      const [row] = await api(`${API}/runs/${enc(id)}/journal?kinds=activity&after=${seq - 1}&limit=1`,
+        { latest: 'result', quiet: true });
+      if (row?.seq === seq) take(row);
+    }
+    for (let page = 0; more; page += 1) {  // more: rows past `after` to read
+      if (page === RESULT_PAGES) {
+        complete = false;
+        break;
+      }
+      const got = await api(`${API}/runs/${enc(id)}/journal?kinds=activity,trace&after=${after}&limit=${RESULT_PAGE}`,
+        { latest: 'result', quiet: true });
+      got.forEach(take);
+      if (got.length) after = got[got.length - 1].seq;
+      if (got.length < RESULT_PAGE) break;
+    }
+  } catch (error) {
+    if (!isAborted(error) && id === S.runId) toast(`Result not loaded: ${errorText(error)}`, { kind: 'warn' });
+    return;
+  } finally {
+    if (resultLoad === id) resultLoad = null;
+  }
+  if (id !== S.runId) return;
+  S.result = { runId: id, rows: [...rows.values()].sort((a, b) => a.seq - b.seq), after, running, complete };
+  drawResult();
+  if (resultAgain === id) {  // a poll came meanwhile: what it brought (the run's end, say) is read now
+    resultAgain = null;
+    if (S.run?.id === id) followResult(S.run);
+  }
+}
+
+/** A poll or control answer: the result reads what is new, and again the activities that ended since they were
+ * read running -- all of them once the run has ended, also those past the poll's rows. A read of this run that is
+ * out is left alone (aborting it for the next would start it over every second) and looked at again after it. */
+function followResult(run) {
+  if (resultLoad === run.id) {
+    resultAgain = run.id;
+    return;
+  }
+  const result = S.result?.runId === run.id ? S.result : null;
+  if (!result) {
+    loadResult();
+    return;
+  }
+  const journal = run.journal || [];
+  const ended = TERMINAL.has(run.status) ? [...result.running]
+    : journal.filter((row) => resultRow(row) && result.running.has(row.seq)).map((row) => row.seq);
+  const newest = Math.max(0, ...journal.filter(resultRow).map((row) => row.seq));
+  if (ended.length || newest > result.after) loadResult({ ended, more: newest > result.after });
+  else drawResult();
+}
+
+function drawResult() {
+  const run = S.run;
+  if (!run) {
+    update($('runResult'), '');
+    return;
+  }
+  const rows = S.result?.runId === run.id ? S.result.rows : [];
+  const activities = rows.filter((row) => row.kind === 'activity');
+  const finals = rows.filter((row) => row.kind === 'trace');
+  const reason = run.error?.type || (TERMINAL.has(run.status) ? run.status : '');
+  update($('runResult'), html`<div class="pk-card sg-result">
+    <div class="pk-card-head"><h3 class="pk-card-title">Result of ${shorten(run.id, 16)}</h3>${statusBadge(run.status)}
+      ${run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span>${reason && reason !== run.status ? html` (${reason})` : ''}</span>` : ''}
+      <span class="pk-grow"></span>
+      ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
+        title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
+    ${run.error ? html`<div class="pk-callout pk-callout--danger"><strong>${run.error.type || 'error'}</strong> ${run.error.message || ''}
+      ${run.error.state ? html`<div class="sg-problem-where">in ${run.error.state}</div>` : ''}</div>` : ''}
+    ${run.output !== undefined && run.output !== null
+    ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
+    : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
+    ${finals.length ? html`<h4 class="sg-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
+      ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
+      <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>
+      ${statusBadge(row.data?.status || 'succeeded')}</li>`)}</ul>` : ''}
+    <h4 class="sg-section-title">Activities <span class="pk-muted">${activities.length}${S.result?.complete === false ? ', the first ones' : ''}</span></h4>
+    ${activities.length ? html`<div class="sg-results">${activities.map(resultActivity)}</div>`
+    : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No activity finished.' : 'None finished yet.'}</p>`}
+  </div>`);
+}
+
+/** One finished activity, folded: what it was and how it went; its answer is drawn when it is opened. */
+function resultActivity(row) {
+  const data = row.data || {};
+  const meta = data.meta || {};
+  const failed = row.status === 'error';
+  const who = meta.agent || stateOf(row.state)?.label || '';
+  const open = S.resultOpen.has(row.seq);  // by seq: an activity that ends later can land before others
+  return html`<details class="pk-details sg-result-item" data-result="${row.seq}" ${open ? 'open' : ''}>
+    <summary><span class="pk-mono">${data.path || row.state || row.key}</span> ${badge(data.kind || 'activity', 'accent')}
+      ${who ? html`<span class="pk-mono">${who}</span>` : ''}
+      ${failed ? badge(data.error?.type || 'error', 'danger') : ''}
+      ${meta.mocked ? badge('mocked') : ''}
+      <span class="pk-muted">${meta.duration_s === undefined || meta.duration_s === null ? '' : `${Number(meta.duration_s).toFixed(1)} s`}</span>
+      ${failed ? '' : html`<span class="sg-mono sg-preview">${preview(data.out, 120)}</span>`}</summary>
+    <div class="sg-result-body" data-drawn="${open ? 'yes' : ''}">${open ? resultBody(row) : ''}</div>
+  </details>`;
+}
+
+function resultValue(value) {
+  return typeof value === 'string' ? html`<pre class="sg-result-text">${value}</pre>` : jsonView(value);
+}
+
+/** The body of an opened activity: its answer or its error, and where it ran (the agent's session). */
+function resultBody(row) {
+  const data = row.data || {};
+  const meta = data.meta || {};
+  return html`${row.status === 'error'
+    ? html`<div class="pk-callout pk-callout--danger"><strong>${data.error?.type || 'error'}</strong> ${data.error?.message || ''}</div>`
+    : resultValue(data.out)}
+    <dl class="pk-kv">
+      ${meta.instance_id ? html`<dt>session</dt><dd><span class="pk-mono">${meta.instance_id}</span>
+        ${ownSessions(S.run) ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${meta.instance_id}" title="Open the agent's conversation in the chat">${icon('message-square', { size: 'sm' })} Open</button>`
+    : html`<span class="pk-muted">${S.run?.user_id || 'anonymous'}'s</span>`}</dd>` : ''}
+      ${meta.request_id ? html`<dt>request</dt><dd class="pk-mono">${meta.request_id}</dd>` : ''}
+      ${meta.model ? html`<dt>model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
+      ${meta.attempts > 1 ? html`<dt>attempts</dt><dd>${meta.attempts}</dd>` : ''}
+      <dt>step</dt><dd class="pk-mono">${row.key}</dd>
+    </dl>`;
+}
+
+// details fire toggle on themselves only: caught on the way down
+$('runResult').addEventListener('toggle', (event) => {
+  const item = event.target.closest?.('[data-result]');
+  if (!item) return;
+  const seq = Number(item.dataset.result);
+  if (!item.open) {
+    S.resultOpen.delete(seq);
+    return;
+  }
+  S.resultOpen.add(seq);  // drawn open again when new rows redraw the list
+  const row = S.result?.rows.find((r) => r.kind === 'activity' && r.seq === seq);
+  const body = item.querySelector('.sg-result-body');
+  if (row && body && body.dataset.drawn !== 'yes') {
+    body.dataset.drawn = 'yes';
+    render(body, resultBody(row));
+  }
+}, true);
+
+$('runResult').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-open-session]');
+  if (!button) return;
+  const id = button.dataset.openSession;
+  if (!openSession(id)) {  // a tab of its own: no chat beside it
+    copyText(id).then((copied) => { if (copied) toast('No chat in this tab: pick the copied session in the chat.'); });
+  }
+});
+
 // ------------------------------------------------------------------ tabs, toolbar, keys
 
 function onTab(tab) {
@@ -1292,7 +1659,34 @@ $('newMachine').addEventListener('click', async () => {
 
 $('machineHead').addEventListener('click', (event) => {
   if (event.target.closest('[data-act="copy-id"]') && S.machine) copyText(S.machine.id);
+  if (event.target.closest('[data-act="delete-machine"]') && S.machine) deleteMachine(S.machine);
 });
+
+/** Delete the open machine (the version shown): its runs stay, the panel shows no machine afterwards. */
+async function deleteMachine(m) {
+  if (!await confirm(`Delete the machine ${m.id}? Its file and layout go, and its Python module unless another machine `
+    + 'uses it. Its runs stay readable. Unsaved changes are lost.', { title: 'Delete machine', danger: true, confirmLabel: 'Delete' })) return;
+  try {
+    await api(`${API}/machines/${enc(m.id)}`, { method: 'DELETE', json: { expected_version: m.versions[m.root_file] } });
+  } catch (error) {
+    return;  // toasted: a machine that imports it, a change since it was read
+  }
+  toast(`${m.id} deleted`, { kind: 'ok' });
+  S.drafts = {};
+  S.inspectorDrafts.clear();
+  setDirty(false);
+  S.machine = null;
+  S.selection = null;
+  // what this panel kept for the machine would come back with a new one of the same id
+  for (const key of ['breakpoints', 'watch', 'mocks']) forget(`${key}:${m.id}`);
+  selectRun(null);
+  drawInspector();
+  $('machineView').hidden = true;
+  $('placeholder').hidden = false;
+  setTitle('State Graph');
+  setQuery({});
+  await loadMachines();
+}
 
 $('palette').addEventListener('click', (event) => {
   const button = event.target.closest('button');
@@ -1323,11 +1717,11 @@ $('canvas').addEventListener('keydown', (event) => {
 
 document.addEventListener('refresh', async (event) => {
   await loadMachines();
-  if (S.machine && !hasDrafts()) {
+  if (S.machine && !unsaved()) {
     try {
       // a name of its own: under openMachine's, this reload of the open machine would abort a click on another one
       const machine = await api(`${API}/machines/${enc(S.machine.id)}`, { latest: 'machine-refresh', quiet: true });
-      const same = machine.id === S.machine?.id && !hasDrafts();  // no other machine opened, no text typed meanwhile
+      const same = machine.id === S.machine?.id && !unsaved();  // no other machine opened, no text typed meanwhile
       if (same && JSON.stringify(machine.versions) !== JSON.stringify(S.machine.versions)) showMachine(machine);
     } catch (error) {
       if (!isAborted(error) && !event.detail?.auto) toast(`Machine not refreshed: ${errorText(error)}`, { kind: 'warn' });

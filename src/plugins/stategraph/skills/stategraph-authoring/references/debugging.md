@@ -89,6 +89,9 @@ Journal keys name the step: `s3` is the activity of top-level step 3, `s3/b.styl
 parallel branch, `s3/i.2` map item 2, `s3/m/s1` step 1 inside the submachine that
 step 3 started.
 
+A run belongs to the user who started it: `get_run`, `control_run` and `send_event`
+answer another user's run as missing, unless you are an admin or auth is off.
+
 ---
 
 ## 3. When a run fails
@@ -104,7 +107,7 @@ step 3 started.
 | `not_serialisable` | `ctx` got a non-JSON value (a set, an object) | convert: `sorted(...)`, `list(...)`, `str(...)` |
 | `params_invalid` | a missing required, unknown or wrongly typed parameter | fix `params` of the run or the `machine` activity |
 | `schema_invalid` / `parse_failed` | the agent's answer stayed unusable after the feedback rounds | clearer task; more `parse_retries`; a more tolerant parser |
-| `submachine_failed` | the submachine ended in a failed final (`error.data`) or failed inside (`error.cause`) | read `error.cause` |
+| `submachine_failed` | the submachine ended in a failed final (`error.data`) or failed inside (`error.cause`); the message ends with the cause: `<alias> ended in <state> (failed): <cause type>: <cause message>` (cause cut at 500 characters) | read `error.cause` |
 | `step_limit` | more than `limits.max_steps` dispatches in one frame | an unbounded loop |
 | `diverged` | a resumed or forked run did not repeat the recorded run | impure code, or the definition changed (section 5) |
 
@@ -138,10 +141,15 @@ Conditions and watch expressions are read-only Python over the scope at that hoo
 | `pause` | pause at the next hook (a running agent call finishes first) |
 | `continue` | run on until the next breakpoint |
 | `step` | run to the next hook |
-| `run_to` + `state` | a one-off breakpoint on that state's entry |
-| `evaluate` + `expr` | a read-only expression against the paused scope: `ctx.draft[:200]`, `out` |
+| `run_to` + `state` | a one-off breakpoint on that state's entry (`state` is required) |
+| `evaluate` + `expr` | a read-only expression against the paused scope: `ctx.draft[:200]`, `out`. The answer is JSON; a value that is not data (a function, a module) comes as its `repr`, as watch values do |
 | `set` + `path` + `expr` | while paused: `ctx.<path> = <expr>` (e.g. `path="round"`, `expr="0"`); journaled, so a resume applies it again |
-| `terminate` | cancel the run and its running agent calls; its `finally` activities run first. An interrupted run is resumed into its termination, so they run there too |
+| `terminate` | cancel the run and its running agent calls; its `finally` activities run first. An interrupted run is resumed into its termination, so they run there too; if its definition no longer loads, it is marked cancelled without them, and its error says so |
+
+Arguments of the wrong type are refused before anything acts, and so are malformed
+breakpoints and watchpoints (a list of strings or objects; `enabled` a boolean). A stored
+point that no longer parses is dropped, not refused: it never blocks a resume, terminate or
+fork. `steps` (1-200) makes the answer carry that many journal rows.
 
 `run_machine` with `wait: "finish"` also returns when the run pauses, so you can
 inspect and continue.
@@ -161,15 +169,23 @@ definition snapshot:
   `error.data` holding its rendered inputs: handle it, e.g. by checking whether the
   first call took effect. A non-idempotent submachine ends the frame it had started first,
   so its `finally` and `close` run.
-- A wait state's deadline is stored; the resumed run waits only for the rest.
+- A wait state's deadline is stored; the resumed run waits only for the rest. So is a
+  retry's backoff: a resume inside it waits out the rest and goes on with the next attempt.
+- The debugger's state survives the stop: a run that stopped while paused pauses again at
+  its first live hook, and a pending `step` or `run_to` still applies.
+- It runs as the run's own user, whoever resumes it.
 - If the machine does not repeat the recorded run -- another kind or path at a step,
   other rendered inputs, another `ctx` after a step -- the run stops with `diverged`,
   naming the first differing key. That means impure code (a clock, randomness, a set's
   order, I/O in a guard or template) or a changed definition. A diverged run never
   continues on another path.
 
-A `run_key` makes starting idempotent: a second `run_machine` with the same key
-attaches to the unfinished run, or resumes it, instead of starting another.
+A `run_key` makes a request idempotent: `run_machine` with the same key gets the newest
+run of that key instead of a second one -- attached to while it runs (`attached: false`
+if another process runs it), resumed when interrupted, and once it ended its outcome
+again (`ended: <status>`: the same output, failure or cancel). Only a failure that is
+transient -- `interrupted`, `timeout`, `agent_failed`, `decision_failed`, `internal` or
+`diverged` as the error or an unhandled cause -- starts a new run.
 
 ---
 
@@ -185,6 +201,8 @@ replays the source run's journal below top-level step N and runs live from there
 - **External state is not forked.** Stores, database rows and agent conversations keep
   what the source run did after step N. The fork gets its own session, so a
   `continue` into an agent instance created before the fork point fails.
+- The fork is a new run of the user who forks. A wait state it reaches at the fork point
+  starts its `timeout` afresh.
 - A fork has its own `run.id`. A replayed step whose rendered inputs, or whose effect
   on `ctx`, contain `run.id` no longer matches the journal, and the fork stops with
   `diverged` at that step. Name external things with `run.origin` instead: it is the

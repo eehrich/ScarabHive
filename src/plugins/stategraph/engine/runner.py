@@ -38,11 +38,34 @@ logger = logging.getLogger(__name__)
 JOURNAL_FORMAT = 1
 LEASE_SECONDS = 60
 HEARTBEAT_SECONDS = 20
+#: Pauses between the tries of a run's end write: the view may fail to store, the end must not (§5.7).
+END_WRITE_DELAYS = (0.5, 1.0, 2.0, 4.0, 8.0)
 _STEP = re.compile(r"s(\d+)")
 #: A frame's keys without a step of their own: its resources (``r.<name>``) and its end (``end.<reason>...``).
 #: A submachine frame below one of them still counts its steps.
 _STEPLESS = ("r.", "end.")
 NO_MOCK = object()
+#: Error types of a failed run that the same request again (its ``run_key``) tries anew instead of getting the
+#: failure again -- failures the machine did not cause: what a crash left undone (``interrupted``), an attempt's own
+#: deadline (``timeout``), the two kinds that end at a provider -- an agent's run and a decision model's call: a
+#: transport or provider error reaches the engine only as their failure (an agent reports it as text), so every
+#: failure of theirs counts --, the engine itself (``internal``: e.g. one "database is locked" on a journal write) and
+#: a replay that went another way (``diverged``: only a resume or fork replays). Not the run's own ``timed_out``: a
+#: new run would spend the same budget. Not ``schema_invalid``, ``parse_failed`` or ``tool_failed``: the answer had
+#: its feedback rounds, and a tool's error answers the same inputs the same way. Every other failure is the
+#: machine's answer.
+TRANSIENT_ERRORS = frozenset({"interrupted", "timeout", "agent_failed", "decision_failed", "internal", "diverged"})
+
+
+def failed_transiently(error: Any) -> bool:
+    """Whether a failed run's error, or one of its unhandled causes, is transient (``TRANSIENT_ERRORS``)."""
+    for _ in range(50):
+        if not isinstance(error, dict):
+            return False
+        if error.get("type") in TRANSIENT_ERRORS:
+            return True
+        error = error.get("cause")
+    return False
 
 
 def key_steps(key: str) -> list[tuple[str, int]]:
@@ -185,6 +208,8 @@ class RunContext:
                     self.ends[key] = data
                 elif row["status"] == "resource_sources":
                     self.resource_sources = dict(data)
+                elif row["status"] == "request_seq":
+                    self._request_seq = int(data.get("n") or 0)
 
     def _advance(self, key: str) -> None:
         for prefix, step in key_steps(key):
@@ -263,7 +288,10 @@ class RunContext:
         return ReplayDivergence(message)
 
     def next_request_id(self) -> str:
+        """``<run>_NNN``, unique over the run's whole life: the count is journaled before the id is used, so a
+        resume goes on after it -- an agent run in flight at a crash left no outcome that names its id."""
         self._request_seq += 1
+        self.write("trace", "request_seq", status="request_seq", data={"n": self._request_seq})
         return f"{self.id}_{self._request_seq:03d}"
 
     def mock_for(self, path: str) -> Any:
@@ -477,7 +505,7 @@ class RunContext:
         self._inbox_changed.set()
         self.persist()
 
-    def set_status(self, status: str) -> None:
+    def set_status(self, status: str, *, write: bool = True) -> None:
         now = time.monotonic()
         if self.status == "running" and status != "running" and self._running_since is not None:
             self.running_seconds += now - self._running_since
@@ -485,7 +513,8 @@ class RunContext:
         elif status == "running" and self.status != "running":
             self._running_since = now
         self.status = status
-        self.persist()
+        if write:
+            self.persist()
 
     def refresh_status(self) -> None:
         """The run's status from its frames (§5): paused > running (a leaf activity works) > waiting > running."""
@@ -515,14 +544,35 @@ class RunContext:
         if self.lost:
             return
         try:
-            status = extra.pop("status", self.status)
-            changed = self.store.update_run(self.id, fence=self.owner, status=status, view=self.view(),
-                                            debug=self.debugger.state(),
-                                            lease_until=_utc(LEASE_SECONDS) if not self.finished else _utc(-1),
-                                            **extra)  # a finished run releases its lease: takeable at once
+            self._write_row(**extra)
         except Exception:  # the view is for display; a failed write must not stop the run
             logger.warning("stategraph: could not persist the view of run %s", self.id, exc_info=True)
-            return
+
+    async def persist_end(self, **extra: Any) -> bool:
+        """The run's end -- unlike the view, it must reach the store: a lost end write leaves the run 'running'
+        until its lease runs out and the sweep calls it interrupted. Retried (once only while the process stops: the
+        sweep marks what is left, and each try can hold the loop for the database's busy timeout); should every try
+        fail, a resume of that interrupted run replays to the same end. Whether the end was stored."""
+        delays = [] if self.stopping else list(END_WRITE_DELAYS)
+        while not self.lost:
+            try:
+                self._write_row(**extra)
+                return not self.lost  # a refused (fenced) write: another process owns the run and ends it
+            except Exception:
+                if not delays:
+                    logger.error("stategraph: the end of run %s was not stored; it stays running until its lease "
+                                 "runs out, and a resume replays it to this end", self.id, exc_info=True)
+                    return False
+                logger.warning("stategraph: could not store the end of run %s; trying again", self.id, exc_info=True)
+                await asyncio.sleep(delays.pop(0))
+        return False
+
+    def _write_row(self, **extra: Any) -> None:
+        status = extra.pop("status", self.status)
+        changed = self.store.update_run(self.id, fence=self.owner, status=status, view=self.view(),
+                                        debug=self.debugger.state(),
+                                        lease_until=_utc(LEASE_SECONDS) if not self.finished else _utc(-1),
+                                        **extra)  # a finished run releases its lease: takeable at once
         if changed == 0 and self.owner is not None:
             self.lose()
 
@@ -607,7 +657,11 @@ class RunManager:
                     user_id: Optional[str] = None, run_id: Optional[str] = None, run_key: Optional[str] = None,
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
                     copy_rows: Optional[list[dict[str, Any]]] = None,
-                    resource_sources: Optional[dict[str, Any]] = None) -> str:
+                    resource_sources: Optional[dict[str, Any]] = None,
+                    nesting: Optional[dict[str, Any]] = None) -> str:
+        """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
+        with the run so its agent instances count as one level below the caller (backend.agent_create)."""
+        self._refuse_while_stopping()
         machine = compile_tree(tree)
         try:
             bind_params(machine.spec.params, params, machine.id)
@@ -619,7 +673,7 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=JOURNAL_FORMAT)
+                              journal_format=JOURNAL_FORMAT, nesting=nesting)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if resource_sources:  # journaled, so a resume of the fork can still run the fork hooks
@@ -629,6 +683,11 @@ class RunManager:
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id)
         return run_id
+
+    def _refuse_while_stopping(self) -> None:
+        """A run started or resumed while the process stops would be neither stopped nor marked interrupted."""
+        if self._stopping:
+            raise ValueError("this process is stopping; start or resume the run once it is back")
 
     def _origin(self, run_id: Optional[str]) -> Optional[str]:
         """The first run of a fork chain (a fork's origin is its source's origin)."""
@@ -645,6 +704,7 @@ class RunManager:
                      token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False) -> str:
         """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
         replays, then it ends as cancelled and its finally and close activities run (§3.10)."""
+        self._refuse_while_stopping()
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
@@ -658,21 +718,29 @@ class RunManager:
         if not self.store.take_lease(run_id, self.owner, _utc(LEASE_SECONDS), now=_utc()):
             raise ValueError(f"run {run_id} is owned by {row.get('owner')} until {row.get('lease_until')}")
         row = self.store.get_run(run_id) or row  # as of the lease: breakpoints stored meanwhile apply
-        if row["status"] in ("succeeded", "cancelled"):  # it ended between the first read and the lease
-            self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1))
-            raise ValueError(f"run {run_id} is {row['status']}; fork it to run again from a step")
-        if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
-            self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel", data={"timed_out": False})
-        tree = load_snapshot(row["definition"])
-        machine = compile_tree(tree)
-        debug = row.get("debug") or {}
-        debugger = Debugger(breakpoints=debug.get("breakpoints") or (), watchpoints=debug.get("watchpoints") or ())
-        options = row.get("mocks") or {}
-        self.store.update_run(run_id, status="running", finished_at=None, error=None, output=None, final_state=None)
-        self._launch(run_id, machine, row.get("params") or {}, options.get("mocks"), bool(options.get("mock_only")),
-                     debugger, backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
-                     token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
-                     running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0))
+        try:
+            if row["status"] in ("succeeded", "cancelled"):  # it ended between the first read and the lease
+                raise ValueError(f"run {run_id} is {row['status']}; fork it to run again from a step")
+            if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
+                self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel",
+                                  data={"timed_out": False})
+            tree = load_snapshot(row["definition"])
+            machine = compile_tree(tree)
+            debugger = Debugger.from_state(row.get("debug"), run_id)  # its points, and the pause or step that held it
+            options = row.get("mocks") or {}
+            self.store.update_run(run_id, status="running", finished_at=None, error=None, output=None,
+                                  final_state=None)
+            self._launch(run_id, machine, row.get("params") or {}, options.get("mocks"),
+                         bool(options.get("mock_only")), debugger,
+                         backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
+                         token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
+                         running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0))
+        except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
+            try:
+                self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"])
+            except Exception:
+                logger.warning("stategraph: could not release the lease of run %s", run_id, exc_info=True)
+            raise
         return run_id
 
     async def fork(self, run_id: str, *, at_step: Optional[int] = None, tree: Optional[MachineTree] = None,
@@ -681,7 +749,9 @@ class RunManager:
                    watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None) -> str:
         """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live.
 
-        ``tree`` is the definition to use (``definition: current``); default: the source run's snapshot.
+        ``tree`` is the definition to use (``definition: current``); default: the source run's snapshot. The fork
+        is ``user_id``'s run, and its own: no caller's place in a sub-agent tree (``nesting``) comes with it -- the
+        forking user started it, not the agent that started the source.
         """
         row = self.store.get_run(run_id)
         if row is None:
@@ -693,7 +763,9 @@ class RunManager:
             name = key[2:] if key.startswith("r.") else ""
             if kind == "activity" and journal_row["status"] == "done" and name and "." not in name and "/" not in name:
                 sources[name] = (journal_row.get("data") or {}).get("out")
-            if kind == "trace" and journal_row["status"] not in ("step", "vars_from", "wait"):
+            # not a wait's deadline: it is absolute, the source's may have expired long ago -- the fork's wait at
+            # the fork point starts afresh (a replayed wait reads its consumed event or fired timer, never it)
+            if kind == "trace" and journal_row["status"] not in ("step", "vars_from"):
                 continue
             if kind == "activity" and journal_row["status"] not in ("done", "error"):
                 continue
@@ -710,7 +782,7 @@ class RunManager:
                 continue
             if steps:
                 keep.append(journal_row)
-        debug = row.get("debug") or {}
+        debug = Debugger.from_state(row.get("debug"), run_id).state()  # the source's points, the invalid ones dropped
         options = row.get("mocks") or {}
         return await self.start(
             tree if tree is not None else load_snapshot(row["definition"]), params=row.get("params") or {},
@@ -766,8 +838,8 @@ class RunManager:
             pass
         try:  # whose run this is: a decision an activity asks is captured under the run's user
             # (llm/hook_notify.py) -- nobody registered the run's own id. This task's context only.
-            # The backend's user first: a resumed run's agents run as whoever resumed it
-            # (service._resume), and its decisions go with them.
+            # The backend's user first -- the user its agents run as, which the service takes from the run's
+            # row, also for a resume someone else triggers -- and the row's for a run without one.
             from agent_system.core.request_context import current_run_user
 
             run_user = getattr(ctx.backend, "user_id", None) or (ctx.store.get_run(ctx.id) or {}).get("user_id")
@@ -779,6 +851,12 @@ class RunManager:
         fields: dict[str, Any] = {}
         watchdog = asyncio.ensure_future(self._watch_timeout(ctx, timeout)) if timeout else None
         try:
+            # the run's session (ScarabHiveBackend; none without one) -- inside: a terminate meanwhile ends the run
+            began = getattr(ctx.backend, "run_began", None)
+            if began is not None:
+                spec = ctx.machine.spec
+                await began(machine=spec.id, title=spec.title,
+                            params=(ctx.store.get_run(ctx.id) or {}).get("params") or {})
             result = await root.execute()
             fields = {"status": result.status, "output": result.output, "final_state": result.final_state,
                       "error": result.error}
@@ -806,17 +884,26 @@ class RunManager:
                 watchdog.cancel()
             if ctx.token_watch is not None:
                 ctx.token_watch.cancel()
-            if not ctx.lost:  # a run another process took over is not ours to finish
-                ctx.finished = True
-                ctx.set_status(fields.get("status", "failed"))
-                ctx.persist(finished_at=utc_now() if fields.get("status") != "interrupted" else None,
-                            **{k: v for k, v in fields.items() if k != "status"})
-            self.live.pop(ctx.id, None)
-            if self.on_finish is not None:
-                try:
-                    self.on_finish(ctx.id)
-                except Exception:
-                    logger.debug("on_finish(%s) raised", ctx.id, exc_info=True)
+            try:
+                if not ctx.lost:  # a run another process took over is not ours to finish
+                    ctx.finished = True
+                    ctx.set_status(fields.get("status", "failed"), write=False)
+                    stored = await ctx.persist_end(
+                        finished_at=utc_now() if fields.get("status") != "interrupted" else None,
+                        **{k: v for k, v in fields.items() if k != "status"})
+                    ended = getattr(ctx.backend, "run_ended", None)
+                    # only an end the store took: else the row is not ended (a resume goes on from there, or the
+                    # process that took the run over ends it) -- and an interrupted run is not ended either
+                    if stored and ended is not None and fields.get("status") != "interrupted":
+                        await ended(status=fields.get("status", "failed"), final_state=fields.get("final_state"),
+                                    output=fields.get("output"), error=fields.get("error"))
+            finally:  # also when a cancel (the process stops) cuts the retries short
+                self.live.pop(ctx.id, None)
+                if self.on_finish is not None:
+                    try:
+                        self.on_finish(ctx.id)
+                    except Exception:
+                        logger.debug("on_finish(%s) raised", ctx.id, exc_info=True)
 
     async def _watch_timeout(self, ctx: RunContext, timeout: float) -> None:
         """``limits.timeout``: the run ends like on a terminate, but failed. Once a terminate came first it
@@ -845,6 +932,8 @@ class RunManager:
     def renew_leases(self) -> None:
         """Extend our runs' leases; a run whose owner changed is lost and stops locally (§5.7)."""
         for run_id, live in list(self.live.items()):
+            if live.ctx.finished:  # its end is written, lease released: renewing would hold it 60 s more
+                continue
             try:
                 kept = self.store.renew(run_id, self.owner, _utc(LEASE_SECONDS), live.ctx.status)
             except Exception:
@@ -862,8 +951,9 @@ class RunManager:
         for live in self.live.values():
             live.ctx.stopping = True
         tasks = [live.task for live in self.live.values()]
-        for task in tasks:
-            task.cancel()
+        for live in list(self.live.values()):
+            if not live.ctx.finished:  # a finished run only tells its session how it ended: cut, it never would
+                live.task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         if self._heartbeat is not None:
             self._heartbeat.cancel()
@@ -880,17 +970,16 @@ class RunManager:
             raise _lost(run_id)
         return live
 
-    def find_by_key(self, run_key: str) -> Optional[dict[str, Any]]:
-        return self.store.find_by_key(run_key)
-
     def control(self, run_id: str, action: str, *, state: Optional[str] = None,
                 machine: Optional[str] = None) -> None:
         if action == "terminate" and run_id not in self.live:
-            self._terminate_elsewhere(run_id)
+            self.terminate_elsewhere(run_id)
             return
         live = self._live(run_id)
         if action == "terminate":
-            if live.ctx.cancelled:  # already on its way; a second cancel would cut its finally activities
+            # already on its way (a second cancel would cut its finally activities), or it ended and its end is
+            # being stored (a cancel would cut that write short)
+            if live.ctx.cancelled or live.ctx.finished:
                 return
             live.ctx.cancel()
             if live.ctx.lost:  # the journaled terminate was refused: another process owns the run now
@@ -906,8 +995,9 @@ class RunManager:
         live.ctx.debugger.command(action, state=state, machine=machine)
         self._persist_control(run_id, live)
 
-    def _terminate_elsewhere(self, run_id: str) -> None:
-        """End a run no process runs (interrupted): take its lease, then write it cancelled."""
+    def terminate_elsewhere(self, run_id: str, reason: str = "terminated while interrupted") -> None:
+        """End a run no process runs (interrupted): take its lease, then write it cancelled -- without its finally
+        activities, which only a resume into the termination runs (service); ``reason`` says why that did not."""
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
@@ -917,7 +1007,7 @@ class RunManager:
             raise ValueError(f"run {run_id} is owned by {row.get('owner')} until {row.get('lease_until')}; "
                              "terminate it there")
         self.store.update_run(run_id, fence=self.owner, status="cancelled", finished_at=utc_now(),
-                              error={"type": "cancelled", "message": "terminated while interrupted"})
+                              error={"type": "cancelled", "message": reason})
 
     def set_points(self, run_id: str, *, breakpoints: Any = None, watchpoints: Any = None) -> None:
         if run_id in self.live:
@@ -929,9 +1019,10 @@ class RunManager:
         if row is None:
             raise KeyError(run_id)
         debug = row.get("debug") or {}
-        debugger = Debugger(breakpoints=debug.get("breakpoints") or (), watchpoints=debug.get("watchpoints") or ())
+        debugger = Debugger.from_state(debug, run_id)
         debugger.set_points(breakpoints=breakpoints, watchpoints=watchpoints)
-        if not self.store.update_debug_unowned(run_id, debugger.state(), now=_utc()):
+        state = {**debugger.state(), "paused": debug.get("paused")}  # where it was held, for the resume and the view
+        if not self.store.update_debug_unowned(run_id, state, now=_utc()):
             raise ValueError(f"run {run_id} is running in {row.get('owner')}; change its breakpoints and "
                              "watchpoints there")
 
@@ -995,4 +1086,5 @@ class RunManager:
         return row
 
 
-__all__ = ["ACTIVE_STATUSES", "JOURNAL_FORMAT", "LiveRun", "RunContext", "RunManager", "key_steps"]
+__all__ = ["ACTIVE_STATUSES", "JOURNAL_FORMAT", "TRANSIENT_ERRORS", "LiveRun", "RunContext", "RunManager",
+           "failed_transiently", "key_steps"]

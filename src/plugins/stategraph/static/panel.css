@@ -15,6 +15,16 @@
 .sg-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
 .sg-item-name { flex: 1 1 6rem; min-width: 0; font-size: var(--text-sm); font-weight: 600; overflow-wrap: anywhere; }
 .sg-item-sub { font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+/* folders of machines: a machine's group, nested by "/" */
+.sg-folder > summary {
+  display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none;
+  padding: var(--space-1); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 600;
+  color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.sg-folder > summary::-webkit-details-marker { display: none; }
+.sg-folder > summary:hover { background: var(--surface-2); }
+.sg-folder:not([open]) > summary { color: var(--text-muted); }
+.sg-folder-body { display: flex; flex-direction: column; gap: var(--space-1); padding-left: var(--space-2); margin-left: var(--space-2); border-left: 1px solid var(--border-subtle); }
 
 .sg-main { min-height: 0; display: flex; flex-direction: column; }
 .sg-placeholder { padding: var(--space-6); }
@@ -67,6 +77,14 @@
 }
 .sg-code > .pk-textarea::placeholder { color: var(--text-muted); }
 .sg-code:has(> .pk-textarea:read-only) > .sg-code-view { opacity: 0.6; }
+/* A companion module in the YAML tab: Prism's Python tokens, coloured like the kit's YAML and the chat's code */
+.sg-code-view .token.comment { color: var(--text-muted); font-style: italic; }
+.sg-code-view .token.punctuation, .sg-code-view .token.operator { color: var(--text-secondary); }
+.sg-code-view .token.keyword { color: var(--accent-text); }
+.sg-code-view .token.string, .sg-code-view .token.triple-quoted-string { color: var(--ok); }
+.sg-code-view .token.number, .sg-code-view .token.boolean { color: var(--warn); }
+.sg-code-view .token.function, .sg-code-view .token.class-name, .sg-code-view .token.builtin,
+.sg-code-view .token.decorator { color: var(--info); }
 .sg-yamlbar, .sg-start-options { gap: var(--space-2); flex-wrap: wrap; }
 .sg-file { width: auto; max-width: 22rem; }
 .sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2) var(--space-3); }
@@ -90,6 +108,8 @@
 .sg-watch { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--text-xs); }
 .sg-watch-expr { font-family: var(--font-mono); font-weight: 600; }
 .sg-inline { gap: var(--space-1); flex-wrap: nowrap; }
+/* the kit's selects are 100% wide: beside a growing field that squeezes it to its arrow (the event name) */
+.sg-inline > .pk-select:not(.pk-grow) { width: auto; }
 .sg-path { width: 8rem; flex: none; }
 .sg-actions { flex-wrap: wrap; gap: var(--space-1); }
 .sg-checks { gap: var(--space-3); flex-wrap: wrap; }
@@ -158,6 +178,14 @@
 .sg-arrow--error path { fill: var(--danger); }
 .sg-arrow--active path { fill: var(--info); }
 .sg-arrow--selected path { fill: var(--accent); }
+
+/* a run's result: its activities folded, an answer drawn when opened */
+.sg-result { margin-block: var(--space-3); }
+.sg-results { display: flex; flex-direction: column; gap: var(--space-1); }
+.sg-result-item > summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); cursor: pointer; padding-block: var(--space-1); }
+.sg-result-item > summary .sg-preview { flex: 1 1 12rem; }
+.sg-result-body { display: flex; flex-direction: column; gap: var(--space-2); padding-block: var(--space-2); }
+.sg-result-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-xs); max-height: 28rem; overflow: auto; }
 
 /* the kit's breakpoint: from there on it stacks the panes */
 @media (max-width: 640px) {

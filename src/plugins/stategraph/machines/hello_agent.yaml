@@ -6,7 +6,7 @@ stategraph: 1
 id: hello_agent
 title: Hello agent
 description: >-
-  One agent activity and a final output. Live, it asks chat_agent; mock the
+  One agent activity and a final output. Live, it asks stategraph_example_agent; mock the
   state "greet" to run it offline.
 
 params:
@@ -21,7 +21,7 @@ initial: greet
 states:
   greet:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "Write one friendly sentence that greets {{ params.name }}."
       timeout: 5m
     transitions:

@@ -542,7 +542,8 @@ def _server(tmp_path) -> StateGraphServer:
 
 
 async def test_terminate_of_an_interrupted_run_cancels_it(tmp_path):
-    """E9: an interrupted run can be abandoned; its run_key then starts a fresh run instead of resuming it."""
+    """E9: an interrupted run can be abandoned; its run_key then answers the cancelled run again -- it neither
+    resumes it nor starts another (the same request after a cancel is answered cancelled)."""
     process_one = _server(tmp_path)
     first = await process_one.service.start_run("m", mock_only=True, run_key="req-9")
     run_id = first["run_id"]
@@ -558,6 +559,7 @@ async def test_terminate_of_an_interrupted_run_cancels_it(tmp_path):
         assert row["finished_at"]
 
         again = await process_two.service.start_run("m", mock_only=True, run_key="req-9")
-        assert again["run_id"] != run_id and "resumed" not in again, again
+        assert again == {"run_id": run_id, "ended": "cancelled"}, again
+        assert len(process_two.run_store.list_runs()) == 1
     finally:
         await process_two.stop_plugin()

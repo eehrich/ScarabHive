@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 _FAILED_TYPE = {"agent": "agent_failed", "tool": "tool_failed", "decide": "decision_failed", "call": "call_failed"}
 #: A key below an activity that lies in a frame's ending -- its finally or close activities, or what runs inside one.
 _IN_ENDING = re.compile(r"(?:^|/)(?:end\.|s\d+\.fin\.)")
+#: How much of a submachine's error its submachine_failed message repeats (the whole error is error.cause).
+_CAUSE_CHARS = 500
 
 
 class ReplayDivergence(Exception):
@@ -150,8 +152,11 @@ class ActivityRun:
         """
         counter = itertools.count()
         closed = False
+        loop = asyncio.get_running_loop()
 
         async def tool(name: str, args: Optional[dict[str, Any]] = None, *, idempotent: bool = False) -> Any:
+            if asyncio.get_running_loop() is not loop:  # a sync function runs in a worker thread (CallKind)
+                raise RuntimeError(f"{self.path}: sg.tool() runs on the run's event loop: make the function async")
             if closed:
                 raise RuntimeError(f"{self.path}: sg.tool() called after the call returned")
             if not isinstance(name, str) or not name:
@@ -223,8 +228,10 @@ class ActivityRun:
                       finalizer=self.finalizer, ending_only=self.ending_only)
         result = await child.execute()
         if result.status != "succeeded":
-            raise ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status})",
-                                data=result.output, cause=result.error)
+            cause = result.error or {}  # named in the message too: the caller's answer and a finally read that
+            why = f"{cause.get('type')}: {cause.get('message')}"
+            raise ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status}): "
+                                f"{why[:_CAUSE_CHARS]}", data=result.output, cause=result.error)
         return result.output
 
     # ------------------------------------------------------------ execution
@@ -260,14 +267,20 @@ class ActivityRun:
         # here -- also before it would end interrupted. A composite goes on, so its children replay into their
         # frames' ends first; then it ends without an outcome of its own (§3.10).
         leaf = not (kind.nested_one or kind.nested_map or kind.submachine(spec))
-        if self.stopped and leaf:
+        started = self.run.started.get(self.key)
+        begun_row = (started or {}).get("data") or {}
+        # A crash in a retry's backoff: the failed attempt had ended and the next one was not due yet, so nothing
+        # was in flight -- the next attempt starts when the rest of its backoff has passed. A composite stopped
+        # there ends at once like a leaf: the frames of the failed attempt had ended, the next attempt never began.
+        due = begun_row.get("backoff_until")
+        if self.stopped and (leaf or due is not None):
             self.run.stop_here()
         self.run.went_live()
 
-        started = self.run.started.pop(self.key, None)
+        self.run.started.pop(self.key, None)
         if started is not None:
-            self._check(started.get("data") or {}, base, "started")
-            if not self.stopped and not kind.idempotent(spec):
+            self._check(begun_row, base, "started")
+            if due is None and not self.stopped and not kind.idempotent(spec):
                 if not leaf:  # the frames it had opened end first: their finally and close activities run
                     await self._end_in_flight(kind, spec, started)
                 failure = ActivityError("interrupted", f"{self.path}: was running when the run stopped; not "
@@ -302,10 +315,12 @@ class ActivityRun:
         timeout = parse_duration(spec.timeout)
         # A crash is not a failed attempt: a resumed activity continues the attempt it was in, so the
         # children that attempt finished replay under their keys and the retry budget stays the same.
-        first = max(1, int(((started or {}).get("data") or {}).get("attempt") or 1))
+        first = max(1, int(begun_row.get("attempt") or 1))
         begun = time.monotonic()
         failure: Optional[ActivityError] = None
         for attempt in range(first, max(attempts, first) + 1):
+            if due is not None:  # the retry's backoff (a resume waits out what is left)
+                await asyncio.sleep(max(0.0, float(due) - time.time()))
             failure = None  # this attempt's outcome, not the previous attempt's
             self.attempt = attempt
             self.meta["attempts"] = attempt
@@ -314,10 +329,17 @@ class ActivityRun:
                 self.run.busy += 1
                 self.run.refresh_status()
             out: Any = None
+            task = asyncio.current_task()
+            cancels = task.cancelling() if task is not None else 0
             try:
                 out = _normalised(await self._attempt(kind, spec, timeout))
-            except (asyncio.CancelledError, ReplayDivergence, RunAbort):
+            except (ReplayDivergence, RunAbort):
                 raise
+            except asyncio.CancelledError:
+                if self._cancelled_by_run(task, cancels):
+                    raise
+                failure = ActivityError(_FAILED_TYPE.get(kind.key, "activity_failed"),
+                                        f"{self.path}: cancelled from inside, not by the run")
             except ActivityError as exc:
                 failure = exc
             except _AttemptTimeout:
@@ -341,13 +363,26 @@ class ActivityRun:
                 self._journal("done", {**base, "out": out, "meta": self.meta})
                 return out
             if attempt < attempts and spec.retry is not None and self._retryable(spec.retry, failure):
-                await asyncio.sleep(spec.retry.delay(attempt))
+                # journaled with the time the next attempt is due: a resume within the backoff does not take this
+                # attempt for in flight (interrupted, or run once more over the budget) (§5.5)
+                due = time.time() + spec.retry.delay(attempt)
+                self._journal("started", {**base, "attempt": attempt + 1, "inputs": inputs, "backoff_until": due})
                 continue
             break
         assert failure is not None
         self.meta["duration_s"] = round(time.monotonic() - begun, 3)
         self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
         raise failure
+
+    def _cancelled_by_run(self, task: Optional["asyncio.Task[Any]"], cancels: int) -> bool:
+        """Whether a CancelledError out of an attempt is the run's (§5.8): this task is being cancelled (a
+        terminate, a halt, limits.timeout, a timeout above it, a fail-fast sibling's failure), or the run is
+        ending or its token was cancelled from outside. Any other -- a future some library cancelled -- is the
+        activity's own failure. (A frame the engine stops below a composite raises past the attempt anyway: the
+        ``stopped`` check after it; so does a run that lost its lease, whose every write raises.)"""
+        tokens = (self.run.token, getattr(self.run.backend, "token", None))  # the backend's: what _watch_token sees
+        return ((task is not None and task.cancelling() > cancels) or self.run.ending
+                or any(getattr(t, "is_cancelled", False) is True for t in tokens))
 
     def _retryable(self, retry: Any, failure: ActivityError) -> bool:
         """Whether a retry may run this activity again (docs/stategraph_design.md §2.5 retry, §5.5).

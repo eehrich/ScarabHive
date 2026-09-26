@@ -49,7 +49,7 @@ def render() -> str:
 
 def main() -> None:
     SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SCHEMA_PATH.write_text(render(), encoding="utf-8")
+    SCHEMA_PATH.write_text(render(), encoding="utf-8", newline="\n")  # the same file on every OS
     print(f"wrote {SCHEMA_PATH}")
 
 

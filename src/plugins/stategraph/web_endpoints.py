@@ -23,7 +23,8 @@ from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
 #: Arguments control_run takes besides the action (schema.yaml, tool control_run).
-CONTROL_ARGS = frozenset({"state", "machine", "at_step", "definition", "breakpoints", "watchpoints", "expr", "path"})
+CONTROL_ARGS = frozenset({"state", "machine", "at_step", "definition", "breakpoints", "watchpoints", "expr", "path",
+                          "steps"})
 
 
 def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, required: bool = False) -> Any:
@@ -93,8 +94,9 @@ class StateGraphWebEndpoints:
     # ------------------------------------------------------------------ the panel
 
     async def render_panel(self, request: Request):
-        await self._user(request)
-        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name})
+        # the viewer: a run's sessions are its user's, and the chat opens only the viewer's own
+        viewer = await self._user(request)
+        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name, "viewer": viewer or ""})
 
     # ------------------------------------------------------------------ machines
 
@@ -121,6 +123,11 @@ class StateGraphWebEndpoints:
         return await self._call("save_machine", machine_id, files,
                                 expected_versions=_field(body, "expected_versions", dict),
                                 force=bool(_field(body, "force", bool)))
+
+    async def api_delete_machine(self, request: Request, machine_id: str):
+        await self._user(request)
+        body = await self._body(request)
+        return await self._call("delete_machine", machine_id, _field(body, "expected_version", str, required=True))
 
     async def api_edit_machine(self, request: Request, machine_id: str):
         await self._user(request)
@@ -161,8 +168,8 @@ class StateGraphWebEndpoints:
             pause_at_start=bool(_field(body, "pause_at_start", bool)), user_id=user)
 
     async def api_get_run(self, request: Request, run_id: str, steps: int = Query(50, ge=1, le=500)):
-        await self._user(request)
-        return await self._call("get_run", run_id, steps=steps)
+        user = await self._user(request)
+        return await self._call("get_run", run_id, steps=steps, user_id=user)
 
     async def api_run_journal(self, request: Request, run_id: str, after: int = Query(0, ge=0),
                               limit: int = Query(200, ge=1, le=2000), kinds: Optional[str] = None):
@@ -177,12 +184,12 @@ class StateGraphWebEndpoints:
         unknown = sorted(set(body) - CONTROL_ARGS - {"action"})
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown arguments {', '.join(unknown)} for control_run")
-        # resume and fork start agents again: they run as the admin asking (None without auth: the run's own user)
+        # resume and terminate run as the run's own user, a fork is a new run of the admin asking (service)
         arguments = {key: value for key, value in body.items() if key != "action"}
         return await self._call("control_run", run_id, action, **arguments, user_id=user)
 
     async def api_send_event(self, request: Request, run_id: str):
-        await self._user(request)
+        user = await self._user(request)
         body = await self._body(request)
         return await self._call("send_event", run_id, _field(body, "name", str, required=True),
-                                data=body.get("data"), frame=_field(body, "frame", str))
+                                data=body.get("data"), frame=_field(body, "frame", str), user_id=user)

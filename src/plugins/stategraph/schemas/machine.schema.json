@@ -207,6 +207,25 @@
     "Activity_decide": {
       "additionalProperties": false,
       "properties": {
+        "advanced": {
+          "default": false,
+          "description": "with by: use the agent's advanced model profile",
+          "title": "Advanced",
+          "type": "boolean"
+        },
+        "by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "an agent that decides instead of a decision model: a literal, or {{ params.x }} with an enum; it answers in JSON, checked like a schema (confidence and probabilities are null)",
+          "title": "By"
+        },
         "criteria": {
           "default": null,
           "description": "single question: its criteria",
@@ -245,6 +264,14 @@
           "description": "the content to judge (template: text or object, not empty)",
           "title": "Input"
         },
+        "parse_retries": {
+          "default": 1,
+          "description": "with by: feedback rounds for an unusable answer",
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Parse Retries",
+          "type": "integer"
+        },
         "profile": {
           "anyOf": [
             {
@@ -255,7 +282,7 @@
             }
           ],
           "default": null,
-          "description": "decision profile; default: the configured one (jev)",
+          "description": "decision profile (llm_system.decision_profiles); default: the configured default",
           "title": "Profile"
         },
         "question": {
@@ -1194,6 +1221,12 @@
       "default": null,
       "description": "an activity that runs once when the machine frame ends, whatever the cause (final state, failure, cancel); reads ending",
       "title": "Finally"
+    },
+    "group": {
+      "default": "",
+      "description": "its folder in the panel's machine list, nested by / (Writer/v6); empty: the folder of where it comes from",
+      "title": "Group",
+      "type": "string"
     },
     "id": {
       "title": "Id",

@@ -48,7 +48,7 @@ states:
   draft:
     max_visits: 3                # the 4th draft raises loop_limit here
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: |
         Write a short announcement about: {{ params.topic }}
         {{ ('The reviewer rejected the last draft. Address this: ' + ctx.reasons[-1]) if ctx.reasons else '' }}

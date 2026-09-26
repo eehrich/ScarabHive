@@ -3,7 +3,8 @@ inspector's state fragments sent back through set_state, the whole panel against
 (tests/js/panel_smoke.js), and single cases of it against the kit's timing (tests/js/panel_cases.js).
 
 No browser on the machine this was built on (docs/stategraph_design.md §11): jsc checks what can be checked without
-one. Skipped where jsc is not installed (it ships with macOS).
+one. Where jsc is not installed (it ships with macOS), node runs the same tests with jsc's globals
+(tests/js/node_jsc.mjs); skipped where neither is.
 """
 
 from __future__ import annotations
@@ -28,22 +29,36 @@ JSC = next((str(path) for path in (
     Path(shutil.which("jsc") or "/nonexistent"),
 ) if path.is_file()), None)
 
-pytestmark = pytest.mark.skipif(JSC is None, reason="JavaScriptCore (jsc) is not installed")
+NODE = shutil.which("node")
+NODE_JSC = Path(__file__).resolve().parent / "js" / "node_jsc.mjs"
+
+pytestmark = pytest.mark.skipif(JSC is None and NODE is None, reason="neither JavaScriptCore (jsc) nor node is installed")
+
+
+def run_js(script: str, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+    """``jsc -m <script>`` in cwd; node with jsc's globals where jsc is missing."""
+    command = [JSC, "-m", script] if JSC else [NODE, str(NODE_JSC), script]
+    return subprocess.run(command, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+                          start_new_session=True)
+
+
+def module_ref(path: Path) -> str:
+    """A path as a module specifier in an import, quoted: node takes an absolute path only as a file URL."""
+    return json.dumps(str(path) if JSC else path.as_uri())
 
 
 @pytest.mark.parametrize("script", ["static/panel.js", "static/graph.js"])
 def test_the_panel_scripts_are_valid_modules(script):
     source = json.dumps(str(PLUGIN / script))
+    command = [JSC, "-e", f"checkModuleSyntax(readFile({source}))"] if JSC else [NODE, "--check", str(PLUGIN / script)]
 
-    done = subprocess.run([JSC, "-e", f"checkModuleSyntax(readFile({source}))"], capture_output=True, text=True,
-                          timeout=60, start_new_session=True)
+    done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=60, start_new_session=True)
 
     assert done.returncode == 0, done.stdout + done.stderr
 
 
 def test_the_canvas_functions_pass_their_tests():
-    done = subprocess.run([JSC, "-m", "graph_tests.js"], cwd=PLUGIN / "tests" / "js", capture_output=True, text=True,
-                          timeout=120, start_new_session=True)
+    done = run_js("graph_tests.js", PLUGIN / "tests" / "js", timeout=120)
 
     lines = done.stdout.splitlines()
     failed = [line for line in lines if line.startswith("FAIL")]
@@ -66,6 +81,9 @@ ODD_LAYOUTS = {
                            "      - target: done\n  done: {type: final,\n         description: end}\n",
     "comment_tail.yaml": "stategraph: 1\nid: comment_tail\ninitial: a\nstates:\n  a:\n    transitions:\n"
                          "      - target: done\n    # trailing note inside a\n\n  # about done\n  done:\n    type: final\n",
+    "alias_use.yaml": "stategraph: 1\nid: alias_use\ninitial: a\nstates:\n  a:\n    description: &d shared\n"
+                      "    transitions:\n      - target: b\n  b:\n    description: *d\n    transitions:\n"
+                      "      - target: done\n  done:\n    type: final\n",
 }
 
 
@@ -83,15 +101,14 @@ def test_every_state_applied_as_the_inspector_shows_it_leaves_the_file_byte_exac
         assert graph["states"], f"{name}: no states, this case would check nothing"
         cases += [{"file": name, "state": state["name"], "line": state["line"]} for state in graph["states"]]
     (tmp_path / "cases.json").write_text(json.dumps({"files": files, "cases": cases}), encoding="utf-8")
-    graph_js = json.dumps(str(PLUGIN / "static" / "graph.js"))
+    graph_js = module_ref(PLUGIN / "static" / "graph.js")
     (tmp_path / "fragments.js").write_text(
         f"import {{ fragmentLock, stateFragment }} from {graph_js};\n"
         "const { files, cases } = JSON.parse(readFile('./cases.json'));\n"
         "print(JSON.stringify(cases.map((c) => ({ ...c, yaml: stateFragment(files[c.file], c.line),"
         " lock: fragmentLock(files[c.file], c.line) }))));\n", encoding="utf-8")
 
-    done = subprocess.run([JSC, "-m", "fragments.js"], cwd=tmp_path, capture_output=True, text=True, timeout=60,
-                          start_new_session=True)
+    done = run_js("fragments.js", tmp_path, timeout=60)
     assert done.returncode == 0, done.stdout + done.stderr
     shown = json.loads(done.stdout)
 
@@ -257,7 +274,7 @@ def prepare_panel(directory: Path, kit: str, scripts: tuple[str, ...]) -> None:
         shutil.copy(js / name, directory / name)
     panel = (PLUGIN / "static" / "panel.js").read_text(encoding="utf-8")
     panel, kits = re.subn(r"'/static/kit/panel-kit\.js'", f"'./{kit}'", panel)
-    panel, graph = re.subn(r"'\./graph\.js'", json.dumps(str(PLUGIN / "static" / "graph.js")), panel)
+    panel, graph = re.subn(r"'\./graph\.js'", module_ref(PLUGIN / "static" / "graph.js"), panel)
     assert (kits, graph) == (1, 1), "panel.js imports changed: point the copy at the fakes again"
     (directory / "panel_copy.js").write_text(panel, encoding="utf-8")
     (directory / "fixtures.js").write_text(smoke_fixtures(), encoding="utf-8")
@@ -268,8 +285,7 @@ def prepare_panel(directory: Path, kit: str, scripts: tuple[str, ...]) -> None:
 def test_the_panel_runs_every_main_path_against_a_fake_kit_and_dom(tmp_path):
     prepare_panel(tmp_path, "fake_kit.js", ("panel_smoke.js",))
 
-    done = subprocess.run([JSC, "-m", "panel_smoke.js"], cwd=tmp_path, capture_output=True, text=True, timeout=180,
-                          start_new_session=True)
+    done = run_js("panel_smoke.js", tmp_path, timeout=180)
 
     lines = done.stdout.splitlines()
     failed = [line for line in lines if line.startswith("FAIL")]
@@ -290,13 +306,42 @@ PANEL_CASES = [
     "a_poll_tick_waits_for_the_answer_that_is_out",
     "a_refresh_neither_drops_a_machine_click_nor_draws_the_machine_left",
     "opening_a_machine_abandons_the_refresh_in_flight",
+    "a_control_answer_for_a_run_left_does_not_take_the_view",
+    "the_run_list_follows_a_terminate",
+    "a_failed_poll_goes_on_polling_and_says_so",
+    "text_typed_into_the_inspector_is_not_dropped_unasked",
+    "tab_in_a_read_only_file_types_nothing",
+    "a_run_that_ended_leaves_the_debug_lists_to_the_next_run",
+    "an_interrupted_run_can_be_terminated",
+    "a_click_on_a_states_handle_connects_nothing",
+    "a_double_click_renames_the_state_under_the_pointer",
+    "a_click_zoomed_out_selects_and_moves_nothing",
+    "an_empty_machine_asks_for_a_first_state",
+    "the_result_shows_every_activitys_answer_and_the_end_states",
+    "a_live_runs_result_reads_on_from_where_it_stopped",
+    "machines_sit_in_their_folders_and_a_closed_folder_stays_closed",
+    "a_machine_the_author_made_can_be_deleted_and_a_shipped_one_offers_no_delete",
+    "a_running_composite_does_not_make_every_poll_read_again",
+    "a_run_that_ends_while_its_result_is_read_is_read_to_its_end",
+    "a_conflict_says_that_a_reload_drops_the_inspectors_text",
+    "a_run_that_ended_reads_the_activities_it_still_had_running",
+    "a_companion_module_is_added_as_two_drafts_and_saved_with_them",
+    "a_python_file_is_coloured_as_python_and_indented_by_four",
+    "a_machine_that_names_its_module_or_cannot_be_written_offers_none",
+    "a_module_line_typed_into_the_yaml_or_a_missing_id_line_adds_nothing",
+    "a_module_whose_name_a_file_has_already_is_used_as_it_is",
+    "an_activity_read_while_it_ran_is_read_again_when_it_ends",
+    "a_poll_leaves_a_result_read_that_is_out_alone",
+    "a_run_switched_to_takes_the_result_of_the_one_left_away_at_once",
+    "text_typed_into_one_inspector_form_is_asked_about_by_another",
+    "a_deleted_machine_leaves_nothing_of_itself_behind",
+    "the_sessions_of_another_users_run_are_not_offered",
 ]
 
 
 def run_case(directory: Path, case: str) -> list[str]:
     (directory / "case.js").write_text(f"export const CASE = {json.dumps(case)};\n", encoding="utf-8")
-    done = subprocess.run([JSC, "-m", "panel_cases.js"], cwd=directory, capture_output=True, text=True, timeout=120,
-                          start_new_session=True)
+    done = run_js("panel_cases.js", directory, timeout=120)
     assert done.returncode == 0, done.stdout + done.stderr
     return done.stdout.splitlines()
 

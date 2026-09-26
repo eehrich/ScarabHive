@@ -51,7 +51,7 @@ states:
   summarise:
     max_visits: 2
     do:
-      agent: research_agent
+      agent: research_worker
       task: "Read {{ params.url }} and summarise it in five sentences."
       retry: {attempts: 2, backoff: 10s}
     transitions:
@@ -143,9 +143,9 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 |---|---|---|
 | `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text, or the parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result; an error result raises `tool_failed` |
-| `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` | `{value, confidence, probabilities}` |
+| `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile`, or `by: <agent>` (an agent decides) | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {value, confidence, probabilities}}` |
-| `call: <companion function>` | `args` | the return value |
+| `call: <companion function>` | `args` | the return value (a sync function runs in a worker thread; `sg.tool()` needs `async def`) |
 | `machine: <import alias>` | `params` | the submachine's final output |
 | `parallel: {branch: activity}` | `fail: fast\|collect` | `{branch: out}` |
 | `map: <Python expression>` | `each`, `as`, `concurrency`, `fail` | a list in item order |
@@ -155,8 +155,8 @@ Common keys: `retry: {attempts, backoff, errors}`, `timeout` (per attempt), `ide
 
 A state or the machine may have `finally: <activity>` (runs once on every exit, reads
 `ending`); a machine may declare `resources` (external state per frame, e.g. a store
-namespace, as `resources.<name>`); a `call` function may make journaled tool calls with
-`await sg.tool(name, args)`. Details: `references/format.md` §14.
+namespace, as `resources.<name>`); an async `call` function may make journaled tool calls
+with `await sg.tool(name, args)`. Details: `references/format.md` §14.
 
 ## Mocks for the test run
 
@@ -175,11 +175,11 @@ namespace, as `resources.<name>`); a `call` function may make journaled tool cal
 
 | code | means | usual fix |
 |---|---|---|
-| SG001 | YAML or schema: unknown key, wrong type, file not named `<id>.yaml`, a param default that does not fit | check the key against `references/format.md` |
+| SG001 | YAML or schema: unknown key, wrong type, file not named `<id>.yaml`, a param default that does not fit, `stategraph:` not the integer 1, an invalid JSON schema in `events.<x>.data` | check the key against `references/format.md` |
 | SG002 | unknown state, target, `initial` or undeclared event | declare it; fix the name |
 | SG003 | structure: choice without `else`, `else` not last, bad final, wait state without events | see the rule it names |
-| SG004 | Python: syntax, unknown name, a name not bound there, braces in a code field, undeclared `params.x`, `out.x` / `ctx.a.b` / `ctx.get()` on plain data | move data into `ctx` first; drop the braces; use `out["x"]` |
-| SG005 | activity: unknown kind, several kind keys, bad fields, a computed `agent:`/`tool:` | one kind key; the kind's fields only; literal names |
+| SG004 | Python: syntax, unknown name, a name not bound there, braces in a code field, undeclared `params.x`, `out.x` / `ctx.a.b` / `ctx.get()` on plain data, assigning to `params`/`run`/`error`/`event`/… (only `ctx` is writable) | move data into `ctx` first; drop the braces; use `out["x"]` |
+| SG005 | activity: unknown kind, several kind keys, bad fields, an invalid JSON `schema`, a computed `agent:`/`tool:`/`by:` | one kind key; the kind's fields only; literal names |
 | SG006 | submachine: unknown alias, cycle, missing/unknown parameter | `imports:`, the callee's `params` |
 | SG007 | configuration: agent not configured or one that reaches machines, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities; another machine as a submachine |
 | SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |

@@ -18,8 +18,10 @@ resolved configuration, with the matchers the runtime itself uses.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import functools
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
@@ -101,6 +103,14 @@ def validate_answer(value: Any, schema: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _run_message(role: str, content: str) -> dict[str, Any]:
+    """A message of a run's session: written by the plugin, not by a person or a model (``injected_by``)."""
+    from datetime import datetime, timezone
+
+    return {"role": role, "content": content, "injected_by": "stategraph",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+
+
 def inject(tool: str, args: dict[str, Any], inject_params: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """tool_script's rule: for every fnmatch pattern that matches the tool, its params win over the machine's."""
     merged = dict(args)
@@ -113,12 +123,13 @@ def inject(tool: str, args: dict[str, Any], inject_params: dict[str, dict[str, A
 class ScarabHiveBackend:
     def __init__(self, *, runner: Any, system_config: Any, session_id: str, user_id: Optional[str],
                  token: Any = None, inject_params: Optional[dict[str, dict[str, Any]]] = None,
-                 config_check: Optional[Any] = None):
+                 config_check: Optional[Any] = None, nesting: Optional[dict[str, Any]] = None):
         self.runner = runner
         self.system_config = system_config
         self.session_id = session_id
         self.user_id = user_id
         self.token = token
+        self.nesting = nesting  # the run's caller in a sub-agent tree: {depth, depth_budget} of its session
         self.inject_params = dict(inject_params or {})
         self.config_check = config_check  # the validator's SG007 check, applied again at run time
         self._busy: set[str] = set()  # instances with a run in flight: one conversation, one run at a time
@@ -275,17 +286,86 @@ class ScarabHiveBackend:
                            vars: dict[str, Any]) -> tuple[str, Optional[str]]:
         target = self._agent(agent)
         service = self._sessions(target)
+        budget = (self.nesting or {}).get("depth_budget")
+        if budget is not None and budget < 1:  # the SAM above the run granted no level below its caller
+            raise ActivityError("config", f"{agent}: the caller of this run has no sub-agent level left below it "
+                                          f"(depth_budget {budget}); the SAM above it limits max_nesting_depth")
         try:
             created = await service.session_manager.create_session(
                 user_id=self.user_id or "anonymous", title=f"{agent} ({act.path})", agent_name=target.name,
                 llm_profile=getattr(target.agent_config, "default_llm_profile", None) or "normal",
                 parent_session_id=self.session_id)  # a sub-session: not in the user's session list
+            if self.nesting:  # one level below the run's caller, where its SAM would have put it: a SAM the
+                created["depth"] = int(self.nesting.get("depth") or 1) + 1  # instance calls counts on from there
+                if budget is not None:
+                    created["depth_budget"] = budget - 1
+                await service.session_manager.save_session(created)
         except Exception as exc:
             raise ActivityError("agent_failed", f"{agent}: its session could not be created: {exc}") from exc
         instance = created["session_id"]
         text = await self._run_agent(act, target, service, instance_id=instance, message=task, advanced=advanced,
                                      variables=vars, new=True)
         return text, instance
+
+    # ------------------------------------------------------------ the run's own session
+    def _run_sessions(self) -> Any:
+        """The session service of the runner -- the host of runs -- or None: then the run keeps no session."""
+        service = getattr(self.runner, "_session_service", None)
+        return service if getattr(service, "session_manager", None) is not None else None
+
+    async def run_began(self, *, machine: str, title: str, params: dict[str, Any]) -> None:
+        """The run's own session, ``sg_<run id>``: its agents' instance sessions are its sub-sessions, so the
+        session list shows the run with them -- under the caller's session when an agent started it (a machine
+        facade, a tool call), at the top of its user's list otherwise. A resume finds it there already. The view
+        of a run: a run never fails over it."""
+        service = self._run_sessions()
+        if service is None:
+            return
+        manager, user = service.session_manager, self.user_id or "anonymous"
+        try:
+            await manager.load_session(user, self.session_id)
+            return  # a resume: begun before
+        except Exception:
+            pass
+        try:
+            created = await manager.create_session(
+                user_id=user, title=f"{title or machine} · {self.session_id.removeprefix('sg_')}",
+                agent_name=getattr(self.runner, "name", "stategraph_runner"),
+                llm_profile=getattr(getattr(self.runner, "agent_config", None), "default_llm_profile", None) or "normal",
+                session_id=self.session_id, parent_session_id=(self.nesting or {}).get("session"))
+            # a level below its caller, or the top: the chat opens a session with a depth whose agent it cannot
+            # pick -- the runner is private -- read-only (static/js/shell/sessions.js), so nobody types a message
+            # that would run the runner on the session the run's tool activities use
+            created["depth"] = int((self.nesting or {}).get("depth") or 0) + 1
+            shown = json.dumps(params, ensure_ascii=False, indent=2) if params else "(none)"
+            created["messages"].append(_run_message("user", f"Run of the state machine `{machine}`, params:\n\n"
+                                                            f"```json\n{shown}\n```"))
+            await manager.save_session(created)
+        except Exception:
+            logger.warning("stategraph: the session of run %s could not be created", self.session_id, exc_info=True)
+
+    async def run_ended(self, *, status: str, final_state: Optional[str], output: Any, error: Any) -> None:
+        """How the run ended, as the answer in its session: status, final state, output or error."""
+        service = self._run_sessions()
+        if service is None:
+            return
+        manager, user = service.session_manager, self.user_id or "anonymous"
+        lines = [f"The run ended **{status}**" + (f" in `{final_state}`" if final_state else "") + "."]
+        if error:
+            lines.append(f"\n**{error.get('type', 'error')}**: {error.get('message', '')}" if isinstance(error, dict)
+                         else f"\n{error}")
+        if output is not None:
+            shown = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, indent=2)
+            lines.append(f"\nOutput:\n\n```json\n{shown}\n```" if not isinstance(output, str) else f"\n{shown}")
+        try:
+            lock = service.save_lock(self.session_id) if hasattr(service, "save_lock") else None
+            async with lock if lock is not None else contextlib.nullcontext():
+                data = await manager.load_session(user, self.session_id)
+                data["messages"].append(_run_message("assistant", "\n".join(lines)))
+                await manager.save_session(data)
+        except Exception:
+            logger.warning("stategraph: the end of run %s was not written to its session", self.session_id,
+                           exc_info=True)
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any]) -> str:

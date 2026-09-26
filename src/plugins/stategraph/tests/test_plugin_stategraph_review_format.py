@@ -247,7 +247,7 @@ async def test_call_tool_refuses_a_stategraph_tool_at_run_time(tmp_path, name, c
     server._registry = SimpleNamespace(get=lambda agent: runner)
     try:
         tree = load({"m.yaml": COMPUTED_TOOL.replace("NAME", name)}, execute=True)  # not validated, as forced
-        run_id = await server.run_manager.start(tree, backend_factory=server.service.backend_factory(None))
+        run_id = await server.run_manager.start(tree, backend_factory=server.service.backend_factory())
         row = await settle(server.run_manager, run_id)
     finally:
         await server.stop_plugin()

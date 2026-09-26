@@ -37,6 +37,15 @@ class VersionConflict(Exception):
         self.current = current
 
 
+class FileInTheWay(Exception):
+    """A file written as new exists already: it is not one of the files the caller read (an earlier module)."""
+
+    def __init__(self, rel: str):
+        super().__init__(f"{rel} exists already next to the machine but is not one of its files: name it in the "
+                         "YAML to use it, or give the new file another name")
+        self.rel = rel
+
+
 @dataclass
 class MachineFile:
     id: str
@@ -59,8 +68,8 @@ class FileSources:
             raise FileNotFoundError(f"{path} (outside the machine roots)")
         try:
             return Path(path).read_text(encoding="utf-8")
-        except (FileNotFoundError, IsADirectoryError):
-            raise FileNotFoundError(path) from None
+        except (OSError, UnicodeDecodeError) as exc:  # a directory (`python: .`) is a PermissionError on Windows
+            raise FileNotFoundError(f"{path}: {exc}") from None
 
     def resolve(self, ref: str, base: str) -> str:
         if ref.startswith("./") or ref.startswith("../") or ref.endswith(".yaml"):
@@ -108,13 +117,14 @@ class MachineStore:
         for root, directory in self.root_dirs():
             for file in sorted(directory.glob("*.yaml")):
                 machine_id = file.stem
-                if file.name.endswith(".layout.yaml") or not _ID.match(machine_id) or machine_id in machines:
+                if (file.name.endswith(".layout.yaml") or not _ID.fullmatch(machine_id) or machine_id in machines
+                        or not file.is_file()):
                     continue
                 machines[machine_id] = MachineFile(machine_id, file, root, self.is_writable(file))
         return list(machines.values())
 
     def find(self, machine_id: str) -> Optional[MachineFile]:
-        if not _ID.match(machine_id or ""):
+        if not _ID.fullmatch(machine_id or ""):
             return None
         return next((m for m in self.list() if m.id == machine_id), None)
 
@@ -174,10 +184,11 @@ class MachineStore:
     # ------------------------------------------------------------ writing
     def write_files(self, machine_id: str, files: dict[str, str],
                     expected_versions: Optional[dict[str, str]] = None) -> dict[str, str]:
-        """Write a machine tree (relative path -> text) into its directory; all version checks first.
+        """Write a machine tree (relative path -> text) into its directory: all files or none, version checks first.
 
         Every target must lie inside a writable root. An existing file needs its
         expected version (no blind overwrite); a new file must not appear meanwhile.
+        Returns each file's version as a read gives it back (line endings are ``\\n``).
         """
         base = self.base_dir(machine_id)
         expected_versions = dict(expected_versions or {})
@@ -187,17 +198,17 @@ class MachineStore:
             if not self.is_writable(target) and not self.is_writable(target.parent / "x"):
                 raise PermissionError(f"{rel}: {target} is not in a writable machine root")
             if target.exists():
+                if rel not in expected_versions:
+                    raise FileInTheWay(rel)
                 current = version_of(target.read_text(encoding="utf-8"))
-                if expected_versions.get(rel) != current:
+                if expected_versions[rel] != current:
                     raise VersionConflict(current)
             elif rel in expected_versions:
                 raise VersionConflict("absent")
             targets[rel] = target
-        versions = {}
-        for rel, target in targets.items():
-            _atomic_write(target, files[rel])
-            versions[rel] = version_of(files[rel])
-        return versions
+        texts = {rel: _lf(files[rel]) for rel in targets}
+        _write_all({rel: (targets[rel], texts[rel]) for rel in targets})
+        return {rel: version_of(text) for rel, text in texts.items()}
 
     def write(self, machine_id: str, text: str, *, expected_version: Optional[str]) -> MachineFile:
         found = self.find(machine_id)
@@ -217,6 +228,27 @@ class MachineStore:
         _atomic_write(found.path, text)
         return found
 
+    def delete(self, machine_id: str, *, expected_version: str, companion: Optional[Path] = None) -> list[str]:
+        """Remove a machine from a writable root: its file (the version the caller saw, no blind delete), its layout
+        sidecar and ``companion`` -- the caller names the module only when no other machine uses it. Returns the
+        paths removed. The file goes first: a failure after it leaves a stray module, never a machine without one."""
+        found = self.find(machine_id)
+        if found is None:
+            raise KeyError(machine_id)
+        if not found.writable:
+            raise PermissionError(f"{found.path} is not in a writable machine root")
+        current = version_of(found.path.read_text(encoding="utf-8"))
+        if expected_version != current:
+            raise VersionConflict(current)
+        paths = [Path(p) for p in (found.path, found.path.with_name(found.path.stem + LAYOUT_SUFFIX), companion)
+                 if p is not None and Path(p).is_file()]
+        for path in paths:  # every check before the first removal
+            if not self.is_writable(path):
+                raise PermissionError(f"{path} is not in a writable machine root")
+        for path in paths:
+            path.unlink()
+        return [str(path) for path in paths]
+
     def write_layout(self, machine_id: str, layout: dict[str, Any]) -> None:
         found = self.find(machine_id)
         if found is None:
@@ -227,16 +259,70 @@ class MachineStore:
                       json.dumps(layout, indent=1, sort_keys=True))
 
 
+def _lf(text: str) -> str:
+    """Line endings as a read returns them (universal newlines): what is written is what the version is of."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _atomic_write(path: Path, text: str) -> None:
+    _write_all({path.name: (path, _lf(text))})
+
+
+def _write_all(files: dict[str, tuple[Path, str]]) -> None:
+    """Replace every file (name -> (path, text)) or none.
+
+    Each text goes into a temp file next to its target first; then the temp files replace the targets. If one
+    fails, the files replaced so far get their old bytes back (a new one is removed) and the error is raised again,
+    naming the file and saying so. Written as UTF-8 with ``\\n`` line endings on every OS.
+    """
+    staged: dict[str, str] = {}
+    replaced: list[tuple[str, Path, Optional[bytes]]] = []
+    current = ""
+    try:
+        for current, (path, text) in files.items():
+            staged[current] = _stage(path, text.encode("utf-8"))
+        for current, (path, _) in files.items():
+            old = path.read_bytes() if path.exists() else None
+            os.replace(staged[current], path)  # no copystat: the new mtime must show (writer invariants on .envrc)
+            replaced.append((current, path, old))
+    except OSError as exc:
+        stuck = [name for name, path, old in reversed(replaced) if not _put_back(path, old)]
+        outcome = (f"not saved, but {', '.join(stuck)} could not be restored and still hold the new text" if stuck
+                   else "nothing was saved")
+        raise type(exc)(f"{current}: {exc.strerror or exc}; {outcome}") from exc
+    finally:
+        for temp in staged.values():
+            try:
+                os.unlink(temp)
+            except FileNotFoundError:
+                pass
+
+
+def _stage(path: Path, data: bytes) -> str:
+    """A temp file with ``data`` next to ``path``."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as out:
-            out.write(text)
-        os.replace(temp, path)  # no copystat: the new mtime must show (see writer invariants on .envrc)
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
     except BaseException:
-        try:
-            os.unlink(temp)
-        except FileNotFoundError:
-            pass
+        os.unlink(temp)
         raise
+    return temp
+
+
+def _put_back(path: Path, old: Optional[bytes]) -> bool:
+    """Undo a replace: the old bytes back, or no file where there was none. False if that fails too."""
+    try:
+        if old is None:
+            path.unlink(missing_ok=True)
+        else:
+            temp = _stage(path, old)
+            try:
+                os.replace(temp, path)
+            except OSError:
+                os.unlink(temp)
+                raise
+        return True
+    except OSError:
+        return False

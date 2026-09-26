@@ -19,8 +19,13 @@ import copy
 import dataclasses
 import functools
 import hashlib
+import itertools
 import json
+import posixpath
+import re
+import sys
 import types
+import weakref
 from dataclasses import dataclass
 from collections.abc import ItemsView, Iterator, KeysView, ValuesView
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -61,12 +66,19 @@ class CodeError(Exception):
 
 # --------------------------------------------------------------------- compile
 
+#: What Python's parser and compiler raise for code nested too deeply (``1+1+...``, ``not not ...``).
+_TOO_DEEP = (RecursionError, MemoryError)
+_TOO_DEEP_MESSAGE = "nested too deeply for Python's parser"
+
+
 @functools.lru_cache(maxsize=4096)
 def compile_expression(source: str, where: str = "<expression>") -> types.CodeType:
     try:
         return compile(source.strip(), where, "eval")
     except SyntaxError as exc:
         raise CodeError(where, f"not a Python expression: {exc.msg} ({source.strip()!r})", cause=exc) from None
+    except _TOO_DEEP as exc:
+        raise CodeError(where, f"not a Python expression: {_TOO_DEEP_MESSAGE}", cause=exc) from None
 
 
 @functools.lru_cache(maxsize=4096)
@@ -75,6 +87,8 @@ def compile_statements(source: str, where: str = "<statements>") -> types.CodeTy
         return compile(source, where, "exec")
     except SyntaxError as exc:
         raise CodeError(where, f"not Python statements: {exc.msg} (line {exc.lineno})", cause=exc) from None
+    except _TOO_DEEP as exc:
+        raise CodeError(where, f"not Python statements: {_TOO_DEEP_MESSAGE}", cause=exc) from None
 
 
 def braced(source: str) -> bool:
@@ -109,6 +123,8 @@ def scan_template(text: str) -> list[tuple[int, int, str]]:
             except SyntaxError:
                 cursor = end + 1
                 continue
+            except _TOO_DEEP:
+                raise CodeError("template", f"{{{{ {candidate.strip()[:40]} ... }}}}: {_TOO_DEEP_MESSAGE}") from None
             found.append((start, end + 2, candidate))
             position = end + 2
             break
@@ -159,6 +175,7 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
     params_reads: set[str] = set()
     resources_reads: set[str] = set()
     misuse: list[str] = []
+    frozen: list[str] = []
     called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     for node in ast.walk(tree):
         misuse.extend(_misuse(node, called))
@@ -195,6 +212,11 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
             target = _ctx_field(node.target)
             if target is not None:
                 reads.add(target)
+        if (isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Name) and node.value.id in _READ_ONLY):
+            frozen.append(node.value.id)
+    # a local `for error in ...` is the code's own
+    misuse.extend(f"{name} is read-only: only ctx takes assignments" for name in frozen if name not in stores)
     known = set(allowed) | SCOPE_NAMES | BUILTIN_NAMES | stores
     unknown = tuple(sorted({name for name in loads if name not in known}))
     free = frozenset(name for name in loads if name not in stores)  # a local `for event in ...` is not the scope's
@@ -203,6 +225,8 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
 
 
 _NAMESPACES = ("ctx", "params", "error", "event", "run", "activity", "resources", "ending")
+#: Namespaces the engine binds frozen everywhere: assigning a field of one always fails.
+_READ_ONLY = ("params", "error", "event", "run", "activity", "resources", "ending")
 _DICT_METHODS = {"get", "keys", "items", "values", "pop", "update", "setdefault", "copy", "clear"}
 #: Methods of JSON values: passing one as a value (``max(out, key=out.get)``) is valid Python.
 _DATA_METHODS = frozenset(name for kind in (dict, list, str, int, float) for name in dir(kind)
@@ -268,29 +292,113 @@ def _ctx_field(node: ast.AST, root: str = "ctx") -> Optional[str]:
     return None
 
 
+#: Values that are data, never callable: a name assigned one of these is no function.
+_DATA_VALUES = (ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict, ast.Set, ast.ListComp, ast.SetComp,
+                ast.DictComp, ast.GeneratorExp, ast.Compare)
+#: Operators whose result is data when all their operands are (``-1``, ``60 * 60``); ``fast or json.dumps`` or a
+#: parser combinator ``a | b`` may be a function.
+_OPERATORS = (ast.BoolOp, ast.BinOp, ast.UnaryOp)
+
+
+def _is_data(value: ast.expr) -> bool:
+    todo = [value]  # iterative: ``"a" + "b" + ...`` over a thousand terms is one expression
+    while todo:
+        node = todo.pop()
+        if isinstance(node, _OPERATORS):
+            todo.extend(child for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr))
+        elif not isinstance(node, _DATA_VALUES):
+            return False
+    return True
+
+
+def _assigned(target: ast.expr, value: Optional[ast.expr]) -> Iterator[tuple[str, bool]]:
+    """``(name, may be a function)`` for every name ``target = value`` binds.
+
+    A tuple or list unpacked from one of the same length pairs up element by element; unpacked from anything else,
+    its names are of unknown kind and count as functions (the scan must not refuse what the run accepts).
+    """
+    if isinstance(target, ast.Name):
+        yield target.id, value is None or not _is_data(value)
+    elif isinstance(target, ast.Starred):
+        yield from _assigned(target.value, None)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        pairs = (isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts)
+                 and not any(isinstance(item, ast.Starred) for item in target.elts + value.elts))
+        for index, item in enumerate(target.elts):
+            yield from _assigned(item, value.elts[index] if pairs else None)  # type: ignore[union-attr]
+
+
+#: A star import's mark in module_names' sets: the names it brings are unknown to a scan.
+STAR = "*"
+
+
 def module_names(source: str) -> tuple[frozenset[str], frozenset[str]]:
-    """Public names and public function names a companion module defines -- without executing it."""
-    tree = ast.parse(source)
+    """Public names and public function names a companion module defines -- without executing it.
+
+    What the module binds at its top level, inside top-level ``if``/``try``/``with``/``for`` blocks too (an import
+    with a fallback). A function is a ``def``, a class, a name imported from a module, or a name assigned anything
+    but data -- literals and operators over them (``build = partial(...)``, a lambda, ``a | b``): the scan cannot
+    tell those apart, the run can. So is a name a loop, a ``with`` or a walrus binds. A star import's names are
+    unknown to a scan: it adds ``STAR`` to both sets, and the namespace then takes any name.
+    """
     names: set[str] = set()
     functions: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            names.add(node.name)
-            functions.add(node.name)
-        elif isinstance(node, ast.ClassDef):
-            names.add(node.name)
-            functions.add(node.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                for sub in ast.walk(target):
-                    if isinstance(sub, ast.Name):
-                        names.add(sub.id)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                names.add((alias.asname or alias.name).split(".")[0])
+    _bind(ast.parse(source).body, names, functions)
     public = frozenset(n for n in names if not n.startswith("_"))
     return public, frozenset(n for n in functions if not n.startswith("_"))
+
+
+def _bind(body: list[ast.stmt], names: set[str], functions: set[str]) -> None:
+    """The module-level names ``body`` binds (not the ones inside functions and classes)."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            functions.add(node.name)
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    names.add(STAR)
+                    functions.add(STAR)
+                else:
+                    name = alias.asname or alias.name.split(".")[0]
+                    names.add(name)
+                    if isinstance(node, ast.ImportFrom):
+                        functions.add(name)
+            continue
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            continue  # `x: int` binds nothing
+        stored = set(_stored(node))
+        names.update(stored)
+        data: set[str] = set()
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):  # `n += 1` over data is data
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                for name, function in _assigned(target, node.value):
+                    (functions if function else data).add(name)
+        functions.update(stored - data)  # a loop's, a with's or a walrus's name: whatever the run binds there
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.stmt):
+                _bind([child], names, functions)
+            elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
+                _bind(child.body, names, functions)
+
+
+#: Below a statement, what binds no module name: nested statements (``_bind`` has them) and scopes of their own.
+_NOT_STORED = (ast.stmt, ast.ExceptHandler, ast.match_case, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+               ast.GeneratorExp)
+
+
+def _stored(node: ast.AST) -> Iterator[str]:
+    """Names a statement assigns itself: targets, ``as`` names, walrus names -- not nested statements' or scopes'.
+
+    Iterative: a value of a thousand ``+`` terms compiles, and must not exhaust the recursion limit here.
+    """
+    todo = [child for child in ast.iter_child_nodes(node) if not isinstance(child, _NOT_STORED)]
+    while todo:
+        child = todo.pop()
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            yield child.id
+        todo.extend(inner for inner in ast.iter_child_nodes(child) if not isinstance(inner, _NOT_STORED))
 
 
 # ------------------------------------------------------------------- namespaces
@@ -405,14 +513,15 @@ class Namespace:
                  names: Iterable[str] = (), functions: Iterable[str] = ()):
         self.module = dict(module_globals or {})
         self.public = {k: v for k, v in self.module.items() if not k.startswith("_")}
-        self._names = frozenset(self.public) | frozenset(names)
-        self._functions = frozenset(k for k, v in self.public.items() if callable(v)) | frozenset(functions)
+        self.open = STAR in names  # a scanned star import: any name may be the module's, the run decides
+        self._names = (frozenset(self.public) | frozenset(names)) - {STAR}
+        self._functions = (frozenset(k for k, v in self.public.items() if callable(v)) | frozenset(functions)) - {STAR}
 
     def names(self) -> frozenset[str]:
         return self._names
 
     def has_function(self, name: str) -> bool:
-        return name in self._functions
+        return self.open or name in self._functions
 
     def function(self, name: str, where: str) -> Callable[..., Any]:
         fn = self.public.get(name)
@@ -497,26 +606,42 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def load_module(source: str, filename: str) -> Namespace:
-    """Execute a companion module's source in a fresh namespace (not in sys.modules).
+_MODULE_NUMBERS = itertools.count(1)
 
-    Kept out of ``sys.modules`` so a changed file is picked up on the next load,
-    two machines' modules never shadow each other, and a run's snapshot source
-    is what runs.
+
+def load_module(source: str, filename: str) -> Namespace:
+    """Execute a companion module's source as a new module of its own.
+
+    Every load is a fresh module under a name of its own (``stategraph_machine_<n>_<stem>``), so a changed file is
+    picked up on the next load, two machines -- or two versions of one machine -- never shadow each other, and a
+    run's snapshot source is what runs. The module sits in ``sys.modules`` for as long as its ``Namespace`` lives:
+    what looks a module up there (dataclasses, pydantic's forward references, ``typing.get_type_hints``, pickle)
+    works as in any module, and a finished run leaves nothing behind.
     """
-    module_globals: dict[str, Any] = {"__name__": f"stategraph_machine:{filename}", "__file__": filename,
-                                      "__builtins__": builtins}
+    stem = re.sub(r"\W", "_", posixpath.splitext(posixpath.basename(filename.replace("\\", "/")))[0])
+    name = f"stategraph_machine_{next(_MODULE_NUMBERS)}_{stem}"  # no dots: pickle imports the name
     try:
         code = compile(source, filename, "exec")
     except SyntaxError as exc:
         raise CodeError(filename, f"companion module does not compile: {exc.msg} (line {exc.lineno})",
                         cause=exc) from None
+    except _TOO_DEEP as exc:
+        raise CodeError(filename, f"companion module does not compile: {_TOO_DEEP_MESSAGE}", cause=exc) from None
+    module = types.ModuleType(name)
+    module.__file__ = filename
+    module.__builtins__ = builtins  # type: ignore[attr-defined]
+    sys.modules[name] = module
     try:
-        exec(code, module_globals)  # noqa: S102 -- machine code is trusted (§8.3)
-    except Exception as exc:
+        exec(code, module.__dict__)  # noqa: S102 -- machine code is trusted (§8.3)
+    except BaseException as exc:
+        sys.modules.pop(name, None)
+        if not isinstance(exc, Exception):
+            raise
         raise CodeError(filename, f"companion module raised on import: {type(exc).__name__}: {exc}",
                         cause=exc) from exc
-    return Namespace(module_globals)
+    namespace = Namespace(module.__dict__)
+    weakref.finalize(namespace, sys.modules.pop, name, None)
+    return namespace
 
 
 def scan_module(source: str, filename: str) -> Namespace:
@@ -526,4 +651,6 @@ def scan_module(source: str, filename: str) -> Namespace:
     except SyntaxError as exc:
         raise CodeError(filename, f"companion module does not compile: {exc.msg} (line {exc.lineno})",
                         cause=exc) from None
+    except _TOO_DEEP as exc:
+        raise CodeError(filename, f"companion module does not compile: {_TOO_DEEP_MESSAGE}", cause=exc) from None
     return Namespace(names=names, functions=functions)

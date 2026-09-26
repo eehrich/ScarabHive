@@ -7,7 +7,7 @@ stategraph: 1
 id: critique_round
 title: Critique round
 description: >-
-  One critic (chat_agent) reads a text and answers with JSON notes; returns
+  One critic (stategraph_example_agent) reads a text and answers with JSON notes; returns
   {notes, blocking}. A failed critic ends in a failed final, which the caller
   receives as error submachine_failed.
 
@@ -24,7 +24,7 @@ initial: critique
 states:
   critique:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: |
         Critique this scene{{ ' by the standard of a publisher' if params.strict else '' }}.
         Answer with one JSON object and nothing else:

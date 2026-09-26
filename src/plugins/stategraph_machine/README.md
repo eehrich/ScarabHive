@@ -25,18 +25,20 @@ plugins:
 
 The keys sit next to `type`, not under `agent_config` (which forbids unknown keys). The
 machine's agents get their prompt vars from the machine (`vars`, `vars_from`), not from the
-caller's session.
+caller's session. The run's own session (`sg_<run id>`, with its agents' sessions below it)
+sits below the facade's session, and its agents count one sub-agent level below the facade:
+a SAM's `max_nesting_depth` bounds them as if the facade had spawned them.
 
 ## Behaviour
 
 | Situation | What happens |
 |---|---|
 | a message | one run, run key = `<agent>:<request id>` (the user's), run id = `<request id>_sg<n>` (cancel, status lines and cost stay under the caller) |
-| the same request again | attaches to its live run, resumes it after a crash, or answers the succeeded run's output again; after a failed or cancelled run it starts a new one (whether it should answer the failure again is open, design §10); another user's request id gets nothing |
+| the same request again | attaches to its live run, resumes it after a crash, or -- once it ended -- answers its outcome again: the output, the failure, the cancel. Only a transient failure (`interrupted`, `timeout`, `agent_failed`, `decision_failed`, `internal`, `diverged` as the error or an unhandled cause) starts a new run (design §5.7); another user's request id gets nothing |
 | a `continue` of the instance | answers the output again (succeeded), resumes (interrupted), or refuses (failed, cancelled) -- in any process: the session's run is kept in runs.db |
 | a call as another agent's tool | a request of its own each time (its own session, a request id below the caller's) |
 | a request cancelled before its run started | answers `cancelled`, starts nothing |
-| a cancel of the request or of any request above it | the run is terminated; its `finally` activities run; the answer is `cancelled` |
+| a cancel of the request or of any request above it | the run is terminated; its `finally` activities run -- within 10 s: then the platform force-cancels the caller's request tree, their tool calls and agent runs included; the answer is `cancelled` |
 | the process stops, or the client goes away | the run is left alone and ends `interrupted`; the next dispatch resumes it |
 | the machine fails | an `error` event (never a `final`: writer_jobs counts any `final` as success) |
 

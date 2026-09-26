@@ -369,7 +369,7 @@ states:
   done: {type: final}
 """})
     messages = [(p.code, p.path, p.message) for p in tree.problems if p.level == "error"]
-    assert any(code == "SG004" and path == "finally.args" and "nope" in msg for code, path, msg in messages), messages
+    assert any(code == "SG004" and path == "finally.args.x" and "nope" in msg for code, path, msg in messages), messages
     assert any(code == "SG005" and path.startswith("states.a.finally") for code, path, _ in messages), messages
     assert any(code == "SG003" and path == "states.c.finally" for code, path, _ in messages), messages
     assert not found(validate({"m.yaml": FINALLY_MACHINE}), "SG004")
@@ -393,7 +393,7 @@ states:
   done: {type: final}
 """})
     errors = [(p.path, p.message) for p in tree.problems if p.level == "error"]
-    assert [path for path, message in errors if "'ending' is not bound" in message] == ["states.a.do.args"], errors
+    assert [path for path, message in errors if "'ending' is not bound" in message] == ["states.a.do.args.x"], errors
 
 
 # ------------------------------------------------------------------ resources (§2.9)
@@ -509,8 +509,8 @@ states:
     declared = validate({"m.yaml": "stategraph: 1\nid: m\nresources:\n  store:\n"
                                    "    open: {tool: t, args: {x: \"{{ fork_source }}\"}}\n" + uses % "stor"})
     errors = [(p.path, p.message) for p in declared.problems if p.level == "error"]
-    assert any(path == "resources.store.open.args" and "'fork_source' is not bound" in msg for path, msg in errors)
-    assert any(path == "states.a.do.args" and "resources has no 'stor'" in msg for path, msg in errors), errors
+    assert any(path == "resources.store.open.args.x" and "'fork_source' is not bound" in msg for path, msg in errors)
+    assert any(path == "states.a.do.args.x" and "resources has no 'stor'" in msg for path, msg in errors), errors
 
     undeclared = validate({"m.yaml": "stategraph: 1\nid: m\n" + uses % "store"})
     assert any("'resources' is not bound" in p.message for p in undeclared.problems), "no resources declared"
@@ -961,8 +961,8 @@ states:
   done: {type: final}
 """})
     messages = [(p.path, p.message) for p in tree.problems if p.level == "error"]
-    assert any(path == "resources.forum.open.args" and "not open yet" in msg for path, msg in messages), messages
-    assert any(path == "states.a.do.args" and "plain data" in msg for path, msg in messages), messages
+    assert any(path == "resources.forum.open.args.ns" and "not open yet" in msg for path, msg in messages), messages
+    assert any(path == "states.a.do.args.x" and "plain data" in msg for path, msg in messages), messages
 
 
 async def test_a_state_s_finally_and_its_submachine_s_finally_have_their_own_paths(harness):

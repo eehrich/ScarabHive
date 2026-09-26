@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS runs (
     run_key TEXT,
     owner TEXT,
     lease_until TEXT,
-    journal_format INTEGER
+    journal_format INTEGER,
+    nesting TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
 CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine_id, created_at);
@@ -70,7 +71,9 @@ CREATE TABLE IF NOT EXISTS callers (
 );
 """
 
-_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug")
+_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting")
+#: Columns a runs.db from before them lacks: added when it is opened.
+_ADDED_COLUMNS = {"nesting": "TEXT"}
 
 
 def utc_now() -> str:
@@ -102,6 +105,14 @@ class RunStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.executescript(_SCHEMA)
+            present = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+            for column, kind in _ADDED_COLUMNS.items():
+                if column not in present:
+                    try:
+                        conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
+                    except sqlite3.OperationalError as exc:  # another process added it meanwhile
+                        if "duplicate column" not in str(exc):
+                            raise
             self._conn = conn
         return self._conn
 
@@ -129,16 +140,17 @@ class RunStore:
                    params: Any = None, mocks: Any = None, debug: Any = None, user_id: Optional[str] = None,
                    session_id: Optional[str] = None, parent_run: Optional[str] = None,
                    fork_step: Optional[int] = None, run_key: Optional[str] = None, owner: Optional[str] = None,
-                   lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running") -> None:
+                   lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running",
+                   nesting: Any = None) -> None:
         now = utc_now()
         with self._lock:
             self._db().execute(
                 "INSERT INTO runs (id, machine_id, status, created_at, updated_at, params, mocks, definition, debug,"
-                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format, nesting)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, machine_id, status, now, now, _dumps(params), _dumps(mocks), _dumps(definition),
                  _dumps(debug), user_id, session_id, parent_run, fork_step, run_key, owner, lease_until,
-                 journal_format))
+                 journal_format, _dumps(nesting)))
 
     def update_run(self, run_id: str, *, fence: Optional[str] = None, **fields: Any) -> int:
         """Update a run; with ``fence`` only while that owner still holds it. Returns the rows changed."""
@@ -239,18 +251,10 @@ class RunStore:
         return row["run_id"] if row else None
 
     def latest_by_key(self, run_key: str) -> Optional[dict[str, Any]]:
-        """The newest run with this key, whatever its status (the facade answers a succeeded one again)."""
+        """The newest run with this key, whatever its status: the same request again gets it (service.start_run)."""
         with self._lock:
             row = self._db().execute("SELECT * FROM runs WHERE run_key = ? ORDER BY created_at DESC LIMIT 1",
                                      (run_key,)).fetchone()
-        return self._run_row(row) if row else None
-
-    def find_by_key(self, run_key: str) -> Optional[dict[str, Any]]:
-        """The newest run with this key that has not ended."""
-        with self._lock:
-            row = self._db().execute(
-                "SELECT * FROM runs WHERE run_key = ? AND status NOT IN ('succeeded','failed','cancelled')"
-                " ORDER BY created_at DESC LIMIT 1", (run_key,)).fetchone()
         return self._run_row(row) if row else None
 
     # ---------------------------------------------------------------- journal

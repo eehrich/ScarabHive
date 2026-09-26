@@ -1,19 +1,20 @@
 # Patterns
 
 Each pattern is a complete machine that validates against the shipped configuration
-(agents `chat_agent` and `research_agent`, tools of `stategraph_json` through the
-runner). Swap in the agents and tools
+(agents `stategraph_example_agent`, the plain agent this plugin ships, and `research_worker`;
+tools of `stategraph_json` through the runner). Name agents whose answer is plain text: an
+agent with the markdown formatter on (`chat_agent`) answers in HTML. Swap in the agents and tools
 `stategraph_catalog` lists for you. The machines in `src/plugins/stategraph/machines/`
 are the same patterns, runnable.
 
-Contents: 1 Review loop with Jev · 2 Retry with feedback to the same instance ·
+Contents: 1 Review loop with a decision model · 2 Retry with feedback to the same instance ·
 3 Tool error → repair state · 4 Fan-out and join · 5 Map over data · 6 Human
 approval · 7 Submachine reuse · 8 Shared error handling · 9 The v6 ritual ·
 10 Small ones: initial router, counter loop, reading the outside
 
 ---
 
-## 1. Review loop with Jev
+## 1. Review loop with a decision model
 
 Write, let a calibrated decision model judge, revise until good enough or out of
 rounds. Two bounds: the guard on `ctx.round` (the planned end) and `max_visits` (the
@@ -37,7 +38,7 @@ states:
     max_visits: 5
     entry: ctx.round += 1
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: |
         {{ 'Revise the draft below so that it fulfils the brief.' if ctx.draft else 'Write a draft that fulfils the brief.' }}
         Brief: {{ params.brief }}
@@ -81,6 +82,10 @@ Test: `mocks: {"write": {"$visits": ["d1", "d2"]}, "judge": {"$visits": [{"value
 
 With notes for the revision, put a critic between writer and judge -- see
 `machines/scene_review.yaml`, which also shows a companion function building the task.
+
+Where no decision profile fits the question, let an agent judge: `by: <agent>` on the
+`decide`. `out` keeps its shape (with `confidence` and `probabilities` `null`), so the
+guards and the mocks stay the same.
 
 ---
 
@@ -128,7 +133,7 @@ initial: count
 states:
   count:
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "How many distinct people are named in this text? Think it through, then end with COUNT: <number>.\n\n{{ params.text }}"
       parse: parse_count
       parse_retries: 2
@@ -152,7 +157,7 @@ states:
   recount:
     max_visits: 2
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       continue: "{{ ctx.counter }}"
       task: "Your count cannot be right: {{ ctx.problem }} Count again and end with COUNT: <number>."
       parse: parse_count
@@ -177,9 +182,12 @@ Mocks answer after parsing: `{"count": 4}` means `out` = 4. The `check` activity
 ## 3. Tool error → repair state
 
 A tool that refuses its input raises `tool_failed` with the tool's message. Send the
-message to an agent that repairs the input, then call the tool again -- bounded by
-`max_visits` on the repair state. A transient failure (a timeout, a busy service) is
-better handled by `retry` on the tool activity itself.
+message to an agent that repairs the input, then call the tool again -- bounded in the
+guard of the error transition that enters the repair state. Not by `max_visits` alone:
+the repair state is entered by an error transition, and a `loop_limit` raised while an
+error transition runs ends the frame -- no transition catches it (design §3.5).
+`max_visits` stays as the declared bound. A transient failure (a timeout, a busy
+service) is better handled by `retry` on the tool activity itself.
 
 ```yaml
 stategraph: 1
@@ -209,7 +217,7 @@ states:
     transitions:
       - target: done
       - trigger: error
-        guard: error.type == "tool_failed"
+        guard: error.type == "tool_failed" and run.visits.get("repair", 0) < 2
         target: repair
         effect: ctx.tool_error = error.message
       - trigger: error
@@ -217,7 +225,7 @@ states:
   repair:
     max_visits: 2
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: |
         The store refused this JSON: {{ ctx.tool_error }}
         Fix it and answer with the corrected JSON only.
@@ -267,9 +275,9 @@ states:
   ask:
     do:
       parallel:
-        optimist: {agent: chat_agent, task: "Argue for: {{ params.question }}"}
-        skeptic: {agent: chat_agent, task: "Argue against: {{ params.question }}"}
-        facts: {agent: research_agent, task: "Collect the facts behind: {{ params.question }}"}
+        optimist: {agent: stategraph_example_agent, task: "Argue for: {{ params.question }}"}
+        skeptic: {agent: stategraph_example_agent, task: "Argue against: {{ params.question }}"}
+        facts: {agent: research_worker, task: "Collect the facts behind: {{ params.question }}"}
       fail: collect
     transitions:
       - target: done
@@ -318,7 +326,7 @@ states:
       concurrency: 3
       fail: collect
       each:
-        agent: chat_agent
+        agent: stategraph_example_agent
         task: "Summarise '{{ doc['title'] }}' (document {{ index + 1 }}) in two sentences.\n\n{{ doc['text'] }}"
     transitions:
       - target: done
@@ -463,13 +471,13 @@ states:
     initial: outline
     states:
       outline:
-        do: {agent: chat_agent, task: "Outline an article on {{ params.topic }} in five points.", timeout: 5m}
+        do: {agent: stategraph_example_agent, task: "Outline an article on {{ params.topic }} in five points.", timeout: 5m}
         transitions:
           - target: draft
             effect: ctx.outline = out
       draft:
         do:
-          agent: chat_agent
+          agent: stategraph_example_agent
           task: "Write the article for this outline:\n\n{{ ctx.outline }}"
           retry: {attempts: 2, backoff: 30s}
         transitions:
@@ -507,74 +515,38 @@ again (e.g. from a retry state) resets the visit counts of everything inside.
 
 ---
 
-## 9. The v6 ritual
+## 9. One step, called many times: the v6 ritual
 
-The writer v6 coordinator repeats one ritual for every step: set the context, let a
-panel of agents work, merge its delta into the story document, drop keys, checkpoint.
-As a machine it is one submachine, called once per step with parameters.
-`machines/v6_ritual_demo.yaml` (+ `.py`) is the runnable demo; its moves:
+The writer v6 story design repeats one ritual for every step: a panel of agents works, its
+delta is merged into the story document, keys are dropped, the step is recorded. As a machine
+it is one submachine called once per step with parameters: `v6_ritual.yaml`, called by
+`v6_story.yaml` (both in `src/plugins_writer/writer_pipeline_v6/machines/`). Its moves:
 
-1. **Template vars instead of `set_context`.** `vars: {phase: "{{ params.phase }}",
-   aufgabe: "{{ params.work_item }}"}` -- the v6 prompts branch on these names, so
-   the keys keep v6's names. The merge order (§11 of format.md) puts a submachine's own
-   vars over its caller's, so every ritual call sets its own `phase` whatever the
-   top-level machine sets.
-2. **A marker line, parsed.** The panel ends its answer with
-   `DELTA_DOC=<id> | STATUS_DOC=<id> | DELETE_KEYS=a,b`. `parse: parse_marker` turns it
-   into `{delta_doc, status_doc, delete_keys}`; a missing or broken marker raises
-   `ValueError`, whose message goes back to the same panel instance.
-3. **Merge, with the store's error as feedback.** `tool: …_manage_json` with
-   `operation: merge_doc`. On `tool_failed` the machine goes to `panel_fix`, which
-   `continue`s the same panel instance with the error text; `max_visits: 2` on
-   `panel_fix` bounds it, and `loop_limit` ends the ritual as failed. The merge is
-   marked `idempotent: true`: merging the same delta twice gives the same document, so
-   a resumed run may repeat it.
-4. **Guarded `delete_keys`.** Two completion transitions after the merge: to
-   `drop_keys` when the marker named keys, else straight to the checkpoint.
-5. **Checkpoint** as a tool call (`set_value`), again idempotent.
+1. **Template vars per call.** `vars: "{{ {**params.vars, 'phase': params.phase, 'aufgabe':
+   params.aufgabe} }}"` -- the v6 prompts branch on these names. The merge order (§11 of
+   format.md) puts a submachine's own vars over its caller's, so every call sets its own
+   `phase`.
+2. **A marker line, parsed.** The panel ends its answer with one line such as
+   `DELTA_DOC=<id> | STATUS_DOC=<id> | DELETE_KEYS=a,b`. `parse:` turns it into a mapping; a
+   missing or broken line (a `ValueError` from the parse function) goes back to the same
+   instance as feedback, `parse_retries` times.
+3. **The store's error goes to a new agent.** The merge's error transition (guard
+   `error.type in ("tool_failed", "issues_failed")`) goes back to the initial choice with the
+   error text in `ctx`, and a fresh panel gets it in its task: in v6 a panel that closed its
+   forum channel cannot act again, so no `continue`. The bound is `max_visits: 3` on the panel
+   states (the first try and two store errors). The third store error enters a panel a fourth
+   time and raises `loop_limit` while an error transition runs, which ends the ritual's frame
+   (design §3.5); the caller's error transition around the ritual call takes it. Inside one
+   machine, bound such a loop in the guard instead (§3).
+4. **Repeatable store calls, decided per call.** The store calls run in a companion function
+   through `sg.tool(..., idempotent=...)`: a read, a merge of the same delta, a write of a named
+   document may be repeated by a resumed run; a delete by list index may not -- repeated, it
+   would take the next element.
+5. **A given result skips the agent.** An initial choice routes straight to the merge when
+   the caller passes the marker itself.
 
-Calling it per step:
-
-```yaml
-stategraph: 1
-id: ritual_steps
-title: Three ritual steps in a row
-imports:
-  ritual: ./v6_ritual_demo.yaml
-params:
-  namespace: {type: string, required: true}
-context:
-  merged: []
-initial: idea
-states:
-  idea:
-    do: {machine: ritual, params: {phase: idea, namespace: "{{ params.namespace }}"}}
-    transitions:
-      - target: synopsis
-        effect: ctx.merged.append(out["merged"])
-      - trigger: error
-        target: failed
-  synopsis:
-    do: {machine: ritual, params: {phase: synopsis, namespace: "{{ params.namespace }}"}}
-    transitions:
-      - target: audit
-        effect: ctx.merged.append(out["merged"])
-      - trigger: error
-        target: failed
-  audit:
-    do: {machine: ritual, params: {phase: audit, work_item: complete, namespace: "{{ params.namespace }}"}}
-    transitions:
-      - target: done
-        effect: ctx.merged.append(out["merged"])
-      - trigger: error
-        target: failed
-  done:
-    type: final
-    output: {merged: "{{ ctx.merged }}"}
-  failed:
-    type: final
-    status: failed
-```
+The caller runs it per step, `do: {machine: ritual, params: {phase: synopsis, ...}}`, each call
+with its own error transition.
 
 Secrets a writer tool needs (`write_key`) come from the plugin's `inject_params`,
 never from the machine. A step that creates something (a story row) is not
@@ -611,7 +583,7 @@ states:
   step:
     max_visits: 50
     do:
-      agent: chat_agent
+      agent: stategraph_example_agent
       task: "Continue the list. Previous: {{ ctx.results[-1] if ctx.results else 'none' }}. Item: {{ params.items[ctx.index] }}"
     transitions:
       - target: step

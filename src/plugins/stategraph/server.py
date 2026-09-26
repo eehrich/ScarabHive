@@ -145,26 +145,38 @@ class StateGraphServer(SchemaBasedToolServer):
         if registry is not None:
             self._registry = registry
 
+    def _auth_enabled(self) -> bool:
+        auth = getattr(self.system_config, "auth", None)
+        return auth is not None and bool(getattr(auth, "enabled", False))
+
+    @staticmethod
+    def _is_admin(user_id: Any) -> bool:
+        if not user_id:
+            return False
+        try:
+            from agent_system.auth.database import get_user_by_username
+            from agent_system.auth.models import UserRole
+
+            user = get_user_by_username(str(user_id))
+            return user is not None and user.is_active and user.role == UserRole.ADMIN
+        except Exception:
+            logger.debug("stategraph: role lookup for %r failed", user_id, exc_info=True)
+            return False
+
+    def sees_run(self, user_id: Optional[str], owner: Optional[str]) -> bool:
+        """Whether ``user_id`` may see and control a run of ``owner`` (§8.3): an admin every run, anyone else their
+        own and runs of nobody; without auth the app has one user."""
+        return not self._auth_enabled() or owner in (None, user_id) or self._is_admin(user_id)
+
     def _authorize(self, params: dict[str, Any], tool: str) -> Optional[str]:
         """None when the caller may use ``tool``; else the refusal (§8.3)."""
-        if tool in READ_ONLY_TOOLS:
-            return None
-        auth = getattr(self.system_config, "auth", None)
-        if auth is None or not getattr(auth, "enabled", False):
+        if tool in READ_ONLY_TOOLS or not self._auth_enabled():
             return None
         user_id = params.get("_user_id")
         if user_id and any(fnmatch.fnmatchcase(str(user_id), pattern) for pattern in self.allowed_users):
             return None
-        if user_id:
-            try:
-                from agent_system.auth.database import get_user_by_username
-                from agent_system.auth.models import UserRole
-
-                user = get_user_by_username(str(user_id))
-                if user is not None and user.is_active and user.role == UserRole.ADMIN:
-                    return None
-            except Exception:
-                logger.debug("stategraph: role lookup for %r failed", user_id, exc_info=True)
+        if self._is_admin(user_id):
+            return None
         return (f"stategraph: only admins may use {tool} (user {user_id or 'unknown'}); machines contain Python "
                 "and run agents and tools. An operator can list the user in the instance's allowed_users.")
 
@@ -259,7 +271,7 @@ class StateGraphServer(SchemaBasedToolServer):
                 machine_id, params=params.get("params") or {}, mocks=params.get("mocks") or None,
                 mock_only=bool(params.get("mock_only")), breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
-                run_key=params.get("run_key"))
+                run_key=params.get("run_key"), caller_session=params.get("_session_id"))
             run_id = started["run_id"]
             if (params.get("wait") or "finish") == "background" or started.get("attached") is False:
                 # background -- or a run another process owns: nothing here to wait on, report its row
@@ -285,7 +297,8 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def get_run(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            row = self.service.get_run(_need(params, "run_id"), steps=int(params.get("steps") or 30))
+            row = self.service.get_run(_need(params, "run_id"), steps=params.get("steps") or 30,
+                                       user_id=params.get("_user_id"))
             return {**_summary(row), "run_id": row["id"], "frames": (row.get("view") or {}).get("frames", []),
                     "journal": row.get("journal", []), "debug": row.get("debug")}
         return await self._run_tool(params, "get_run", body,
@@ -296,10 +309,12 @@ class StateGraphServer(SchemaBasedToolServer):
             run_id, action = _need(params, "run_id"), _need(params, "action")
             kwargs = {k: params[k] for k in ("state", "machine", "at_step", "definition", "breakpoints", "watchpoints",
                                               "expr", "path") if k in params}
-            kwargs["user_id"] = params.get("_user_id")
-            result = await self.service.control_run(run_id, action, **kwargs)
+            if params.get("steps") is not None:  # as get_run's: the answer carries that many journal rows
+                kwargs["steps"] = params["steps"]
+            result = await self.service.control_run(run_id, action, user_id=params.get("_user_id"), **kwargs)
             if "id" in result:  # a run row
-                return {**_summary(result), "run_id": result["id"], "action": action}
+                return {**_summary(result), "run_id": result["id"], "action": action,
+                        **({"journal": result.get("journal", [])} if "steps" in kwargs else {})}
             return {"action": action, **result}
         return await self._run_tool(params, "control_run", body,
                                     lambda r: f"{r['action']}: " + (f"run {r['run_id']} {r.get('run_status', '')}"
@@ -308,7 +323,7 @@ class StateGraphServer(SchemaBasedToolServer):
     async def send_event(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
             result = self.service.send_event(_need(params, "run_id"), _need(params, "name"), params.get("data"),
-                                             params.get("frame"))
+                                             params.get("frame"), user_id=params.get("_user_id"))
             if not result.get("accepted"):
                 raise ServiceError(409, result.get("reason") or "not accepted")
             return result
@@ -331,6 +346,7 @@ class StateGraphServer(SchemaBasedToolServer):
     # ------------------------------------------------------------ lifecycle (plugins/capabilities.py)
     async def start_plugin(self) -> None:
         """Mark runs whose owner's lease expired as interrupted -- in every process, never a live one."""
+        self.run_manager._stopping = False  # started again after stop_plugin: runs start again
         try:
             swept = self.run_manager.sweep_expired()
             if swept:

@@ -165,7 +165,8 @@ class Frame:
                                  "machine": self.machine.id,
                                  "state": leaf.name if leaf else None, "visits": dict(self.visits),
                                  "frame": self.prefix}, "run"),
-            "resources": namespace_of(self.resources, "resources"),
+            # a resource not opened (its open failed, or has not run yet) reads as None: a finally can check it
+            "resources": namespace_of({**dict.fromkeys(self.machine.spec.resources), **self.resources}, "resources"),
             "out": None, "error": None, "event": None, "activity": None,
         }
         if event is not None:
@@ -213,18 +214,21 @@ class Frame:
                 self._init_vars()
                 await self._enter_initial()
                 while True:
+                    # the states the last transition left -- also the initial one's, whose initial pseudostate
+                    # can lead out of a composite -- before the target's do (§3.10)
+                    await self._run_pending_finally()
                     self.run.stop_past_journal(self)
                     leaf = self.leaf
                     if leaf is None:
                         raise MachineFailed(self.pending_error or self._error("no_transition", "no active state", None))
                     if leaf.is_final and leaf.parent is None and self.pending_error is None:
                         result = self._finish(leaf)
-                        await self._finalize("finished", None)
+                        # a failed final ends the frame failed: its finally activities see why (ending.error)
+                        await self._finalize("finished" if result.status == "succeeded" else "failed", result.error)
                         return result
                     event = await self._next_event()
                     await self._dispatch(event)
                     await self.run.after_step(self)
-                    await self._run_pending_finally()
             except MachineFailed as failed:
                 self.run.trace(self, "failed", state=self.leaf.name if self.leaf else None, data=failed.error)
                 await self._finalize("failed", failed.error)
@@ -365,8 +369,11 @@ class Frame:
         if end is not None and end.get("reason") == "cancelled" and not end.get("terminated") and not self.ending_only:
             end = None  # a local cancel (a fail-fast join, an activity timeout) is not journaled: decide anew
         if end is not None:
+            # a journal from before 2026-09-26, when a failed final ended its frame 'finished': that end stands, so
+            # its end.finished.* keys match again
+            legacy = (end.get("reason"), computed) == ("finished", "failed") and (error or {}).get("type") == "final"
             reason, error = str(end.get("reason")), end.get("error")
-            if reason != computed and "cancelled" not in (reason, computed):
+            if reason != computed and "cancelled" not in (reason, computed) and not legacy:
                 raise self.run.diverged(f"{key}: the frame ended {reason} in the recorded run and {computed} now (a "
                                         "guard, action or template is not deterministic, or the definition changed)")
         else:
@@ -483,16 +490,22 @@ class Frame:
         status = leaf.spec.status or "succeeded"
         output = self._final_output(leaf)
         self.run.trace(self, "final", state=leaf.name, data={"status": status})
-        error = None if status == "succeeded" else self._error("final", f"ended in {leaf.name}", leaf.name)
+        error = None if status == "succeeded" else self._error("final", f"ended in the failed final state "
+                                                                        f"{leaf.name}", leaf.name)
         return FrameResult(status, output, leaf.name, error)
 
     def _final_output(self, leaf: Node) -> Any:
         if leaf.spec.output is None:
             return None
         try:
-            return jsonable(self.machine.namespace.render(leaf.spec.output, self.scope(), f"{leaf.name}.output"))
+            rendered = self.machine.namespace.render(leaf.spec.output, self.scope(), f"{leaf.name}.output")
         except CodeError as exc:
             raise MachineFailed(self._error("template_failed", exc.message, leaf.name)) from exc
+        try:
+            return jsonable(rendered)
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:  # e.g. a dict with tuple keys
+            raise MachineFailed(self._error("not_serialisable", f"{leaf.name}.output is not JSON data: {exc}",
+                                            leaf.name)) from exc
 
     async def _next_event(self) -> Event:
         leaf = self.leaf
@@ -561,6 +574,11 @@ class Frame:
             self.run.trace(self, "transition", state=owner.name,
                            data={"from": owner.name, "to": target.name if target else None, "event": event.name,
                                  "index": owner.transitions.index(transition)})
+            if event.name == TRIGGER_ERROR and self.pending_error is not None:
+                # the error transition entered a state past its max_visits: an error raised while an error
+                # transition is executed ends the frame, it is not handled again (§3.5)
+                error, self.pending_error = self.pending_error, None
+                raise MachineFailed({**error, "cause": event.error})
             return
         if event.name == TRIGGER_ERROR:
             raise MachineFailed(event.error or self._error("error", "unhandled error", leaf.name))

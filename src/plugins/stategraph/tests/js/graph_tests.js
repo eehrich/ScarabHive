@@ -4,8 +4,8 @@
 // The layout test loads the vendored ELK the way the panel does (a classic script defining the global ELK).
 
 import {
-  applyPositions, clipToBox, edgeRoute, edgeText, elkInput, layoutFrom, nodeSize, PAD, problemIndex, runOverlay,
-  fragmentLock, stateFragment, stateId,
+  applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
+  posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId,
 } from '../../static/graph.js';
 
 const results = [];
@@ -221,6 +221,60 @@ test('stateFragment and fragmentLock: an anchor, a tag, an alias or a flow value
   equal([2, 4, 8].map((line) => Boolean(fragmentLock(text, line))), [true, true, true], 'anchor, tag, alias: locked');
   assert(fragmentLock(text, 6).includes('goes on below'), 'the flow over two lines is locked');
   equal(fragmentLock(text, 9), '', 'a comment below does not lock');
+});
+
+// ------------------------------------------------------------------ names and paths from the server
+
+test('problemIndex and runOverlay: a state named like an Object property is a state like any other', () => {
+  const graph = { initial: 'constructor', states: [
+    { name: 'constructor', parent: null, type: 'state', composite: false, path: 'states.constructor', line: 5 },
+    { name: 'toString', parent: null, type: 'state', composite: false, path: 'states.toString', line: 9 }],
+  transitions: [] };
+  const index = problemIndex(graph, [{ level: 'error', code: 'SG004', message: 'x', path: 'states.constructor.do', file: 'm.yaml', line: 6 }], 'm.yaml');
+  equal(index.states.constructor.errors, 1, 'the problem is pinned to the state');
+  assert(!('toString' in index.states), 'a state without problems has no entry, inherited or not');
+  const overlay = runOverlay({ view: { frames: [{ prefix: '', config: [], visits: { constructor: 2 } }] } });
+  equal(overlay.visits.constructor, 2, 'visits of the state');
+  assert(!('toString' in overlay.visits), 'no visits inherited for another state');
+});
+
+test('problemIndex: a file named with backslashes (a server on Windows) is the root file', () => {
+  const index = problemIndex(GRAPH, [{ level: 'error', code: 'SG004', message: 'x', path: 'states.write.do',
+    file: 'E:\\machines\\review.yaml', line: 9 }], 'review.yaml');
+  equal(index.states.write?.errors, 1, 'pinned to its state, not to the machine');
+  equal(posixPath('a\\b\\c.yaml'), 'a/b/c.yaml', 'backslashes become slashes');
+});
+
+test('elkInput and gridLayout: a composite holding a state of its own name is laid out once, not without end', () => {
+  const graph = { initial: 'a', states: [
+    { name: 'a', parent: null, type: 'state', composite: true, initial: 'a' },
+    { name: 'a', parent: 'a', type: 'state', composite: true, initial: 'b' },
+    { name: 'b', parent: 'a', type: 'state', composite: false }],
+  transitions: [] };
+  const input = elkInput(graph);
+  equal(input.children.map((n) => n.id), ['i:', 's:a'], 'one a at the top');
+  equal(input.children[1].children.map((n) => n.id), ['i:a', 's:b'], 'the second a is left out');
+  equal(Object.keys(gridLayout(graph).nodes).sort(), ['s:a', 's:b'], 'the grid places each name once');
+});
+
+test('ELK gives a composite the width its title needs', async () => {
+  const graph = { initial: 'a_composite_with_a_rather_long_name', states: [
+    { name: 'a_composite_with_a_rather_long_name', parent: null, type: 'state', composite: true, initial: 'x', icon: 'layers' },
+    { name: 'x', parent: 'a_composite_with_a_rather_long_name', type: 'state', composite: false }],
+  transitions: [] };
+  const box = layoutFrom(await new ELK().layout(elkInput(graph))).nodes['s:a_composite_with_a_rather_long_name'];
+  const needed = compositeTitleWidth(graph.states[0]);
+  assert(needed > nodeSize(graph.states[1])[0] + PAD.left + PAD.right, 'fixture: the title is wider than the child');
+  assert(box.w >= needed, `the box holds its title: ${box.w} < ${needed}`);
+});
+
+test('fragmentLock: a state that uses an alias is applied in its place in the file: no lock', () => {
+  const file = [
+    'states:', '  a:', '    do: *work', '  b:', '    <<: *base', '    transitions: [{target: a}]', '  c:',
+    '    do: {agent: w, task: "a *bold* word"}', '    description: say it *twice* please', '  d:', '    items: [*x, *y]',
+  ].join('\n');
+  equal(['a', 'b', 'c', 'd'].map((name) => Boolean(fragmentLock(file, file.split('\n').indexOf(`  ${name}:`) + 1))),
+    [false, false, false, false], 'set_state reads the text where it stands: an alias there resolves');
 });
 
 // ------------------------------------------------------------------ run

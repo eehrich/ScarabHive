@@ -56,12 +56,40 @@ plugins:
       metadata:
         visibility: private                # not a chat partner
 
+    # The agent of the example machines (machines/*.yaml): plain text in, plain
+    # text out, no tools. Shipped with the plugin so the examples validate on
+    # every installation. Not chat_agent: its markdown formatter turns answers
+    # into HTML, and a machine reads the answer as data.
+    stategraph_example_agent:
+      type: basic_agent
+      enabled: true
+      description: "Plain agent for the stategraph example machines; answers in plain text"
+      agent_config:
+        llm_profile: [chat, or-gemini-flash-lite]
+        llm_profile_advanced: []
+        max_steps: 10
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: false
+            markdown_formatter.inject_markdown_system_prompt:
+              enabled: false
+      metadata:
+        visibility: private                # runs from machines, not a chat partner
+
     # JSON working documents for machines' tool activities
     # (tool stategraph_json_manage_json). Documents are scoped to the run's
-    # session unless a call passes a namespace. json_store's defaults apply:
-    # files under data/json_store/stategraph_json/, an idle namespace's files
-    # are deleted after 14 days (file_retention_hours).
+    # session unless a call passes a namespace. Files under
+    # data/json_store/stategraph_json/.
     stategraph_json:
       type: json_store
       enabled: true
       description: "stategraph: JSON working documents of machine runs"
+      config:
+        # Kept as long as the runs that name them: runs.db keeps every run,
+        # and an interrupted run resumes whenever someone resumes it -- its
+        # journal still names these documents then. json_store's default
+        # (336 h) would delete an idle namespace, and the resume would fail
+        # in its store steps.
+        file_retention_hours: 0

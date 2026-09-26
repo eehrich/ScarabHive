@@ -23,17 +23,18 @@ import difflib
 import io
 import re
 import textwrap
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
 
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.comments import CommentedMap, CommentedSeq, merge_attrib
+from ruamel.yaml.error import ReusedAnchorWarning, YAMLError
 from ruamel.yaml.scalarstring import LiteralScalarString, ScalarString
 
 from plugins.agent_editor.store import splice
 
-from .loader import to_plain
+from .loader import to_plain, yaml_bounds
 from .spec import NAME_PATTERN
 
 #: (mapping, sequence, offset) indentation tried per file; the rendering closest to the file wins.
@@ -79,12 +80,14 @@ def _add_state(edit: "_Edit", op: dict[str, Any]) -> str:
         body["do"] = _node(activity)
     parent = op.get("parent")
     if parent is None:
+        edit.untied(f"add state {name!r}", edit.doc["states"])
         edit.doc["states"][name] = body
         return edit.result()
     holder = _state_body(edit.state(parent))
     if holder.get("type", "state") != "state" or "do" in holder:
         raise EditError(f"{parent!r} cannot hold states: only a simple state without do becomes a composite")
     region = holder.get("states")
+    edit.untied(f"add state {name!r} to {parent!r}", holder, region)
     if isinstance(region, CommentedMap) and region:
         region[name] = body
     else:
@@ -117,6 +120,7 @@ def _remove_state(edit: "_Edit", op: dict[str, Any]) -> str:
     else:
         # the composite's last child: it becomes a simple state again
         removals.extend((found.owner, key) for key in ("initial", "states") if key in found.owner)
+    edit.untied(f"remove state {found.name!r}", *(container for container, _ in removals))
     blocks = [edit.block(container, key) for container, key in removals]
     for container, key in sorted(removals, key=lambda pair: pair[1] if isinstance(pair[1], int) else 0, reverse=True):
         del container[key]
@@ -126,6 +130,7 @@ def _remove_state(edit: "_Edit", op: dict[str, Any]) -> str:
 def _rename_state(edit: "_Edit", op: dict[str, Any]) -> str:
     found = edit.state(op.get("old"))
     new = _new_name(edit, op.get("new"))
+    edit.untied(f"rename state {found.name!r}", found.region)
     position = list(found.region).index(found.name)
     comment = found.region.ca.items.get(found.name)
     del found.region[found.name]
@@ -149,11 +154,28 @@ def _set_state(edit: "_Edit", op: dict[str, Any]) -> str:
         raise EditError("yaml: the state's mapping as YAML text")
     shown = edit.value_text(found.region, found.name)
     fragment = textwrap.dedent(source).strip("\n")
-    try:
+    lines = edit.replace_body(found.region, found.name, fragment)
+    if lines is not None:
+        # read in its place in the file: an alias of an anchor elsewhere resolves, an anchor of its own reaches the
+        # aliases after it; the typed lines are then the result as they stand
+        try:
+            doc = _parse(edit._join(lines), "the state's YAML")
+        except EditError as exc:  # a state tied to another place: most likely an anchor it held is gone
+            if edit.tied(found.body, whole=True):
+                raise EditError(f"{_shared(f'state {found.name!r}')} ({exc.message})") from None
+            raise
+        if not isinstance(doc, CommentedMap) or not isinstance(doc.get("states"), CommentedMap):
+            raise EditError("the state's YAML breaks the file around it (check its indentation)")
+        bodies = {state.name: state.body for state in _states(doc)}
+        if found.name not in bodies:  # a quote or an indentation ran past it and took it
+            raise EditError(_beyond(found.name))
+        body = bodies[found.name]
+        if body is None:  # a typed null: the machine would not load
+            raise EditError("the state's YAML must be a mapping (type, do, transitions, ...)")
+    else:  # a layout the lines cannot stand in for: the text alone, rendered into the file
+        doc = None
         # with its final newline, as replace_body writes it: a `|` block at the end keeps the newline it ends with
-        body = _yaml().load(fragment + "\n") if fragment.strip() else None
-    except YAMLError as exc:
-        raise EditError(f"the state's YAML does not parse: {exc}") from None
+        body = _parse(fragment + "\n", "the state's YAML") if fragment.strip() else None
     if body is None:
         body = CommentedMap()
     if not isinstance(body, CommentedMap):
@@ -161,9 +183,16 @@ def _set_state(edit: "_Edit", op: dict[str, Any]) -> str:
     current = to_plain(found.body) if found.body is not None else {}
     if to_plain(body) == current and _plain_lines(fragment) in [_plain_lines(text) for text in shown]:
         return edit.text  # applied as shown: the file stays byte-exact, an inline comment included
-    lines = edit.replace_body(found.region, found.name, fragment if body else "")
-    found.region[found.name] = body
-    return edit.result(lines=lines)
+    # an anchor or alias in it: the typed lines keep them, or the edit is refused
+    tied = f"state {found.name!r}" if edit.tied(found.body, whole=True) else ""
+    found.region[found.name] = body  # the old document with this state's value new, nothing else
+    if doc is not None:
+        # the typed lines read as a new file; it must be that document: an anchor the text keeps or reuses
+        # reaches other states, a quote or an indentation can run past the state
+        if to_plain(edit.doc) != to_plain(doc):
+            raise EditError(_shared(tied) if tied else _beyond(found.name))
+        edit.doc = doc
+    return edit.result(lines=lines, tied=tied)
 
 
 def _add_transition(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -173,6 +202,8 @@ def _add_transition(edit: "_Edit", op: dict[str, Any]) -> str:
     item = CommentedMap((key, _node(fields[key])) for key in TRANSITION_FIELDS if key in fields)
     body = _state_body(found)
     seq = body.get("transitions")
+    edit.untied(f"state {found.name!r}", seq)
+    edit.untied_key(f"state {found.name!r}", body, "transitions")
     if isinstance(seq, CommentedSeq):
         seq.append(item)
     else:
@@ -193,6 +224,12 @@ def _update_transition(edit: "_Edit", op: dict[str, Any]) -> str:
         raise EditError(f"transition {index} of {found.name!r} is not a mapping; fix it in the YAML tab")
     if fields.get("target") is not None:
         _check_target(edit, fields["target"])
+    merged_from = list(getattr(item, merge_attrib, None) or [])  # the mappings it merges
+    for key, value in fields.items():  # an item that merges another: its own keys only
+        edit.untied_key(f"state {found.name!r}", item, key)
+        if value in (None, "") and key in item and any(key in source for source in merged_from):
+            raise EditError(f"state {found.name!r}: without its own {key}, the transition takes the one it merges; "
+                            "edit it in the YAML tab")
     for key, value in fields.items():
         if value is None or value == "":
             item.pop(key, None)
@@ -219,10 +256,13 @@ def _move_transition(edit: "_Edit", op: dict[str, Any]) -> str:
     if to == index:
         return edit.text
     lines = edit.move_item(seq, index, to)
+    # an anchor or a merge in the list: only the moved lines keep them where they are (an alias above its anchor
+    # does not read; a rendering would move the anchor into another item)
+    tied = f"state {found.name!r}" if edit.tied(seq, whole=True) else ""
     item = seq[index]
     del seq[index]
     seq.insert(to, item)
-    return edit.result(lines=lines)
+    return edit.result(lines=lines, tied=tied)
 
 
 def _set_initial(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -231,6 +271,7 @@ def _set_initial(edit: "_Edit", op: dict[str, Any]) -> str:
     if parent is not None and parent != found.parent:
         raise EditError(f"{found.name!r} is not a direct child of {parent!r}; initial names a direct child")
     owner = found.owner
+    edit.untied(f"initial {found.name!r}", owner)
     if "initial" in owner:
         owner["initial"] = _like(owner["initial"], found.name)
     else:
@@ -292,11 +333,16 @@ def _transition(edit: "_Edit", op: dict[str, Any]) -> tuple[_State, CommentedSeq
     index = op.get("index")
     if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(seq):
         raise EditError(f"{found.name!r} has no transition {index!r}" + (f" (0 to {len(seq) - 1})" if seq else ""))
+    item = seq[index]
+    edit.untied(f"state {found.name!r}", seq)
+    if edit.reached.get(id(item), 0) > 1 or getattr(item, "_ref", None):  # aliased, or merged into another item
+        raise EditError(_shared(f"state {found.name!r}"))
+    edit.untied_key(f"state {found.name!r}", found.body, "transitions")
     return found, seq, index
 
 
 def _new_name(edit: "_Edit", name: Any) -> str:
-    if not isinstance(name, str) or not _NAME.match(name):
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
         raise EditError(f"state name {name!r} must match {NAME_PATTERN} (lowercase, digits, underscore)")
     if any(state.name == name for state in edit.states()):
         raise EditError(f"a state {name!r} exists already; state names are unique within a machine")
@@ -308,6 +354,70 @@ def _check_target(edit: "_Edit", target: Any) -> None:
         return
     if not isinstance(target, str) or not any(state.name == target for state in edit.states()):
         raise EditError(f"target {target!r} is no state of this machine")
+
+
+def _beyond(name: str) -> str:
+    return (f"state {name!r}: the typed YAML changes more than this state (an anchor used elsewhere, or a quote or an "
+            "indentation that runs past it); edit it in the YAML tab")
+
+
+def _key_line(name: str) -> re.Pattern:
+    """A state's key line: its name plain or quoted, then the rest."""
+    key = re.escape(name)
+    return re.compile(rf"^( *)(?:{key}|\"{key}\"|'{key}') *:(?P<rest>.*)$")
+
+
+def _shared(what: str) -> str:
+    return (f"{what}: this changes YAML that is shared with another place (an anchor and its alias, or a merge key "
+            "<<); edit it in the YAML tab")
+
+
+def _reached(doc: Any) -> dict[int, int]:
+    """How many ways lead to each mapping and sequence of ``doc``; more than one: an alias or a merge shares it
+    (everything below a shared node too). The walk expands aliases: ``yaml_bounds`` has bounded that."""
+    counts: dict[int, int] = {}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, (CommentedMap, CommentedSeq)):
+            counts[id(node)] = counts.get(id(node), 0) + 1
+            for child in node.values() if isinstance(node, CommentedMap) else node:
+                walk(child)
+
+    walk(doc)
+    return counts
+
+
+def _below(node: Any) -> Iterator[Any]:
+    """``node`` and every mapping and sequence below it, each once."""
+    seen: set[int] = set()
+    todo = [node]
+    while todo:
+        item = todo.pop()
+        if isinstance(item, (CommentedMap, CommentedSeq)) and id(item) not in seen:
+            seen.add(id(item))
+            yield item
+            todo.extend(item.values() if isinstance(item, CommentedMap) else item)
+
+
+def _parse(text: str, what: str) -> Any:
+    """Typed YAML as round-trip nodes, bounded like a file; what does not read is an EditError naming ``what``."""
+    try:
+        with warnings.catch_warnings():
+            # a typed anchor under a name the file has already would rebind the aliases after it
+            warnings.simplefilter("error", ReusedAnchorWarning)
+            doc = _yaml().load(text)
+    except ReusedAnchorWarning as exc:
+        raise EditError(f"{what} names an anchor the file has already: {exc}") from None
+    except YAMLError as exc:
+        raise EditError(f"{what} does not parse: {exc}") from None
+    except RecursionError:
+        raise EditError(f"{what} is nested too deeply to read") from None
+    except Exception as exc:  # ruamel's constructor: a merge key that names its own anchor
+        raise EditError(f"{what} does not read as YAML: {exc}") from None
+    too_big = yaml_bounds(doc)
+    if too_big:
+        raise EditError(f"{what}: {too_big.removeprefix('YAML: ')}")
+    return doc
 
 
 def _node(value: Any) -> Any:
@@ -345,9 +455,10 @@ def _dump(doc: Any, indent: tuple[int, int, int]) -> str:
 
 def _reads_as(text: str, expected: Any) -> bool:
     try:
-        return to_plain(_yaml().load(text)) == expected
-    except YAMLError:
+        doc = _yaml().load(text)
+    except Exception:  # YAMLError, RecursionError, or ruamel's constructor
         return False
+    return not yaml_bounds(doc) and to_plain(doc) == expected  # a typed anchor may enlarge the aliases after it
 
 
 def _distance(a: str, b: str) -> int:
@@ -393,6 +504,13 @@ class _Edit:
             self.doc = _yaml().load(text)
         except YAMLError as exc:
             raise EditError(f"the file does not parse as YAML ({exc}); fix it in the YAML tab first") from None
+        except RecursionError:
+            raise EditError("the file is nested too deeply to read as YAML; fix it in the YAML tab first") from None
+        except Exception as exc:  # ruamel's constructor: a merge key that names its own anchor
+            raise EditError(f"the file does not read as YAML ({exc}); fix it in the YAML tab first") from None
+        too_big = yaml_bounds(self.doc)
+        if too_big:
+            raise EditError(f"{too_big}; fix it in the YAML tab first")
         if not isinstance(self.doc, CommentedMap) or not isinstance(self.doc.get("states"), CommentedMap):
             raise EditError("the file is no machine with states; fix it in the YAML tab first")
         renderings: dict[tuple[int, int, int], str] = {}
@@ -405,6 +523,34 @@ class _Edit:
         self.indent = indent
         self.base = renderings[indent]  # the unedited document as ruamel writes it: splice's common ancestor
         self.lines, self.open_end = _split(text)
+        self.reached = _reached(self.doc)
+
+    def tied(self, *nodes: Any, whole: bool = False) -> bool:
+        """Whether YAML ties ``nodes`` to another place of the file: a node reached twice (an anchor and its alias)
+        or a mapping in a merge (``<<: *base``). ``whole``: or anything below them."""
+        for node in nodes:
+            for part in _below(node) if whole else [node]:
+                merged = getattr(part, merge_attrib, None) or getattr(part, "_ref", None)  # it merges, or is merged
+                if merged or self.reached.get(id(part), 0) > 1:
+                    return True
+        return False
+
+    def untied(self, what: str, *nodes: Any) -> None:
+        """Refuse to change ``nodes`` where YAML ties them to another place: the edit would change that place as
+        well, or fail inside ruamel."""
+        if self.tied(*nodes):
+            raise EditError(_shared(what))
+
+    def untied_key(self, what: str, mapping: Any, key: str) -> None:
+        """Refuse to set or remove ``key`` of ``mapping`` where another place sees it: the mapping is reached twice,
+        its ``key`` comes through its own merge (``<<: *base``), or a mapping that merges it inherits ``key``. A
+        mapping's own key beside a merge is its own business."""
+        if not isinstance(mapping, CommentedMap):
+            return
+        inherited = key in mapping and not mapping._unmerged_contains(key)
+        heirs = [other for other in getattr(mapping, "_ref", ()) if not other._unmerged_contains(key)]
+        if inherited or heirs or self.reached.get(id(mapping), 0) > 1:
+            raise EditError(_shared(what))
 
     # -- finding
     def states(self) -> Iterator[_State]:
@@ -456,7 +602,7 @@ class _Edit:
         except (KeyError, AttributeError):
             return []
         own = self.lines[line] if line < len(self.lines) else ""
-        head = re.match(rf"^( *){re.escape(name)} *:(?P<rest>.*)$", own.rstrip("\n"))
+        head = _key_line(name).match(own.rstrip("\n"))
         if head is None or len(head.group(1)) != column:
             return []
         rest = head.group("rest").strip()
@@ -478,38 +624,46 @@ class _Edit:
         except (KeyError, AttributeError):
             return None
         own = self.lines[line] if line < len(self.lines) else ""
-        head = re.match(rf"^( *){re.escape(name)} *:(?P<rest>.*)$", own.rstrip("\n"))
+        head = _key_line(name).match(own.rstrip("\n"))
         if head is None or len(head.group(1)) != column:
             return None
         rest = head.group("rest").strip()
         inline = bool(rest) and not rest.startswith("#")
         end = line + 1 if inline else _body_end(self.lines, line, column)
-        if not fragment:
+        pad = " " * (column + self.indent[0])
+        if all(not text.strip() or text.lstrip().startswith("#") for text in fragment.split("\n")):
+            # nothing but comments (or nothing): an empty mapping, not a null the machine would not load
             key_line = f"{' ' * column}{name}: {{}}\n"
-            body: list[str] = []
+            body: list[str] = [f"{pad}{text.strip()}\n" for text in fragment.split("\n") if text.strip()]
         else:
             key_line = f"{' ' * column}{name}:\n" if inline else own
-            pad = " " * (column + self.indent[0])
             body = [f"{pad}{text}\n" if text.strip() else "\n" for text in fragment.split("\n")]
         return self.lines[:line] + [key_line] + body + self.lines[end:]
 
     # -- writing
     def result(self, *, cut: Optional[list[Optional[tuple[int, int]]]] = None,
-               lines: Optional[list[str]] = None) -> str:
-        """The edited document as text: planned lines first, then the splice, then ruamel's own rendering."""
+               lines: Optional[list[str]] = None, tied: str = "") -> str:
+        """The edited document as text: planned lines first, then the splice, then ruamel's own rendering.
+
+        ``tied`` (what the edit is about): the edit touches an anchor or an alias, so only the planned lines may
+        write it -- a rendering would expand the alias into a copy or drop the anchor."""
         expected = to_plain(self.doc)
-        for candidate in self._candidates(cut, lines):
+        for candidate in self._candidates(cut, lines, render=not tied):
             if _reads_as(candidate, expected):
                 return candidate
+        if tied:
+            raise EditError(_shared(tied))
         raise EditError("the edit cannot be written so that the file reads back as intended; "
                         "change it in the YAML tab")
 
     def _candidates(self, cut: Optional[list[Optional[tuple[int, int]]]],
-                    lines: Optional[list[str]]) -> Iterator[str]:
+                    lines: Optional[list[str]], render: bool = True) -> Iterator[str]:
         if cut and all(block is not None for block in cut):
             yield self._join(self._cut(cut))  # type: ignore[arg-type]
         if lines is not None:
             yield self._join(lines)
+        if not render:
+            return
         new = _dump(self.doc, self.indent)
         yield splice(self.text, self.base, new, True)
         yield splice(self.text, self.base, new, False)

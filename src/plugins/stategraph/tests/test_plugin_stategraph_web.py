@@ -161,6 +161,55 @@ def test_control_run_passes_known_arguments_and_the_user_and_refuses_others():
     assert refused.status_code == 422 and len(service.calls) == 1
 
 
+def test_a_run_is_read_evented_and_controlled_as_the_admin_asking(monkeypatch):
+    """The service checks who may see a run (server.sees_run) and fails closed: a route that names nobody would find
+    every run of a user missing. The control answer carries as many journal rows as the panel's poll."""
+    test_client, service = client(auth=True)
+    admin = SimpleNamespace(username="ada", is_active=True, role=UserRole.ADMIN)
+
+    async def found(*args: Any) -> Any:
+        return admin
+
+    monkeypatch.setattr(web_endpoints, "get_optional_user", found)
+    monkeypatch.setattr(web_endpoints, "get_db", lambda: None)
+
+    run = test_client.get("/plugins/stategraph/api/runs/r1?steps=200")
+    event = test_client.post("/plugins/stategraph/api/runs/r1/events", json={"name": "approve"})
+    control = test_client.post("/plugins/stategraph/api/runs/r1/control", json={"action": "pause", "steps": 200})
+
+    assert (run.status_code, event.status_code, control.status_code) == (200, 200, 200)
+    assert service.calls == [("get_run", ("r1",), {"steps": 200, "user_id": "ada"}),
+                             ("send_event", ("r1", "approve"), {"data": None, "frame": None, "user_id": "ada"}),
+                             ("control_run", ("r1", "pause"), {"steps": 200, "user_id": "ada"})]
+
+
+def test_the_page_names_its_viewer_whose_sessions_the_chat_can_open(monkeypatch):
+    test_client, _ = client(auth=True)
+    admin = SimpleNamespace(username="ada", is_active=True, role=UserRole.ADMIN)
+
+    async def found(*args: Any) -> Any:
+        return admin
+
+    monkeypatch.setattr(web_endpoints, "get_optional_user", found)
+    monkeypatch.setattr(web_endpoints, "get_db", lambda: None)
+
+    page = test_client.get("/plugins/stategraph/")
+
+    assert page.status_code == 200 and 'data-viewer="ada"' in page.text
+
+
+def test_a_machine_is_deleted_as_json_naming_the_version_seen():
+    test_client, service = client()
+
+    form = test_client.request("DELETE", "/plugins/stategraph/api/machines/review", content="expected_version=v1",
+                               headers={"content-type": "application/x-www-form-urlencoded"})
+    blind = test_client.request("DELETE", "/plugins/stategraph/api/machines/review", json={})
+    deleted = test_client.request("DELETE", "/plugins/stategraph/api/machines/review", json={"expected_version": "v1"})
+
+    assert (form.status_code, blind.status_code, deleted.status_code) == (415, 422, 200)
+    assert service.calls == [("delete_machine", ("review", "v1"), {})]
+
+
 def test_the_panel_page_loads_elk_before_the_module():
     test_client, _ = client()
 

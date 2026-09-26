@@ -23,8 +23,9 @@ instances, all enabled:
 |---|---|---|
 | `stategraph` | `stategraph` | the tools and the panel |
 | `stategraph_runner` | `basic_agent` | hosts runs; its tool allowlist is what a machine may call |
-| `stategraph_json` | `json_store` | JSON documents for machines' tool activities |
+| `stategraph_json` | `json_store` | JSON documents for machines' tool activities; kept without expiry (`file_retention_hours: 0`): an interrupted run's journal still names them when it resumes |
 | `stategraph_author` | `multi_turn_agent` | writes, validates, saves and test-runs machines |
+| `stategraph_example_agent` | `basic_agent` | the agent of the example machines: plain text, no tools, private. Not `chat_agent`: its markdown formatter hands a machine HTML |
 
 Configuration of `stategraph` (defaults in code):
 
@@ -64,15 +65,49 @@ output as JSON. Example: `v6_story_machine`, the writer v6 story design as a mac
 | `stategraph_get_machine` | `machine_id` | `files {path: text}`, `versions {path: version}`, problems | |
 | `stategraph_validate_machine` | `files` or `yaml`, `machine_id?` | problems | yes |
 | `stategraph_save_machine` | `files`, `machine_id?`, `expected_versions?` | versions; refused on errors or a version conflict | yes |
-| `stategraph_run_machine` | `machine_id`, `params`, `mocks`, `mock_only`, `breakpoints`, `watchpoints`, `run_key`, `wait`, `max_wait` | run id, status, state, output, error, accepted events | yes |
+| `stategraph_run_machine` | `machine_id`, `params`, `mocks`, `mock_only`, `breakpoints`, `watchpoints`, `run_key`, `wait`, `max_wait` | run id, status, state, output, error, accepted events; with `run_key` also `attached`, `resumed` or `ended` | yes |
 | `stategraph_get_run` | `run_id`, `steps?` | status, frames, context, output or error, last journal rows | |
 | `stategraph_control_run` | `run_id`, `action`, action args | pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set | yes |
 | `stategraph_send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not | yes |
 
 ¹ The handler checks `_user_id`: an active admin, or a user in `allowed_users`.
 
+**`run_key`** -- the same request again. Every call looks up the newest run of the key: a
+live one is attached to, one another process holds answers `attached: false`, an interrupted
+one is resumed, and an ended one answers `{run_id, ended: <status>}` -- the same output, failure
+or cancel again. Only a failure that is transient (`interrupted`, `timeout`, `agent_failed`,
+`decision_failed`, `internal`, `diverged` as the error or an unhandled cause;
+`runner.TRANSIENT_ERRORS`) starts a new
+run. A key of another user's run is refused.
+
+**`control_run`** checks its arguments' types, `steps` included (a wrong one is an error,
+nothing acts); with `steps` its answer carries that many journal rows;
+`run_to` needs a `state`; `evaluate` answers JSON (a value that is not data comes as its
+`repr`), as do watch values. The debugger's state -- pause, step, `run_to` -- survives a stop
+and resume.
+
 Slash command: `/stategraph-run <machine id>` starts a run in the background.
-REST for the panel: `/plugins/stategraph/api/…` (design §8.2), admin-only.
+REST for the panel: `/plugins/stategraph/api/…` (design §8.2), admin-only. It also deletes a
+machine, which no tool does: `DELETE /plugins/stategraph/api/machines/{id}` with
+`{"expected_version": …}` removes the file, its layout sidecar and its companion module unless
+another machine uses that module or it lies outside the writable roots; refused (409) while
+another machine imports it. Its runs keep their snapshot.
+
+## Panel
+
+**State Graph** lists the machines in collapsible folders by `group` (`Writer/v6`; without
+one, "My machines" for the writable root, else the plugin the machine comes with); the open
+folders are remembered, and a search opens what it finds. The machines pane and the inspector
+fold away (toolbar buttons). A writable machine can be deleted; a double-click on a state
+renames it; inspector edits not yet applied are asked about before they are dropped. A state's
+YAML in the inspector is read in its place in the file, so it may use an alias of an anchor
+elsewhere. In the YAML tab, **Python module** gives a writable machine without one its companion
+module: `python: <id>.py` after the id line and the file, both drafts until Save (a file of that
+name left from an earlier module can be used as it is); a `.py` file is coloured as Python. Each run
+has a **Result** card: its output or error, the end state of every frame, and every finished
+activity folded with its full answer; an agent's session and the run's own session open in the
+chat. A failed poll keeps polling and says "not refreshed"; the run list follows a terminate;
+an interrupted run can be terminated (its `finally` activities run).
 
 ## Security
 
@@ -84,6 +119,11 @@ and they run agents and tools. Therefore:
 - **Tools** that validate, save, run, control or send events require an admin or a user
   in `allowed_users`. Validating and saving never execute a machine's companion module
   (its names come from a scan); only a run does.
+- **Runs belong to their user.** `get_run`, `control_run` and `send_event` (tools and REST)
+  answer another user's run as missing unless the asker is an admin or auth is off; a run of
+  nobody is visible to all. A resumed or terminated run runs as its own user, whoever
+  triggered it; a fork is a new run of the forking user and never continues the source's
+  agent instances.
 - **Recursion.** The runner's allowlist never contains stategraph's own tools, and the
   validator refuses them in a machine (SG007): a machine cannot save, start or control
   machines.
@@ -107,13 +147,21 @@ and they run agents and tools. Therefore:
 
 - **Cross-process debugging.** Only runs of the API process can be paused from the
   panel; runs of other processes are visible through their journal (design §11).
-- **Browser tests.** The panel is checked with JavaScriptCore, not in a browser; the
-  first browser session is a manual check in both themes.
+- **Browser tests.** The panel is checked with JavaScriptCore, or with node where `jsc` is
+  missing (`tests/js/node_jsc.mjs`), not in a browser; the first browser session is a manual
+  check in both themes.
 - **Cost.** Agent calls report no usage to the engine; only `decide` reports cost.
 - **External state is not forked.** A fork replays the machine's own journal; stores,
   database rows and agent conversations keep what the source run did.
 - **`call` activities run in mock-only runs.** They are in-process Python; mock the
   ones that reach outside.
+- **A sync `call` cannot be stopped.** It runs in a worker thread, so terminate and timeouts
+  take effect at once -- the activity ends, the thread's late result is dropped -- but the
+  thread runs on to its end. `sg.tool()` works only on the event loop: an async function
+  awaits it, a sync one may only return it.
+- **A `finally` under a cancelled caller** (the agent facade's request, or one above it) has
+  10 s, not 60: the platform then force-cancels the caller's request tree, the `finally`'s tool
+  calls and agent runs included.
 
 ## Model Experience
 
@@ -132,7 +180,7 @@ Its tools, with the descriptions from `schema.yaml`:
 - `stategraph_get_machine` -- "A machine as its file tree: files {relative path: text} (the YAML, its companion .py, imported machines in the same root), versions {path: version} to pass back when saving, and its validation problems."
 - `stategraph_validate_machine` -- "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents that exist, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
 - `stategraph_save_machine` -- "Validate, then write the machine tree into the writable machine root. Refused if validation finds errors, or if a file changed since the versions you read (pass expected_versions from get_machine; omit for new files)."
-- `stategraph_run_machine` -- "Run a machine. mocks {state path: out} answer instead of the activity ({"$visits": [out1, out2]} per use of the path in the run, {"$error": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key attaches to an unfinished run with the same key instead of starting a second one."
+- `stategraph_run_machine` -- "Run a machine. mocks {state path: out} answer instead of the activity ({"$visits": [out1, out2]} per use of the path in the run, {"$error": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key makes it the same request again: the run with that key is attached to while it runs, resumed when interrupted, and answered again (ended: its status) once it ended; only a transient failure starts a new run."
 - `stategraph_get_run` -- "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows."
 - `stategraph_control_run` -- "Debugger and lifecycle: pause, continue, step, run_to (state), terminate, resume (an interrupted run), fork (from top-level step at_step), set_breakpoints, set_watchpoints, evaluate (expr, read-only), set (path, expr; only while paused)."
 - `stategraph_send_event` -- "Send a declared event to a run. It goes to the frame whose active states accept it; name frame when several do. An event nobody accepts yet waits in the run's inbox."
@@ -151,18 +199,27 @@ A failed test run's `error` names the state and the cause, e.g.
 `loop_limit: panel_fix entered 3 times (max_visits 2)`.
 
 **Agents a machine runs** see only their task and the template vars the machine sets;
-nothing about stategraph. Each instance is a sub-session of the run's session
-(`sg_<run id>`), so it stays out of the session list. **`stategraph_runner`** is never talked to; its prompt only
+nothing about stategraph. An agent that decides (`decide` with `by:`) gets the questions with
+the form of each answer and the content, and answers in JSON.
+
+**The run's own session.** A run with a backend creates the session `sg_<run id>` (title
+`<machine title> · <run id>`, agent `stategraph_runner`): at the top level of its user's
+session list, or below the session of the agent that started it (the facade, a tool call). It
+holds a user message with the params and, when the run ends, an assistant message with status,
+final state, and output or error (both `injected_by: stategraph`); a resume finds it there.
+Each agent instance is a sub-session of it, so the list shows the run with its
+agents' conversations below it. A mock-only run has none. It carries a `depth`, so the chat
+opens it read-only: **`stategraph_runner`** is private and never talked to; its prompt only
 tells a stray visitor where to go.
 
-No hook: the plugin injects nothing into any conversation.
+No hook: the plugin writes only into its runs' own sessions, never into another conversation.
 
 ### Token and cache effect
 
-- The skill body (about 9 KB, roughly 2.3k tokens) and the author prompt (about 4 KB)
+- The skill body (about 10 KB, roughly 2.6k tokens) and the author prompt (about 4 KB)
   sit in the author's system prompt: static, no ticking values -- a stable cache prefix.
 - References are read on demand and **appended** to the history (`format.md` about
-  38 KB, `patterns.md` about 20 KB, `debugging.md` about 10 KB); nothing rewrites
+  51 KB, `patterns.md` about 20 KB, `debugging.md` about 12 KB); nothing rewrites
   earlier messages.
 - Tool results grow with the machine: `get_machine` returns the whole tree,
   `validate_machine` the problem list, `get_run` at most `steps` journal rows (default

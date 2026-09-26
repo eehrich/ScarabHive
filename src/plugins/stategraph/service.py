@@ -16,13 +16,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
+from .engine.debugger import Breakpoint, Watchpoint, parse_points
 from .engine.journal import ACTIVE_STATUSES, RunStore
 from .engine.machine import CompileError
-from .engine.runner import RunManager
+from .engine.runner import RunManager, failed_transiently
 from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
 from .model.validate import validate_tree
-from .store import MachineStore, VersionConflict, version_of
+from .store import FileInTheWay, MachineStore, VersionConflict, version_of
 
 if TYPE_CHECKING:
     from .server import StateGraphServer
@@ -56,6 +57,8 @@ _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: How long terminate waits for the run to end (its finally activities run first) before it answers.
 TERMINATE_WAIT = 10.0
+#: The folder of machines in the writable roots that name none: the author's own.
+OWN_GROUP = "My machines"
 
 
 class StateGraphService:
@@ -113,12 +116,14 @@ class StateGraphService:
         out = []
         for machine in self.store.list():
             entry: dict[str, Any] = {"id": machine.id, "file": str(machine.path), "root": machine.root,
-                                     "writable": machine.writable, "title": "", "description": ""}
+                                     "writable": machine.writable, "title": "", "description": "",
+                                     "group": _origin(machine)}
             try:
                 tree = self._validate(self.store.load(machine.id))
                 spec = tree.root_file.spec
                 if spec is not None:
                     entry["title"], entry["description"] = spec.title, spec.description
+                    entry["group"] = spec.group or entry["group"]
                 errors = [p for p in tree.problems if p.level == "error"]
                 entry.update(valid=not errors, errors=len(errors),
                              warnings=len(tree.problems) - len(errors))
@@ -152,9 +157,47 @@ class StateGraphService:
         text = NEW_MACHINE.format(id=machine_id, title=json.dumps(title, ensure_ascii=False))  # JSON is valid YAML
         try:
             self.store.write_files(machine_id, {f"{machine_id}.yaml": text})
+        except FileInTheWay:  # made meanwhile, or a file no root lists
+            raise ServiceError(409, f"machine {machine_id!r} exists already") from None
         except PermissionError as exc:
             raise ServiceError(403, str(exc)) from None
         return self.get_machine(machine_id)
+
+    def delete_machine(self, machine_id: str, expected_version: str) -> dict[str, Any]:
+        """Delete a machine of a writable root: its file (the version the caller saw), its layout and its companion
+        module -- unless another machine uses that module, or it lies outside the writable roots. Refused while
+        another machine imports it: that one would stop loading. Its runs keep their snapshot and stay readable."""
+        self._require(machine_id)
+        found = self.store.find(machine_id)
+        assert found is not None
+        own = self.store.load(machine_id).root_file
+        importers, sharers = [], []
+        for other in self.store.list():
+            if other.id == machine_id:
+                continue
+            try:
+                tree = self.store.load(other.id)
+            except Exception:  # a broken machine imports nothing that loads
+                continue
+            if any(_same_file(path, found.path) for path in tree.files if path != tree.root):
+                importers.append(other.id)
+            if own.python_path and any(f.python_path and _same_file(f.python_path, own.python_path)
+                                       for f in tree.files.values()):
+                sharers.append(other.id)
+        if importers:
+            raise ServiceError(409, f"{machine_id!r} is imported by {', '.join(sorted(importers))}: remove those "
+                                    "imports first")
+        module = Path(own.python_path) if own.python_path else None
+        keep = module is None or sharers or not self.store.is_writable(module)
+        try:
+            removed = self.store.delete(machine_id, expected_version=expected_version,
+                                        companion=None if keep else module)
+        except VersionConflict as exc:
+            raise ServiceError(409, f"the machine changed since it was read ({exc}): reload it first") from None
+        except PermissionError as exc:
+            raise ServiceError(403, str(exc)) from None
+        return {"deleted": machine_id, "files": [Path(path).name for path in removed],
+                "kept_module": Path(module).name if module is not None and keep else None}
 
     def _tree_from(self, files: Optional[dict[str, str]], yaml: Optional[str],
                    machine_id: Optional[str]) -> tuple[str, dict[str, str], MachineTree]:
@@ -198,7 +241,7 @@ class StateGraphService:
             raise ServiceError(422, f"{len(errors)} error(s), not saved: {first}")
         try:
             versions = self.store.write_files(machine_id, files, expected_versions)
-        except VersionConflict as exc:
+        except (FileInTheWay, VersionConflict) as exc:
             raise ServiceError(409, str(exc)) from None
         except PermissionError as exc:
             raise ServiceError(403, str(exc)) from None
@@ -237,31 +280,41 @@ class StateGraphService:
         return describe_kinds()
 
     # ------------------------------------------------------------ runs
-    def backend_factory(self, user_id: Optional[str]) -> Callable[[str], Any]:
+    def backend_factory(self) -> Callable[[str], Any]:
+        """A run's backend, as its row says: its user -- whoever resumes or terminates the run only triggers that;
+        its agents run, and their instance sessions are found, as the run's user -- and its caller's place in a
+        sub-agent tree."""
         def make(run_id: str) -> Any:
             runner = self.server.resolve_runner()
             if runner is None:
                 return NoBackend()
+            row = self.run_store.get_run(run_id) or {}
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
-                                     session_id=f"sg_{run_id}", user_id=user_id,
-                                     token=self.server.cancel_token(run_id),
+                                     session_id=f"sg_{run_id}", user_id=row.get("user_id"),
+                                     token=self.server.cancel_token(run_id), nesting=row.get("nesting"),
                                      inject_params=self.server.inject_params, config_check=self.config_check())
         return make
 
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,
                         mocks: Optional[dict[str, Any]] = None, mock_only: bool = False, breakpoints: Any = (),
                         watchpoints: Any = (), pause_at_start: bool = False, user_id: Optional[str] = None,
-                        run_key: Optional[str] = None, run_id: Optional[str] = None) -> dict[str, Any]:
-        """Start a run of ``machine_id``; with ``run_key``, attach to or resume the unfinished run of that key.
+                        run_key: Optional[str] = None, run_id: Optional[str] = None,
+                        caller_session: Optional[str] = None) -> dict[str, Any]:
+        """Start a run of ``machine_id``. With ``run_key`` the same request gets the run of that key, if there is
+        one: attached to while it runs, resumed when interrupted, and once it ended its outcome again (``ended``:
+        its status) -- only after a transient failure (runner.TRANSIENT_ERRORS) does a new run try it anew.
 
         ``run_id`` (the agent facade: ``<request id>_sg<n>``) keeps cancel, status and cost attribution under
         the caller's request id; it must be a session-id-safe word of at most 128 characters.
+        ``caller_session``: the session of the agent that asks; the run's agent instances sit one level below it
+        in its sub-agent tree.
         """
         self._require(machine_id)
         if run_id is not None and not _RUN_ID.fullmatch(run_id):
             raise ServiceError(422, f"run_id {run_id!r} must match {_RUN_ID.pattern}")
+        nesting = await self._nesting(user_id, caller_session)  # before the key's lookup: nothing awaits past it
         if run_key:
-            existing = self.runs.find_by_key(run_key)
+            existing = self.run_store.latest_by_key(run_key)
             if existing is not None and existing.get("user_id") not in (None, user_id):
                 raise ServiceError(409, f"run_key {run_key!r} belongs to another user's run")
             if existing is not None:
@@ -274,30 +327,50 @@ class StateGraphService:
                     return {"run_id": existing["id"], "attached": False, "owner": existing.get("owner"),
                             "note": "another process runs it; this call started nothing"}
                 if existing["status"] == "interrupted":
-                    await self._resume(existing["id"], user_id)
+                    await self._resume(existing["id"])
                     return {"run_id": existing["id"], "resumed": True}
+                if not (existing["status"] == "failed" and failed_transiently(existing.get("error"))):
+                    return {"run_id": existing["id"], "ended": existing["status"]}
         checked = self._validate(self.store.load(machine_id))
         errors = [p for p in checked.problems if p.level == "error"]
         if errors:
             raise ServiceError(422, f"{len(errors)} error(s): " + "; ".join(
                 f"{p.code} {p.path} {p.message}" for p in errors[:3]))
-        tree = self.store.load(machine_id, execute_python=True)
+        tree = load_snapshot(checked.snapshot())  # exactly what was validated: a save meanwhile does not slip in
         try:
             run_id = await self.runs.start(
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
-                backend_factory=None if mock_only else self.backend_factory(user_id), user_id=user_id,
-                run_key=run_key, run_id=run_id)
+                backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
+                run_key=run_key, run_id=run_id, nesting=nesting)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
 
-    async def _resume(self, run_id: str, user_id: Optional[str]) -> None:
+    async def _nesting(self, user_id: Optional[str], caller_session: Optional[str]) -> Optional[dict[str, Any]]:
+        """The caller's place in a sub-agent tree, as the SAM keeps it in the caller's session: ``depth`` and
+        ``depth_budget`` (the levels it may still grant below itself). None without a stored caller session."""
+        if not caller_session:
+            return None
+        runner = self.server.resolve_runner()
+        sessions = getattr(getattr(runner, "_session_service", None), "session_manager", None)
+        if sessions is None:
+            return None
+        try:
+            data = await sessions.load_session(user_id or "anonymous", caller_session)
+        except Exception:  # no stored session of that user: the run's agents start a tree of their own
+            return None
+        depth, budget = data.get("depth"), data.get("depth_budget")
+        # session: the run's own session hangs below it (backend.run_began), where its caller's tree is shown
+        return {"depth": depth if _is_int(depth) else 1, "depth_budget": budget if _is_int(budget) else None,
+                "session": caller_session}
+
+    async def _resume(self, run_id: str) -> None:
         row = self.run_store.get_run(run_id)
         options = (row or {}).get("mocks") or {}
         try:
             await self.runs.resume(run_id, backend_factory=None if options.get("mock_only")
-                                   else self.backend_factory(user_id or (row or {}).get("user_id")))
+                                   else self.backend_factory())
         except (ValueError, CompileError) as exc:
             raise ServiceError(409, str(exc)) from None
 
@@ -311,11 +384,11 @@ class StateGraphService:
         except asyncio.TimeoutError:
             logger.info("stategraph: run %s still ends after %.0fs (finally activities)", run_id, timeout)
 
-    async def _terminate_elsewhere(self, run_id: str, user_id: Optional[str]) -> None:
+    async def _terminate_elsewhere(self, run_id: str) -> None:
         """A run no process here runs: resume it into its termination, so its finally activities run (§3.10).
 
         A run that ended is left alone; one another process holds is refused (409). If it cannot be resumed
-        at all (its definition no longer loads), it is marked cancelled without them.
+        at all (its definition no longer loads), it is marked cancelled without them, and its error says so.
         """
         row = self.run_store.get_run(run_id) or {}
         if row.get("status") in ("succeeded", "failed", "cancelled"):
@@ -323,14 +396,25 @@ class StateGraphService:
         options = row.get("mocks") or {}
         try:
             await self.runs.resume(run_id, cancel=True, backend_factory=None if options.get("mock_only")
-                                   else self.backend_factory(user_id or row.get("user_id")))
-        except CompileError:
-            self.runs.control(run_id, "terminate")
+                                   else self.backend_factory())
+        except CompileError as exc:
+            self.runs.terminate_elsewhere(run_id, "terminated while interrupted; its finally activities did not "
+                                                  f"run: its definition does not load ({exc})")
+
+    def _run(self, run_id: str, user_id: Optional[str]) -> dict[str, Any]:
+        """The run's row for a user who may see it (§8.3): an admin every run, anyone else their own -- another
+        user's run answers like one that does not exist."""
+        row = self.run_store.get_run(run_id)
+        if row is None or not self.server.sees_run(user_id, row.get("user_id")):
+            raise ServiceError(404, f"no run {run_id!r}")
+        return row
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)))
 
-    def get_run(self, run_id: str, steps: int = 50) -> dict[str, Any]:
+    def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None) -> dict[str, Any]:
+        self._run(run_id, user_id)
+        _check_steps(steps)
         try:
             row = self.runs.describe(run_id)
         except KeyError:
@@ -338,8 +422,7 @@ class StateGraphService:
         view = row.get("view") or {}
         row["accepts"] = [{"frame": f.get("prefix", ""), "state": f.get("state"), "events": f.get("accepts") or []}
                           for f in view.get("frames", []) if f.get("accepts")]
-        row["journal"] = self.run_store.tail(run_id, limit=max(1, min(int(steps), 500)),
-                                             kinds=("activity", "trace", "event", "edit", "timer"))
+        row["journal"] = self.run_store.tail(run_id, limit=steps, kinds=("activity", "trace", "event", "edit", "timer"))
         return row
 
     def journal(self, run_id: str, after: int = 0, limit: int = 200, kinds: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -347,22 +430,28 @@ class StateGraphService:
             raise ServiceError(404, f"no run {run_id!r}")
         return self.run_store.page(run_id, after=after, limit=max(1, min(int(limit), 1000)), kinds=kinds)
 
-    async def control_run(self, run_id: str, action: str, **kwargs: Any) -> dict[str, Any]:
-        if self.run_store.get_run(run_id) is None:
-            raise ServiceError(404, f"no run {run_id!r}")
+    async def control_run(self, run_id: str, action: str, *, user_id: Optional[str] = None, steps: int = 50,
+                          **kwargs: Any) -> dict[str, Any]:
+        """``user_id`` asks: they may control the runs they may see (``_run``); a resume, fork's source or terminate
+        runs as the run's own user all the same (backend_factory). ``steps``: the journal rows of the answer, as
+        ``get_run``'s."""
+        self._run(run_id, user_id)
+        _check_steps(steps)  # with the other arguments: nothing acts before all of them hold
+        _check_control_args(kwargs)
         try:
             if action == "terminate":
                 if run_id in self.runs.live:
                     self.runs.control(run_id, action)
                 else:
-                    await self._terminate_elsewhere(run_id, kwargs.get("user_id"))
+                    await self._terminate_elsewhere(run_id)
                 await self._await_end(run_id, TERMINATE_WAIT)  # its finally activities run first
             elif action in ("pause", "continue", "step", "run_to"):
-                self.runs.control(run_id, action, state=kwargs.get("state"), machine=kwargs.get("machine"))
+                state = _required(kwargs, "state") if action == "run_to" else kwargs.get("state")
+                self.runs.control(run_id, action, state=state, machine=kwargs.get("machine"))
             elif action == "resume":
-                await self._resume(run_id, kwargs.get("user_id"))
+                await self._resume(run_id)
             elif action == "fork":
-                return await self._fork(run_id, kwargs)
+                return await self._fork(run_id, kwargs, user_id)
             elif action == "set_breakpoints":
                 self.runs.set_points(run_id, breakpoints=kwargs.get("breakpoints") or [])
             elif action == "set_watchpoints":
@@ -383,9 +472,12 @@ class StateGraphService:
             if isinstance(exc, CodeError):
                 raise ServiceError(422, exc.message) from None
             raise
-        return self.get_run(run_id)
+        return self.get_run(run_id, steps=steps, user_id=user_id)
 
-    async def _fork(self, run_id: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    async def _fork(self, run_id: str, kwargs: dict[str, Any], user_id: Optional[str]) -> dict[str, Any]:
+        """A fork is a new run, and it is the forking user's: they started it. It never continues an agent instance
+        of its source (§5.6: its own session refuses them), so no conversation of the source's user runs on under
+        another; its new instances are the fork's user's. Without a user (no auth) it keeps the source's."""
         row = self.run_store.get_run(run_id)
         assert row is not None
         tree = None
@@ -394,24 +486,64 @@ class StateGraphService:
             checked = self._validate(self.store.load(row["machine_id"]))
             if not checked.ok:
                 raise ServiceError(422, "the current definition has errors; fix them before forking onto it")
-            tree = self.store.load(row["machine_id"], execute_python=True)
+            tree = load_snapshot(checked.snapshot())  # exactly what was validated
         options = row.get("mocks") or {}
-        user_id = kwargs.get("user_id") or row.get("user_id")
         try:
             new_id = await self.runs.fork(run_id, at_step=kwargs.get("at_step"), tree=tree,
                                           backend_factory=None if options.get("mock_only")
-                                          else self.backend_factory(user_id), user_id=user_id)
+                                          else self.backend_factory(), user_id=user_id or row.get("user_id"))
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}
 
-    def send_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None) -> dict[str, Any]:
+    def send_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None, *,
+                   user_id: Optional[str] = None) -> dict[str, Any]:
+        self._run(run_id, user_id)
         try:
             return self.runs.send_event(run_id, name, data, frame)
         except KeyError:
             raise ServiceError(404, f"no run {run_id!r}") from None
         except ValueError as exc:
             raise ServiceError(409, str(exc)) from None
+
+
+#: control_run's arguments besides the action, and their types (the tool's and the panel's parameters).
+_CONTROL_ARGS: dict[str, type] = {"state": str, "machine": str, "at_step": int, "definition": str,
+                                  "breakpoints": list, "watchpoints": list, "expr": str, "path": str}
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_control_args(kwargs: dict[str, Any]) -> None:
+    """Every argument of its type before anything acts on it: a wrong one is the caller's mistake (422), not a
+    crash inside the run or the fork."""
+    for key, value in kwargs.items():
+        kind = _CONTROL_ARGS.get(key)
+        if kind is None:
+            raise ServiceError(422, f"unknown argument {key!r} for control_run")
+        if value is not None and not (_is_int(value) if kind is int else isinstance(value, kind)):
+            raise ServiceError(422, f"{key} must be {'a whole number' if kind is int else 'a ' + kind.__name__}, "
+                                    f"not {type(value).__name__}")
+    if kwargs.get("at_step") is not None and kwargs["at_step"] < 0:
+        raise ServiceError(422, "at_step must be 0 or more")
+    if kwargs.get("definition") not in (None, "snapshot", "current"):
+        raise ServiceError(422, f"definition must be snapshot or current, not {kwargs['definition']!r}")
+    _check_points(kwargs.get("breakpoints"), kwargs.get("watchpoints"))
+
+
+def _check_steps(steps: Any) -> None:
+    if not _is_int(steps) or not 1 <= steps <= 500:
+        raise ServiceError(422, f"steps must be a whole number from 1 to 500, not {steps!r}")
+
+
+def _check_points(breakpoints: Any, watchpoints: Any) -> None:
+    try:
+        parse_points(breakpoints, Breakpoint)
+        parse_points(watchpoints, Watchpoint)
+    except ValueError as exc:
+        raise ServiceError(422, str(exc)) from None
 
 
 def _required(kwargs: dict[str, Any], key: str) -> str:
@@ -433,3 +565,16 @@ def _id_of(yaml_text: str) -> Optional[str]:
 
 
 __all__ = ["ServiceError", "StateGraphService", "load_snapshot", "Path"]
+
+
+def _origin(machine: Any) -> str:
+    """The folder a machine that names no group shows in: the author's own for the writable roots, else the folder
+    that holds its machines/ directory -- the plugin it comes with."""
+    if machine.writable:
+        return OWN_GROUP
+    folder = Path(machine.path).parent
+    return folder.parent.name if folder.name == "machines" else folder.name
+
+
+def _same_file(a: Any, b: Any) -> bool:
+    return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(os.path.realpath(str(b)))

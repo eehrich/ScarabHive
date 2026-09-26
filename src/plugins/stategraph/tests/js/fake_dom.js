@@ -74,7 +74,7 @@ globalThis.document = {
 globalThis.window = globalThis;
 globalThis.DOC_LISTENERS = {};
 globalThis.location = { search: '?machine=review', pathname: '/plugins/stategraph/' };
-globalThis.localStorage = { store: {}, getItem(k) { return this.store[k] ?? null; }, setItem(k, v) { this.store[k] = String(v); } };
+globalThis.localStorage = { store: {}, getItem(k) { return this.store[k] ?? null; }, setItem(k, v) { this.store[k] = String(v); }, removeItem(k) { delete this.store[k]; } };
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.Event = class { constructor(type) { this.type = type; } };
 globalThis.console = { log: print, warn: print, error: (...a) => { globalThis.ERRORS.push(a.map(String).join(' ')); print('console.error', ...a); }, err: print };

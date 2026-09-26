@@ -19,8 +19,9 @@ Config (flat keys next to ``type``; ``agent_config`` forbids unknown keys)::
 
 Request ids: the run key is ``<agent>:<request id>`` (and belongs to the user who started the
 run), the run id ``<request id>_sg<n>``. So a re-dispatch of the same request attaches to its
-run, resumes it after a crash, or answers the succeeded one again; cancel, status lines and
-cost accounting stay under the caller; and a cancel of the caller reaches the run's token,
+run, resumes it after a crash, or -- once it ended -- answers its outcome again: the output, the
+failure, the cancel; only a transient failure starts a new run (service.start_run); cancel, status
+lines and cost accounting stay under the caller; and a cancel of the caller reaches the run's token,
 which terminates the run (its ``finally`` activities run). A bare task cancel -- the process
 stops, the SSE client left -- leaves the run alone: it ends ``interrupted`` and the next
 dispatch resumes it. Which run a session belongs to is kept in runs.db, so a continue in any
@@ -162,23 +163,16 @@ class MachineAgent(Agent):
         caller = f"{self.name}:{session_id}"
         stopped = lambda: token.is_cancelled or entry["cancel"].is_set()  # noqa: E731
         run_id = server.run_store.run_of_caller(caller)
-        if run_id is None:  # a create
-            run_key = f"{self.name}:{request_id}"
-            done = server.run_store.latest_by_key(run_key)
-            if done is not None and done.get("user_id") not in (None, user_id):
-                yield await refuse(f"{self.name}: request {request_id} belongs to another user")
-                return
-            if done is not None and done["status"] == "succeeded":  # the same request again: its answer again
-                run_id = done["id"]
-            elif stopped():
+        if run_id is None:  # a create -- or the same request again, which start_run answers with its run
+            if stopped():
                 yield await refuse(f"{self.name}: cancelled before the run started", "cancelled")
                 return
-            else:
-                try:
-                    run_id = await self._start(server, self._params(text), run_key, request_id, user_id, token, entry)
-                except _Refused as refused:
-                    yield await refuse(f"{self.name}: {refused}")
-                    return
+            try:
+                run_id = await self._start(server, self._params(text), f"{self.name}:{request_id}", request_id,
+                                           user_id, session_id, token, entry)
+            except _Refused as refused:
+                yield await refuse(f"{self.name}: {refused}")
+                return
             server.run_store.set_caller(caller, run_id)
         else:  # a continue: never a second run
             await self._load_transcript(session_id, user_id)
@@ -254,14 +248,17 @@ class MachineAgent(Agent):
 
     # ------------------------------------------------------------ helpers
     async def _start(self, server: Any, params: dict[str, Any], run_key: str, request_id: str,
-                     user_id: Optional[str], token: Any, entry: dict[str, Any]) -> str:
-        """Start (or attach to, or resume) the run of this request; wait out another process's live lease."""
+                     user_id: Optional[str], session_id: str, token: Any, entry: dict[str, Any]) -> str:
+        """The run of this request: started, attached to, resumed, or the one that ended (its outcome is the answer
+        again; start_run decides, also after another process's run we waited for ended meanwhile); wait out
+        another process's live lease."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + ATTACH_PATIENCE
         while True:
             try:
                 started = await server.service.start_run(self.machine_id, params=params, user_id=user_id,
-                                                         run_key=run_key, run_id=f"{request_id}_sg{short_id(6)}")
+                                                         run_key=run_key, run_id=f"{request_id}_sg{short_id(6)}",
+                                                         caller_session=session_id)
             except Exception as exc:  # ServiceError (unknown machine, invalid params, config, key of another user)
                 raise _Refused(f"the machine {self.machine_id} did not start: {exc}") from exc
             if started.get("attached") is not False:

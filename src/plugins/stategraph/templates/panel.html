@@ -2,9 +2,13 @@
 {% from "kit/macros.html" import icon, empty %}
 {% block title %}State Graph{% endblock %}
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
-{% block toolbar %}<pk-refresh interval="10"></pk-refresh>{% endblock %}
+{% block toolbar %}
+<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="machinesPane" aria-expanded="true" title="Show or hide the machines">{{ icon('panel-left', size='sm') }}</button>
+<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-pk-sidebar-toggle aria-controls="inspectorPane" aria-expanded="true" title="Show or hide the inspector">{{ icon('panel-right', size='sm') }}</button>
+<pk-refresh interval="10"></pk-refresh>
+{% endblock %}
 {% block content %}
-<div class="sg-layout pk-sidebar-layout">
+<div class="sg-layout pk-sidebar-layout" data-viewer="{{ viewer }}">
   <nav class="sg-side pk-sidebar" id="machinesPane" aria-label="Machines">
     <div class="pk-row sg-side-top">
       <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search machines" aria-label="Search machines"></label>
@@ -44,6 +48,7 @@
           <select id="yamlFile" class="pk-select pk-select--sm sg-file" aria-label="File"></select>
           <span id="yamlState" class="pk-muted"></span>
           <span class="pk-grow"></span>
+          <button type="button" class="pk-btn pk-btn--sm" id="yamlAddModule" hidden title="Add a companion module: its public functions can be call and parse targets, its names are in scope in this machine's code">{{ icon('plus', size='sm') }} Python module</button>
           <button type="button" class="pk-btn pk-btn--sm" id="yamlRevert" title="Discard the unsaved changes of every file">{{ icon('rotate-ccw', size='sm') }} Revert</button>
           <button type="button" class="pk-btn pk-btn--sm" id="yamlValidate">{{ icon('circle-check', size='sm') }} Validate</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="yamlSave">{{ icon('save', size='sm') }} Save</button>
@@ -69,6 +74,7 @@
           <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary" id="startRun">{{ icon('play', size='sm') }} Start</button></div>
         </form>
         <div id="runList"></div>
+        <div id="runResult"></div>
         <div id="runHistory"></div>
       </section>
     </div>
@@ -125,5 +131,6 @@
 {% endblock %}
 {% block scripts %}
 <script src="/plugins/{{ plugin }}/static/vendor/elkjs/elk.bundled.js"></script>
+<script src="/static/vendor/prism/prism.js" data-manual></script>
 <script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>
 {% endblock %}

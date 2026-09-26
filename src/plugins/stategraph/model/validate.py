@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+import jsonschema
 import networkx as nx
 from pydantic import ValidationError
 
@@ -20,8 +21,8 @@ from plugins.stategraph.kinds import KindLookupError, parse_activity
 from plugins.stategraph.kinds.builtin import param_ref
 from plugins.stategraph.kinds.base import ActivityKind, KindSpec
 from .code import (BINDINGS, SCOPE_NAMES, CodeError, analyse, braced, compile_expression, compile_statements,
-                   template_expressions)
-from .loader import LoadedFile, MachineTree, dotted
+                   scan_template, template_expressions)
+from .loader import LoadedFile, MachineTree, dotted, schema_problems
 from .spec import GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec
 
 #: ``kind`` is "agent", "tool", "profile" or "vars_from" (with the name);
@@ -80,6 +81,8 @@ def _validate_file(fc: _FileContext) -> None:
             json.dumps(value, allow_nan=False)
         except (TypeError, ValueError):
             fc.problem("error", "SG001", f"context.{name} is not JSON data", ["context", name])
+    for name, event in spec.events.items():
+        _check_schema(fc, event.data, ["events", name, "data"], "SG001")
     for index, (name, resource) in enumerate(spec.resources.items()):
         fc.open_resources = set(list(spec.resources)[:index])
         _check_activity(fc, resource.open, ["resources", name, "open"], set())
@@ -230,8 +233,7 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
     elif state.initial:
         fc.problem("error", "SG003", "initial belongs to composite states (with nested states)", path + ["initial"])
 
-    is_wait = (kind == "state" and not state.states and state.do is None
-               and not any(t.trigger == TRIGGER_DONE for t in state.transitions))
+    is_wait = state.is_wait
     if state.timeout is not None and not is_wait:
         fc.problem("error", "SG003", "timeout belongs to wait states (no do, no completion transition); an "
                                      "activity has its own do.timeout", path + ["timeout"])
@@ -299,7 +301,7 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
     except SyntaxError as exc:
         fc.problem("error", "SG004", f"not Python: {exc.msg}", path)
         return
-    for unknown in use.unknown:
+    for unknown in [] if fc.loaded.namespace.open else use.unknown:  # a star import may bring any name
         fc.problem("error", "SG004", f"unknown name {unknown!r} (in scope: ctx, params, out, error, event, run, "
                                      f"activity, the companion module, builtins)", path)
     unbound = sorted((use.loads & SCOPE_NAMES) - set(bound) - fc.always_bound - {"sg"})
@@ -328,27 +330,34 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
 
 
 def _check_template(fc: _FileContext, value: Any, path: list[Any], bound: Iterable[str], extra: set[str]) -> None:
-    try:
-        expressions = list(template_expressions(value))
-    except CodeError as exc:
-        fc.problem("error", "SG004", exc.message, path)
-        return
-    for source in expressions:
-        _check_code(fc, source, path, mode="eval", bound=bound, extra=extra)
-    _lint_bare_references(fc, value, path)  # per leaf: a templated sibling does not excuse a bare reference
-
-
-def _lint_bare_references(fc: _FileContext, value: Any, path: list[Any]) -> None:
-    if isinstance(value, str):
+    """Every leaf of a template value, each problem at the leaf that has it."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _check_template(fc, item, path + [key], bound, extra)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _check_template(fc, item, path + [index], bound, extra)
+    elif isinstance(value, str):
+        try:
+            found = scan_template(value)
+        except CodeError as exc:
+            fc.problem("error", "SG004", exc.message, path)
+            return
+        for _, _, source in found:
+            _check_code(fc, source, path, mode="eval", bound=bound, extra=extra)
         if _BARE_REFERENCE.match(value) and "{{" not in value:
             fc.problem("warning", "SG107", f"{value!r} is literal text here; did you mean {{{{ {value.strip()} }}}}?",
                        path)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            _lint_bare_references(fc, item, path + [key])
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _lint_bare_references(fc, item, path + [index])
+
+
+def _check_schema(fc: _FileContext, schema: Any, path: list[Any], code: str) -> None:
+    """A JSON schema the engine validates against at run time: an invalid one fails every value."""
+    if not isinstance(schema, dict):
+        return
+    try:
+        jsonschema.validators.validator_for(schema).check_schema(schema)  # what jsonschema.validate checks first
+    except jsonschema.SchemaError as exc:
+        fc.problem("error", code, f"not a valid JSON schema: {exc.message}", path + list(exc.path))
 
 
 # ------------------------------------------------------------------ activities
@@ -374,15 +383,17 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
         fc.problem("error", "SG005", str(exc), path)
         return
     except ValidationError as exc:
-        for error in exc.errors():
-            loc = [part for part in error["loc"] if isinstance(part, (str, int))]
-            message = str(error.get("msg", "invalid")).removeprefix("Value error, ")
+        def message(error: dict[str, Any]) -> str:
             if error.get("type") == "extra_forbidden":
-                message = f"unknown key {loc[-1]!r} for a {kind_name(raw)}-activity"
-            fc.problem("error", "SG005", message, path + loc)
+                return f"unknown key {error['loc'][-1]!r} for a {kind_name(raw)}-activity"
+            return str(error.get("msg", "invalid")).removeprefix("Value error, ")
+
+        for loc, text in schema_problems(raw, exc.errors(), message):
+            fc.problem("error", "SG005", text, path + loc)
         return
 
     bound = set(BINDINGS["state"]) | extra
+    _check_schema(fc, raw.get("schema"), path + ["schema"], "SG005")
     if "vars" in kind.template_fields and "vars" in raw:
         _check_vars_shape(fc, raw["vars"], path + ["vars"])
     for key in kind.template_fields:

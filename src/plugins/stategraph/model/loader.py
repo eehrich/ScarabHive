@@ -12,6 +12,7 @@ run started with, not whatever the file says today).
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Literal, Optional, Protocol
 
@@ -110,7 +111,10 @@ class MachineTree:
         return self.files[self.root]
 
     def snapshot(self) -> dict[str, Any]:
-        """Everything needed to load this tree again later: texts and machine ids."""
+        """Everything needed to load this tree again later: texts and machine ids.
+
+        Keys are portable (``portable_snapshot``), so a run started on one OS resumes on another.
+        """
         texts: dict[str, str] = {}
         ids: dict[str, str] = {}
         for path, loaded in self.files.items():
@@ -119,7 +123,7 @@ class MachineTree:
                 texts[loaded.python_path] = loaded.python_text
             if loaded.spec:
                 ids[loaded.spec.id] = path
-        return {"root": self.root, "files": texts, "ids": ids}
+        return portable_snapshot({"root": self.root, "files": texts, "ids": ids})
 
     def add(self, level: Literal["error", "warning"], code: str, message: str, *,
             file: str = "", path: str = "", line: Optional[int] = None) -> None:
@@ -139,8 +143,38 @@ def load_tree(root: str, sources: Sources, *, execute_python: bool = False) -> M
 
 
 def load_snapshot(snapshot: dict[str, Any], *, execute_python: bool = True) -> MachineTree:
+    snapshot = portable_snapshot(snapshot)  # a run stored before snapshots were portable holds host paths
     return load_tree(snapshot["root"], SnapshotSources(snapshot["files"], snapshot.get("ids")),
                      execute_python=execute_python)
+
+
+def portable_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """A definition snapshot whose paths mean the same on every OS: relative to the root file's directory, ``/``.
+
+    ``SnapshotSources`` resolves ``python:`` and ``./x.yaml`` next to a path with ``posixpath``, but the store's
+    paths are the host's (``C:\\machines\\m.yaml`` on Windows). Rewriting them once, here, keeps every relative
+    reference resolvable wherever the run resumes. A file with nothing in common with the root's directory (another
+    Windows drive) keeps its absolute path, with ``/``. Applying this to a portable snapshot changes nothing.
+    """
+    root = _slashed(snapshot["root"])
+    base = posixpath.dirname(root)
+    start = base.rstrip("/").split("/") if base else []  # "/" is the one part "" (the root), like "/m" is "", "m"
+
+    def key(path: str) -> str:
+        parts = _slashed(path).split("/")
+        common = 0
+        while common < min(len(parts) - 1, len(start)) and parts[common] == start[common]:
+            common += 1
+        if start and not common:
+            return "/".join(parts)
+        return "/".join([".."] * (len(start) - common) + parts[common:])
+
+    return {**snapshot, "root": key(root), "files": {key(p): text for p, text in snapshot["files"].items()},
+            "ids": {machine_id: key(p) for machine_id, p in (snapshot.get("ids") or {}).items()}}
+
+
+def _slashed(path: str) -> str:
+    return posixpath.normpath(path.replace("\\", "/"))
 
 
 # ------------------------------------------------------------------- internals
@@ -149,6 +183,51 @@ def parse_yaml(text: str) -> Any:
     yaml = YAML(typ="rt")
     yaml.allow_duplicate_keys = False
     return yaml.load(text)
+
+
+#: Bounds of a machine document with its aliases expanded. Everything past parsing -- to_plain, the validator,
+#: ``copy.deepcopy`` of the context, the journal's JSON -- recurses per level and copies per alias.
+MAX_DEPTH = 100
+MAX_VALUES = 100_000
+MAX_TEXT = 10_000_000  # characters: an alias of a long text copies all of it
+
+
+def yaml_bounds(doc: Any) -> Optional[str]:
+    """Why a parsed document is too big to work with, or None.
+
+    Aliases make it cheap to write a document that expands without bound: a chain of ``&a [*b]`` nests deeper
+    than any recursion, ten lines of ``&x [*y, *y]`` hold a million values, and an alias of a long text copies
+    the text each time. Counted per distinct node (an alias costs one lookup), without recursion; an alias of an
+    enclosing node (a cycle) is too deep.
+    """
+    extent: dict[int, tuple[int, int, int]] = {}  # id -> (values, characters, depth), of every finished node
+    open_: set[int] = set()
+    todo: list[tuple[Any, bool]] = [(doc, False)]
+    while todo:
+        node, finished = todo.pop()
+        children = (list(node.keys()) + list(node.values()) if isinstance(node, dict)
+                    else list(node) if isinstance(node, (list, tuple)) else None)
+        if children is None or (id(node) in extent and not finished):
+            continue
+        if finished:
+            inner = [extent.get(id(child), (1, len(child) if isinstance(child, str) else 0, 0)) for child in children]
+            extent[id(node)] = (1 + sum(v for v, _, _ in inner), sum(c for _, c, _ in inner),
+                                1 + max((d for _, _, d in inner), default=0))
+            open_.discard(id(node))
+        elif id(node) in open_:
+            return "YAML: an alias refers to a node that contains it"
+        else:
+            open_.add(id(node))
+            todo.append((node, True))
+            todo.extend((child, False) for child in children)
+    values, characters, depth = extent.get(id(doc), (1, len(doc) if isinstance(doc, str) else 0, 0))
+    if depth > MAX_DEPTH:
+        return f"YAML: nested {depth} levels deep (at most {MAX_DEPTH})"
+    if values > MAX_VALUES:
+        return f"YAML: its aliases expand it to {values} values (at most {MAX_VALUES})"
+    if characters > MAX_TEXT:
+        return f"YAML: its aliases expand it to {characters} characters of text (at most {MAX_TEXT})"
+    return None
 
 
 def to_plain(value: Any) -> Any:
@@ -244,6 +323,16 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
     except YAMLError as exc:
         tree.add("error", "SG001", f"YAML: {exc}", file=path)
         return loaded
+    except RecursionError:  # ruamel's parser recurses once per level: a few hundred levels exhaust it
+        tree.add("error", "SG001", "YAML: nested too deeply to read", file=path)
+        return loaded
+    except Exception as exc:  # ruamel fails in its constructor too: a merge key that names its own anchor
+        tree.add("error", "SG001", f"YAML: does not construct ({type(exc).__name__}: {exc})", file=path)
+        return loaded
+    too_big = yaml_bounds(doc)
+    if too_big:  # before anything walks it (the editor's graph too)
+        tree.add("error", "SG001", too_big, file=path)
+        return loaded
     loaded.doc = doc
     bad_key = _non_string_keys(doc, [])
     if bad_key is not None:
@@ -255,18 +344,17 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
                  file=path, line=1)
         return loaded
     version = doc.get("stategraph")
-    if version != FORMAT_VERSION:
+    if type(version) is not int or version != FORMAT_VERSION:  # not true, not 1.0: both compare equal to 1
         tree.add("error", "SG001",
                  f"unknown format version stategraph: {version!r}; this engine reads stategraph: {FORMAT_VERSION}",
                  file=path, path="stategraph", line=loaded.line_of(["stategraph"]) or 1)
         return loaded
+    data = to_plain(doc)
     try:
-        loaded.spec = MachineSpec.model_validate(to_plain(doc))
+        loaded.spec = MachineSpec.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            loc = [part for part in error["loc"] if part not in ("function-after", "function-before")]
-            tree.add("error", "SG001", _pydantic_message(error), file=path, path=dotted(loc),
-                     line=loaded.line_of(loc))
+        for loc, message in schema_problems(data, exc.errors(), _pydantic_message):
+            tree.add("error", "SG001", message, file=path, path=dotted(loc), line=loaded.line_of(loc))
         return loaded
     spec = loaded.spec
     if posixpath.basename(path.replace("\\", "/")) != f"{spec.id}.yaml":
@@ -274,8 +362,12 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
                                    f"forks by file name), not in {posixpath.basename(path)}", file=path, path="id",
                  line=loaded.line_of(["id"]))
 
-    if spec.python:
-        python_path = sources.sibling(spec.python, path)
+    python = _reference(spec.python) if spec.python else None
+    if spec.python and python is None:
+        tree.add("error", "SG004", f"python: {spec.python!r} is absolute; write it relative to this file",
+                 file=path, path="python", line=loaded.line_of(["python"]))
+    elif python:
+        python_path = sources.sibling(python, path)
         loaded.python_path = python_path
         try:
             loaded.python_text = sources.read(python_path)
@@ -291,7 +383,10 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
     stack = stack + [path]
     for alias, ref in spec.imports.items():
         try:
-            target = sources.resolve(ref, path)
+            relative = _reference(ref)
+            if relative is None:
+                raise LookupError(f"{ref} is absolute; write it relative to this file, or name the machine id")
+            target = sources.resolve(relative, path)
         except LookupError as exc:
             tree.add("error", "SG006", f"import {alias}: {exc}", file=path, path=f"imports.{alias}",
                      line=loaded.line_of(["imports", alias]))
@@ -304,6 +399,55 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
         loaded.imports[alias] = target
         _load(target, sources, tree, stack, execute)
     return loaded
+
+
+def schema_problems(data: Any, errors: Iterable[dict[str, Any]],
+                    message: Callable[[dict[str, Any]], str]) -> list[tuple[list[Any], str]]:
+    """pydantic errors as ``(YAML path, message)``, one per path.
+
+    A union (``vars``, a duration) fails once per member, each with the member's tag in its location
+    (``vars.dict[str,any]``, ``timeout.int``): the tags are no keys of the document, so the path leaves them out and
+    the members' messages become one.
+    """
+    merged: dict[tuple[Any, ...], list[str]] = {}
+    for error in errors:
+        path = yaml_path(data, error["loc"], missing=error.get("type") == "missing")
+        merged.setdefault(tuple(path), []).append(message(error))
+    out = []
+    for path, messages in merged.items():
+        messages = list(dict.fromkeys(messages))
+        prefix = "Input should be "
+        if len(messages) > 1 and all(m.startswith(prefix) for m in messages):
+            messages = [prefix + " or ".join(m.removeprefix(prefix) for m in messages)]
+        out.append((list(path), "; ".join(messages)))
+    return out
+
+
+def yaml_path(data: Any, loc: Iterable[Any], *, missing: bool = False) -> list[Any]:
+    """The part of a pydantic location that exists in ``data``; the last part too for a ``missing`` key."""
+    parts = list(loc)
+    path: list[Any] = []
+    node = data
+    for index, part in enumerate(parts):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        elif (isinstance(node, list) and isinstance(part, int) and not isinstance(part, bool)
+              and 0 <= part < len(node)):
+            node = node[part]
+        elif not (missing and index == len(parts) - 1):
+            continue  # a union member's or a validator's tag
+        path.append(part)
+    return path
+
+
+def _reference(ref: str) -> Optional[str]:
+    """A ``python:`` or ``imports:`` path as every OS reads it: ``/`` separators. None for an absolute path.
+
+    The store resolves references with the host's ``os.path``, a run's snapshot with ``posixpath`` on paths relative
+    to the machine: ``sub\\m.py`` or ``C:/x/m.py`` would load from disk and then be missing from the run.
+    """
+    ref = ref.replace("\\", "/")
+    return None if ref.startswith("/") or re.match(r"[A-Za-z]:", ref) else ref
 
 
 def _pydantic_message(error: dict[str, Any]) -> str:
