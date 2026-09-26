@@ -37,8 +37,10 @@ Codex is phase 2.
    reaches it — an `ANTHROPIC_API_KEY` would switch it to API billing.
 4. While the tool call waits (`wait_s`), Claude Code's tool calls and texts
    become progress lines, at most one a second: the latest, with `(+N)` for
-   the others. After that the call answers with the run id, and the session is
-   woken when the run ends.
+   the others -- only its texts while the live view below runs, which gives
+   each tool call a status line of its own (the terminal printed it twice).
+   After that the call answers with the run id, and the session is woken
+   when the run ends.
 
    For the viewer the run is a sub-run, shown the way a sub-agent is
    (`live.py`): its stream becomes `sub_run` events under

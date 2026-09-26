@@ -164,15 +164,16 @@ def events_from(path: Path, offset: int) -> tuple[list[dict], int]:
     return found, offset + end
 
 
-def actions(event: dict, root: Path) -> list[str]:
-    """What an assistant event did, one short line per tool call or text."""
+def actions(event: dict, root: Path, tools: bool = True) -> list[str]:
+    """What an assistant event did, one short line per tool call or text --
+    the text only with tools=False."""
     if event.get("type") != "assistant":
         return []
     lines = []
     for block in (event.get("message") or {}).get("content") or []:
         if not isinstance(block, dict):
             continue
-        if block.get("type") == "tool_use":
+        if block.get("type") == "tool_use" and tools:
             lines.append(tool_line(str(block.get("name") or "?"), block.get("input"), root))
         elif block.get("type") == "text":
             first = next((ln.strip() for ln in str(block.get("text") or "").splitlines() if ln.strip()), "")
