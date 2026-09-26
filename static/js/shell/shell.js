@@ -244,6 +244,7 @@ async function start() {
     theme: currentTheme,
     session: () => activeSession,
     onSetTheme: applyTheme,
+    onOpenSession: (id) => sessions.loadSession(id),  // declared below, called only once the shell runs
     // one layout per account: whoever signs in next in this browser gets their own
     layoutKey: user ? `scarabhive.layout.v1:${user.username}` : 'scarabhive.layout.v1',
     narrow,

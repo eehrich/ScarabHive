@@ -1606,6 +1606,7 @@ EXPECTED = [
     'a docked panel detaches into a window and docks back',
     'a window gets its size back once the browser window grows again',
     'loading a session names it in the header and tells the panels',
+    'a panel opens a session in the chat, a sub-session too',
     'an open branch of the session tree stays open and current when the list refreshes',
     'a session started from the chat is named once the server has named it',
     'the last session clicked wins, not the last answer',

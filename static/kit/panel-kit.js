@@ -642,6 +642,16 @@ export function currentTheme() {
 export function navigate(path = location.pathname + location.search) { tell('pk:navigate', { path }); }
 export function setTitle(text) { tell('pk:title', { text }); document.title = text; }
 
+/**
+ * Open a session in the chat: the shell switches the chat to it. False where there is no chat to switch -- a panel
+ * opened in a browser tab of its own; the caller then says what to do instead.
+ */
+export function openSession(sessionId) {
+  if (!framed) return false;
+  tell('pk:open-session', { session_id: String(sessionId) });
+  return true;
+}
+
 let dirty = false;
 /** Unsaved input: until the page says it is clean again, the shell asks before it closes or reloads the panel, a tab before it is left. */
 export function setDirty(value) {
@@ -1117,7 +1127,11 @@ const keepSidebarWidth = new MutationObserver((changes) => changes.forEach(({ ta
   } catch { /* the width lasts this page only */ }
 }));
 
-/** Gives every .pk-sidebar under root the width the viewer last dragged it to, and keeps the next one. Runs at start. */
+/**
+ * Gives every .pk-sidebar under root the width the viewer last dragged it to, and keeps the next one. A button with
+ * data-pk-sidebar-toggle and aria-controls naming a .pk-sidebar folds that pane away and back, as the chat's
+ * sessions pane does; the panel keeps that choice too. Runs at start.
+ */
 export function initSidebars(root = document) {
   root.querySelectorAll('.pk-sidebar').forEach((sidebar) => {
     if (sidebarsReady.has(sidebar)) return;
@@ -1127,6 +1141,22 @@ export function initSidebars(root = document) {
       if (width) sidebar.style.width = width;
     } catch { /* storage unavailable */ }
     keepSidebarWidth.observe(sidebar, { attributes: true, attributeFilter: ['style'] });
+  });
+  root.querySelectorAll('[data-pk-sidebar-toggle]').forEach((button) => {
+    const sidebar = document.getElementById(button.getAttribute('aria-controls') || '');
+    if (!sidebar || sidebarsReady.has(button)) return;
+    sidebarsReady.add(button);
+    const openKey = `${sidebarKey(sidebar)}:open`;
+    const show = (open, remember) => {
+      sidebar.hidden = !open;
+      button.setAttribute('aria-expanded', String(open));
+      if (!remember) return;
+      try { localStorage.setItem(openKey, String(open)); } catch { /* it stays so for this page only */ }
+    };
+    let stored = null;
+    try { stored = localStorage.getItem(openKey); } catch { /* storage unavailable */ }
+    show(stored !== 'false', false);
+    button.addEventListener('click', () => show(sidebar.hidden, true));
   });
 }
 

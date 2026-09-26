@@ -70,6 +70,7 @@ EXPECTED = [
     "pk-refresh with auto refreshes from the start, and its button stops it",
     "pk-refresh remembers the viewer's interval and pause per page",
     "a side pane gets the width the viewer last dragged it to, keeps a new one per pane, and resizes at its corner",
+    "a side pane folds away and back with its toggle, and a panel opened again finds it as the viewer left it",
     "a refresh says whether the viewer or the timer asked",
     "hidden hides whatever display a component sets",
     "a panel pushed narrow scrolls sideways with its scrollbar in view, and prose tables still wrap",

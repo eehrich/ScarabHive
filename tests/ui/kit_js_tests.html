@@ -811,6 +811,39 @@
     }
   });
 
+  await check('a side pane folds away and back with its toggle, and a panel opened again finds it as the viewer left it', async () => {
+    const key = `pk.sidebar:${location.pathname}#kit-test-fold:open`;
+    localStorage.removeItem(key);
+    const markup = '<button type="button" data-pk-sidebar-toggle aria-controls="kit-test-fold"></button>'
+      + '<nav class="pk-sidebar" id="kit-test-fold"></nav><div></div>';
+    const mount = () => {
+      const box = document.createElement('div');
+      box.className = 'pk-sidebar-layout';
+      box.innerHTML = markup;
+      document.body.appendChild(box);
+      pk.initSidebars(box);
+      return { box, button: box.querySelector('button'), pane: box.querySelector('.pk-sidebar') };
+    };
+    let { box, button, pane } = mount();
+    try {
+      const startsOpen = !pane.hidden && button.getAttribute('aria-expanded') === 'true';
+      button.click();
+      const folded = pane.hidden && button.getAttribute('aria-expanded') === 'false'
+        && getComputedStyle(pane).display === 'none' && localStorage.getItem(key) === 'false';
+      pk.initSidebars(box);  // wired once: a second run adds no second click handler
+      button.click();
+      const back = !pane.hidden && localStorage.getItem(key) === 'true';
+      button.click();
+      box.remove();
+      ({ box, button, pane } = mount());
+      const kept = pane.hidden && button.getAttribute('aria-expanded') === 'false';
+      return startsOpen && folded && back && kept;
+    } finally {
+      box.remove();
+      localStorage.removeItem(key);
+    }
+  });
+
   await check('a refresh says whether the viewer or the timer asked', () => {
     const control = document.createElement('pk-refresh');
     document.body.appendChild(control);

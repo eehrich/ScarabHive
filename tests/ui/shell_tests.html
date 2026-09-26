@@ -441,6 +441,15 @@
       && sessionButton('s-1', 'open').tagName === 'BUTTON';
   });
 
+  await check('a panel opens a session in the chat, a sub-session too', async () => {
+    const opened = probe().pk.openSession('s-1-sub');
+    await until('the header names the sub-session', () => $('#headerSessionId').textContent === 'Research the icons');
+    const told = received('pk:session').at(-1)?.session?.id === 's-1-sub';
+    sessionButton('s-1', 'open').click();  // back where the checks below expect the chat
+    await until('s-1 again', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    return opened === true && told;
+  });
+
   await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
     sessionButton('s-1', 'expand').click();
     await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));

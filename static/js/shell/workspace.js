@@ -22,15 +22,17 @@ export class Workspace {
    * @param {() => string} deps.theme    current theme
    * @param {() => object|null} deps.session  active session {id, title}
    * @param {(theme: string) => void} deps.onSetTheme
+   * @param {(sessionId: string) => void} [deps.onOpenSession]  a panel asks the chat to show a session
    * @param {string} deps.layoutKey  where this browser keeps the layout
    * @param {() => boolean} deps.narrow  a narrow screen: panels cover the chat, one at a time
    * @param {() => void} deps.onShow  a panel came to the front
    */
-  constructor({ catalog, theme, session, onSetTheme, layoutKey, narrow, onShow }) {
+  constructor({ catalog, theme, session, onSetTheme, onOpenSession, layoutKey, narrow, onShow }) {
     this.catalog = catalog;
     this.theme = theme;
     this.session = session;
     this.onSetTheme = onSetTheme;
+    this.onOpenSession = onOpenSession || (() => {});
     this.layoutKey = layoutKey;
     this.narrow = narrow;
     this.onShow = onShow;
@@ -542,6 +544,11 @@ export class Workspace {
         break;
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));
+        break;
+      case 'pk:open-session':
+        if (!message.session_id) break;
+        if (this.narrow()) this.stepAside();  // the panels cover the chat there: step back so it shows
+        this.onOpenSession(String(message.session_id));
         break;
       case 'pk:preferences':
         // Saved on the account by the panel; the chat lives in this document.
