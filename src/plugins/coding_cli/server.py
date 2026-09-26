@@ -36,6 +36,7 @@ from agent_system.paths import PROJECT_ROOT
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import run as cli
+from .live import LiveRun
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -144,6 +145,9 @@ class CodingCliServer(SchemaBasedToolServer):
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
         self._monitors: dict[str, asyncio.Task] = {}
         self._listeners: dict[str, Any] = {}
+        # run id -> its live view (live.py), for the life of the run, not only
+        # while the call that started it waits.
+        self._live: dict[str, LiveRun] = {}
         self._rings: dict[str, asyncio.Task] = {}
         self._starting: set[str] = set()
         self._sweeper: Optional[asyncio.Task] = None
@@ -389,6 +393,9 @@ class CodingCliServer(SchemaBasedToolServer):
                 monitor = self._watch(record, record.pop("_proc"))
             finally:
                 self._starting.discard(run_id)
+        live = await LiveRun.open(params.get("_request_id"), task, Path(record.get("worktree") or "."))
+        if live is not None:
+            self._live[run_id] = live
         self._listeners[run_id] = status
         sub_agent = False
         try:
@@ -546,25 +553,37 @@ class CodingCliServer(SchemaBasedToolServer):
                 elif time.time() > deadline:
                     await self._stop_run(record, f"stopped after the time limit of {self.max_run_s / 60:.0f} min")
                     deadline, stopped = float("inf"), True
-                listener = self._listeners.get(run_id)
+                listener, live = self._listeners.get(run_id), self._live.get(run_id)
+                if listener is None and live is None:
+                    continue
+                found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
+                if live is not None:
+                    await live.feed(found)
                 if listener is None:
                     continue
                 # At most one line per poll: the rest is counted, not lost from the record.
-                found, offset = cli.events_from(self._file(run_id, "jsonl"), offset)
                 lines = [line for event in found for line in cli.actions(event, root)]
                 if lines:
                     await listener.progress(lines[-1] if len(lines) == 1 else f"{lines[-1]} (+{len(lines) - 1})")
+            live = self._live.get(run_id)
+            if live is not None:
+                # What the process wrote between the last poll and its exit.
+                await live.feed(cli.events_from(self._file(run_id, "jsonl"), offset)[0])
             if await asyncio.to_thread(self._finalize, run_id) is None:
                 # Somebody else ends it: wait for that end, then ring if they did not.
                 for _ in range(int(CLAIM_WAIT_S / 0.5)):
                     if (self._load(run_id) or {}).get("state") in FINAL_STATES:
                         break
                     await asyncio.sleep(0.5)
+            if live is not None:
+                await live.close(self._load(run_id) or {})
             self._ring(run_id)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a broken watch costs progress and the ring, never the process
             logger.exception("coding_cli: watching run %s failed", run_id)
+        finally:
+            self._live.pop(run_id, None)
 
     async def _settle(self, run_id: str, reader: str = "") -> dict:
         """The record, finalized first when its process is gone or past its

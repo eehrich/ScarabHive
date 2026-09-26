@@ -1,10 +1,16 @@
 """Tests for Sub-Agent Manager plugin hook duplicate injection prevention."""
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from agent_system.hooks.plugin_hook import HookContext
 from agent_system.llm.models import ChatMessage
 from plugins.sub_agent_manager.hooks import SubAgentContextInjector
 from plugins.sub_agent_manager.manager import SubAgentManager
+
+
+# Whose sessions the panel is asked for: the tests store them under ada.
+VIEWER = SimpleNamespace(username="ada")
 
 
 async def stored_status(metadata):
@@ -777,7 +783,7 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
     mock_request = MagicMock(spec=Request)
 
     with patch('plugins.sub_agent_manager.web_endpoints.get_session_service', return_value=mock_session_service):
-        data = await factory.get_sub_agents(mock_request, session_id="test_session")
+        data = await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER)
         phase = data["phase"]
         assert phase["variable"] == "workflow_phase"
         assert phase["current"] == "planning"
@@ -786,22 +792,22 @@ async def test_the_sub_agent_list_carries_the_phase_of_the_session():
 
         # a phase without agents of its own falls back to _default, and an empty _default to every allowed agent
         mock_session_manager.load_session.return_value = {"context_vars": {"workflow_phase": "review"}}
-        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER))["phase"]
         assert phase["current"] == "review" and phase["agents"] == phase["allowed_agents"]
 
         # a non-empty _default is what such a phase gets
         server.phase_agents = {"planning": ["story_designer"], "_default": ["scene_writer"]}
-        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER))["phase"]
         assert phase["current"] == "review" and phase["agents"] == ["scene_writer"]
 
         # without a phase set, _default does not apply: the tool allows every agent then
         mock_session_manager.load_session.return_value = {"context_vars": {}}
-        phase = (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"]
+        phase = (await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER))["phase"]
         assert phase["current"] is None and phase["agents"] == phase["allowed_agents"]
         assert server._get_phase_allowed_agents({}) is None
 
         server.phase_filtering_enabled = False
-        assert (await factory.get_sub_agents(mock_request, session_id="test_session"))["phase"] is None
+        assert (await factory.get_sub_agents(mock_request, session_id="test_session", current_user=VIEWER))["phase"] is None
 
 
 async def _session_with_a_manager(tmp_path):
@@ -852,8 +858,8 @@ async def test_the_agent_map_nests_a_sub_agents_own_sub_agents_under_it(tmp_path
                                               current_activity="Running tool: web_search")
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
-        listed = await factory.get_sub_agents(MagicMock(), session_id="s-1")
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER)
+        listed = await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER)
 
     root = answer["root"]
     assert (root["instance_id"], root["title"], root["agent_type"]) == ("s-1", "The coordinator", "coordinator")
@@ -890,7 +896,7 @@ async def test_the_agent_map_reads_only_the_sessions_that_have_sub_agents(tmp_pa
 
     sessions.load_session = counted
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER)
     assert len(answer["root"]["children"][0]["children"]) == 2
     assert opened == ["s-1", parent]  # the two leaves are stated, not read, and the root is read once
 
@@ -914,7 +920,7 @@ async def test_the_agent_map_says_when_something_below_is_not_shown(tmp_path):
     async def mapped(**bounds):
         with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service), \
                 patch.multiple(web_endpoints, **bounds):
-            return await factory.get_agent_map(MagicMock(), session_id="s-1")
+            return await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER)
 
     whole = await mapped(MAP_NODES=3)  # the tree is three nodes and fits exactly
     assert whole["truncated"] is False
@@ -948,9 +954,11 @@ async def test_the_agent_map_says_so_when_a_node_it_has_to_read_is_gone(tmp_path
     await service.session_manager.delete_session("ada", parent, create_backup=False)
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        answer = await factory.get_agent_map(MagicMock(), session_id="s-1")
+        answer = await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER)
+        listed = await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER)
     node = answer["root"]["children"][0]
     assert (node["instance_id"], node["children"]) == (parent, []) and answer["truncated"] is True
+    assert parent in [entry["instance_id"] for entry in listed["instances"]], "the list dropped it"
 
 
 @pytest.mark.asyncio
@@ -962,9 +970,136 @@ async def test_the_agent_map_of_a_session_that_is_not_stored_is_that_session_alo
 
     service, server, _ = await _session_with_a_manager(tmp_path)
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        answer = await SubAgentManagerWebFactory(server).get_agent_map(MagicMock(), session_id="s-unsaved")
+        answer = await SubAgentManagerWebFactory(server).get_agent_map(MagicMock(), session_id="s-unsaved", current_user=VIEWER)
     assert answer == {"root": {"instance_id": "s-unsaved", "title": None, "agent_type": None, "children": []},
                       "truncated": False}
+
+
+@pytest.mark.asyncio
+async def test_the_panel_shows_its_viewer_her_own_sessions_only(tmp_path):
+    """Every lookup of the panel goes by its viewer, as /sessions does. It asked the session directories whose a
+    session id is, and answered anyone who named one: another user's sub-agents, their transcripts, an archive."""
+    from unittest.mock import patch
+
+    from fastapi import HTTPException
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    sub = await _spawn(manager, "s-1", "own")
+    await service.session_manager.create_session(user_id="mallory", session_id="m-1", title="Mine",
+                                                 agent_name="coordinator", llm_profile="normal")
+    mallorys = await manager.create_sub_session(parent_session_id="m-1", agent_type="writer_agent",
+                                               initial_message="x", params={"_user_id": "mallory"})
+    server.phase_filtering_enabled = True  # the session's phase is hers too
+    await service.session_manager.replace_session_context_vars("ada", "s-1", {"workflow_phase": "planning"})
+    factory = SubAgentManagerWebFactory(server)
+    stranger = SimpleNamespace(username="mallory")
+
+    async def refused(call) -> int:
+        with pytest.raises(HTTPException) as answer:
+            await call
+        return answer.value.status_code
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=stranger)
+        mapped = await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=stranger)
+        read = await refused(factory.get_sub_agent(MagicMock(), agent_id=sub, session_id="s-1", offset=None,
+                                                   limit=None, current_user=stranger))
+        archived = await refused(factory.archive_sub_agent(MagicMock(), agent_id=sub, session_id="s-1",
+                                                           current_user=stranger))
+        # an id no session can have is not found either, not a server error
+        malformed = await refused(factory.archive_sub_agent(MagicMock(), agent_id="a b", session_id="s-1",
+                                                            current_user=VIEWER))
+        # her own session, another user's sub-agent: not found, not "belongs to another user"
+        foreign_read = await refused(factory.get_sub_agent(MagicMock(), agent_id=mallorys, session_id="s-1",
+                                                           offset=None, limit=None, current_user=VIEWER))
+        foreign_archive = await refused(factory.archive_sub_agent(MagicMock(), agent_id=mallorys, session_id="s-1",
+                                                                  current_user=VIEWER))
+        own = await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER)  # the counter-proof
+
+    assert listed["instances"] == [] and listed["phase"]["current"] is None, listed
+    assert mapped["root"]["children"] == [] and mapped["root"]["title"] is None, mapped
+    assert read == archived == malformed == foreign_read == foreign_archive == 404
+    parent = await service.session_manager.load_session("ada", "s-1", bypass_cache=True)
+    assert parent["metadata"]["sub_agents"][sub]["status"] != "archived", "archived by a stranger"
+    assert [entry["instance_id"] for entry in own["instances"]] == [sub]
+    assert own["phase"]["current"] == "planning"
+
+
+@pytest.mark.asyncio
+async def test_an_entry_naming_another_users_sub_agent_is_shown_as_it_says(tmp_path, monkeypatch):
+    """A session's metadata is its user's to write (PATCH /sessions). An entry naming another user's sub-agent had
+    the panel look up that one's tokens and whether it runs, by the bare id. It is shown as its entry says, as one
+    whose sub-session was deleted is: left out, it would have said the id exists elsewhere."""
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager import web_endpoints
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    asked: list[str] = []
+
+    async def context_of(ids):
+        asked.extend(ids)
+        return {}
+    monkeypatch.setattr(web_endpoints, "context_of", context_of)
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    theirs = await _spawn(manager, "s-1", "theirs")
+    await service.session_manager.create_session(user_id="mallory", session_id="m-1", title="Mine",
+                                                 agent_name="coordinator", llm_profile="normal")
+    mine = await manager.create_sub_session(parent_session_id="m-1", agent_type="writer_agent",
+                                            initial_message="x", params={"_user_id": "mallory"})
+    forged = {"agent_type": "writer_agent", "status": "active", "created_at": "2026-09-25T00:00:00+00:00"}
+    await service.session_manager.update_session_metadata("mallory", "m-1", {"sub_agents": {
+        theirs: {"instance_id": theirs, **forged},
+        "../s-1": {"instance_id": "../s-1", **forged}}})  # nor a path, whose file an answer would confirm
+    server._running_agents.add(theirs)
+    stranger = SimpleNamespace(username="mallory")
+    factory = SubAgentManagerWebFactory(server)
+
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = await factory.get_sub_agents(MagicMock(), session_id="m-1", current_user=stranger)
+        mapped = await factory.get_agent_map(MagicMock(), session_id="m-1", current_user=stranger)
+
+    states = lambda entries: {entry["instance_id"]: entry["state"] for entry in entries}  # noqa: E731
+    assert states(listed["instances"]) == states(mapped["root"]["children"]) == {
+        mine: "idle", theirs: "idle", "../s-1": "idle"}, "running, as a lookup by the id says"
+    assert set(asked) == {mine}, asked
+
+
+@pytest.mark.asyncio
+async def test_the_list_reads_the_viewers_copy_of_an_id_two_users_hold(tmp_path):
+    """An id can sit in two users' directories: an archived one is free again, and a reinstated archive checks only
+    its own directory. The list found the owner by scanning the directories and read whichever copy came first."""
+    import json
+    from unittest.mock import patch
+
+    from plugins.sub_agent_manager.web_endpoints import SubAgentManagerWebFactory
+
+    service, server, manager = await _session_with_a_manager(tmp_path)
+    await service.session_manager.create_session(user_id="mallory", session_id="dup", title="Mine",
+                                                 agent_name="coordinator", llm_profile="normal")
+    mine = await manager.create_sub_session(parent_session_id="dup", agent_type="writer_agent",
+                                            initial_message="x", params={"_user_id": "mallory"})
+    other = json.loads((tmp_path / "mallory" / "dup.json").read_text(encoding="utf-8"))
+    other["user_id"] = "aaa"  # a directory the scan meets before hers
+    other["metadata"]["sub_agents"] = {"sub_of_aaa": {"instance_id": "sub_of_aaa", "agent_type": "writer_agent",
+                                                      "status": "active", "created_at": "2026-09-25T00:00:00+00:00"}}
+    (tmp_path / "aaa").mkdir()
+    (tmp_path / "aaa" / "dup.json").write_text(json.dumps(other), encoding="utf-8")
+
+    factory = SubAgentManagerWebFactory(server)
+    mallory = SimpleNamespace(username="mallory")
+    with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
+        listed = await factory.get_sub_agents(MagicMock(), session_id="dup", current_user=mallory)
+        # the transcript too: the lookup of whose it is read the other copy, and the cache kept it under the id
+        service.session_manager._cache.clear()
+        read = await factory.get_sub_agent(MagicMock(), agent_id=mine, session_id="dup", offset=None, limit=None,
+                                           current_user=mallory)
+
+    assert [entry["instance_id"] for entry in listed["instances"]] == [mine], listed
+    assert read["instance_id"] == mine, read
 
 
 @pytest.mark.asyncio
@@ -989,16 +1124,16 @@ async def test_the_panel_hands_a_sub_agent_to_the_instance_that_spawned_it(tmp_p
     factory = SubAgentManagerWebFactory(server)
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]
-        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]
-        info = await factory.get_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1", offset=None, limit=None)
-        archived = await factory.archive_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1")
+        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER))["instances"]
+        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER))["root"]["children"]
+        info = await factory.get_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1", offset=None, limit=None, current_user=VIEWER)
+        archived = await factory.archive_sub_agent(MagicMock(), agent_id=theirs, session_id="s-1", current_user=VIEWER)
 
     states = lambda entries: {entry["instance_id"]: entry["state"] for entry in entries}  # noqa: E731
     assert states(listed) == states(mapped) == {own: "idle", theirs: "running"}
     assert info["status"] == "running"
     assert archived["status"] == "archived"
-    assert other.server._async_jobs[theirs].get("_archived") is True  # marked in the instance that holds the job
+    assert other.server._async_jobs[theirs].get("_ended_by_caller") is True  # marked in the instance that holds the job
 
 
 @pytest.mark.asyncio
@@ -1018,8 +1153,8 @@ async def test_a_creator_that_is_no_sub_agent_manager_leaves_the_sub_agent_to_th
     factory = SubAgentManagerWebFactory(server)
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
-        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]
-        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]
+        listed = (await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER))["instances"]
+        mapped = (await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER))["root"]["children"]
 
     assert [(entry["instance_id"], entry["state"]) for entry in listed] == [(stray, "idle")]
     assert [(entry["instance_id"], entry["state"]) for entry in mapped] == [(stray, "idle")]
@@ -1058,9 +1193,9 @@ async def test_the_list_and_the_map_show_the_messages_and_the_tokens_of_each_sub
 
     with patch("plugins.sub_agent_manager.web_endpoints.get_session_service", return_value=service):
         listed = {entry["instance_id"]: entry
-                  for entry in (await factory.get_sub_agents(MagicMock(), session_id="s-1"))["instances"]}
+                  for entry in (await factory.get_sub_agents(MagicMock(), session_id="s-1", current_user=VIEWER))["instances"]}
         mapped = {entry["instance_id"]: entry
-                  for entry in (await factory.get_agent_map(MagicMock(), session_id="s-1"))["root"]["children"]}
+                  for entry in (await factory.get_agent_map(MagicMock(), session_id="s-1", current_user=VIEWER))["root"]["children"]}
     [nested] = mapped[worked]["children"]
 
     figures = lambda entry: tuple(entry.get(key) for key in (  # noqa: E731

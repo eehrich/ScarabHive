@@ -29,9 +29,12 @@ import hashlib
 import json
 import logging
 import os
+import time
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
-from typing import Any, Iterator, NamedTuple
+from fnmatch import fnmatchcase
+from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
 from agent_system.llm.message_roles import is_input, opens_a_turn
 from agent_system.utils.multimodal_tool_content import extract_inline_media
@@ -75,6 +78,20 @@ class CompactionConfig:
     # A NEW tool result larger than this share of the model's context window is
     # stored on arrival, below every threshold (Pre-Layer T). 0 disables it.
     tool_result_max_window_share: float = 0.25
+    # A NEW tool result of this many tokens is stored on arrival AND a cheap
+    # model writes what it says into the placeholder -- for a hand-over to an
+    # expensive agent, which pays for every token of a long answer it was handed.
+    # The full text stays in the store and is read back with the read tool.
+    # 0 disables it -- that count is the switch. The profile is a NAME from
+    # config/llm.yaml, never a model: which model condenses text is the
+    # operator's to configure and to change when a cheaper one appears.
+    tool_result_summary_from: int = 0
+    tool_result_summary_profile: str = "summarizer"
+    # Which tools' results a summary may replace, as fnmatch patterns over the
+    # tool name ("*_manage_sub_agent"). Empty = every tool, which is what a
+    # hand-over agent wants; an agent that also READS files with the same hook
+    # names the hand-over tools here, so its file reads arrive whole.
+    tool_result_summary_tools: list[str] = field(default_factory=list)
 
     # Message archival settings
     archive_after_turns: int = 10    # Archive messages older than N turns
@@ -159,6 +176,13 @@ def _coerce(value: Any, type_name: str, field_name: str) -> Any:
     dropped: a wrong type is the operator's to see, and silently substituting
     a default here would be the same disappearing act this module exists to
     stop.
+
+    The exception is ``list[str]``, which is ITERATED at its use site: passing
+    a number through raises there and costs the whole compaction. A value of
+    that type is therefore dropped instead -- with a warning, and to a pattern
+    that matches nothing rather than to the empty list, which the use site
+    reads as "everything". An absent value (``None``) is not that case: it is
+    the key left blank, and it yields the empty list the default already is.
     """
     try:
         if type_name == "bool":
@@ -169,6 +193,31 @@ def _coerce(value: Any, type_name: str, field_name: str) -> Any:
             return int(value)
         if type_name == "float":
             return float(value)
+        if type_name == "list[str]":
+            # A single pattern written as a plain string is the likely slip,
+            # and iterating a str would match its CHARACTERS.
+            if isinstance(value, str):
+                return [p.strip() for p in value.split(",") if p.strip()]
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in value]
+            if value is None:
+                return []
+            # Everything else is dropped rather than passed through, against
+            # this function's own rule: a list is ITERATED at the use site, so
+            # a number there raises inside the hook and the whole compaction is
+            # lost -- silently, until the context outgrows the provider. A
+            # mapping would be worse: it iterates its keys and filters by them
+            # without a word.
+            #
+            # It is dropped to a pattern that matches NOTHING, not to the empty
+            # list: empty means "every tool" at the use site, so an unreadable
+            # filter would turn into the most permissive one there is. The
+            # operator who writes this key writes it to keep results away from
+            # another provider; a typo must not hand them over.
+            logger.warning(
+                "[ContextEngineer] config '%s' = %r is not a list of strings; "
+                "nothing is summarized until it is one", field_name, value)
+            return [MATCHES_NO_TOOL]
     except (TypeError, ValueError):
         logger.warning(
             "[ContextEngineer] config '%s' = %r is not a %s; using it as-is",
@@ -255,6 +304,71 @@ ARCHIVED_REF_TYPE = "archived_ref"
 #: switch the exemption off and bring the retrieval loop back. The answer
 #: identifying itself survives any renaming.
 RETRIEVAL_MARKER = "retrieval_result"
+
+
+#: Where a wrapped answer keeps its prose: a sub-agent result
+#: ({"instance_id","status","result"}), an untrusted wrapper ({"untrusted":
+#: true, "content": …}, which the tools put INSIDE "result" or "data"), a file
+#: read, a plain answer.
+_PROSE_FIELDS = ("result", "content", "text", "output", "answer", "data")
+#: How deep a wrapper may be nested before its prose stops counting as prose.
+_PROSE_DEPTH = 3
+#: What an unreadable filter falls back to: the empty pattern, which matches no
+#: NAMED tool, while a nameless result is turned away by the use site's own
+#: check. The empty LIST cannot serve here -- it means "every tool" and would
+#: turn a typo into the most permissive filter there is.
+MATCHES_NO_TOOL = ""
+#: What the summarizing model is shown, what may come back, how short that has
+#: to be to be a summary at all, and how much of the wrapper the prose must be
+#: (below that the other fields carry their own facts -- a build result's
+#: status and exit code next to its log -- and a summary of the prose alone
+#: would drop them).
+SUMMARY_INPUT_CHARS = 60_000
+SUMMARY_CHARS = 1_200
+SUMMARY_MAX_SHARE = 0.5
+SUMMARY_WRAPPER_SHARE = 0.8
+#: All the summaries of one round together, well short of the hook's budget,
+#: and the least that is worth starting a call with.
+SUMMARY_ROUND_S = 20.0
+SUMMARY_MIN_CALL_S = 1.0
+
+
+def _prose_of(content: str) -> str | None:
+    """The text worth summarizing in a tool result, or None when there is none.
+
+    A structured result is read back whole; a summary of it would be a second,
+    lossy shape of the same data. A wrapper around prose -- what a sub-agent
+    hands its caller -- is worth exactly its prose.
+    """
+    stripped = content.strip()
+    if not stripped.startswith(("{", "[")):
+        return content
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return content            # looked like JSON, is not: prose after all
+    prose = _wrapped_prose(data, _PROSE_DEPTH)
+    if prose is None or len(prose) < len(content) * SUMMARY_WRAPPER_SHARE:
+        # Not a wrapper around prose but a result that HAS prose in it: a build
+        # result's log sits next to its status, error and exit code, and a
+        # summary written from the log alone would drop them.
+        return None
+    return prose
+
+
+def _wrapped_prose(data: Any, depth: int) -> str | None:
+    """The prose a wrapper holds. The tools nest them: a sub-agent's answer
+    arrives as {"result": {"untrusted": true, "content": "…"}}."""
+    if not isinstance(data, dict) or depth <= 0:
+        return None
+    for key in _PROSE_FIELDS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        inner = _wrapped_prose(value, depth - 1)
+        if inner is not None:
+            return inner
+    return None
 
 
 def _is_retrieval_result(message: dict[str, Any]) -> bool:
@@ -380,11 +494,37 @@ class _MediaPick(NamedTuple):
     reason: str
 
 
-#: Above this many messages in one prune, the archive is written WITHOUT the
-#: vector index (see _archive_pruned). Measured: ~17 ms per message of embedding
-#: against 0.02 ms for the row itself, and the largest of 1000 production prunes
-#: was 11 messages — so this only ever trips on a runaway loop.
+#: How many messages are embedded in one go. Above this, a prune stores its rows
+#: inside the request and the embedding follows in the background, chunk by chunk
+#: (see _archive_pruned). Measured: ~17 ms per message of embedding against
+#: 0.02 ms for the row itself, and the largest of 1000 production prunes was 11
+#: messages — so the background path only ever trips on a runaway loop. It used
+#: to SKIP the index there, which left the archive half indexed: a similarity
+#: search then answers over half of it without saying so.
 _SEMANTIC_INDEX_MAX_BATCH = 200
+
+#: One background embedding at a time, per event loop -- see the comment in
+#: ``_index_in_background`` for why there is a bound at all. Per loop and not
+#: per module, because an asyncio primitive binds to the loop it first WAITS on
+#: and raises in any other: uncontended, `acquire` never reaches that check, so
+#: a module-level semaphore would work on every loop until two batches overlap
+#: and then raise inside a task, where the failure is one log line. The API has
+#: one loop per process, but agent-cli, chat and every test build their own.
+#: Weak keys alone do not let a loop go: a semaphore that ever had a waiter
+#: holds the loop it bound to, so its entry holds its own key. ``_index_slot``
+#: drops the closed ones.
+_index_slots: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def _index_slot() -> asyncio.Semaphore:
+    """The one-at-a-time slot of the running loop."""
+    for closed in [loop for loop in _index_slots if loop.is_closed()]:
+        del _index_slots[closed]
+    loop = asyncio.get_running_loop()
+    slot = _index_slots.get(loop)
+    if slot is None:
+        slot = _index_slots[loop] = asyncio.Semaphore(1)
+    return slot
 
 
 def _ref_type(message: dict[str, Any]) -> str | None:
@@ -499,7 +639,8 @@ class LayeredCompactionStrategy:
         core_memory: CoreMemory,
         archival_memory: ArchivalMemory,
         config: CompactionConfig | None = None,
-        media_store: MediaStore | None = None
+        media_store: MediaStore | None = None,
+        summarize: Callable[[str, str], Awaitable[str | None]] | None = None
     ):
         """Initialize the compaction strategy.
 
@@ -509,18 +650,28 @@ class LayeredCompactionStrategy:
             archival_memory: Archive for old messages
             config: Compaction configuration
             media_store: Optional store for inline media before compaction
+            summarize: (content, tool_name) -> summary for a stored result, or
+                None for none. The hook builds it; the engine stays free of the
+                LLM layer and of system_config.
         """
         self.tool_store = tool_store
         self.core_memory = core_memory
         self.archival_memory = archival_memory
         self.config = config or CompactionConfig()
         self.media_store = media_store
+        self.summarize = summarize
+        #: Seconds left for the summaries of the current round. Pre-Layer T
+        #: resets it per round; a direct call gets the full one.
+        self._summary_budget = SUMMARY_ROUND_S
         #: Set per run by ``compact``; pre-set so a directly called layer
         #: cannot fail on a missing attribute instead of storing the media.
         #: It is a SHARED pot, not a private one — ``_store_inline_media`` says
         #: so out loud the first time anything lands in it.
         self._current_session_id = _SHARED_SESSION_ID
         self._warned_shared_session = False
+        #: Background embeddings of oversized archived batches. Held because an
+        #: unreferenced task can be garbage collected while it runs.
+        self._index_tasks: set[asyncio.Task[None]] = set()
     
     def _add_media_hint_to_content(
         self,
@@ -735,10 +886,12 @@ class LayeredCompactionStrategy:
         # sent; neither the thresholds nor the hysteresis hold it back.
         arrivals = self.oversized_arrivals(result.modified_messages, context_window)
         if arrivals:
+            # One budget for the whole round, spent by the summaries in it.
+            self._summary_budget = SUMMARY_ROUND_S
             estimated = 0
             for i in arrivals:
                 msg = result.modified_messages[i]
-                reference = await self._store_tool_result(msg, msg["content"])
+                reference = await self._store_tool_result(msg, msg["content"], on_arrival=True)
                 result.modified_messages[i] = {**msg, "content": reference}
                 result.tool_results_stored += 1
                 estimated += (estimate_content_tokens(msg["content"])
@@ -1643,28 +1796,113 @@ class LayeredCompactionStrategy:
         retrieval answer is exempt for the reason Layer 1 gives.
         """
         share = self.config.tool_result_max_window_share
-        if not context_window or share <= 0:
+        window_limit = context_window * share if context_window and share > 0 else None
+        summarizing = self.summarize is not None and self.config.tool_result_summary_from > 0
+        if window_limit is None and not summarizing:
             return []
-        limit = context_window * share
-        return [i for i in _arrival_indices(messages)
-                if messages[i].get("role") == "tool"
-                and isinstance(messages[i].get("content"), str)
-                and not _is_retrieval_result(messages[i])
-                and estimate_content_tokens(messages[i]["content"]) > limit]
+        picked = []
+        for i in _arrival_indices(messages):
+            message = messages[i]
+            content = message.get("content")
+            if (message.get("role") != "tool" or not isinstance(content, str)
+                    or _is_retrieval_result(message)):
+                continue
+            # Over the share: out of the window's way, as before. Over the
+            # summary floor: only what a summary can actually replace -- taking
+            # a structured result out for a pointer nobody summarizes would
+            # cost the next agent a read call instead of saving it one.
+            if window_limit is not None and estimate_content_tokens(content) > window_limit:
+                picked.append(i)
+            elif summarizing and self._summary_prose(content, message.get("name")) is not None:
+                picked.append(i)
+        return picked
 
-    async def _store_tool_result(self, msg: dict[str, Any], content: str) -> str:
-        """Store one tool result and return the placeholder that replaces it."""
+    def _summary_prose(self, content: str, tool_name: str | None) -> str | None:
+        """The text a summary would be written from, if one is due for this
+        result at all: the right tool, prose, and enough of it to be worth a
+        model."""
+        floor = self.config.tool_result_summary_from
+        patterns = self.config.tool_result_summary_tools
+        if floor <= 0:
+            return None
+        # No patterns = every tool. With patterns, a result has to be NAMED to
+        # pass: a nameless one (a session restored mid tool-turn carries no
+        # name) can be matched by no pattern the operator could write, and
+        # summarizing what they did not name is what this key exists to stop.
+        # fnmatchcase, not fnmatch: fnmatch lowercases both sides on Windows
+        # and nowhere else, so a camelCase tool name would be filtered one way
+        # on a developer's machine and the other way on the server.
+        if patterns and not (tool_name
+                             and any(fnmatchcase(tool_name, p) for p in patterns)):
+            return None
+        text = _prose_of(content)
+        if text is None or estimate_content_tokens(text) < floor:
+            return None
+        return text
+
+    async def _store_tool_result(self, msg: dict[str, Any], content: str,
+                                 on_arrival: bool = False) -> str:
+        """Store one tool result and return the placeholder that replaces it.
+
+        ``on_arrival`` is Pre-Layer T's call, the one result of the round the
+        model has not seen yet. Layer 1 comes through here too, with the whole
+        history at once: a summary per result there would be dozens of model
+        calls in one hook, and the hook's budget ends the compaction for all
+        of them (hooks/registry.py). What Layer 1 stores keeps its preview.
+        """
         # A bare ref+token_count gives the model nothing to decide what to
         # find= for — it can only page blindly. A cheap preview (no LLM call)
         # is enough to point it at find=.
         preview = " ".join(content.split())[:200]
+        written = await self._written_summary(msg, content) if on_arrival else None
         return await asyncio.to_thread(
             self.tool_store.store_and_reference,
             tool_call_id=msg.get("tool_call_id", ""),
             tool_name=msg.get("name", "unknown"),
             content=content,
-            summary=preview,
+            summary=written or preview,
+            inline_summary=written,
         )
+
+    async def _written_summary(self, msg: dict[str, Any], content: str) -> str | None:
+        """What a cheap model says this result contains, or None for the preview.
+
+        Only prose is worth it: a structured result is read back whole, and a
+        summary of JSON would be a second, lossy shape of the same thing.
+        """
+        # The profile decides whether there IS a summarizer (the hook builds
+        # none without one); _summary_prose decides what is worth one, and it
+        # is the same question the selection asked.
+        text = (self._summary_prose(content, msg.get("name"))
+                if self.summarize is not None else None)
+        if text is None or self._summary_budget < SUMMARY_MIN_CALL_S:
+            # The budget is the ROUND's, not the call's: several results arrive
+            # together (a fan-out to sub-agents is this feature's own case), and
+            # the hook that runs all of this is dropped whole when its own
+            # budget ends -- with the storing every other result was due.
+            return None
+        started = time.monotonic()
+        try:
+            # Only the head of it: the result Pre-Layer T exists for can be a
+            # whole book, and the cheap call would be the run's dearest.
+            head = text[:SUMMARY_INPUT_CHARS]
+            if len(text) > SUMMARY_INPUT_CHARS:
+                head += "\n[… the rest is only in the stored result]"
+            answer = await asyncio.wait_for(
+                self.summarize(head, str(msg.get("name") or "unknown")), timeout=self._summary_budget)
+        except Exception as exc:  # noqa: BLE001 - CancelledError is not an Exception and stays
+            logger.warning("Summary of a %s result failed, keeping the preview: %s", msg.get("name"), exc)
+            return None
+        finally:
+            self._summary_budget -= time.monotonic() - started
+        summary = " ".join(str(answer or "").split())
+        if not summary or len(summary) > len(text) * SUMMARY_MAX_SHARE:
+            # Measured BEFORE the cap: a model that echoes instead of
+            # summarizing would otherwise pass as a summary of everything it
+            # did not write -- a prefix of the result, cut mid-word, resent for
+            # the rest of the session.
+            return None
+        return summary[:SUMMARY_CHARS] + ("…" if len(summary) > SUMMARY_CHARS else "")
 
     async def _apply_layer1(self, result: CompactionResult, bytes_exceeded: bool = False) -> None:
         """Layer 1: Reversible compaction.
@@ -1873,11 +2111,13 @@ class LayeredCompactionStrategy:
         # Archive collected messages — in conversation order: the archive
         # timestamps each row as it is written, and the history listing follows
         # them. A set iterates in hash order once the indices outgrow its table.
-        for i in sorted(indices_to_archive):
+        # One batch, not one store() per message: see _store_batch for why a
+        # row-by-row write left duplicates behind on failure.
+        ordered = sorted(indices_to_archive)
+        archive_ids = await self._store_batch([messages[i] for i in ordered], "Layer 2")
+        for i, archive_id in zip(ordered, archive_ids, strict=True):
             msg = messages[i]
             original_role = msg.get("role", "system")
-            # Wrap sync SQLite operation in thread pool
-            archive_id = await asyncio.to_thread(self.archival_memory.store, msg)
             
             # Create compact reference as JSON (preserves structure, valid for tool messages)
             summary = self.archival_memory._generate_summary(msg)
@@ -2314,7 +2554,7 @@ class LayeredCompactionStrategy:
 
         # Placeholders are skipped inside: their body is already in a store, and
         # archiving a pointer would only produce a pointer to a pointer.
-        if not await self._archive_pruned(leaving.modified_messages):
+        if not await self._archive_pruned(leaving.modified_messages, caller):
             logger.warning(
                 f"{caller}: skipping the removal of {len(selected)} messages — "
                 f"the archive write failed and dropping them would destroy them"
@@ -2353,7 +2593,7 @@ class LayeredCompactionStrategy:
             if loose_picks:
                 await self._evict_media(loose, loose_picks, store=True)
                 result.media_bytes_saved += loose.media_bytes_saved
-            if not await self._archive_pruned(extra_messages):
+            if not await self._archive_pruned(extra_messages, caller):
                 logger.error(
                     f"{caller}: {extra} messages removed by the sequence fix "
                     f"could not be archived and are lost"
@@ -2362,7 +2602,7 @@ class LayeredCompactionStrategy:
         self._leave_prune_notice(messages, len(removed))
         return len(removed)
 
-    async def _archive_pruned(self, removed: list[dict[str, Any]]) -> bool:
+    async def _archive_pruned(self, removed: list[dict[str, Any]], caller: str) -> bool:
         """Write pruned messages to the archive. True when they are safe to drop.
 
         Placeholders are skipped — their body is already stored and archiving
@@ -2393,28 +2633,138 @@ class LayeredCompactionStrategy:
         # as rows and 80 s with the vector index. In steady state that never
         # matters (the largest of 1000 production prunes was 11 messages), but a
         # model that emits a runaway tool_call batch produces exactly the huge
-        # first prune where a stall would hurt most. Beyond the cap the rows and
-        # the FTS index still go in — the content stays listable and findable by
-        # keyword, only vector similarity misses it — and the log says so.
-        index_semantic = len(payload) <= _SEMANTIC_INDEX_MAX_BATCH
-        if not index_semantic:
-            logger.warning(
-                f"Pre-Layer P: {len(payload)} messages exceed the semantic-index "
-                f"batch cap of {_SEMANTIC_INDEX_MAX_BATCH}; archiving them "
-                f"without vector indexing (list and keyword search still find them)"
-            )
-
+        # first prune where a stall would hurt most. Past the cap the rows go in
+        # here and the embedding follows in a background task.
         try:
-            await asyncio.to_thread(
-                self.archival_memory.store_many, payload, None, index_semantic
-            )
+            await self._store_batch(payload, caller)
             return True
         except Exception as e:  # noqa: BLE001 - see docstring
             logger.error(
-                f"Pre-Layer P: archiving {len(payload)} pruned messages failed, "
+                f"{caller}: archiving {len(payload)} pruned messages failed, "
                 f"keeping them in the conversation instead of destroying them: {e}"
             )
             return False
+
+    async def _store_batch(self, payload: list[dict[str, Any]], caller: str) -> list[str]:
+        """Archive a batch in ONE transaction; ids in input order.
+
+        The embedding goes inline while the batch is small and into the
+        background past the cap -- too large to embed inside this request, but
+        NOT a reason to leave it out of the index: a half-indexed archive answers
+        every similarity search without saying which half it searched.
+
+        One transaction is also what makes a failure clean. Writing row by row
+        committed the rows before the one that failed; the caller then kept the
+        messages, and the next compaction archived them AGAIN -- every retry a
+        second copy in the archive and a second hit in every search. (The
+        rollback that makes a failed WRITE clean too is in _store_many_rows.)
+
+        A hook timeout inside this call cannot be rolled back -- the worker
+        thread commits regardless, and the placeholders are lost with the pass.
+        The ids are derived from the messages for that (see _entry_id): the
+        next pass writes onto the same rows instead of beside them.
+        """
+        if len(payload) <= _SEMANTIC_INDEX_MAX_BATCH:
+            return await asyncio.to_thread(self.archival_memory.store_many, payload, None)
+        ids, documents, metadatas = await asyncio.to_thread(
+            self.archival_memory.store_many_unindexed, payload, None)
+        if self.archival_memory.enable_semantic_search:
+            self._index_in_background(ids, documents, metadatas, caller)
+        return ids
+
+    def _index_in_background(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]],
+        caller: str,
+    ) -> None:
+        """Embed a large archived batch after the request it belongs to.
+
+        In chunks, and each chunk in a thread: embedding is ~17 ms per message,
+        so a runaway batch is a minute of work that must not sit in the hook's
+        budget and must not hold the event loop either. The task is kept in a
+        set -- an unreferenced task can be garbage collected mid-run -- and a
+        failure costs similarity search on those entries, never the content.
+
+        It starts at the next suspension point, which can still be inside this
+        same compaction; "background" means "not in the caller's critical path",
+        not "after the response". What it does NOT survive is the loop closing
+        under it, and it says so in the log when that happens.
+        """
+        async def run() -> None:
+            done = 0
+            try:
+                # One batch at a time across the whole process. The vector
+                # store holds its lock across the embedding, and every chunk
+                # occupies a default-executor thread while it waits -- the same
+                # pool every foreground `to_thread` uses, including other
+                # sessions' archiving. Unbounded, a handful of runaway prunes
+                # would move the stall from this request into theirs.
+                chunk = _SEMANTIC_INDEX_MAX_BATCH   # read once: two reads can disagree
+                async with _index_slot():
+                    for start in range(0, len(ids), chunk):
+                        end = start + chunk
+                        if not self.archival_memory.is_open:
+                            logger.info("%s: indexing of %d archived messages stopped at "
+                                        "%d -- the session was closed", caller, len(ids), done)
+                            return
+                        indexed = await asyncio.to_thread(
+                            self.archival_memory.index_batch,
+                            ids[start:end], documents[start:end], metadatas[start:end])
+                        if not indexed and not self.archival_memory.is_open:
+                            # Asked AGAIN, because a chunk is seconds long and
+                            # the loop is free during it: an eviction lands
+                            # inside the chunk, and index_batch then reports a
+                            # refused batch because the store is gone. Blaming
+                            # the vector store for a shutdown is what the check
+                            # above exists to avoid -- once before is not enough.
+                            logger.info("%s: indexing of %d archived messages stopped at "
+                                        "%d -- the session was closed", caller, len(ids), done)
+                            return
+                        # The text of a finished chunk is not needed again, and
+                        # the whole payload is held by this closure until the
+                        # task ends -- which, behind the one slot, can be
+                        # several batches' worth of waiting.
+                        # ponytail: frees the RUNNING task's text as it goes;
+                        # queued tasks still hold theirs. Re-read the rows by id
+                        # instead if a host ever queues enough to matter.
+                        documents[start:end] = [""] * (end - start)
+                        if not indexed:
+                            # index_batch reports rather than raises: the rows
+                            # are committed, so this costs similarity search on
+                            # the rest of the batch and nothing else. Saying
+                            # "indexed" here is what made the old skip
+                            # invisible.
+                            logger.error(
+                                "%s: indexing stopped after %d of %d archived messages; "
+                                "the rest is readable by ref and found by a filter whose "
+                                "every word it contains, not by meaning", caller, done, len(ids))
+                            return
+                        done = min(end, len(ids))
+            except asyncio.CancelledError:
+                # A one-shot CLI run cancels every pending task when its loop
+                # closes (agent_run, agent-cli, chat), and CancelledError is a
+                # BaseException -- caught here only to leave a record, because
+                # silence would restore exactly the half-indexed archive this
+                # path exists to prevent.
+                logger.warning(
+                    "%s: indexing of %d archived messages was cancelled after %d (process "
+                    "ending?); the rest is readable by ref and found by a filter whose "
+                    "every word it contains, not by meaning", caller, len(ids), done)
+                raise
+            except Exception as exc:  # noqa: BLE001 — the rows are committed
+                logger.error("%s: indexing %d archived messages failed at %d (they are "
+                             "readable by ref, and found by a filter whose every word they "
+                             "contain): %s", caller, len(ids), done, exc)
+                return
+            logger.info("%s: indexed %d archived messages in the background", caller, done)
+
+        task = asyncio.create_task(run())
+        self._index_tasks.add(task)
+        task.add_done_callback(self._index_tasks.discard)
+        logger.info("%s: %d archived messages are being indexed in the background; they "
+                    "are already readable by ref and found by their words", caller, len(ids))
 
     def _leave_prune_notice(
         self, messages: list[dict[str, Any]], removed: int

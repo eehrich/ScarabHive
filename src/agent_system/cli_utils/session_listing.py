@@ -24,8 +24,9 @@ instead of emptying it and the next call rebuilds it.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,41 @@ _AGENT_WIDTH = 22
 _LINE_BUDGET = 100
 
 
+#: The word that lists every session, runs of pipeline agents included.
+EVERYTHING = "all"
+
+
+def in_chat_selector(runtime: Any, keep: tuple = ()) -> Optional[Callable[[str], bool]]:
+    """Whether a session's agent is one meant for chat.
+
+    The listing is for the conversations its person started, and those run on
+    agents meant for chat -- ``visibility`` ui or both, the same answer the
+    panel's agent dropdown gives (runtime.ServerDecl.visibility, manifest
+    fallback included). Everything else is a run some pipeline started under
+    the same user: measured for cli_user on 25.09.2026, 4562 of 5054
+    top-level sessions, so that 18 of the newest 20 lines were
+    ``v4_continuity_scorer_bench_*`` and a person's own chats sank below them.
+    A name the configuration no longer declares (a renamed agent, a benchmark
+    instance) is not meant for chat either.
+
+    The terminal reaches further than the panel -- ``--agent`` and ``/agent``
+    run a ``tool`` or ``private`` agent too -- so the agents in *keep* (the
+    one this chat or run is on) are always shown: a listing that hid the
+    conversation being had would be the worst answer it could give. A session
+    with no agent name cannot be judged and is shown. None when there is no
+    runtime to ask: then nothing is filtered.
+    """
+    if runtime is None:
+        return None
+
+    def shown(agent_name: str) -> bool:
+        if not agent_name or agent_name in keep:
+            return True
+        declared = runtime.describe(agent_name)
+        return declared is not None and declared.visibility in ("ui", "both")
+    return shown
+
+
 def parse_limit(value: Any, default: int = DEFAULT_LIMIT) -> tuple[int, Optional[str]]:
     """Read a count. Returns ``(limit, complaint)``; 0 means "all of them".
 
@@ -68,6 +104,53 @@ def parse_limit(value: Any, default: int = DEFAULT_LIMIT) -> tuple[int, Optional
     if count < 0:
         return default, text
     return count, None
+
+
+def newest_of(others: list, everything_hint: str) -> str:
+    """What to add when a title named several sessions and the newest was taken.
+
+    Empty when it named one: then there was no choice to mention.
+    """
+    if not others:
+        return ""
+    return (f"   (the newest of {len(others) + 1} with this title -- "
+            f"{everything_hint} lists every id)")
+
+
+def parse_listing(value: Any, default: int = DEFAULT_LIMIT) -> tuple[int, bool, Optional[str]]:
+    """``(limit, everything, complaint)`` for a listing's argument.
+
+    A count as parse_limit reads it, or ``all``: every session, the runs of
+    pipeline agents included, without a limit -- the way to dig, not to look.
+    """
+    if str(value or "").strip().lower() == EVERYTHING:
+        return 0, True, None
+    limit, complaint = parse_limit(value, default)
+    return limit, False, complaint
+
+
+def split_for_chat(sessions: list, shown: Optional[Callable[[str], bool]],
+                   current_session_id: Optional[str] = None) -> tuple[list, list]:
+    """``(listable, left_out)``: what a listing shows, and the runs it only counts.
+
+    Without *shown* (no filter, or ``all``) nothing is left out. The session
+    the chat is in stays whatever its agent: it is marked, and a listing
+    without its own "*" row misstates where the person is. Shared by the
+    terminal's listing and ``GET /api/sessions/listing``.
+    """
+    if shown is None:
+        return list(sessions), []
+    listable, left_out = [], []
+    for s in sessions:
+        kept = s.get("session_id") == current_session_id or shown(s.get("agent_name") or "")
+        (listable if kept else left_out).append(s)
+    return listable, left_out
+
+
+def most_left_out(left_out: list) -> Optional[tuple[str, int]]:
+    """The agent most of the left-out runs ran on, and how many -- None for none."""
+    top = Counter(s.get("agent_name") or "?" for s in left_out).most_common(1)
+    return top[0] if top else None
 
 
 def _when(raw: Any) -> str:
@@ -118,8 +201,15 @@ async def print_sessions(
     current_session_id: Optional[str] = None,
     more_hint: str = "",
     footer: str = "",
+    shown: Optional[Callable[[str], bool]] = None,
+    everything_hint: str = "",
 ) -> list[dict]:
     """Print this user's top-level sessions, newest first, one line each.
+
+    With *shown* (in_chat_selector), only sessions whose agent passes are
+    listed -- and one line says how many runs were left out, of which agents,
+    and *everything_hint* how to list them: a listing that drops rows without
+    saying so reads as "that is all there is".
 
     Returns what it read, so a caller that also needs the records does not
     walk the index a second time -- the listing stats every session for
@@ -139,13 +229,24 @@ async def print_sessions(
         print(f"No sessions for user '{user_id}'.")
         return []
 
-    shown = sessions if limit <= 0 else sessions[:limit]
-    print(f"Sessions for '{user_id}' ({len(shown)} of {len(sessions)}):")
-    for entry in shown:
+    listable, left_out = split_for_chat(sessions, shown, current_session_id)
+    printed = listable if limit <= 0 else listable[:limit]
+    print(f"Sessions for '{user_id}' ({len(printed)} of {len(listable)}):")
+    for entry in printed:
         print(format_session_line(entry, current_session_id))
-    rest = len(sessions) - len(shown)
+    rest = len(listable) - len(printed)
     if rest > 0 and more_hint:
         print(f"   ... {rest} more -- {more_hint}")
+    most = most_left_out(left_out)
+    if most:
+        # One line within the budget: how many, the agent most of them ran on,
+        # and the word that lists them. The agent gives way, as a session
+        # line's title does -- five-digit counts ran to 102 columns.
+        agent, count = most
+        head = f"   ({len(left_out)} more on agents not meant for chat, most "
+        tail = f" {count}" + (f" -- {everything_hint}" if everything_hint else "") + ")"
+        room = max(0, min(_AGENT_WIDTH, _LINE_BUDGET - len(head) - len(tail)))
+        print(head + agent[:room] + tail)
     if footer:
         print(footer)
     return list(sessions)

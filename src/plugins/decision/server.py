@@ -16,7 +16,7 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
-    from plugins.llm_decisions.openrouter import DecisionsResult
+    from plugins.llm_decisions.system_one import DecisionsResult
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,22 @@ DEFAULT_MAX_CONTEXT_LENGTH = 50000
 DEFAULT_MAX_BATCH_SIZE = 250
 DEFAULT_MAX_CONCURRENCY = 10
 MAX_STATUS_MESSAGE_LEN = 140
+
+
+def _spend(answered: Sequence[dict]) -> dict[str, Any]:
+    """The summary's cost and tokens, from the usage of every call that was answered.
+
+    A refused answer (``DecisionsError.usage``) was billed and counts like the
+    rest. The cost is None when any of them carried none -- unknown, not free:
+    a local Laya and TypeSafe direct report no cost, and a sum of the others
+    would read as the whole.
+    """
+    costs = [u["cost"] for u in answered]
+    return {
+        "total_cost": None if any(c is None for c in costs) else round(sum(costs), 6),
+        "total_input_tokens": sum(u["input_tokens"] for u in answered),
+        "total_output_tokens": sum(u["output_tokens"] for u in answered),
+    }
 
 
 def _cap_status_line(text: str, limit: int = MAX_STATUS_MESSAGE_LEN) -> str:
@@ -267,6 +283,8 @@ class DecisionServer(SchemaBasedToolServer):
             )
 
         completed_count = 0
+        # usage of answers the client refused: billed, so part of the spend
+        refused: list[dict] = []
         progress_lock = asyncio.Lock()
 
         async def _eval_item(
@@ -295,6 +313,9 @@ class DecisionServer(SchemaBasedToolServer):
                     raise
                 except Exception as exc:
                     outcome = (iid, None, str(exc))
+                    billed = getattr(exc, "usage", None)
+                    if billed:
+                        refused.append(billed)
 
             async with progress_lock:
                 completed_count += 1
@@ -322,9 +343,7 @@ class DecisionServer(SchemaBasedToolServer):
         results: dict[str, dict[str, float]] = {}
         details: dict[str, dict[str, Any]] = {}
         errors: dict[str, str] = {}
-        total_cost: float = 0.0
-        total_in_tokens: int = 0
-        total_out_tokens: int = 0
+        answered: list[dict] = list(refused)
         model_name: Optional[str] = None
 
         for iid, res, err in batch_outcomes:
@@ -334,10 +353,8 @@ class DecisionServer(SchemaBasedToolServer):
             assert res is not None
             if model_name is None:
                 model_name = res.model
-            if res.cost is not None:
-                total_cost += res.cost
-            total_in_tokens += res.input_tokens
-            total_out_tokens += res.output_tokens
+            answered.append({"input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
+                             "cost": res.cost})
 
             item_probs: dict[str, float] = {}
             item_details: dict[str, Any] = {}
@@ -388,9 +405,7 @@ class DecisionServer(SchemaBasedToolServer):
                 "total_items": len(items),
                 "successful_items": success_count,
                 "failed_items": fail_count,
-                "total_cost": round(total_cost, 6),
-                "total_input_tokens": total_in_tokens,
-                "total_output_tokens": total_out_tokens,
+                **_spend(answered),
                 "model": model_name,
             },
         }
@@ -510,6 +525,8 @@ class DecisionServer(SchemaBasedToolServer):
             )
 
         completed_count = 0
+        # usage of answers the client refused: billed, so part of the spend
+        refused: list[dict] = []
         progress_lock = asyncio.Lock()
 
         async def _eval_item(
@@ -538,6 +555,9 @@ class DecisionServer(SchemaBasedToolServer):
                     raise
                 except Exception as exc:
                     outcome = (iid, None, str(exc))
+                    billed = getattr(exc, "usage", None)
+                    if billed:
+                        refused.append(billed)
 
             async with progress_lock:
                 completed_count += 1
@@ -565,9 +585,7 @@ class DecisionServer(SchemaBasedToolServer):
         results: dict[str, dict[str, float]] = {}
         details: dict[str, dict[str, Any]] = {}
         errors: dict[str, str] = {}
-        total_cost: float = 0.0
-        total_in_tokens: int = 0
-        total_out_tokens: int = 0
+        answered: list[dict] = list(refused)
         model_name: Optional[str] = None
 
         for iid, res, err in batch_outcomes:
@@ -577,10 +595,8 @@ class DecisionServer(SchemaBasedToolServer):
             assert res is not None
             if model_name is None:
                 model_name = res.model
-            if res.cost is not None:
-                total_cost += res.cost
-            total_in_tokens += res.input_tokens
-            total_out_tokens += res.output_tokens
+            answered.append({"input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
+                             "cost": res.cost})
 
             item_scores: dict[str, float] = {}
             item_details: dict[str, Any] = {}
@@ -632,9 +648,7 @@ class DecisionServer(SchemaBasedToolServer):
                 "total_items": len(items),
                 "successful_items": success_count,
                 "failed_items": fail_count,
-                "total_cost": round(total_cost, 6),
-                "total_input_tokens": total_in_tokens,
-                "total_output_tokens": total_out_tokens,
+                **_spend(answered),
                 "model": model_name,
             },
         }

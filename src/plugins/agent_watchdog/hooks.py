@@ -344,13 +344,7 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
             return None
         from agent_system.llm.factory import create_llm_from_profile
 
-        ssl_verify = None
-        try:
-            ssl_verify = system_config.network.ssl_verify
-        except Exception:
-            pass
-        self._judge_llm = create_llm_from_profile(
-            system_config, self._llm_profile, ssl_verify=ssl_verify)
+        self._judge_llm = create_llm_from_profile(system_config, self._llm_profile)
         return self._judge_llm
 
     def _write(self, record: Dict[str, Any]) -> None:

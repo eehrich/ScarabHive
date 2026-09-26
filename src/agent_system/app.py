@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401 - used in nested closures in event_stream() and lifespan
+import types
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
@@ -11,13 +12,14 @@ from urllib.parse import urlparse
 from datetime import datetime  # noqa: F401 - used in health endpoint
 from .utils.id import short_id
 from agent_system.utils import yaml_io
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Callable, Optional
 
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile  # Use starlette's UploadFile for isinstance checks
 from fastapi.staticfiles import StaticFiles
 
@@ -29,7 +31,8 @@ from .tools.base import ToolServerRegistry
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
 from .runtime import ServerView
-from .utils.logging import setup_logging
+from .utils.logging import setup_role_logging
+from .services.initialization_service import apply_ssl_verify_to_environment
 from .tools.status import get_status_metrics
 from .tools.integration import initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system, start_batch_queue_manager
@@ -70,6 +73,7 @@ _session_archive: Optional[Any] = None  # SessionArchive, see services/session_a
 # Owner is core.request_context (usable from agent layer without upward import);
 # re-exported here under the historical name for existing importers.
 from .core.request_context import (  # noqa: E402
+    get_request_user,
     register_request_user,
     request_user_map as _request_user_map,  # noqa: F401 - re-export for tests/importers
     release_request_user_tree,
@@ -118,6 +122,23 @@ async def _parse_json_body(request: Request) -> Any:
             detail="Invalid JSON body: could not be parsed"
         )
 
+
+def _sse_response(stream, **kwargs) -> StreamingResponse:
+    """A streaming response whose generator is closed as soon as its client has gone.
+
+    Starlette cancels a response whose client went away but never closes its body
+    generator. Caught at a yield -- in the middle of a send, or at a stream's
+    farewell line -- the generator waited there for the garbage collector, and its
+    ``finally`` with it: the job's reader count, the run's session save, its hold on
+    the session, the request's owner entries.
+    """
+    async def close() -> None:
+        # A coroutine function: handed `stream.aclose` itself, Starlette takes it for a plain
+        # callable, calls it in a thread -- and the awaitable it returns is never awaited.
+        await stream.aclose()
+
+    return StreamingResponse(stream, background=BackgroundTask(close), **kwargs)
+
 # Shutdown event for graceful stream termination
 _shutdown_event: Optional[asyncio.Event] = None
 
@@ -127,6 +148,7 @@ async def resolve_agent_for_request(
     job_manager: BackgroundJobManager,
     registry: Optional[ToolServerRegistry],
     default_agent: Any,
+    agent_name: Optional[str] = None,
 ) -> Any:
     """Resolve the agent instance that owns an active/recent request.
 
@@ -134,13 +156,14 @@ async def resolve_agent_for_request(
     per-request state (mid-run append queue, request→session mapping) lives on
     that instance, not on the global default agent. Falls back to the default
     agent when the job is unknown, names the default placeholder, or its agent
-    cannot be resolved.
+    cannot be resolved. ``agent_name`` names the agent for a run that has no job
+    (a /run with files, a sub-agent's session), when the caller knows it.
     """
     try:
         job = await job_manager.get_job(request_id)
     except Exception:
         job = None
-    agent_name = getattr(job, "agent_name", None)
+    agent_name = getattr(job, "agent_name", None) or agent_name
     if registry is not None and agent_name and agent_name not in ("default", default_agent.name):
         try:
             candidate = registry.get(agent_name)
@@ -156,84 +179,40 @@ async def resolve_agent_for_request(
     return default_agent
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """FastAPI lifespan context manager for startup and shutdown events."""
-    logger = logging.getLogger(__name__)
-    logger.info("FastAPI application starting up")
+async def format_answer_fields(payload: dict, selected_agent, request_id: str, session_id: str) -> dict:
+    """The event with the answer it carries rendered to HTML: a final's summary, a finished step's content.
 
-    # Startup: Initialize tool integration
-    global _tool_integration, _tool_server_service, _tool_service, _session_manager, _session_service
-    
-    # Initialize background job manager and start cleanup loop
-    job_manager = get_background_job_manager()
-    asyncio.create_task(job_manager.cleanup_loop())
-    logger.info("BackgroundJobManager initialized")
-
-    # Get config from global service
-    if _config_service is None:
-        logger.error("ConfigService not initialized before lifespan startup")
-    else:
-        config = _config_service.get_config()
-
-        # Initialize tool integration
-        logger.info("Starting tool integration initialization...")
+    A copy where anything changes, never the event itself: every reader of a job is sent
+    the same event object, and rendered in place the next reader would render the HTML
+    again -- and the run's own caller (POST /run) holds it too.
+    """
+    kind = payload.get("type")
+    if kind == "final" and payload.get("summary"):
         try:
-            from .tools.integration import initialize_tools
-            from .services.tool_server_service import ToolServerService
-            from .services.tool_service import ToolService
-            from .services.session_manager import SessionManager
-
-            tool_integration = await initialize_tools(config, app)
-            _tool_integration = tool_integration
-
-            # Initialize services
-            _tool_server_service = ToolServerService(tool_integration, config)
-            _tool_service = ToolService(tool_integration, config)
-
-            # Initialize SessionManager
-            from pathlib import Path
-            # Allow tests to override session storage path via environment variable
-            env_storage_path = os.getenv("AGENT_SESSION_STORAGE_PATH")
-            if env_storage_path:
-                storage_path = Path(env_storage_path)
-            else:
-                storage_path = Path(__file__).parents[2] / "data" / "sessions"
-            _session_manager = SessionManager(storage_path=str(storage_path))
-            logger.info(f"SessionManager initialized with storage_path={storage_path}")
-
-            # Initialize SessionService
-            from .services.session_service import SessionService
-            _session_service = SessionService(_session_manager)
-            logger.info("SessionService initialized")
-
-            # Store session manager in app state for dependency injection
-            app.state.session_manager = _session_manager
-            logger.info("SessionManager stored in app.state for dependency injection")
-
-            # Make integration accessible to mcp module
-            from .tools import integration as _tools_mod
-            _tools_mod.tool_integration = tool_integration
-
-            logger.info("tool integration startup complete")
+            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                output=payload["summary"],
+                request_id=request_id,
+                session_id=session_id,
+                output_format='html'
+            )
+            return {**payload, "summary": formatted_summary, "content_format": content_format}
         except Exception as e:
-            logger.error(f"Failed to initialize tool integration: {e}", exc_info=True)
-            raise
+            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
 
-    yield
-
-    # Shutdown logic
-    logger.info("FastAPI application shutting down gracefully")
-    try:
-        # Shutdown tool integration
-        if _tool_integration:
-            from .tools.integration import shutdown_tools
-            await shutdown_tools()
-            logger.info("tool integration shut down")
-    except Exception as e:
-        logger.error("Error during shutdown cleanup: %s", e)
-    finally:
-        logger.info("FastAPI application shutdown complete")
+    # Also format thinking_complete content to HTML (for streaming)
+    elif kind == "thinking_complete" and payload.get("assistant", {}).get("content"):
+        try:
+            formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
+                output=payload["assistant"]["content"],
+                request_id=request_id,
+                session_id=session_id,
+                output_format='html'
+            )
+            return {**payload, "assistant": {**payload["assistant"], "content": formatted_content},
+                    "content_format": content_format}
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
+    return payload
 
 
 # Lives in llm.capabilities so the command-line entry points share it without
@@ -316,30 +295,22 @@ async def _validate_client_request_id(client_request_id: str) -> str:
 
 
 def _build_entry_agent(entry_name: str, config, registry, session_service):
-    """Build the entry agent when bootstrap did not register one under that
-    name, from its MERGED server config, and register it.
-
-    Merged means default_config plus the ``type:`` chain -- what bootstrap
-    gives every other agent. This used to read plugins.default_config alone,
-    so the entry agent ran with that block's max_steps and profile no matter
-    what its own entry said (measured 01.09.2026: 133 of 203 agents carry a
-    raw max_steps of 20 where the merged value is 100 or 30). The branch
-    before it, ``_config_service.get_agent_config``, could never contribute:
-    AgentSystemConfig has no ``agents`` field, so it raises on every call.
+    """The API's entry agent: servers.agent.entry.entry_agent -- the registered
+    one, or a build from its MERGED server config -- and, when the name is no
+    agent here, one from plugins.default_config: the API cannot exit over a
+    config mistake the way the command line does.
     """
     from .servers.agent.server import Agent as CoreAgent
-    from .config.settings import get_tool_server_config
+    from .servers.agent.entry import NotAnAgent, entry_agent
 
-    server_cfg = get_tool_server_config(entry_name, config)
-
-    if not server_cfg:
+    try:
+        return entry_agent(entry_name, config, registry, session_service)
+    except NotAnAgent as e:
         logging.getLogger(__name__).warning(
-            "No server configuration found for agent '%s', falling back to plugins.default_config",
-            entry_name
-        )
-        # Read from the config that was passed in, not from the module-global
-        # ConfigService: that global belongs to whichever build_app ran last.
-        server_cfg = config.plugins.default_config if config.plugins else None
+            "%s\nThe API runs a generic entry agent from plugins.default_config.", e)
+    # Read from the config that was passed in, not from the module-global
+    # ConfigService: that global belongs to whichever build_app ran last.
+    server_cfg = config.plugins.default_config if config.plugins else None
 
     if not server_cfg:
         from .config.models import ToolServerConfig, AgentConfig, ToolConfig
@@ -558,7 +529,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "SessionArchive sweep loop started: every %.1f h, first in %.0f s",
                 archive.sweep_interval_hours, archive.first_sweep_delay_seconds,
             )
-        
+
+        # Finished jobs keep only how their run ended once COMPLETED_JOB_TTL is past.
+        # Nothing else starts this: a module-level lifespan that did was never the
+        # app's, and every job kept its whole event buffer until the process ended.
+        await get_background_job_manager().start_cleanup_task()
+
         # Log startup complete marker
         logger.info("═" * 80)
         logger.info("║  AgentSystem API Server READY - accepting connections")
@@ -595,7 +571,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 _shutdown_event.set()
                 # Give streams a brief moment to notice and exit
                 await asyncio.sleep(0.1)
-            
+
+            await get_background_job_manager().stop_cleanup_task()
+
             # Stop profiling
             if PROFILING_ENABLED:
                 await stop_profiling()
@@ -709,6 +687,47 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except SessionBusy as busy:
             logging.getLogger(__name__).warning("%s; this run keeps it unheld", busy)
             return None
+
+    def _carry_title(target_agent: Any, event: dict, title: Optional[str]) -> None:
+        """A title the caller gave the session a run starts: handed to the run
+        at its start event -- the one that names a new session -- and written
+        by its first save (SessionService), as agent-cli writes a /title typed
+        before the first message. Only text is a title: a JSON number or a
+        file part of that name is not one."""
+        if not isinstance(title, str) or not title.strip():
+            return
+        if event.get("type") == "start" and event.get("session_id"):
+            target_agent._session_tracker.carry_title(event["session_id"], title.strip())
+
+    async def _mirror_run_as_job(request_id: str, user_id: str, agent_name: str,
+                                 session_id: Optional[str], llm_profile: Optional[str]):
+        """A BackgroundJob that shows a run somebody else collects, or None.
+
+        POST /run answers its caller from collect_final_result and made no job, so
+        nothing could follow such a run: not the chat (it attaches to a session's
+        job), not a second page. The job takes the events as they pass (``put``);
+        the caller's answer does not go through it.
+
+        A job running under the id already is refused with a 409, as /events does:
+        _validate_client_request_id cannot rule out a request that got past it at
+        the same time, and two agents under one id cannot be told apart.
+        """
+        feed: asyncio.Queue = asyncio.Queue()
+
+        async def relay():
+            while (event := await feed.get()) is not None:
+                yield event
+
+        try:
+            await get_background_job_manager().create_job(
+                request_id=request_id, user_id=user_id, agent_name=agent_name,
+                session_id=session_id, agent_runner=relay, llm_profile=llm_profile,
+                mirror=True)
+        except DuplicateRequestIdError:
+            logger.warning("[RUN] refused duplicate request_id=%s -- a job is already running under it", request_id)
+            raise HTTPException(status_code=409, detail="request_id is already running")
+
+        return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -836,48 +855,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         static_files = StaticFiles(directory=str(static_path))
         app.mount("/static", revalidated(static_files) if app.state.revalidate_static else static_files, name="static")
 
-    # Initialize logging with role-specific logfile
-    def _role_logfile(base: str, role: str) -> str:
-        p = Path(base)
-        stem = p.stem or "agent"
-        suffix = "".join(p.suffixes) or ".log"
-        return str(p.with_name(f"{stem}-{role}{suffix}"))
-
-    # Use file_api config or generate from default file
-    if not config.logging.file_api:
-        default_log = _role_logfile(config.logging.file or "logs/agent.log", "api")
-        logging.getLogger(__name__).warning(
-            "No file_api configured in logging settings, falling back to default: %s", default_log
-        )
-        log_path = default_log
-    else:
-        log_path = config.logging.file_api
-
     # Check for environment variable override
     env_level = os.getenv("AGENT_LOG_LEVEL")
-    level_to_use = env_level if env_level else config.logging.level
     if env_level:
         logging.getLogger(__name__).info("Overriding log level from environment: %s", env_level)
         config.logging.level = env_level
 
-    log_file = setup_logging(
-        config.logging.enabled, 
-        level_to_use, 
-        log_path,
-        rotation_enabled=config.logging.rotation_enabled,
-        max_bytes=config.logging.max_bytes,
-        backup_count=config.logging.backup_count
-    )
+    log_file = setup_role_logging(config.logging, "api")
     if log_file:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
-
-    # Disable SSL verification if configured
-    if not config.network.ssl_verify:
-        os.environ["PYTHONHTTPSVERIFY"] = "0"
-        os.environ.setdefault("SSL_CERT_FILE", "")
-        os.environ.setdefault("CURL_CA_BUNDLE", "")
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
-        logging.getLogger(__name__).info("SSL verification disabled - set environment variables for global SSL bypass")
+    apply_ssl_verify_to_environment(config)
 
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
@@ -896,7 +883,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     else:
         # Servers already bootstrapped by initialize_tools, just populate local registry
         # by copying from plugin_registry and inject sessions
-        from .servers.agent.server import Agent as _Agent
         for server_name in _tool_integration.plugin_registry.list_servers():
             server_adapter = _tool_integration.plugin_registry.get_server(server_name)
             if server_adapter and hasattr(server_adapter, 'plugin_server'):
@@ -911,44 +897,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     entry_name = config.default_agent or 'agent'
     logging.getLogger(__name__).debug(f"Using entry agent: '{entry_name}'")
 
-    # Reuse existing agent from registry if available
-    selected_agent = None
-    try:
-        if entry_name in registry.list():
-            candidate = registry.get(entry_name)
-            from .servers.agent.server import Agent as _Agent
-            if isinstance(candidate, _Agent):
-                selected_agent = candidate
-                # CRITICAL: Inject _session_service into existing agent (same as CLI does)
-                # Agents from bootstrap_servers were created without session_service
-                # ALWAYS inject, even if attribute exists, to refresh the reference
-                selected_agent._session_service = _session_service
-                # No server overrides are applied here on purpose. The
-                # block that used to stand here could never run: its first
-                # statement, ConfigService.get_agent_config, raises
-                # AttributeError on every call (AgentSystemConfig has no
-                # `agents` field) and a debug-level except swallowed it.
-                # Nothing is missing: the Runtime built this agent from the
-                # MERGED server config (default_config + the type: chain),
-                # which is where those very overrides come from.
-    except Exception as e:
-        logger.debug(f"Failed to get entry agent from registry: {e}")
-        selected_agent = None
-
-    # Create new agent if not found in registry
-    if selected_agent is None:
-        selected_agent = _build_entry_agent(entry_name, config, registry, _session_service)
-    else:
-        # Bind reused agent to current registry and update session_service
-        try:
-            selected_agent.registry = registry
-            # Update session_service for existing agent
-            if _session_service and hasattr(selected_agent, '_session_service'):
-                selected_agent._session_service = _session_service
-        except Exception as e:
-            logger.warning(f"Failed to bind registry to agent: {e}", exc_info=True)
-
-    agent = selected_agent
+    # The registered agent, rewired to this registry and session service
+    # (bootstrap built it without one), or a build. No server overrides are
+    # applied on top: the Runtime built it from the MERGED server config,
+    # which is where those overrides come from.
+    agent = _build_entry_agent(entry_name, config, registry, _session_service)
 
     # Wire the BackgroundJobManager with the registry + default agent
     # so cancel_job can walk every Agent-typed server that may own a
@@ -1183,27 +1136,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "packages": packages
         }
 
-    async def _format_and_yield_event(
-        ev: dict,
-        selected_agent,
-        request_id: str,
-        session_id: str,
-        user_id: str,
-        agent_name: Optional[str],
-        llm_profile: Optional[str],
-        was_new_session: bool
-    ) -> str:
-        """Format event payload and return SSE data string."""
-        if hasattr(ev, 'to_dict'):
-            payload = ev.to_dict()
-        else:
-            payload = ev
+    async def _format_and_yield_event(ev: dict, selected_agent, request_id: str, session_id: str) -> str:
+        """An event as an SSE data line, its answer rendered to HTML."""
+        payload = ev.to_dict() if hasattr(ev, 'to_dict') else ev
 
         if selected_agent._hook_manager:
-            await _format_answer_fields(payload, selected_agent, request_id, session_id)
+            payload = await format_answer_fields(payload, selected_agent, request_id, session_id)
             # A sub-agent's answer is the same text and is shown the same way.
             if payload.get("type") == "sub_run" and isinstance(payload.get("event"), dict):
-                await _format_answer_fields(payload["event"], selected_agent, request_id, session_id)
+                payload = {**payload, "event": await format_answer_fields(
+                    payload["event"], selected_agent, request_id, session_id)}
 
         try:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -1212,35 +1154,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             error_payload = {"type": "error", "message": f"Serialization error: {str(e)}"}
             return f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
-    async def _format_answer_fields(payload: dict, selected_agent, request_id: str, session_id: str) -> None:
-        """Render the answer an event carries to HTML, in place: a final's summary, a finished step's content."""
-        kind = payload.get("type")
-        if kind == "final" and payload.get("summary"):
-            try:
-                formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                    output=payload["summary"],
-                    request_id=request_id,
-                    session_id=session_id,
-                    output_format='html'
-                )
-                payload["summary"] = formatted_summary
-                payload["content_format"] = content_format
-            except Exception as e:
-                logger.error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
+    async def _open_session_for_run(selected_agent, user_id: str, session_id: Optional[str],
+                                    llm_profile: Optional[str]) -> bool:
+        """SessionService.open_for_run for /run and /events; whether the session
+        existed. 403 for another user's session; without an id there is nothing
+        to open -- the run creates its session and names it in the start event.
 
-        # Also format thinking_complete content to HTML (for streaming)
-        elif kind == "thinking_complete" and payload.get("assistant", {}).get("content"):
-            try:
-                formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                    output=payload["assistant"]["content"],
-                    request_id=request_id,
-                    session_id=session_id,
-                    output_format='html'
-                )
-                payload["assistant"]["content"] = formatted_content
-                payload["content_format"] = content_format
-            except Exception as e:
-                logger.error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
+        While a run of this process has the session, the tracker holds that
+        run's state -- a session it has not saved yet reads as new, and must
+        not be reset under it (in_use). Another user's such run answers 403:
+        the metadata this writes would hand them its session.
+        """
+        if not session_id:
+            return False
+        running = (await get_background_job_manager().active_sessions()).get(session_id)
+        if running is not None and running.get("user_id") not in (None, user_id):
+            raise HTTPException(status_code=403,
+                                detail=f"Permission denied: session {session_id} belongs to another user")
+        try:
+            return await _session_service.open_for_run(
+                selected_agent, user_id, session_id,
+                llm_profile or selected_agent.agent_config.default_llm_profile,
+                in_use=running is not None)
+        except SessionPermissionError as e:
+            raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
 
     def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
         """Get agent instance with optional overrides.
@@ -1308,27 +1245,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 llm_profile = default_profile
 
             try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                          resolve_llm_config_for_agent)
-                from .config.models import AgentConfig
-
-                llm_override = create_llm_from_profile(
-                    config=live,
-                    llm_profile=llm_profile,
-                    ssl_verify=getattr(live.network, "ssl_verify", None),
-                    # The agent keeps its own llm_params on a profile it did
-                    # not choose itself (see agent_params_for_profile).
-                    llm_params=agent_params_for_profile(
-                        getattr(selected_agent, "agent_config", None), llm_profile),
-                )
-
-                # Get profile info for status display
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                resolved = resolve_llm_config_for_agent(live, temp_agent_config)
-                model = resolved.spec.model
-                provider = resolved.spec.provider
-                llm_profile_info = f"{llm_profile}:{provider}/{model}"
+                from .llm.factory import override_for_profile
+                llm_override, llm_profile_info = override_for_profile(
+                    live, getattr(selected_agent, "agent_config", None), llm_profile)
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Failed to apply LLM profile: {str(e)}")
@@ -1657,6 +1576,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         session_id: Optional[str] = Query(default=None),
         agent_name: Optional[str] = Query(default=None),
         llm_profile: Optional[str] = Query(default=None),
+        session_title: Optional[str] = Query(default=None),
         force: bool = Query(default=False)
     ):
         """Run agent with optional multimodal input (text + images).
@@ -1670,6 +1590,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use instead of default
         - llm_profile: Optional LLM profile override (turbo, normal, think, etc.)
+        - session_title: Optional title for the session, written with its first save
         
         Security:
         - Requires authentication when auth.enabled=true
@@ -1713,6 +1634,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     agent_name = body.get('agent_name')
                 if not llm_profile and 'llm_profile' in body:
                     llm_profile = body.get('llm_profile')
+                if not session_title and 'session_title' in body:
+                    session_title = body.get('session_title')
                 if 'request_id' in body:
                     client_request_id = body.get('request_id')
                 # Session presence: run a session another process holds anyway
@@ -1742,6 +1665,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 agent_name = form.get('agent_name')
             if not llm_profile and 'llm_profile' in form:
                 llm_profile = form.get('llm_profile')
+            if not session_title and 'session_title' in form:
+                session_title = form.get('session_title')
             if 'request_id' in form:
                 client_request_id = form.get('request_id')
             force = force or str(form.get('force') or "").lower() in ("1", "true", "yes")
@@ -1787,40 +1712,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
-        # Load existing session if session_id provided
-        session_exists = False
-        if session_id and _session_service:
-            try:
-                session_exists, msg_count = await _session_service.load_and_restore_session(
-                    selected_agent, user_id, session_id
-                )
-            except SessionPermissionError as e:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Permission denied: {e}"
-                )
-
-        # CRITICAL: Always set/update session metadata (even for existing sessions)
-        # This ensures user_id is available for tool execution AND respects llm_profile overrides
-        if session_id:
-            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-            selected_agent._session_tracker.set_session_metadata(session_id, {
-                "user_id": user_id,
-                "agent_name": selected_agent.name,
-                "llm_profile": effective_llm_profile
-            })
-            
-            # CRITICAL: Initialize session template_vars from agent_config for NEW sessions
-            # This ensures initial values (like workflow_phase: "planning") are available
-            # without requiring explicit set_context calls
-            if not session_exists:
-                # Copy initial template_vars from agent_config to session-scoped vars
-                if (hasattr(selected_agent, 'agent_config') and 
-                    selected_agent.agent_config and 
-                    selected_agent.agent_config.template_vars):
-                    initial_vars = selected_agent.agent_config.template_vars.copy()
-                    selected_agent._session_tracker.set_session_template_vars(session_id, initial_vars)
-                    logger.debug(f"[SESSION] Initialized session template_vars from agent_config: {list(initial_vars.keys())}")
+        session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+        if session_exists:
+            session_title = None  # it names a session the run creates, not one it continues
 
         from .servers.agent.result_utils import collect_final_result
 
@@ -1829,25 +1723,35 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if not task:
                 raise HTTPException(status_code=400, detail="Missing 'task' in request")
 
-            # Register request ownership for status stream security -- AFTER
-            # all validations and right before the try whose finally releases
-            # it. Registered earlier, every 4xx above leaked the entry.
-            register_request_user(request_id, user_id)
-            # Session presence (core/session_presence.py): held through the save
-            # after the run, so no woken run has its turn overwritten.
-            refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
-            if refusal:
-                release_request_user_tree(request_id)
-                raise HTTPException(status_code=409, detail=refusal)
-
+            # Mirrored into a job, so a page can follow the run (see _mirror_run_as_job).
+            # First: a second run under a running id is refused before it takes the
+            # id's ownership or the session.
+            mirror = await _mirror_run_as_job(
+                request_id, user_id, selected_agent.name, session_id,
+                llm_profile or selected_agent.agent_config.default_llm_profile)
+            held = None
             try:
+                # Register request ownership for status stream security -- AFTER
+                # all validations and inside the try whose finally releases it.
+                # Registered earlier, every 4xx above leaked the entry.
+                register_request_user(request_id, user_id)
+                # Session presence (core/session_presence.py): held through the save
+                # after the run, so no woken run has its turn overwritten.
+                refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
+                if refusal:
+                    raise HTTPException(status_code=409, detail=refusal)
+                def on_event(event: dict) -> Any:
+                    _carry_title(selected_agent, event, session_title)
+                    return mirror.put(event)
+
                 # Pass LLM override to collect_final_result
                 result = await collect_final_result(
                     selected_agent, task,
                     request_id=request_id,
                     session_id=session_id,
                     llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info
+                    llm_profile_info_override=llm_profile_info,
+                    on_event=on_event,
                 )
 
                 # Format summary from Markdown to HTML for web display
@@ -1879,6 +1783,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 return result
             finally:
+                mirror.close()
                 _let_go(selected_agent, held, user_id)
                 # Cleanup: release request + derived sub-request ids (tool
                 # suffixes, sub-agents) from the ownership map
@@ -1886,12 +1791,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Process uploaded files for multimodal input
         from .utils.multimodal_processor import (
-            create_multimodal_message_extended,
-            ImageProcessingError, 
-            AudioProcessingError, 
-            TextFileProcessingError,
-            detect_file_type
-        )
+            AttachmentRejected, detect_file_type, message_with_attachments)
         import tempfile
         from pathlib import Path
 
@@ -1947,30 +1847,18 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 logger.debug("Saved uploaded file %s (%d bytes) -> %s [%s]", 
                            upload_file.filename, len(content), temp_path, file_type)
 
-            # One check for every entry point that attaches media — the CLI and
-            # agent_run ask the same function.
-            from .llm.capabilities import ensure_model_supports
-            problem = ensure_model_supports(
-                capability_model_name(llm_override, selected_agent),
-                images=len(image_paths or []),
-                audio=len(audio_paths or []))
-            if problem:
-                raise HTTPException(status_code=400, detail=problem)
-
-            # Create multimodal message with all file types
+            if not task and not (image_paths or audio_paths or text_paths):
+                raise HTTPException(status_code=400, detail="Missing 'task' in request")
+            # The check against the model this run uses, then the build: the
+            # step every entry point that attaches media shares.
             try:
-                multimodal_msg = create_multimodal_message_extended(
-                    text=task,
-                    image_paths=image_paths if image_paths else None,
-                    audio_paths=audio_paths if audio_paths else None,
-                    text_file_paths=text_paths if text_paths else None
-                )
-                logger.info(
-                    "Created multimodal message with %d image(s), %d audio(s), %d text file(s)", 
-                    len(image_paths), len(audio_paths), len(text_paths)
-                )
-            except (ImageProcessingError, AudioProcessingError, TextFileProcessingError) as e:
-                logger.exception("File processing failed while creating multimodal message: %s", e)
+                multimodal_msg = message_with_attachments(
+                    task, {"image": image_paths, "audio": audio_paths, "text": text_paths},
+                    llm_override, selected_agent)
+            except AttachmentRejected as e:
+                # A file that failed to process carries its cause; that one may
+                # be a server fault (a codec, a bug) and keeps its traceback.
+                logger.warning("Attachments refused: %s", e, exc_info=e.__cause__ is not None)
                 raise HTTPException(status_code=400, detail=str(e))
 
             # Stream events for multimodal message (same as /events endpoint)
@@ -2001,6 +1889,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                             if not held:
                                 held = _hold_fresh_session(
                                     selected_agent, actual_session_id, user_id)
+                            _carry_title(selected_agent, event, session_title)
 
                         # CRITICAL: Always set/update session metadata (even for existing sessions)
                         # This ensures user_id is available for tool execution AND respects llm_profile overrides
@@ -2059,7 +1948,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
             stream_owns_cleanup = True
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            return _sse_response(event_stream(), media_type="text/event-stream")
 
         except HTTPException:
             raise
@@ -2082,6 +1971,27 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     except Exception as e:
                         logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
+    async def _sse_lines(job: BackgroundJob, format_agent: Any, cursor: int,
+                         before_send: Optional[Callable[[dict], None]] = None):
+        """A job's events from number ``cursor`` on as SSE lines, a keepalive while it is quiet.
+
+        Every stream of every job reads through here: the run's own and each reconnect.
+        ``before_send`` sees each event first.
+        """
+        job_manager = get_background_job_manager()
+        await job_manager.increment_sse_client(job.request_id)
+        try:
+            async for ev in job.follow(cursor, config.status.sse_keepalive_interval):
+                if ev is None:
+                    yield ":keepalive\n\n"
+                    continue
+                if before_send is not None:
+                    before_send(ev)
+                yield await _format_and_yield_event(
+                    ev, format_agent, job.request_id, job.actual_session_id or job.session_id or "unknown")
+        finally:
+            await job_manager.decrement_sse_client(job.request_id)
+
     async def _handle_events(
         request: Request,
         task: str,
@@ -2090,6 +2000,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         llm_profile: Optional[str] = None,
         request_id: Optional[str] = None,
         force: bool = False,
+        session_title: Optional[str] = None,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
@@ -2130,6 +2041,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # already active elsewhere (non-BackgroundJob, so not reconnectable), or
         # in line with a live run's id → 409.
         if not existing_job:
+            # No task, no run. The chat's reconnect URL carries none, and for an id whose
+            # job is gone by then (a restart) it would start an empty turn in the session.
+            if not (task or "").strip():
+                if request_id:
+                    raise HTTPException(status_code=404, detail=f"No running job under request_id {request_id}")
+                raise HTTPException(status_code=400, detail="Missing 'task'")
             if request_id:
                 request_id = await _validate_client_request_id(request_id)
             else:
@@ -2155,16 +2072,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 except Exception as e:
                     logger.warning(f"Could not load agent '{existing_job.agent_name}': {e}, using default")
             
+            # ``catch_up=skip&seen=N``: the client has just loaded this session, and that
+            # load told it the run had sent N events by then -- everything those events
+            # say is already in the messages it is showing, so it reads on from event N.
+            # Without it the reconnect replays what the buffer still holds.
+            cursor = 0
+            if request.query_params.get("catch_up") == "skip":
+                try:
+                    cursor = max(0, int(request.query_params.get("seen", "")))
+                except ValueError:
+                    cursor = 0
+
             async def reconnect_event_stream():
                 """Simplified event stream for reconnecting clients."""
-                import asyncio as _asyncio
-                
                 # Send immediate :ok to establish connection
                 yield ":ok\n\n"
-                
-                # Increment client count
-                await job_manager.increment_sse_client(request_id)
-                
+
                 # Send reconnect event
                 reconnect_payload = {
                     "type": "reconnect",
@@ -2179,125 +2102,30 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 }
                 if existing_job.last_status_message:
                     reconnect_payload["last_status"] = existing_job.last_status_message
-
-                # ``catch_up=skip&seen=N``: the client has just loaded this session, and
-                # that load told it the run had sent N events by then -- everything those
-                # events say is already in the messages it is showing. Replaying them
-                # would show the same turns twice.
-                #
-                # Only those. An earlier version dropped the buffer WHOLE, which also
-                # threw away everything the run emitted between that load and this
-                # connect -- a window of two round trips, and if the run's final answer
-                # fell into it the viewer never saw the answer and got a
-                # "connection lost" notice on a run that had finished cleanly.
-                #
-                # Worked out BEFORE the yield below: yielding hands control back to the
-                # event loop, and what the run puts in the queue meanwhile has not been
-                # seen by anyone.
-                skip_count = 0
-                if request.query_params.get("catch_up") == "skip":
-                    try:
-                        seen = int(request.query_params.get("seen", ""))
-                    except ValueError:
-                        seen = 0
-                    skip_count = existing_job.catch_up_skip(seen)
-
                 yield f"data: {json.dumps(reconnect_payload, ensure_ascii=False)}\n\n"
 
-                dropped = 0
-                while dropped < skip_count:
-                    try:
-                        item = existing_job.event_queue.get_nowait()
-                    except Exception:  # noqa: BLE001 -- drained by another reader meanwhile
-                        break
-                    if item is None:
-                        existing_job.event_queue.put_nowait(None)  # the run's end marker stays
-                        break
-                    dropped += 1
-                if skip_count:
-                    logger.debug("[EVENTS] %s: skipped %d of %d buffered events on catch-up",
-                                 request_id, dropped, skip_count)
+                async with aclosing(_sse_lines(existing_job, reconnect_agent, cursor)) as lines:
+                    async for line in lines:
+                        yield line
 
-                keepalive_interval = config.status.sse_keepalive_interval
-                actual_session_id = existing_job.actual_session_id or existing_job.session_id
-                
-                try:
-                    while True:
-                        if existing_job.status != JobStatus.RUNNING:
-                            # Drain remaining events
-                            while not existing_job.event_queue.empty():
-                                try:
-                                    ev = existing_job.event_queue.get_nowait()
-                                    if ev is not None:
-                                        yield await _format_and_yield_event(
-                                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
-                                            user_id, existing_job.agent_name, llm_profile, False
-                                        )
-                                except Exception:
-                                    break
-                            break
-                        
-                        try:
-                            ev = await _asyncio.wait_for(existing_job.event_queue.get(), timeout=keepalive_interval)
-                        except _asyncio.TimeoutError:
-                            yield ":keepalive\n\n"
-                            continue
-                        
-                        if ev is None:
-                            break
-                        
-                        # Track status for future reconnects
-                        if ev.get("type") == "status" and ev.get("message"):
-                            existing_job.last_status_message = ev["message"]
-                        
-                        yield await _format_and_yield_event(
-                            ev, reconnect_agent, request_id, actual_session_id or "unknown",
-                            user_id, existing_job.agent_name, llm_profile, False
-                        )
-                        
-                except _asyncio.CancelledError:
-                    raise
-                finally:
-                    await job_manager.decrement_sse_client(request_id)
-            
-            return StreamingResponse(
+            return _sse_response(
                 reconnect_event_stream(),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
         # NORMAL PATH: For new requests, do full setup
-        # Get agent with LLM override
-        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
-
-        # Load existing session if session_id provided (only for new jobs)
-        session_exists = False
-        if session_id and _session_service:
-            try:
-                session_exists, msg_count = await _session_service.load_and_restore_session(
-                    selected_agent, user_id, session_id
-                )
-            except SessionPermissionError as e:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Permission denied: {e}"
-                )
-
-        # CRITICAL: Always set/update session metadata (even for existing sessions)
-        # This ensures user_id is available for tool execution AND respects llm_profile overrides
-        # load_and_restore_session sets metadata from disk, but we need to override with current request's llm_profile
-        if session_id:
-            # Use override llm_profile if provided, otherwise agent's default
-            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-            selected_agent._session_tracker.set_session_metadata(session_id, {
-                "user_id": user_id,
-                "agent_name": selected_agent.name,
-                "llm_profile": effective_llm_profile
-            })
+        try:
+            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+            session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
+        except HTTPException:
+            # Registered above for the status stream; no run follows to release it.
+            release_request_user_tree(request_id)
+            raise
+        if session_exists:
+            session_title = None  # it names a session the run creates, not one it continues
 
         async def event_stream():
-            nonlocal job_manager
-            
             # Check if server is already shutting down
             if _shutdown_event and _shutdown_event.is_set():
                 yield ":server_shutdown\n\n"
@@ -2308,12 +2136,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
 
-            # Keep-alive mechanism
-            keepalive_interval = config.status.sse_keepalive_interval
-            
-            import asyncio as _asyncio
-            CancelledError = _asyncio.CancelledError
-            
             # Session presence (core/session_presence.py): held before the job
             # starts through the save after it; a session the job creates comes
             # with the start event.
@@ -2330,6 +2152,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     task, request_id, actual_session_id, 
                     llm_override=llm_override, llm_profile_info_override=llm_profile_info
                 ):
+                    # Here, not where the stream is read: the run waits at this
+                    # event until it is passed on, so no save of it comes first.
+                    _carry_title(selected_agent, ev, session_title)
                     yield ev
             
             try:
@@ -2363,68 +2188,28 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Store task description for reconnect
             job.task_description = task
 
+            def take_the_session(ev: dict) -> None:
+                """The run's own stream holds a session the run creates, from its start event."""
+                nonlocal actual_session_id, held
+                if ev.get("type") == "start" and ev.get("session_id"):
+                    actual_session_id = ev["session_id"]
+                    if not held:
+                        held = _hold_fresh_session(selected_agent, actual_session_id, user_id)
+                if was_new_session or ev.get("type") == "start":
+                    selected_agent._session_tracker.set_session_metadata(actual_session_id, {
+                        "user_id": user_id,
+                        # The real agent name, never the literal "default" —
+                        # a later append persists this field to disk and the
+                        # session UI resolves it against the registry.
+                        "agent_name": selected_agent.name,
+                        "llm_profile": llm_profile or selected_agent.agent_config.default_llm_profile,
+                    })
+
             try:
-                # Read events from job's event queue
-                while True:
-                    # Check if job is done
-                    if job.status != JobStatus.RUNNING:
-                        # Job finished - drain remaining events
-                        while not job.event_queue.empty():
-                            try:
-                                ev = job.event_queue.get_nowait()
-                                if ev is not None:
-                                    yield await _format_and_yield_event(
-                                        ev, selected_agent, request_id, actual_session_id or "unknown",
-                                        user_id, agent_name, llm_profile, was_new_session
-                                    )
-                            except Exception:
-                                break
-                        break
-                    
-                    # Try to get next event from queue with timeout
-                    try:
-                        ev = await _asyncio.wait_for(job.event_queue.get(), timeout=keepalive_interval)
-                    except _asyncio.TimeoutError:
-                        # No event received within keepalive interval - send keepalive
-                        yield ":keepalive\n\n"
-                        continue
-                    
-                    if ev is None:
-                        # Job finished signal
-                        break
-                    
-                    # Track session_id from start event
-                    if ev.get("type") == "start" and ev.get("session_id"):
-                        actual_session_id = ev["session_id"]
-                        if not held:
-                            held = _hold_fresh_session(
-                                selected_agent, actual_session_id, user_id)
-                        # Store in job for reconnect support
-                        job.actual_session_id = actual_session_id
-                    
-                    # Track status messages for reconnect
-                    if ev.get("type") == "status" and ev.get("message"):
-                        job.last_status_message = ev["message"]
-
-                    # Update session metadata
-                    if was_new_session or ev.get("type") == "start":
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                        selected_agent._session_tracker.set_session_metadata(actual_session_id, {
-                            "user_id": user_id,
-                            # The real agent name, never the literal "default" —
-                            # a later append persists this field to disk and the
-                            # session UI resolves it against the registry.
-                            "agent_name": selected_agent.name,
-                            "llm_profile": effective_llm_profile
-                        })
-
-                    # Format and yield event
-                    yield await _format_and_yield_event(
-                        ev, selected_agent, request_id, actual_session_id or "unknown",
-                        user_id, agent_name, llm_profile, was_new_session
-                    )
-                    
-            except CancelledError:
+                async with aclosing(_sse_lines(job, selected_agent, 0, take_the_session)) as lines:
+                    async for line in lines:
+                        yield line
+            except asyncio.CancelledError:
                 # SSE connection cancelled (client disconnect)
                 # Send cancellation event to client (if possible)
                 cancelled_payload = {"type": "disconnected", "request_id": request_id, "message": "SSE connection closed, job continues in background"}
@@ -2443,9 +2228,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     pass
                 raise
             finally:
-                # Decrement SSE client count
-                await job_manager.decrement_sse_client(request_id)
-                
                 # NOTE: We do NOT cancel the job here! The job continues running in background.
                 # The job will be cancelled only via explicit /cancel endpoint.
                 
@@ -2469,7 +2251,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 if job.status != JobStatus.RUNNING:
                     release_request_user_tree(request_id)
 
-        return StreamingResponse(
+        return _sse_response(
             event_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -2485,6 +2267,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         llm_profile: Optional[str] = Query(default=None),
         request_id: Optional[str] = Query(default=None),
         force: bool = Query(default=False),
+        session_title: Optional[str] = Query(default=None),
     ):
         """Stream agent events for a task (GET).
 
@@ -2493,6 +2276,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent or agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
+        - session_title: Optional title for the session, written with its first save
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
@@ -2509,6 +2293,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             llm_profile=llm_profile,
             request_id=request_id,
             force=force,
+            session_title=session_title,
         )
 
     @app.post("/events")
@@ -2520,6 +2305,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - session_id: Optional session ID for conversation continuity
         - agent_name: Optional agent to use
         - llm_profile: Optional LLM profile override
+        - session_title: Optional title for the session, written with its first save
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
@@ -2539,12 +2325,47 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             llm_profile=body.get("llm_profile"),
             request_id=body.get("request_id"),
             force=bool(body.get("force")),
+            session_title=body.get("session_title"),
         )
 
+    async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:
+        """403 unless every run the request id reaches is the caller's own, or the caller is an admin.
+
+        A request id is all these endpoints are given. Without this, anyone signed in
+        who learned one could read another user's run, stop it, or put words into it --
+        which the run then acts on with its owner's tools.
+
+        An id may be nobody's and still be somebody's run: a sub-run is named by its
+        caller's id and `_…`, and forgotten by the owner map when its caller's turn ends,
+        while it may work on -- so the owner is that of the nearest known run at or above
+        the id. A cancel (``reaches_below``) stops every run whose id extends the one
+        given, so there every known run below it counts too. A request nobody is known to
+        own (a restart forgot it) is left alone: nothing of anybody's is reached through it.
+        """
+        if current_user is None or getattr(current_user, "role", None) == "admin":
+            return
+        job_manager = get_background_job_manager()
+        owners = set()
+        parts = request_id.split("_")
+        for n in range(len(parts), 0, -1):
+            above = "_".join(parts[:n])
+            job = await job_manager.get_job(above)
+            owner = job.user_id if job is not None else get_request_user(above, default=None)
+            if owner is not None:
+                owners.add(owner)
+                break
+        if reaches_below:
+            below = f"{request_id}_"
+            owners.update(user for rid, user in list(_request_user_map.items()) if rid.startswith(below))
+            owners.update(job["user_id"] for job in await job_manager.get_all_jobs(include_completed=True)
+                          if job["request_id"].startswith(below))
+        if owners - {current_user.username}:
+            raise HTTPException(status_code=403, detail="Access denied to this request")
+
     @app.get("/api/requests/{request_id}/status")
-    async def get_request_status(request_id: str):
+    async def get_request_status(request_id: str, request: Request):
         """Get the status of a request for reconnection purposes.
-        
+
         Used by the WebUI before it follows a run again after a reload: GET /events
         with an id the job manager no longer holds would start a new run. Returns
         whether the request is still running or completed.
@@ -2552,6 +2373,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # First check BackgroundJobManager for more accurate status
         job_manager = get_background_job_manager()
         job = await job_manager.get_job(request_id)
+        await _refuse_foreign_request(request_id, await _enforce_endpoint_security(request))
+        # A finished MIRROR (POST /run) answers as if there had been no job: its
+        # caller had the answer, and "completed" with the job's keys is what the
+        # writer reconcile takes as proof that a book run is done.
+        if job and job.mirror and job.status != JobStatus.RUNNING:
+            job = None
         if job:
             return {
                 "request_id": request_id,
@@ -2559,7 +2386,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "completed": job.status != JobStatus.RUNNING,
                 "error": job.error_message,
                 "sse_clients": job.sse_client_count,
-                "events_buffered": job.event_queue.qsize() if job.event_queue else 0
+                "events_buffered": len(job.events),
             }
         
         # Fallback to session tracker — checks the DEFAULT agent first
@@ -2610,7 +2437,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.post("/api/requests/{request_id}/cancel")
-    async def cancel_request(request_id: str, force: bool = Query(default=False)):
+    async def cancel_request(request_id: str, request: Request, force: bool = Query(default=False)):
         """Cancel an active request by its ID.
 
         Delegates to ``BackgroundJobManager.cancel_job`` which is the
@@ -2637,6 +2464,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "Cancel request received for request_id=%s (force=%s)",
             request_id, force,
         )
+        await _refuse_foreign_request(request_id, await _enforce_endpoint_security(request), reaches_below=True)
         success = await get_background_job_manager().cancel_job(
             request_id, force_timeout=5.0 if force else 0.0,
         )
@@ -2664,17 +2492,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         one -- and a not-yet-persisted session has no owner on disk either, so
         the check passed for anybody. Callers that pass nothing keep the old
         behaviour of asking the entry agent.
+
+        A run of this process holding the session names its owner first, whichever
+        agent it runs on: a session such a run has not saved yet has an owner in no
+        other tracker and not on disk -- and an append to it goes to that run.
         """
         from fastapi import HTTPException
         if current_user is None:
             return
         if tracker is None:
             tracker = getattr(agent, "_session_tracker", None)
-        owner = None
-        # In-memory session metadata first (covers sessions not yet persisted),
+        owner = ((await get_background_job_manager().active_sessions()).get(sid) or {}).get("user_id")
+        # In-memory session metadata next (covers sessions not yet persisted),
         # then the persisted owner on disk.
         try:
-            meta = tracker.get_session_metadata(sid)
+            meta = tracker.get_session_metadata(sid) if owner is None else None
             if meta:
                 owner = meta.get("user_id")
         except Exception:
@@ -2738,6 +2570,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         target_agent = await resolve_agent_for_request(
             request_id, get_background_job_manager(), _app_registry, agent
         )
+        await _refuse_foreign_request(request_id, current_user)
 
         logger.debug("Append request received for request_id=%s (agent=%s): %.120s",
                      request_id, target_agent.name, content)
@@ -2762,6 +2595,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # If request not found/finished, try to append into the persisted session for this request
         sid = target_agent._session_tracker.get_session_for_request(request_id)
         if sid:
+            await _verify_session_owner(sid, current_user, target_agent._session_tracker)
             logger.debug("Request %s already finished; appending to session %s", request_id, sid)
             if await _append_and_persist(target_agent, sid, content, user_id, force):
                 return {"status": "appended", "session_id": sid}
@@ -2777,7 +2611,29 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         another process wrote the file -- a run woken by a direct message
         continues the session from disk, while re-reading unasked would undo
         what a run of this process has not saved yet.
+
+        A session a run of THIS process has is not written beside the run: the
+        message goes to the run, which reads it at its next step -- or, when the
+        run takes no more (it is finishing), it is refused. Written into the
+        session, it answered "appended" and was gone at the run's next save, which
+        writes the run's own list; the claim below does not stop it, since holds
+        nest inside a process.
         """
+        job_manager = get_background_job_manager()
+        running = (await job_manager.active_sessions()).get(sid)
+        if running and running.get("request_id"):
+            run_id = running["request_id"]
+            # `agent`, not owner_agent: a job on "default" runs on the app's default agent,
+            # and owner_agent is the agent of the request the caller named -- its last run.
+            run_agent = await resolve_agent_for_request(run_id, job_manager, _app_registry, agent,
+                                                        agent_name=running.get("agent_name"))
+            if await run_agent.append_user_message(run_id, content):
+                return True
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session {sid} is finishing a run -- what it saves would drop the message. "
+                       f"Try again once it is done.")
+
         refusal, held = await _claim_session(owner_agent, sid, user_id, force)
         if refusal:
             raise HTTPException(status_code=409, detail=refusal)

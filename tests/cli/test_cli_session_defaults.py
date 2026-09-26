@@ -63,7 +63,7 @@ class TestUsableSessionDefaults:
     def _config(self, agents=("known",), profiles=("p_known",)):
         servers = {name: SimpleNamespace(agent_config=object()) for name in agents}
         # A tool server: present, but no agent_config -- the same raw gate
-        # _build_entry_agent applies.
+        # servers/agent/entry.py applies.
         servers["a_tool_server"] = SimpleNamespace(agent_config=None)
         return SimpleNamespace(
             plugins=SimpleNamespace(servers=servers),

@@ -7,6 +7,7 @@ It provides a clean interface for session restoration and persistence.
 
 import asyncio
 import logging
+import weakref
 from typing import List, Dict, Any, Optional
 
 from agent_system.services.session_manager import SessionDeletedError, SessionPermissionError, SessionNotFoundError
@@ -108,6 +109,8 @@ class SessionService:
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         # session_id -> asyncio.Task running the checkpoint loop
         self._checkpoint_tasks: Dict[str, asyncio.Task] = {}
+        # session_id -> the lock its writes take in turn (save_lock)
+        self._save_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
     async def load_and_restore_session(
         self,
@@ -200,7 +203,62 @@ class SessionService:
             logger.error(f"[SESSION] Failed to load session {session_id}: {e}", exc_info=True)
             return False, 0
 
-    async def save_session(
+    async def open_for_run(self, agent, user_id: str, session_id: str, llm_profile: str,
+                           in_use: bool = False) -> bool:
+        """Ready *session_id* on *agent* for a run; returns whether it existed.
+
+        A stored session is restored (conversation, its context_vars). A new
+        one starts from nothing -- whatever this process still holds under the
+        id (a first save that failed) is not it: no conversation, no vars, no
+        start mark -- on the agent's template_vars. *in_use*: a run of this
+        process has the session, so what the tracker holds is that run's
+        unsaved state and stays as it is. Either way the metadata names this
+        run: user, agent, *llm_profile*.
+
+        One step for /run, /events, agent-cli and agent-run. Written out per
+        entry point, a new session got the agent's template_vars in three of
+        five. Raises SessionPermissionError for another user's session.
+        """
+        exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
+        tracker = agent._session_tracker
+        if not exists and not in_use:
+            # A title the first run was given and never wrote (it saved nothing):
+            # this run's save writes it -- agent-cli keeps its /title until one
+            # does. The same user's run only: another shares no more than the id.
+            first_run = tracker.get_session_metadata(session_id) or {}
+            carried = self._title_to_write(agent, session_id) if first_run.get("user_id") == user_id else None
+            tracker.discard_session(session_id)
+            if carried:
+                tracker.carry_title(session_id, carried)
+            own_vars = getattr(getattr(agent, "agent_config", None), "template_vars", None)
+            if own_vars:
+                tracker.set_session_template_vars(session_id, dict(own_vars))
+        tracker.set_session_metadata(session_id, {
+            "user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile})
+        return exists
+
+    def save_lock(self, session_id: str) -> asyncio.Lock:
+        """One write of *session_id* at a time: its saves, and a rename
+        (update_session). The run's own save and a checkpoint overlap -- the
+        loop runs through the whole run -- and each reads the record and the
+        title to write before it writes: the later one has to see what the
+        earlier wrote, a rename included. Writers that load, change and save
+        the record without it (task_switch's context vars, sub_agent_manager's
+        refresh of a sub-session's inherited vars) can still lose a rename
+        landing in between."""
+        lock = self._save_locks.get(session_id)
+        if lock is None:
+            lock = self._save_locks[session_id] = asyncio.Lock()
+        return lock
+
+    async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
+                           was_new_session: bool, title: Optional[str] = None) -> bool:
+        """_save_session, one write of the session at a time (save_lock)."""
+        async with self.save_lock(session_id):
+            return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
+                                            was_new_session, title)
+
+    async def _save_session(
         self,
         agent,
         user_id: str,
@@ -260,8 +318,11 @@ class SessionService:
                 messages_dicts.append(msg_dict)
             await asyncio.to_thread(_add_estimated_tokens, messages_dicts)
 
-            # Explicit title wins; otherwise derive it from the first user message
-            explicit_title = title
+            # Explicit title wins; otherwise derive it from the first user message.
+            # A title the run was given (SessionTracker.carry_title) is explicit
+            # until a save has written it.
+            carried = self._title_to_write(agent, session_id)
+            explicit_title = title or carried
             title = explicit_title or self._extract_session_title(messages_dicts)
 
             # Use the actual owner's user_id for existing sessions
@@ -341,6 +402,7 @@ class SessionService:
 
             # Save back
             await self.session_manager.save_session(session_data)
+            self._title_written(agent, session_id, carried)
 
             logger.debug(f"[SESSION] Session {session_id} saved with {len(messages_dicts)} messages")
             return True
@@ -351,6 +413,25 @@ class SessionService:
         except Exception as save_err:
             logger.error(f"[SESSION] Failed to save session {session_id}: {save_err}", exc_info=True)
             return False
+
+    @staticmethod
+    def _title_to_write(agent, session_id: str) -> Optional[str]:
+        """A title the caller gave the session its run started (SessionTracker
+        .carry_title): the save that writes the record first writes it -- the
+        run's own, or a checkpoint during a long tool -- and then lets go of
+        it, so a rename after that is not put back."""
+        tracker = getattr(agent, "_session_tracker", None)
+        title = tracker.title_to_write(session_id) if hasattr(tracker, "title_to_write") else None
+        return title if isinstance(title, str) else None
+
+    @staticmethod
+    def _title_written(agent, session_id: str, written: Optional[str]) -> None:
+        """After a save: the carried title it wrote is let go, so a rename after
+        it is not put back. One carried meanwhile stays for the next save: a
+        run's own carry has a save after it, and a rename's waits (save_lock)."""
+        tracker = getattr(agent, "_session_tracker", None)
+        if written and hasattr(tracker, "title_written"):
+            tracker.title_written(session_id, written)
 
     def _extract_session_title(self, messages_dicts: List[Dict[str, Any]]) -> str:
         """
@@ -381,6 +462,11 @@ class SessionService:
     # ------------------------------------------------------------------
 
     async def checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
+        """_checkpoint_session, in turn with the session's other writes (save_lock)."""
+        async with self.save_lock(session_id):
+            return await self._checkpoint_session(agent, user_id, session_id)
+
+    async def _checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
         """Persist the current in-memory session state up to the last consistent
         tool_call/tool_result boundary.
 
@@ -406,6 +492,9 @@ class SessionService:
             if not safe_messages and not runtime_vars:
                 # Nothing useful to checkpoint yet
                 return False
+            # A long tool keeps the run's own save away; this may be the write
+            # that creates the record, so it takes the run's title too.
+            carried = self._title_to_write(agent, session_id)
 
             # Find the actual session owner if the session is already on disk
             session_owner = await self.session_manager._find_session_owner_async(session_id)
@@ -441,6 +530,8 @@ class SessionService:
                 session_data = await self.session_manager.load_session(actual_user_id, session_id)
 
             session_data["messages"] = safe_messages
+            if carried:
+                session_data["title"] = carried
             if runtime_vars:
                 existing = session_data.get("context_vars")
                 if not isinstance(existing, dict):
@@ -449,6 +540,7 @@ class SessionService:
                 session_data["context_vars"] = existing
 
             await self.session_manager.save_session(session_data)
+            self._title_written(agent, session_id, carried)
             logger.debug(
                 f"[CHECKPOINT] Session {session_id}: persisted {len(safe_messages)} safe messages "
                 f"(trimmed from {len(messages_dicts)})"

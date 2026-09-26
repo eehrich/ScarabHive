@@ -135,8 +135,8 @@ async def test_status_returns_completed_when_bg_job_has_it(
     fake_job.status = JobStatus.COMPLETED
     fake_job.error_message = None
     fake_job.sse_client_count = 0
-    fake_job.event_queue = MagicMock()
-    fake_job.event_queue.qsize = MagicMock(return_value=0)
+    fake_job.events = []
+    fake_job.mirror = False  # a job /events started; a MagicMock attribute would read as True
 
     mgr = MagicMock()
     mgr.get_job = AsyncMock(return_value=fake_job)

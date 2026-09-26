@@ -103,9 +103,10 @@ class _DummyAgent:
         self.agent_config = AgentConfig(system_prompt="x")
         self.registry = None
         self.llm = SimpleNamespace(model="m")
-        self._session_tracker = SimpleNamespace(
-            set_session_messages=lambda sid, messages: None,
-            set_session_metadata=lambda sid, meta: None)
+        # The real tracker: opening a session (SessionService.open_for_run)
+        # uses more of it than a stand-in would know.
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+        self._session_tracker = SessionTracker()
 
     async def run_events(self, task, **kwargs):
         _sent.append(task)
@@ -147,7 +148,7 @@ def booted(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_run, "load_settings", lambda path=None: config)
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
     monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
-    monkeypatch.setattr("agent_system.agent_cli.Agent", _DummyAgent)
+    monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _DummyAgent)
 
     async def fake_initialize_system(cfg):
         return ToolServerRegistry(), service
@@ -373,7 +374,7 @@ class TestAFailedAttachmentIsAFailedRun:
             cli.main()
 
         assert exit_info.value.code == 1
-        assert "error processing image" in capsys.readouterr().err.lower()
+        assert "kaputt.png" in capsys.readouterr().err
         assert not booted.sent
 
     def test_agent_run_exits_non_zero_on_an_unreadable_image(self, booted, tmp_path,
@@ -390,7 +391,7 @@ class TestAFailedAttachmentIsAFailedRun:
             loop.close()
 
         assert exit_info.value.code == 1
-        assert "error processing image" in capsys.readouterr().err.lower()
+        assert "kaputt.png" in capsys.readouterr().err
         assert not booted.sent
 
 
@@ -549,7 +550,7 @@ class TestNoAttachmentErrorLeavesWithZero:
                      if isinstance(c, ast.Call)]
             names = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
                      for c in calls}
-            if "create_multimodal_message_extended" in names:
+            if "message_with_attachments" in names:
                 handlers.extend(node.handlers)
         return handlers
 
@@ -603,7 +604,7 @@ class TestAFinishedRunAlwaysPrintsItsResult:
                 yield {"type": "end"}
 
         monkeypatch.setattr("agent_system.servers.agent.server.Agent", _SetResultAgent)
-        monkeypatch.setattr("agent_system.agent_cli.Agent", _SetResultAgent)
+        monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _SetResultAgent)
 
     @pytest.mark.parametrize("flag", ["--raw", "--verbose"])
     def test_agent_cli(self, booted, monkeypatch, capsys, flag):

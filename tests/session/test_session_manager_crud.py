@@ -813,3 +813,112 @@ async def test_save_session_preserves_parent_session(session_manager):
     loaded = await session_manager.load_session("user1", "sub_agent_001")
     assert loaded["parent_session"]["session_id"] == "parent_001"
     assert loaded["depth"] == 2
+
+
+class TestResolveSessionRef:
+    """A person types the name they gave a session; an id is machine-made.
+
+    The id cannot be renamed -- it is the key the usage tracker, the message
+    debugger, the context stores, the sub-session indexes and the presence
+    locks file their rows under -- so the title is the name, and --session
+    and /resume take it.
+    """
+
+    async def _titled(self, manager, title, session_id, updated_at=None, parent=None):
+        if not updated_at:
+            session = await manager.create_session(
+                user_id="u", session_id=session_id, title=title,
+                agent_name="a", llm_profile="p")
+            await manager.save_session(session)
+            return session
+        # A record with the stamp it is given: save_session stamps "now", and
+        # "newest" would then be decided by the wall clock (two saves inside
+        # one Windows clock tick tie). reinstate_session writes it as it is.
+        session = {"session_id": session_id, "user_id": "u", "title": title,
+                   "created_at": updated_at, "updated_at": updated_at,
+                   "agent_name": "a", "llm_profile": "p", "messages": [], "metadata": {}}
+        if parent:
+            session["parent_session"] = {"session_id": parent, "created_at": updated_at}
+        await manager.reinstate_session(session)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_an_id_wins_over_a_title_that_looks_like_one(self, session_manager):
+        await self._titled(session_manager, "fpga", "abc123")
+        await self._titled(session_manager, "Quartus", "fpga")
+
+        assert await session_manager.resolve_session_ref("u", "fpga") == "fpga"
+
+    @pytest.mark.asyncio
+    async def test_a_title_finds_its_session_whatever_the_case(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "2332j2kj22k")
+
+        assert await session_manager.resolve_session_ref("u", "fpga quartus") == "2332j2kj22k"
+
+    @pytest.mark.asyncio
+    async def test_the_same_title_many_times_means_the_newest(self, session_manager):
+        """A pipeline writes hundreds of "Bewerte Kapitel 3" -- the one the
+        person means is the one they last worked in."""
+        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+                           updated_at="2026-09-24T10:00:00+00:00")
+        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+
+        assert await session_manager.resolve_session_ref("u", "Bewerte Kapitel 3") == "new1"
+
+    @pytest.mark.asyncio
+    async def test_the_others_with_the_same_title_are_named(self, session_manager):
+        """So the caller can say it took the newest of several."""
+        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+                           updated_at="2026-09-24T10:00:00+00:00")
+        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+        await self._titled(session_manager, "Anderes", "other1")
+        others: list = []
+
+        assert await session_manager.resolve_session_ref(
+            "u", "Bewerte Kapitel 3", others=others) == "new1"
+        assert others == ["old1"]
+
+    @pytest.mark.asyncio
+    async def test_a_sub_agents_task_title_is_neither_taken_nor_counted(self, session_manager):
+        """A sub-agent's title is its task text, shared by the hundred in a
+        pipeline -- a title a person typed belongs to a session they see."""
+        await self._titled(session_manager, "Recherche", "root1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+        await self._titled(session_manager, "Recherche", "sub1",
+                           updated_at="2026-09-24T10:00:00+00:00", parent="root1")
+        others: list = []
+
+        assert await session_manager.resolve_session_ref("u", "Recherche", others=others) == "root1"
+        assert others == [], "a sub-agent session was counted as a namesake"
+        assert await session_manager.resolve_session_ref("u", "sub1") == "sub1", \
+            "its id no longer reaches a sub-agent session"
+
+    @pytest.mark.asyncio
+    async def test_the_start_of_a_title_is_enough(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus Prime", "xyz789")
+
+        assert await session_manager.resolve_session_ref("u", "FPGA Qua") == "xyz789"
+
+    @pytest.mark.asyncio
+    async def test_a_prefix_that_fits_two_sessions_names_neither(self, session_manager):
+        """`--session build` creates a session called "build"; joining a
+        stranger's conversation because the first letters matched is worse."""
+        await self._titled(session_manager, "Build pipeline v4", "aaa111")
+        await self._titled(session_manager, "Build the panel", "bbb222")
+
+        assert await session_manager.resolve_session_ref("u", "Build") is None
+
+    @pytest.mark.asyncio
+    async def test_a_name_nobody_gave_resolves_to_nothing(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "xyz789")
+
+        assert await session_manager.resolve_session_ref("u", "Amiga") is None
+        assert await session_manager.resolve_session_ref("u", "   ") is None
+
+    @pytest.mark.asyncio
+    async def test_another_users_session_is_not_found_by_its_title(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "xyz789")
+
+        assert await session_manager.resolve_session_ref("somebody_else", "FPGA Quartus") is None

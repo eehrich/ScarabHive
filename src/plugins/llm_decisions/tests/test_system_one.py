@@ -3,7 +3,8 @@
 The wire contract under test, from OpenRouter's OpenAPI document and their own
 worked example: POST /api/alpha/decisions with {model, state, questions}, and
 {answers, usage} comes back -- one probability for ``noul``, a named option for
-``choice``, a point on a scale for ``score``.
+``choice``, a point on a scale for ``score``. TypeSafe's /v1/systemone and a
+local laya-serve speak the same wire; what differs per host is the ``Host``.
 """
 from __future__ import annotations
 
@@ -18,8 +19,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[3]))
 
 from agent_system.core.cancellation import CancellationToken
-from plugins.llm_decisions.openrouter import (
-    DECISIONS_URL,
+from plugins.llm_decisions.system_one import (
+    OPENROUTER,
+    SYSTEM_ONE,
     DecisionsClient,
     DecisionsError,
 )
@@ -78,7 +80,7 @@ async def test_the_question_goes_out_and_the_probability_comes_back():
     with _respond(_response(), record=sent):
         result = await _client().decide(STATE, SAFE_TO_RUN, session_id="s-1")
 
-    assert sent[0]["url"] == DECISIONS_URL
+    assert sent[0]["url"] == OPENROUTER.url
     assert sent[0]["headers"]["Authorization"] == "Bearer sk-or-test"
     assert sent[0]["json"] == {"model": "~typesafe/jev-latest", "state": STATE,
                                "questions": SAFE_TO_RUN, "session_id": "s-1"}
@@ -149,6 +151,89 @@ async def test_the_key_follows_the_endpoint_not_the_provider_name(monkeypatch):
         DecisionsClient(model="m", url="https://decisions.example.com/v1/decide")
     named = DecisionsClient(model="m", api_key="sk-proxy", url="https://decisions.example.com/v1/decide")
     assert named.api_key == "sk-proxy"
+    # TypeSafe's own endpoint takes the variable their SDKs read, never OpenRouter's
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-from-the-environment")
+    assert DecisionsClient(model="jev-latest", host=SYSTEM_ONE).api_key == "ts-from-the-environment"
+
+
+async def test_a_local_endpoint_without_a_key_gets_none_not_the_openai_one(monkeypatch):
+    """The local fallback of api_keys.py hands OPENAI_API_KEY to local
+    OpenAI-compatible servers. A local laya-serve is not one: it has no use for
+    that secret, and where the variable is unset it must not stop the client."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+    sent = []
+    laya = DecisionsClient(model="multilingual", host=SYSTEM_ONE, url="http://127.0.0.1:8788/v1/systemone")
+    with _respond(_response(), record=sent):
+        await laya.decide(STATE, SAFE_TO_RUN)
+    assert "Authorization" not in sent[0]["headers"]
+
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert DecisionsClient(model="m", host=SYSTEM_ONE, url="http://laya:8788/v1/systemone").api_key == ""
+    # ...while a url that names no host at all still fails where it is configured,
+    # not at every call: without a scheme there is no hostname to call local
+    with pytest.raises(ValueError, match="no environment variable is configured"):
+        DecisionsClient(model="m", host=SYSTEM_ONE, url="laya:8788/v1/systemone")
+    keyed = DecisionsClient(model="m", host=SYSTEM_ONE, url="http://laya:8788/v1/systemone", api_key="laya-key")
+    with _respond(_response(), record=sent):
+        await keyed.decide(STATE, SAFE_TO_RUN)
+    assert sent[1]["headers"]["Authorization"] == "Bearer laya-key"
+
+
+async def test_each_host_is_sent_what_it_documents_and_books_the_call_under_its_name():
+    """session_id is OpenRouter's field; TypeSafe's reference lists model, state
+    and questions, and a local laya-serve is that wire. The hooks still get the
+    session -- the grouping is ours, not the host's -- under the host's own
+    provider name: a local Laya counted as OpenRouter would be spend that
+    happened somewhere else."""
+    sent = []
+    registry, watching = _watching_hooks()
+    with watching, _respond(_response(), record=sent):
+        await _client(host=SYSTEM_ONE).decide(STATE, SAFE_TO_RUN, session_id="s-5")
+
+    assert sent[0]["url"] == SYSTEM_ONE.url
+    assert sent[0]["json"] == {"model": "~typesafe/jev-latest", "state": STATE, "questions": SAFE_TO_RUN}
+    assert [c.llm_provider for _, c in registry.seen] == ["systemone_decisions"] * 2
+    assert [c.session_id for _, c in registry.seen] == ["s-5", "s-5"]
+
+
+#: What laya-serve 0.3.20 answered on this machine (2026-09-25) to the three
+#: types -- recorded, not written: ``answer_confidence``, ``action`` and
+#: ``routing`` are its own, ``model`` names no checkpoint, and there is no id,
+#: no provider and no cost.
+LAYA_QUESTIONS = {
+    "safe": {"type": "noul", "instructions": "Is this safe to run without a human approving it?"},
+    "kind": {"type": "choice", "instructions": "What does it do?",
+             "criteria": {"read": "Only reads.", "delete": "Deletes data."}},
+    "risk": {"type": "score", "instructions": "How risky?", "criteria": ["none", "low", "high"]},
+}
+LAYA_ANSWER = {
+    "model": "laya-rl-agent",
+    "answers": {
+        "safe": {"type": "noul", "noul": 0.1858, "confidence": 0.8142, "answer_confidence": 0.8142,
+                 "action": {"act_probability": 1.0}},
+        "kind": {"type": "choice", "choice": "delete", "probabilities": {"read": 0.0211, "delete": 0.9789},
+                 "confidence": 0.8523, "answer_confidence": 0.9789, "action": {"act_probability": 1.0}},
+        "risk": {"type": "score", "score": 0.5773, "legend": {"0": "none", "1": "low", "2": "high"},
+                 "probabilities": {"0": 0.5143, "1": 0.394, "2": 0.0916}, "confidence": 0.1554,
+                 "answer_confidence": 0.5143, "action": {"act_probability": 1.0}},
+    },
+    "usage": {"input_tokens": 108, "output_tokens": 0},
+    "routing": {"model": "english", "repo": "convaiinnovations/laya",
+                "reason": "Latin script, language not identified and no non-English letters; "
+                          "using default (english)"},
+}
+
+
+async def test_a_local_laya_answer_reads_like_a_jev_one():
+    laya = _client(host=SYSTEM_ONE, url="http://127.0.0.1:8788/v1/systemone", api_key="unused")
+    with _respond(_response(payload=LAYA_ANSWER)):
+        result = await laya.decide("rm -rf /tmp/build", LAYA_QUESTIONS)
+
+    assert {n: a.value for n, a in result.answers.items()} == {"safe": 0.1858, "kind": "delete", "risk": 0.5773}
+    assert result["kind"].probabilities["delete"] == 0.9789 and result["risk"].legend["2"] == "high"
+    # nothing this host leaves out is invented: unknown cost, no id, no gateway
+    assert result.cost is None and result.id is None and result.provider is None
+    assert result.model == "laya-rl-agent" and result.input_tokens == 108
 
 
 async def test_a_state_of_nothing_is_refused():
@@ -243,9 +328,9 @@ async def test_a_broken_connection_is_tried_again(monkeypatch):
 
 
 async def test_the_failed_attempt_is_grouped_with_the_run_as_well(monkeypatch):
-    """The tracker skips error rows on purpose, so the debugger is the only
-    place a failed attempt shows up -- and an ungrouped row there is a cost
-    that looks like it happened somewhere else."""
+    """The tracker books no row for an attempt that brought no usage, so the
+    debugger is the only place a failed attempt shows up -- and an ungrouped
+    row there is a cost that looks like it happened somewhere else."""
     from agent_system.tools.status import current_request_id
 
     real_sleep = asyncio.sleep
@@ -353,6 +438,30 @@ async def test_every_way_the_call_can_end_reaches_the_hooks(fail, says):
     assert says in ended.llm_error and ended.llm_finish_reason == "error"
 
 
+async def test_an_answer_refused_after_it_was_billed_still_says_what_it_cost():
+    """The call was billed before this client refused the answer: the error
+    carries the usage, and so does the hook's error row -- the usage tracker
+    books a failure only then, and the decision tool adds it to its total."""
+    billed = {"input_tokens": 300, "output_tokens": 0, "cost": 1.2e-05}
+    registry, watching = _watching_hooks()
+    for answers, says in (({}, "unanswered"),
+                          ({"safe_to_run": {"type": "vibes", "vibes": 1}}, "no usable value")):
+        with watching, _respond(_response(payload={"model": "m", "answers": answers, "usage": billed})):
+            with pytest.raises(DecisionsError, match=says) as refused:
+                await _client().decide(STATE, SAFE_TO_RUN)
+        assert refused.value.usage == billed, says
+        assert registry.seen[-1][1].llm_usage == billed and registry.seen[-1][1].llm_error
+
+    # nothing to book: a refused request was never answered, and an answer
+    # without a usage block says nothing about what it cost
+    for ends in (_response(status=400, text="no"),
+                 _response(payload={"model": "m", "answers": {}})):
+        with watching, _respond(ends):
+            with pytest.raises(DecisionsError) as failed:
+                await _client().decide(STATE, SAFE_TO_RUN)
+        assert failed.value.usage is None and not registry.seen[-1][1].llm_usage
+
+
 async def test_a_cancel_reaches_the_hooks_too():
     """The user's cancel ends the call -- and the hooks are told, not left hanging."""
     registry, watching = _watching_hooks()
@@ -438,18 +547,20 @@ async def test_a_busy_endpoint_is_tried_again(monkeypatch):
     assert waited == [2.0, 4.0], "the wait between attempts does not grow"
 
 
-async def test_a_cloudflare_520_is_tried_again(monkeypatch):
-    """The endpoint sits behind Cloudflare, which answers 520 when the origin
-    misbehaves -- transient, and it killed a whole fan-out once because the
-    client raised on it instead of trying again."""
+@pytest.mark.parametrize("status", [520, 529])
+async def test_a_transient_status_is_tried_again(monkeypatch, status):
+    """520: the endpoint sits behind Cloudflare, which answers it when the
+    origin misbehaves -- transient, and it killed a whole fan-out once because
+    the client raised on it instead of trying again. 529: TypeSafe's reference
+    names it (overloaded) beside 429 as the one to retry with backoff."""
     real_sleep = asyncio.sleep
     monkeypatch.setattr(asyncio, "sleep", lambda delay: real_sleep(0))
     sent = []
-    with _respond(_response(status=520, text='{"error":{"code":520}}'),
+    with _respond(_response(status=status, text=f'{{"error":{{"code":{status}}}}}'),
                   _response(), record=sent):
         result = await _client(max_retries=2).decide(STATE, SAFE_TO_RUN)
 
-    assert len(sent) == 2, "the 520 was not tried again"
+    assert len(sent) == 2, f"the {status} was not tried again"
     assert result["safe_to_run"].value == 0.05
 
 

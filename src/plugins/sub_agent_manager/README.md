@@ -55,7 +55,9 @@ in one prompt.
 `merge_parent_context_vars` resolves it by provenance: a key whose value
 differs from the inherited snapshot was set by the sub-agent itself and wins;
 every other key follows the parent, whose tracker is the live source of truth;
-keys only the sub-agent has are kept. Sessions predating
+keys only the sub-agent has are kept. A key the parent no longer has stays too:
+an empty read of the parent's vars cannot be told from a failed one, and taking
+it for a removal would wipe every inherited var on a tracker that did not answer. Sessions predating
 `context_vars_inherited` are treated as fully inherited, which lets the
 parent's current values through — the intended behaviour for old sessions.
 
@@ -123,8 +125,30 @@ elsewhere (its request tree going down, the process shutting down) and an
 archiving to make room — both happen behind the caller's back, and it is asleep
 over a job it has not heard the end of.
 
+The ringing stops once the ending is read -- wherever it is read. The entry in the
+job's process says so for a reader there; a caller woken into a run of its own
+reads the stored state instead, where this process's entry says nothing. So an
+ending the bell rings for is stored `ending_unread`, and a reader of the stored
+state hands it over (poll and wait, a `continue` reopening the instance, the
+caller's `delete`); the bell asks both (`_ending_still_unread`, which the core
+awaits between rings). It used to ring on over an ending read elsewhere, up to its
+budget, and the marker of the last ring woke a second, paid run when that caller's
+turn let go. An ending that could not be stored has only its entry to go by.
+
 A wake that cannot be delivered is logged and costs the caller a poll, never the
-job: the run's ending is recorded before anyone is told about it.
+job: the run's ending is recorded before anyone is told about it. A caller woken
+into a process of its own reads that stored ending, so the job's entry in this
+process goes once the ring has a run of the session on its way (started by this
+ring or another) -- held on, it kept the result for the life of the process, one
+per woken job. A caller whose turn outlasts the ringing is woken at its release
+instead; that run reads the stored ending too, and the entry here stays until
+this process ends or reads it.
+An archiving to make room changes nothing about the job: it dropped a finished
+job's entry, which could then no longer say the ending is unread, and the ringing
+stopped for a caller asleep over it. And the bell
+rings outside what turns a cancel into an ending: a shutdown that cancels a job
+while it rings — up to five minutes, while the caller's session is held — used
+to record a second ending, *cancelled* over the finished one, and ring again.
 
 ## Limits and the guards behind them
 
@@ -163,7 +187,13 @@ Two more that are not limits but guards:
 
 * **No concurrent run of the same instance.** `_running_agents` plus a lock;
   a second `create`/`continue` on a busy instance is refused rather than
-  interleaved into one transcript.
+  interleaved into one transcript. A run of another process counts too: a
+  woken coordinator continues from a process of its own, while the job it
+  continues may still run in the API. `continue` asks the lock beside the
+  sub-session (`core/session_presence.py`) as `list` does, and refuses — two
+  runs on one transcript each saved their own, the later over the other. A
+  refusal of a busy, missing or foreign instance is the caller's mistake and
+  logged at INFO; a slot no running task holds is a leak and logged as an error.
 * **The manager writes a parent's sub-agent entries one at a time.** An entry
   is written whole, and a limit is a count that a spawn reads and then fills; a
   lock per parent session holds both. The creates of a fan-out are counted one
@@ -176,10 +206,16 @@ Two more that are not limits but guards:
   checkpoint) is not held off by it, and no longer needs to be: `save_session`
   lets the metadata already in the file win (`b579f62fe`), so a checkpoint
   does not write an older `sub_agents` back.
-* **Instance ids do not collide across parents or restarts.** The counter is
-  class-level (shared by every manager instance) behind a class lock, and
-  seeded from the time of day rather than zero, so a restart does not re-issue
-  the ids of the session still on disk.
+* **Instance ids stay apart across parents, processes and restarts.** The
+  counter is class-level (shared by every manager instance) and starts at random
+  in each process, so two processes land on one id only by chance; an id already
+  on disk is skipped. It started at the time of day, and processes started in the
+  same second -- the parallel agent-cli runs of a batch -- counted through the
+  same ids.
+* **One archiving makes room at both limits.** At the type's limit the oldest of
+  that type goes, which frees a place under the session's limit too; the
+  session's limit was checked first, archived the oldest of any type, and with
+  the type still full a second one.
 * **A finished run answers with its own words, job or no job.** The background
   job holds the result text only until somebody reads it, and after a restart
   or an archiving there is none at all. `poll` then reads the last thing the
@@ -189,7 +225,11 @@ Two more that are not limits but guards:
   answer "not found" about a run it started itself. A run **cut off in a tool
   call** has no answer to give — neither the empty step nor the sentence a model
   narrates before working ("let me look at the configuration first"), which
-  handed over as a result reads as the sub-agent's finding.
+  handed over as a result reads as the sub-agent's finding. Nor has a run that
+  **nobody finished**: a process that dies mid-run leaves the sub-agent's
+  activity behind, and `list` calls that one *interrupted*. `poll` answers the
+  same — *interrupted*, and no result — where it used to hand the transcript
+  of a half-done run over as *completed*; `wait_all` counts it as failed.
 * **A run this process has no job for is not finished by that.** A blocking run
   never had a job here, a job lives in the process that started it, and a woken
   coordinator polls from a process of its own — so `poll` asks both questions
@@ -259,6 +299,10 @@ caller's prompt may legitimately ask for advanced continues (synthesis,
 stuck), and each of those would be a premium call over the whole accumulated
 context. Unlisted types keep the plain `allow_advanced_model` behaviour.
 
+Both vetoes filter that argument only. A sub-agent with
+`agent_config.inherit_parent_llm` follows a caller that was switched to
+another profile, a premium one included (`docs/config_based_agents.md`).
+
 ## Reading a transcript
 
 `info` returns the **tail** by default — the most recent messages, which is
@@ -314,6 +358,17 @@ same session alike; a transcript and an archive go to the instance that spawned
 the sub-agent, which holds its runs and its jobs. (The list used to show the
 panel's own instance only, and was empty beside a full map on every session
 whose agent spawns through another.)
+
+It shows its viewer's own sessions only, by the rule of `/sessions` (the signed-in
+user, else `anonymous`), and reads them under that user. A session of another
+user shows no sub-agents and maps to itself alone, and a transcript or an archive
+of one is not found: each asks first whether the session and the sub-agent are
+the viewer's (`belongs_to`, a stat). Figures and whether one runs are looked up
+for her own sub-sessions only — a session's metadata is its user's to write, and
+an entry naming another user's sub-agent had those looked up by the bare id. It
+is shown as its entry says, as one whose sub-session was deleted is, so neither
+tells whether an id exists elsewhere. The panel used to ask the session
+directories whose a session id is, and answered anyone who named one.
 
 Both carry the same two figures per sub-agent, each left out where it is not
 known:

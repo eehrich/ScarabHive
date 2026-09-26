@@ -5,11 +5,18 @@
 <script type="module">
   // A panel inside a (fake) shell: what it says before the handshake must
   // arrive after it, and the handshake's visibility must take effect.
-  import { setTitle, navigate, isVisible } from '/static/kit/panel-kit.js';
+  import { setTitle, navigate, isVisible, autoRefresh } from '/static/kit/panel-kit.js';
 
   setTitle('Early title');
   navigate('/early/path');
   window.probeVisible = isVisible;  // the page asks once it has answered
+  // a panel's timer, counted: what it does while hidden and on coming back
+  window.ticks = 0;
+  window.startTicking = (ms) => {
+    const timer = autoRefresh(() => { window.ticks += 1; }, ms);
+    timer.start();
+    return timer;
+  };
 </script>
 </body>
 </html>

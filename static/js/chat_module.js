@@ -155,10 +155,24 @@
     msgDiv.appendChild(pre);
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
+    runGoesOnBelow();
     // force: a note answers something the user just typed. Honouring
     // "only scroll when already at the bottom" would hide the reply to their
     // own keystroke whenever they had scrolled up.
     scrollBottom(true);
+  }
+
+  /**
+   * A note written while a run is going: the run's next step goes below it, as it does
+   * below a message appended mid-run. Without this the run kept writing into its block
+   * ABOVE the note, so every command typed during a run stacked up at the bottom of the
+   * chat until the run ended -- and its answer arrived above all of them.
+   *
+   * Not at once: the step that is streaming would be torn in two (see the append path).
+   * A message appended mid-run outranks it: the server reads that one, a note it never sees.
+   */
+  function runGoesOnBelow() {
+    if (chatModule.activeRun() && !pendingAppendRebind) pendingAppendRebind = 'note';
   }
 
   /**
@@ -177,6 +191,7 @@
     msgDiv.appendChild(body);
     row.appendChild(msgDiv);
     chatContainer.appendChild(row);
+    runGoesOnBelow();
     scrollBottom(true);
   }
 
@@ -203,24 +218,8 @@
     return await resp.json();
   }
 
-  async function postJSON(url, body) {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      let detail = resp.status + ' ' + resp.statusText;
-      try {
-        const answer = await resp.json();
-        if (answer && answer.detail) detail = answer.detail;
-      } catch (e) { /* not JSON -- keep the status line */ }
-      const error = new Error(detail);
-      error.status = resp.status;
-      throw error;
-    }
-    return await resp.json();
+  function postJSON(url, body) {
+    return getJSON(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   }
 
   function currentAgentName() {
@@ -414,57 +413,128 @@
   // ---------------------------------------------------------------------
 
   async function cmdSessions(container, payload) {
-    // The count is advertised by the shared command catalogue, which both
-    // surfaces render -- so it has to mean the same here as in agent-cli:
-    // a number, 0 for all, anything else the usage line (as /history does).
+    // Read, filtered and counted by the server with the terminal's own
+    // functions (GET /api/sessions/listing): a count, 0 or `all`, the agents
+    // meant for chat, this chat's agent and session always -- one rule for
+    // both chats, not a second copy of it here.
     const raw = (payload || '').trim();
-    if (raw && !/^\+?\d+$/.test(raw)) {
-      addNote(container, 'Usage: /sessions [count]   (got: ' + raw + ')');
+    let listing;
+    try {
+      listing = await getJSON('/api/sessions/listing?count=' + encodeURIComponent(raw) +
+        '&agent=' + encodeURIComponent(currentAgentName() || '') +
+        '&current=' + encodeURIComponent(currentSessionId || ''));
+    } catch (error) {
+      if (error.status !== 400) throw error;
+      addNote(container, 'Usage: /sessions [count|all]   (got: ' + raw + ')');
       return;
     }
-    const limit = raw ? parseInt(raw, 10) : 20;
-    const sessions = await getJSON('/api/sessions');
-    if (!sessions.length) {
+    const shown = listing.sessions;
+    if (!shown.length && !listing.left_out) {
       addNote(container, 'No sessions yet.');
       return;
     }
-    const shown = limit <= 0 ? sessions : sessions.slice(0, limit);
     const lines = shown.map(function (s) {
       const marker = s.session_id === currentSessionId ? '*' : ' ';
       const count = String(s.message_count || 0).padStart(4);
       return ' ' + marker + ' ' + s.session_id + '  ' + count + ' msg  ' +
         (s.agent_name || '?') + '  ' + oneLine(s.title || 'Untitled', 48);
     });
-    const rest = sessions.length - shown.length;
-    addNote(container, 'Sessions (' + shown.length + ' of ' + sessions.length + '):\n' +
+    const rest = listing.total - shown.length;
+    const most = listing.most_left_out;
+    addNote(container, 'Sessions (' + shown.length + ' of ' + listing.total + '):\n' +
       lines.join('\n') +
-      (rest > 0 ? '\n   ... ' + rest + ' more -- /sessions <count>, /sessions 0 for all' : '') +
-      '\nUse /resume <id> to continue one.');
+      (rest > 0 ? '\n   ... ' + rest + ' more -- /sessions <count>, /sessions 0 for no limit' : '') +
+      (most ? '\n   (' + listing.left_out + ' more on agents not meant for chat, most ' +
+        most.agent + ' ' + most.count + ' -- /sessions all)' : '') +
+      '\nUse /resume <id or title> to continue one.');
+  }
+
+  // A /title typed before the first message: there is no session to rename
+  // yet, so the title goes out with that message (session_title) and the
+  // run's first save writes it -- as agent-cli does. Dropped, with a word,
+  // when the chat goes to another session first.
+  // `firstMessageOut`: that message is out and its run has not started --
+  // {title} it took along, null for none.
+  // `unlistedTitles`: session id -> {title} its first save writes, for a bare
+  // /title and the header while the session list does not have it -- kept for
+  // this tab, so a reload during that run still knows it.
+  const UNLISTED_TITLES_KEY = 'unlistedSessionTitles';
+  let pendingTitle = null;
+  let firstMessageOut = null;
+  let unlistedTitles = (() => {
+    try { return JSON.parse(sessionStorage.getItem(UNLISTED_TITLES_KEY)) || {}; } catch { return {}; }
+  })();
+
+  function nameUnlisted(sessionId, title) {
+    if (listed(sessionId)) return;  // the list has its title
+    unlistedTitles = { ...unlistedTitles, [sessionId]: { title } };
+    sessionStorage.setItem(UNLISTED_TITLES_KEY, JSON.stringify(unlistedTitles));
+  }
+
+  function listed(sessionId) {
+    const pane = window.sessionManager;
+    return Boolean(pane && pane.byId && pane.byId.get(sessionId));
+  }
+
+  // The title the session list does not have yet -- let go of once the list
+  // has the session: from then on its entry is what to show.
+  function unlistedTitleOf(sessionId) {
+    const unlisted = unlistedTitles[sessionId];
+    if (!unlisted) return null;
+    if (!listed(sessionId)) return unlisted.title;
+    unlistedTitles = { ...unlistedTitles };
+    delete unlistedTitles[sessionId];
+    sessionStorage.setItem(UNLISTED_TITLES_KEY, JSON.stringify(unlistedTitles));
+    return null;
+  }
+
+  // The header reads the session list, which has a new session only after its
+  // first save: until then it shows the title that save writes.
+  function headerTitle(sessionId) {
+    const pane = window.sessionManager;
+    const title = unlistedTitleOf(sessionId);
+    if (title && pane && typeof pane.setCurrent === 'function') pane.setCurrent(sessionId, title);
+  }
+
+  // A message written into the session: the pane sets the header from its list.
+  function messageWritten(sessionId) {
+    window.sessionManager.messageWritten(sessionId);
+    headerTitle(sessionId);
   }
 
   /**
-   * `/rename <title>` -- the title the session list shows.
+   * `/title <text>` -- the title the session list shows.
    *
    * Through the session pane, not with a PATCH of its own: the pencil in
    * that list does the same write, and the list and the header have to end
    * up in the same state whichever one did it.
    */
-  async function cmdRename(container, payload) {
+  async function cmdTitle(container, payload) {
     const title = (payload || '').trim();
     if (!title) {
-      addNote(container, 'Usage: /rename <title>');
+      // The stored title, as the session list has it -- not the header's,
+      // which reads 'Untitled' for a session without one, a name /resume
+      // would then not find.
+      const pane = window.sessionManager;
+      const entry = currentSessionId && pane && pane.byId && pane.byId.get(currentSessionId);
+      const unlisted = currentSessionId ? unlistedTitleOf(currentSessionId) : null;
+      const named = pendingTitle || (firstMessageOut && firstMessageOut.title) || (entry ? entry.title : unlisted);
+      addNote(container, (named ? 'Title: ' + named : 'This session has no title yet.') +
+        '\nUsage: /title <text>   (/resume takes it)');
       return;
     }
     if (!currentSessionId) {
-      addNote(container, 'No session yet -- it is created with your first message, ' +
-        'and can be named after that.');
+      pendingTitle = title;
+      addNote(container, 'Title: ' + title + '   (written with the first message)');
       return;
     }
     if (!window.sessionManager || typeof window.sessionManager.renameTo !== 'function') {
       addNote(container, 'Renaming is not available in this window.');
       return;
     }
-    const done = await window.sessionManager.renameTo(currentSessionId, title);
+    const sessionId = currentSessionId;
+    const done = await window.sessionManager.renameTo(sessionId, title);
+    if (done) nameUnlisted(sessionId, title);
     addNote(container, done ? 'Title: ' + title : 'The session was not renamed.');
   }
 
@@ -688,10 +758,33 @@
   }
 
   async function cmdResume(container, payload) {
-    const id = (payload || '').trim();
-    if (!id) {
-      addNote(container, 'Usage: /resume <session-id>   (/sessions lists them)');
-      return;
+    const typed = (payload || '').trim();
+    let id;
+    let chose = '';
+    if (!typed) {
+      // Bare: the newest session /sessions lists that is not this one. Any
+      // chat agent's -- the browser switches the agent with the session,
+      // where the terminal is bound to its own.
+      const listing = await getJSON('/api/sessions/listing?count=2' +
+        '&agent=' + encodeURIComponent(currentAgentName() || '') +
+        '&current=' + encodeURIComponent(currentSessionId || ''));
+      const last = listing.sessions.find(function (s) { return s.session_id !== currentSessionId; });
+      if (!last) {
+        addNote(container, 'No earlier session to continue. /sessions lists them.');
+        return;
+      }
+      id = last.session_id;
+      addNote(container, 'Resuming ' + id + ' -- ' + oneLine(last.title || 'Untitled', 60));
+    } else {
+      // Ids are machine-made and cannot be renamed, so a person may type the
+      // title they gave the session instead -- resolved by the server, by the
+      // same rule the terminal follows (SessionManager.resolve_session_ref).
+      const found = await getJSON('/api/sessions/resolve?ref=' + encodeURIComponent(typed));
+      id = found.session_id;
+      // A title several sessions share names the newest, and says it chose.
+      const others = found.others || [];
+      chose = others.length ? '   (the newest of ' + (others.length + 1) +
+        ' with this title -- /sessions all lists every id)' : '';
     }
     if (!window.sessionManager || typeof window.sessionManager.loadSession !== 'function') {
       addNote(container, 'Session switching is not available in this window.');
@@ -711,7 +804,7 @@
     // the next message continues. It is set by the session:loaded handler,
     // which loadSession dispatches synchronously before it returns.
     if (currentSessionId === id) {
-      addNote(container, 'Resumed session: ' + id);
+      addNote(container, 'Resumed session: ' + id + chose);
     } else {
       addNote(container, 'Session ' + id + ' was not loaded -- the switch was cancelled or failed.');
     }
@@ -995,7 +1088,7 @@
     const handlers = {
       sessions: function () { return cmdSessions(container, payload); },
       resume: function () { return cmdResume(container, payload); },
-      rename: function () { return cmdRename(container, payload); },
+      title: function () { return cmdTitle(container, payload); },
       agent: function () { return cmdAgent(container, payload); },
       vars: function () { return cmdVars(container, payload); },
       tools: function () { return cmdTools(container, payload); },
@@ -1031,11 +1124,7 @@
   function clearInput(taskInput) {
     if (!taskInput) return;
     taskInput.value = '';
-    try {
-      taskInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: false }));
-    } catch (e) {
-      taskInput.dispatchEvent(document.createEvent('Event'));
-    }
+    taskInput.dispatchEvent(new Event('input', { bubbles: true }));
     updateActionButton();
   }
 
@@ -1751,7 +1840,6 @@
 
   const activeOperations = new Map();
   const treeNodes = new Map(); // requestId -> { element, parentId, depth, children:Set }
-  const pendingChildren = new Map(); // parentId -> [{elementInfo}]
   const lateRows = new Set();   // rows opened by live events released after their stream ended
 
   /**
@@ -1764,7 +1852,6 @@
     activeOperations.clear();
     lateRows.clear();
     treeNodes.clear();
-    pendingChildren.clear();
   }
 
   function toggleTreeNode(requestId) {
@@ -1823,39 +1910,17 @@
     }
   }
 
+  // A parent is always there by now: addStatusEvent puts up a virtual one for a line
+  // whose parent has not been heard from yet.
   function registerNode(requestId, parentId, element, depthLevel) {
     treeNodes.set(requestId, { element, parentId, depthLevel, children: new Set() });
-    if (parentId) {
-      const parentNode = treeNodes.get(parentId);
-      if (parentNode) {
-        parentNode.children.add(requestId);
-        updateParentExpandButton(parentId);
-        // Check full ancestor chain to determine visibility
-        const shouldBeVisible = isAllAncestorsExpanded(requestId);
-        element.style.display = shouldBeVisible ? 'block' : 'none';
-      } else {
-        // Queue child until parent arrives
-        element.style.display = 'none';
-        if (!pendingChildren.has(parentId)) pendingChildren.set(parentId, []);
-        pendingChildren.get(parentId).push({ requestId, element, depthLevel });
-      }
-    }
-    attachPendingChildren(requestId);
-  }
-
-  function attachPendingChildren(parentId) {
-    const waiting = pendingChildren.get(parentId);
-    if (!waiting) return;
-    const parentNode = treeNodes.get(parentId);
-    if (!parentNode) return;
-    for (const child of waiting) {
-      parentNode.children.add(child.requestId);
+    const parentNode = parentId && treeNodes.get(parentId);
+    if (parentNode) {
+      parentNode.children.add(requestId);
       updateParentExpandButton(parentId);
       // Check full ancestor chain to determine visibility
-      const shouldBeVisible = isAllAncestorsExpanded(child.requestId);
-      child.element.style.display = shouldBeVisible ? 'block' : 'none';
+      element.style.display = isAllAncestorsExpanded(requestId) ? 'block' : 'none';
     }
-    pendingChildren.delete(parentId);
   }
 
   function createTreeOperationDiv(operationKey, ev, depthLevel, parentId) {
@@ -2030,9 +2095,6 @@
       registerNode(parentId, null, virtualParent, depthLevel - 1);
     }
     
-    // Prefer server-provided sequence number for ordering when available
-    const seq = ev.meta && ev.meta._seq ? ev.meta._seq : null;
-    
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -2071,19 +2133,6 @@
         const timeSpan = operationDiv.querySelector('.progress-time');
         if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
-        // Update request id if present
-        if (ev.request_id) {
-          let req = operationDiv.querySelector('.operation-request-id');
-          if (!req) {
-            const span = document.createElement('span');
-            span.className = 'operation-request-id';
-            span.textContent = ev.request_id;
-            const timeSpan = operationDiv.querySelector('.progress-time');
-            if (timeSpan && timeSpan.parentNode) timeSpan.parentNode.insertBefore(span, timeSpan.nextSibling);
-          } else {
-            req.textContent = ev.request_id;
-          }
-        }
       }
     } else if (ev.phase === 'end') {
       let operationDiv = activeOperations.get(operationKey);
@@ -2099,9 +2148,7 @@
       const iconSpan = operationDiv.querySelector('.progress-icon');
       const messageSpan = operationDiv.querySelector('.progress-message');
       const timeSpan = operationDiv.querySelector('.progress-time');
-      // Respect backend hint to suppress the completion icon for internal helpers
-      const suppressIcon = ev.meta && ev.meta.suppress_completion_icon;
-      if (iconSpan) iconSpan.innerHTML = suppressIcon ? '' : '<div class="checkmark">✓</div>';
+      if (iconSpan) iconSpan.innerHTML = '<div class="checkmark">✓</div>';
       if (messageSpan) messageSpan.textContent = ev.message || 'Completed';
       if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       operationDiv.classList.add('completed');
@@ -2174,15 +2221,18 @@
     const token = ++successorWatch;   // a newer watch, a new run or a new session wins
     let step = 0;
     let sawItWorking = false;
+    // A run followed again ends the watch -- not the stream of the run that ended: it is
+    // still open while that run saves, and asking about it would end the watch on the
+    // very first tick. (followRunOfOpenSession does not attach while it is open.)
     const tick = async () => {
       if (token !== successorWatch || currentSessionId !== session) return;
-      if (chatModule.hasActiveRequest()) return;   // something is being followed again
+      if (chatModule.activeRun()) return;   // something is being followed again
       const elsewhere = await sessionIsWorkingElsewhere(session);
       // Asked again after the answer: a run of this page's own may have started
       // while it was on its way, and an answer from before it would put the mark
       // back under that run, where nothing takes it down again.
       if (token !== successorWatch || currentSessionId !== session) return;
-      if (chatModule.hasActiveRequest()) return;
+      if (chatModule.activeRun()) return;
       if (elsewhere || (elsewhere === null && sawItWorking)) {
         // null is "could not ask", which is not "not working". Read as an answer
         // it would end the wait on one bad request and lose the very turn this
@@ -2293,10 +2343,6 @@
   // to its end with its events ignored: closing it would cut the end of its request short (a run with files saves
   // there, a message's request saves once more and releases the run). `ended`: it was read to its end.
   let followedStream = null;
-  // Block object the live stream consumer renders into (same object identity
-  // as the blk passed to handleSSEEvent). Mid-run appends rebind its fields to
-  // a fresh block so the agent's reaction renders below the injected message.
-  let activeStreamBlk = null;
 
   // While init checks whether a run of this tab is still going, the composer is held: a
   // message would start a second run beside it (see followRun).
@@ -2362,7 +2408,12 @@
   // (thinking_delta re-renders the full accumulated text into whatever block
   // blk points at), teleporting the in-flight answer below the injected
   // message and letting the post-drain step overwrite it.
+  // 'message' for a message appended to the run, 'note' for a note written meanwhile
+  // (runGoesOnBelow): the server answers the one and never sees the other.
   let pendingAppendRebind = false;
+  // A message the run took after its last step had begun: its answer is not the reply to it.
+  const LATE_MESSAGE = 'The run had already answered when your message arrived -- '
+    + 'it is kept in the session, and the next run answers it.';
 
   // Move the live stream to a fresh assistant block (appended at the end of the
   // chat, i.e. below any injected user message) by mutating the SAME blk object
@@ -2421,6 +2472,13 @@
   // has restored it; a run reattached after a reload continues the session it
   // was stored with, and a stream's start or reconnect event names its own.
   let currentSessionId = null;
+  // Sessions loaded into the chat so far: what the server says about a session asked for
+  // before the latest load is not acted on (attachRunOfOpenSession).
+  let sessionLoads = 0;
+  // The session loaded last, as the server sent it (live_events_seen for a run followed from it).
+  let shownSession = null;
+  // The load whose run a reload has joined itself (followRun): that load's own join stays out.
+  let joinedLoad = null;
 
   // The run of this tab a reload follows again: its request and the session it runs in.
   // sessionStorage, not localStorage, so each tab has its own.
@@ -2472,13 +2530,54 @@
     unmarkStopping(run.requestId);
   }
 
+  // Stop, ready to be clicked -- whatever an earlier stop left on it.
+  function readyStop() {
+    stopBtn.disabled = false;
+    stopBtn.setAttribute('title', 'Stop');
+    stopBtn.setAttribute('aria-label', 'Stop');
+    stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+  }
+
   // The controls go back to idle: a message starts a run, and Stop is reset for it.
   function idleControls() {
     runActive = false; updateActionButton();
-    stopBtn.setAttribute('title', 'Stop');
-    stopBtn.setAttribute('aria-label', 'Stop');
-    stopBtn.disabled = false;
-    stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+    readyStop();
+  }
+
+  /**
+   * Stop the run the chat follows: ask the server to cancel it. Its stream brings its end, as
+   * it would without. Before its start the run has no id to cancel it by: the stop waits for
+   * the start (handleSSEEvent), and the button says it is on its way meanwhile.
+   */
+  async function stopRun(clicked) {
+    // immediate feedback: the icon stays, label and tooltip change
+    stopBtn.setAttribute('title', 'Canceling');
+    stopBtn.setAttribute('aria-label', 'Canceling');
+    stopBtn.disabled = true;
+    stopBtn.classList.add('cancelling');
+    const requestId = clicked.requestId;
+    if (!requestId) {
+      clicked.stopWhenStarted = true;
+      return;
+    }
+    markStopping(requestId);
+    let over = false;
+    try {
+      over = await cancelRun(requestId, { force: false });
+    } catch (error) {
+      console.error('Failed to cancel request:', error);
+    }
+    // the run clicked on: an answer that comes after another run has taken the chat leaves that one alone
+    if (run !== clicked || !chatModule.hasActiveRequest()) return;  // the run has ended meanwhile, and its controls with it
+    const outcome = over ? 'Done' : 'Failed';
+    stopBtn.setAttribute('title', outcome);
+    stopBtn.setAttribute('aria-label', outcome);
+    stopBtn.classList.remove('cancelling');
+    stopBtn.classList.add(over ? 'cancelled' : 'cancel-failed');
+    // Stop again after a moment, while the run's stream is still open
+    setTimeout(() => {
+      if (run === clicked && chatModule.hasActiveRequest()) readyStop();
+    }, 2000);
   }
 
   // The chat lets go of its run: the controls go back to idle, and unless `keep` a reload
@@ -2504,20 +2603,12 @@
   // until then. The fetch stream reads on to its end, its events ignored; a /run streams its agent inline, and a
   // reader that stops reading cuts the run short.
   //
-  // The run of a stream let go of past its answer, still being read for its end -- or null. Attaching a second
-  // reader to it would have the two split its events between them: the one still reading discards what it gets,
-  // and the new one waits for an `end` that went to the other, which reads to the viewer as a lost connection on
-  // a run that is finishing cleanly.
-  let lingeringRequestId = null;
-
   // Its stream is NOT closed -- neither the EventSource of a run followed again nor the fetch stream of one this
   // chat started: it still brings the run's `end`, and with it the refresh that puts the run's save in the session
-  // list, and a /run carrying files would be cut short by a reader that stops. But it stays a reader of the run's
-  // queue, which the server hands each event to exactly once -- so the run it is reading is remembered above, and
-  // a second reader is never attached to the same one.
+  // list. Coming back to the session meanwhile joins the run again from where that load stands, as the answered
+  // run it is (attachRunOfOpenSession); every reader of a run gets every event.
   function letGoOfFinishedRun() {
     if (!chatModule.hasActiveRequest() || !run.over) return;
-    lingeringRequestId = run.requestId || null;  // before the two are let go of: either one is still reading
     followedStream = null;
     currentEventSource = null;
     endRun();
@@ -2529,11 +2620,16 @@
    * works on; only this chat stops watching.
    *
    * Unlike letting go of a finished run, the connection is CLOSED, not merely
-   * ignored. The server hands each event to whoever is reading, so a reader left
-   * draining and discarding would eat the run's output, and coming back to the
-   * session would show an idle-looking agent. Closed, the events wait in the run's
-   * buffer (the oldest are dropped past its size, which is why coming back reloads
-   * the session rather than trusting the buffer).
+   * ignored: a run can go on for hours, and a stream nobody looks at would hold one
+   * of the few connections a browser keeps to a server all that time. Coming back to
+   * the session loads it again and joins the run from there.
+   *
+   * A new chat's run too: its session reaches the list (which is read from disk)
+   * only with the run's first save, so the session pane is told to look for a session
+   * it does not know (awaitListing) -- read to its end instead, it held the connection
+   * all the same. Not before the server has named a run (no start so far): its stream
+   * is read on for the start (namedAfterLettingGo), which a Stop clicked before it
+   * waits for, and closed there.
    *
    * A reload of this tab does NOT follow it: showing another session lets the stored
    * run go (leaveLostRun), or the reload would open the session left behind rather
@@ -2545,9 +2641,69 @@
     followedStream = null;
     const source = currentEventSource;
     currentEventSource = null;
-    try { stream?.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
+    if (run.requestId) {
+      try { stream?.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
+      window.sessionManager.awaitListing(run.sessionId);   // if the list does not have it yet
+    } else if (stream) {
+      // Read on for the start that names it (readEvents): a Stop clicked before it is sent then.
+      stream.untilStart = { cancel: Boolean(run.stopWhenStarted) };
+    }
     try { source?.close(); } catch { /* same */ }
     endRun(true);
+  }
+
+  // A run let go of before its start, now named by it: a Stop clicked meanwhile is sent, and
+  // the stream closed -- coming back to its session joins the run; a session the list does
+  // not have yet (a new chat's) is looked for until it has.
+  function namedAfterLettingGo(stream, start) {
+    const { cancel } = stream.untilStart;
+    stream.untilStart = null;
+    if (cancel && start.request_id) {
+      markStopping(start.request_id);
+      cancelRun(start.request_id, { force: false }).catch((error) => console.error('Failed to cancel request:', error));
+    }
+    try { stream.stop?.(); } catch { /* a stream already finishing needs no stopping */ }
+    window.sessionManager.awaitListing(start.session_id);
+  }
+
+  /**
+   * Read a run's SSE response to its end, handing each event to `onEvent` while the chat
+   * follows `stream`; a stream let go of is read on with its events dropped. Resolves
+   * whether the server said anything at all -- its first line is a comment -- which is
+   * how an answer of 200 with nothing in it shows. `stream.ended` once the server closed it.
+   */
+  async function readEvents(response, stream, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let heard = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        stream.ended = true;
+        return heard;
+      }
+      if (followedStream !== stream && !stream.untilStart) continue;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();  // an incomplete line waits for the rest
+      for (const line of lines) {
+        if (line.startsWith(':')) {
+          heard = true;  // a comment: the connection is up, or still up (keepalive)
+          continue;
+        }
+        if (!line.startsWith('data:')) continue;  // `event:` lines and the blank one between events
+        const json = line.substring(5).trim();
+        if (!json) continue;
+        try {
+          const data = JSON.parse(json);
+          if (followedStream === stream) onEvent(data);
+          else if (stream.untilStart && data.type === 'start') namedAfterLettingGo(stream, data);
+        } catch (e) {
+          console.error('Failed to parse SSE data:', e);
+        }
+      }
+    }
   }
 
   // A lasting row about the run's connection in the block's status (a status without a
@@ -2614,7 +2770,9 @@
         break;
       }
       case 'thinking_delta':
-        // The answer, streaming: the whole of it so far, with a cursor.
+        // The answer, streaming: the whole of it so far, with a cursor. One without it
+        // was superseded in the server's buffer by the next, which follows.
+        if (data.accumulated === undefined) break;
         view.streamStep = data.step;
         showSection(view.t);
         view.t.innerHTML = `<div class="response-text streaming">${formatTextWithLineBreaks(data.accumulated || '')}<span class="typing-cursor">|</span></div>`;
@@ -2666,8 +2824,10 @@
         // it saves and runs its end hooks belongs to the run, not to its last call.
         view.openStep = null;
         // Only when nothing streamed: a streamed answer is already in the box, and
-        // this is the same text.
-        if (!view.t.innerHTML || view.t.innerHTML.trim() === '') {
+        // this is the same text -- as is one the session load showed (answerLoaded: a run
+        // joined past its answer's stream). A reconnect's note in the box is no answer.
+        if (!view.answerLoaded
+            && (!view.t.innerHTML.trim() || view.t.querySelector(':scope > .reconnect-info'))) {
           showAnswer(view, data.summary || data.content || '', data.content_format || 'text');
         }
         settleView(view);
@@ -3007,6 +3167,12 @@
     await attachStoredSubRuns(session, [view]);
   }
 
+  /** Whether a conversation ends in an answer: an assistant turn with words and no tool calls. */
+  function endsInAnswer(messages) {
+    const last = messages?.[messages.length - 1];
+    return last?.role === 'assistant' && Boolean(last.content) && !last.tool_calls?.length;
+  }
+
   /**
    * What the tools answered to the calls of `messages[index]`, by call id: the answers that
    * follow it, up to the next LLM call. Not by id alone across the session -- a provider
@@ -3126,11 +3292,27 @@
   // Shared SSE event handler for both EventSource and manual fetch() parsing
   // Module-level so it can be used by both normal requests and a run reattached after a reload
   function handleSSEEvent(data, blk) {
+    // A note came while nothing of this run was on the page yet (it was still starting):
+    // the block itself goes below the note before anything is drawn into it. Waiting for
+    // the next step, as for a run already under way, would leave the run's first status
+    // lines above the note -- and a new block below them. It also stays the chat's last
+    // row, which is where its request id is put once it is known.
+    // Empty by structure, not by innerText: that lays the page out on every event.
+    if (pendingAppendRebind && blk.row && !blk.steps.hasChildNodes() && !blk.t.hasChildNodes()) {
+      pendingAppendRebind = false;
+      chatContainer.appendChild(blk.row);
+    }
     switch (data.type) {
       case 'start':
         run.requestId = data.request_id;
         run.sessionId = data.session_id;
         currentSessionId = data.session_id;
+        settlePendingTitle(currentSessionId);
+        // Stop was clicked before the run had an id to be cancelled by
+        if (run.stopWhenStarted) {
+          run.stopWhenStarted = false;
+          stopRun(run);
+        }
         // Steps count from 1 again, so a leftover from the previous run would put this
         // one's first tool lines into the last one's call.
         blk.openStep = null;
@@ -3139,7 +3321,8 @@
         if (window.sessionManager && typeof window.sessionManager.onSessionUpdated === 'function') {
           window.sessionManager.onSessionUpdated(currentSessionId);
         }
-        
+        headerTitle(currentSessionId);
+
         updateRequestId();
         break;
       case 'reconnect':
@@ -3165,17 +3348,11 @@
         
         updateRequestId();
 
-        // Show reconnect info in response area
+        // Show reconnect info in response area (taken down at the run's end if nothing took its place)
         showSection(blk.t);
         // Both escaped: last_status is a plugin's status line and carries
         // tool arguments the model chose ("Searching: <query>").
         blk.t.innerHTML = `<div class="response-text reconnect-info">${escapeHtml(data.message)}${data.last_status ? '<br><em>Last status: ' + escapeHtml(data.last_status) + '</em>' : ''}</div>`;
-        break;
-      case 'heartbeat':
-        // Keep-alive heartbeat during long LLM calls - ignore but log in debug mode
-        if (window.DEBUG_MODE) {
-          console.log('Heartbeat received (step', data.step, ')');
-        }
         break;
       case 'reasoning_delta':
       case 'tool_call':
@@ -3193,6 +3370,13 @@
         scrollBottom();
         break;
       case 'thinking_complete':
+        // A model that does not stream hands over the whole answer here: nothing of it
+        // is above a note written while it worked, so it goes below. (Not for an
+        // appended message: this answer is not the reply to it.)
+        if (pendingAppendRebind === 'note' && data.step !== blk.streamStep && data.assistant && data.assistant.content) {
+          pendingAppendRebind = false;
+          rebindLiveBlock(blk);
+        }
         renderRunEvent(blk, data);
         break;
       case 'thinking':
@@ -3228,18 +3412,6 @@
           // Otherwise silently ignore status from other requests/sessions
         }
         break;
-      case 'status_batch':
-        // Batched status events for efficiency (multiple events in one SSE message)
-        if (blk && blk.steps && data.events && Array.isArray(data.events)) {
-          data.events.forEach(statusEvent => {
-            const eventRequestId = statusEvent.request_id || '';
-            const matches = eventRequestId === run.requestId ||
-                (eventRequestId && run.requestId && eventRequestId.startsWith(run.requestId + '_'));
-
-            if (matches) placeStatus(blk, statusEvent);
-          });
-        }
-        break;
       case 'continuation':
         // Auto-continuation: system injected a user message to keep the agent working
         // Display it in the chat as a system-injected user message
@@ -3259,12 +3431,14 @@
         break;
       case 'final':
         run.over = true;
-        if (pendingAppendRebind) {
-          // Edge (e.g. max-steps): the run finalizes without another step. The
-          // final would be suppressed against the old block's non-empty content
-          // — render it into a fresh block below the injected message instead.
+        if (pendingAppendRebind === 'message') {
+          // The run answered without another step, so the message came after the last
+          // one had begun: this answer is not the reply to it. The server keeps it in the
+          // session, and the next run answers it -- which the viewer has to be told, or the
+          // answer below reads as that reply. (Moved below the message, the answer showed
+          // twice: it was in the block already.)
           pendingAppendRebind = false;
-          rebindLiveBlock(blk);
+          addNote(chatContainer, LATE_MESSAGE);
         }
         // Its answer is here: nothing is left to stop -- a cancel would take its session-end hooks and background
         // sub-agents along -- and a reload shows the answer from the session the run saves, following the run no more.
@@ -3282,6 +3456,12 @@
         run.over = true;
         blk.streamEnded = true;   // this block's stream, not the run followed since (placeStatus)
         pendingAppendRebind = false;
+        // A reconnect's note nothing took the place of -- a run joined past its answer, which
+        // the load shows: it said "running", and would stand under that answer for good.
+        if (blk.t.children.length === 1 && blk.t.firstElementChild.classList.contains('reconnect-info')) {
+          blk.t.replaceChildren();
+          blk.t.closest('.container-section').style.display = 'none';
+        }
         // Before the stream goes: whatever is still open stops being updated
         // the moment it closes, so the row has to say so rather than freeze.
         markOpenScopesUnfinished();
@@ -3330,8 +3510,9 @@
     scrollBottom();
   }
 
-  // Public init function that wires the chat form behavior
-  chatModule.init = function () {
+  // Public init function that wires the chat form behavior. `agentsLoaded`: the selector's
+  // lists, which a session opened after a reload is checked against (read-only or not).
+  chatModule.init = function (agentsLoaded) {
     const chatForm = document.getElementById('f');
     const taskInput = taskInputEl = document.getElementById('task');
     runBtn = document.getElementById('runBtn');
@@ -3362,40 +3543,7 @@
     taskInput.addEventListener('input', updateActionButton);
     updateActionButton();
 
-    // Stop asks the server to cancel the run; the run's stream brings its end, as it would without.
-    stopBtn.addEventListener('click', async function() {
-      // the run clicked on: an answer that comes after another run has taken the chat leaves that one alone
-      const clicked = run;
-      const requestId = clicked.requestId;
-      if (!requestId) return;
-      markStopping(requestId);
-      // immediate feedback: the icon stays, label and tooltip change
-      stopBtn.setAttribute('title', 'Canceling');
-      stopBtn.setAttribute('aria-label', 'Canceling');
-      stopBtn.disabled = true;
-      stopBtn.classList.add('cancelling');
-
-      let over = false;
-      try {
-        over = await cancelRun(requestId, { force: false });
-      } catch (error) {
-        console.error('Failed to cancel request:', error);
-      }
-      if (run !== clicked || !chatModule.hasActiveRequest()) return;  // the run has ended meanwhile, and its controls with it
-      const outcome = over ? 'Done' : 'Failed';
-      stopBtn.setAttribute('title', outcome);
-      stopBtn.setAttribute('aria-label', outcome);
-      stopBtn.classList.remove('cancelling');
-      stopBtn.classList.add(over ? 'cancelled' : 'cancel-failed');
-      // Stop again after a moment, while the run's stream is still open
-      setTimeout(() => {
-        if (run !== clicked || !chatModule.hasActiveRequest()) return;
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
-        stopBtn.disabled = false;
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-      }, 2000);
-    });
+    stopBtn.addEventListener('click', () => stopRun(run));
 
     // Guards ONLY the window between reading the input and clearing it. The
     // slash resolve is an await, so two quick Ctrl+Enters (or a double-clicked
@@ -3497,7 +3645,7 @@
               ? 'The request is finishing -- the message stays here; send it once it has.'
               : 'The request is being stopped -- the message stays here; send it once it has.');
         // still written into this session: a pick, New or a delete waiting for the run leaves it where it is
-        window.sessionManager.messageWritten(currentSessionId);
+        messageWritten(currentSessionId);
         return;
       }
 
@@ -3511,25 +3659,18 @@
       const sent = addUser(chatContainer, displayText, filesByType.images, filesByType.audio, filesByType.text);
       // The message belongs to this chat's session: a session still loading must not take its
       // place, and a delete waiting for the session's run keeps it.
-      window.sessionManager.messageWritten(currentSessionId);
-      taskInput.value = '';
+      messageWritten(currentSessionId);
+      clearInput(taskInput);
       // The input is consumed -- everything below is the run itself, during
       // which the user must be able to type the next message.
       submitting = false;
-      // Trigger input event so auto-resize logic recalculates height immediately
-      try {
-        const ev = new Event('input', { bubbles: true, cancelable: false });
-        taskInput.dispatchEvent(ev);
-      } catch (e) {
-        // Older browsers fallback
-        taskInput.dispatchEvent(document.createEvent('Event'));
-      }
 
       // If there's an active request, append the user message to it (a fetch stream, or
       // a run reattached after a reload: hasActiveRequest covers both) -- its start has named it,
       // or the message would have been held above
       if (chatModule.hasActiveRequest()) {
         const requestId = run.requestId;
+        const shown = { load: sessionLoads, session: currentSessionId };  // what the answer may still write into
         let status = 0;  // no answer at all
         try {
           // fallback=none: a run that has just finished answers 404 instead of the
@@ -3566,40 +3707,25 @@
         // accumulated text into whatever block blk points at, which would
         // teleport the in-flight answer below the injected message.
         // handleSSEEvent performs the rebind when the next step starts.
-        pendingAppendRebind = true;
-        if (activeStreamBlk && activeStreamBlk.status) {
-          // Visible confirmation — without it the UI looks stalled until the
-          // agent's current step finishes and the reaction starts.
-          // phase 'end' renders a persistent completed (✓) row; the synthetic
-          // unique request_id keeps it from mutating the agent's own
-          // operation row (operationKey = request_id in addStatusEvent).
-          addStatusEvent(activeStreamBlk.status, {
-            type: 'status',
-            phase: 'end',
-            message: 'Message delivered to the running agent — it reacts at its next step',
-            request_id: `${requestId}_user_append_${Date.now()}`,
-            timestamp: new Date().toISOString()
-          });
-          scrollBottom();
+        // Not in a session opened, or loaded again, while the message was on its way: the run
+        // the chat follows there is another one, or joined past the message.
+        if (shown.load !== sessionLoads || shown.session !== currentSessionId) return;
+        if (run.requestId === requestId && run.over) {
+          // its answer came while the message was on its way: no step is left to rebind at
+          addNote(chatContainer, LATE_MESSAGE);
+          return;
         }
+        pendingAppendRebind = 'message';
         // back to Stop for the emptied input -- unless the run ended while the append was on its way
         updateActionButton();
-        stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-        stopBtn.disabled = false;
-        stopBtn.setAttribute('title', 'Stop');
-        stopBtn.setAttribute('aria-label', 'Stop');
         return;
       }
 
       // No active request: start a new request
       showWorkingElsewhere(false);   // as in attachRun: a run of this page's own takes the chat
       const blk = addAssistantBlock(chatContainer);
-      activeStreamBlk = blk;
       runActive = true; updateActionButton();  // -> Stop (empty input)
-      stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
-      stopBtn.disabled = false;
-      stopBtn.setAttribute('title', 'Stop');
-      stopBtn.setAttribute('aria-label', 'Stop');
+      readyStop();
       run = { requestId: null, sessionId: null, over: false };  // named by its start event
       pendingAppendRebind = false; // stale flag from a previous run must not leak
 
@@ -3626,6 +3752,9 @@
         // Add current session ID if exists (to continue existing session)
         if (currentSessionId) {
           formData.append('session_id', currentSessionId);
+        } else {
+          const title = titleForFirstMessage();
+          if (title) formData.append('session_title', title);  // names the session this message starts
         }
 
         // NO abort handle on purpose. POST /run runs the agent INLINE in its SSE
@@ -3658,47 +3787,12 @@
             return;
           }
 
-          // Response is SSE stream - parse it manually
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let sseOk = false;
-
-          while (true) {
-            const {done, value} = await reader.read();
-            if (done) {
-              stream.ended = true;
-              break;
-            }
-            if (followedStream !== stream) continue;  // let go of: read on to its end, and nothing more
-
-            buffer += decoder.decode(value, {stream: true});
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // Keep incomplete line in buffer
-
-            for (const line of lines) {
-              if (line.startsWith(':')) {
-                sseOk = true;
-                continue;
-              }
-              if (line.startsWith('event:')) {
-                continue;
-              }
-              if (line.startsWith('data:')) {
-                const jsonStr = line.substring(5).trim();
-                if (!jsonStr) continue;
-                try {
-                  const ev = JSON.parse(jsonStr);
-                  handleSSEEvent(ev, blk);
-                  // the server took the message: its files are sent (a refusal leaves them attached, and
-                  // files attached since stay)
-                  if (ev.type === 'start') window.fileUploadModule.removeFiles(files);
-                } catch (e) {
-                  console.error('Failed to parse SSE data:', e);
-                }
-              }
-            }
-          }
+          const sseOk = await readEvents(response, stream, (ev) => {
+            handleSSEEvent(ev, blk);
+            // the server took the message: its files are sent (a refusal leaves them attached, and
+            // files attached since stay)
+            if (ev.type === 'start') window.fileUploadModule.removeFiles(files);
+          });
 
           if (!sseOk) {
             showSection(blk.t);
@@ -3713,10 +3807,9 @@
         } finally {
           // The run ran inline in this request, not as a job a reload could follow: it was never stored,
           // and the run stored for a reload is another one.
-          // Whatever became of it, nothing reads this run any more.
-          if (lingeringRequestId === run.requestId) lingeringRequestId = null;
           if (followedStream === stream) {
             followedStream = null;
+            firstMessageOver();
             endRun();
           } else if (stream.ended) {
             window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
@@ -3734,15 +3827,16 @@
       // Build POST body
       const postBody = { task: task };
       if (currentSessionId) postBody.session_id = currentSessionId;
+      else {
+        const title = titleForFirstMessage();
+        if (title) postBody.session_title = title;  // names the session this message starts
+      }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
 
       let lost = false;  // the connection broke before the run's end
       // `stop` ENDS the connection, where letting go of a finished run only stops
-      // reading it. A run that is still going must have its connection closed:
-      // the server hands each event to the reader that takes it, so a reader
-      // that keeps draining and discarding would empty the run's buffer -- and
-      // the chat coming back to that session would find nothing waiting.
+      // reading it (see letGoOfRunningRun).
       const runAbort = new AbortController();
       const stream = { stop: () => runAbort.abort() };
       try {
@@ -3774,45 +3868,11 @@
           return;
         }
 
-        // Parse SSE stream manually (same approach as file upload path)
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const {done, value} = await reader.read();
-          if (done) {
-            stream.ended = true;
-            break;
-          }
-          if (followedStream !== stream) continue;  // let go of: read on to its end, and nothing more
-
-          buffer += decoder.decode(value, {stream: true});
-          const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            if (line.startsWith(':')) {
-              continue; // SSE comment / keepalive
-            }
-            if (line.startsWith('event:')) {
-              continue;
-            }
-            if (line.startsWith('data:')) {
-              const jsonStr = line.substring(5).trim();
-              if (!jsonStr) continue;
-              try {
-                const ev = JSON.parse(jsonStr);
-                handleSSEEvent(ev, blk);
-                // runs as a background job: a reload of this tab follows it again
-                if (ev.type === 'start') storeRun(run.requestId, run.sessionId);
-              } catch (e) {
-                console.error('Failed to parse SSE data:', e);
-              }
-            }
-          }
-        }
-
+        await readEvents(response, stream, (ev) => {
+          handleSSEEvent(ev, blk);
+          // runs as a background job: a reload of this tab follows it again
+          if (ev.type === 'start') storeRun(run.requestId, run.sessionId);
+        });
       } catch (err) {
         if (followedStream !== stream) return;  // let go of before its connection broke
         // The connection was lost mid-run: the run may still be going, and a reload follows it.
@@ -3838,10 +3898,9 @@
         }
       } finally {
         // The run is over for this chat; a lost one stays stored for a reload to follow.
-        // Whatever became of it, nothing reads this run any more.
-        if (lingeringRequestId === run.requestId) lingeringRequestId = null;
         if (followedStream === stream) {
           followedStream = null;
+          firstMessageOver();
           endRun(lost);
         } else if (stream.ended) {
           window.sessionManager.loadSessions();  // let go of and read to its end: the run has saved its session
@@ -3853,8 +3912,17 @@
      * After a reload a run of this tab may still be going: follow it. The status is checked
      * first -- GET /events with an id the server no longer holds would start a new, empty run.
      * The composer is held meanwhile, so no message starts a second run beside it.
+     *
+     * Its session is opened first and the run followed from where that load stands: the
+     * run's buffer holds the run alone, and nothing of the turns before it -- the chat came
+     * back with the run and none of the conversation. That load's own join
+     * (attachRunOfOpenSession) then stays out -- or a run that ended before it had its
+     * answer was joined a second time. Opened only once the agent list is in: a sub-agent's
+     * session is read-only when its agent is not in it, and read before the list, every
+     * one was. A session whose first step is still going is not on disk yet: then the run
+     * is all there is, and its buffer replays it.
      */
-    async function followRun() {
+    async function followRun(agentsLoaded) {
       const stored = storedRun();
       if (!stored) return;
       holding = true;
@@ -3874,16 +3942,29 @@
           unmarkStopping(stored.requestId);  // over: it takes no message, mark or no mark
           return;
         }
-        attachRun(stored);
+        await agentsLoaded;
+        const shown = await window.sessionManager.loadSession(stored.sessionId, { quiet: true });
+        if (shown) {
+          if (!chatModule.hasActiveRequest()) {
+            joinedLoad = sessionLoads;
+            attachRun(stored, { catchUp: 'skip', seen: shownSession?.live_events_seen,
+              answered: Boolean(shownSession?.live_run_answered),
+              answerLoaded: endsInAnswer(shownSession?.messages) });
+          }
+        } else if (shown === false) {
+          attachRun(stored);   // not there to load; null is a session picked meanwhile, which wins
+        }
       } finally {
         holding = false;
         updateComposer();
       }
     }
 
-    function attachRun({ requestId, sessionId: session }, { catchUp = 'replay', seen = null } = {}) {
-      // The live run takes the chat -- over a session picked meanwhile (a read-only one too:
-      // the run's session takes messages). A chat that shows that session keeps it.
+    function attachRun({ requestId, sessionId: session },
+                       { catchUp = 'replay', seen = null, answered = false, answerLoaded = false } = {}) {
+      // The live run takes the chat -- after a reload, over a session that was not there to
+      // load (a read-only one too: the run's session takes messages). A chat that shows that
+      // session keeps it.
       if (currentSessionId !== session) {
         chatContainer.innerHTML = '';
         releasePreviewObjectUrls();
@@ -3898,26 +3979,33 @@
       // mark would linger for seconds and a check on it would measure the timer.
       showWorkingElsewhere(false);
       const blk = addAssistantBlock(chatContainer);
-      activeStreamBlk = blk;
+      // The session load shows the run's answer already: its final is not shown a second time.
+      blk.answerLoaded = answerLoaded;
       runActive = true; updateActionButton();
-      stopBtn.disabled = false;
-      stopBtn.setAttribute('title', 'Stop');
-      stopBtn.setAttribute('aria-label', 'Stop');
-      stopBtn.classList.remove('cancelling', 'cancelled', 'cancel-failed');
+      readyStop();
 
       // The chat continues the run's session and tells the session manager,
       // so no pick or restore takes its place.
       window.sessionManager.setCurrentSession(session);
       currentSessionId = session;
+      headerTitle(session);
       run = { requestId, sessionId: session, over: false };
+      pendingAppendRebind = false;  // set for the run followed before, not this one
+      // Past its answer (the server says so), only finishing: as after its final. Joined from
+      // where a load stands, its final is behind what the chat is sent -- nothing would say it
+      // has answered, and Stop would cancel its background sub-agents along with it.
+      if (answered) {
+        run.over = true;
+        idleControls();
+        forgetRun();
+      }
       // Only request_id: the backend uses the job's agent. No token in the URL either:
       // the server does not accept one, and the access_token cookie goes along.
       // catch_up=skip&seen=N: the session was just loaded and already carries the run's
       // live messages -- everything the run's first N events said. Replaying those would
       // show the same turns twice; anything the run sent SINCE still comes, which is how
-      // an answer that landed between the load and this connect reaches the screen. After
-      // a reload there is nothing on screen and the buffer IS the history -- that path
-      // replays.
+      // an answer that landed between the load and this connect reaches the screen. A run
+      // that started after the page looked (a successor) has been seen by nobody: replayed.
       const es = new EventSource(`/events?task=&request_id=${encodeURIComponent(requestId)}&session_id=${encodeURIComponent(session || '')}`
         + (catchUp === 'skip' ? `&catch_up=skip&seen=${encodeURIComponent(Number(seen) || 0)}` : ''),
         { withCredentials: true });
@@ -3931,7 +4019,6 @@
             // saved its session by then
             if (data.type === 'end') {
               es.close();
-              if (lingeringRequestId === requestId) lingeringRequestId = null;
               window.sessionManager.loadSessions();
             }
             return;
@@ -3954,7 +4041,6 @@
       // not tell apart -- may leave the run going: a reload asks the server again.
       es.onerror = () => {
         es.close();
-        if (lingeringRequestId === requestId) lingeringRequestId = null;
         if (currentEventSource !== es) return;  // let go of already
         currentEventSource = null;
         if (run.over) {
@@ -3982,6 +4068,7 @@
     async function attachRunOfOpenSession(session, join = null) {
       const sessionId = session && session.session_id;
       if (!sessionId || chatModule.hasActiveRequest()) return;
+      const load = sessionLoads;
       let active = null;
       try {
         const response = await fetch(`/api/sessions/active?ids=${encodeURIComponent(sessionId)}`,
@@ -3992,13 +4079,6 @@
         console.warn('[chat_module] Could not ask whether the session has a run:', error);
         return;
       }
-      // `attachable` is false for a run with no background job (a /run with files, a
-      // sub-agent's run): GET /events answers 409 for those, which the chat would show
-      // as a lost connection on a session that is working perfectly well.
-      if (!active || !active.request_id || !active.attachable) return;
-      // Already being read: a stream let go of past its answer is still bringing that
-      // run's end, and the server hands each event to one reader only.
-      if (active.request_id === lingeringRequestId) return;
       // Another session was opened while the server answered, or a run started here
       // meanwhile: that one is the chat's, not this answer.
       //
@@ -4009,18 +4089,45 @@
       // load already on its way. The click would vanish without a word.
       if (window.sessionManager.getCurrentSessionId() !== sessionId) return;
       if (window.sessionManager.requested !== sessionId) return;
-      if (chatModule.hasActiveRequest()) return;
+      if (currentSessionId !== sessionId || chatModule.hasActiveRequest()) return;
+      // The same session loaded again meanwhile: its answer, with the later count of
+      // events already on screen, is the one to join by. This one would replay the
+      // events in between a second time.
+      if (load !== sessionLoads) return;
+      // The reload that made this load has joined its run itself (followRun): ended since,
+      // the run would be joined twice.
+      if (!join && load === joinedLoad) return;
+      // Held by another process (a woken run): nothing to attach to, only to wait for.
+      // A session just opened is watched as one whose run has ended is, or the turn
+      // shows only on the next load; the watch itself asks with a `join`.
+      if (active?.elsewhere) {
+        if (join === null) watchForASuccessorRun();
+        return;
+      }
+      // `attachable` is false for a run with no background job (a /run with files, a
+      // sub-agent's run): GET /events answers 409 for those, which the chat would show
+      // as a lost connection on a session that is working perfectly well.
+      if (!active || !active.request_id || !active.attachable) return;
+      // The run the chat has just followed to its answer, still saving (a mirrored /run's
+      // job runs until its caller's save is done): the watch for its successor would
+      // replay it whole. (A session opened meanwhile joins it from where its load stands.)
+      if (join && active.request_id === run.requestId && run.over) return;
       // `join` is how the caller says what it has already seen of that run. A
       // session just loaded carries the run's live messages, so it skips; a run
       // that started AFTER this page was watching has been seen by nobody, and
       // replaying it is the only way its turn reaches the screen at all.
+      //
+      // Whether the load shows the run's answer is the load's to say: the run's live
+      // conversation takes its answer only after the post-LLM hooks, the stream sends it
+      // before them -- so a load in between counts the answer as seen without showing it.
       attachRun({ requestId: active.request_id, sessionId },
-        join || { catchUp: 'skip', seen: session.live_events_seen });
+        { ...(join || { catchUp: 'skip', seen: session.live_events_seen }), answered: Boolean(active.answered),
+          answerLoaded: !join && endsInAnswer(session.messages) });
     }
 
     chatModule.followRunOfOpenSession = attachRunOfOpenSession;
 
-    return followRun();
+    return followRun(agentsLoaded);
   };
   
   // Where a failure puts its reason, the answer's own place: shown AND open. The setting
@@ -4044,9 +4151,6 @@
     }
   }
 
-  // Expose functions for testing
-  chatModule.addStatusEvent = addStatusEvent;
-  chatModule.toggleTreeNode = toggleTreeNode;
   // The command grammar is shared with the terminal (chat_commands.py), and
   // this surface renders what that catalogue advertises -- so what the browser
   // DOES with an argument has to be measurable from outside. Without this the
@@ -4055,10 +4159,7 @@
   
   // attach to global
   global.chatModule = chatModule;
-  
-  // Also attach to AgentSystem namespace for consistency with other modules
-  global.AgentSystem = global.AgentSystem || {};
-  global.AgentSystem.ChatModule = chatModule;
+
   // No cleanup on beforeunload: the browser ends the streams of a page that unloads, and a page that stays -- a
   // link that turns into a download -- follows its run on.
 
@@ -4253,6 +4354,8 @@
     updateComposer();
     // The session shown may have an agent working in it. Not awaited: the session is
     // rendered either way, and the run joins the view when the server has answered.
+    sessionLoads++;
+    shownSession = session;
     chatModule.followRunOfOpenSession?.(session);
   });
 
@@ -4371,6 +4474,73 @@
   chatModule.hasActiveRequest = function() {
     return followedStream !== null || currentEventSource !== null;
   };
+
+  // A title waiting for the first message goes when the chat goes to another
+  // session first -- said, as agent-cli says it. Registered after the chat's
+  // own session:new / session:loaded handlers, which clear the conversation:
+  // the note belongs to the one the chat goes to. A session:new nobody chose
+  // (the stored session could not be shown) leaves the chat the new one it was:
+  // a title typed there waits on -- unless a first message was on its way, which
+  // is let go of all the same, and the title with it.
+  function dropPendingTitle(event) {
+    const unchosen = Boolean(event && event.type === 'session:new' && event.detail && event.detail.chosen === false);
+    const keep = unchosen && !firstMessageOut;
+    const chat = document.getElementById('chat');
+    if (pendingTitle && !keep) {
+      addNote(chat, '(the title \'' + pendingTitle + '\' was not written -- ' + (firstMessageOut
+        ? 'the chat left before the session your message is starting was there)'
+        : 'no message went out)'));
+    } else if (firstMessageOut && firstMessageOut.title) {
+      // before the run's start: the server may still refuse the message
+      addNote(chat, '(the title \'' + firstMessageOut.title
+        + '\' went out with your message: a session the server starts for it is named so)');
+    }
+    if (!keep) pendingTitle = null;
+    firstMessageOut = null;
+  }
+
+  // A first message goes out: the waiting title with it (session_title).
+  function titleForFirstMessage() {
+    firstMessageOut = { title: pendingTitle };
+    pendingTitle = null;
+    return firstMessageOut.title;
+  }
+
+  // The chat is done with its first message's stream: a run that never started
+  // (refused, unreachable) leaves its title waiting for the next message.
+  function firstMessageOver() {
+    if (!firstMessageOut) return;
+    pendingTitle = pendingTitle || firstMessageOut.title;
+    firstMessageOut = null;
+  }
+
+  // The start of the run a first message began: the title that went out with
+  // it is the run's now; one typed since goes to the session by name (the
+  // server keeps it for the run's first save -- there is no record yet).
+  function settlePendingTitle(sessionId) {
+    if (!firstMessageOut) return;  // not the start of this chat's first message
+    const typedSince = pendingTitle;
+    const sent = firstMessageOut.title;
+    pendingTitle = null;
+    firstMessageOut = null;
+    if (sent) nameUnlisted(sessionId, sent);
+    if (!typedSince || !window.sessionManager) return;
+    // named only once it is written: a refused rename leaves the one that went out
+    const shown = unlistedTitles[sessionId];
+    window.sessionManager.renameTo(sessionId, typedSince).then((done) => {
+      const now = listed(sessionId) ? null : unlistedTitles[sessionId];  // none: nothing named, or the list has the session since
+      if (now && now !== shown) return;  // named again since: that one stands
+      if (done) {
+        nameUnlisted(sessionId, typedSince);
+      } else if (currentSessionId === sessionId) {
+        // the title it keeps is the list's once the list has it -- maybe renamed since
+        addNote(document.getElementById('chat'), '(the title \'' + typedSince + '\' was not written'
+          + (now ? ' -- the session keeps \'' + now.title + '\')' : ')'));
+      }
+    });
+  }
+  window.addEventListener('session:new', dropPendingTitle);
+  window.addEventListener('session:loaded', dropPendingTitle);
 
 })(window);
 

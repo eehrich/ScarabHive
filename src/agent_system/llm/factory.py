@@ -141,6 +141,50 @@ def create_llm_from_profile(
     return _build_client(config, temp_agent_config, ssl_verify)
 
 
+class UnknownLLMProfile(ValueError):
+    """A run was switched to a profile the configuration does not have."""
+
+    def __init__(self, profile: str, available: Any = ()) -> None:
+        self.profile = profile
+        self.available = sorted(available)
+        message = f"LLM profile '{profile}' not found in configuration."
+        if self.available:
+            message += "\n\nAvailable profiles:\n  " + "\n  ".join(self.available)
+        super().__init__(message)
+
+
+def override_for_profile(
+    config: AgentSystemConfig,
+    agent_config: Any,
+    profile: str,
+    params: Optional[Dict[str, Any]] = None,
+) -> tuple[LLMClient, str]:
+    """(client, label) for a run of an agent switched to LLM *profile*.
+
+    The one way every entry point builds a switch -- the API's llm_profile,
+    the CLI's --llm, the chat's /model, use_advanced_model, a caller's switch
+    a sub-agent follows. The switch picks another MODEL, not another agent:
+    the agent's own llm_params for the profile apply, *params* (typed for this
+    run) over them. The label is what status lines and the session show,
+    ``profile:provider/model``, plus ``+params(...)`` for what was typed; the
+    agent's own params are not the switch and stay out of it.
+
+    Raises UnknownLLMProfile for a profile the configuration does not have;
+    the caller turns that into its own answer (an HTTP status, an exit code).
+    """
+    profiles = (config.llm_system.profiles if config.llm_system else None) or {}
+    if profile not in profiles:
+        raise UnknownLLMProfile(profile, profiles)
+    client = create_llm_from_profile(
+        config=config, llm_profile=profile,
+        llm_params=agent_params_for_profile(agent_config, profile, params))
+    spec = resolve_llm_config_for_agent(config, AgentConfig(llm_profile=profile)).spec
+    label = f"{profile}:{spec.provider}/{spec.model}"
+    if params:
+        label += " +params(" + ",".join(f"{k}={v}" for k, v in params.items()) + ")"
+    return client, label
+
+
 
 @dataclass
 class ResolvedLLM:
@@ -157,6 +201,18 @@ class ResolvedLLM:
     model_ref: str
     is_batch: bool = False
     batch_provider: Optional[str] = None
+
+
+def _stamp_profile(client: Any, profile: str) -> None:
+    """Which profile *client* runs: a run switched to it hands that to its
+    sub-agents (llm/caller_llm.py). A client that takes no attributes (a
+    provider plugin's slotted object) still runs -- it just passes nothing on.
+    """
+    try:
+        client.profile_name = profile
+    except AttributeError:
+        logger.debug("LLM client %s takes no profile_name; sub-agents will not inherit it",
+                     type(client).__name__)
 
 
 def _build_client(
@@ -180,6 +236,7 @@ def _build_client(
         ssl_verify = getattr(config.network, "ssl_verify", None) if config.network else None
 
     underlying_client = registry.build_client(resolved.spec, ssl_verify=ssl_verify)
+    _stamp_profile(underlying_client, resolved.profile_name)
 
     if resolved.is_batch and resolved.batch_provider:
         queue_manager = get_batch_queue_manager()
@@ -192,13 +249,15 @@ def _build_client(
                     from .batch.batch_client import BatchLLMClient
                     logger.info("Wrapping LLM client with batch support: model=%s, provider=%s",
                                 resolved.model_ref, resolved.batch_provider)
-                    return BatchLLMClient(
+                    batch_client = BatchLLMClient(
                         underlying_client=underlying_client,
                         queue_manager=queue_manager,
                         batch_provider_config=provider_config,
                         model_name=resolved.spec.model,
                         batch_provider=resolved.batch_provider,
                     )
+                    _stamp_profile(batch_client, resolved.profile_name)
+                    return batch_client
         logger.warning(
             "Batch mode requested for model %s but batch system not available. "
             "Falling back to sync mode.",

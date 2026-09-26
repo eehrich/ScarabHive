@@ -1,97 +1,43 @@
-"""Tests for the lifespan management in app.py"""
+"""The app's lifespan -- the one build_app registers -- starts what needs a running loop.
 
-import asyncio
+A module-level ``lifespan()`` in app.py once started the job cleanup; it was never
+the app's, and in production no finished job ever left the process, event buffer
+and all. This drives the real lifespan, with only the tool integration left out.
+"""
+from __future__ import annotations
+
 import pytest
-from unittest.mock import Mock, patch
-from contextlib import asynccontextmanager
 
-from agent_system.app import lifespan
-from fastapi import FastAPI
+from agent_system.services import background_job_manager as bjm
 
-
-@pytest.mark.asyncio
-async def test_lifespan_startup_and_shutdown():
-    """Test that the lifespan context manager handles startup and shutdown properly."""
-    app = FastAPI()
-    
-    with patch('logging.getLogger') as mock_get_logger:
-        mock_logger = Mock()
-        mock_get_logger.return_value = mock_logger
-        
-        # Test the lifespan context manager
-        async with lifespan(app):
-            # During startup
-            mock_logger.info.assert_any_call("FastAPI application starting up")
-        
-        # After shutdown
-        mock_logger.info.assert_any_call("FastAPI application shutting down gracefully")
-        mock_logger.info.assert_any_call("FastAPI application shutdown complete")
+pytestmark = pytest.mark.anyio
 
 
-@pytest.mark.asyncio
-async def test_lifespan_handles_shutdown_errors():
-    """Test that lifespan handles errors during shutdown gracefully."""
-    app = FastAPI()
-    
-    with patch('logging.getLogger') as mock_get_logger:
-        mock_logger = Mock()
-        mock_get_logger.return_value = mock_logger
-        
-        # Mock an exception during shutdown
-        with patch('agent_system.app.lifespan') as mock_lifespan:
-            @asynccontextmanager
-            async def failing_lifespan(app):
-                yield
-                # Simulate an error during shutdown
-                raise Exception("Shutdown error")
-            
-            mock_lifespan.side_effect = failing_lifespan
-            
-            # The lifespan should handle the error gracefully
-            try:
-                async with failing_lifespan(app):
-                    pass
-            except Exception:
-                # Error is expected in this test case
-                pass
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
-def test_fastapi_app_has_lifespan():
-    """Test that the FastAPI app is configured with lifespan."""
-    from agent_system.app import build_app
-    
-    # Build an app instance to test
-    app = build_app()
-    
-    # The app should have a lifespan attribute
-    assert hasattr(app, 'router')
-    # Note: lifespan is internal to FastAPI, so we just verify the app is properly constructed
+async def test_the_apps_lifespan_runs_the_job_cleanup_and_stops_it(tmp_path, monkeypatch):
+    from agent_system import app as app_mod
 
+    async def no_tools(*args, **kwargs):
+        raise RuntimeError("no tool integration in this test")
 
-@pytest.mark.asyncio
-async def test_lifespan_context_manager_flow():
-    """Test the complete flow of the lifespan context manager."""
-    app = FastAPI()
-    
-    with patch('logging.getLogger') as mock_get_logger:
-        mock_logger = Mock()
-        mock_get_logger.return_value = mock_logger
-        
-        startup_called = False
-        shutdown_called = False
-        
-        async with lifespan(app):
-            # Verify startup was called
-            mock_logger.info.assert_any_call("FastAPI application starting up")
-            startup_called = True
-            
-            # Simulate some work during app lifetime
-            await asyncio.sleep(0.01)
-        
-        # Verify shutdown was called
-        shutdown_called = True
-        mock_logger.info.assert_any_call("FastAPI application shutting down gracefully")
-        mock_logger.info.assert_any_call("FastAPI application shutdown complete")
-        
-        assert startup_called
-        assert shutdown_called
+    async def no_batch_manager(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(app_mod, "initialize_tools", no_tools)
+    monkeypatch.setattr(app_mod, "start_batch_queue_manager", no_batch_manager)
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
+    bjm.reset_background_job_manager()
+    try:
+        app = app_mod.build_app()
+        manager = bjm.get_background_job_manager()
+        assert manager._cleanup_task is None, "fixture: a cleanup was running before the app started"
+        async with app.router.lifespan_context(app):
+            task = manager._cleanup_task
+            assert task is not None and not task.done(), "the app runs without its job cleanup"
+        assert manager._cleanup_task is None and task.done(), "the job cleanup outlived the app"
+    finally:
+        bjm.reset_background_job_manager()

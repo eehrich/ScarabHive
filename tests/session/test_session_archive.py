@@ -468,6 +468,30 @@ async def test_restore_refuses_to_overwrite_a_live_session(sm, archive):
 
 
 @pytest.mark.asyncio
+async def test_a_tree_with_an_id_another_user_holds_is_not_restored_in_part(sm, archive):
+    """reinstate_session refuses an id another user holds. Met on the way, it left the root
+    and a child back, the rest only in the zip -- and every retry stopped at the same child."""
+    await _make_tree(sm, "root_ou", ["kid_ou1", "kid_ou2"])
+    _age(sm, ["root_ou", "kid_ou1", "kid_ou2"], days=60)
+    await archive.archive_user(USER)
+    # Another user's session under a child's id, written from outside: in this process
+    # the tombstone refuses the id to anybody.
+    (sm.storage_path / "someone_else").mkdir(parents=True, exist_ok=True)
+    (sm.storage_path / "someone_else" / "kid_ou2.json").write_text(
+        json.dumps({
+            "session_id": "kid_ou2", "user_id": "someone_else", "created_at": "2026-09-01T00:00:00+00:00",
+            "updated_at": "2026-09-01T00:00:00+00:00", "title": "theirs", "agent_name": "a",
+            "llm_profile": "p", "messages": [], "metadata": {},
+        }), encoding="utf-8")
+
+    with pytest.raises(ArchiveError, match="another user's now"):
+        await archive.restore(USER, "root_ou")
+
+    assert not (_user_dir(sm) / "root_ou.json").exists(), "the tree came back in part"
+    assert len(await archive.list_archived(USER)) == 1
+
+
+@pytest.mark.asyncio
 async def test_restoring_something_that_was_never_archived(sm, archive):
     with pytest.raises(ArchiveNotFound, match="No archived session"):
         await archive.restore(USER, "nope")
@@ -1592,3 +1616,20 @@ async def test_an_index_held_by_another_process_is_an_answer_not_a_hang(
     # it is the registration that failed.
     assert (_user_dir(sm) / "root_idx1.json").exists()
     assert (_user_dir(sm) / "root_idx2.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_another_user_holds_meanwhile_is_not_reinstated_beside_it(sm):
+    """Archiving frees the id. Reinstated beside another user's session of that id, the two
+    shared the cache and every owner lookup, which assume one owner per id: the second
+    user's loads failed with a permission error while the first one's was cached."""
+    session = await sm.create_session(user_id=USER, title="archived")
+    archived = await sm.load_session(USER, session["session_id"])
+    await sm.delete_session(USER, session["session_id"], create_backup=False)
+    # another user's session under the same id -- a custom id, or their own archive restored first
+    await sm.reinstate_session({**archived, "user_id": "someone_else", "title": "theirs now"})
+    assert (sm.storage_path / "someone_else" / f"{session['session_id']}.json").exists(), "fixture"
+
+    with pytest.raises(ValueError, match="another user"):
+        await sm.reinstate_session(archived)
+    assert not (_user_dir(sm) / f"{session['session_id']}.json").exists()

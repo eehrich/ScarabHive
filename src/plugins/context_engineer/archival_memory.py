@@ -14,6 +14,7 @@ Key features:
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import sqlite3
@@ -68,6 +69,32 @@ def _message_text(message: dict[str, Any]) -> str:
     return "\n".join(filter(None, [text, *calls]))
 
 
+def _entry_id(session_id: str, message: dict[str, Any], occurrence: int = 0) -> str:
+    """The archive id OF a message: the same message archived twice is one row.
+
+    A compaction whose hook times out inside the write loses its placeholders,
+    while the worker thread still commits the rows; the messages stay in the
+    conversation and the next pass archives them again. With a random id that
+    was a second copy of each, in the archive and in every search. Derived from
+    the message, the retry lands on the rows the lost pass wrote (INSERT OR
+    IGNORE) and its placeholders point at them.
+
+    Only what the row keeps is hashed. The rest of a message is the
+    provider's and changes between two passes: a model switch strips
+    ``reasoning_details`` from the whole session before the hooks run, and the
+    retry would have come back under new ids.
+
+    ``occurrence`` keeps identical messages of ONE batch apart -- the vector
+    store refuses a batch that names an id twice. Identical messages of two
+    different batches share a row: the same text, so every placeholder still
+    reads back what it replaced.
+    """
+    key = json.dumps([session_id, occurrence, message.get("role", "unknown"),
+                      _message_text(message), message.get("tool_call_id"),
+                      message.get("name")], default=str, ensure_ascii=False)
+    return f"arch_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+
+
 def _synchronized(method):
     """Serialize a store method on the instance's reentrant lock.
 
@@ -81,6 +108,29 @@ def _synchronized(method):
         with self._lock:
             return method(self, *args, **kwargs)
     return wrapper
+
+
+#: Reciprocal rank fusion constant. 60 is the value from the original paper
+#: (Cormack et al. 2009) and the usual default: large enough that rank 1 and
+#: rank 2 of one list do not outweigh agreement between the two lists.
+_RRF_K = 60
+
+
+def _fused(*rankings: list["ArchivedMessage"], limit: int) -> list["ArchivedMessage"]:
+    """Merge ranked result lists by reciprocal rank fusion.
+
+    A message found by both lists rises above one found by either alone; one
+    found by only ONE list still gets the place its rank earns there, instead of
+    being cut because the other list already filled the limit. Ties keep the
+    order of the lists as given (sorted is stable).
+    """
+    score: dict[str, float] = {}
+    first: dict[str, ArchivedMessage] = {}
+    for ranking in rankings:
+        for rank, message in enumerate(ranking):
+            score[message.id] = score.get(message.id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+            first.setdefault(message.id, message)
+    return sorted(first.values(), key=lambda m: -score[m.id])[:limit]
 
 
 @dataclass
@@ -312,12 +362,8 @@ class ArchivalMemory:
         Returns (entry_id, document to embed, vector metadata) for the caller
         to index once the lock is released.
         """
-        import uuid
-        
         session_id = session_id or self.session_id or "default"
-        
-        # Generate ID
-        entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+        entry_id = _entry_id(session_id, message)
         
         # Extract message fields
         role = message.get("role", "unknown")
@@ -350,32 +396,40 @@ class ArchivalMemory:
                 for tc in tool_calls
             ]
         
-        # Insert into SQLite
-        self._db.execute("""
-            INSERT INTO archived_messages 
-            (id, role, content, summary, timestamp, session_id, token_count, 
-             metadata, tool_call_id, tool_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            entry_id,
-            role,
-            content,
-            summary,
-            datetime.now().isoformat(),
-            session_id,
-            token_count,
-            json.dumps(metadata) if metadata else None,
-            tool_call_id,
-            tool_name
-        ))
-        
-        # Update FTS index
-        self._db.execute("""
-            INSERT INTO archived_fts (id, summary, content, session_id)
-            VALUES (?, ?, ?, ?)
-        """, (entry_id, summary, content, session_id))
-        
-        self._db.commit()
+        # Insert into SQLite -- rolled back on failure for the reason
+        # _store_many_rows gives: a row left pending is saved by the next commit.
+        try:
+            inserted = self._db.execute("""
+                INSERT OR IGNORE INTO archived_messages
+                (id, role, content, summary, timestamp, session_id, token_count,
+                 metadata, tool_call_id, tool_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                entry_id,
+                role,
+                content,
+                summary,
+                datetime.now().isoformat(),
+                session_id,
+                token_count,
+                json.dumps(metadata) if metadata else None,
+                tool_call_id,
+                tool_name
+            )).rowcount
+
+            # Update FTS index -- not for a row that was already there (see
+            # _entry_id), or search finds it twice.
+            if inserted:
+                self._db.execute("""
+                    INSERT INTO archived_fts (id, summary, content, session_id)
+                    VALUES (?, ?, ?, ?)
+                """, (entry_id, summary, content, session_id))
+
+            self._db.commit()
+        except BaseException:
+            if self._db is not None:
+                self._db.rollback()
+            raise
 
         logger.debug(
             f"Archived message: id={entry_id}, role={role}, "
@@ -391,8 +445,7 @@ class ArchivalMemory:
     def store_many(
         self,
         messages: list[dict[str, Any]],
-        session_id: str | None = None,
-        index_semantic: bool | None = None
+        session_id: str | None = None
     ) -> list[str]:
         """Store many messages in ONE transaction. Returns ids, input order.
 
@@ -401,11 +454,9 @@ class ArchivalMemory:
         same rows written in a single transaction. Pre-Layer P archives whole
         blocks at once and cannot pay per-message commits.
 
-        ``index_semantic=False`` skips the VectorStore. The rows and the FTS
-        index are written either way, so the content stays listable and
-        findable by keyword; only vector similarity would miss it. Callers use
-        this when a batch is large enough that embedding it would stall the
-        request (embedding dominates: 80 s of the same 4682-message batch).
+        Embeds the batch before returning, so it costs its embedding
+        (~17 ms/message). A caller that cannot pay that inside a request takes
+        ``store_many_unindexed`` and schedules ``index_batch`` itself.
 
         NOT synchronized itself: the connection work is, the embedding must not
         be (see ``_index_semantic``).
@@ -413,10 +464,51 @@ class ArchivalMemory:
         if not messages:
             return []
 
-        ids, documents, metadatas = self._store_many_rows(messages, session_id)
-        if index_semantic is not False and self.enable_semantic_search and self._vector_store:
-            self._index_semantic(ids, documents, metadatas)
+        ids, documents, metadatas = self.store_many_unindexed(messages, session_id)
+        self.index_batch(ids, documents, metadatas)
         return ids
+
+    def store_many_unindexed(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None = None
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """The rows of ``store_many``, with the embedding left to the caller.
+
+        For a batch too large to embed inside a request: the content is durable
+        and readable by ref the moment this returns, and the caller hands
+        ``index_batch`` the triple whenever it can afford the seconds. Skipping
+        the embedding instead would leave the archive half indexed, and a
+        similarity search over half an archive answers without saying so.
+
+        Until the embedding lands -- or for good, if it never does -- ``search``
+        still finds these rows through the text index. Where the vector index
+        answers, the text half is fused in and demands every word of the
+        filter; where it has nothing, the broad text search (any word) is the
+        whole answer. Not by meaning.
+        """
+        return self._store_many_rows(messages, session_id)
+
+    def index_batch(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]]
+    ) -> bool:
+        """Embed an already stored batch. True when it is in the index.
+
+        Reports instead of raising, because the rows are committed before this
+        runs: a failed embedding costs similarity search on those entries, never
+        the content, and must not propagate into a caller that would then keep
+        an over-long conversation. A background caller that logs "indexed" on a
+        swallowed failure is the reason this returns anything at all.
+
+        False also means "nothing to index" -- no vector store, semantic search
+        off, no ids. Neither is an error, and neither is "indexed" either.
+        """
+        if not (ids and self.enable_semantic_search and self._vector_store):
+            return False
+        return self._index_semantic(ids, documents, metadatas)
 
     @_synchronized
     def _store_many_rows(
@@ -426,12 +518,10 @@ class ArchivalMemory:
     ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
         """The connection half of ``store_many``: rows + FTS in one transaction."""
 
-        import uuid
-
         session_id = session_id or self.session_id or "default"
 
         # One timestamp per ROW, not one per batch. get_session_messages orders
-        # by `timestamp ASC, id ASC` and the id is a random uuid — with a shared
+        # by `timestamp ASC, id ASC` and the id is a hash — with a shared
         # timestamp the whole batch comes back in random order, and the prune
         # breadcrumb points the agent straight at that listing. The offsets keep
         # the conversation order of the input.
@@ -444,10 +534,15 @@ class ArchivalMemory:
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
+        occurrences: dict[str, int] = {}
 
         for position, message in enumerate(messages):
             now = stamps[position]
-            entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+            entry_id = _entry_id(session_id, message)
+            occurrence = occurrences.get(entry_id, 0)
+            occurrences[entry_id] = occurrence + 1
+            if occurrence:
+                entry_id = _entry_id(session_id, message, occurrence)
             role = message.get("role", "unknown")
             content = _message_text(message)
             summary = self._generate_summary(message)
@@ -472,19 +567,40 @@ class ArchivalMemory:
             metadatas.append({"session_id": session_id, "role": role,
                               "timestamp": now})
 
-        self._db.executemany("""
-            INSERT INTO archived_messages
-            (id, role, content, summary, timestamp, session_id, token_count,
-             metadata, tool_call_id, tool_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-        self._db.executemany("""
-            INSERT INTO archived_fts (id, summary, content, session_id)
-            VALUES (?, ?, ?, ?)
-        """, fts_rows)
-        self._db.commit()
+        # Row by row inside the one transaction: only a row that is really new
+        # gets its FTS entry (see _entry_id). The cost of the batch was the
+        # commits, never the statements.
+        inserted = 0
+        try:
+            for row, fts_row in zip(rows, fts_rows):
+                if self._db.execute("""
+                    INSERT OR IGNORE INTO archived_messages
+                    (id, role, content, summary, timestamp, session_id, token_count,
+                     metadata, tool_call_id, tool_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, row).rowcount:
+                    inserted += 1
+                    self._db.execute("""
+                        INSERT INTO archived_fts (id, summary, content, session_id)
+                        VALUES (?, ?, ?, ?)
+                    """, fts_row)
+            self._db.commit()
+        except BaseException:
+            # sqlite3 opens a transaction implicitly and never closes it on an
+            # error. What the first insert wrote would stay PENDING on this
+            # shared connection -- visible to every reader of it, and saved by
+            # the next commit, which is the retry compaction archiving the very
+            # same messages again. One batch is only atomic with this line.
+            # (No connection: the archive was closed under the call. Rolling
+            # back None would raise over the real error and bury it.)
+            if self._db is not None:
+                self._db.rollback()
+            raise
 
-        logger.debug(f"Archived {len(ids)} messages in one transaction")
+        logger.debug(f"Archived {len(ids)} messages in one transaction, {inserted} new")
+        # All of them to embed, the ones already there too: a pass lost past the
+        # cap wrote its rows but never scheduled their embedding. The vector
+        # store upserts, so a row embedded before is only embedded again.
         return ids, documents, metadatas
 
     def _index_semantic(
@@ -492,7 +608,7 @@ class ArchivalMemory:
         ids: list[str],
         documents: list[str],
         metadatas: list[dict[str, Any]]
-    ) -> None:
+    ) -> bool:
         """Feed a stored batch to the VectorStore. NOT synchronized, on purpose.
 
         Embedding a full batch costs ~17 ms per message — up to several seconds
@@ -509,10 +625,12 @@ class ArchivalMemory:
                 documents=documents,
                 metadatas=metadatas
             )
+            return True
         except Exception as e:
             # The rows are already committed — a failed index costs similarity
             # search on these entries, not the content.
-            logger.error(f"Failed to add batch to VectorStore: {e}")
+            logger.error(f"Failed to add batch of {len(ids)} to VectorStore: {e}")
+            return False
 
     def search(
         self,
@@ -545,12 +663,34 @@ class ArchivalMemory:
         if use_semantic is None:
             use_semantic = self.enable_semantic_search
         
-        if use_semantic and self._vector_store:
-            return self._search_semantic(query, session_id, limit)
-        else:
+        if not (use_semantic and self._vector_store):
             return self._search_text(query, session_id, limit)
+        semantic = self._search_semantic(query, session_id, limit)
+        if not semantic:
+            # Nothing indexed is not nothing archived: the shared store starts
+            # empty for a session archived before semantic search was on. The
+            # broad text search, exactly as without semantic search.
+            return self._search_text(query, session_id, limit)
+        # Both. The vector index is not the archive: a row is in it only once
+        # its embedding landed, and a large prune embeds in the background, a
+        # refused or cancelled batch never does. Asked alone, the index answers
+        # over the part it holds and never says which part that was -- an exact
+        # identifier from an unembedded message is then simply not there.
+        #
+        # The text half demands EVERY word. Its broad form ORs them, and fusion
+        # weighs by rank alone: a row that matched nothing but "die" would take
+        # a slot at the same weight as a strong vector hit. Demanding all of
+        # them, it can only add what really contains everything asked for --
+        # which is what the vector index may be missing.
+        #
+        # Text first: fusion breaks ties by list order, and the top of each list
+        # scores the same. With the vector list first, limit=1 returned the
+        # nearest neighbour and never the row that holds every word asked for.
+        return _fused(self._search_text(query, session_id, limit, every_word=True),
+                      semantic,
+                      limit=limit)
     
-    def _escape_fts5_query(self, query: str) -> str:
+    def _escape_fts5_query(self, query: str, every_word: bool = False) -> str:
         """Escape special characters for FTS5 MATCH syntax.
         
         FTS5 has special characters that need escaping:
@@ -558,40 +698,75 @@ class ArchivalMemory:
         - Special operators: AND, OR, NOT, NEAR, *
         - Punctuation: . - : @ # etc.
         
-        Strategy: Wrap each word in double quotes to treat as literal.
+        Strategy: Wrap each word in double quotes to treat as literal --
+        except AND and OR written in capitals, which stay operators. NOT is not
+        offered: the vector half of a search cannot exclude anything, so it
+        would promise what half the answer does not keep. The word after it is
+        left out instead -- looked for, it would find exactly what was meant
+        to be excluded.
         """
         import re
         
+        # OR for broader matching; AND where a row must hold all of them.
+        default = ' AND ' if every_word else ' OR '
         # Split on whitespace, wrap each token in quotes
         # This makes FTS5 treat each word as a literal phrase
         tokens = query.split()
-        
-        # Escape any double quotes within tokens
-        escaped_tokens = []
+        # A filter made of nothing but operators is looked for as its words.
+        operators = any(t not in ("AND", "OR", "NOT") for t in tokens)
+        parts: list[str] = []
+        operator = default
+        leave_out = False
         for token in tokens:
+            # An operator the filter spells out is one (FTS5 counts only the
+            # capitals). Quoted like a word, "QS-4711 OR QS-4712" asked the
+            # every-word search for rows holding "or" too, and found nothing.
+            # One with no term before or after it has nothing to join.
+            if operators and token in ("AND", "OR"):
+                operator = f" {token} "
+                continue
+            if operators and token == "NOT":
+                leave_out = True
+                continue
             # Remove/escape problematic chars
             # FTS5 doesn't like bare punctuation
             cleaned = re.sub(r'[^\w\s]', ' ', token).strip()
-            if cleaned:
-                escaped_tokens.append(f'"{cleaned}"')
-        
-        if not escaped_tokens:
+            if cleaned and leave_out:
+                leave_out = False
+            elif cleaned:
+                if parts:
+                    parts.append(operator)
+                parts.append(f'"{cleaned}"')
+                operator = default
+
+        if not parts:
             # Fallback: just return original with dangerous chars removed
             return re.sub(r'[^\w\s]', ' ', query).strip()
-        
-        # Join with OR for broader matching
-        return ' OR '.join(escaped_tokens)
+
+        return ''.join(parts)
     
     @_synchronized
     def _search_text(
         self,
         query: str,
         session_id: str | None,
-        limit: int
+        limit: int,
+        every_word: bool = False
     ) -> list[ArchivedMessage]:
-        """Full-text search using SQLite FTS5."""
+        """Full-text search using SQLite FTS5.
+
+        Broad by default (any word). ``every_word`` demands all of them -- the
+        form search() fuses with the vector index, where a row matching one
+        common word would otherwise take a slot.
+
+        FTS5 here matches whole words, without stemming; only when it finds
+        nothing at all does the LIKE below look for the query as a substring
+        (so "Pruefstueck" finds "Pruefstuecks" then, and not while any row
+        holds the exact word). AND and OR in capitals are operators; see
+        _escape_fts5_query for NOT.
+        """
         # Escape query for FTS5 syntax safety
-        fts_query = self._escape_fts5_query(query)
+        fts_query = self._escape_fts5_query(query, every_word)
         
         try:
             # Build query
@@ -657,16 +832,21 @@ class ArchivalMemory:
         session_id: str | None,
         limit: int
     ) -> list[ArchivedMessage]:
-        """Semantic search using VectorStore."""
+        """Semantic search using VectorStore; [] when the index has nothing.
+
+        [] and not the text search: search() decides what an empty answer
+        means, and falling back HERE ran the text search twice on every query
+        of a session whose index is empty -- once inside, once for the fusion.
+        """
         if not self._vector_store:
-            return self._search_text(query, session_id, limit)
+            return []
         # The store is shared between sessions and only the session_id filter
         # keeps them apart. A query without one would rank OTHER sessions'
         # messages — in the per-session layout that was merely an empty
         # directory, here it would be a leak. Unreachable from the plugin
         # (hooks always set the id), guarded anyway.
         if not session_id:
-            return self._search_text(query, session_id, limit)
+            return []
 
         try:
             where = {"session_id": session_id}
@@ -679,12 +859,7 @@ class ArchivalMemory:
             )
 
             if not results or not results.get("ids") or not results["ids"]:
-                # Nothing indexed does not mean nothing archived: the vector
-                # index starts empty after the move to the shared store, and
-                # batches above the semantic cap are only ever FTS-indexed.
-                # Answering [] here hid rows that sit in archive.db; the text
-                # index has them.
-                return self._search_text(query, session_id, limit)
+                return []
             
             # Fetch full messages from SQLite.
             #
@@ -701,9 +876,8 @@ class ArchivalMemory:
                 ids = ids[0]
             if not ids:
                 # ChromaDB's empty answer is [[]] — truthy, so it passes the
-                # check above and only shows here. Same reasoning: nothing
-                # indexed is not nothing archived.
-                return self._search_text(query, session_id, limit)
+                # check above and only shows here.
+                return []
             placeholders = ",".join("?" * len(ids))
             # Only the row fetch needs this instance's lock; the vector query
             # above deliberately ran without it (see search()).
@@ -725,7 +899,7 @@ class ArchivalMemory:
             
         except Exception as e:
             logger.error(f"Semantic search failed, falling back to text: {e}")
-            return self._search_text(query, session_id, limit)
+            return []
     
     @_synchronized
     def get_session_messages(
@@ -893,6 +1067,20 @@ class ArchivalMemory:
         
         return f"{role.title()} message (empty)"
     
+    @property
+    def is_open(self) -> bool:
+        """Whether this archive still has its connections.
+
+        Asked by work that outlives the request that started it: a background
+        embedding runs for up to a minute, and a session evicted meanwhile
+        closes the stores under it. Without this the next chunk would report a
+        refused batch, and the log would blame the vector store.
+
+        Deliberately NOT ``@_synchronized``: it is read from the event loop, and
+        this lock is held across seconds of another session's embedding.
+        """
+        return self._db is not None
+
     @_synchronized
     def close(self) -> None:
         """Close database connections."""

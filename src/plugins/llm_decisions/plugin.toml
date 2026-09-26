@@ -11,9 +11,9 @@
 [plugin]
 name = "llm_decisions"
 version = "0.1.0"
-description = "Clients for decision models (OpenRouter Decisions API / TypeSafe Jev)"
+description = "Clients for decision models over the System One wire (TypeSafe Jev via OpenRouter or TypeSafe, a local Laya)"
 author = "AgentSystem"
 type = ["llm-provider"]
-provides_decisions = ["openrouter_decisions"]
+provides_decisions = ["openrouter_decisions", "systemone_decisions"]
 requires = { agent_system = ">=0.6.0" }
 dependencies = []

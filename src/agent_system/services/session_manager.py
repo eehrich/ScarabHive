@@ -1250,7 +1250,9 @@ class SessionManager:
 
         Refuses to overwrite a session that is live again: two sessions under
         one id is corruption, and the caller has to see it rather than lose
-        whichever copy loses the race.
+        whichever copy loses the race. Live under ANOTHER user counts too --
+        archiving freed the id, create_session checks every user for it, and
+        the cache and every owner lookup here assume one owner per id.
 
         Raises:
             ValueError: If the session data is invalid or the session is live.
@@ -1264,6 +1266,8 @@ class SessionManager:
             path = self._get_session_path(user_id, session_id)
             if path.exists():
                 raise ValueError(f"Session {session_id} is live -- refusing to overwrite it")
+            if self._session_id_exists_globally(session_id):
+                raise ValueError(f"Session {session_id} is live for another user -- refusing a second one")
 
             await self._atomic_write_async(path, session_data)
             self._cache[session_id] = (session_data, time.time())
@@ -1427,6 +1431,61 @@ class SessionManager:
         # 11 ms of contiguous block, which every SSE stream in the process waits out.
         # It is stat work like the read, so it belongs in the same thread.
         return await asyncio.to_thread(read_and_shape)
+
+    async def resolve_session_ref(self, user_id: str, ref: str, *,
+                                  others: Optional[list] = None) -> Optional[str]:
+        """The session ``ref`` names: an id, or the TITLE of one.
+
+        A session id is machine-made (``2332j2kj22k``) and cannot be renamed:
+        it is the key the usage tracker, the message debugger, the context
+        stores, the sub-session indexes and the presence locks all file their
+        rows under. The name a person remembers is the title, so the title is
+        what they may type -- ``--session "FPGA Quartus"`` and ``/resume
+        FPGA Quartus`` find the same session the id would.
+
+        An existing id always wins over a title that looks like one. Then an
+        exact title -- where several sessions carry the same one (a pipeline
+        writes hundreds of "Bewerte Kapitel 3"), the most recently updated is
+        meant, because that is the one its person worked in. A prefix counts
+        only when it names exactly ONE session: ``--session build`` creates a
+        session called "build" unless a single stored title starts that way,
+        and joining a stranger's conversation because the first letters
+        matched is worse than starting a new one. None when nothing matches.
+
+        *others*, when given, receives the ids of the other sessions that
+        carry the same exact title -- so the caller can say it took the newest
+        of several instead of letting the choice pass unseen.
+
+        Titles are looked up among the TOP-LEVEL sessions only, the ones the
+        listings show and /title names: a sub-agent's title is the first 100
+        characters of its task, repeated pipeline tasks share them by the
+        hundred, and a title typed by a person must neither land in one of
+        those nor count them as namesakes the listing then cannot show. An id
+        still reaches any session, sub-agents' included.
+        """
+        ref = (ref or "").strip()
+        if not ref:
+            return None
+        if self.belongs_to(user_id, ref):
+            return ref
+        wanted = ref.casefold()
+        rows = await self.list_root_sessions(user_id)
+
+        def newest(matches: list) -> Optional[str]:
+            if not matches:
+                return None
+            best = max(matches, key=lambda r: str(r.get("updated_at") or ""))
+            return best.get("session_id")
+
+        titled = [(r, str(r.get("title") or "").strip().casefold()) for r in rows]
+        same = [r for r, title in titled if title == wanted]
+        exact = newest(same)
+        if exact:
+            if others is not None:
+                others.extend(r.get("session_id") for r in same if r.get("session_id") != exact)
+            return exact
+        starting = [r for r, title in titled if title.startswith(wanted)]
+        return starting[0].get("session_id") if len(starting) == 1 else None
 
     async def rename_session(self, user_id: str, session_id: str, new_title: str) -> None:
         """Rename a session.

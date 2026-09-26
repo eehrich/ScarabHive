@@ -16,7 +16,7 @@ from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
 from agent_system.tools.base import ToolServerRegistry
 from agent_system.config.models import AgentConfig
-from plugins.sub_agent_manager.manager import SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentManager
 
 
 @pytest.fixture
@@ -326,8 +326,8 @@ async def test_e2e_max_nesting_depth_enforcement(
         initial_message="Level 3"
     )
     
-    # Level 4: Should fail (exceeds max depth)
-    with pytest.raises(ValueError, match="Maximum nesting depth"):
+    # Level 4: Should fail (exceeds max depth) -- a limit's refusal, logged as one, not as a crash
+    with pytest.raises(CallerMistake, match="Maximum nesting depth"):
         await manager.create_sub_session(
             parent_session_id=level3_id,
             agent_type="agent_l4",
@@ -493,8 +493,8 @@ async def test_create_sub_session_retries_on_cross_process_collision(
     between our uniqueness-check and our create_session. The retry-loop must
     regenerate a new id and succeed instead of bubbling the error.
 
-    Simulates the multi-process race that hits when 5 parallel agent-cli
-    runs all start their _class_counter at the same value.
+    Simulates the multi-process race: two processes land on one id by chance
+    (each starts its _class_counter at random, see _first_counter).
     """
     # Create coordinator
     coord_id = "coord_collision_test"

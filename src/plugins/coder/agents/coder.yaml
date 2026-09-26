@@ -46,6 +46,13 @@ plugins:
         # failure, review, fix. 300 is a safety net, not a target.
         max_steps: 300
 
+        # An answer cut off at the output cap is sent back with a note instead
+        # of ending the run, up to twice in a row. Measured 24.09.2026: three
+        # calls in a row stopped at 16384 tokens, each lost the tool call that
+        # was writing a whole file, and the announcement before it ended the
+        # run as its reply.
+        output_cap_notes: 2
+
         system_template: "./prompts/coder.md"
 
         template_vars:
@@ -69,6 +76,10 @@ plugins:
             - "+coder_okf/*"                # durable project knowledge it wrote
             - "+sequential_thinking/*"      # think a hard step through
             - "+datetime/*"
+            # Claude Code, where it is installed: without the claude executable
+            # the instance offers no tools, and the prompt's section on it is
+            # rendered only when has_tool() finds them.
+            - "+coding_cli/*"
 
           # semantic_search is ON since 18.09.2026 and no longer blocked here:
           # the index stores one document per symbol, so a hit is a function

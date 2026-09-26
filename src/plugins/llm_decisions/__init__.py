@@ -9,11 +9,14 @@ seam instead — ``provides_decisions`` in the manifest, an entry under
 ``llm_system.decision_models``, and ``create_decisions_from_profile`` — which
 is the way the audio plugins are reached.
 
-One host today — ``openrouter`` — and the shape is OpenRouter's own
-(``POST /api/alpha/decisions``, the single ``/api/`` path in their whole
-specification, with their provider-routing fields). TypeSafe serves the same
-models directly under a different path, and other gateways have picked them up
-as well; when a second one is built here, what the two share (the three
-question types, their validation, the answer types) moves into this package's
-own module. Generalising before that would be guessing which half is shared.
+One wire, several hosts: TypeSafe's "System One" API, which OpenRouter serves
+under ``/api/alpha/decisions`` (and ``/api/v1/systemone``), TypeSafe under
+``https://api.typesafe.ai/v1/systemone``, and ``laya-serve`` on a machine that
+runs the open Laya weights. One questionnaire against OpenRouter (both paths)
+and laya-serve, and TypeSafe's reference for its own host (2026-09-25): the
+same request, the same answer fields. So there is one client
+(``system_one.py``), and what a host needs of its own is data -- a ``Host``
+with the provider name its calls are booked under, its default endpoint, and
+whether it takes OpenRouter's ``session_id``. Two manifest providers hand the
+client one each: ``openrouter_decisions`` and ``systemone_decisions``.
 """

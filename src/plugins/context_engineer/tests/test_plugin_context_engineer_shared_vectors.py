@@ -197,14 +197,15 @@ def test_close_touches_only_a_store_it_owns(tmp_path, injected, expected_close_c
 def test_empty_vector_index_falls_back_to_text_search(tmp_path, shape):
     """No vector hit does not mean no archived row.
 
-    The shared store starts empty after the move, and batches above the
-    semantic cap are only ever FTS-indexed. Answering ``[]`` hid rows that
-    sit in archive.db — this is what made "the index rebuilds itself" true
-    instead of a blind spot. Two early returns exist, one per answer shape;
-    each parametrisation reaches one of them.
+    The shared store starts empty after the move. Answering ``[]`` hid rows
+    that sit in archive.db — this is what made "the index rebuilds itself"
+    true instead of a blind spot. _search_semantic now reports the empty
+    answer and search() falls back to the broad text search; each
+    parametrisation is one of the two empty shapes.
 
-    Mutation: restore ``return []`` at either early return → the matching
-    parametrisation goes red.
+    Mutation: return the empty vector answer from search() instead of the text
+    fallback -> both parametrisations go red. (That the fallback runs ONCE is
+    pinned in test_plugin_context_engineer_hybrid_search.py.)
     """
     archive = ArchivalMemory(tmp_path / "a.db", session_id="s",
                              enable_semantic_search=True, vector_store=_EmptyStore(shape))

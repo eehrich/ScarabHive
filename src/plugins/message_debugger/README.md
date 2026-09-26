@@ -80,6 +80,10 @@ All under `/plugins/message_debugger/`:
 `as_of_id` is the newest id a list was answered as of; passed back as `max_id`, the list and its total leave out
 what was captured since. Ids only grow, a clear included.
 
+Every endpoint but the page is an admin's (403 otherwise; with authentication off, everyone's): the raw traffic of
+every session and user -- system prompts, tool calls, answers -- is the operator's data. For the panel to disappear
+from a non-admin's launcher as well, a rule for `/plugins/message_debugger/*` belongs in `auth.plugin_security`.
+
 ## Files
 
 ```

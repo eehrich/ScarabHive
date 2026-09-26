@@ -173,7 +173,7 @@ def actions(event: dict, root: Path) -> list[str]:
         if not isinstance(block, dict):
             continue
         if block.get("type") == "tool_use":
-            lines.append(_tool_line(str(block.get("name") or "?"), block.get("input"), root))
+            lines.append(tool_line(str(block.get("name") or "?"), block.get("input"), root))
         elif block.get("type") == "text":
             first = next((ln.strip() for ln in str(block.get("text") or "").splitlines() if ln.strip()), "")
             if first:
@@ -181,7 +181,7 @@ def actions(event: dict, root: Path) -> list[str]:
     return [line[:CAP_ACTION] for line in lines]
 
 
-def _tool_line(name: str, args: Any, root: Path) -> str:
+def tool_line(name: str, args: Any, root: Path) -> str:
     args = args if isinstance(args, dict) else {}
     target = str(args.get("file_path") or args.get("path") or args.get("pattern") or args.get("command") or "")
     try:

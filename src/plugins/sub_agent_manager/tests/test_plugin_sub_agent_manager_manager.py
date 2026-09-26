@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
+from plugins.sub_agent_manager.manager import CallerMistake, SubAgentLimitReached, SubAgentManager
 
 
 @pytest.fixture
@@ -36,6 +36,73 @@ import re
 def manager(mock_session_service, mock_registry):
     """Create SubAgentManager instance."""
     return SubAgentManager(mock_session_service, mock_registry)
+
+
+def test_two_processes_do_not_start_counting_at_the_same_id(monkeypatch):
+    """Parallel agent-cli runs of a batch start within one second; seeded from the time of day, they counted
+    through the same ids."""
+    import time
+
+    from plugins.sub_agent_manager import manager as sam_manager
+
+    monkeypatch.setattr(time, "time", lambda: 1_758_000_000.0)  # one and the same second for every process
+
+    assert len({sam_manager._first_counter() for _ in range(3)}) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_first_id_counts_on_from_where_the_process_started(manager, monkeypatch):
+    from plugins.sub_agent_manager import manager as sam_manager
+
+    monkeypatch.setattr(SubAgentManager, "_class_counter", None)  # a process that has made no id yet
+    monkeypatch.setattr(sam_manager, "_first_counter", lambda: 4_812_000)
+
+    assert await manager._generate_instance_id("worker", None) == "sub_worker_4812001"
+    assert await manager._generate_instance_id("worker", None) == "sub_worker_4812002"
+
+
+@pytest.mark.asyncio
+async def test_one_archiving_makes_room_at_both_limits(mock_session_service, mock_registry):
+    """At the session's limit and the type's at once, the oldest of the type makes room under both. The session's
+    limit was checked first: it archived the oldest of any type, and with the type still full, a second one."""
+    manager = SubAgentManager(mock_session_service, mock_registry, max_nesting_depth=5,
+                              max_sub_agents_per_type=3, max_sub_agents_per_session=10, auto_archive_on_limit=True)
+    existing = {f"s{i}": {"agent_type": "planner" if i < 7 else "reviewer", "status": "active",
+                          "created_at": f"2026-01-01T0{i}:00:00+00:00"} for i in range(10)}
+    archived: list[str] = []
+
+    async def archive(parent_session_id, sub_session_id):
+        archived.append(sub_session_id)
+        return True
+    manager._archive_sub_agent = archive
+
+    await manager._make_room("parent123", existing, "reviewer")
+
+    assert archived == ["s7"], "the oldest reviewer alone"
+
+
+@pytest.mark.asyncio
+async def test_a_create_for_an_agent_that_is_not_there_archives_nothing(mock_session_service):
+    """At the limit, making room archives the oldest sub-agent -- one the caller may be waiting on.
+    A misspelled type did that first and failed afterwards; the real registry raises KeyError for a
+    name it does not know, so the check behind it never even ran."""
+    from agent_system.tools.base import ToolServerRegistry
+
+    manager = SubAgentManager(mock_session_service, ToolServerRegistry(), max_nesting_depth=5,
+                              max_sub_agents_per_type=1, max_sub_agents_per_session=1,
+                              auto_archive_on_limit=True)
+    mock_session_service.session_manager.load_session = AsyncMock(return_value={
+        "session_id": "parent123", "depth": 1,
+        "metadata": {"sub_agents": {"sub_research_1": {
+            "agent_type": "web_research", "status": "active",
+            "created_at": "2026-01-01T08:00:00+00:00"}}}})
+    manager._write_sub_agent = AsyncMock(return_value=True)
+
+    with pytest.raises(CallerMistake, match="not found in registry"):
+        await manager.create_sub_session(parent_session_id="parent123", agent_type="planer_typo",
+                                         initial_message="x")
+
+    assert manager._write_sub_agent.await_args_list == [], "archived before the agent was known"
 
 
 @pytest.mark.asyncio
@@ -517,70 +584,22 @@ async def test_auto_archive_archives_oldest_not_newest(mock_session_service, moc
     assert not newest_archived, "Newest sub-agent should NOT be archived"
 
 
-@pytest.mark.asyncio
-async def test_auto_archive_says_which_instance_it_took(mock_session_service, mock_registry):
-    """Making room happens down here, but what an archived instance leaves behind lives above.
-
-    The server holds the background jobs, and an auto-archived id never reaches it: the tool's
-    `delete` goes through the server, this does not. Its job would then keep the whole result
-    text for the life of the process -- which is what the writer's coordinators do all day, with
-    ``auto_archive_on_limit`` on and hundreds of sub-agent branches per book.
-    """
-    archived: list[str] = []
-
-    async def remember(instance_id: str) -> None:
-        archived.append(instance_id)
-
-    manager = SubAgentManager(
-        mock_session_service, mock_registry,
-        max_nesting_depth=5, max_sub_agents_per_type=1,
-        auto_archive_on_limit=True,
-        on_archived=remember,
-    )
-
-    mock_session_service.session_manager.load_session = AsyncMock(return_value={
-        "session_id": "parent123",
-        "depth": 1,
-        "metadata": {"sub_agents": {"sub_research_1": {
-            "agent_type": "web_research", "status": "active",
-            "created_at": "2026-01-01T08:00:00+00:00"}}},
-    })
-    mock_agent = MagicMock()
-    mock_agent.agent_config.default_llm_profile = "gpt-4"
-    mock_registry.get = MagicMock(return_value=mock_agent)
-
-    await manager.create_sub_session(
-        parent_session_id="parent123",
-        agent_type="web_research",
-        initial_message="New task",
-    )
-
-    assert archived == ["sub_research_1"]
-
-
 @pytest.mark.parametrize("later", [
     {"session_id": "parent123", "metadata": {}},
     {"session_id": "parent123", "metadata": {"sub_agents": {}}},
     OSError("the sessions directory is gone"),
 ], ids=["no-sub-agents-metadata", "id-not-among-them", "parent-unreadable"])
 @pytest.mark.asyncio
-async def test_nothing_is_reported_when_nothing_was_archived(mock_session_service, mock_registry, later):
+async def test_a_create_whose_archiving_wrote_nothing_is_refused(mock_session_service, mock_registry, later):
     """`update_sub_session_metadata` gives up quietly on three paths, and these are they.
 
     Nothing says archived anywhere then: the instance is still listed, still counted and still
-    pollable. Two things must not happen. Nobody may tidy up after it -- that would take a result
-    away from a caller who can still ask for it. And the spawn that was making room must not go
-    ahead: no room was made, so it would put the session over the limit it asked for, quietly."""
-    archived: list[str] = []
-
-    async def remember(instance_id: str) -> None:
-        archived.append(instance_id)
-
+    pollable. The spawn that was making room must not go ahead: no room was made, so it would put
+    the session over the limit it asked for, quietly."""
     manager = SubAgentManager(
         mock_session_service, mock_registry,
         max_nesting_depth=5, max_sub_agents_per_type=1,
         auto_archive_on_limit=True,
-        on_archived=remember,
     )
 
     # The parent that create() loads first carries the sub-agent; every load after it is the one
@@ -613,42 +632,6 @@ async def test_nothing_is_reported_when_nothing_was_archived(mock_session_servic
             agent_type="web_research",
             initial_message="New task",
         )
-
-    assert archived == [], "nobody tidies up after an instance that is still there"
-
-
-@pytest.mark.asyncio
-async def test_a_slip_in_that_report_does_not_cost_the_room_it_made(mock_session_service, mock_registry):
-    """The archiving is done and written by the time anyone is told. Failing the create over the
-    bookkeeping would trade a job left in memory for a spawn that does not happen at all."""
-    async def fails(instance_id: str) -> None:
-        raise RuntimeError("no")
-
-    manager = SubAgentManager(
-        mock_session_service, mock_registry,
-        max_nesting_depth=5, max_sub_agents_per_type=1,
-        auto_archive_on_limit=True,
-        on_archived=fails,
-    )
-
-    mock_session_service.session_manager.load_session = AsyncMock(return_value={
-        "session_id": "parent123",
-        "depth": 1,
-        "metadata": {"sub_agents": {"sub_research_1": {
-            "agent_type": "web_research", "status": "active",
-            "created_at": "2026-01-01T08:00:00+00:00"}}},
-    })
-    mock_agent = MagicMock()
-    mock_agent.agent_config.default_llm_profile = "gpt-4"
-    mock_registry.get = MagicMock(return_value=mock_agent)
-
-    sub_session_id = await manager.create_sub_session(
-        parent_session_id="parent123",
-        agent_type="web_research",
-        initial_message="New task",
-    )
-
-    assert sub_session_id.startswith("sub_"), "the spawn it made room for went through"
 
 
 @pytest.mark.asyncio

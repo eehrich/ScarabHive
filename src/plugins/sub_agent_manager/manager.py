@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
+import random
 import weakref
 from agent_system.services.session_manager import SessionNotFoundError
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     from agent_system.tools.base import ToolServerRegistry
     from agent_system.services.session_service import SessionService
 
@@ -38,6 +36,34 @@ def _parent_lock(parent_session_id: str) -> asyncio.Lock:
     return lock
 
 
+def _first_counter() -> int:
+    """Where this process starts counting instance ids: at random, so two processes land on one id only
+    by chance, and a restarted one does not count through the ids of the one before (an id already on
+    disk is skipped besides). It started at the time of day -- processes started in the same second,
+    the parallel agent-cli runs of a batch, counted through the same ids, and one's session file could
+    replace the other's between the existence check and the write."""
+    return random.randrange(10_000_000)
+
+
+async def message_counts(sessions, user_id: str, parent_id: str) -> dict[str, int]:
+    """The message count of each sub-session of ``parent_id``, from the parent's sub-index: one small
+    file, rewritten at every save of a sub-session with the transcript's length as of that save -- no
+    transcript read for it. The count in the parent's entry is no substitute: it lags a run behind and
+    was measured wrong besides (0, 2 or 9 where the transcripts held 4 to 27)."""
+    try:
+        rows = await sessions.list_child_sessions(user_id, parent_id, annotate_children=False)
+    except Exception as error:  # a figure must not fail the listing it stands in
+        logger.debug("No sub-index for %s: %s", parent_id, error)
+        return {}
+    return {row["session_id"]: int(row.get("message_count") or 0) for row in rows if row.get("session_id")}
+
+
+class CallerMistake(ValueError):
+    """A call naming a sub-agent that is not there, not the caller's, or busy, or an agent that
+    cannot be spawned. The model is answered and can correct it; the manager did nothing wrong.
+    Logged as an error, with a traceback, it read like a crash in the server log."""
+
+
 class SubAgentLimitReached(ValueError):
     """No room for one more active sub-agent: a limit is reached, and nothing was archived to make
     some. A ValueError still, for every caller that catches those."""
@@ -56,20 +82,9 @@ class SubAgentManager:
     for all persistence operations.
     """
     
-    # Class-level counter shared across ALL instances to avoid collisions
-    # when multiple parent sessions run in parallel.
-    # Uses timestamp-based start to avoid collisions after server restart.
-    # Format: seconds since midnight (0-86400) * 100 + random offset
-    # This gives ~8.6M unique values per day before wrapping
-    _class_counter: int = (int(time.time()) % 86400) * 100
-    _class_lock: asyncio.Lock | None = None  # Initialized lazily
-    
-    @classmethod
-    def _get_class_lock(cls) -> asyncio.Lock:
-        """Get or create the class-level lock (lazy initialization for thread safety)."""
-        if cls._class_lock is None:
-            cls._class_lock = asyncio.Lock()
-        return cls._class_lock
+    # Class-level counter shared by every manager of the process, started by `_first_counter` at the
+    # first id the process makes.
+    _class_counter: Optional[int] = None
 
     def __init__(
         self, 
@@ -79,7 +94,6 @@ class SubAgentManager:
         max_sub_agents_per_type: int = 3,
         max_sub_agents_per_session: int = 10,
         auto_archive_on_limit: bool = False,
-        on_archived: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         """Initialize SubAgentManager.
 
@@ -93,11 +107,6 @@ class SubAgentManager:
             max_sub_agents_per_session: Maximum total number of active sub-agents per session
             auto_archive_on_limit: If True, automatically archive the oldest sub-agent when
                 a limit is reached instead of returning limit_reached error.
-            on_archived: Told which instance was archived, right after it was. Auto-archiving
-                happens down here, while what an archived instance leaves behind lives in the
-                server above (its background jobs), which never sees the id otherwise. Called
-                with the parent's lock held (`_make_room`): it must not write that parent's
-                sub-agents, or it waits on itself.
         """
         self._session_service = session_service
         self._registry = registry
@@ -105,7 +114,6 @@ class SubAgentManager:
         self.max_sub_agents_per_type = max_sub_agents_per_type
         self.max_sub_agents_per_session = max_sub_agents_per_session
         self.auto_archive_on_limit = auto_archive_on_limit
-        self._on_archived = on_archived
 
         # Activity update tracking: only save when activity actually changes
         # to avoid excessive session saves during streaming
@@ -224,31 +232,33 @@ class SubAgentManager:
         budget = self.max_nesting_depth if inherited is None else min(inherited, self.max_nesting_depth)
 
         if budget < 1:
-            raise ValueError(
+            raise CallerMistake(  # a limit's refusal, not a fault
                 f"Maximum nesting depth exceeded: session {parent_session_id} "
                 f"(depth {parent_depth}) has no levels left below it "
                 f"(max_nesting_depth={self.max_nesting_depth}, inherited budget={inherited})"
             )
 
-        await self._make_room(parent_session_id,
-                              parent_data.get("metadata", {}).get("sub_agents", {}), agent_type)
-
-        # Get actual agent to extract llm_profile (check before id generation)
-        agent = self._registry.get(agent_type)
+        # The agent before the room for it: making room archives the oldest sub-agent, and a
+        # misspelled type archived one the caller may be waiting on, then failed.
+        try:
+            agent = self._registry.get(agent_type)
+        except KeyError:  # the registry raises for a name it does not know
+            agent = None
         if not agent:
-            raise ValueError(f"Agent type '{agent_type}' not found in registry")
+            raise CallerMistake(f"Agent type '{agent_type}' not found in registry")
 
         agent_llm_profile = agent.agent_config.default_llm_profile if hasattr(agent, 'agent_config') else None
         if not agent_llm_profile:
             raise ValueError(f"Agent '{agent_type}' has no agent_config.llm_profile")
 
+        await self._make_room(parent_session_id,
+                              parent_data.get("metadata", {}).get("sub_agents", {}), agent_type)
+
         # Generate unique instance ID + create session.
         #
         # Race condition guard for multi-process scenarios (e.g. 5 parallel
-        # agent-cli runs): each Python process has its OWN ``_class_counter``
-        # starting at ``(int(time.time()) % 86400) * 100``. Parallel processes
-        # land on the same counter and collide. The asyncio class-lock is
-        # process-local and doesn't help cross-process.
+        # agent-cli runs): each Python process has its OWN ``_class_counter``,
+        # started at random, so two land on one id only by chance.
         #
         # ``_generate_instance_id`` checks uniqueness against the filesystem,
         # but between that check and ``create_session`` (which runs the same
@@ -568,31 +578,8 @@ class SubAgentManager:
             if sub_meta.get("status") == "active"
         ]
 
-        # Check total session limit
-        if len(active_sub_agents) >= self.max_sub_agents_per_session:
-            if self.auto_archive_on_limit:
-                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_sub_agents)
-                if not await self._archive_sub_agent(parent_session_id, oldest_id):
-                    # Nothing was archived, so no room was made. Spawning anyway puts the
-                    # session over the limit it asked for, quietly and for good.
-                    raise SubAgentLimitReached(
-                        f"Maximum number of active sub-agents per session "
-                        f"({self.max_sub_agents_per_session}) reached, and the oldest "
-                        f"({oldest_id}) could not be archived to make room."
-                    )
-                active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
-                logger.info(
-                    f"Auto-archived sub-agent {oldest_id} (session limit) "
-                    f"to make room in parent {parent_session_id}"
-                )
-            else:
-                raise SubAgentLimitReached(
-                    f"Maximum number of active sub-agents per session "
-                    f"({self.max_sub_agents_per_session}) reached. "
-                    f"Active sub-agents: {len(active_sub_agents)}"
-                )
-
-        # Check per-type limit
+        # The type's limit first: archiving the oldest of that type makes room under both. The
+        # session's first archived the oldest of any type, and with the type still full, one more.
         active_agents_of_type = [
             sub_id for sub_id in active_sub_agents
             if existing_sub_agents[sub_id].get("agent_type") == agent_type
@@ -607,7 +594,6 @@ class SubAgentManager:
                         f"({self.max_sub_agents_per_type}) reached, and the oldest "
                         f"({oldest_id}) could not be archived to make room."
                     )
-                active_agents_of_type = [sid for sid in active_agents_of_type if sid != oldest_id]
                 active_sub_agents = [sid for sid in active_sub_agents if sid != oldest_id]
                 logger.info(
                     f"Auto-archived sub-agent {oldest_id} (type limit: {agent_type}) "
@@ -618,6 +604,29 @@ class SubAgentManager:
                     f"Maximum number of active sub-agents of type '{agent_type}' "
                     f"({self.max_sub_agents_per_type}) reached. "
                     f"Active sub-agents: {active_agents_of_type}"
+                )
+
+        # Check total session limit
+        if len(active_sub_agents) >= self.max_sub_agents_per_session:
+            if self.auto_archive_on_limit:
+                oldest_id = self._find_oldest_sub_agent(existing_sub_agents, active_sub_agents)
+                if not await self._archive_sub_agent(parent_session_id, oldest_id):
+                    # Nothing was archived, so no room was made. Spawning anyway puts the
+                    # session over the limit it asked for, quietly and for good.
+                    raise SubAgentLimitReached(
+                        f"Maximum number of active sub-agents per session "
+                        f"({self.max_sub_agents_per_session}) reached, and the oldest "
+                        f"({oldest_id}) could not be archived to make room."
+                    )
+                logger.info(
+                    f"Auto-archived sub-agent {oldest_id} (session limit) "
+                    f"to make room in parent {parent_session_id}"
+                )
+            else:
+                raise SubAgentLimitReached(
+                    f"Maximum number of active sub-agents per session "
+                    f"({self.max_sub_agents_per_session}) reached. "
+                    f"Active sub-agents: {len(active_sub_agents)}"
                 )
 
     async def reopen_sub_session(self, parent_session_id: str, instance_id: str) -> None:
@@ -651,6 +660,8 @@ class SubAgentManager:
                 status="active",
                 current_activity=None,
                 activity_updated_at=None,
+                error=None,  # an earlier run's: a later failure that stores none would report it
+                ending_unread=None,  # continued, the caller has it: the bell of the job's process stops
             )
 
     async def update_sub_session_metadata(
@@ -801,15 +812,6 @@ class SubAgentManager:
             logger.warning(f"Could not archive sub-agent {sub_session_id} in parent {parent_session_id}")
             return False
         logger.debug(f"Archived sub-agent {sub_session_id} in parent {parent_session_id}")
-
-        if self._on_archived is not None:
-            # Never at the cost of the archiving itself: it is done and written by now, and the
-            # caller is a create that is making room. A slip here leaves a job behind, which is
-            # what this call is against -- failing the create over it would be the worse trade.
-            try:
-                await self._on_archived(sub_session_id)
-            except Exception as e:
-                logger.warning(f"on_archived for {sub_session_id} failed: {e}", exc_info=True)
         return True
 
     async def _generate_instance_id(
@@ -830,36 +832,36 @@ class SubAgentManager:
             Unique instance ID (short format, no parent ID)
         """
         import re
-        
-        class_lock = self._get_class_lock()
-        async with class_lock:
-            session_manager = self._session_service.session_manager
 
-            # Keep incrementing counter until we find a unique ID
-            max_attempts = 1000
-            for _ in range(max_attempts):
-                # Increment class-level counter (shared across all instances)
-                SubAgentManager._class_counter += 1
-                counter = SubAgentManager._class_counter
+        # No await below, so nothing else of this loop runs in between: the counter needs no lock.
+        session_manager = self._session_service.session_manager
 
-                # Use custom label or auto-generate
-                if instance_label:
-                    # Sanitize label (alphanumeric, underscore, hyphen only)
-                    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
-                    instance_id = f"sub_{sanitized}_{counter:04d}"
-                else:
-                    # Auto-generate: sub_{agent_type}_{counter}
-                    instance_id = f"sub_{agent_type}_{counter:04d}"
+        # Keep incrementing counter until we find a unique ID
+        max_attempts = 1000
+        for _ in range(max_attempts):
+            # Increment class-level counter (shared across all instances)
+            counter = SubAgentManager._class_counter
+            counter = (_first_counter() if counter is None else counter) + 1
+            SubAgentManager._class_counter = counter
 
-                # Check if this ID is already taken
-                if not session_manager._session_id_exists_globally(instance_id):
-                    logger.debug(f"Generated unique instance ID: {instance_id} (class counter: {counter})")
-                    return instance_id
-                else:
-                    logger.debug(f"Instance ID {instance_id} already exists, trying next counter...")
+            # Use custom label or auto-generate
+            if instance_label:
+                # Sanitize label (alphanumeric, underscore, hyphen only)
+                sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', instance_label)
+                instance_id = f"sub_{sanitized}_{counter:04d}"
+            else:
+                # Auto-generate: sub_{agent_type}_{counter}
+                instance_id = f"sub_{agent_type}_{counter:04d}"
 
-            # Fallback if we somehow can't find a unique ID
-            raise ValueError(f"Failed to generate unique instance ID after {max_attempts} attempts")
+            # Check if this ID is already taken
+            if not session_manager._session_id_exists_globally(instance_id):
+                logger.debug(f"Generated unique instance ID: {instance_id} (class counter: {counter})")
+                return instance_id
+            else:
+                logger.debug(f"Instance ID {instance_id} already exists, trying next counter...")
+
+        # Fallback if we somehow can't find a unique ID
+        raise ValueError(f"Failed to generate unique instance ID after {max_attempts} attempts")
 
 
     def _extract_user_id(self, session_id: str, params: Optional[dict] = None) -> str:

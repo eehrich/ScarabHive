@@ -100,6 +100,11 @@ Under `/plugins/<instance>/`:
 | GET | `/events/{id}` | one run with `before_messages` and `after_messages`; 404 when it is no longer in the history |
 | POST | `/clear` | forgets every run |
 
+Who sees what (`agent_system/auth/session_access.py`, the rule of the usage tracker too): a user the runs of her own
+sessions -- another user's session answers as one without runs, and a run of it (its messages are the conversation's
+text) or a run without a session as one that is gone (404). Every session at once and `/clear` are an admin's (403
+otherwise); with authentication off, everything is shown.
+
 ## Tests
 
 ```bash

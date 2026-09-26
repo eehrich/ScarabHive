@@ -1336,7 +1336,7 @@ class TestSessionsCommand:
     never passes it is a command nobody has ever seen used.
     """
 
-    def _dispatch(self, monkeypatch, line):
+    def _dispatch(self, monkeypatch, line, **run_kwargs):
         import agent_system.cli_utils.chat as chat
 
         seen = {}
@@ -1346,7 +1346,7 @@ class TestSessionsCommand:
             seen["user_id"] = user_id
 
         monkeypatch.setattr(chat, "print_sessions", fake_print)
-        drive_chat_repl(monkeypatch, [line])
+        drive_chat_repl(monkeypatch, [line], **run_kwargs)
         return seen
 
     def test_a_bare_call_uses_the_default_count(self, monkeypatch):
@@ -1366,8 +1366,31 @@ class TestSessionsCommand:
 
     def test_the_footer_and_the_hint_reach_the_listing(self, monkeypatch):
         seen = self._dispatch(monkeypatch, "/sessions")
-        assert seen["footer"] == "Use /resume <id> to continue one."
-        assert "/sessions 0 for all" in seen["more_hint"]
+        assert seen["footer"] == "Use /resume <id or title> to continue one."
+        assert "/sessions 0 for no limit" in seen["more_hint"]
+
+    def test_only_the_agents_meant_for_chat_are_listed(self, monkeypatch):
+        """The filter is the runtime this chat's process bootstrapped -- handed
+        in, not Runtime.last_started, which an in-process pipeline can swap --
+        asked per session whether its agent is meant for chat (ui/both). The
+        agent this chat runs on ("a" here) stays, whatever its visibility."""
+        from types import SimpleNamespace as NS
+
+        decls = {"coder": NS(visibility="ui"), "v4_scorer": NS(visibility="private"),
+                 "a": NS(visibility="private")}
+        seen = self._dispatch(monkeypatch, "/sessions", runtime=NS(describe=decls.get))
+        assert seen["shown"]("coder") and not seen["shown"]("v4_scorer")
+        assert seen["shown"]("a"), "the conversation being had was hidden from its own listing"
+        assert seen["everything_hint"] == "/sessions all"
+
+    def test_all_lists_the_pipeline_runs_too(self, monkeypatch):
+        # A runtime to filter with: without one there is no filter, and "all
+        # turned it off" could not be told from "there was none".
+        from types import SimpleNamespace as NS
+
+        runtime = NS(describe={"a": NS(visibility="ui")}.get)
+        seen = self._dispatch(monkeypatch, "/sessions all", runtime=runtime)
+        assert seen["shown"] is None and seen["limit"] == 0
 
     def test_a_count_that_is_not_a_count_gets_the_usage_line(self, monkeypatch,
                                                              capsys):
@@ -1376,7 +1399,7 @@ class TestSessionsCommand:
         # either way.
         seen = self._dispatch(monkeypatch, "/sessions 2o")
         assert not seen, "the listing ran with a discarded argument"
-        assert "Usage: /sessions [count]   (got: 2o)" in capsys.readouterr().out
+        assert "Usage: /sessions [count|all]   (got: 2o)" in capsys.readouterr().out
 
     def test_a_negative_count_is_not_read_as_all_of_them(self, monkeypatch):
         seen = self._dispatch(monkeypatch, "/sessions -1")
@@ -3463,6 +3486,18 @@ class TestResumeBringsTheSessionAlong:
             llm_system=SimpleNamespace(profiles={"profile_a": None, "profile_b": None}))
 
         class _Manager:
+            #: What a person types is an id or the TITLE of a session; the real
+            #: one looks it up (SessionManager.resolve_session_ref). Here every
+            #: id is its own, except the one name this fixture gave away.
+            titles = {"Der Blitter": "s2"}
+            #: Two older sessions carry the same title -- the real one names them.
+            namesakes = {"Der Blitter": ["s0", "s1b"]}
+
+            async def resolve_session_ref(self, user_id, ref, *, others=None):
+                if others is not None:
+                    others.extend(self.namesakes.get(ref, []))
+                return self.titles.get(ref, ref)
+
             async def load_session(self, user_id, session_id):
                 return {"agent_name": stored_agent, "llm_profile": stored_llm}
 
@@ -3495,6 +3530,29 @@ class TestResumeBringsTheSessionAlong:
         out = capsys.readouterr().out
         assert "belongs to writer" in out
         assert "--session s2 --agent writer" in out
+
+    async def test_a_title_continues_the_session_it_belongs_to(self, monkeypatch, capsys):
+        """Ids are machine-made and cannot be renamed, so /resume takes the
+        name the person gave the session with /title -- turned into its id
+        BEFORE the hold, or the presence lock names the words typed and the
+        session itself stays open to a woken run."""
+        import agent_system.cli_utils.chat as chat
+
+        ctx, loads = self._ctx(monkeypatch, "coder", "profile_b")
+        held, released = [], []
+        monkeypatch.setattr(chat, "_hold_session", lambda ctx, sid: held.append(sid) or True)
+        monkeypatch.setattr(chat, "_release_session", lambda ctx, sid: released.append(sid))
+
+        assert await chat._resume_into(ctx, "Der Blitter", "s1") is True
+
+        assert loads == ["s2"], "the title was taken for an id of its own"
+        assert ctx.session_id == "s2"
+        assert held == ["s2"], "the lock was taken on the title, not on the session"
+        assert released == ["s1"]
+        out = capsys.readouterr().out
+        assert "Der Blitter" in out, "it did not say which session it took"
+        # the newest of three was taken -- and it says so, instead of choosing unseen
+        assert "newest of 3 with this title" in out, out
 
     async def test_it_continues_on_its_own_llm(self, monkeypatch):
         from agent_system.cli_utils.chat import _resume_session
@@ -4159,7 +4217,7 @@ class TestCompletion:
 
         values = self._values(ctx, "/re", skills=["writer"])
 
-        assert "/resume" in values and "/rename" in values
+        assert "/resume" in values and "/title" in values
         assert "/compact" in values, "the agent's own commands are missing"
         assert "/writer" in values, "skills are missing"
 
@@ -4353,7 +4411,7 @@ class TestResumeWithoutAnId:
 
         monkeypatch.setattr(chat, "_resume_session", resume)
         ctx = _completion_ctx(monkeypatch)
-        ctx.session_manager = SimpleNamespace(list_root_sessions=_sessions_of(
+        ctx.session_manager = SimpleNamespace(resolve_session_ref=_own_id, list_root_sessions=_sessions_of(
             [{"session_id": "s1", "title": "die offene"},
              {"session_id": "ab12cd34", "title": "die davor"}]))
 
@@ -4395,7 +4453,7 @@ class TestResumeWithoutAnId:
 
         monkeypatch.setattr(chat, "_resume_session", resume)
         ctx = _completion_ctx(monkeypatch)          # entry_name="coder"
-        ctx.session_manager = SimpleNamespace(list_root_sessions=_sessions_of([
+        ctx.session_manager = SimpleNamespace(resolve_session_ref=_own_id, list_root_sessions=_sessions_of([
             {"session_id": "ff00", "title": "des writers", "agent_name": "writer"},
             {"session_id": "ab12", "title": "meine", "agent_name": "coder"}]))
 
@@ -4508,7 +4566,7 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Blitter umbauen")) is True
+                chat._set_session_title(ctx, "Blitter umbauen")) is True
         finally:
             loop.close()
 
@@ -4532,7 +4590,7 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Neu")) is False
+                chat._set_session_title(ctx, "Neu")) is False
         finally:
             loop.close()
 
@@ -4552,12 +4610,47 @@ class TestRename:
         loop = asyncio.new_event_loop()
         try:
             assert loop.run_until_complete(
-                chat._rename_current_session(ctx, "Neue Sache")) is True
+                chat._set_session_title(ctx, "Neue Sache")) is True
         finally:
             loop.close()
 
         assert ctx.session_title == "Neue Sache"
         assert "first message" in capsys.readouterr().out
+
+    def test_a_stored_title_with_newlines_is_shown_on_one_line(self, monkeypatch, capsys):
+        import agent_system.cli_utils.chat as chat
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.session_title = "Bewerte\n  Kapitel 3"
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(chat._set_session_title(ctx, ""))
+        finally:
+            loop.close()
+
+        assert "Title: Bewerte Kapitel 3" in capsys.readouterr().out
+
+    def test_a_bare_title_says_the_one_on_disk(self, monkeypatch, capsys):
+        """ctx.session_title is dropped once a save wrote it -- the record
+        is where a resumed session's title lives."""
+        import agent_system.cli_utils.chat as chat
+
+        async def load(user_id, session_id):
+            return {"title": "Der Blitter"}
+
+        ctx = _completion_ctx(monkeypatch)
+        ctx.was_new_session = False
+        ctx.session_title = None
+        ctx.session_manager = SimpleNamespace(load_session=load)
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(chat._set_session_title(ctx, "")) is False
+        finally:
+            loop.close()
+
+        out = capsys.readouterr().out
+        assert "Title: Der Blitter" in out, out
 
     def test_an_empty_title_is_refused(self, monkeypatch, capsys):
         import agent_system.cli_utils.chat as chat
@@ -4565,11 +4658,11 @@ class TestRename:
         ctx = _completion_ctx(monkeypatch)
         loop = asyncio.new_event_loop()
         try:
-            assert loop.run_until_complete(chat._rename_current_session(ctx, "")) is False
+            assert loop.run_until_complete(chat._set_session_title(ctx, "")) is False
         finally:
             loop.close()
 
-        assert "Usage: /rename" in capsys.readouterr().out
+        assert "Usage: /title" in capsys.readouterr().out
 
 
 class TestSwitchAgent:
@@ -4655,18 +4748,19 @@ class TestSwitchAgent:
         out = capsys.readouterr().out
         assert "Unknown agent" in out and "writer" in out, "no suggestion offered"
 
-    def test_a_factory_that_exits_does_not_end_the_chat(self, monkeypatch, capsys):
+    def test_a_name_the_factory_refuses_does_not_end_the_chat(self, monkeypatch, capsys):
         import agent_system.cli_utils.chat as chat
+        from agent_system.servers.agent.entry import NotAnAgent
 
-        def exits(ctx, name):
-            raise SystemExit(1)
+        def refuses(ctx, name):
+            raise NotAnAgent(f"'{name}' is a tool server, not an agent.", ["coder"])
 
-        monkeypatch.setattr(chat, "_agent_for", exits)
+        monkeypatch.setattr(chat, "_agent_for", refuses)
         ctx = _completion_ctx(monkeypatch)
 
         assert chat._switch_agent(ctx, "writer") is False
         assert ctx.entry_name == "coder"
-        assert "Could not build agent" in capsys.readouterr().out
+        assert "Could not switch to 'writer'" in capsys.readouterr().out
 
     def test_the_repl_starts_a_new_session_for_it(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
@@ -4720,26 +4814,31 @@ class TestSwitchAgent:
         ctx = _completion_ctx(monkeypatch)
         ctx.agent.registry = registry
         built = []
-        import agent_system.agent_cli as agent_cli
-        monkeypatch.setattr(agent_cli, "_build_entry_agent",
-                            lambda *a: built.append(a) or "fresh")
+        import agent_system.servers.agent.entry as entry
+        monkeypatch.setattr(entry, "get_tool_server_config",
+                            lambda *a: built.append(a) or "cfg")
 
         assert chat._agent_for(ctx, "writer") is registered
         assert built == [], "the registered agent was rebuilt"
 
     def test_an_agent_that_is_not_registered_yet_is_built(self, monkeypatch):
         import agent_system.cli_utils.chat as chat
-        import agent_system.agent_cli as agent_cli
+        import agent_system.servers.agent.entry as entry
 
-        registry = SimpleNamespace(list=lambda: [], get=lambda name: None)
+        registered = {}
+        registry = SimpleNamespace(list=lambda: [], get=lambda name: None,
+                                   register=registered.__setitem__)
         ctx = _completion_ctx(monkeypatch)
         ctx.agent.registry = registry
         built = []
-        monkeypatch.setattr(agent_cli, "_build_entry_agent",
-                            lambda name, config, reg, service: built.append(name) or "fresh")
+        fresh = SimpleNamespace(agent_config=None)
+        monkeypatch.setattr(entry, "get_tool_server_config", lambda name, config: "cfg")
+        monkeypatch.setattr(entry, "Agent", lambda name, config, server_config, reg, session_service=None:
+                            built.append(name) or fresh)
 
-        assert chat._agent_for(ctx, "writer") == "fresh"
+        assert chat._agent_for(ctx, "writer") is fresh
         assert built == ["writer"]
+        assert registered == {"writer": fresh}
 
 
 def _sessions_of(entries):
@@ -4747,6 +4846,11 @@ def _sessions_of(entries):
         return list(entries)
 
     return list_root_sessions
+
+
+async def _own_id(user_id, ref, *, others=None):
+    """resolve_session_ref of a store where every ref is an id."""
+    return ref
 
 
 class TestTakingTheLastExchangeBack:
@@ -4881,7 +4985,7 @@ class TestWhatALeftSessionTakesWithIt:
     """Both ways out of a session pass the same note."""
 
     def test_resume_names_the_title_it_drops(self, monkeypatch, capsys):
-        """A /rename before the first message parks the title on the context;
+        """A /title before the first message parks the title on the context;
         the session it named has no record to write it into. /new says so --
         /resume dropped it without a word."""
         import agent_system.cli_utils.chat as chat

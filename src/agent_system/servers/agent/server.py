@@ -298,14 +298,10 @@ class Agent(ToolServer):
                         "model": resolved.spec.model,
                     })
 
-                    # Get SSL verify setting
-                    ssl_verify = getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None
-
                     # Use factory function that properly handles batch mode
                     self.llm = create_llm_from_profile(
                         config=system_config,
                         llm_profile=self.agent_config.default_llm_profile,
-                        ssl_verify=ssl_verify,
                         llm_params=self.agent_config.llm_params,
                     )
                 except Exception as e:
@@ -447,6 +443,7 @@ class Agent(ToolServer):
         "escalate_max_calls",
         "escalate_error_streak",
         "fallback_recovery_seconds",
+        "inherit_parent_llm",
     )
 
     def reload_config(self, server_config: Any) -> dict:
@@ -550,13 +547,8 @@ class Agent(ToolServer):
             advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
             if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
                 return None
-            from ...llm.factory import create_llm_from_profile
-            ssl_verify = getattr(self.system_config, "network", None)
-            ssl_verify = ssl_verify.ssl_verify if ssl_verify else None
-            client = create_llm_from_profile(
-                config=self.system_config, llm_profile=advanced_profile,
-                ssl_verify=ssl_verify,
-                llm_params=self.agent_config.llm_params if self.agent_config else None)
+            from ...llm.factory import override_for_profile
+            client, _ = override_for_profile(self.system_config, self.agent_config, advanced_profile)
             if hasattr(client, "set_app_title"):
                 client.set_app_title(self.name)
             if self._hook_manager:
@@ -568,6 +560,46 @@ class Agent(ToolServer):
         except Exception as e:
             logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
             return None
+
+    def _llm_from_caller(self) -> Optional[tuple[LLMClient, str]]:
+        """(client, profile info) for a run on the caller's LLM, else None.
+
+        Only for an agent that asks for it (agent_config.inherit_parent_llm) and
+        only when the calling run was switched to a profile (llm/caller_llm.py).
+        Built like any override: the agent keeps its own llm_params for the
+        profile, its own chain stays the fallback. A profile this config does
+        not know leaves the agent on its own chain, with a warning -- a caller
+        on a model the sub-agent cannot run must not cost the call.
+        """
+        if not (self.agent_config and self.agent_config.inherit_parent_llm):
+            return None
+        from ...llm.caller_llm import caller_llm_profile
+        profile = caller_llm_profile()
+        if not profile:
+            return None
+        try:
+            from ...llm.factory import override_for_profile
+            client, label = override_for_profile(self.system_config, self.agent_config, profile)
+        except Exception as e:
+            logger.warning("[%s] cannot run on the caller's LLM profile %r, runs its own: %s",
+                           self.name, profile, e)
+            return None
+        logger.info("[%s] runs on the caller's LLM profile %s", self.name, profile)
+        return client, f"{label} (from caller)"
+
+    def _profile_to_hand_down(self, llm_override: Optional[LLMClient]) -> Optional[str]:
+        """The profile this run hands to the sub-agents its tools start: the one
+        it was switched to, else None. An override on the agent's own primary
+        profile (--llm-params alone, a web pick of the same profile) switched
+        nothing -- unless the run followed its caller onto it: that switch came
+        from above and goes on down.
+        """
+        from ...llm.caller_llm import caller_llm_profile
+        profile = getattr(llm_override, "profile_name", None)
+        if (profile and self.agent_config and profile == self.agent_config.default_llm_profile
+                and profile != caller_llm_profile()):
+            return None
+        return profile
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -612,8 +644,6 @@ class Agent(ToolServer):
         try:
             from ...llm.factory import create_llm_from_profile
 
-            ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
-
             # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
             # Primaermodell — create_llm_from_profile loest die profil-
             # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
@@ -621,7 +651,6 @@ class Agent(ToolServer):
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
-                ssl_verify=ssl_verify,
                 llm_params=self.agent_config.llm_params if self.agent_config else None,
             )
             fallback_llm.set_app_title(self.name)
@@ -920,6 +949,24 @@ class Agent(ToolServer):
     #: The note rides on this many of the last steps.
     _STEP_BUDGET_NOTE_LAST_STEPS = 2
 
+    @staticmethod
+    def _output_cap_note(completion_tokens: Optional[int]) -> ChatMessage:
+        """What the run tells a model whose answer the output cap cut off.
+
+        The RUN speaks (developer), as for the step budget: a person did not
+        write this, and injected_by keeps it from counting as a turn.
+        """
+        at = f" ({completion_tokens} tokens)" if completion_tokens else ""
+        return ChatMessage(
+            role=DEVELOPER,
+            content=(f"Your last answer was cut off at the output limit{at}. Everything after the cut is "
+                     "lost, including any tool call you were writing -- nothing of it was executed. Do not "
+                     "send it again in one piece: write a large file in parts (create it, then add section "
+                     "by section), or keep the answer shorter."),
+            timestamp=datetime.now(timezone.utc),
+            injected_by="agent.output_cap",
+        )
+
     @classmethod
     def _step_budget_note(cls, step: int, max_steps: int) -> Optional[ChatMessage]:
         """A note on the steps left, for the last steps of a run; else None.
@@ -1034,14 +1081,32 @@ class Agent(ToolServer):
             max_steps=max_steps,
             current_step=current_step,
             agent_instance=self,  # Pass self for hook access
-            session_template_vars=session_template_vars  # Session-scoped vars (override agent_config)
+            session_template_vars=session_template_vars,  # Session-scoped vars (override agent_config)
+            plugins=self._enabled_plugin_types(),
+            mcp_servers=self._enabled_mcp_servers(),
         )
         return renderer.render(context)
+
+    def _enabled_plugin_types(self) -> list[str]:
+        """Plugin types installed and switched on (see ToolServerRegistry)."""
+        plugin_types = getattr(getattr(self, "registry", None), "plugin_types", None)
+        return plugin_types() if callable(plugin_types) else []
+
+    def _enabled_mcp_servers(self) -> list[str]:
+        """External MCP servers switched on, sorted -- not which are connected:
+        a connection comes and goes, and the prompt must not change with it."""
+        manager = getattr(self, "_tool_integration_manager", None)
+        integration = getattr(manager, "tool_integration", None)
+        if integration is None:
+            return []
+        return sorted(integration.configured_external_servers)
 
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            usable_tools, _, _ = await self.list_usable_tools()  # Ignore patterns for prompt display
+            # Expanded as the run expands it, or `tools` in the prompt reads
+            # server names here and tool names in every step that is sent.
+            _schemas, usable_tools = await self._schemas_for(*await self.list_usable_tools())
         except Exception as e:
             logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
             usable_tools = []
@@ -1255,9 +1320,7 @@ class Agent(ToolServer):
           and asking for it twice means awaiting list_tools() on every
           registered server a second time.
         """
-        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
-        tools_schema = await self._schemas_for(
-            usable_tools, allowed_patterns, blocked_patterns)
+        tools_schema, usable_tools = await self._schemas_for(*await self.list_usable_tools())
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
         system_msg, _ = self._render_prompts(
             usable_tools, max_steps, current_step=0, session_id=session_id)
@@ -1265,19 +1328,22 @@ class Agent(ToolServer):
 
     async def _schemas_for(self, usable_tools: list[str],
                            allowed_patterns: Optional[list[str]],
-                           blocked_patterns: Optional[list[str]]) -> list[Dict[str, Any]]:
-        """The LLM schemas for an ALREADY discovered set of tools."""
+                           blocked_patterns: Optional[list[str]]
+                           ) -> tuple[list[Dict[str, Any]], list[str]]:
+        """The LLM schemas for an ALREADY discovered set of tools, and the
+        tool names after expansion and filtering -- what a run renders as
+        ``tools``."""
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
             tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry,
         )
-        tools_schema, _mapping, _usable, _display = await schema_builder.build_schemas(
+        tools_schema, _mapping, usable, _display = await schema_builder.build_schemas(
             usable_tools,
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns,
         )
-        return list(tools_schema)
+        return list(tools_schema), usable
 
     async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
         """The tool schemas this agent hands the model, exactly as they go out.
@@ -1295,8 +1361,8 @@ class Agent(ToolServer):
         what a token count needs is the rest, and the parameters are usually
         the larger half of both.
         """
-        usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
-        return await self._schemas_for(usable_tools, allowed_patterns, blocked_patterns)
+        schemas, _usable = await self._schemas_for(*await self.list_usable_tools())
+        return schemas
 
     async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Return detailed info about tools this agent CAN USE (name + description).
@@ -1412,7 +1478,7 @@ class Agent(ToolServer):
 
         # Handle use_advanced_model if no llm_override provided
         if use_advanced_model and not llm_override:
-            from agent_system.llm.factory import create_llm_from_profile
+            from agent_system.llm.factory import override_for_profile
 
             # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
             # Keine Advanced-Kette konfiguriert oder advanced == default
@@ -1423,28 +1489,21 @@ class Agent(ToolServer):
                 advanced_profile = None
             if advanced_profile:
                 try:
-                    # Get SSL verify setting
-                    ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
-
-                    # Create LLM client override using factory
-                    llm_override = create_llm_from_profile(
-                        config=self.system_config,
-                        llm_profile=advanced_profile,
-                        ssl_verify=ssl_verify,
-                        llm_params=self.agent_config.llm_params if self.agent_config else None,
-                    )
-
-                    # Create profile info for logging
-                    profile = self.system_config.llm_system.profiles[advanced_profile]
-                    model_ref = profile.model_ref
-                    model_config = self.system_config.llm_system.models[model_ref]
-                    llm_profile_info_override = f"{advanced_profile}:{model_config.provider}/{model_config.model}"
-
+                    llm_override, llm_profile_info_override = override_for_profile(
+                        self.system_config, self.agent_config, advanced_profile)
                     logger.info(f"use_advanced_model=True mapped to profile: {llm_profile_info_override}")
 
                 except Exception as e:
                     logger.error(f"Failed to create LLM override for use_advanced_model: {e}")
                     # Continue with default LLM
+
+        # The caller's LLM (agent_config.inherit_parent_llm): after the choices
+        # made for this very run, which win over it -- an override passed in, or
+        # use_advanced_model where the agent has an advanced chain to go to.
+        if llm_override is None:
+            from_caller = self._llm_from_caller()
+            if from_caller is not None:
+                llm_override, llm_profile_info_override = from_caller
 
         # Create and start status forwarder BEFORE entering status_scope context managers
         # This ensures the forwarder is subscribed to status_bus before any START events are generated
@@ -1544,10 +1603,10 @@ class Agent(ToolServer):
         6. Validate LLM availability
         7. Initialize tool integration
         8. Discover usable tools
-        9. Render system prompts
-        10. Load session history
-        11. Execute session start hooks
-        12. Build tool schemas
+        9. Build tool schemas (the expanded tool list the prompt renders)
+        10. Render system prompts
+        11. Load session history
+        12. Execute session start hooks
 
         Args:
             task: User task description
@@ -1597,6 +1656,24 @@ class Agent(ToolServer):
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
         usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+
+        # Build tool schemas using ToolSchemaBuilder
+        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
+        # Before the first render: `tools` in the prompt is the EXPANDED list
+        # from here on, as in every step's re-render. Rendered from the
+        # server-level list, the first prompt branched differently from the
+        # ones sent (the session-start hooks saw that one).
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            tool_integration_manager=self._tool_integration_manager,
+            server_getter_func=self._get_server_from_any_registry
+        )
+
+        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns
+        )
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -1656,20 +1733,6 @@ class Agent(ToolServer):
 
         # Track live messages for this session (request-scoped)
         self._set_live_messages(session_id, messages.copy())
-
-        # Build tool schemas using ToolSchemaBuilder
-        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
-        schema_builder = ToolSchemaBuilder(
-            agent_name=self.name,
-            tool_integration_manager=self._tool_integration_manager,
-            server_getter_func=self._get_server_from_any_registry
-        )
-
-        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
-            usable_tools,
-            allowed_patterns=allowed_patterns,
-            blocked_patterns=blocked_patterns
-        )
 
         # Track current tool schemas per-session for token estimation by hooks
         self._set_live_tools_schema(session_id, tools_schema)
@@ -1737,6 +1800,20 @@ class Agent(ToolServer):
         except Exception as e:
             logger.warning("Session presence: releasing %s failed: %s", session_id, e)
 
+    async def _take_in_late_messages(self, request_id: str, session_id: Optional[str],
+                                     messages: List[ChatMessage]) -> List[ChatMessage]:
+        """Messages appended too late for the run to act on, into its conversation.
+
+        The live copy is refreshed with them: it was taken at the run's final, and the
+        session load serves it until the run's job has ended -- without them the chat
+        showed the turn with the message missing that its note said was kept.
+        """
+        held = len(messages)
+        messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+        if len(messages) > held:
+            self._set_live_messages(session_id, messages.copy())
+        return messages
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -1783,7 +1860,7 @@ class Agent(ToolServer):
         # entry. They are answered by the next run on this session.
         if messages is not None:
             try:
-                messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+                messages = await self._take_in_late_messages(request_id, session_id, messages)
             except Exception as e:
                 logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
@@ -2208,6 +2285,13 @@ class Agent(ToolServer):
         prev_step_all_errored = False     # was the IMMEDIATELY preceding step an all-error tool step?
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+        # Text answers cut off at the output cap in a row, each sent back with a
+        # note (see _output_cap_note) -- only where the agent opted in
+        # (agent_config.output_cap_notes): for an agent whose product is its
+        # text the cut-off text is still the reply, and a model that loops
+        # until a 120k cap must not be sent back for two more rounds of it.
+        consecutive_cut_off = 0
+        max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
 
         # Create a request-scoped loop detector.
         # Each request gets its own detector so concurrent requests on the
@@ -2372,6 +2456,20 @@ class Agent(ToolServer):
                     # The override the swap replaced failed too: not a fallback.
                     failed_override = llm_profile_info_override.split(":", 1)[0]
                     profiles = [p for p in profiles if p != failed_override]
+                if llm_override is not None and self.agent_config:
+                    # On an override the agent's own primary is not the run's
+                    # base: fallback_chain() leaves it out as the active model,
+                    # yet it is the first fallback -- with a one-entry chain the
+                    # only one.
+                    own_primary = (self.agent_config.advanced_llm_profile
+                                   if use_advanced_model and self.agent_config.advanced_llm_profile
+                                   else self.agent_config.default_llm_profile)
+                    override_profile = (llm_profile_info_override.split(":", 1)[0]
+                                        if llm_profile_info_override
+                                        else getattr(llm_override, "profile_name", None))
+                    if own_primary and own_primary not in profiles and own_primary not in (
+                            active_profile_override, override_profile):
+                        profiles.insert(0, own_primary)
                 if use_advanced_model and profiles:
                     logger.debug(
                         f"[{self.name}] use_advanced_model=True — fallback "
@@ -3084,6 +3182,10 @@ class Agent(ToolServer):
             # onto the fallback profile and discards output that is
             # usually still usable — the same trade-off the incomplete_stream
             # branch settles the same way.
+            # "In a row" means answers: one that ended on its own -- a tool call
+            # of a model now writing in parts included -- starts the count again.
+            if finish_reason != "length":
+                consecutive_cut_off = 0
             if finish_reason == "length" and (content or tool_calls):
                 logger.warning(
                     "[%s] Answer truncated at the output cap (finish_reason=length, "
@@ -3301,6 +3403,9 @@ class Agent(ToolServer):
                     user_id=user_id,
                     status_forwarder=context.status_forwarder,
                     assistant_message=assistant_msg,
+                    # What this run was switched to, for the sub-agents its
+                    # tools start (agent_config.inherit_parent_llm).
+                    llm_profile=self._profile_to_hand_down(llm_override),
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -3495,6 +3600,26 @@ class Agent(ToolServer):
             if len(messages) > pre_drain_count and not final_call:
                 context.messages = messages
                 self._set_live_messages(session_id, messages.copy())
+                consecutive_no_tool_calls = 0
+                continue
+
+            # Cut off at the output cap with no tool call left: not an answer.
+            # The call the model was writing is lost, and the text before it --
+            # "now the engine, the big file:" -- is an announcement. Measured in a
+            # coder session: three calls in a row stopped at 16384 tokens, each
+            # ended the run as if that were its reply, and the user had to push
+            # three times. The run goes on with a note saying what happened --
+            # where the agent opted in (output_cap_notes), not on the final
+            # call, and not past that many in a row.
+            if (finish_reason == "length" and content and content.strip() and not final_call
+                    and consecutive_cut_off < max_cut_off_notes):
+                consecutive_cut_off += 1
+                usage = (llm_out or {}).get("usage") or {}
+                messages.append(self._output_cap_note(usage.get("completion_tokens")))
+                context.messages = messages
+                await status_worker.progress(
+                    "answer cut off at the output limit -- asked to continue in parts",
+                    meta={"step": step + 1, "cut_off": consecutive_cut_off})
                 consecutive_no_tool_calls = 0
                 continue
 

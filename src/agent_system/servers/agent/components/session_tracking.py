@@ -71,6 +71,11 @@ class SessionTracker:
         # Session metadata: session_id -> Dict[str, Any] (user_id, etc.)
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
 
+        # Titles the caller gave a session its run starts: session_id -> title,
+        # until a save has written it. Not in the metadata -- the API sets that
+        # dict anew on every event of a new session's run.
+        self._titles_to_write: Dict[str, str] = {}
+
         # Session template vars: session_id -> Dict[str, Any] (workflow_phase, book_id, etc.)
         # CRITICAL: These are SESSION-SCOPED, not shared across sessions using same agent
         self._session_template_vars: Dict[str, Dict[str, Any]] = {}
@@ -453,6 +458,7 @@ class SessionTracker:
         """
         self._sessions.pop(session_id, None)
         self._session_metadata.pop(session_id, None)
+        self._titles_to_write.pop(session_id, None)
         self._session_template_vars.pop(session_id, None)
         self._compacted_messages.pop(session_id, None)
         self._started.discard(session_id)
@@ -473,6 +479,19 @@ class SessionTracker:
     def emptied(self, session_id: str) -> bool:
         """Whether the session holds no messages although it held some in this process (/undo)."""
         return session_id in self._held and not self._sessions.get(session_id)
+
+    def carry_title(self, session_id: str, title: str) -> None:
+        """A title for the next save of *session_id* to write -- then dropped
+        (title_written), so a rename after it is not put back."""
+        self._titles_to_write[session_id] = title
+
+    def title_to_write(self, session_id: str) -> Optional[str]:
+        return self._titles_to_write.get(session_id)
+
+    def title_written(self, session_id: str, title: str) -> None:
+        """*title* is on disk: dropped -- unless another was carried meanwhile."""
+        if self._titles_to_write.get(session_id) == title:
+            del self._titles_to_write[session_id]
 
     def set_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         """
@@ -574,6 +593,7 @@ class SessionTracker:
         
         # Clear metadata to prevent memory leak
         self._session_metadata.pop(session_id, None)
+        self._titles_to_write.pop(session_id, None)
         
         # Clear session template vars to prevent memory leak
         self._session_template_vars.pop(session_id, None)
@@ -603,6 +623,7 @@ class SessionTracker:
         self._request_to_session.clear()
         self._compacted_messages.clear()
         self._session_metadata.clear()
+        self._titles_to_write.clear()
         self._session_template_vars.clear()
         self._started.clear()
         self._held.clear()

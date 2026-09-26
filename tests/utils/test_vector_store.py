@@ -318,6 +318,37 @@ class TestVectorStoreMetadata:
             gc.collect()
             tmpdir_obj.cleanup()
 
+    def test_sqlite_vec_re_add_replaces_and_a_failed_add_leaves_nothing(self):
+        """vec0 refuses INSERT OR REPLACE on an id it holds: a re-add raised
+        where ChromaDB replaces. And a batch failing halfway left its first
+        items pending, for the next commit on the connection to save."""
+        import agent_system.utils.vector_store as module
+        from agent_system.utils.vector_store import VectorStoreError
+
+        original = module.get_vector_backend
+        module.get_vector_backend = lambda: "sqlite-vec"
+        tmpdir_obj = create_temp_dir()
+        try:
+            store = VectorStore(persist_path=tmpdir_obj.name)
+            store.add(collection="re_add", ids=["doc1"], documents=["Hello world"])
+            store.add(collection="re_add", ids=["doc1"], documents=["Hello again"])
+            assert store.count("re_add") == 1
+
+            with pytest.raises(VectorStoreError):
+                # doc2 is written, doc3 has no document and raises.
+                store.add(collection="re_add", ids=["doc2", "doc3"], documents=["Zwei"])
+            store.add(collection="re_add", ids=["doc4"], documents=["Vier"])
+
+            assert {e["id"] for e in store.list_entries("re_add")} == {"doc1", "doc4"}
+        finally:
+            module.get_vector_backend = original
+            try:
+                store.close()
+            except Exception:
+                pass
+            gc.collect()
+            tmpdir_obj.cleanup()
+
     def test_list_entries_without_metadata_yields_an_empty_dict(self, store):
         """An entry stored without metadata must not break the caller's lookup."""
         store.add(

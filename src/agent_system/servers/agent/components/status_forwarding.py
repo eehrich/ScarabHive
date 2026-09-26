@@ -74,12 +74,15 @@ class DirectStatusHandler(StatusHandler):
     
     async def process(self, event: StatusEvent) -> None:
         """Directly append matching events to the list."""
-        # Filter: only events for this request (exact match or prefix for sub-requests)
+        # Filter: only events for this request (exact match or prefix for sub-requests).
+        # One that names no request is nobody's and is dropped: let through, it reached
+        # every run's stream in the process, whoever that run belonged to.
         event_request_id = event.request_id
-        if self.request_id and event_request_id:
-            if not (event_request_id == self.request_id or 
-                    event_request_id.startswith(f"{self.request_id}_")):
-                return  # Not our event
+        if not event_request_id:
+            return
+        if self.request_id and not (event_request_id == self.request_id or
+                                    event_request_id.startswith(f"{self.request_id}_")):
+            return  # Not our event
         
         # Convert to SSE format and append directly
         status_sse_event = {
@@ -183,9 +186,8 @@ class StatusEventForwarder:
             return
         copied = dict(event)
         if isinstance(copied.get("assistant"), dict):
-            # The API renders the answer in it to HTML, in place, when this is
-            # delivered -- which can be long after the run yielded it, and the run
-            # goes on using that dict (thinking_complete's is the one it keeps).
+            # Delivered to every reader, long after the run yielded it -- and the
+            # run goes on using that dict (thinking_complete's is the one it keeps).
             copied["assistant"] = dict(copied["assistant"])
         envelope = {
             "type": "sub_run",

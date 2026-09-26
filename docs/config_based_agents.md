@@ -111,6 +111,7 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 |-------|------|----------|---------|-------------|
 | `llm_profile` | list[string] | Yes | - | Profile CHAIN from `config/llm.yaml`: `[primary, fallback1, ...]` |
 | `llm_profile_advanced` | list[string] | No | [] | Same chain shape for the advanced model |
+| `inherit_parent_llm` | boolean | No | false | Als Sub-Agent auf dem LLM laufen, auf das der aufrufende Lauf umgestellt wurde (siehe unten) |
 | `fallback_recovery_seconds` | integer | No | 3600 | Längste Sperre, die der Agent auf ein LLM setzt (siehe unten) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
@@ -120,6 +121,68 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 | `context_management` | object | No | defaults | Context management config |
 
 \* Either `system_prompt` or `system_template` must be provided, but not both.
+
+### Das LLM des Aufrufers erben (`inherit_parent_llm`)
+
+Ein Sub-Agent läuft normalerweise auf seiner eigenen Kette — dafür hat er
+eine. Manche erledigen aber die Arbeit ihres Aufrufers und sollen auf dessen
+Modell laufen: ein Skills- oder Coding-Helfer, der sonst als einziger Teil
+des Jobs auf dem schwächeren Modell bliebe. Die schalten das ein:
+
+```yaml
+skills_agent:
+  agent_config:
+    inherit_parent_llm: true
+```
+
+Was dann gilt:
+
+1. **Nur ein Umschalten wird weitergegeben.** Wurde der aufrufende Lauf auf
+   ein anderes Profil als das eigene gestellt — `llm_profile` der API, der
+   Modell-Wähler im Web-Chat (er schickt immer ein Profil), `--llm` der CLI,
+   `/model` im Chat, `use_advanced_model` —, läuft der Sub-Agent auf diesem
+   Profil. Läuft der Aufrufer auf seiner eigenen Kette oder nur mit anderen
+   Parametern auf seinem eigenen Primär-Profil (`--llm-params` allein),
+   läuft der Sub-Agent auf seiner.
+2. **Er bleibt er selbst.** Seine `llm_params` für dieses Profil gelten
+   (Denkstufe, Kontextfenster …); seine Kette bleibt der Fallback, ihr
+   Primär-Profil zuerst.
+3. **Eine Wahl für genau diesen Lauf gewinnt.** Ein Override, das der
+   Sub-Agent-Start selbst mitgibt, oder `use_advanced_model` bei einem Agenten
+   mit Advanced-Kette. Ohne Advanced-Kette ist `use_advanced_model` keine Wahl,
+   dann erbt er.
+4. **Weiter nach unten nur, wenn jede Ebene will.** Ein Enkel erbt vom
+   Sub-Agenten, nicht vom Großeltern-Lauf. Läuft der Sub-Agent auf seiner
+   eigenen Kette, hat der Enkel nichts zu erben.
+5. **Ein Profil, das die Config nicht kennt**, lässt den Sub-Agenten auf
+   seiner Kette (mit Warnung im Log) statt den Aufruf scheitern zu lassen.
+
+**Unabhängig davon, wer den Sub-Agenten startet.** Das Profil steckt nicht in
+einer Schnittstelle des `sub_agent_manager`, sondern im Lauf selbst
+(`agent_system/llm/caller_llm.py`): der Agent-Loop führt jeden Tool-Aufruf in
+einem eigenen Kontext aus, der das Profil des Laufs trägt. Jedes Plugin, das
+in einem Tool-Aufruf einen Agenten startet — abgewartet oder als eigener
+Task —, gibt es damit weiter, ohne davon zu wissen.
+
+**Grenzen:**
+
+- Ein Lauf, der später in einem **anderen Prozess** startet (ein Weckruf, ein
+  Job-Worker), bekommt nichts mit und läuft auf seiner Kette.
+- Der Sub-Agent baut das Profil aus der Config, mit der er gestartet wurde —
+  wie seine Fallback-Kette und sein Advanced-Modell. Ein Profil, das erst ein
+  Config-Reload hinzugefügt hat, kennt er bis zum Neustart nicht; dann gilt
+  Punkt 5.
+- Die Advanced-Sperren des `sub_agent_manager` (`allow_advanced_model`,
+  `advanced_create_only_agents`) filtern nur das Argument
+  `use_advanced_model`. Ein erbender Sub-Agent folgt einem Aufrufer, der auf
+  ein teures Profil umgestellt wurde, trotzdem dorthin.
+- Tools, die ein Hook oder ein Befehl außerhalb der Tool-Aufrufe des Loops
+  startet (`tool_preload`), sehen, womit der Lauf selbst gestartet wurde (das
+  Profil seines Aufrufers), nicht das, was er seinen Tool-Aufrufen mitgibt.
+
+**Vererbung der Config beachten:** Ein Agent mit `type: <anderer Agent>` erbt
+den Schalter mit. `skills_agent_multimodal` setzt ihn deshalb ausdrücklich auf
+`false` — er braucht ein Modell, das Medien liest, egal was der Aufrufer fährt.
 
 ### LLM Profile Fallbacks
 
@@ -133,6 +196,10 @@ my_agent:
     llm_profile: ["gemini", "openai", "anthropic"]   # Kette: primär, dann Fallbacks
     fallback_recovery_seconds: 1800                  # längste Sperre (Default: 3600)
 ```
+
+Läuft der Lauf auf einem anderen Profil als dem eigenen (API-`llm_profile`,
+`/model`, geerbt vom Aufrufer), ist das Primär-Profil der eigenen Kette sein
+erster Fallback, danach der Rest der Kette.
 
 > `llm_profile_fallbacks` was **removed**. The positional `[standard, advanced]`
 > reading is gone; a chain lives in `llm_profile` itself, and the advanced model
@@ -380,6 +447,38 @@ The following variables are automatically available in all templates:
 | `current_year` | Year (e.g., 2025) |
 
 Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
+
+#### Was installiert ist: `tools`, `has_tool()`, `plugins`, `mcp_servers`
+
+Ein Prompt kann danach verzweigen, was vorhanden ist:
+
+| Variable | Inhalt |
+|----------|--------|
+| `tools` | Was **dieser Agent** aufrufen darf, nach Allow- und Block-Mustern: Server-Namen, Tool-Namen und `server.tool` für Tools externer MCP-Server |
+| `has_tool(muster)` | `tools` per fnmatch-Muster gefragt, Groß-/Kleinschreibung zählt. Tool-Namen tragen den Instanznamen (`coder_sam_manage_sub_agent`), darum Muster: `has_tool('*_manage_sub_agent')`, `has_tool('github.*')` |
+| `plugins` | Plugin-Typen, die installiert **und** eingeschaltet sind (mindestens eine Instanz mit `enabled: true`) — unabhängig davon, ob dieser Agent sie benutzen darf |
+| `mcp_servers` | Externe MCP-Server mit `enabled: true` in `config/mcp_servers.yaml` (nur, wenn das `mcp_client`-Plugin läuft) |
+
+```jinja
+{% if has_tool('*_manage_sub_agent') %}
+Große Teilaufgaben gibst du an Sub-Agents ab.
+{% else %}
+Du arbeitest allein; teile große Aufgaben in Schritte.
+{% endif %}
+{% if 'writer_pipeline_v4' in plugins %}Das Buch-System ist installiert.{% endif %}
+```
+
+Die **Plugin-ID ist der Plugin-Typ** — der Ordnername, derselbe, der in
+`plugins.yaml` unter `type:` steht. Kommt ein Typ in zwei Plugin-Verzeichnissen
+vor, gewinnt der erste, und der Start meldet es.
+
+`plugins` und `mcp_servers` kommen aus der Konfiguration, nie aus einem
+Live-Zustand: ein MCP-Server, der gerade nicht verbunden ist, steht trotzdem in
+`mcp_servers`. Sonst änderte sich der System-Prompt zwischen zwei Schritten und
+mit ihm der Cache-Prefix. `tools` wird einmal pro Lauf ermittelt und hält
+innerhalb des Laufs still; die Tools eines MCP-Servers, der beim Start des Laufs
+nicht verbunden war, fehlen darin — `has_tool('github.*')` fragt also, ob der
+Agent sie **jetzt** hat, `'github' in mcp_servers`, ob sie vorgesehen sind.
 
 **Keep the system prompt stable.** It is re-rendered before every step and is the
 start of the prompt the provider caches; a value that differs from one call to

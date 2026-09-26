@@ -81,6 +81,8 @@ export class SessionManager {
     this.active = new Map();
     /** counted up by every activity poll; an older poll's answer is dropped */
     this.activityPolls = 0;
+    /** new chats' sessions the chat let go of before the list had them (awaitListing) */
+    this.unlisted = new Set();
     render(this.pane, html`
       <div class="sessions-head">
         <h2 class="pk-grow">Sessions</h2>
@@ -148,6 +150,7 @@ export class SessionManager {
             : html`<span class="session-expand-spacer"></span>`}
           <button type="button" class="session-open pk-truncate" data-act="open" title="${session.title || 'Untitled'}">${session.title || 'Untitled'}</button>
           <span class="session-running" title="An agent is working in this session" aria-hidden="true"></span>
+          <span class="session-agent pk-truncate" aria-hidden="true"></span>
           <span class="session-running-said pk-sr-only"></span>
           <span class="session-meta">${relative(session.updated_at)}</span>
           <span class="session-actions">
@@ -222,10 +225,19 @@ export class SessionManager {
    */
   markActive() {
     this.list.querySelectorAll('.session-item').forEach((item) => {
-      const running = this.active.has(item.dataset.id);
+      const entry = this.active.get(item.dataset.id);
+      const running = Boolean(entry);
       item.classList.toggle('is-running', running);
-      const said = item.querySelector(':scope > .session-row > .session-running-said');
-      if (said) said.textContent = running ? 'An agent is working in this session' : '';
+      // WHICH agent: the server names it, and a run started from outside -- a book on
+      // the server, a woken session -- is exactly the one nobody knows the agent of.
+      const agent = (entry && entry.agent_name) || '';
+      const row = item.querySelector(':scope > .session-row');
+      const label = row && row.querySelector(':scope > .session-agent');
+      if (label) label.textContent = agent;
+      const said = row && row.querySelector(':scope > .session-running-said');
+      if (said) said.textContent = !running ? '' : agent ? `${agent} is working in this session` : 'An agent is working in this session';
+      const dot = row && row.querySelector(':scope > .session-running');
+      if (dot) dot.title = agent ? `${agent} is working in this session` : 'An agent is working in this session';
     });
   }
 
@@ -267,7 +279,9 @@ export class SessionManager {
    */
   async refreshActivity() {
     if (document.visibilityState !== 'visible') return;
-    const ids = this.visibleIds();
+    const unlisted = [...this.unlisted];
+    // those first: past the cap, the server answers for the first ids only
+    const ids = [...unlisted, ...this.visibleIds()].slice(0, ACTIVITY_POLL_MAX_IDS);
     if (!ids.length) return;
     const poll = ++this.activityPolls;
     const data = await api(`/api/sessions/active?ids=${encodeURIComponent(ids.join(','))}`,
@@ -278,6 +292,25 @@ export class SessionManager {
     if (poll !== this.activityPolls) return;
     this.active = new Map(Object.entries(data.active || {}));
     this.markActive();
+    if (unlisted.length) await this.lookForUnlisted(unlisted);
+  }
+
+  /**
+   * The session of a run the chat let go of, if the pane does not know it -- a new chat's,
+   * which the list (read from disk) has only once its run has saved it. Nothing else would
+   * read the list again, so the activity tick does, until the session is listed -- or its
+   * run is over and one more read did not list it (a run that ended before any save).
+   */
+  awaitListing(id) {
+    if (id && !this.byId.has(id)) this.unlisted.add(id);
+  }
+
+  async lookForUnlisted(ids) {
+    const over = ids.filter((id) => !this.active.has(id));
+    await this.loadSessions();
+    for (const id of ids) {
+      if (over.includes(id) || this.byId.has(id)) this.unlisted.delete(id);
+    }
   }
 
   /** Start the activity poll. The shell owns the cadence, as it does for health. */
@@ -347,7 +380,7 @@ export class SessionManager {
   }
 
   /**
-   * Rename without asking — the chat's `/rename <title>` already has one.
+   * Rename without asking — the chat's `/title <text>` already has one.
    *
    * The write and the two refreshes live here rather than at each caller:
    * the pencil and the command have to leave the list in the same state,
@@ -501,15 +534,22 @@ export class SessionManager {
     this.onShown();
   }
 
-  /** Open a session in the chat. Resolves true when it is shown. Clicked twice quickly, the last click wins, not the last answer. */
-  async loadSession(id) {
+  /**
+   * Open a session in the chat. Resolves true when it is shown, false when it could not be, and null when a later
+   * click took over: clicked twice quickly, the last click wins, not the last answer. `quiet`: a failed load is the
+   * caller's to handle -- no toast, and no new chat in its place.
+   */
+  async loadSession(id, { quiet = false } = {}) {
     if (this.going.has(id)) {
       toast('The session is being deleted', { kind: 'warn' });
       return false;
     }
     // the open session while its run works: it is already shown, and there is no
-    // stream to move -- the chat keeps following the one it has
+    // stream to move -- the chat keeps following the one it has. Still a click: one on
+    // another session still loading must not take the chat from it.
     if (id === this.currentSessionId && window.chatModule.activeRun()) {
+      this.loading++;
+      this.requested = id;
       this.onShown();
       return true;
     }
@@ -517,13 +557,14 @@ export class SessionManager {
     this.requested = id;
     let session;
     try {
-      session = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      session = await api(`/api/sessions/${encodeURIComponent(id)}`, { quiet });
     } catch {
+      if (attempt !== this.loading) return null;
       // api() already told the user; with no session open the chat offers a start again -- as it did, no choice
-      if (attempt === this.loading && !this.currentSessionId) this.startNew({ chosen: false });
+      if (!quiet && !this.currentSessionId) this.startNew({ chosen: false });
       return false;
     }
-    if (attempt !== this.loading) return false;
+    if (attempt !== this.loading) return null;
     this.show(session);
     this.onShown();
     return true;

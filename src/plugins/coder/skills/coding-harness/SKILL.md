@@ -2,7 +2,7 @@
 name: coding-harness
 description: The working loop for a coding change — understand the real flow before editing, plan as a task list, fix the root cause rather than the reported symptom, verify what you claim, and have the finished change attacked before calling it done. Use for any request to write, fix, refactor or review code.
 metadata:
-  version: '1.1.0'
+  version: '1.2.0'
 ---
 
 # The loop
@@ -61,6 +61,11 @@ candidates for the failure.
 **Verify = you ran something and read the output.** Not that the edit applied,
 not that it looks right.
 
+**Edit with the file tool, not the shell.** A heredoc, `echo >` or `sed -i`
+writing code breaks quotes and indentation, and bypasses the sandbox the file
+tool enforces. Write a large file in parts: one enormous call can run past the
+output limit and be lost whole.
+
 Before a sweep you cannot easily undo (mass rename, scripted edit, files you
 have not read): copy the originals outside the project and say where. Never
 undo your own edit with `git checkout`/`stash`/`reset` — they reset to the
@@ -75,6 +80,11 @@ self-check. Trivial one-liners need none.
 **Then break the guarded line, watch it go red, restore from your copy.** A
 green run has two readings — the code is correct, or the check never looked —
 and only the mutation tells them apart.
+
+Where other processes run the code you work on — a server, workers, other
+agents importing the same tree — a mutant on disk is live for all of them for
+as long as it exists. Mutate a copy of the package instead and put it first on
+the import path of your test run.
 
 ## 7. Have it attacked
 

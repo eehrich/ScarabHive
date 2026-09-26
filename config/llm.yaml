@@ -618,6 +618,15 @@ llm_system:
       description: "Local model for privacy and offline usage"
       max_steps: 500
 
+    # Was vorhandenen Text verdichtet, statt etwas zu entscheiden: ein langes
+    # Tool-Ergebnis auf dem Weg zu einem teuren Agenten, ein alter Teil eines
+    # Gespraechs. Billig und schnell. Die Plugins nennen dieses PROFIL, nicht
+    # ein Modell — welches Modell es ist, steht nur hier.
+    summarizer:
+      model_ref: openrouter-gemini-flash-lite
+      description: "Cheap fast model that condenses existing text (context_engineer)"
+      max_steps: 500
+
   default_profile: or-deepseek-flash
 
   # =============================================================================
@@ -669,3 +678,24 @@ llm_system:
       model_ref: openrouter-qwen-tts
       description: "Qwen Audio 3.0 TTS Flash via OpenRouter speech API"
 
+  # =============================================================================
+  # DECISION MODELS (local) - a questionnaire, not a conversation
+  # =============================================================================
+  # Jev via OpenRouter and default_decision_profile live in llm_openrouter.yaml;
+  # both decision_models sections are merged. Client: src/plugins/llm_decisions.
+  decision_models:
+    laya:
+      provider: systemone_decisions
+      model: laya-multilingual        # the checkpoint laya-serve runs: laya (= english),
+                                      # laya-multilingual, laya-typed-decisions. An
+                                      # unknown name is NOT refused there, it is
+                                      # routed by script -- so name one.
+      url: http://127.0.0.1:8788/v1/systemone   # a local laya-serve; its own default
+                                                # port 8000 is this API's
+      # api_key: ${LAYA_API_KEY}      # only if laya-serve runs with LAYA_API_KEY;
+      #                               # without one a local url gets no key at all
+
+  decision_profiles:
+    laya:
+      model_ref: laya
+      description: "Laya, open weights on a local laya-serve - measured blind to German language errors (README of llm_decisions)"

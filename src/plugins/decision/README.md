@@ -124,6 +124,12 @@ Outputs continuous score points along ordered scales (e.g. 1-5 or custom levels)
 }
 ```
 
+`total_cost` and the token totals count every call that was answered — one
+whose answer the client refused (a question left unanswered) too, because it
+was billed. `total_cost` is `null` when any of them came without a cost — a
+local Laya or TypeSafe direct report none, and a sum of the rest would read as
+the whole.
+
 #### Error strings verbatim:
 - `"Items must be a non-empty list of context items."`
 - `"Batch size (<len>) exceeds maximum allowed (<max>)."`

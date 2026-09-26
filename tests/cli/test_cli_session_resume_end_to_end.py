@@ -36,11 +36,14 @@ AGENT_DEFAULT_PROFILE = "profile_agent_default"
 class _DummyAgent:
     """Enough Agent for main() to reach the save."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, name=STORED_AGENT, *args, **kwargs):
+        self.name = name
         self.agent_config = AgentConfig(system_prompt="x",
                                         llm_profile=AGENT_DEFAULT_PROFILE)
         self.registry = None
         self.llm = SimpleNamespace(model="m")
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+        self._session_tracker = SessionTracker()
 
     async def run(self, task):
         return {"task": task, "summary": "done", "calls": []}
@@ -86,7 +89,7 @@ def cli_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
     monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
-    monkeypatch.setattr("agent_system.agent_cli.Agent", _DummyAgent)
+    monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _DummyAgent)
 
     saved = {}
 
@@ -554,7 +557,7 @@ class TestListSessions:
         _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "weiter"])
 
         out = capsys.readouterr().out
-        assert "Ignoring 'weiter': --list-sessions takes a count." in out
+        assert "Ignoring 'weiter': --list-sessions takes a count or 'all'." in out
         assert "Sessions for 'cli_user' (1 of 1):" in out
         assert not cli_env.saved, "the task ran anyway"
 
@@ -566,4 +569,155 @@ class TestListSessions:
         out = capsys.readouterr().out
         marked = [l for l in out.splitlines() if l.startswith(" *")]
         assert len(marked) == 1 and " s1 " in marked[0], out
-        assert "Continue one with: --session <id>" in out
+        assert "Continue one with: --session <id or title>" in out
+
+
+class TestListingLeavesPipelineRunsOut:
+    """A person's chats, not the runs pipelines started under the same user.
+
+    Measured for cli_user on 25.09.2026: 4562 of 5054 top-level sessions ran
+    on agents the chat does not offer, and 18 of the newest 20 lines were
+    benchmark scorer runs. Which agents the chat offers is the runtime's
+    answer (visibility ui/both) -- here a stand-in that offers STORED_AGENT.
+    """
+
+    @pytest.fixture
+    def offered(self, monkeypatch, cli_env):
+        from agent_system.services.initialization_service import InitializationService
+
+        class _Runtime:
+            def describe(self, name):
+                return SimpleNamespace(visibility="ui") if name == STORED_AGENT else None
+
+        runtime = _Runtime()
+        monkeypatch.setattr(InitializationService, "runtime", property(lambda self: runtime))
+        loop = asyncio.new_event_loop()
+        try:
+            for i in range(3):
+                loop.run_until_complete(cli_env.manager.create_session(
+                    user_id="cli_user", session_id=f"bench{i}",
+                    agent_name="v4_scorer_bench_42", llm_profile=STORED_PROFILE))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+        return runtime
+
+    def test_the_chat_filters_with_the_runtime_this_process_bootstrapped(
+            self, cli_env, offered, monkeypatch):
+        """Handed in -- without it the terminal's /sessions lists every
+        pipeline run and says nothing about it."""
+        import agent_system.cli_utils.chat as chat
+
+        seen = {}
+        monkeypatch.setattr(chat, "run_chat_loop", lambda **kwargs: seen.update(kwargs))
+        monkeypatch.setattr(
+            "agent_system.llm.factory.create_llm_from_profile",
+            lambda config, llm_profile, llm_params=None: object())
+
+        _run(monkeypatch, ["agent-cli", "chat", "hallo"])
+
+        assert seen["runtime"] is offered
+
+    def test_only_the_chats_are_listed_and_the_rest_is_counted(
+            self, cli_env, offered, monkeypatch, capsys):
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions"])
+
+        out = capsys.readouterr().out
+        assert "Sessions for 'cli_user' (1 of 1):" in out, out
+        assert " s1 " in out and "bench" not in out.split("(3 more")[0], out
+        # dropped rows are said, with the way to see them -- or it reads as "that is all"
+        assert "(3 more on agents not meant for chat, most v4_scorer_bench_42 3" in out
+        assert "--list-sessions all" in out
+
+    def test_the_session_being_continued_stays_whatever_its_agent(
+            self, cli_env, offered, monkeypatch, capsys):
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions",
+                           "--session", "bench1"])
+
+        out = capsys.readouterr().out
+        marked = [line for line in out.splitlines() if line.startswith(" *")]
+        assert len(marked) == 1 and " bench1 " in marked[0], out
+        assert "(2 more on agents not meant for chat" in out, out
+
+    def test_all_lists_every_session(self, cli_env, offered, monkeypatch, capsys):
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "--list-sessions", "all"])
+
+        out = capsys.readouterr().out
+        assert "Sessions for 'cli_user' (4 of 4):" in out, out
+        assert "not meant for chat" not in out, out
+
+
+class TestResumeByTitle:
+    """`--session` takes the name a person gave the session, not just its id.
+
+    A session id is machine-made (`2332j2kj22k`) and cannot be renamed -- it
+    is the key the usage tracker, the message debugger, the context stores,
+    the sub-session indexes and the presence locks file their rows under. So
+    the title is the name, resolved in SessionManager.resolve_session_ref.
+    """
+
+    def _titled(self, cli_env, title, session_id):
+        loop = asyncio.new_event_loop()
+        try:
+            session = loop.run_until_complete(cli_env.manager.create_session(
+                user_id="cli_user", session_id=session_id, title=title,
+                agent_name=STORED_AGENT, llm_profile=STORED_PROFILE))
+            loop.run_until_complete(cli_env.manager.save_session(session))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+
+    def _stamped(self, cli_env, title, session_id, updated_at):
+        """A record with the stamp it is given (reinstate_session keeps it)."""
+        session = {"session_id": session_id, "user_id": "cli_user", "title": title,
+                   "created_at": updated_at, "updated_at": updated_at,
+                   "agent_name": STORED_AGENT, "llm_profile": STORED_PROFILE,
+                   "messages": [], "metadata": {}}
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(cli_env.manager.reinstate_session(session))
+        finally:
+            loop.close()
+        cli_env.manager.clear_cache()
+
+    def test_a_title_continues_the_session_it_belongs_to(self, cli_env, monkeypatch):
+        self._titled(cli_env, "FPGA Quartus", "2332j2kj22k")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter",
+                           "--session", "FPGA Quartus"])
+
+        assert cli_env.saved.get("session_id") == "2332j2kj22k", (
+            "the title was taken for an id of its own")
+        # Resolved too late, the run takes the config default agent, holds a
+        # lock under the typed name and writes that agent over the record --
+        # the "survived exactly one resume" bug, by another door.
+        assert cli_env.saved.get("agent_name") == STORED_AGENT, (
+            "the session was continued with another agent")
+        assert cli_env.saved.get("llm_profile") == STORED_PROFILE
+
+    def test_an_id_still_wins_over_a_title_that_looks_like_one(self, cli_env, monkeypatch):
+        self._titled(cli_env, "s1", "9kk9kk9kk9")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "s1"])
+
+        assert cli_env.saved.get("session_id") == "s1"
+
+    def test_a_title_several_sessions_share_says_it_took_the_newest(
+            self, cli_env, monkeypatch, capsys):
+        # Fixed stamps, the newer one written FIRST: save_session stamps "now",
+        # and two saves within one Windows clock tick would make "newest" a
+        # coin toss -- reinstate_session keeps the stamp it is given.
+        self._stamped(cli_env, "FPGA Quartus", "new2new2", "2026-09-24T10:00:00+00:00")
+        self._stamped(cli_env, "FPGA Quartus", "old1old1", "2026-09-01T10:00:00+00:00")
+
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter",
+                           "--session", "FPGA Quartus"])
+
+        assert cli_env.saved.get("session_id") == "new2new2"
+        assert "the newest of 2 with this title" in capsys.readouterr().err
+
+    def test_a_name_nobody_gave_still_starts_a_session_under_it(self, cli_env, monkeypatch):
+        """Unchanged behaviour: `--session fpga` is how a readable id is made."""
+        _run(monkeypatch, ["agent-cli", "--raw", "run", "weiter", "--session", "fpga"])
+
+        assert cli_env.saved.get("session_id") == "fpga"

@@ -24,9 +24,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
+from tests.session_owners import admin
 
 BROWSER = find_browser()
 PAGE_TIMEOUT = 120
@@ -126,6 +128,9 @@ def panel_app(storage: Path, monkeypatch):
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
     registry.register_web_plugin("context_engineer", plugin)
     registry.apply_to_app(app)
+    # An admin looks: this page tests what the panel draws; who may see which session is
+    # test_plugin_context_engineer_access.py.
+    app.dependency_overrides[get_optional_user] = admin
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/context_engineer", StaticFiles(directory=TESTS), name="panel-tests")
     return app
@@ -232,6 +237,9 @@ def test_the_session_is_read_off_the_event_loop(tmp_path, monkeypatch):
 
     from plugins.context_engineer import web_endpoints
 
+    async def allowed(*args):
+        return True
+    monkeypatch.setattr(web_endpoints, "may_see_session", allowed)  # who may: test_plugin_context_engineer_access.py
     (tmp_path / "s-1").mkdir()
     (tmp_path / "s-1" / "core_memory.json").write_text('{"facts": []}', encoding="utf-8")
     read_on = []

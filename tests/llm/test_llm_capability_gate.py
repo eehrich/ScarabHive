@@ -73,18 +73,44 @@ class TestTheGateStaysOutOfWhatItDoesNotKnow:
 
 
 class TestEveryEntryPointAsks:
-    """Three ways in, one gate. The wiring is what was missing, not the check."""
+    """Several ways in, one gate. The wiring is what was missing, not the check.
 
-    @pytest.mark.parametrize("module", [
+    An entry point asks through utils.multimodal_processor.message_with_attachments,
+    which asks the gate itself (tests/other/test_message_with_attachments.py).
+    """
+
+    ENTRY_POINTS = [
         "src/agent_system/app.py",
         "src/agent_system/agent_cli.py",
         "src/agent_system/agent_run.py",
-    ])
+        "src/agent_system/cli_utils/chat.py",
+    ]
+
+    @pytest.mark.parametrize("module", ENTRY_POINTS)
     def test_the_entry_point_calls_the_gate(self, module):
         src = (REPO_ROOT / module).read_text(encoding="utf-8")
-        assert "ensure_model_supports(" in src, (
+        assert "message_with_attachments(" in src, (
             f"{module} attaches media without asking whether the model can "
             f"take it")
+
+    def test_no_module_builds_the_message_past_the_gate(self):
+        """Only message_with_attachments builds a multimodal message, so no
+        entry point can skip the question whether the model takes it -- and a
+        list of known entry points would miss the next one."""
+        import re
+
+        builder = re.compile(r"\bcreate_multimodal_message(?:_extended)?\(")
+        scanned, past = 0, []
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            if path.name == "multimodal_processor.py" or "tests" in path.parts:
+                continue
+            src = path.read_text(encoding="utf-8", errors="replace")
+            scanned += 1
+            if builder.search(src):
+                past.append(str(path.relative_to(REPO_ROOT)))
+        assert scanned > 100, f"fixture: only {scanned} modules scanned"
+        assert not past, ("these build a multimodal message themselves -- use "
+                          f"message_with_attachments, which asks the model first: {past}")
 
 
 class TestTheMultimodalShorthandIsGone:

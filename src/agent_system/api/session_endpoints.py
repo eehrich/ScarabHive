@@ -7,14 +7,21 @@ Provides CRUD endpoints for managing user conversation sessions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from agent_system.auth.models import User
 from agent_system.auth.dependencies import get_current_active_user, get_optional_user
 from agent_system.api.dependencies import get_session_manager, get_agent_optional, get_tool_registry
+from agent_system.cli_utils.session_listing import (
+    in_chat_selector,
+    most_left_out,
+    parse_listing,
+    split_for_chat,
+)
 from agent_system.services.background_job_manager import get_background_job_manager
 
 logger = logging.getLogger(__name__)
@@ -36,21 +43,22 @@ _ACTIVE_IDS_LIMIT = 200
 _DESCENDANT_READS_AT_ONCE = 16
 
 
-async def _events_emitted(request_id: Optional[str]) -> Optional[int]:
-    """How many events the run behind ``request_id`` has sent so far, or None.
+async def _run_progress(request_id: Optional[str]) -> tuple[Optional[int], bool]:
+    """How many events the run behind ``request_id`` has sent so far, and whether it has answered.
 
-    None for a run with no background job -- a ``/run`` carrying files, a
+    (None, False) for a run with no background job -- a ``/run`` carrying files, a
     sub-agent's run. Those stream inline and cannot be reconnected to anyway, so
-    there is nothing for the number to be used for.
+    there is nothing for the numbers to be used for. Both read at one moment: the
+    answer a client skips past is the one this says was sent.
     """
     if not request_id:
-        return None
+        return None, False
     try:
         job = await get_background_job_manager().get_job(request_id)
     except Exception as err:  # noqa: BLE001 -- a missing job manager is not a failed session load
         logger.debug("Could not read the event count for %s: %s", request_id, err)
-        return None
-    return job.events_emitted if job is not None else None
+        return None, False
+    return (job.events_emitted, job.answered) if job is not None else (None, False)
 
 
 async def _build_descendants_context_vars(
@@ -498,6 +506,66 @@ async def list_session_children(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+@session_router.get("/resolve", response_model=Dict[str, Any])
+async def resolve_session(
+    ref: str = "",
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """The id of the session ``ref`` names -- an id, or a session's TITLE.
+
+    Before "/{session_id}", or that route would take "resolve" for an id.
+    The rule itself lives in SessionManager.resolve_session_ref, so the chat
+    in the browser finds a session by the name its person gave it exactly as
+    the terminal does.
+    """
+    user_id = current_user.username if current_user else "anonymous"
+    others: List[str] = []
+    found = await session_manager.resolve_session_ref(user_id, ref, others=others)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"no session called {ref!r}")
+    # A title several sessions share was answered with the newest of them;
+    # the others are named so the caller can say that it chose.
+    return {"session_id": found, "others": others}
+
+
+@session_router.get("/listing", response_model=Dict[str, Any])
+async def list_sessions_for_chat(
+    request: Request,
+    count: str = "",
+    agent: str = "",
+    current: str = "",
+    current_user: Optional[User] = Depends(get_optional_user),
+    session_manager=Depends(get_session_manager),
+):
+    """The chat's ``/sessions [count|all]``: top-level sessions, newest first.
+
+    Only those of agents meant for chat -- the rule and the functions are the
+    terminal's (cli_utils.session_listing), so both chats list the same.
+    ``agent`` is the one the chat runs on and ``current`` the session it is
+    in: both stay whatever their agent. The runs left out are counted, with
+    the agent most of them ran on; ``count=all`` lists every one.
+    """
+    limit, everything, complaint = parse_listing(count)
+    if complaint is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"count must be a number or 'all', got {complaint!r}")
+    user_id = current_user.username if current_user else "anonymous"
+    sessions = await session_manager.list_root_sessions(user_id)
+    shown = None if everything else in_chat_selector(
+        getattr(request.app.state, "runtime", None), keep=(agent,))
+    listable, left_out = split_for_chat(sessions, shown, current or None)
+    listed = listable if limit <= 0 else listable[:limit]
+    most = most_left_out(left_out)
+    return {
+        "sessions": [_session_node(s) for s in listed],
+        "total": len(listable),
+        "left_out": len(left_out),
+        "most_left_out": {"agent": most[0], "count": most[1]} if most else None,
+    }
+
+
 @session_router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -556,14 +624,23 @@ async def get_session(
         # and gated on the session lock rather than on the live state being
         # present: that state outlives the run it belongs to.
         #
-        # The lock is the gate, and it is a hair narrower than it looks: the run
-        # releases it just BEFORE its final save, so for the length of that write
-        # this falls back to disk and shows the previous turn. The next load is
-        # right. Named rather than papered over -- closing it means moving the
-        # release past the save, which is the run's lifecycle, not this endpoint's.
+        # The lock alone is too narrow a gate: the run releases it just BEFORE its
+        # final save and its session-end hooks, and its job runs on until those are
+        # done -- an LLM call, for lessons_learned. A load then read the turn off
+        # disk with no count of what the run had sent (during the save, the turn
+        # before it), and the chat, joining the job, replayed the whole run below
+        # it: the turn twice. So a run the tracker maps to this session counts as
+        # in flight while its job runs. Its live state is its conversation: the
+        # session's next run sets its own only once it holds the lock.
         if session_agent is not None and hasattr(session_agent, "_session_tracker"):
+            tracker = session_agent._session_tracker
             try:
-                is_running, owner_request_id = session_agent._session_tracker.check_session_locked(session_id)
+                is_running, owner_request_id = tracker.check_session_locked(session_id)
+                if not is_running:
+                    running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
+                    if (running.get("attachable")
+                            and tracker.get_session_for_request(running["request_id"]) == session_id):
+                        is_running, owner_request_id = True, running["request_id"]
             except Exception as lock_err:
                 logger.debug(f"Could not read the session lock for {session_id}: {lock_err}")
                 is_running, owner_request_id = False, None
@@ -576,18 +653,24 @@ async def get_session(
                 if live:
                     from agent_system.services.session_service import _msg_to_dict, _add_estimated_tokens
                     messages = [_msg_to_dict(m) for m in live]
+                    # How much of the run's stream these messages already account for, so a
+                    # client attaching next can ask the run to skip just that much. Without
+                    # it the reconnect either replays turns the client has (duplicates) or
+                    # drops the buffer whole -- which loses whatever the run emitted between
+                    # this response and the attach, up to and including its final answer.
+                    # Read right after the messages, before the await below: what the run
+                    # sends meanwhile would count as seen without being in them.
+                    # Whether those include its answer goes with them: a client joining past
+                    # the answer is sent nothing that says the run has answered.
+                    events_seen, answered = await _run_progress(owner_request_id)
                     # The panel sums estimated_tokens and counts how many messages carried
                     # one; the persisted path adds them, so the live one has to as well or
                     # the token figure reads 0 for exactly the sessions worth watching.
                     # Off the loop, as there: the estimator probes media files.
                     await asyncio.to_thread(_add_estimated_tokens, messages)
                     session["messages"] = messages
-                    # How much of the run's stream these messages already account for, so a
-                    # client attaching next can ask the run to skip just that much. Without
-                    # it the reconnect either replays turns the client has (duplicates) or
-                    # drops the buffer whole -- which loses whatever the run emitted between
-                    # this response and the attach, up to and including its final answer.
-                    session["live_events_seen"] = await _events_emitted(owner_request_id)
+                    session["live_events_seen"] = events_seen
+                    session["live_run_answered"] = answered
 
         # Inject live runtime template_vars from the agent's session tracker.
         # save_session persists context_vars only after messages are committed
@@ -756,6 +839,48 @@ async def get_session_messages(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+async def _carry_title_to_run(session_id: str, user_id: str, title: str, registry, default_agent,
+                              *, waiting_only: bool = False) -> bool:
+    """Hand *title* to the run that holds *session_id* -- the caller's own run
+    only. Its next save writes it (SessionService), as agent-cli writes a /title
+    typed during the first turn once it is saved. ``waiting_only``: only in
+    place of a title that run carries already."""
+    title = (title or "").strip()
+    if not title or default_agent is None:
+        return False
+    jobs = get_background_job_manager()
+    info = (await jobs.active_sessions()).get(session_id)
+    if not info or info.get("user_id") != user_id:
+        return False
+    # A run started without an agent name has "default" on its job
+    from agent_system.app import resolve_agent_for_request  # the app imports this module
+    agent = await resolve_agent_for_request(info.get("request_id"), jobs, registry, default_agent,
+                                            info.get("agent_name"))
+    tracker = getattr(agent, "_session_tracker", None)
+    if tracker is None or (waiting_only and tracker.title_to_write(session_id) is None):
+        return False
+    tracker.carry_title(session_id, title)
+    return True
+
+
+def _titles_carried(session_id: str, registry, default_agent) -> list:
+    """(tracker, title) for every agent of this process that carries a title
+    for *session_id* -- from a run that has not written it."""
+    agents = [default_agent]  # registered too, unless its name was taken
+    for name in (registry.list() if registry is not None else []):
+        try:
+            agents.append(registry.get(name))
+        except KeyError:
+            continue
+    carried = []
+    for agent in agents:
+        tracker = getattr(agent, "_session_tracker", None)
+        title = tracker.title_to_write(session_id) if hasattr(tracker, "title_to_write") else None
+        if isinstance(title, str):
+            carried.append((tracker, title))
+    return carried
+
+
 @session_router.put("/{session_id}")
 @session_router.patch("/{session_id}")
 async def update_session(
@@ -763,6 +888,8 @@ async def update_session(
     request: UpdateSessionRequest,
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
+    default_agent=Depends(get_agent_optional),
+    tool_registry=Depends(get_tool_registry),
 ):
     """Update session metadata (title, agent, LLM profile, or tags)."""
     # session_manager injected via dependency
@@ -775,11 +902,39 @@ async def update_session(
 
         # Update title if provided
         if request.title is not None:
-            await session_manager.rename_session(
-                user_id,
-                session_id,
-                request.title
-            )
+            # In turn with the session's saves (SessionService.save_lock): a
+            # rename landing while one runs is written over by the copy that
+            # save loaded -- a /title during a run's first save, or any later.
+            from agent_system.app import _session_service  # the app imports this module
+            async with (_session_service.save_lock(session_id) if _session_service is not None
+                        else contextlib.nullcontext()):
+                # A record can be there before its run's first save (a
+                # sub-agent's parent record): the title that run carries would
+                # put the old name back with that save.
+                await _carry_title_to_run(session_id, user_id, request.title,
+                                          tool_registry, default_agent, waiting_only=True)
+                # The rename names the session from then on: a title an agent
+                # still carries from a run that never wrote it (its first save
+                # failed, it ran on another agent) would put an older name back
+                # at that agent's next save. The caller's run has this one.
+                older = [(tracker, title) for tracker, title in
+                         _titles_carried(session_id, tool_registry, default_agent)
+                         if title != request.title.strip()]
+                try:
+                    await session_manager.rename_session(
+                        user_id,
+                        session_id,
+                        request.title
+                    )
+                except SessionNotFoundError:
+                    # Not written yet: its first run is still going -- the run
+                    # writes the title with its first save.
+                    if not await _carry_title_to_run(session_id, user_id, request.title,
+                                                     tool_registry, default_agent):
+                        raise
+                else:
+                    for tracker, title in older:
+                        tracker.title_written(session_id, title)  # only if still that one
 
         # Update other metadata if provided
         metadata_updates = {}

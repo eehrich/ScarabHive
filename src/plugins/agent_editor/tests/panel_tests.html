@@ -327,6 +327,29 @@
       && chainOf(CHAIN) === 'deep,fast';
   });
 
+  await check('the model tab lets an agent follow its caller’s model, and a child inherits the switch', async () => {
+    const INHERIT = ['agent_config', 'inherit_parent_llm'];
+    const path = 'config/agents/team.yaml';
+    const before = (await file(path)).text;
+    await choose('writer');
+    openTab('model');
+    const off = !isSet(INHERIT) && !control(INHERIT).checked;
+    control(INHERIT).click();
+    const on = isSet(INHERIT) && control(INHERIT).checked;
+    await saveAll('writer saved');
+    const written = (await file(path)).text;
+    // editor is writer's child: it follows too, without a key of its own
+    await choose('editor');
+    openTab('model');
+    const childFollows = control(INHERIT).checked && !isSet(INHERIT);
+    await choose('writer');
+    openTab('model');
+    fieldOf(INHERIT).querySelector('[data-reset]').click();
+    await saveAll('writer saved');
+    const back = (await file(path)).text;
+    return off && on && /inherit_parent_llm: true/.test(written) && childFollows && back === before;
+  });
+
   await check('the run tab sets the core run settings key by key, and says when auto-escalation cannot run', async () => {
     const LOOPS_ON = ['agent_config', 'loop_detection', 'enabled'];
     const HISTORY = ['agent_config', 'loop_detection', 'history_size'];

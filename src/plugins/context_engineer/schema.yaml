@@ -236,6 +236,22 @@ config:
     maximum: 1.0
     description: "A NEW tool result larger than this share of the model's context window is stored on arrival, below every threshold and hysteresis (Pre-Layer T). Only the current round is touched: messages a request already carried stay as sent. 0 disables it."
 
+  tool_result_summary_from:
+    type: integer
+    default: 0
+    minimum: 0
+    description: "A NEW tool result of this many tokens is stored on arrival AND a cheap model writes what it says into the placeholder the conversation keeps -- for hand-overs to an expensive agent, which pays for every token of a long answer it was handed. The full text stays in the store and is read back with the read tool. 0 disables it; a structured (JSON) result is never summarized, a wrapper around prose is summarized by its prose. Per agent via hooks.overrides."
+
+  tool_result_summary_profile:
+    type: string
+    default: "summarizer"
+    description: "The llm_profile that writes those summaries -- a NAME from config/llm.yaml, which is where the model behind it is chosen and changed. 'summarizer' ships as a cheap fast profile. Empty: nothing is summarized, whatever tool_result_summary_from says. Every summarized result goes to that profile's provider, file contents included -- pick one you trust with what the agent reads."
+
+  tool_result_summary_tools:
+    type: array
+    default: []
+    description: "Which tools' results may be summarized, as name patterns (fnmatch, e.g. [\"*_manage_sub_agent\", \"coding_cli_*\"]). The tool name starts with the instance name: coder_sam_manage_sub_agent. A key left blank per agent keeps the plugin value. Empty (default) means every tool -- right for an agent that only takes hand-overs, wrong for one that also reads files with the same hook, because a long file would arrive as a summary it has to read back. Per agent via hooks.overrides."
+
   # Tool Result Clearing (Legacy - kept for compatibility)
 
   # Memory Management

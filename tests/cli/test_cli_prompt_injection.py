@@ -11,7 +11,10 @@ class DummyAgent:
         # profile is an override at all, and a fake without it hides that.
         from agent_system.config.models import AgentConfig
 
+        self.name = "basic_agent"
         self.agent_config = AgentConfig()
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+        self._session_tracker = SessionTracker()
         self._events = events or [
             {"type": "final", "summary": "done"},
             {"type": "end"},
@@ -77,7 +80,7 @@ def test_cli_injects_german_hint_in_memory(monkeypatch):
         lambda name, system_config, server_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
     )
     monkeypatch.setattr(
-        'agent_system.agent_cli.Agent',
+        'agent_system.servers.agent.entry.Agent',
         lambda name, system_config, server_config=None, registry=None, **k: fake_entry_agent(name, system_config, registry)
     )
     # Run CLI in raw mode to take the non-streaming path (simpler output)

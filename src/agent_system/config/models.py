@@ -240,8 +240,9 @@ class DecisionModelConfig(BaseModel):
     (TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).
     It therefore does not belong in ``models``: nothing here can serve
     ``chat()``, and an entry there would be offered to every agent as a chat
-    model and checked for a per-token price it does not have — the answer
-    reports its own cost.
+    model and checked for a per-token price it does not have. OpenRouter's
+    answer carries its cost; one that carries none (a local Laya, TypeSafe
+    direct) is priced by the usage tracker from llm_pricing.yaml, by model.
 
     The shape of ``TTSModelConfig`` minus its voice, for the same reason: a
     non-chat client needs a connection and nothing from the chat knobs.
@@ -654,6 +655,17 @@ class AgentConfig(BaseModel):
     # letzte Sicherheitsnetz: ist die eigene Kette bei Fallbacks erschöpft, wird
     # die jeweils andere Kette komplett durchprobiert (fallback_chain()).
     llm_profile_advanced: Optional[List[str]] = None
+    # Run on the caller's LLM (opt-in): when the run that starts this agent was
+    # switched to another profile than its agent's own (API llm_profile, the
+    # web chat's model picker, CLI --llm, the chat's /model, use_advanced_model
+    # -- or it followed its own caller this way), this agent runs on that
+    # profile too, with its own llm_params for it; its chain stays the
+    # fallback, its own primary first. Without such a switch it runs its own
+    # chain. A choice made for this very run wins: an override
+    # passed to it, or use_advanced_model. Any plugin that starts sub-agents
+    # inside a tool call gets this without doing anything (llm/caller_llm.py);
+    # a run started later in another process does not.
+    inherit_parent_llm: bool = False
     # ENTFERNT (alte Semantik [std_fallback, adv_fallback]) — Migration:
     # scripts/migrate_llm_profiles.py. Absichtlich als Feld behalten, damit
     # unmigrierte yamls LAUT beim Laden scheitern statt still falsch zu laufen.
@@ -711,6 +723,13 @@ class AgentConfig(BaseModel):
     escalate_rounds: int = 2          # steps to stay on the advanced model per trigger
     escalate_max_calls: int = 6       # total advanced calls allowed per run (budget)
     escalate_error_streak: int = 2    # trigger after N consecutive all-error tool steps
+    # How often in a row a TEXT answer cut off at the output cap (finish_reason
+    # length, no tool call left) is sent back with a note instead of delivered
+    # as the reply. 0 delivers it, as always -- right for an agent whose product
+    # is its text, and for a model that loops until the cap. For an agent that
+    # works through tool calls the cut is typically a lost call writing a large
+    # file (measured in the coder: three in a row, each ending the run).
+    output_cap_notes: int = 0
 
     @field_validator("system_template")
     @classmethod

@@ -2,7 +2,7 @@
 
 ## 1. Overview & Motivation
 
-The **Decision Plugin** provides LLM agents in ScarabHive with direct access to calibrated "System One" decision models (specifically TypeSafe's **Jev** via OpenRouter).
+The **Decision Plugin** provides LLM agents in ScarabHive with direct access to calibrated "System One" decision models (TypeSafe's **Jev** via OpenRouter or TypeSafe, or a local Laya — whichever the decision profile names).
 
 Unlike standard generative chat models that produce non-deterministic prose, decision models evaluate named questions against given content and return deterministic or calibrated numeric values (probabilities, scale points, categorical choices) without generating conversational text or tool calls.
 
@@ -32,8 +32,8 @@ In real-world agent workflows, agents frequently need to evaluate large batches 
                               | Parallel requests (bounded)
                               v
 +-----------------------------------------------------------+
-| DecisionsClient (src/plugins/llm_decisions/openrouter.py)  |
-| - POST https://openrouter.ai/api/alpha/decisions          |
+| DecisionsClient (src/plugins/llm_decisions/system_one.py)  |
+| - POST <the profile's endpoint: OpenRouter, TypeSafe, Laya>|
 +-----------------------------------------------------------+
 ```
 
@@ -140,7 +140,7 @@ plugins:
       enabled: true
       decision_profile: jev          # Default profile (falls back to system config)
       max_batch_size: 250            # Maximum items evaluated in one batch tool call
-      max_concurrency: 10            # Maximum parallel OpenRouter calls
+      max_concurrency: 10            # Maximum parallel decision calls
       max_questions: 20              # Maximum questions/criteria per call
       max_context_length: 50000      # Maximum context length in characters per item
       default_scale: ["1", "2", "3", "4", "5"]

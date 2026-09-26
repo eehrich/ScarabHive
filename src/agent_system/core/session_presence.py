@@ -38,6 +38,7 @@ that steps aside) leaves it.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -48,7 +49,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 import psutil
 
@@ -832,9 +833,25 @@ WAKE_RETRIES = 30
 RING_AGAIN = frozenset({"delivered_next_step"})
 
 
+async def _asks_for_it(still_needed: Callable[[], Union[bool, Awaitable[bool]]],
+                       session_id: str, what: str) -> bool:
+    """``still_needed``'s answer, awaited where it is an awaitable. A guard that
+    raises -- a session file read half-written, a PermissionError of a Windows
+    replace -- counts as still needed: it used to end the whole wake."""
+    try:
+        needed = still_needed()
+        if inspect.isawaitable(needed):
+            needed = await needed
+        return bool(needed)
+    except Exception as error:
+        logger.warning("Could not ask whether %s still waits for %s, ringing on: %s",
+                       session_id, what or "finished work", error)
+        return True
+
+
 async def wake_session(system_config: Any, session_id: str, user_id: str,
                        what: str = "",
-                       still_needed: Optional[Callable[[], bool]] = None,
+                       still_needed: Optional[Callable[[], Union[bool, Awaitable[bool]]]] = None,
                        started_by: Optional[str] = None) -> str:
     """Tell a session that something it has been waiting for is over.
 
@@ -854,7 +871,11 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
     before every ring after the first, it ends the ringing once the caller has
     read the result by itself -- otherwise a ring can land after a wake run has
     already delivered and read the news, and start a second run for it. Pass it
-    whenever the caller can tell; without it the loop rings its full budget.
+    whenever the caller can tell; without it the loop rings its full budget. It
+    may return an awaitable, for a caller that has to look the answer up -- the
+    reader can be a run of another process, whose reading only its stored state
+    shows. One that raises is logged and counts as still needed: ringing on costs
+    at most a woken run, stopping would lose the news.
 
     A wake only reaches a session whose work still runs somewhere, and
     background work lives in the process that started it: the API, or an
@@ -907,7 +928,7 @@ async def wake_session(system_config: Any, session_id: str, user_id: str,
                 # Asked BEFORE ringing again, never after: a ring that goes out
                 # while a wake run is already reading the news starts a SECOND
                 # one, and that is a whole turn on the user's money.
-                if still_needed is not None and not still_needed():
+                if still_needed is not None and not await _asks_for_it(still_needed, session_id, what):
                     # "not needed" covers read-by-its-caller AND gone-from-the
                     # registry (pruned, stopped). Naming only the first would be
                     # a reason this cannot know.

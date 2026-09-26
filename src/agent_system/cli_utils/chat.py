@@ -41,7 +41,8 @@ from .common import (
     supports_color,
 )
 from .attachments import sort_attachments
-from .session_listing import DEFAULT_LIMIT, parse_limit, print_sessions
+from .session_listing import (DEFAULT_LIMIT, in_chat_selector, newest_of, parse_listing,
+                              print_sessions)
 from .session_defaults import session_defaults
 from ..core.session_presence import WAKE_TASK, SessionBusy, note_stop, presence_for
 from .agent_runner import wake_message
@@ -1349,8 +1350,13 @@ class _ChatContext:
                  template_vars: Optional[dict] = None,
                  llm_params: Optional[dict] = None,
                  session_title: Optional[str] = None,
-                 attachments: Sequence[str] = ()) -> None:
+                 attachments: Sequence[str] = (),
+                 runtime: Any = None) -> None:
         self.agent = agent
+        # The Runtime this process bootstrapped: which agents are meant for
+        # chat (/sessions). Held here, not read from Runtime.last_started --
+        # an in-process pipeline that bootstraps its own would swap that.
+        self.runtime = runtime
         self.entry_name = entry_name
         self.session_service = session_service
         self.session_manager = session_manager
@@ -1416,19 +1422,19 @@ def _report_what_stays_behind(ctx: "_ChatContext", previous: str) -> None:
     """Say what the session being left takes with it, and what waits here.
 
     Both ways out of a session pass here (`/new`, `/agent` and `/resume`): a
-    title typed with `/rename` before the first message has no record to go
+    title typed with `/title` before the first message has no record to go
     into and dies with the session -- and losing it without a word looks like
     a bug. Queued attachments do NOT die; they are simply easy to forget
     once the chat says "New session".
 
-    What it does NOT say is whether that title reached the disk. A /rename of
+    What it does NOT say is whether that title reached the disk. A /title of
     a session that HAS a record writes it and keeps ctx.session_title only so
     a later save cannot put the old name back -- "nothing written yet" was a
     plain lie about that session.
     """
     if ctx.session_title:
-        print(f"(the title '{ctx.session_title}' stays with {previous} -- "
-              f"the session you are going to starts unnamed)")
+        # Nothing about the session gone to: /resume goes to one with a title of its own.
+        print(f"(the title '{ctx.session_title}' stays with {previous})")
     if ctx.attachments:
         print(f"({len(ctx.attachments)} attachment(s) stay queued for the "
               f"next message -- /attach clear drops them)")
@@ -2311,26 +2317,11 @@ def _build_profile(ctx: "_ChatContext", wanted: str) -> tuple[Any, str]:
     ``thinking_level=max`` typed at the start must not vanish on /model.
     Changes nothing, so an interrupt while it builds leaves the chat as it was.
     """
-    from ..llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                               resolve_llm_config_for_agent)
-    from ..config.models import AgentConfig
+    from ..llm.factory import override_for_profile
 
-    system_config: Any = getattr(ctx.agent, "system_config", None)
-    params = ctx.llm_params or None
-    client = create_llm_from_profile(
-        config=system_config, llm_profile=wanted,
-        # /model picks another model, not another agent: the agent's own
-        # params stay, what was typed wins over them.
-        llm_params=agent_params_for_profile(
-            getattr(ctx.agent, "agent_config", None), wanted, params))
-    resolved = resolve_llm_config_for_agent(system_config, AgentConfig(llm_profile=wanted))
-    # The label names what was TYPED over the profile; the agent's own params
-    # ride along either way and are not the switch the person is making. The
-    # identity fields it shows cannot be overridden, so they hold regardless.
-    label = f"{wanted}:{resolved.spec.provider}/{resolved.spec.model}"
-    if params:
-        label += " +params(" + ",".join(f"{k}={v}" for k, v in params.items()) + ")"
-    return client, label
+    return override_for_profile(getattr(ctx.agent, "system_config", None),
+                                getattr(ctx.agent, "agent_config", None),
+                                wanted, ctx.llm_params or None)
 
 
 def _use_profile(ctx: "_ChatContext", wanted: str,
@@ -2402,24 +2393,25 @@ def _switch_model(ctx: "_ChatContext", payload: str) -> bool:
 
 
 def _agent_names(ctx: "_ChatContext") -> list[str]:
-    """Agents this configuration defines -- the CLI's own gate, not a copy.
+    """Agents this configuration defines -- the factory's own gate, not a copy.
 
     Reading it a second time here is how a listing and its factory drift
-    apart: /agent would offer a name that _build_entry_agent then rejects.
+    apart: /agent would offer a name that the factory then rejects.
     """
-    from ..agent_cli import agent_entry_names
+    from ..servers.agent.entry import agent_entry_names
 
     return agent_entry_names(getattr(ctx.agent, "system_config", None))
 
 
 def _agent_for(ctx: "_ChatContext", name: str) -> Any:
-    """The agent object for *name*, through the CLI's own factory.
+    """The agent object for *name*, through the one factory
+    (servers/agent/entry.py). Raises NotAnAgent.
 
     Not a second copy of it: that one applies the MERGED server config, and
     the copy this chat would grow instead is how an agent ends up with a
     quietly downgraded max_steps.
     """
-    from ..agent_cli import entry_agent
+    from ..servers.agent.entry import entry_agent
 
     config: Any = getattr(ctx.agent, "system_config", None)
     registry: Any = getattr(ctx.agent, "registry", None)
@@ -2461,11 +2453,6 @@ def _switch_agent(ctx: "_ChatContext", payload: str) -> bool:
 
     try:
         agent = _agent_for(ctx, wanted)
-    except SystemExit:
-        # The factory exits the process when it cannot build one. Not from
-        # inside a REPL: the person is mid-conversation.
-        print(f"Could not build agent '{wanted}'.")
-        return False
     except Exception as e:
         logger.error("Could not switch to agent %s: %s", wanted, e, exc_info=True)
         print(f"Could not switch to '{wanted}': {e}")
@@ -2795,6 +2782,21 @@ def _last_session(ctx: _ChatContext) -> Optional[dict]:
     return next(iter(_resumable_sessions(ctx)), None)
 
 
+async def _named_session(ctx: _ChatContext, typed: str) -> str:
+    """The session id *typed* names -- a person may type the title they gave
+    the session with /title, since ids are machine-made and cannot be renamed.
+    """
+    if ctx.session_manager is None:
+        return typed
+    others: list = []
+    named = await ctx.session_manager.resolve_session_ref(
+        ctx.session_user, typed, others=others)
+    if named and named != typed:
+        print(f"Session '{typed}': {named}{newest_of(others, '/sessions all')}")
+        return named
+    return typed
+
+
 async def _resume_into(ctx: _ChatContext, session_id: str, previous: str) -> bool:
     """Take *session_id* over, and let go of whichever session is left behind.
 
@@ -2802,7 +2804,12 @@ async def _resume_into(ctx: _ChatContext, session_id: str, previous: str) -> boo
     must not be pulled out from under it -- and the release is in a
     ``finally``: a Ctrl-C lands inside the load, and a hold taken there and
     never given back locks the session for the rest of the process.
+
+    A title is turned into its id before anything is held: holding the words
+    typed left the session itself unlocked, skipped the busy check, and kept
+    a lock file named after the title until the process ended.
     """
+    session_id = await _named_session(ctx, session_id)
     if not _hold_session(ctx, session_id):
         return False  # another process runs it: the chat stays where it is
     switched = False
@@ -2826,10 +2833,21 @@ async def _resume_last_session(ctx: _ChatContext, previous: str) -> bool:
     return await _resume_into(ctx, session_id, previous)
 
 
-async def _rename_current_session(ctx: _ChatContext, title: str) -> bool:
-    """Give the open session a title, the one `/sessions` shows."""
+async def _set_session_title(ctx: _ChatContext, title: str) -> bool:
+    """Give the open session a title, the one `/sessions` shows -- bare, say it."""
     if not title:
-        print("Usage: /rename <title>")
+        # The title waiting for the first save, else the one on disk:
+        # ctx.session_title is dropped once a save has written it.
+        current = ctx.session_title
+        if current is None and not ctx.was_new_session and ctx.session_manager is not None:
+            try:
+                record = await ctx.session_manager.load_session(ctx.session_user, ctx.session_id)
+                current = (record or {}).get("title")
+            except Exception:  # noqa: BLE001 -- a missing line, not the end of the chat
+                logger.debug("No title for %s", ctx.session_id, exc_info=True)
+        print(f"Title: {' '.join(current.split())}" if current
+              else "This session has no title yet.")
+        print("Usage: /title <text>   (/resume and --session take it)")
         return False
     if ctx.was_new_session or ctx.session_manager is None:
         # Nothing on disk yet: the title rides along with the first save,
@@ -2850,12 +2868,12 @@ async def _rename_current_session(ctx: _ChatContext, title: str) -> bool:
 
 
 async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
-    """Show this user's own sessions -- `/sessions [count]`, 0 for all."""
-    limit, complaint = parse_limit(payload, DEFAULT_LIMIT)
+    """Show this user's own sessions -- `/sessions [count|all]`, 0 for no limit."""
+    limit, everything, complaint = parse_listing(payload, DEFAULT_LIMIT)
     if complaint:
         # Same voice as /history next door: a discarded argument that still
         # prints a plausible listing is indistinguishable from a honoured one.
-        print(f"Usage: /sessions [count]   (got: {complaint})")
+        print(f"Usage: /sessions [count|all]   (got: {complaint})")
         return
     # What it printed is what the completion and a bare /resume read -- taken
     # from the listing it already did, not from a second walk of the index.
@@ -2863,8 +2881,11 @@ async def _list_sessions(ctx: _ChatContext, payload: str = "") -> None:
         ctx.session_manager, ctx.session_user,
         limit=limit,
         current_session_id=ctx.session_id,
-        more_hint="/sessions <count>, /sessions 0 for all",
-        footer="Use /resume <id> to continue one.",
+        more_hint="/sessions <count>, /sessions 0 for no limit",
+        footer="Use /resume <id or title> to continue one.",
+        # Which agents are meant for chat -- and this chat's own, whatever it is.
+        shown=None if everything else in_chat_selector(ctx.runtime, keep=(ctx.entry_name,)),
+        everything_hint="/sessions all",
     )
     if listed:
         ctx.recent_sessions = listed
@@ -2915,7 +2936,7 @@ async def _resume_session(ctx: _ChatContext, session_id: str) -> bool:
         print(f"No session '{session_id}' for user '{ctx.session_user}'.")
         return False
     # The title belonged to the session being left -- from --session-title or
-    # from a /rename it never got to write. Named, then dropped.
+    # from a /title it never got to write. Named, then dropped.
     _report_what_stays_behind(ctx, ctx.session_id)
     ctx.session_id = session_id
     ctx.was_new_session = False
@@ -3128,8 +3149,7 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
     can fix the problem (switch profile, drop a file) without re-attaching;
     it is cleared only when the message actually goes out.
     """
-    from ..llm.capabilities import capability_model_name, ensure_model_supports
-    from ..utils.multimodal_processor import create_multimodal_message_extended
+    from ..utils.multimodal_processor import AttachmentRejected, message_with_attachments
 
     # /attach already refused what cannot be sent, so a problem here means the
     # file changed under us since it was queued -- say which one, keep the rest.
@@ -3141,20 +3161,12 @@ def _task_with_attachments(ctx: _ChatContext, task: str,
 
     # The per-request override wins over the agent's default -- one rule for
     # the HTTP API, the chat and both command-line entry points.
-    problem = ensure_model_supports(
-        capability_model_name(ctx.llm_override, ctx.agent),
-        images=len(kinds["image"]), audio=len(kinds["audio"]))
-    if problem:
-        print(f"Not sent: {problem}")
+    try:
+        message = message_with_attachments(task, kinds, ctx.llm_override, ctx.agent)
+    except AttachmentRejected as e:
+        print(f"Not sent: {e}")
         print(renderer._colored(f"(kept text: {task})", "90"))
         return None
-    try:
-        message = create_multimodal_message_extended(
-            text=task,
-            image_paths=kinds["image"] or None,
-            audio_paths=kinds["audio"] or None,
-            text_file_paths=kinds["text"] or None,
-        )
     except Exception as e:
         print(f"Attachment failed, nothing sent: {e}")
         return None
@@ -3389,6 +3401,7 @@ def run_chat_loop(
     llm_params: Optional[dict] = None,
     session_title: Optional[str] = None,
     attachments: Sequence[str] = (),
+    runtime: Any = None,
 ) -> None:
     """The chat REPL. Drives one event loop for its whole lifetime.
 
@@ -3412,6 +3425,7 @@ def run_chat_loop(
         show_status=show_status, session_manager=session_manager,
         template_vars=template_vars, llm_params=llm_params,
         session_title=session_title, attachments=attachments,
+        runtime=runtime,
     )
     ansi = supports_color()
     renderer = ChatRenderer(ansi=ansi)
@@ -3604,9 +3618,9 @@ def run_chat_loop(
                             editor.reseed(_history_seed(ctx))
                         print(f"Resumed session: {ctx.session_id}")
                     continue
-                if command == "rename":
-                    _run_interruptible(loop, _rename_current_session(ctx, payload),
-                                       "/rename")
+                if command == "title":
+                    _run_interruptible(loop, _set_session_title(ctx, payload),
+                                       "/title")
                     continue
                 if command == "agent":
                     if not _switch_agent(ctx, payload):

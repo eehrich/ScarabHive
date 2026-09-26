@@ -331,6 +331,10 @@ class LLMClient:
     #: The agent this client serves (set_app_title). Keys the backend a
     #: gateway routed its calls to (backend_affinity); None remembers nothing.
     served_agent: Optional[str] = None
+    #: The llm_system profile this client was built for (llm.factory), None for
+    #: one built another way. A run switched to this client hands it to the
+    #: sub-agents it starts (llm/caller_llm.py).
+    profile_name: Optional[str] = None
     #: How long that backend stays the one a new run starts on. None = the
     #: default of backend_affinity, 0 = off. Set from the model entry.
     provider_affinity_minutes: Optional[float] = None

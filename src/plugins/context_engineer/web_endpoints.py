@@ -9,11 +9,14 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.request import pathname2url
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from agent_system.auth.dependencies import get_optional_user
+from agent_system.auth.models import User
+from agent_system.auth.session_access import may_see_session
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
@@ -50,11 +53,11 @@ def _read_saved(path: Path) -> str:
             time.sleep(READ_PAUSE_SECONDS)
 
 
-def _core_memory(path: Path, max_tokens: int) -> dict[str, Any]:
+def _core_memory(path: Path | None, max_tokens: int) -> dict[str, Any]:
     """The facts as the file holds them, counted as the core memory counts them, without loading it (a load trims and
     saves a file over its budget)."""
     memory = CoreMemory(max_tokens=max_tokens)
-    if path.exists():
+    if path is not None and path.exists():
         memory.facts = [Fact.from_dict(fact) for fact in json.loads(_read_saved(path)).get("facts", [])]
         memory._recalculate_tokens()
     order = {category: index for index, category in enumerate(CoreMemory.CATEGORIES)}
@@ -83,9 +86,13 @@ class ContextEngineerWebFactory:
 
     async def get_history(self, request: Request,
                           session_id: str | None = Query(None, pattern=SESSION_PATTERN),
-                          limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
-        """The newest compactions of a session (of all without one), newest first; the figures count every one asked for."""
-        events = [event for event in self.stats_history if session_id is None or event.get("session_id") == session_id]
+                          limit: int = Query(100, ge=1, le=1000),
+                          current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
+        """The newest compactions of a session (of all without one: an admin's), newest first; the figures count every
+        one asked for. Another user's session answers as one without compactions."""
+        shown = await may_see_session(request, current_user, session_id)
+        events = [event for event in self.stats_history
+                  if shown and (session_id is None or event.get("session_id") == session_id)]
         return {
             "events": list(reversed(events[-limit:])),
             "stats": {
@@ -98,11 +105,17 @@ class ContextEngineerWebFactory:
             },
         }
 
-    async def get_session(self, request: Request, session_id: str = Query(..., pattern=SESSION_PATTERN)) -> dict[str, Any]:
+    async def get_session(self, request: Request, session_id: str = Query(..., pattern=SESSION_PATTERN),
+                          current_user: Optional[User] = Depends(get_optional_user)) -> dict[str, Any]:
         """What a session's stores hold on disk: tool results, archived messages, core memory facts. A session without
-        a directory holds nothing; a store that cannot be read is answered 503 with the reason."""
+        a directory holds nothing, and so does another user's; a store that cannot be read is answered 503 with the
+        reason."""
         hooks = self.server._hooks_impl
         directory = hooks._storage_base / session_id
+        if not await may_see_session(request, current_user, session_id):
+            nothing = {"count": 0, "tokens": 0}
+            return {"tool_results": nothing, "archived": dict(nothing),
+                    "core_memory": _core_memory(None, hooks.core_memory_max_tokens)}
 
         def read() -> dict[str, Any]:
             return {

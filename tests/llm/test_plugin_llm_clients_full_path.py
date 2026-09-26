@@ -477,3 +477,14 @@ class TestEveryResolvedFieldReachesTheRegistry:
         create_llm_from_profile(self._full_config(), "p")
 
         assert calls["ssl_verify"] is True,             "network.ssl_verify never reached the registry"
+
+    def test_a_config_that_turns_verification_off_reaches_the_registry(self, monkeypatch):
+        """No caller passes ssl_verify any more -- every client relies on this
+        derivation, so False has to survive it, not only True."""
+        calls = self._record(monkeypatch)
+        config = self._full_config()
+        config.network.ssl_verify = False
+
+        create_llm_from_profile(config, "p")
+
+        assert calls["ssl_verify"] is False, "network.ssl_verify: false turned into verification on"

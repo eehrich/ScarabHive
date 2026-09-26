@@ -48,6 +48,10 @@ plugins:
   takes effect without a restart — including in runs already in flight.
 - Date variables come via `config.context.auto_datetime`; never put them in the prompt
   (cache, see [hooks.md](hooks.md)).
+- Branch on what is there: `has_tool('*_manage_sub_agent')` (fnmatch over `tools`, the
+  agent's own tools; names carry the instance prefix), `'writer_pipeline_v4' in plugins`
+  (types installed and enabled), `'github' in mcp_servers`. A plugin's id is its
+  type = folder name. Table: `docs/config_based_agents.md`.
 
 ### llm_profile
 

@@ -19,9 +19,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
+from tests.session_owners import admin
 
 BROWSER = find_browser()
 PAGE_TIMEOUT = 120
@@ -77,6 +79,9 @@ def panel_app(tmp_path: Path):
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
     registry.register_web_plugin("context_usage_tracker", plugin)
     registry.apply_to_app(app)
+    # An admin looks: this page tests what the panel draws, and every session's figures are hers to see. Who may
+    # see which is test_plugin_context_usage_tracker_access.py.
+    app.dependency_overrides[get_optional_user] = admin
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/context_usage_tracker", StaticFiles(directory=TESTS), name="panel-tests")
     return app

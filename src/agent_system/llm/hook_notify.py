@@ -100,6 +100,11 @@ async def notify_response(
     Called on EVERY way a call can end, including the ways that failed: a
     request the debugger never sees an answer to is how a whole class of calls
     went missing once before.
+
+    A ``usage`` sent together with an ``error`` is booked as spend by
+    context_usage_tracker: pass one only when the call was billed (an answer
+    the client refused afterwards), never on a retry -- the retry that
+    succeeds reports its own, and the same call would count twice.
     """
     await _dispatch(
         "POST_LLM_RESPONSE", provider=provider, model=model, url=url,

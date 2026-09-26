@@ -351,6 +351,19 @@ class ToolServerRegistry:
             return None
         return self._runtime.view(name)
 
+    def plugin_types(self) -> list[str]:
+        """The plugin types with an enabled instance, sorted; [] when unbound.
+
+        What a prompt asks as ``plugins``: installed AND switched on. Read from
+        the declarations, which are made once at start, so it holds still
+        between the renders of one session -- the system prompt is the cached
+        prefix. An instance whose type is not installed is not declared at all.
+        """
+        if self._runtime is None:
+            return []
+        return sorted({decl.type for decl in self._runtime.declarations().values()
+                       if decl.factory is not None})
+
     def list(self) -> list[str]:
         """The BUILT servers -- unchanged, bound or not.
 
@@ -362,7 +375,7 @@ class ToolServerRegistry:
         in the stage that stops building at start -- and all six move with
         them. They are, in ``src/agent_system/``:
 
-            app.py (twice), agent_cli.py,
+            app.py, agent_cli.py, servers/agent/entry.py,
             servers/agent/components/tool_execution.py (three times)
 
         No line numbers on purpose, they rot. The whole set is

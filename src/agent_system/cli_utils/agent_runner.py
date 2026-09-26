@@ -3,27 +3,19 @@ Shared agent runner functionality for both agent-run and agent-cli.
 
 This module provides centralized logic for:
 - Agent selection and creation
-- LLM profile override
 - Agent execution with status monitoring
 - Error handling and reporting
 """
 from __future__ import annotations
 
-import logging
-from typing import Optional, Any, Tuple
-
 from datetime import datetime, timezone
 
-from ..config.settings import AgentSystemConfig, get_tool_server_config
-from ..config.models import AgentConfig
+from ..config.settings import AgentSystemConfig
 from ..core.session_presence import WAKE_TASK
 from ..llm.message_roles import DEVELOPER
 from ..llm.models import ChatMessage
 from ..tools.base import ToolServerRegistry
 from ..servers.agent.server import Agent
-
-
-logger = logging.getLogger(__name__)
 
 
 def wake_message() -> ChatMessage:
@@ -54,180 +46,19 @@ def wake_message() -> ChatMessage:
                        timestamp=datetime.now(timezone.utc))
 
 
-def get_agent_with_llm_override(
-    config: AgentSystemConfig,
-    registry: ToolServerRegistry,
-    agent_name: str,
-    llm_profile: Optional[str] = None
-) -> Tuple[Agent, Optional[Any], Optional[str]]:
-    """Get agent instance with optional LLM profile override.
-    
-    This function mirrors the functionality from interface_api's _get_agent_with_overrides.
-    It handles both plugin-based agents and config-based agents.
-    
-    Args:
-        config: System configuration
-        registry: tool registry containing all servers
-        agent_name: Name of the agent to get
-        llm_profile: Optional LLM profile to override agent's default
-        
-    Returns:
-        Tuple of (agent_instance, llm_override, llm_profile_info)
-        - agent_instance: The selected agent from registry
-        - llm_override: LLM client to pass to run_events (None if using agent's default)
-        - llm_profile_info: Profile info string for status display (None if no override)
-        
-    Raises:
-        ValueError: If agent not found or LLM profile invalid
-    """
-    # Get agent from registry
-    try:
-        agent = registry.get(agent_name)
-    except KeyError:
-        # Build helpful error message with available agents
-        available_agents = []
-        
-        # Get agents from plugins.servers
-        if config.plugins and config.plugins.servers:
-            available_agents.extend([
-                name for name, server in config.plugins.servers.items()
-                if server.enabled and server.agent_config is not None
-            ])
-        
-        # Remove duplicates and sort
-        available_agents = sorted(set(available_agents))
-        
-        error_msg = f"Agent '{agent_name}' not found in configuration."
-        if available_agents:
-            error_msg += "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
-        else:
-            error_msg += "\n\nNo agents are configured. Check your config files."
-        
-        raise ValueError(error_msg)
-    
-    # Verify it's actually an Agent instance
-    if not isinstance(agent, Agent):
-        raise ValueError(f"'{agent_name}' is not an agent (found: {type(agent).__name__})")
-    
-    # Create LLM override if profile specified
-    llm_override = None
-    llm_profile_info = None
-    
-    if llm_profile and config.llm_system and config.llm_system.profiles:
-        if llm_profile not in config.llm_system.profiles:
-            available_profiles = sorted(config.llm_system.profiles.keys())
-            error_msg = f"LLM profile '{llm_profile}' not found in configuration."
-            if available_profiles:
-                error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
-            raise ValueError(error_msg)
-        
-        try:
-            # Use factory function that properly handles batch mode
-            from ..llm.factory import (agent_params_for_profile, create_llm_from_profile,
-                                       resolve_llm_config_for_agent)
-
-            llm_override = create_llm_from_profile(
-                config=config,
-                llm_profile=llm_profile,
-                llm_params=agent_params_for_profile(
-                    getattr(agent, "agent_config", None), llm_profile),
-            )
-            
-            # Get profile info for status display
-            temp_agent_config = AgentConfig(llm_profile=llm_profile)
-            resolved = resolve_llm_config_for_agent(config, temp_agent_config)
-            model = resolved.spec.model
-            provider = resolved.spec.provider
-            llm_profile_info = f"{llm_profile}:{provider}/{model}"
-            
-            logger.debug(f"Using LLM override: {llm_profile_info}")
-        except Exception as e:
-            logger.error(f"Failed to create LLM override: {e}", exc_info=True)
-            raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
-    
-    return agent, llm_override, llm_profile_info
-
-
 async def create_and_register_agent(
     config: AgentSystemConfig,
     registry: ToolServerRegistry,
     agent_name: str,
     session_service=None
 ) -> Agent:
-    """Create and register an agent if it doesn't already exist in registry.
-    
-    This handles both plugin-based agents (from plugins.servers) and
-    config-based agents (from agents.yaml).
-    
-    Args:
-        config: System configuration
-        registry: tool registry to register agent in
-        agent_name: Name of the agent to create
-        session_service: Optional SessionService to inject into agent
-        
-    Returns:
-        Agent instance (either newly created or existing from registry)
-        
-    Raises:
-        ValueError: If agent configuration not found or invalid
+    """The agent *agent_name*: the registered one, or built from the merged
+    config and registered -- servers/agent/entry.py, the one factory the API
+    and agent-cli use. Kept for agent-run and the writer's audio plugins.
+
+    Raises NotAnAgent (a ValueError, with the agents there are) for a tool
+    server's name, an unknown one, or a registered server that is no agent.
     """
-    def _with_agent_listing(message: str) -> str:
-        available_agents = []
-        if config.plugins and config.plugins.servers:
-            available_agents.extend([
-                name for name, server in config.plugins.servers.items()
-                if server.enabled and server.agent_config is not None
-            ])
-        available_agents = sorted(set(available_agents))
-        if available_agents:
-            return message + "\n\nAvailable agents:\n  " + "\n  ".join(available_agents)
-        return message + "\n\nNo agents are configured. Check your config files."
+    from ..servers.agent.entry import entry_agent
 
-    # Check if agent already exists in registry
-    try:
-        existing_agent = registry.get(agent_name)
-    except KeyError:
-        existing_agent = None  # Agent doesn't exist, need to create it
-
-    if isinstance(existing_agent, Agent):
-        logger.debug(f"Using existing agent '{agent_name}' from registry")
-        # Update session_service for existing agent
-        if session_service and hasattr(existing_agent, '_session_service'):
-            existing_agent._session_service = session_service
-        return existing_agent
-
-    if existing_agent is not None:
-        # Building one here would register it OVER that server and take it out
-        # of the registry for the rest of the process.
-        raise ValueError(_with_agent_listing(
-            f"'{agent_name}' is registered as {type(existing_agent).__name__}, not an Agent."))
-
-    # "Is this an agent at all" has to be decided on the RAW entry:
-    # plugins.default_config carries an agent_config, so the MERGED config has
-    # one for every tool server as well -- measured on the real config, 96 of
-    # 219 servers have no raw agent_config and every one of them is a tool
-    # server. A gate on the merged config waves all of them through.
-    raw_config = config.plugins.servers.get(agent_name) if config.plugins else None
-    if raw_config is not None and not raw_config.agent_config:
-        raise ValueError(_with_agent_listing(f"'{agent_name}' is a tool server, not an agent."))
-
-    # Try to get tool server config from plugins.servers
-    server_config = get_tool_server_config(agent_name, config)
-
-    if not server_config:
-        raise ValueError(_with_agent_listing(f"Agent '{agent_name}' not found in configuration."))
-
-    if not server_config.agent_config:
-        raise ValueError(f"Agent '{agent_name}' has no agent_config section")
-
-    # Create the agent using the signature: Agent(name, system_config, server_config, registry, session_service)
-    agent = Agent(agent_name, config, server_config, registry, session_service=session_service)
-    
-    # Make agent public so it shows up in tool lists if needed
-    agent._tool_public = True
-    
-    # Register the agent in the registry
-    registry.register(agent_name, agent)
-    
-    logger.info(f"Created agent '{agent_name}' with LLM profile '{server_config.agent_config.llm_profile}'")
-    return agent
+    return entry_agent(agent_name, config, registry, session_service)

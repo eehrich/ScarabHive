@@ -34,6 +34,11 @@ def job_manager():
             job.task.cancel()
 
 
+async def _all_events(job):
+    """Every event of the run, read to its end."""
+    return [event async for event in job.follow(keepalive=0.5) if event is not None]
+
+
 @pytest.fixture
 def reset_singleton():
     """Reset singleton before and after test."""
@@ -56,7 +61,6 @@ class TestBackgroundJob:
     """Test BackgroundJob dataclass."""
     
     def test_default_values(self):
-        queue = asyncio.Queue()
         task = MagicMock(spec=asyncio.Task)
         
         job = BackgroundJob(
@@ -65,7 +69,6 @@ class TestBackgroundJob:
             agent_name="test_agent",
             session_id="sess1",
             task=task,
-            event_queue=queue,
         )
         
         assert job.request_id == "req1"
@@ -82,6 +85,7 @@ class TestBackgroundJob:
         assert job.actual_session_id is None
         assert job.last_status_message is None
         assert job.task_description is None
+        assert len(job.events) == 0 and job.events_emitted == 0
 
 
 class TestBackgroundJobManager:
@@ -112,11 +116,7 @@ class TestBackgroundJobManager:
         assert job.status == JobStatus.RUNNING
         
         # Wait for job to complete and collect events
-        while True:
-            event = await asyncio.wait_for(job.event_queue.get(), timeout=2.0)
-            if event is None:
-                break
-            events_received.append(event)
+        events_received = await asyncio.wait_for(_all_events(job), timeout=2.0)
         
         assert len(events_received) == 3
         assert events_received[0] == {"type": "start"}
@@ -142,16 +142,11 @@ class TestBackgroundJobManager:
             agent_runner=failing_runner,
         )
         
-        # Collect events until None
-        events = []
-        while True:
-            event = await asyncio.wait_for(job.event_queue.get(), timeout=2.0)
-            if event is None:
-                break
-            events.append(event)
-        
-        assert len(events) == 1
-        assert events[0] == {"type": "start"}
+        events = await asyncio.wait_for(_all_events(job), timeout=2.0)
+
+        # the failure is said on the stream, not only in the job's status
+        assert events == [{"type": "start"},
+                          {"type": "error", "request_id": "req1", "message": "Test error"}]
         
         # Give task time to update status
         await asyncio.sleep(0.1)
@@ -244,7 +239,6 @@ class TestBackgroundJobManager:
         foreign = BackgroundJob(
             request_id="own1", user_id="u", agent_name="other",
             session_id=None, task=MagicMock(spec=asyncio.Task),
-            event_queue=asyncio.Queue(),
         )
         job_manager._jobs["own1"] = foreign
 
@@ -488,7 +482,7 @@ class TestBackgroundJobManager:
     
     @pytest.mark.asyncio
     async def test_event_buffer_overflow(self, job_manager):
-        """Test that queue overflow drops old events."""
+        """A full buffer drops its oldest events, and the count goes on."""
         # Use small buffer for testing
         original_max = BackgroundJobManager.MAX_EVENT_BUFFER
         BackgroundJobManager.MAX_EVENT_BUFFER = 5
@@ -512,16 +506,19 @@ class TestBackgroundJobManager:
             while job.status == JobStatus.RUNNING:
                 await asyncio.sleep(0.1)
             
-            # Queue should have at most MAX_EVENT_BUFFER + 1 (for None signal)
-            # Actually may have less due to race conditions
-            assert job.event_queue.qsize() <= 6  # 5 events + None
+            assert [e["index"] for e in job.events] == [5, 6, 7, 8, 9]
+            assert job.events_emitted == event_count
             
         finally:
             BackgroundJobManager.MAX_EVENT_BUFFER = original_max
     
     @pytest.mark.asyncio
     async def test_cleanup_old_jobs(self, job_manager):
-        """Test cleanup of old completed jobs."""
+        """A finished job past its TTL keeps how its run ended -- and stays, found by its id.
+
+        writer_jobs' story_design retry reconnects under the same id long after and reads
+        the answer from it; with the job gone, the retry started the whole run again.
+        """
         # Set very short TTL for testing
         original_ttl = BackgroundJobManager.COMPLETED_JOB_TTL
         BackgroundJobManager.COMPLETED_JOB_TTL = 0.1  # 100ms
@@ -529,6 +526,8 @@ class TestBackgroundJobManager:
         try:
             async def quick_runner():
                 yield {"type": "data"}
+                yield {"type": "final", "summary": "the answer"}
+                yield {"type": "data", "after": "the answer"}
             
             job = await job_manager.create_job(
                 request_id="req1",
@@ -551,8 +550,10 @@ class TestBackgroundJobManager:
             # Run cleanup
             await job_manager._cleanup_old_jobs()
             
-            # Job should be removed
-            assert await job_manager.get_job("req1") is None
+            assert await job_manager.get_job("req1") is job, "the finished job is gone"
+            assert job.status == JobStatus.COMPLETED
+            assert job.events_from(0) == ([{"type": "final", "summary": "the answer"},
+                                           {"type": "data", "after": "the answer"}], 3),                 "the job kept more, or less, than how its run ended"
             
         finally:
             BackgroundJobManager.COMPLETED_JOB_TTL = original_ttl
@@ -588,8 +589,9 @@ class TestBackgroundJobManager:
             # Run cleanup
             await job_manager._cleanup_old_jobs()
             
-            # Job should still exist because of SSE client
+            # A reader is on it: its buffer stays whole
             assert await job_manager.get_job("req1") is not None
+            assert list(job.events) == [{"type": "data"}]
             
         finally:
             BackgroundJobManager.COMPLETED_JOB_TTL = original_ttl
@@ -651,20 +653,6 @@ class TestCleanupLoop:
     """Test cleanup loop functionality."""
     
     @pytest.mark.asyncio
-    async def test_cleanup_loop_can_be_cancelled(self, job_manager):
-        """Test that cleanup loop can be cleanly cancelled."""
-        task = asyncio.create_task(job_manager.cleanup_loop())
-        
-        await asyncio.sleep(0.1)
-        task.cancel()
-        
-        # Cleanup loop handles cancellation gracefully and doesn't raise
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass  # This is also acceptable behavior
-    
-    @pytest.mark.asyncio
     async def test_start_stop_cleanup_task(self, job_manager):
         """Test starting and stopping cleanup task."""
         assert job_manager._cleanup_task is None
@@ -699,7 +687,7 @@ class TestCancelSession:
         job_manager._jobs["job-named-s1"].actual_session_id = "s1"
         answered = await job_manager.create_job(request_id="answered-of-s1", user_id="user1", agent_name="test_agent",
                                                 session_id="s1", agent_runner=answered_runner)
-        final = await asyncio.wait_for(answered.event_queue.get(), timeout=2)
+        final = await asyncio.wait_for(anext(aiter(answered.follow())), timeout=2)
         assert final["type"] == "final" and answered.status == JobStatus.RUNNING, "fixture: the job is not finishing"
         inline = _agent_owning({"inline-of-s1", "inline-of-s2"})
         inline._session_tracker = MagicMock()
@@ -985,3 +973,86 @@ class TestCancelJobIntegrationWithCancellationManager:
 
         ok = await mgr.cancel_job("never-existed")
         assert ok is False
+
+
+async def test_an_answer_delta_the_next_one_supersedes_is_kept_without_the_whole_answer(job_manager):
+    """Each answer delta carries the whole answer so far; the buffer held every prefix of it."""
+    sent = []
+
+    async def runner():
+        for n in range(1, 4):
+            for event in ({"type": "thinking_delta", "step": 1, "delta": "abc"[n - 1], "accumulated": "abc"[:n]},
+                          {"type": "status", "message": f"line {n}"},   # the forwarder's lines come between
+                          {"type": "sub_run", "run_id": "sub1", "event": {
+                              "type": "thinking_delta", "step": 1, "delta": "x", "accumulated": "x" * n}}):
+                sent.append(event)
+                yield event
+        yield {"type": "thinking_delta", "step": 2, "delta": "d", "accumulated": "d"}
+
+    job = await job_manager.create_job(request_id="deltas", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    held = list(job.events)
+    answer = [e for e in held if e["type"] == "thinking_delta"]
+    sub = [e["event"] for e in held if e["type"] == "sub_run"]
+    assert [e.get("accumulated") for e in answer] == [None, None, "abc", "d"], answer
+    assert "".join(e["delta"] for e in answer[:3]) == "abc", "agent-cli adds up the deltas"
+    assert [e.get("accumulated") for e in sub] == [None, None, "xxx"], sub
+    assert all("accumulated" in (e.get("event") or e) for e in sent if e["type"] != "status"), \
+        "the run's own events were changed in place"
+
+
+async def test_a_job_that_ended_without_an_answer_keeps_its_last_error(job_manager, monkeypatch):
+    monkeypatch.setattr(BackgroundJobManager, "COMPLETED_JOB_TTL", 0)
+
+    async def runner():
+        yield {"type": "error", "message": "a tool failed"}
+        yield {"type": "data"}
+        raise RuntimeError("the run broke")
+
+    job = await job_manager.create_job(request_id="broke", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    await asyncio.sleep(0.01)
+    await job_manager._cleanup_old_jobs()
+    assert [e["message"] for e in job.events] == ["the run broke"], list(job.events)
+
+
+async def test_answer_deltas_are_slimmed_in_a_buffer_that_has_overflowed(job_manager, monkeypatch):
+    monkeypatch.setattr(BackgroundJobManager, "MAX_EVENT_BUFFER", 4)
+
+    async def runner():
+        text = ""
+        for n in range(12):
+            text += f"{n} "
+            yield {"type": "thinking_delta", "step": 1, "delta": f"{n} ", "accumulated": text}
+            yield {"type": "status", "message": f"line {n}"}
+
+    job = await job_manager.create_job(request_id="full", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    await asyncio.sleep(0.01)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    deltas = [e for e in job.events if e["type"] == "thinking_delta"]
+    assert [e.get("accumulated") for e in deltas] == [None, "0 1 2 3 4 5 6 7 8 9 10 11 "], deltas
+
+
+async def test_a_reader_waiting_for_the_next_event_is_woken_by_it(job_manager):
+    go, hold = asyncio.Event(), asyncio.Event()
+
+    async def runner():
+        await go.wait()
+        yield {"type": "data"}
+        await hold.wait()   # still running: the run's end, which wakes everyone, is not what wakes it
+
+    job = await job_manager.create_job(request_id="wake", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    reader = job.follow(keepalive=30)   # longer than this test waits: only a wake-up reaches it
+    first = asyncio.ensure_future(reader.__anext__())
+    await asyncio.sleep(0.05)
+    go.set()
+    try:
+        assert await asyncio.wait_for(first, timeout=2.0) == {"type": "data"}
+    finally:
+        hold.set()
+        await reader.aclose()

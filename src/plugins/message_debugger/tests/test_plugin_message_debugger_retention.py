@@ -134,8 +134,12 @@ class TestManualPrune:
         assert _count_requests(db) == 120, "cost rows preserved through manual prune"
 
     @pytest.mark.asyncio
-    async def test_prune_endpoint_strips_reports_and_keeps_cost(self, db):
+    async def test_prune_endpoint_strips_reports_and_keeps_cost(self, db, monkeypatch):
+        import plugins.message_debugger.web_endpoints as endpoints
         from plugins.message_debugger.web_endpoints import MessageDebuggerWebFactory
+
+        # an admin asks; that only one may is test_plugin_message_debugger_access.py
+        monkeypatch.setattr(endpoints, "require_everything", lambda *args: None)
 
         _insert_requests(db, 120)
         factory = MessageDebuggerWebFactory(db=db)

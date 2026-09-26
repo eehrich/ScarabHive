@@ -240,6 +240,47 @@ async def test_the_ringing_stops_when_the_caller_read_it_itself(config, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_the_ringing_asks_a_guard_that_has_to_look_it_up(config, monkeypatch, instant_retry):
+    """The caller may read the result in another process -- a woken run -- and
+    only the stored state shows that: the guard has to await a read."""
+    rung = []
+
+    def notify(self, session_id, user_id):
+        rung.append(session_id)
+        return "delivered_next_step", ""
+
+    async def still_unread():
+        await asyncio.sleep(0)   # the look-up
+        return len(rung) < 2     # read elsewhere after the second ring
+
+    monkeypatch.setattr(SessionPresence, "notify", notify)
+
+    state = await wake_session(config, "sess-1", "someone", still_needed=still_unread)
+    assert state == "delivered_next_step"
+    assert len(rung) == 2, rung
+
+
+@pytest.mark.asyncio
+async def test_a_guard_that_fails_to_answer_keeps_it_ringing(config, monkeypatch, instant_retry):
+    """Its look-up can fail -- a file read half-written. Ringing on costs at most
+    a woken run; it used to end the wake, and the news was never delivered."""
+    monkeypatch.setattr(presence_module, "WAKE_RETRIES", 2)
+    rung = []
+
+    def notify(self, session_id, user_id):
+        rung.append(session_id)
+        return "delivered_next_step", ""
+
+    def cannot_tell():
+        raise PermissionError("the file is being replaced")
+
+    monkeypatch.setattr(SessionPresence, "notify", notify)
+
+    assert await wake_session(config, "sess-1", "someone", still_needed=cannot_tell) == "delivered_next_step"
+    assert len(rung) == 3, rung   # the whole budget, not the first ring alone
+
+
+@pytest.mark.asyncio
 async def test_the_ringing_is_bounded(config, monkeypatch, instant_retry):
     """A turn that outlasts the budget ends with the marker in place, and
     release() wakes the session on that -- but the ringing itself stops."""

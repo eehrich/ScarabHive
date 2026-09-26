@@ -336,7 +336,23 @@ function applyTheme(theme) {
   listeners.theme.forEach((fn) => fn(theme));
 }
 
-function setVisible(value) { visible = value !== false; }
+// Timers that skipped a tick while the panel was out of sight: coming back into view
+// catches each up once. Without it a panel brought back showed what it knew when it
+// went away, until its next tick -- up to a minute for a slow one --, and a click on
+// refresh looked like the thing that made auto-refresh work.
+const whenVisibleAgain = new Set();
+
+function visibleAgain() {
+  if (isVisible()) whenVisibleAgain.forEach((catchUp) => catchUp());
+}
+
+document.addEventListener('visibilitychange', visibleAgain);
+
+function setVisible(value) {
+  const was = visible;
+  visible = value !== false;
+  if (!was && visible) visibleAgain();
+}
 
 // What a panel says about itself before the handshake -- typically right at
 // load -- is kept (the latest of each) and sent once the shell has answered.
@@ -649,11 +665,34 @@ export function autoRefresh(fn, ms) {
   // above it setInterval's 32-bit limit wraps around to ~4 ms.
   const period = Math.min(Math.max(Number(ms) || 0, 1000), 86_400_000);
   let timer = null;
-  const tick = () => { if (isVisible()) fn(); };
+  let missed = false;
+  const tick = () => {
+    missed = !isVisible();
+    if (!missed) fn();
+  };
+  // once, however many ticks went by: it is the panel's state that is late, not a count.
+  // The beat starts over from here, or a tick due a moment later would load it all again.
+  const catchUp = () => {
+    if (!missed) return;
+    missed = false;
+    clearInterval(timer);
+    timer = setInterval(tick, period);
+    fn();
+  };
   return {
     get running() { return timer !== null; },
-    start() { if (timer === null) timer = setInterval(tick, period); },
-    stop() { if (timer !== null) { clearInterval(timer); timer = null; } },
+    start() {
+      if (timer !== null) return;
+      timer = setInterval(tick, period);
+      whenVisibleAgain.add(catchUp);
+    },
+    stop() {
+      if (timer === null) return;
+      clearInterval(timer);
+      timer = null;
+      missed = false;
+      whenVisibleAgain.delete(catchUp);
+    },
   };
 }
 
@@ -699,7 +738,10 @@ class RefreshControl extends HTMLElement {
       if (this.auto) this.auto.stop();
       this.auto = autoRefresh(() => fire(true), interval * 1000);
       if (on) this.auto.start();
-      toggle.textContent = seconds(interval);
+      // Off says off: the interval alone, in both states, told a paused panel from a
+      // live one by its tint only -- and a paused panel looked like one whose refresh
+      // did not work. What it would refresh at stays in the title.
+      toggle.textContent = on ? seconds(interval) : word('off');
       toggle.title = (on ? word('refreshingEvery') : word('refreshEveryTitle'))(seconds(interval));
       toggle.setAttribute('aria-pressed', String(on));
       menu.querySelectorAll('[data-interval]').forEach((item) => {

@@ -99,25 +99,25 @@ print(entry.content)  # Full content
 > und `list`/`read` bedienen ihn ohnehin schon.
 ### Archival Memory (`archival_memory.py`)
 
-Searchable archive of conversation history using SQLite FTS5 for text search and optional VectorStore for semantic search (supports ChromaDB and sqlite-vec backends).
+Searchable archive of conversation history using SQLite FTS5 for text search and optional VectorStore for semantic search (supports ChromaDB and sqlite-vec backends). With semantic search on, `search()` asks BOTH and fuses the two rankings (reciprocal rank fusion): a message both agree on ranks first, and one only the text index knows -- not embedded yet, or never, after a refused or cancelled batch -- still gets the place its text rank earns. The text half demands every word of the query there: fusion weighs by rank alone, and a row that matched only a common word would otherwise take a slot at the weight of a real hit. When the vector index has nothing for the session at all, the search is the broad text search (any word), exactly as without semantic search. Asked alone, the vector index answered over the part it held and never said which part that was. AND and OR written in capitals are operators in a query; any other word is looked for as written. NOT is not offered -- the vector half cannot exclude anything -- and the text search leaves the word after it out rather than looking for it.
+
+An entry's id is derived from the message (its session, its content, and its place among identical messages of the same batch), so archiving a message again writes nothing new. That is the retry after a compaction whose hook timed out inside the write: the worker thread commits regardless, the placeholders are lost with the pass, and with random ids every message of it ended up in the archive twice. Identical messages of different batches share one entry.
 
 ```python
+from pathlib import Path
+
 from plugins.context_engineer.archival_memory import ArchivalMemory
 
 archive = ArchivalMemory(Path("archive.db"), session_id="session_123")
+messages = [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
 
-# Archive a message
-archive.store_message(
-    role="assistant",
-    content="The Python code processes data in batches...",
-    turn_number=42
-)
+# Archive a message, or many in one transaction
+entry_id = archive.store({"role": "assistant",
+                          "content": "The Python code processes data in batches..."})
+ids = archive.store_many(messages)
 
-# Search text
-results = archive.search_text("batch processing", limit=5)
-
-# Semantic search (uses VectorStore - ChromaDB or sqlite-vec)
-results = archive.search_semantic("how to handle large datasets", limit=5)
+# Search: text index, fused with the vector index when semantic search is on
+results = archive.search("batch processing", limit=5)
 ```
 
 ### Layered Compaction (`compaction.py`)
@@ -127,10 +127,18 @@ Progressive compression strategy that applies increasingly aggressive techniques
 **Pre-Layer T (on arrival):**
 - A new tool result larger than `tool_result_max_window_share` (default 0.25) of the model's context window is stored right away, below every threshold and hysteresis. The agent reads it back with `read` (paged, or `find=` for the matching parts).
 - The bound is a share of the window, not a token count: a 1M model keeps a 100k chapter inline (the read tool pages 5000 characters at a time). Lower the share per agent for a tighter cap.
+- **A summary instead of a pointer** (`tool_result_summary_from`, tokens, 0 = off; `tool_result_summary_profile`, default `summarizer`, and an empty string switches it off too; like every key here, one left blank in an agent's overrides keeps the plugin's value): a result from that size on is stored AND a cheap model writes what it says into the placeholder the conversation keeps. This is for hand-overs — the expensive agent that was handed a sub-agent's answer pays for every token of it, and a bare pointer costs it a read call before it can act at all. The full text stays in the store; `read` returns it whole. The threshold is a token count, not a share: what the next agent pays does not shrink because its window is large.
+  - **Prose only.** A structured result (JSON) is neither summarized nor taken out of the conversation for this — a pointer nobody summarizes would cost the next agent a read call instead of saving one. A wrapper around prose is summarized by its prose, nested too (`result`, `content`, `text`, `output`, `answer`, `data`, three levels deep) — that is the shape the sub-agent manager, coding_cli and n8n hand over. The prose must be at least 80 % of the result: below that the other fields carry their own facts (a build result's `status`, `error` and `exit` next to its log), and a summary of the log alone would drop them.
+  - **Per tool, if you name them** (`tool_result_summary_tools`, fnmatch patterns over the tool name, which starts with the instance name: `coder_sam_manage_sub_agent`, so `*_manage_sub_agent` names every sub-agent manager and `sub_agent_manager_*` only the one of that name). Empty, the default, means every tool -- right for an agent that only takes hand-overs. An agent that also reads files through the same hook names the hand-over tools here, or a long file arrives as a summary it has to read back: a turn spent instead of saved. Matching is case-sensitive on every platform. A result whose message carries no tool name (a session restored mid tool-turn) stays whole as soon as patterns are set at all, `*` included -- no pattern an operator can write names it. With no patterns it is summarized like any other. A single pattern written as a string is split on commas; a key left blank in an agent's overrides keeps the plugin's patterns. Any other value that is not a list of patterns is dropped with a warning to a pattern that matches nothing, not to the empty list: empty means every tool, so a typo would otherwise turn this key into the most permissive setting there is.
+  - **On arrival only.** Layer 1 stores results too, the whole history at once; a model call per result there would spend the hook's budget and the compaction would be dropped with it. What Layer 1 stores keeps the cheap preview.
+  - **Bounded on both sides.** At most 60k characters of the result are shown to the model (the rest is only in the store, and the summary says so), at most 1200 characters come back (cut with `…`), and an answer longer than half the original counts as an echo, not a summary — measured on what the model wrote, before the cap.
+  - **One time budget per round**, not per call: 20 s for all summaries of the arrivals together, and under a second left no call is started. A round of parallel sub-agent results would otherwise add up past the hook's own budget, and the hook is dropped whole — with the storing every other result was due. A failed, timed out or cancelled call keeps the pointer; the turn never fails over a summary.
+  - **The profile is a name, not a model.** `summarizer` is a profile in `config/llm.yaml`; which model condenses text is configured there, once, for every plugin that summarizes. Nothing in this plugin names a model.
+  - **It leaves the process.** Every summarized result goes to that profile's provider — file contents included, since `read_file` answers are prose too. Pick a profile you trust with what the agent reads, and switch the feature on per agent (`hooks.overrides`), not plugin-wide.
 - Only the current round (after the last assistant message the model wrote) is touched: messages a request already carried and their reasoning artifacts stay as they were sent. The one block of our own is the restoration section, appended as a `developer` turn at the END (it used to sit behind the system prompt, where rebuilding it invalidated the cached prefix behind it); it explains how to read a stored result: it gains its "Tool Results" section when a session stores its first one, and for an agent whose calls normally skip the hook (no always-on media compaction) it is inserted whenever the hook runs — the same as on a Layer 1 run.
 
 **Pre-Layer P (message count, off by default):**
-- Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools.
+- Past `max_messages`, the oldest messages are archived and removed until `max_messages_prune_to` remain (0 = half the limit). No LLM call; the agent finds them again through the retrieval tools. With `enable_semantic_search` on, a prune larger than 200 messages writes its rows inside the request and embeds them in a background task, in chunks of 200, one batch at a time per loop: they are listed, readable by ref and found by their words at once; search by meaning reaches them a little later. The old answer was to skip the index there, and a half-indexed archive answers every similarity search over half of itself without saying so. Three things end an embedding early, and each says so in the log: a vector store that refuses a chunk, a session evicted under the task, and a one-shot CLI run whose loop closes while it is still going (the API's loop lives as long as the process). Without semantic search no embedding happens at any size and no task is started. What was not embedded is still readable by its ref and found by a filter whose every word it contains; not by meaning.
 - It is a hysteresis: each prune breaks the prompt cache, the next one comes about `max_messages - max_messages_prune_to` messages later (`min_tokens_between_compactions` can hold it longer). `200` / `100` breaks at most once per 100 messages; `max_messages_prune_to` equal to the limit prunes whenever the list is over it.
 - The task (first user message), the last user message, system messages and the round the model has not seen yet stay. Among the oldest messages placeholders go before real content; the choice stops before the newer half of what stays (a tool-call unit at that edge still leaves whole).
 
@@ -339,6 +347,10 @@ visible (`<pk-refresh>`). The compaction history is the hook's in-memory list (t
 | `GET /plugins/context_engineer/` | the panel |
 | `GET /plugins/context_engineer/history?session_id=&limit=100` | `{events, stats}`: the newest `limit` (1–1000) compactions of the session (all without `session_id`), newest first as the hook records them; `stats` = `events`, `tokens_saved`, `average_reduction` (percent, `null` without events), `media_always_compacted`, `media_deduplicated`, `media_compacted_after_event` over every event asked for |
 | `GET /plugins/context_engineer/session?session_id=` | `{tool_results: {count, tokens}, archived: {count, tokens}, core_memory: {facts: [{content, category, importance}], tokens, max_tokens}}`; `archived` counts the messages tagged with the session (what `list` reaches); a session without a directory holds nothing; a store that cannot be read → 503 with the reason |
+
+Who sees what (`agent_system/auth/session_access.py`, the rule of the usage tracker too): a user her own sessions --
+another user's answers as a session without compactions and without stores. Every session at once is an admin's
+(403 otherwise); with authentication off, everything is shown.
 
 `session_id` must match `^[A-Za-z0-9_-]+$` (422 otherwise): it names the session's directory. The endpoints only read:
 the stores are opened read-only and the core memory file is parsed, not loaded — nothing creates a session's files or

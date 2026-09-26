@@ -968,15 +968,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             # the hand-rolled call never did.
             from agent_system.llm.factory import create_llm_from_profile
 
-            ssl_verify = None
-            try:
-                ssl_verify = context.agent.system_config.network.ssl_verify
-            except Exception:
-                pass
-
             self._evaluator_llm = create_llm_from_profile(
-                context.agent.system_config, self._llm_profile,
-                ssl_verify=ssl_verify)
+                context.agent.system_config, self._llm_profile)
             model_name = getattr(
                 self._evaluator_llm, "model_name", "unknown"
             )

@@ -22,6 +22,12 @@ Plus the instances they run on, in [agents/tools.yaml](agents/tools.yaml):
 `coder_fs` (sandboxed read/write), `coder_fs_ro` (the same tree, read-only),
 `coder_shell`, and `coder_sam` (the sub-agent manager).
 
+Where Claude Code is installed, the coder also has `coding_cli` (the
+`coding_cli` plugin): it can hand a self-contained task to Claude Code, whose
+result comes back on a branch and goes through the same review as its own
+work. Its prompt section is rendered only when `has_tool('coding_cli_run_task')`
+finds the tool, so an installation without Claude Code sees none of it.
+
 Try it:
 
 ```bash
@@ -233,8 +239,11 @@ The enforced boundary in this harness is `coder_fs`, not the shell. Read that
 as: do not hand `coder_shell` to an agent you would not trust with the whole
 machine.
 
-It starts in `data/workspace` (`platform.initial_cwd`) so tests run where the
-code lives. One consequence is worth knowing: with the default sandbox,
+It starts at the repository root (`platform.initial_cwd: "."`) — the root
+`coder_fs` resolves relative paths against, so a path means one file in both
+tools. Started in `data/workspace`, the shell read every path the file tools
+gave it one level too deep: measured in 7 of 9 real coder sessions. One
+consequence is worth knowing: with the default sandbox,
 `data/workspace/` is *inside* this repository and *ignored* by it, so `git`
 from there resolves to the AgentSystem repo — it would show the agent other
 people's uncommitted changes and none of its own. The prompt therefore tells

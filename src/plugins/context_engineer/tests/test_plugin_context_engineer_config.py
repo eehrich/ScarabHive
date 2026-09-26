@@ -77,7 +77,10 @@ class TestShippedConfigArrives:
             if key == "storage_path":
                 continue
             got = effective.get(key)
-            if got is None or float(got) != float(want):
+            # Kein float(): 20000.0 == 20000 gilt ohnehin, und float() brach an
+            # der ersten Zeichenkette ab -- ein Profilname in plugins.yaml haette
+            # diesen Test umgeworfen, statt zu sagen, ob der Wert ankommt.
+            if got is None or got != want:
                 ignored.append(f"{key}: gesetzt {want!r}, wirksam {got!r}")
 
         assert not ignored, (

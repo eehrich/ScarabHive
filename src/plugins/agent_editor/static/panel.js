@@ -1309,6 +1309,13 @@ function drawModel() {
     'No profile: the model default “normal” applies.')}
       ${chainField(['agent_config', 'llm_profile_advanced'], 'Advanced chain', 'Used while the agent escalates.',
     'No advanced chain: use_advanced_model runs on the model chain above, and auto-escalation stays off.')}
+      <div class="ae-grid">
+        ${field(['agent_config', 'inherit_parent_llm'], 'Caller’s model',
+          toggle(['agent_config', 'inherit_parent_llm'], 'Run on the model the calling agent was switched to', false),
+          { help: 'Only when the run that starts this agent was switched to another model than its own (the chat’s model '
+            + 'picker, /model, --llm, the API’s profile, use_advanced_model). Its own parameters for that model still apply, '
+            + 'and the chains above stay the fallback, their primary first.' })}
+      </div>
     </section>
     <section class="ae-section" aria-labelledby="modelSettingsTitle">
       <h3 class="ae-section-title" id="modelSettingsTitle">Model settings</h3>

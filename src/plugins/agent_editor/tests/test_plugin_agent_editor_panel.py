@@ -330,6 +330,7 @@ EXPECTED = [
     'an edited field marks the form dirty, and Save writes the diff it showed into the file',
     'resetting a field to the inherited value removes its key from the file',
     'the model chain adds, reorders and removes profiles',
+    'the model tab lets an agent follow its caller’s model, and a child inherits the switch',
     'the run tab sets the core run settings key by key, and says when auto-escalation cannot run',
     'a small YAML field keeps text that does not parse, and the head counts it as a change',
     'the tool tree grants whole servers and single tools as production does, blocks, and the count follows',

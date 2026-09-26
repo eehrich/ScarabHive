@@ -10,7 +10,7 @@ import pytest
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.decision.server import DecisionServer
-from plugins.llm_decisions.openrouter import Answer, DecisionsResult
+from plugins.llm_decisions.system_one import Answer, DecisionsResult
 
 
 def _make_server(**server_cfg_kwargs) -> DecisionServer:
@@ -319,6 +319,79 @@ async def test_evaluate_scores_batch_happy_path():
     assert result["summary"]["total_items"] == 2
     assert closing.phase is StatusPhase.END
     assert "2 items evaluated" in closing.message
+
+
+TWO_ITEMS = [{"id": "a", "context": "one"}, {"id": "b", "context": "two"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, params, answer", [
+    ("decision_evaluate_probabilities", {"items": TWO_ITEMS, "questions": ["Is it valid?"]},
+     Answer(name="q1", type="noul", value=0.5)),
+    ("decision_evaluate_scores",
+     {"items": TWO_ITEMS, "criteria": [{"id": "q1", "question": "How good?", "scale": ["low", "high"]}]},
+     Answer(name="q1", type="score", value=1.0)),
+])
+async def test_a_cost_the_host_did_not_report_is_unknown_not_zero(tool, params, answer):
+    """A local Laya and TypeSafe direct answer without a cost (DecisionsResult:
+    None is not free). Summing the known part would tell the agent the batch
+    cost less than it did -- or nothing at all."""
+
+    async def run(costs):
+        server = _make_server()
+        remaining = list(costs)
+
+        async def decide(state, questions, **kwargs):
+            return DecisionsResult(answers={"q1": answer}, model="m", provider=None, id=None,
+                                   input_tokens=10, output_tokens=0, cost=remaining.pop(),
+                                   duration_ms=1.0)
+
+        server._client = MagicMock(decide=AsyncMock(side_effect=decide))
+        server._cached_profile = None
+        result, _ = await _run_tool(server, tool, params)
+        assert result["summary"]["successful_items"] == 2, result
+        return result["summary"]["total_cost"]
+
+    assert await run([0.00002, None]) is None
+    # control: every answer priced, and the sum stands
+    assert await run([0.00002, 0.00003]) == pytest.approx(0.00005)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, params", [
+    ("decision_evaluate_probabilities", {"items": TWO_ITEMS, "questions": ["Is it valid?"]}),
+    ("decision_evaluate_scores",
+     {"items": TWO_ITEMS, "criteria": [{"id": "q1", "question": "How good?", "scale": ["low", "high"]}]}),
+])
+async def test_an_answer_the_client_refused_is_still_part_of_the_spend(tool, params):
+    """Item b's answer was billed and then refused (a question left
+    unanswered): the item fails, its cost does not vanish. A failure that
+    never reached an answer carries no usage and adds nothing."""
+    from plugins.llm_decisions.system_one import DecisionsError
+
+    async def run(failure):
+        server = _make_server()
+
+        async def decide(state, questions, **kwargs):
+            if state == "two":
+                raise failure
+            return DecisionsResult(answers={"q1": Answer(name="q1", type="noul", value=0.5)},
+                                   model="m", provider=None, id=None, input_tokens=10,
+                                   output_tokens=1, cost=0.00002, duration_ms=1.0)
+
+        server._client = MagicMock(decide=AsyncMock(side_effect=decide))
+        server._cached_profile = None
+        result, _ = await _run_tool(server, tool, params)
+        assert result["status"] == "partial_success", result
+        return result["summary"]
+
+    billed = await run(DecisionsError("left q1 unanswered",
+                                      usage={"input_tokens": 30, "output_tokens": 0, "cost": 0.00001}))
+    assert billed["total_cost"] == pytest.approx(0.00003)
+    assert (billed["total_input_tokens"], billed["total_output_tokens"]) == (40, 1)
+    # control: nothing answered, nothing billed
+    unbilled = await run(DecisionsError("Decisions call failed: ConnectError"))
+    assert unbilled["total_cost"] == pytest.approx(0.00002) and unbilled["total_input_tokens"] == 10
 
 
 @pytest.mark.asyncio

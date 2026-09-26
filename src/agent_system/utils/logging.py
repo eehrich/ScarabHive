@@ -4,7 +4,8 @@ import logging
 import os
 import re
 import sys
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
@@ -264,3 +265,21 @@ def setup_logging(
         pass
 
     return file_path
+
+
+def setup_role_logging(logging_config: Any, role: str) -> Optional[str]:
+    """setup_logging for one process role ("api", "cli") from the logging config.
+
+    The file is the role's own ``file_<role>`` setting, else the shared
+    ``file`` with the role in its name -- logs/agent.log becomes
+    logs/agent-cli.log -- so the API and a CLI running next to it do not
+    write into one file.
+    """
+    path = getattr(logging_config, f"file_{role}", None)
+    if not path:
+        base = Path(logging_config.file or "logs/agent.log")
+        path = str(base.with_name(f"{base.stem or 'agent'}-{role}{''.join(base.suffixes) or '.log'}"))
+    return setup_logging(logging_config.enabled, logging_config.level, path,
+                         rotation_enabled=logging_config.rotation_enabled,
+                         max_bytes=logging_config.max_bytes,
+                         backup_count=logging_config.backup_count)

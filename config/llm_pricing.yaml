@@ -519,3 +519,12 @@ moonshotai/kimi-k3:
 "gpt-oss:20b":
   input: 0.00
   output: 0.00
+
+# =============================================================================
+# Lokal (laya-serve, Decision-Modell) — keine Kosten. Die Antwort nennt keine
+# Kosten; ohne Zeile waere der Aufruf im Tracker "unbekannt" statt 0.
+# Schluessel = `model` des Eintrags in decision_models (llm.yaml).
+# =============================================================================
+laya-multilingual:
+  input: 0.00
+  output: 0.00
