@@ -3,9 +3,12 @@
 Provides REST API endpoints and web panel for viewing captured message turns
 and raw LLM API request/response logs from the SQLite database.
 
-Every endpoint but the page itself is an admin's: the raw traffic of every
-session and user -- system prompts, tool calls, answers -- is the operator's
-data, and anyone signed in used to read it, clear it and prune it.
+A user reads the captures of their own calls, an admin everyone's (and may
+name one user). Each row carries the user whose call it was; the database
+refuses a read that does not say whose rows it wants (database.py), so the
+rule sits in one place: _owner. A row nobody owns -- a call no run named a
+user for, everything captured before rows had owners -- is an admin's.
+Clearing and pruning act on everyone's rows and stay an admin's.
 """
 from __future__ import annotations
 
@@ -17,11 +20,14 @@ from typing import TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 
+from agent_system.auth.database import UserDatabase
 from agent_system.auth.dependencies import get_optional_user
 from agent_system.auth.models import User
-from agent_system.auth.session_access import require_everything
+from agent_system.auth.session_access import require_everything, sees_everything, viewer
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
+
+from .database import EVERYONE, Account
 
 if TYPE_CHECKING:
     from .database import MessageDebuggerDB
@@ -54,7 +60,24 @@ class MessageDebuggerWebFactory:
         self.db = db
         self.server = server
         self.templates = ui_templates(Path(__file__).parent / "templates")
-    
+
+    @staticmethod
+    def _owner(request: Request, current_user: Optional[User], user_id: Optional[str] = None):
+        """Whose rows a request reads: an admin everyone's, or the one user it names;
+        anyone else their own -- captured since their account was made, as a new
+        account under a deleted user's name must not read the old one's. Naming
+        another user is an admin's; so are the rows of the identities without an
+        account ("anonymous", "cli_user") -- runs whose owner nobody knew were
+        recorded under them."""
+        if sees_everything(request, current_user):
+            return user_id or EVERYONE
+        own = viewer(current_user)
+        if own in UserDatabase.RESERVED_USERNAMES:
+            raise HTTPException(status_code=403, detail="Sign in to see the captures of your own runs.")
+        if user_id and user_id != own:
+            raise HTTPException(status_code=403, detail="Another user's captures are for admins.")
+        return Account(own, current_user.created_at.timestamp() * 1000)
+
     # ---- Turns endpoints ----
     
     async def list_turns(
@@ -64,6 +87,7 @@ class MessageDebuggerWebFactory:
         session_id: str | None = Query(default=None, description="Filter by session ID"),
         request_id: str | None = Query(default=None, description="Filter by request ID"),
         snapshot_type: str | None = Query(default=None, description="Filter by type (pre_llm/post_llm)"),
+        user_id: str | None = Query(default=None, description="Admins: only this user's entries"),
         max_id: int | None = Query(default=None, ge=0, le=LARGEST_INTEGER, description=(
             "Only entries up to this id: the list as it stood at an earlier answer's as_of_id")),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum turns to return"),
@@ -75,9 +99,10 @@ class MessageDebuggerWebFactory:
         The answer holds still at ``as_of_id``: the newest turn when it was asked, or ``max_id``. A viewer who
         passes it back sees the same list -- a page more, other filters -- and nothing captured since.
         """
-        require_everything(request, current_user, "What the message debugger captured")
-        as_of = self.db.newest_id("turns") if max_id is None else max_id  # first: a turn written meanwhile waits
-        filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        owner = self._owner(request, current_user, user_id)
+        # first: a turn written meanwhile waits
+        as_of = self.db.newest_id("turns", owner=owner) if max_id is None else max_id
+        filters = dict(owner=owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                        snapshot_type=snapshot_type, max_id=as_of)
         turns = self.db.get_turns(**filters, limit=limit, offset=offset)
         total = self.db.count_turns(**filters)
@@ -92,8 +117,9 @@ class MessageDebuggerWebFactory:
     
     async def get_turn(self, request: Request, turn_id: int, current_user: Optional[User] = Depends(get_optional_user)):
         """Get detailed information for a specific turn."""
-        require_everything(request, current_user, "What the message debugger captured")
-        turn = self.db.get_turn(turn_id) if abs(turn_id) <= LARGEST_INTEGER else None
+        owner = self._owner(request, current_user)
+        # Another user's turn is answered like one that does not exist: a 403 would confirm it does.
+        turn = self.db.get_turn(turn_id, owner=owner) if abs(turn_id) <= LARGEST_INTEGER else None
         if not turn:
             raise HTTPException(status_code=404, detail=f"Turn {turn_id} not found")
         return turn
@@ -108,6 +134,7 @@ class MessageDebuggerWebFactory:
         request_id: str | None = Query(default=None, description="Filter by request ID"),
         direction: str | None = Query(default=None, description="Filter by direction (request/response)"),
         provider: str | None = Query(default=None, description="Filter by provider"),
+        user_id: str | None = Query(default=None, description="Admins: only this user's entries"),
         max_id: int | None = Query(default=None, ge=0, le=LARGEST_INTEGER, description=(
             "Only entries up to this id: the list as it stood at an earlier answer's as_of_id")),
         limit: int = Query(default=50, ge=1, le=500, description="Maximum entries to return"),
@@ -118,9 +145,9 @@ class MessageDebuggerWebFactory:
 
         Holds still at ``as_of_id`` like the turns list.
         """
-        require_everything(request, current_user, "What the message debugger captured")
-        as_of = self.db.newest_id("llm_requests") if max_id is None else max_id
-        filters = dict(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        owner = self._owner(request, current_user, user_id)
+        as_of = self.db.newest_id("llm_requests", owner=owner) if max_id is None else max_id
+        filters = dict(owner=owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                        direction=direction, provider=provider, max_id=as_of)
         items = self.db.get_llm_requests(**filters, limit=limit, offset=offset)
         total = self.db.count_llm_requests(**filters)
@@ -135,18 +162,24 @@ class MessageDebuggerWebFactory:
 
     async def get_llm_request(self, request: Request, entry_id: int, current_user: Optional[User] = Depends(get_optional_user)):
         """Get one LLM request log entry by its row ID."""
-        require_everything(request, current_user, "What the message debugger captured")
-        item = self.db.get_llm_request(entry_id) if abs(entry_id) <= LARGEST_INTEGER else None
+        owner = self._owner(request, current_user)
+        item = self.db.get_llm_request(entry_id, owner=owner) if abs(entry_id) <= LARGEST_INTEGER else None
         if not item:
             raise HTTPException(status_code=404, detail=f"LLM request log entry {entry_id} not found")
         return item
     
     # ---- Stats & maintenance ----
     
-    async def get_stats(self, request: Request, current_user: Optional[User] = Depends(get_optional_user)):
-        """Get statistics about captured data."""
-        require_everything(request, current_user, "What the message debugger captured")
-        return self.db.get_stats()
+    async def get_stats(
+        self,
+        request: Request,
+        user_id: str | None = Query(default=None, description="Admins: only this user's entries"),
+        current_user: Optional[User] = Depends(get_optional_user),
+    ):
+        """Statistics about the captures the viewer may read; ``sees_everything`` tells the panel whether the
+        viewer is an admin (the user filter, clearing, pruning)."""
+        owner = self._owner(request, current_user, user_id)
+        return {**self.db.get_stats(owner=owner), "sees_everything": sees_everything(request, current_user)}
     
     async def clear_all(self, request: Request, current_user: Optional[User] = Depends(get_optional_user)):
         """Clear all captured data."""

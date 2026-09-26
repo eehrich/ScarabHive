@@ -12,18 +12,47 @@ import queue
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
+class _Everyone:
+    """Whose rows an admin reads: all of them, the ones nobody owns too."""
+
+    def __repr__(self) -> str:
+        return "EVERYONE"
+
+
+#: The owner a read passes to get every row. Any other read names the one user
+#: whose rows it gets; a read that names nobody is refused (see _owner_clause).
+EVERYONE = _Everyone()
+
+
+@dataclass(frozen=True)
+class Account:
+    """A signed-in user's own rows: those under their name captured since their
+    account was made. Names come free again when an account is deleted, and a
+    new account under the name must not read what the old one left."""
+
+    user_id: str
+    since_ms: float
+
+
 class MessageDebuggerDB:
     """SQLite-backed storage for message debugger data.
-    
+
     Tables:
     - turns: Agent-level message snapshots (pre_llm / post_llm)
     - llm_requests: LLM-client-level raw API request/response logs
+
+    Each row carries the user whose call it was (``user_id``; NULL: nobody's --
+    a call no run named a user for, and every row from before the column).
+    Every read takes ``owner`` as a required keyword: a user's name, or
+    EVERYONE. There is no default, so a read that forgot whose rows it wants
+    fails instead of answering with everybody's.
     """
     
     def __init__(self, db_path: str | Path, wal_mode: bool = True, max_size_mb: float = 5120,
@@ -123,7 +152,8 @@ class MessageDebuggerDB:
                 context_window INTEGER,
                 messages_json TEXT,
                 llm_response_json TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                user_id TEXT
             );
             
             CREATE TABLE IF NOT EXISTS llm_requests (
@@ -144,7 +174,8 @@ class MessageDebuggerDB:
                 usage_json TEXT,
                 finish_reason TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                served_by TEXT
+                served_by TEXT,
+                user_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_turns_agent ON turns(agent_name);
@@ -183,10 +214,40 @@ class MessageDebuggerDB:
         """)
         # Databases from before served_by existed. ADD COLUMN only touches the
         # schema, not the rows: instant even on a multi-GB file.
-        if "served_by" not in {row[1] for row in conn.execute("PRAGMA table_info(llm_requests)")}:
-            conn.execute("ALTER TABLE llm_requests ADD COLUMN served_by TEXT")
+        self._add_column(conn, "llm_requests", "served_by")
+        # A user's reads go through this index only (_where), and it holds every
+        # column they filter and count by: user_id and error sit behind the
+        # payloads, and reading either from a row walks them all -- the
+        # statistics a panel asks for every few seconds included. Rows from
+        # before the column do not hold it, so building the index reads no
+        # payload: once, some seconds on a multi-GB file.
+        covering = {
+            "turns": "user_id, timestamp_ms, agent_name, session_id, request_id, snapshot_type",
+            "llm_requests": "user_id, timestamp_ms, agent_name, session_id, request_id, direction, provider, error",
+        }
+        for table, columns in covering.items():
+            self._add_column(conn, table, "user_id")
+            try:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_user ON {table}({columns}) "
+                             "WHERE user_id IS NOT NULL")
+            except sqlite3.OperationalError as e:  # another process builds it right now
+                logger.warning("message_debugger: index on %s.user_id not built (%s) -- the next start builds it",
+                               table, e)
         conn.commit()
     
+    @staticmethod
+    def _add_column(conn: sqlite3.Connection, table: str, column: str) -> None:
+        """ADD COLUMN on a file from before it (only the schema changes: instant on a multi-GB file).
+        Another process starting at the same moment may add it between the look and the ALTER --
+        its "duplicate column" is no failure, and must not cost this process its debugger."""
+        if column in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            return
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise
+
     # ---- Turn operations ----
     
     def insert_turn(
@@ -202,6 +263,7 @@ class MessageDebuggerDB:
         context_window: Optional[int] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
         llm_response: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> int:
         """Insert a conversation turn snapshot.
         
@@ -213,8 +275,8 @@ class MessageDebuggerDB:
             """INSERT INTO turns 
                (timestamp_ms, snapshot_type, agent_name, request_id, session_id,
                 step, message_count, total_tokens, context_window,
-                messages_json, llm_response_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                messages_json, llm_response_json, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp_ms,
                 snapshot_type,
@@ -227,6 +289,7 @@ class MessageDebuggerDB:
                 context_window,
                 json.dumps(messages, default=str) if messages else None,
                 json.dumps(llm_response, default=str) if llm_response else None,
+                user_id,
             )
         )
         conn.commit()
@@ -237,36 +300,58 @@ class MessageDebuggerDB:
     _TURNS_LIST_COLS = (
         "id, timestamp_ms, snapshot_type, agent_name, request_id, "
         "session_id, step, message_count, total_tokens, context_window, "
-        "json_extract(llm_response_json, '$.usage') AS usage_json, created_at"
+        "json_extract(llm_response_json, '$.usage') AS usage_json, created_at, user_id"
     )
     _LLM_REQUESTS_LIST_COLS = (
         "id, timestamp_ms, direction, agent_name, request_id, "
         "session_id, provider, model, url, is_streaming, "
-        "error, duration_ms, usage_json, finish_reason, created_at, served_by"
+        "error, duration_ms, usage_json, finish_reason, created_at, served_by, user_id"
     )
 
     @staticmethod
-    def _where(request_id: Optional[str] = None, max_id: Optional[int] = None,
+    def _owner_clause(owner: Any) -> tuple[list[str], list]:
+        """The rows ``owner`` may read: EVERYONE all of them, a name every row under it (an admin
+        asking for one user), an Account its rows since it was made.
+
+        Anything else is refused, loudly: a read that did not say whose rows it
+        wants would otherwise get everybody's, and nothing in the answer shows it.
+        """
+        if owner is EVERYONE:
+            return [], []
+        if isinstance(owner, Account) and owner.user_id:
+            return ["user_id = ?", "timestamp_ms >= ?"], [owner.user_id, owner.since_ms]
+        if isinstance(owner, str) and owner:
+            return ["user_id = ?"], [owner]
+        raise ValueError(f"not an owner: {owner!r} -- a user id, or EVERYONE")
+
+    @classmethod
+    def _where(cls, owner: Any, request_id: Optional[str] = None, max_id: Optional[int] = None,
                **filters: Optional[str]) -> tuple[str, list]:
-        """The WHERE clause of a list or count query: each filter given is an equality on its column.
+        """The WHERE clause of a list or count query: ``owner``'s rows, each filter given an equality on its column.
 
         A request takes the calls under it along: tool calls and sub-agents run under ``<request_id>_...`` ids.
         ``max_id`` keeps to the rows that existed when it was the newest id (ids only ever grow).
+        For one user's rows the other columns are written ``+column``: no index but the user's may serve
+        them, since any other one would read user_id from each row it finds (see _init_schema).
         """
+        clauses, params = cls._owner_clause(owner)
+        mark = "+" if clauses else ""
         given = {column: value for column, value in filters.items() if value}
-        clauses = [f"{column} = ?" for column in given]
-        params: list = list(given.values())
+        clauses += [f"{mark}{column} = ?" for column in given]
+        params += list(given.values())
         if max_id is not None:
             clauses.append("+id <= ?")  # "+": not a rowid range -- a count would read the table instead of an index
             params.append(max_id)
         if request_id:
             # the ids that start with "<request_id>_" as a range the index serves: '`' is the character after '_'
-            clauses.append("(request_id = ? OR (request_id >= ? AND request_id < ?))")
+            clauses.append(f"({mark}request_id = ? OR ({mark}request_id >= ? AND {mark}request_id < ?))")
             params += [request_id, f"{request_id}_", f"{request_id}`"]
         return (f" WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
     def get_turns(
         self,
+        *,
+        owner: Any,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -280,7 +365,7 @@ class MessageDebuggerDB:
         Returns lightweight rows (no messages_json) for list views.
         Use get_turn(id) to fetch full details including messages.
         """
-        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        where, params = self._where(owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                                     snapshot_type=snapshot_type, max_id=max_id)
         rows = self._get_conn().execute(
             f"SELECT {self._TURNS_LIST_COLS} FROM turns{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
@@ -288,14 +373,20 @@ class MessageDebuggerDB:
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
-    def get_turn(self, turn_id: int) -> Optional[Dict[str, Any]]:
-        """Get a specific turn by ID."""
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM turns WHERE id = ?", (turn_id,)).fetchone()
+    def get_turn(self, turn_id: int, *, owner: Any) -> Optional[Dict[str, Any]]:
+        """Get a specific turn by ID; None when it is not ``owner``'s either."""
+        return self._get_row("turns", turn_id, owner)
+
+    def _get_row(self, table: str, row_id: int, owner: Any) -> Optional[Dict[str, Any]]:
+        clauses, params = self._owner_clause(owner)
+        mine = "".join(f" AND {clause}" for clause in clauses)
+        row = self._get_conn().execute(f"SELECT * FROM {table} WHERE id = ?{mine}", (row_id, *params)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def count_turns(
         self,
+        *,
+        owner: Any,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -303,7 +394,7 @@ class MessageDebuggerDB:
         max_id: Optional[int] = None,
     ) -> int:
         """Count the turns get_turns finds with the same filters."""
-        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        where, params = self._where(owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                                     snapshot_type=snapshot_type, max_id=max_id)
         return self._get_conn().execute(f"SELECT COUNT(*) FROM turns{where}", params).fetchone()[0]
     
@@ -327,6 +418,7 @@ class MessageDebuggerDB:
         usage: Optional[Dict[str, Any]] = None,
         finish_reason: Optional[str] = None,
         served_by: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> int:
         """Insert an LLM API request or response log entry.
 
@@ -342,8 +434,8 @@ class MessageDebuggerDB:
                (timestamp_ms, direction, agent_name, request_id, session_id,
                 provider, model, url, is_streaming,
                 payload_json, response_json, error, duration_ms,
-                usage_json, finish_reason, served_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                usage_json, finish_reason, served_by, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp_ms,
                 direction,
@@ -361,6 +453,7 @@ class MessageDebuggerDB:
                 json.dumps(usage, default=str) if usage else None,
                 finish_reason,
                 served_by,
+                user_id,
             )
         )
         conn.commit()
@@ -457,6 +550,8 @@ class MessageDebuggerDB:
 
     def get_llm_requests(
         self,
+        *,
+        owner: Any,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -471,7 +566,7 @@ class MessageDebuggerDB:
         Returns lightweight rows (no payload_json/response_json) for list views.
         Use get_llm_request(id) to fetch full details.
         """
-        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        where, params = self._where(owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                                     direction=direction, provider=provider, max_id=max_id)
         rows = self._get_conn().execute(
             f"SELECT {self._LLM_REQUESTS_LIST_COLS} FROM llm_requests{where} ORDER BY timestamp_ms DESC LIMIT ? OFFSET ?",
@@ -479,14 +574,14 @@ class MessageDebuggerDB:
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
-    def get_llm_request(self, req_id: int) -> Optional[Dict[str, Any]]:
-        """Get a specific LLM request by ID."""
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM llm_requests WHERE id = ?", (req_id,)).fetchone()
-        return self._row_to_dict(row) if row else None
+    def get_llm_request(self, req_id: int, *, owner: Any) -> Optional[Dict[str, Any]]:
+        """Get a specific LLM request by ID; None when it is not ``owner``'s either."""
+        return self._get_row("llm_requests", req_id, owner)
 
     def count_llm_requests(
         self,
+        *,
+        owner: Any,
         agent_name: Optional[str] = None,
         session_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -495,71 +590,84 @@ class MessageDebuggerDB:
         max_id: Optional[int] = None,
     ) -> int:
         """Count the LLM request logs get_llm_requests finds with the same filters."""
-        where, params = self._where(agent_name=agent_name, session_id=session_id, request_id=request_id,
+        where, params = self._where(owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                                     direction=direction, provider=provider, max_id=max_id)
         return self._get_conn().execute(f"SELECT COUNT(*) FROM llm_requests{where}", params).fetchone()[0]
     
-    def newest_id(self, table: str) -> int:
-        """The id the newest row of ``turns`` or ``llm_requests`` has, 0 for an empty table: a list's point in time."""
+    def newest_id(self, table: str, *, owner: Any) -> int:
+        """The id the newest of ``owner``'s rows in ``turns`` or ``llm_requests`` has, 0 for none: a list's point
+        in time."""
         if table not in ("turns", "llm_requests"):
             raise ValueError(f"not a list table: {table}")
-        return self._get_conn().execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
+        where, params = self._where(owner)
+        # MAX(id) of one user's rows would walk the rowids down from the newest and read
+        # user_id from each row it passes; MAX(+id) takes the user's index (see _where).
+        mark = "+" if params else ""
+        return self._get_conn().execute(f"SELECT COALESCE(MAX({mark}id), 0) FROM {table}{where}",
+                                        params).fetchone()[0]
 
     # ---- Stats ----
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get overall statistics.
-        
+    def get_stats(self, *, owner: Any) -> Dict[str, Any]:
+        """Statistics over ``owner``'s rows.
+
         Optimised to avoid expensive full-table aggregations on large
         databases.  Uses indexed COUNT queries and limits the session
-        list to avoid scanning hundreds of thousands of rows.
+        list to avoid scanning hundreds of thousands of rows. The size of
+        the file is everyone's rows: only EVERYONE's statistics name it.
         """
         conn = self._get_conn()
-        
-        turn_count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-        request_count = conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone()[0]
-        
+        where, params = self._where(owner)
+        mine = where.replace(" WHERE ", " AND ", 1)
+        # One user's rows: the other columns as +column, see _where -- in the
+        # select list too: a DISTINCT would otherwise walk the agent or provider
+        # index over everyone's rows and read user_id from each.
+        mark = "+" if params else ""
+
+        turn_count = conn.execute(f"SELECT COUNT(*) FROM turns{where}", params).fetchone()[0]
+        request_count = conn.execute(f"SELECT COUNT(*) FROM llm_requests{where}", params).fetchone()[0]
+
         # Use separate indexed queries instead of UNION (faster on large DBs)
         agents_set: set[str] = set()
         for row in conn.execute(
-            "SELECT DISTINCT agent_name FROM turns WHERE agent_name != ''"
+            f"SELECT DISTINCT {mark}agent_name FROM turns WHERE {mark}agent_name != ''{mine}", params
         ).fetchall():
             agents_set.add(row[0])
         for row in conn.execute(
-            "SELECT DISTINCT agent_name FROM llm_requests WHERE agent_name != ''"
+            f"SELECT DISTINCT {mark}agent_name FROM llm_requests WHERE {mark}agent_name != ''{mine}", params
         ).fetchall():
             agents_set.add(row[0])
-        
+
         providers = [r[0] for r in conn.execute(
-            "SELECT DISTINCT provider FROM llm_requests WHERE provider != ''"
+            f"SELECT DISTINCT {mark}provider FROM llm_requests WHERE {mark}provider != ''{mine}", params
         ).fetchall()]
-        
-        # Error count uses partial index (fast)
+
+        # Error count uses partial index (fast); one user's reads the error of each of their rows
         error_count = conn.execute(
-            "SELECT COUNT(*) FROM llm_requests WHERE error IS NOT NULL AND error != ''"
+            f"SELECT COUNT(*) FROM llm_requests WHERE {mark}error IS NOT NULL AND {mark}error != ''{mine}", params
         ).fetchone()[0]
-        
+
         # Session count instead of full list (much cheaper)
         session_count_turns = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM turns WHERE session_id != ''"
+            f"SELECT COUNT(DISTINCT {mark}session_id) FROM turns WHERE {mark}session_id != ''{mine}", params
         ).fetchone()[0]
         session_count_reqs = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM llm_requests WHERE session_id != ''"
+            f"SELECT COUNT(DISTINCT {mark}session_id) FROM llm_requests WHERE {mark}session_id != ''{mine}", params
         ).fetchone()[0]
         session_count = max(session_count_turns, session_count_reqs)
-        
-        # DB file size
-        db_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
-        
-        return {
+
+        stats = {
             "total_turns": turn_count,
             "total_llm_requests": request_count,
             "unique_agents": sorted(agents_set),
             "unique_session_count": session_count,
             "unique_providers": sorted(providers),
             "error_count": error_count,
-            "db_size_mb": round(db_size_bytes / (1024 * 1024), 1),
         }
+        if owner is EVERYONE:
+            db_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+            stats["db_size_mb"] = round(db_size_bytes / (1024 * 1024), 1)
+        return stats
     
     # ---- Maintenance ----
     

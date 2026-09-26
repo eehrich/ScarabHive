@@ -10,6 +10,7 @@ write. These tests prove: the hook returns without waiting for the DB, the write
 runs on the writer thread, and the data still persists correctly after a flush.
 """
 
+from plugins.message_debugger.database import EVERYONE
 import asyncio
 import threading
 import time
@@ -74,7 +75,7 @@ class TestFireAndForget:
         assert elapsed < 0.2, f"hook blocked {elapsed:.2f}s on the (slow) DB write"
         # The write is running on the background writer; drain it, then it's there.
         assert db.flush(timeout=3)
-        assert len(db.get_turns()) == 1
+        assert len(db.get_turns(owner=EVERYONE)) == 1
 
     @pytest.mark.asyncio
     async def test_turn_write_runs_on_writer_thread(self, hooks, db, messages):
@@ -96,7 +97,7 @@ class TestFireAndForget:
         assert db.flush(timeout=3)
         assert sink.get("ident") not in (None, main_ident), "write ran on the caller thread"
         assert sink.get("name") == "msgdbg-writer"
-        assert len(db.get_turns()) == 1
+        assert len(db.get_turns(owner=EVERYONE)) == 1
 
     @pytest.mark.asyncio
     async def test_llm_request_write_off_caller_thread(self, hooks, db):
@@ -122,7 +123,7 @@ class TestFireAndForget:
         assert result.success is True
         assert db.flush(timeout=3)
         assert sink.get("ident") not in (None, main_ident)
-        assert len(db.get_llm_requests(direction="request")) == 1
+        assert len(db.get_llm_requests(owner=EVERYONE, direction="request")) == 1
 
     @pytest.mark.asyncio
     async def test_response_write_off_caller_thread(self, hooks, db):
@@ -148,7 +149,7 @@ class TestFireAndForget:
         assert result.success is True
         assert db.flush(timeout=3)
         assert sink.get("ident") not in (None, main_ident)
-        assert len(db.get_llm_requests(direction="response")) == 1
+        assert len(db.get_llm_requests(owner=EVERYONE, direction="response")) == 1
 
 
 class TestCaptureCorrectness:
@@ -164,7 +165,7 @@ class TestCaptureCorrectness:
         result = await hooks.debugger_capture_post_llm(ctx)
         assert result.success is True
         assert db.flush(timeout=3)
-        turns = db.get_turns()
+        turns = db.get_turns(owner=EVERYONE)
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "post_llm"
         assert turns[0]["agent_name"] == "agentX"
@@ -216,7 +217,7 @@ class TestCaptureCorrectness:
         assert result.metadata.get("reason") == "no_messages"
         assert db.flush(timeout=3)
         assert calls["n"] == 0  # no DB write enqueued for an empty snapshot
-        assert len(db.get_turns()) == 0
+        assert len(db.get_turns(owner=EVERYONE)) == 0
 
     @pytest.mark.asyncio
     async def test_metadata_queued(self, hooks, db, messages):
@@ -242,7 +243,7 @@ class TestCaptureCorrectness:
         result = await hooks.debugger_capture_pre_llm(ctx)
         assert result.success is True
         db.flush(timeout=3)
-        assert len(db.get_turns()) == 0
+        assert len(db.get_turns(owner=EVERYONE)) == 0
 
 
 class TestConcurrentCapture:
@@ -259,4 +260,4 @@ class TestConcurrentCapture:
         # serializes the writes, so there is no write race by construction.
         await asyncio.gather(*[worker(i) for i in range(40)])
         assert db.flush(timeout=5)
-        assert len(db.get_turns()) == 40
+        assert len(db.get_turns(owner=EVERYONE)) == 40

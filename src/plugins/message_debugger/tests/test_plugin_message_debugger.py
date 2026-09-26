@@ -9,6 +9,7 @@ import pytest
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from plugins.message_debugger.database import EVERYONE
 
 from agent_system.hooks import HookContext
 from agent_system.llm.models import ChatMessage
@@ -55,11 +56,12 @@ def hybrid_plugin(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _an_admin_asks(monkeypatch):
-    """These test what the endpoints answer; that only an admin may ask is
+    """These test what the endpoints answer to an admin; what a user gets is
     test_plugin_message_debugger_access.py."""
     import plugins.message_debugger.web_endpoints as endpoints
 
     monkeypatch.setattr(endpoints, "require_everything", lambda *args: None)
+    monkeypatch.setattr(endpoints, "sees_everything", lambda *args: True)
 
 
 @pytest.fixture
@@ -138,7 +140,7 @@ class TestMessageDebuggerDB:
         )
         assert row_id > 0
 
-        turn = db.get_turn(row_id)
+        turn = db.get_turn(row_id, owner=EVERYONE)
         assert turn is not None
         assert turn["snapshot_type"] == "pre_llm"
         assert turn["agent_name"] == "test_agent"
@@ -154,16 +156,16 @@ class TestMessageDebuggerDB:
         db.insert_turn(ts, "pre_llm", agent_name="agent_a", session_id="s3")
 
         # Filter by agent
-        turns = db.get_turns(agent_name="agent_a")
+        turns = db.get_turns(owner=EVERYONE, agent_name="agent_a")
         assert len(turns) == 2
 
         # Filter by session
-        turns = db.get_turns(session_id="s2")
+        turns = db.get_turns(owner=EVERYONE, session_id="s2")
         assert len(turns) == 1
         assert turns[0]["agent_name"] == "agent_b"
 
         # Filter by type
-        turns = db.get_turns(snapshot_type="post_llm")
+        turns = db.get_turns(owner=EVERYONE, snapshot_type="post_llm")
         assert len(turns) == 1
 
     def test_count_turns(self, db):
@@ -173,22 +175,22 @@ class TestMessageDebuggerDB:
         db.insert_turn(ts, "pre_llm", agent_name="a")
         db.insert_turn(ts, "pre_llm", agent_name="b")
 
-        assert db.count_turns() == 3
-        assert db.count_turns(agent_name="a") == 2
+        assert db.count_turns(owner=EVERYONE) == 3
+        assert db.count_turns(owner=EVERYONE, agent_name="a") == 2
 
     def test_a_count_up_to_an_id_reads_an_index_not_the_table(self, db):
         """The rows are large: a count bounded as a rowid range would read every page of the table."""
         for table in ("turns", "llm_requests"):
-            where, params = db._where(max_id=7)
+            where, params = db._where(EVERYONE, max_id=7)
             plan = " | ".join(row[3] for row in db._get_conn().execute(
                 f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM {table}{where}", params))
             assert "COVERING INDEX" in plan, plan
 
     def test_newest_id_is_asked_of_the_list_tables_only(self, db):
-        assert db.newest_id("turns") == 0
-        assert db.newest_id("llm_requests") == 0
+        assert db.newest_id("turns", owner=EVERYONE) == 0
+        assert db.newest_id("llm_requests", owner=EVERYONE) == 0
         with pytest.raises(ValueError):
-            db.newest_id("turns; DROP TABLE turns")
+            db.newest_id("turns; DROP TABLE turns", owner=EVERYONE)
 
     def test_insert_and_get_llm_request(self, db):
         """Test inserting and retrieving LLM requests."""
@@ -206,7 +208,7 @@ class TestMessageDebuggerDB:
         )
         assert row_id > 0
 
-        req = db.get_llm_request(row_id)
+        req = db.get_llm_request(row_id, owner=EVERYONE)
         assert req is not None
         assert req["direction"] == "request"
         assert req["provider"] == "openai"
@@ -233,7 +235,7 @@ class TestMessageDebuggerDB:
         db = MessageDebuggerDB(path, wal_mode=False)
         try:
             db.insert_llm_request(2, "response", served_by="DeepInfra")
-            assert [row["served_by"] for row in db.get_llm_requests()] == ["DeepInfra", None]
+            assert [row["served_by"] for row in db.get_llm_requests(owner=EVERYONE)] == ["DeepInfra", None]
         finally:
             db.close()
 
@@ -244,9 +246,9 @@ class TestMessageDebuggerDB:
         db.insert_llm_request(ts, "response", provider="openai", model="gpt-4o", duration_ms=500)
         db.insert_llm_request(ts, "request", provider="anthropic", model="claude-3")
 
-        assert len(db.get_llm_requests(direction="request")) == 2
-        assert len(db.get_llm_requests(provider="anthropic")) == 1
-        assert db.count_llm_requests(provider="openai") == 2
+        assert len(db.get_llm_requests(owner=EVERYONE, direction="request")) == 2
+        assert len(db.get_llm_requests(owner=EVERYONE, provider="anthropic")) == 1
+        assert db.count_llm_requests(owner=EVERYONE, provider="openai") == 2
 
     def test_get_stats(self, db):
         """Test stats aggregation."""
@@ -257,7 +259,7 @@ class TestMessageDebuggerDB:
         db.insert_llm_request(ts, "response", provider="openai", duration_ms=300)
         db.insert_llm_request(ts, "response", provider="anthropic", error="timeout")
 
-        stats = db.get_stats()
+        stats = db.get_stats(owner=EVERYONE)
         assert stats["total_turns"] == 2
         assert stats["total_llm_requests"] == 3
         assert "a" in stats["unique_agents"]
@@ -277,8 +279,8 @@ class TestMessageDebuggerDB:
         result = db.clear_all()
         assert result["turns_deleted"] == 2
         assert result["requests_deleted"] == 1
-        assert db.count_turns() == 0
-        assert db.count_llm_requests() == 0
+        assert db.count_turns(owner=EVERYONE) == 0
+        assert db.count_llm_requests(owner=EVERYONE) == 0
 
     def test_json_serialization(self, db):
         """Test that JSON fields round-trip correctly."""
@@ -292,7 +294,7 @@ class TestMessageDebuggerDB:
         row_id = db.insert_llm_request(
             ts, "request", payload=complex_payload
         )
-        req = db.get_llm_request(row_id)
+        req = db.get_llm_request(row_id, owner=EVERYONE)
         assert req["payload_json"] == complex_payload
 
 
@@ -320,7 +322,7 @@ class TestMessageDebuggerHooks:
         assert result.modified is False
 
         assert db.flush(timeout=3)  # capture is fire-and-forget; drain the writer
-        turns = db.get_turns()
+        turns = db.get_turns(owner=EVERYONE)
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "pre_llm"
         assert turns[0]["agent_name"] == "test_agent"
@@ -342,13 +344,13 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert db.flush(timeout=3)
-        turns = db.get_turns()
+        turns = db.get_turns(owner=EVERYONE)
         assert len(turns) == 1
         assert turns[0]["snapshot_type"] == "post_llm"
         # a list row carries only the usage of the response; the turn itself all of it
         assert turns[0]["usage_json"] == {"total_tokens": 50}
         assert "llm_response_json" not in turns[0]
-        assert db.get_turn(turns[0]["id"])["llm_response_json"]["model"] == "gpt-4"
+        assert db.get_turn(turns[0]["id"], owner=EVERYONE)["llm_response_json"]["model"] == "gpt-4"
 
     @pytest.mark.asyncio
     async def test_capture_disabled(self, hooks_plugin, sample_messages, db):
@@ -364,7 +366,7 @@ class TestMessageDebuggerHooks:
         )
 
         await hooks_plugin.debugger_capture_pre_llm(context)
-        assert db.count_turns() == 0
+        assert db.count_turns(owner=EVERYONE) == 0
 
     @pytest.mark.asyncio
     async def test_capture_empty_messages(self, hooks_plugin, db):
@@ -381,7 +383,7 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert result.metadata["reason"] == "no_messages"
-        assert db.count_turns() == 0
+        assert db.count_turns(owner=EVERYONE) == 0
 
     @pytest.mark.asyncio
     async def test_capture_with_tool_calls(self, hooks_plugin, sample_messages_with_tools, db):
@@ -398,8 +400,8 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert db.flush(timeout=3)
-        turns = db.get_turns()
-        turn_detail = db.get_turn(turns[0]["id"])
+        turns = db.get_turns(owner=EVERYONE)
+        turn_detail = db.get_turn(turns[0]["id"], owner=EVERYONE)
         messages = turn_detail["messages_json"]
 
         tool_call_msg = next(m for m in messages if m.get("tool_calls"))
@@ -431,7 +433,7 @@ class TestMessageDebuggerHooks:
         await hooks_plugin.debugger_capture_pre_llm(context)
 
         assert db.flush(timeout=3)
-        user, assistant, future = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        user, assistant, future = db.get_turn(db.get_turns(owner=EVERYONE)[0]["id"], owner=EVERYONE)["messages_json"]
         assert user["content"] == long_text  # content stays whole
         assert "reasoning_content" not in user  # unset fields are not stored
         assert assistant["served_by"] == "Google AI Studio"
@@ -456,7 +458,7 @@ class TestMessageDebuggerHooks:
         await plugin.debugger_capture_pre_llm(context)
 
         assert db.flush(timeout=3)
-        (message,) = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        (message,) = db.get_turn(db.get_turns(owner=EVERYONE)[0]["id"], owner=EVERYONE)["messages_json"]
         assert message["reasoning_details"][0]["data"] == blob
 
     @pytest.mark.asyncio
@@ -470,7 +472,7 @@ class TestMessageDebuggerHooks:
         await hooks_plugin.debugger_capture_post_llm(context)
 
         assert db.flush(timeout=3)
-        stored = db.get_turn(db.get_turns()[0]["id"])["llm_response_json"]
+        stored = db.get_turn(db.get_turns(owner=EVERYONE)[0]["id"], owner=EVERYONE)["llm_response_json"]
         assert stored["usage"] == {"prompt_tokens": 10}
         assert stored["assistant"]["served_by"] == "DeepInfra"
         assert stored["assistant"]["content"].endswith("[5000 chars]")
@@ -487,7 +489,7 @@ class TestMessageDebuggerHooks:
         await plugin.debugger_capture_pre_llm(context)
 
         assert db.flush(timeout=3)
-        messages = db.get_turn(db.get_turns()[0]["id"])["messages_json"]
+        messages = db.get_turn(db.get_turns(owner=EVERYONE)[0]["id"], owner=EVERYONE)["messages_json"]
         assert not any({"tool_calls", "tool_call_id", "tool_call_count"} & set(m) for m in messages)
 
     @pytest.mark.asyncio
@@ -504,9 +506,9 @@ class TestMessageDebuggerHooks:
         await hooks_plugin.debugger_capture_pre_llm(context)
 
         assert db.flush(timeout=3)
-        turns = db.get_turns()
+        turns = db.get_turns(owner=EVERYONE)
         assert turns[0]["total_tokens"] > 0
-        turn_detail = db.get_turn(turns[0]["id"])
+        turn_detail = db.get_turn(turns[0]["id"], owner=EVERYONE)
         for msg in turn_detail["messages_json"]:
             assert msg["estimated_tokens"] is not None
             assert msg["estimated_tokens"] > 0
@@ -547,7 +549,7 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert db.flush(timeout=3)
-        reqs = db.get_llm_requests(direction="request")
+        reqs = db.get_llm_requests(owner=EVERYONE, direction="request")
         assert len(reqs) == 1
         assert reqs[0]["provider"] == "openai"
         assert reqs[0]["model"] == "gpt-4o"
@@ -573,7 +575,7 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert db.flush(timeout=3)
-        reqs = db.get_llm_requests(direction="response")
+        reqs = db.get_llm_requests(owner=EVERYONE, direction="response")
         assert len(reqs) == 1
         assert reqs[0]["duration_ms"] == pytest.approx(750.5)
         assert reqs[0]["finish_reason"] == "stop"
@@ -591,9 +593,9 @@ class TestMessageDebuggerHooks:
         await hooks_plugin.debugger_capture_post_response(context)
 
         assert db.flush(timeout=3)
-        row = db.get_llm_requests(direction="response")[0]
+        row = db.get_llm_requests(owner=EVERYONE, direction="response")[0]
         assert row["served_by"] == expected, "the list rows lack the backend"
-        assert db.get_llm_request(row["id"])["served_by"] == expected
+        assert db.get_llm_request(row["id"], owner=EVERYONE)["served_by"] == expected
 
     @pytest.mark.asyncio
     async def test_capture_post_response_with_error(self, hooks_plugin, db):
@@ -613,7 +615,7 @@ class TestMessageDebuggerHooks:
 
         assert result.success is True
         assert db.flush(timeout=3)
-        reqs = db.get_llm_requests()
+        reqs = db.get_llm_requests(owner=EVERYONE)
         assert len(reqs) == 1
         assert reqs[0]["error"] == "Rate limit exceeded"
 
@@ -632,7 +634,7 @@ class TestMessageDebuggerHooks:
         )
 
         await hooks_plugin.debugger_capture_pre_request(context)
-        assert db.count_llm_requests() == 0
+        assert db.count_llm_requests(owner=EVERYONE) == 0
 
 
 # ============================================================================
@@ -927,7 +929,7 @@ class TestMessageDebuggerIntegration:
 
         # 3. Verify both snapshots captured in DB (drain the async writer first)
         assert hybrid_plugin._db.flush(timeout=3)
-        turns = hybrid_plugin._db.get_turns()
+        turns = hybrid_plugin._db.get_turns(owner=EVERYONE)
         assert len(turns) == 2
         types = {t["snapshot_type"] for t in turns}
         assert "pre_llm" in types

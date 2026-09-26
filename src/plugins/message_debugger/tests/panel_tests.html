@@ -347,6 +347,25 @@
     return titledQuestion && notYet && pruned === 1 && told && !$('#actionsButton').disabled;
   });
 
+  await check("an admin has the user filter, the maintenance menu and the file's size; a user has none of them and sees their own captures only", async () => {
+    const labels = () => [...doc().querySelectorAll('#stats .pk-stat-label')].map((label) => label.textContent);
+    await fetch('/__stub/turn?user_id=alice', { method: 'POST' });
+    $('#stats').replaceChildren();
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until("the admin's statistics", () => labels().includes('Database'));
+    const adminHas = !$('#userFilter').hidden && !$('#actionsButton').hidden;
+    type('#filterUser', 'alice');
+    await until("the admin's view of alice", () => $('#turnsCount').textContent === '1');
+
+    await fetch('/__stub/viewer?name=alice', { method: 'POST' });
+    await new Promise((resolve) => { frame.onload = resolve; frame.src = '/plugins/message_debugger/'; });
+    await until("alice's statistics", () => labels().includes('Turns'));
+    await until('her one turn', () => rows('turns').length === 1);
+    const userHasNone = $('#userFilter').hidden && $('#actionsButton').hidden && !labels().includes('Database');
+    const ownOnly = $('#turnsCount').textContent === '1' && requestIds('turns')[0] === 'r-alice';
+    return adminHas && userHasNone && ownOnly;
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>
