@@ -4,7 +4,7 @@ Machines are YAML text through the real loader and ``validate_tree``. SG007 is
 driven twice: with a fake ``config_check`` for the plumbing (which names reach
 the configuration, enum values one by one) and with the production
 ``make_config_check`` over a real ``AgentSystemConfig`` for the answers
-(own-tool refusal, allowlists, SAM).
+(own-tool refusal, allowlists, agents).
 
 Mutation checks run (each turned the named tests red, then was restored from a copy):
 - validate._check_transitions: the undeclared-trigger check removed          -> test_sg002_undeclared_event_trigger
@@ -18,6 +18,12 @@ Mutation checks run (each turned the named tests red, then was restored from a c
 - validate._check_activity: the parse/call companion check removed              -> test_sg004_missing_companion_function
 - validate._check_references: enum values not expanded                        -> test_sg007_fake_check_sees_every_enum_value
 - backend.make_config_check: own-instance clause removed                      -> test_sg007_production_check_refuses_stategraphs_own_tools
+- backend.make_config_check: the runner / facade / is_agent / own-allowlist clause removed, one at a
+  time; blocked patterns ignored; only own_instance searched; the raw type instead of the resolved one;
+  the SAM walk removed; the SAM walk one level only                             -> test_sg007_refuses_agents_that_reach_machines[its case]
+- backend.make_config_check: the walk back from the refused agents stops after one step
+                                                                               -> test_sg007_follows_sams_through_a_cycle,
+                                                                                  test_sg007_refuses_agents_that_reach_machines[chain_spawner]
 - validate._check_graph: SG101/SG102/SG103 blocks removed one at a time        -> the matching test_sg10x
 - validate._check_transitions: SG104 branch removed                            -> test_sg104_transition_after_an_unguarded_one
 - validate._validate_file: SG105 loop removed                                  -> test_sg105_undeclared_context_read
@@ -25,7 +31,6 @@ Mutation checks run (each turned the named tests red, then was restored from a c
 - code._IMPURE_CALLS without random/time/uuid                                   -> test_sg106_impure_code[random/time/uuid]
 - validate._lint_bare_references removed                                       -> test_sg107_bare_reference
 - validate._validate_file: SG108 block removed                                 -> test_sg108_submachine_with_run_timeout
-- validate._check_parallel_vars body removed                                   -> test_sg109_parallel_agents_setting_one_var_differently
 """
 
 from __future__ import annotations
@@ -526,7 +531,7 @@ SG007_MACHINE = """\
       do: {agent: writer, task: t}
       transitions: [{target: b}]
     b:
-      do: {agent: forbidden, task: t, sam: other_sam}
+      do: {agent: forbidden, task: t}
       transitions: [{target: c}]
     c:
       do: {agent: "{{ params.who }}", task: t}
@@ -540,7 +545,6 @@ SG007_MACHINE = """\
     done: {type: final}
     """
 SG007_HEAD = """\
-    sam: machine_sam
     params:
       who: {type: string, enum: [writer, forbidden], default: writer}
       store: {type: string, enum: [json_store_read, stategraph_run_machine], default: json_store_read}
@@ -557,8 +561,7 @@ def test_sg007_fake_check_sees_every_enum_value():
 
     tree = validate(machine(SG007_MACHINE, head=SG007_HEAD), config_check=check)
 
-    assert ("agent", "writer", {"sam": "machine_sam"}) in seen, "the machine's sam must reach the check"
-    assert ("agent", "forbidden", {"sam": "other_sam"}) in seen, "the activity's own sam wins"
+    assert ("agent", "writer", {}) in seen
     enum_checks = [(what, name) for what, name, _ in seen if what in ("agent", "tool")]
     assert enum_checks.count(("agent", "forbidden")) == 2, "the enum value must be checked like a literal"
     assert ("tool", "json_store_read") in enum_checks and ("tool", "stategraph_run_machine") in enum_checks
@@ -571,7 +574,7 @@ def test_sg007_fake_check_sees_every_enum_value():
     assert ("SG007", "states.a.do.agent") not in sg007
 
 
-def _system_config(runner_allows=("stategraph", "sg_copy", "json_store", "stategraph_sam")):
+def _system_config(runner_allows=("stategraph", "sg_copy", "json_store", "some_sam")):
     from agent_system.config.models import AgentSystemConfig
 
     return AgentSystemConfig.model_validate({"plugins": {"servers": {
@@ -579,18 +582,51 @@ def _system_config(runner_allows=("stategraph", "sg_copy", "json_store", "stateg
         "sg_copy": {"type": "stategraph", "enabled": True},
         "stategraph_runner": {"type": "basic_agent", "enabled": True,
                               "agent_config": {"tools": {"allowed": list(runner_allows)}}},
-        "stategraph_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["writer"]},
+        "some_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["writer"]},
         "writer": {"type": "basic_agent", "enabled": True},
         "critic": {"type": "basic_agent", "enabled": True},
         "json_store": {"type": "json_store", "enabled": True},
         "web_search": {"type": "tavily_search", "enabled": True},
+        "author": {"type": "basic_agent", "enabled": True,
+                   "agent_config": {"tools": {"allowed": ["stategraph/stategraph_run_machine"]}}},
+        "blocked_author": {"type": "basic_agent", "enabled": True,
+                           "agent_config": {"tools": {"allowed": ["stategraph/*"],
+                                                      "blocked": ["stategraph/*"]}}},
+        "reader": {"type": "basic_agent", "enabled": True,
+                   "agent_config": {"tools": {"allowed": ["stategraph/stategraph_catalog", "sg_copy/sg_copy_get_run"]}}},
+        "copy_author": {"type": "basic_agent", "enabled": True,
+                        "agent_config": {"tools": {"allowed": ["sg_copy/*"]}}},
+        "story_machine": {"type": "stategraph_machine", "enabled": True, "machine": "m"},
+        # inherited types: the resolved type counts
+        "sg_base": {"type": "stategraph", "enabled": True},
+        "sg_child": {"type": "sg_base", "enabled": True},
+        "child_author": {"type": "basic_agent", "enabled": True,
+                         "agent_config": {"tools": {"allowed": ["sg_child/*"]}}},
+        "fac_child": {"type": "story_machine", "enabled": True},
+        # reach through a SAM the agent may call, all the way down
+        "author_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["author"]},
+        "star_sam": {"type": "sub_agent_manager", "enabled": True},
+        "chain_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["spawner"]},
+        "spawner": {"type": "basic_agent", "enabled": True,
+                    "agent_config": {"tools": {"allowed": ["author_sam/*"]}}},
+        "star_spawner": {"type": "basic_agent", "enabled": True,
+                         "agent_config": {"tools": {"allowed": ["star_sam/*"]}}},
+        "chain_spawner": {"type": "basic_agent", "enabled": True,
+                          "agent_config": {"tools": {"allowed": ["chain_sam/*"]}}},
+        "writer_spawner": {"type": "basic_agent", "enabled": True,
+                           "agent_config": {"tools": {"allowed": ["some_sam/*"]}}},
+        # a cycle: loop_a and loop_b can start each other; loop_a can also start the author
+        "aaa_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["loop_b"]},
+        "zzz_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["loop_a"]},
+        "loop_a": {"type": "basic_agent", "enabled": True,
+                   "agent_config": {"tools": {"allowed": ["aaa_sam/*", "author_sam/*"]}}},
+        "loop_b": {"type": "basic_agent", "enabled": True, "agent_config": {"tools": {"allowed": ["zzz_sam/*"]}}},
     }}})
 
 
 def test_sg007_production_check_refuses_stategraphs_own_tools():
     """Even when the runner's allowlist names stategraph, a machine may not call its tools (§8.3)."""
-    check = make_config_check(_system_config(), runner="stategraph_runner", default_sam="stategraph_sam",
-                              own_instance="stategraph")
+    check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph")
     tree = validate(machine("""\
         a:
           do: {tool: stategraph_run_machine, args: {machine_id: x}}
@@ -609,9 +645,9 @@ def test_sg007_production_check_refuses_stategraphs_own_tools():
     assert "states.c.do.tool" not in by_path
 
 
-def test_sg007_production_check_runner_allowlist_sam_and_profile():
-    check = make_config_check(_system_config(), runner="stategraph_runner", default_sam="stategraph_sam",
-                              own_instance="stategraph")
+def test_sg007_production_check_runner_allowlist_agents_and_profile():
+    """Any configured agent may be named -- no SAM list (critic is in none); an unknown one is refused."""
+    check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph")
     tree = validate(machine("""\
         a:
           do: {tool: web_search_search, args: {q: x}}
@@ -623,19 +659,76 @@ def test_sg007_production_check_runner_allowlist_sam_and_profile():
           do: {decide: noul, question: q, input: x, profile: jev}
           transitions: [{target: done}]
         done: {type: final}
-        """, head="params: {who: {type: string, enum: [writer, critic], default: writer}}\n"), config_check=check)
+        """, head="params: {who: {type: string, enum: [writer, critic, ghost], default: writer}}\n"),
+        config_check=check)
     text = messages(tree, "SG007")
     assert "not in stategraph_runner's tool allowlist" in text
-    assert "'critic' is not in stategraph_sam.allowed_agents" in text
-    assert "'writer'" not in text
+    assert "agent 'ghost' is not configured or not enabled" in text
+    assert "'writer'" not in text and "'critic'" not in text
     assert "decision profile 'jev' is not configured" in text
 
 
-def test_sg007_the_runner_must_reach_the_sam_agent_activities_spawn_through():
-    """AgentCaller calls <sam>_manage_sub_agent as the runner: without the SAM in the runner's allowlist every
-    agent step fails at run time with "Unknown tool" -- validation says so first, for the machine's sam too."""
+@pytest.mark.parametrize("agent,refused", [
+    ("author", "may call stategraph_run_machine: a machine may not save, run or control machines"),
+    ("copy_author", "may call sg_copy_"),
+    ("stategraph_runner", "is the runner"),
+    ("story_machine", "use it as a submachine"),
+    ("json_store", "is not an agent"),
+    ("reader", None),
+    ("blocked_author", None),
+    ("writer", None),
+    ("child_author", "may call sg_child_"),
+    ("fac_child", "use it as a submachine"),
+    ("spawner", "can start 'author' through author_sam"),
+    ("star_spawner", "through star_sam"),
+    ("chain_spawner", "can start 'spawner' through chain_sam -- agent 'spawner' can start 'author'"),
+    ("writer_spawner", None),
+])
+def test_sg007_refuses_agents_that_reach_machines(agent, refused):
+    """A machine may not save, start or control machines -- through an agent neither (§8.3): not the runner,
+    not a machine facade, not an agent whose allowlist reaches stategraph's non-read-only tools, not an agent
+    that can start one of those through a SAM (followed all the way down). Types count as resolved."""
+    check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph",
+                              is_agent=lambda name: name != "json_store")
+    tree = validate(machine(f"""\
+        a:
+          do: {{agent: {agent}, task: t}}
+          transitions: [{{target: done}}]
+        done: {{type: final}}
+        """), config_check=check)
+
+    if refused is None:
+        assert found(tree, "SG007") == [], messages(tree, "SG007")
+    else:
+        assert refused in messages(tree, "SG007")
+
+
+def test_sg007_follows_sams_through_a_cycle():
+    """loop_b can start loop_a, which can start the author: both are refused, whichever is asked first."""
+    for order in (["loop_a", "loop_b"], ["loop_b", "loop_a"]):
+        check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph")
+        answers = {name: check("agent", name, {}) for name in order}
+        assert "can start 'author' through author_sam" in (answers["loop_a"] or ""), order
+        assert "can start 'loop_a' through zzz_sam" in (answers["loop_b"] or ""), order
+
+
+def test_sg007_vars_from_may_name_any_configured_agent():
+    """vars_from only reads template vars: the runner may be named there, a missing agent may not."""
+    check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph")
+    body = """\
+        a:
+          do: {agent: writer, task: t}
+          transitions: [{target: done}]
+        done: {type: final}
+        """
+    assert found(validate(machine(body, head="vars_from: stategraph_runner\n"), config_check=check), "SG007") == []
+    assert found(validate(machine(body, head="vars_from: ghost\n"), config_check=check), "SG007")
+
+
+def test_sg007_agent_activities_need_nothing_in_the_runner_s_allowlist():
+    """The backend runs the agent itself: the runner's tool allowlist bounds tool activities only."""
     check = make_config_check(_system_config(runner_allows=("json_store",)), runner="stategraph_runner",
-                              default_sam="stategraph_sam", own_instance="stategraph")
+                              own_instance="stategraph")
     tree = validate(machine("""\
         a:
           do: {agent: writer, task: t}
@@ -643,25 +736,21 @@ def test_sg007_the_runner_must_reach_the_sam_agent_activities_spawn_through():
         done: {type: final}
         """), config_check=check)
 
-    assert "agent activities spawn through stategraph_sam, but 'stategraph_sam_manage_sub_agent' is not in " \
-           "stategraph_runner's tool allowlist: add 'stategraph_sam/*' to it" in messages(tree, "SG007")
+    assert found(tree, "SG007") == [], messages(tree, "SG007")
 
 
 def test_sg007_a_tool_activity_may_not_call_the_sam_s_tool():
-    """The runner may call the SAM, since agent activities spawn through it; a tool activity (or sg.tool(),
-    checked by the same function at run time) may not: its sub-agents would not be journaled, would outlive
-    the run, and could cancel the ones the run's agent activities made."""
-    check = make_config_check(_system_config(), runner="stategraph_runner", default_sam="stategraph_sam",
-                              own_instance="stategraph")
+    """Even when the runner's allowlist names a SAM, a tool activity (or sg.tool(), checked by the same
+    function at run time) may not call it: its sub-agents would not be journaled and would outlive the run."""
+    check = make_config_check(_system_config(), runner="stategraph_runner", own_instance="stategraph")
     tree = validate(machine("""\
         a:
-          do: {tool: stategraph_sam_manage_sub_agent, args: {action: create}}
+          do: {tool: some_sam_manage_sub_agent, args: {action: create}}
           transitions: [{target: done}]
         done: {type: final}
         """), config_check=check)
 
-    assert "tool 'stategraph_sam_manage_sub_agent' belongs to the SAM stategraph_sam" in messages(tree, "SG007")
-    assert check("agent", "writer", {"sam": None}) is None  # agent activities still reach it
+    assert "tool 'some_sam_manage_sub_agent' belongs to the SAM some_sam" in messages(tree, "SG007")
 
 
 # ------------------------------------------------------------------ warnings
@@ -829,17 +918,3 @@ def test_sg108_submachine_with_run_timeout():
     assert problem.file == "sub.yaml"
     root_alone = validate({"m.yaml": sub.replace("id: sub", "id: m")})
     assert found(root_alone, "SG108") == [], "a root machine's run timeout is honoured, no warning"
-
-
-def test_sg109_parallel_agents_setting_one_var_differently():
-    tree = validate(machine("""\
-        a:
-          do:
-            parallel:
-              left: {agent: w, task: t, vars: {phase: one, shared: same}}
-              right: {agent: w, task: t, vars: {phase: two, shared: same}}
-          transitions: [{target: done}]
-        done: {type: final}
-        """))
-    [problem] = found(tree, "SG109")
-    assert problem.path == "states.a.do.parallel" and "left, right" in problem.message

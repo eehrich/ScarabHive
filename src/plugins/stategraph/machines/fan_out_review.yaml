@@ -14,7 +14,7 @@ title: Fan-out review
 description: >-
   Three critics read a text at the same time (parallel, joined when all are
   done), then each chapter is summarised (map, two at a time, results in
-  chapter order). Live, it uses chat_agent through stategraph_sam.
+  chapter order). Live, it runs chat_agent.
 
 params:
   text:     {type: string, required: true, description: The whole text}

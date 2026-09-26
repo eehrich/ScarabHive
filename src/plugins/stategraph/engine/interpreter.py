@@ -413,6 +413,7 @@ class Frame:
         act = ActivityRun(self, state, key, path, raw=raw, finalizer=True, ending_only=False,  # the ending runs live
                           extra_scope={"ending": {"reason": reason, "state": state, "error": error}})
         bound = None if spec.timeout is not None else FINALLY_CANCEL_TIMEOUT  # its own timeout bounds it anyway
+        # (an agent run gets its stop grace after either, backend.AGENT_STOP_GRACE)
         loop = asyncio.get_running_loop()
         work = asyncio.ensure_future(act.execute(kind, spec))
         arrived = False

@@ -1,28 +1,24 @@
 """The stategraph entries as the framework resolves them.
 
 Every link of the activation chain fails silently when it breaks: an allowlist
-pattern that matches nothing, a SAM that spawns nothing or everything, a skill
-another root shadows, a prompt Jinja cannot parse, an example machine naming an
-agent the SAM refuses. So each is asserted on the RESOLVED config
+pattern that matches nothing, a skill another root shadows, a prompt Jinja
+cannot parse, an example machine naming an agent that is not configured. So
+each is asserted on the RESOLVED config
 (``load_settings`` + ``get_tool_server_config``), the way the runtime sees it.
 
 Mutation checks run (each turned the named test red, then was restored from a copy):
 - stategraph.yaml: ``enabled: false`` on stategraph_json          -> test_the_instances_are_enabled
-- stategraph.yaml: ``runner_agent: stategraph_runnr``              -> test_the_plugin_names_an_enabled_runner_agent_and_sam
+- stategraph.yaml: ``runner_agent: stategraph_runnr``              -> test_the_plugin_names_an_enabled_runner_agent
 - author yaml: send_event entry removed / ``+stategraph/*`` / ``+skills/*`` removed
                                                                     -> test_the_author_may_call_exactly_the_tools_its_loop_needs
 - stategraph.yaml: runner allows ``stategraph/stategraph_run_machine`` -> test_the_runner_may_call_no_stategraph_tool
 - stategraph.yaml: runner allows ``no_such_server/*``               -> test_every_runner_pattern_names_an_enabled_server
-- stategraph.yaml: SAM gets ``"*"`` / ``stategraph_author`` / ``no_such_agent`` / loses allowed_agents
-                                                                    -> test_the_sam_spawns_only_named_enabled_agents
 - author yaml ``always: []``; SKILL.md ``name`` changed; a reference renamed; a same-named skill
   in .claude/skills                                                -> test_the_author_loads_the_skill_from_the_plugin
 - author prompt: ``{{ broken``                                     -> test_the_prompt_renders
 - author prompt names ``stategraph_delete_machine``                -> test_prompt_and_skill_name_only_tools_the_author_may_call
 - patterns.md names ``stategraph_fly``                             -> test_the_references_name_only_real_tools
 - hello_agent.yaml: ``agent: coder``                               -> test_every_shipped_machine_validates_against_the_shipped_config
-- stategraph.yaml: runner loses ``stategraph_sam/*`` (every agent step failed with "Unknown tool:
-  stategraph_sam_manage_sub_agent")                                -> test_every_shipped_machine_validates_against_the_shipped_config
 - stategraph.yaml: machine root glob ``src/plugins*/*/machine``    -> test_the_machine_roots_find_the_shipped_machines
 - patterns.md review_loop: ``agent: coder``                        -> test_every_machine_in_the_docs_validates
 """
@@ -56,7 +52,7 @@ INSTANCE = "stategraph"
 AUTHOR_TOOLS = {"catalog", "list_machines", "get_machine", "validate_machine", "save_machine",
                 "run_machine", "get_run", "control_run", "send_event"}
 # Instance names that share the tools' prefix; the docs name them, they are not tools.
-NOT_TOOLS = {"author", "runner", "sam", "json", "json_manage_json", "design"}
+NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design"}
 _TOOL_REF = re.compile(r"\bstategraph_([a-z_]+)\b")
 _FENCE = re.compile(r"```(\w+)\n(.*?)```", re.S)
 
@@ -84,8 +80,7 @@ def allowed_stategraph_tools(agent_cfg) -> set[str]:
 
 def config_check(config):
     plugin = resolved(config, INSTANCE)
-    return make_config_check(config, runner=plugin.runner_agent, default_sam=plugin.default_sam,
-                             own_instance=INSTANCE)
+    return make_config_check(config, runner=plugin.runner_agent, own_instance=INSTANCE)
 
 
 def machine_store(config) -> MachineStore:
@@ -100,7 +95,7 @@ def problems_of(tree) -> list[str]:
 # ---------------------------------------------------------------- instances
 
 @pytest.mark.parametrize("name, kind", [
-    ("stategraph", "stategraph"), ("stategraph_sam", "sub_agent_manager"), ("stategraph_runner", "basic_agent"),
+    ("stategraph", "stategraph"), ("stategraph_runner", "basic_agent"),
     ("stategraph_json", "json_store"), ("stategraph_author", "basic_agent")])
 def test_the_instances_are_enabled(config, name, kind):
     cfg = resolved(config, name)
@@ -108,12 +103,10 @@ def test_the_instances_are_enabled(config, name, kind):
     assert cfg.type == kind
 
 
-def test_the_plugin_names_an_enabled_runner_agent_and_sam(config):
+def test_the_plugin_names_an_enabled_runner_agent(config):
     plugin = resolved(config, INSTANCE)
     runner = resolved(config, plugin.runner_agent)
-    sam = resolved(config, plugin.default_sam)
     assert runner.enabled and runner.type == "basic_agent", f"runner_agent {plugin.runner_agent} is no enabled agent"
-    assert sam.enabled and sam.type == "sub_agent_manager", f"default_sam {plugin.default_sam} is no enabled SAM"
 
 
 # ---------------------------------------------------------------- allowlists
@@ -146,17 +139,6 @@ def test_every_runner_pattern_names_an_enabled_server(config):
         assert resolved(config, server).enabled, f"{pattern}: {server} is not enabled"
     assert tool_matches_patterns("stategraph_json_manage_json", "stategraph_json", patterns), \
         "the store the docs and examples use is not callable"
-
-
-def test_the_sam_spawns_only_named_enabled_agents(config):
-    sam = resolved(config, resolved(config, INSTANCE).default_sam)
-    allowed = list(sam.allowed_agents)  # direct: without the key the SAM's code default is '*'
-    assert allowed, "the SAM allows no agent"
-    for name in allowed:
-        assert not any(ch in name for ch in "*?["), f"{name!r}: allowed_agents is an explicit list (design §8.3)"
-        assert name not in ("stategraph_author", "stategraph_runner"), f"{name} must not be spawnable by machines"
-        agent = resolved(config, name)
-        assert agent.enabled and agent.type == "basic_agent", f"{name} is no enabled agent"
 
 
 # ---------------------------------------------------------------- skill and prompts
@@ -218,7 +200,8 @@ def test_the_machine_roots_find_the_shipped_machines(config):
 
 @pytest.mark.parametrize("name", SHIPPED)
 def test_every_shipped_machine_validates_against_the_shipped_config(config, name):
-    """SG007 checks agents against the SAM and tools against the runner: config and examples must agree."""
+    """SG007 checks that agents are configured and tools are in the runner's allowlist: config and examples
+    must agree."""
     path = PLUGIN / "machines" / name
     tree = validate_tree(load_tree(str(path), FileSources(machine_store(config))), config_check(config))
     assert tree.files[str(path)].spec is not None, problems_of(tree)

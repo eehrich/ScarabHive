@@ -1,8 +1,6 @@
 """Regression tests for the findings of the fix-round re-review (2026-09-26).
 
 Mutation checks run (each red, then restored byte-exactly; runner: scratchpad mut_rereview.py):
-- SG109 parallel threshold len(union) > 99: the vars-vs-no-vars test goes red; >= 1: the identical-vars test
-  goes red; map rule reduced to "any signature": the item-independent map test goes red.
 - _entered_chain returning [target] (the direct edge): both composite-loop tests go red.
 - _DATA_METHODS check removed for out: the bound-method test goes red.
 - _can_fail back to "last guard is not else": the junction SG104 test goes red.
@@ -45,63 +43,6 @@ HEAD = "stategraph: 1\nid: m\n"
 
 def machine(body: str, head: str = "") -> dict[str, str]:
     return {"m.yaml": HEAD + head + body}
-
-
-# ------------------------------------------------------------------ SG109 on effective-var signatures
-
-PARALLEL = """\
-initial: a
-states:
-  a:
-    do:
-      parallel:
-        x: {agent: w, task: t%s}
-        y: {agent: w, task: t%s}
-    transitions: [{target: done}]
-  done: {type: final}
-"""
-
-
-def test_sg109_warns_when_a_branch_without_vars_runs_next_to_one_with_vars():
-    tree = validate(machine(PARALLEL % (", vars: {phase: one}", "")))
-    assert found(tree, "SG109"), "a call without vars clears what its sibling set"
-
-
-def test_sg109_is_silent_for_branches_with_identical_machine_level_vars():
-    tree = validate(machine(PARALLEL % ("", ""), head="vars: {genre: thriller}\n"))
-    assert not found(tree, "SG109")
-
-
-def test_sg109_is_silent_for_a_concurrent_map_with_item_independent_vars():
-    tree = validate(machine("""\
-context: {items: [1, 2, 3]}
-initial: a
-states:
-  a:
-    do:
-      map: ctx.items
-      concurrency: 3
-      each: {agent: w, task: "{{ item }}", vars: {phase: fixed}}
-    transitions: [{target: done}]
-  done: {type: final}
-"""))
-    assert not found(tree, "SG109")
-
-
-def test_sg109_warns_for_a_concurrent_map_with_per_item_vars():
-    tree = validate(machine("""\
-context: {items: [1, 2, 3]}
-initial: a
-states:
-  a:
-    do:
-      map: ctx.items
-      concurrency: 3
-      each: {agent: w, task: "{{ item }}", vars: {chapter: "{{ item }}"}}
-    transitions: [{target: done}]
-  done: {type: final}
-"""))
-    assert found(tree, "SG109")
 
 
 # ------------------------------------------------------------------ loops that enter a composite from outside
@@ -210,7 +151,7 @@ def test_a_title_with_a_control_character_is_refused(tmp_path):
     root = tmp_path / "machines"
     root.mkdir()
     store = RunStore(tmp_path / "runs.db")
-    server = types.SimpleNamespace(name="stategraph", system_config=None, runner_agent="r", default_sam="s",
+    server = types.SimpleNamespace(name="stategraph", system_config=None, runner_agent="r",
                                    machines=MachineStore([str(root)], [str(root)]), run_store=store,
                                    run_manager=RunManager(store), inject_params={})
     service = StateGraphService(server)

@@ -1,13 +1,15 @@
 """What activities reach outside the process through: agents, tools, decision models (§5.8).
 
-``ScarabHiveBackend`` is the production backend. Agents go through one
-``AgentCaller`` per call on a SAM (``retries=0``: the engine is the only retry
-layer). Tools go through the runner agent's ``dispatch_tool_call``, whose
-allowlist is the boundary of what a machine may call; configured
+``ScarabHiveBackend`` is the production backend. An agent activity runs the
+registered agent itself (``run_events``) on an instance session of its own, a
+sub-session of the run's; a continue runs it again on that session. No SAM is
+involved: the machine file names its agents, so it is their allowlist, and the
+engine is the only retry layer. Each instance session holds the call's
+template vars. Tools go through the runner agent's ``dispatch_tool_call``,
+whose allowlist is the boundary of what a machine may call; configured
 ``inject_params`` are applied there, so secrets never live in machine files.
-Decisions go through ``create_decisions_from_profile``. Agent template vars
-are set on the run's session right before a SAM call, where sub-agents inherit
-them. ``NoBackend`` refuses everything; mock-only and test runs use it.
+Decisions go through ``create_decisions_from_profile``. ``NoBackend`` refuses
+everything; mock-only and test runs use it.
 
 ``make_config_check`` answers the validator's SG007 questions from the
 resolved configuration, with the matchers the runtime itself uses.
@@ -17,8 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import logging
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
 
 import jsonschema
 
@@ -29,15 +33,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: After a timeout or terminate cancelled its token, how long an agent run gets to stop before the
+#: activity ends without it. None: until the CancellationManager force-cancels what a cancelled
+#: request left running (its cleanup timeout plus one monitor round), and a second more.
+AGENT_STOP_GRACE: Optional[float] = None
+
+
+def _stop_grace() -> float:
+    if AGENT_STOP_GRACE is not None:
+        return AGENT_STOP_GRACE
+    try:
+        from agent_system.core.cancellation import get_cancellation_manager
+
+        manager = get_cancellation_manager()
+        return float(manager.default_cleanup_timeout) + float(manager.monitor_interval) + 1.0
+    except Exception:
+        return 12.0
+
 
 class Backend(Protocol):
-    async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, sam: Optional[str],
-                           advanced: bool, vars: dict[str, Any]) -> tuple[str, Optional[str]]:
-        """Spawn a sub-agent: ``(answer text, instance id)``."""
+    async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
+                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
+        """Run a new instance of an agent: ``(answer text, instance id)``."""
 
-    async def agent_continue(self, act: "ActivityRun", *, instance_id: str, message: str, sam: Optional[str],
+    async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any]) -> str:
-        """Follow up an instance: its answer text."""
+        """Follow up an instance of ``agent``: its answer text."""
 
     async def call_tool(self, act: "ActivityRun", *, tool: str, args: dict[str, Any]) -> Any:
         """The tool's result; an error-shaped result raises ``ActivityError``."""
@@ -91,76 +112,188 @@ def inject(tool: str, args: dict[str, Any], inject_params: dict[str, dict[str, A
 
 class ScarabHiveBackend:
     def __init__(self, *, runner: Any, system_config: Any, session_id: str, user_id: Optional[str],
-                 token: Any = None, default_sam: Optional[str] = None,
-                 inject_params: Optional[dict[str, dict[str, Any]]] = None,
-                 tool_check: Optional[Any] = None):
+                 token: Any = None, inject_params: Optional[dict[str, dict[str, Any]]] = None,
+                 config_check: Optional[Any] = None):
         self.runner = runner
         self.system_config = system_config
         self.session_id = session_id
         self.user_id = user_id
         self.token = token
-        self.default_sam = default_sam
         self.inject_params = dict(inject_params or {})
-        self.tool_check = tool_check  # the validator's SG007 tool check, applied again at run time
+        self.config_check = config_check  # the validator's SG007 check, applied again at run time
+        self._busy: set[str] = set()  # instances with a run in flight: one conversation, one run at a time
 
     # ------------------------------------------------------------ agents
-    def _caller(self, act: "ActivityRun", sam: Optional[str]) -> Any:
-        from agent_system.core.agent_caller import AgentCaller
+    def _agent(self, name: str) -> Any:
+        """The registered agent ``name`` -- the instance the app runs, not a copy (§3.9)."""
+        if self.config_check is not None:  # the runner, a machine facade, an agent that controls machines
+            problem = self.config_check("agent", name, {})
+            if problem:
+                raise ActivityError("config", problem)
+        registry = getattr(self.runner, "registry", None)
+        try:
+            agent = registry.get(name) if registry is not None else None
+        except Exception:  # the registry raises for a name it does not know
+            agent = None
+        if not callable(getattr(agent, "run_events", None)) or getattr(agent, "_session_tracker", None) is None:
+            raise ActivityError("config", f"agent {name!r} is not configured, not enabled, or not an agent")
+        return agent
 
-        sam = sam or self.default_sam
-        if not sam:
-            raise ActivityError("config", "no SAM for agent activities: set sam: in the machine or default_sam")
-        request_id = act.request_id()
-        act.meta["request_id"] = request_id
-        return AgentCaller(self.runner, sam_instance=sam, session_id=self.session_id, user_id=self.user_id,
-                           request_id=request_id, cancellation_token=self._token_for(act), retries=0)
+    def _sessions(self, agent: Any) -> Any:
+        service = getattr(agent, "_session_service", None) or getattr(self.runner, "_session_service", None)
+        if getattr(service, "session_manager", None) is None:
+            raise ActivityError("config", "no session service: an agent instance keeps its conversation in a session")
+        return service
 
     def _token_for(self, act: "ActivityRun") -> Any:
         """The run's token -- none for a finally or close activity: it runs on after a terminate (§3.10)."""
         return None if act.finalizer else self.token
 
-    def _set_vars(self, variables: dict[str, Any]) -> None:
-        """The run's session holds exactly this call's effective vars -- replaced, never accumulated (§3.9)."""
-        tracker = getattr(self.runner, "_session_tracker", None)
-        if tracker is None:
-            if variables:
-                raise ActivityError("config", "the runner agent has no session tracker: vars cannot reach sub-agents")
-            return
-        tracker.clear_session_template_vars(self.session_id)
-        if variables:
-            tracker.set_session_template_vars(self.session_id, dict(variables))
-
-    async def _guarded(self, act: "ActivityRun", agent: str, call: Any) -> Any:
+    async def _instance_of_this_run(self, service: Any, user: str, instance_id: str, agent: str) -> None:
+        """A continue reaches only an instance this run created, of the agent the activity names."""
         try:
-            return await call
+            data = await service.session_manager.load_session(user, instance_id)
+        except Exception:  # unknown, another user's, or not a session id at all
+            data = None
+        parent = ((data or {}).get("parent_session") or {}).get("session_id")
+        if data is None or parent != self.session_id:
+            raise ActivityError("config", f"continue: {instance_id!r} is not an agent instance of this run")
+        if data.get("agent_name") != agent:
+            raise ActivityError("config", f"continue: instance {instance_id!r} belongs to agent "
+                                          f"{data.get('agent_name')!r}, not {agent!r}")
+
+    async def _run_agent(self, act: "ActivityRun", agent: Any, service: Any, *, instance_id: str, message: str,
+                         advanced: bool, variables: dict[str, Any], new: bool) -> str:
+        """One run of ``agent`` on its instance session: the run's final answer.
+
+        The instance session holds exactly this call's effective vars -- replaced, never accumulated
+        (§3.9); the agent's own template_vars stay under them. A continue loads the instance's
+        conversation from its stored session, so it holds across a restart of the process.
+        """
+        from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+        if instance_id in self._busy:
+            raise ActivityError("config", f"instance {instance_id!r} is already running in this run: "
+                                          "one conversation takes one call at a time")
+        token = self._token_for(act)
+        if token is not None and token.is_cancelled:
+            raise asyncio.CancelledError("run cancelled")
+        request_id = act.request_id()
+        act.meta["request_id"] = request_id
+        user = self.user_id or "anonymous"
+        profile = getattr(agent.agent_config, "default_llm_profile", None) or "normal"
+        self._busy.add(instance_id)
+        register_request_user(request_id, user)
+        work: Optional[asyncio.Future[str]] = None
+        try:
+            try:
+                # the stored vars too: a save merges into them, and a sub-agent the instance starts
+                # through its own SAM inherits what is stored
+                await service.session_manager.replace_session_context_vars(user, instance_id, dict(variables))
+                await service.open_for_run(agent, user, instance_id, profile)
+            except Exception as exc:
+                raise ActivityError("agent_failed", f"{agent.name}: its session could not be opened: {exc}") from exc
+            tracker = agent._session_tracker
+            tracker.clear_session_template_vars(instance_id)
+            if variables:
+                tracker.set_session_template_vars(instance_id, dict(variables))
+            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced))
+            text = await self._guarded(act, agent.name, work)
+            if not await service.save_session(agent, user, instance_id, agent.name, profile, was_new_session=new):
+                logger.warning("stategraph: instance %s of %s was not saved; a continue after a restart "
+                               "would miss its conversation", instance_id, agent.name)
+            return text
+        finally:
+            def release(*_: Any) -> None:
+                self._busy.discard(instance_id)
+                release_request_user_tree(request_id)  # with the ids its tool calls registered
+
+            if work is not None and not work.done():  # it outlived its grace: the instance stays busy until it ends
+                work.add_done_callback(release)
+            else:
+                release()
+
+    @staticmethod
+    async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool) -> str:
+        """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure."""
+        from contextlib import aclosing
+
+        text = ""
+        async with aclosing(agent.run_events(task=message, request_id=request_id, session_id=instance_id,
+                                             use_advanced_model=advanced)) as events:
+            async for event in events:
+                kind = event.get("type")
+                if kind == "final":
+                    text = event.get("summary") or ""  # read on to "end": the run stores its messages there
+                elif kind == "end":
+                    break
+                elif kind == "error":
+                    raise RuntimeError(event.get("message") or "the agent run failed")
+                elif kind == "cancelled":
+                    raise RuntimeError(f"cancelled: {event.get('reason') or event.get('message') or 'from outside'}")
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("the agent ended without an answer")
+        return text
+
+    async def _guarded(self, act: "ActivityRun", agent: str, work: "asyncio.Future[Any]") -> Any:
+        """Await the agent run, a task of its own, so that a timeout or terminate reaches the run's token
+        first. A cancel that reaches the run itself can land in one of its tool calls, which turns it into a
+        "cancelled" tool result -- and the agent runs on. The token is what it stops at: cancelled while the
+        run still holds it, then the task, and the run gets ``_stop_grace()`` to wind down -- also when a
+        second cancel comes meanwhile (a terminate after a timeout)."""
+        work.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, whoever waits
+        try:
+            await asyncio.wait({work})  # never cancels work, and logs nothing when it fails later (shield does)
+            return work.result()
         except asyncio.CancelledError:
             request_id = act.meta.get("request_id")
-            if request_id:  # a timeout or terminate: stop the sub-run too, not only our await
+            if request_id:
                 try:
                     from agent_system.core.cancellation import get_cancellation_manager
 
                     get_cancellation_manager().cancel_request(request_id)
                 except Exception:
                     logger.debug("cancel_request(%s) failed", request_id, exc_info=True)
+            work.cancel()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _stop_grace()
+            while not work.done() and loop.time() < deadline:
+                try:
+                    await asyncio.wait({work}, timeout=deadline - loop.time())
+                except asyncio.CancelledError:
+                    continue  # it is stopping already; the first cancel is the one that ends the activity
+            if not work.done():
+                logger.warning("stategraph: agent run %s of %s did not stop within %.0fs", request_id, agent,
+                               _stop_grace())
             raise
         except ActivityError:
             raise
         except Exception as exc:
             raise ActivityError("agent_failed", f"{agent}: {exc}") from exc
 
-    async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, sam: Optional[str],
-                           advanced: bool, vars: dict[str, Any]) -> tuple[str, Optional[str]]:
-        caller = self._caller(act, sam)
-        self._set_vars(vars)
-        text = await self._guarded(act, agent, caller.call_text(agent, task, use_advanced_model=advanced))
-        return text, caller.last_instance_id  # one caller per call: this is our create
+    async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
+                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
+        target = self._agent(agent)
+        service = self._sessions(target)
+        try:
+            created = await service.session_manager.create_session(
+                user_id=self.user_id or "anonymous", title=f"{agent} ({act.path})", agent_name=target.name,
+                llm_profile=getattr(target.agent_config, "default_llm_profile", None) or "normal",
+                parent_session_id=self.session_id)  # a sub-session: not in the user's session list
+        except Exception as exc:
+            raise ActivityError("agent_failed", f"{agent}: its session could not be created: {exc}") from exc
+        instance = created["session_id"]
+        text = await self._run_agent(act, target, service, instance_id=instance, message=task, advanced=advanced,
+                                     variables=vars, new=True)
+        return text, instance
 
-    async def agent_continue(self, act: "ActivityRun", *, instance_id: str, message: str, sam: Optional[str],
+    async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any]) -> str:
-        caller = self._caller(act, sam)
-        self._set_vars(vars)
-        return await self._guarded(act, instance_id,
-                                   caller.follow_up_text(instance_id, message, use_advanced_model=advanced))
+        target = self._agent(agent)
+        service = self._sessions(target)
+        await self._instance_of_this_run(service, self.user_id or "anonymous", instance_id, target.name)
+        return await self._run_agent(act, target, service, instance_id=instance_id, message=message,
+                                     advanced=advanced, variables=vars, new=False)
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
@@ -176,8 +309,8 @@ class ScarabHiveBackend:
         from agent_system.servers.agent.components.tool_execution import ToolDispatchError
         from agent_system.tools.base import _error_result_message
 
-        if self.tool_check is not None:  # a computed tool name never passed the validator's check
-            problem = self.tool_check("tool", tool, {})
+        if self.config_check is not None:  # a computed tool name never passed the validator's check
+            problem = self.config_check("tool", tool, {})
             if problem:
                 raise ActivityError("tool_denied", problem)
         request_id = act.request_id()
@@ -237,14 +370,84 @@ def _redact(result: Any, tool: str, inject_params: dict[str, dict[str, Any]]) ->
 
 # ------------------------------------------------------------------ config checks
 
-def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[str], own_instance: str):
-    """SG007: can the configuration run what a machine names? Same matchers as the runtime."""
-    from agent_system.config.settings import get_tool_server_config
+@functools.cache
+def _control_tools() -> tuple[str, ...]:
+    """stategraph's tools that save, run or control machines: all of schema.yaml but the read-only ones."""
+    import re
+
+    from plugins.stategraph.server import READ_ONLY_TOOLS
+
+    text = (Path(__file__).resolve().parents[1] / "schema.yaml").read_text(encoding="utf-8")
+    return tuple(tool for tool in re.findall(r'name: "\{\{ name \}\}_(\w+)"', text) if tool not in READ_ONLY_TOOLS)
+
+
+def make_config_check(system_config: Any, *, runner: str, own_instance: str,
+                      is_agent: Optional[Callable[[str], Optional[bool]]] = None):
+    """SG007: can the configuration run what a machine names? Same matchers as the runtime.
+
+    ``is_agent(name)`` answers from the running registry whether a server is an agent (None: it does not
+    know); without it the configuration alone is checked, and a tool server named as an agent fails at run
+    time instead.
+    """
+    from agent_system.config.settings import _resolve_server_inheritance, get_tool_server_config
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
     from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
     servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
+    @functools.cache
+    def final_type(name: str) -> str:
+        try:
+            return _resolve_server_inheritance(name, system_config)[0]
+        except Exception:
+            return str(getattr(servers.get(name), "type", "") or "")
 
+    stategraphs = {own_instance} | {name for name in servers if final_type(name) == "stategraph"}
+
+    sams = sorted(name for name in servers if final_type(name) == "sub_agent_manager")
+
+    def may_call(config: Any, tool: str, owner: str) -> bool:
+        tools = getattr(getattr(config, "agent_config", None), "tools", None)
+        allowed = list(getattr(tools, "allowed", None) or [])
+        blocked = list(getattr(tools, "blocked", None) or [])
+        return tool_matches_patterns(tool, owner, allowed) and not tool_matches_patterns(tool, owner, blocked)
+
+    def own_reason(name: str) -> Optional[str]:
+        """Why agent ``name`` itself would save, start or control machines; None when it would not."""
+        if name == runner:
+            return f"{name!r} is the runner: it hosts the run's tool activities and is no agent to call"
+        if final_type(name) == "stategraph_machine":
+            return (f"{name!r} runs a machine as an agent: a machine may not start machines -- import that "
+                    "machine and use it as a submachine (machine:)")
+        config = server(name)
+        tool = next((f"{instance}_{tool}" for instance in sorted(stategraphs) for tool in _control_tools()
+                     if config is not None and may_call(config, f"{instance}_{tool}", instance)), None)
+        return f"agent {name!r} may call {tool}: a machine may not save, run or control machines" if tool else None
+
+    @functools.cache
+    def reaching() -> dict[str, str]:
+        """Every configured agent that reaches machines, and why: itself, or an agent it can start through a
+        SAM it may call -- the whole graph at once, walked back from the ones that reach them themselves."""
+        from plugins.sub_agent_manager.server import agent_allowed
+
+        names = sorted(name for name in servers if server(name) is not None)
+        why = {name: reason for name in names if (reason := own_reason(name))}
+        starters: dict[str, list[tuple[str, str]]] = {}  # spawned -> [(the agent that can start it, through)]
+        for sam in (s for s in sams if server(s) is not None):
+            allowed = list(getattr(server(sam), "allowed_agents", None) or ["*"])  # the SAM's own default
+            blocked = list(getattr(server(sam), "blocked_agents", None) or [])
+            callers = [name for name in names if may_call(server(name), f"{sam}_manage_sub_agent", sam)]
+            for spawned in (n for n in names if callers and agent_allowed(n, allowed, blocked)):
+                starters.setdefault(spawned, []).extend((caller, sam) for caller in callers if caller != spawned)
+        queue = sorted(why)
+        while queue:
+            spawned = queue.pop(0)
+            for caller, sam in starters.get(spawned, []):
+                if caller not in why:
+                    why[caller] = f"agent {caller!r} can start {spawned!r} through {sam} -- {why[spawned]}"
+                    queue.append(caller)
+        return why
+
+    @functools.cache
     def server(name: str) -> Any:
         try:
             config = get_tool_server_config(name, system_config)
@@ -253,8 +456,7 @@ def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[
         return config if config is not None and getattr(config, "enabled", False) else None
 
     def runner_refuses(tool: str, prefix: str) -> Optional[str]:
-        """Why the runner may not call ``tool`` (None: it may). Tool activities and the SAM calls of agent
-        activities both go through the runner's allowlist."""
+        """Why the runner may not call ``tool`` (None: it may): tool activities go through its allowlist."""
         host = server(runner)
         if host is None:
             return f"runner agent {runner!r} is not configured or not enabled"
@@ -266,44 +468,28 @@ def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[
         return None
 
     def check(what: str, name: str, extra: dict[str, Any]) -> Optional[str]:
-        if what in ("agent", "sam"):
-            sam_name = name if what == "sam" else (extra.get("sam") or default_sam)
-            if not sam_name:
-                return "no SAM: set sam: in the machine or default_sam in the plugin config"
-            sam = server(sam_name)
-            if sam is None:
-                return f"SAM {sam_name!r} is not configured or not enabled"
-            if getattr(sam, "type", "") != "sub_agent_manager":
-                return f"SAM {sam_name!r} is not a sub_agent_manager (it is {getattr(sam, 'type', '?')!r})"
-            refused = runner_refuses(f"{sam_name}_manage_sub_agent", sam_name)
-            if refused is not None:  # AgentCaller spawns through the SAM's tool, as the runner
-                return refused if server(runner) is None else (
-                    f"agent activities spawn through {sam_name}, but {refused}: add '{sam_name}/*' to it")
-            if what == "agent":
-                from plugins.sub_agent_manager.server import agent_allowed
-
-                if server(name) is None:
-                    return f"agent {name!r} is not configured or not enabled"
-                allowed = list(getattr(sam, "allowed_agents", None) or ["*"])
-                blocked = list(getattr(sam, "blocked_agents", None) or [])
-                if not agent_allowed(name, allowed, blocked):
-                    return f"agent {name!r} is not in {sam_name}.allowed_agents (the SAM refuses to spawn it)"
-            return None
+        if what == "vars_from":
+            return None if server(name) is not None else f"agent {name!r} is not configured or not enabled"
+        if what == "agent":  # the backend runs the registered agent itself; the machine file names it
+            config = server(name)
+            if config is None:
+                return f"agent {name!r} is not configured or not enabled"
+            if is_agent is not None and is_agent(name) is False:
+                return f"{name!r} is not an agent"
+            return reaching().get(name)
         if what == "tool":
             owner, prefix = resolve_longest_prefix(lambda p: p if p in servers else None, name)
             if owner is None:
                 return f"tool {name!r}: no configured server owns it (tool names carry the server prefix)"
-            if prefix == own_instance or server(prefix) is not None and getattr(server(prefix), "type", "") == "stategraph":
+            if prefix == own_instance or server(prefix) is not None and final_type(prefix) == "stategraph":
                 return f"tool {name!r} belongs to stategraph itself: a machine may not save, run or control machines"
-            if getattr(server(prefix), "type", "") == "sub_agent_manager":  # the runner may call it, for agent steps
+            if server(prefix) is not None and final_type(prefix) == "sub_agent_manager":
                 return (f"tool {name!r} belongs to the SAM {prefix}: a machine starts agents with an agent activity, "
                         "which the run journals and cancels with itself")
             refused = runner_refuses(name, prefix)
             if refused is None:
                 return None
             return refused if server(runner) is None else f"tool {refused} (the runner is the boundary)"
-        if what == "agent_exists":
-            return None if server(name) is not None else f"agent {name!r} is not configured or not enabled"
         if what == "profile":
             llm = getattr(system_config, "llm_system", None)
             profiles = getattr(llm, "decision_profiles", None) or {}

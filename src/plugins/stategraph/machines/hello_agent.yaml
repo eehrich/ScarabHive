@@ -6,8 +6,8 @@ stategraph: 1
 id: hello_agent
 title: Hello agent
 description: >-
-  One agent activity and a final output. Live, it asks chat_agent through the
-  plugin's SAM (stategraph_sam); mock the state "greet" to run it offline.
+  One agent activity and a final output. Live, it asks chat_agent; mock the
+  state "greet" to run it offline.
 
 params:
   name: {type: string, default: world, description: Who to greet}

@@ -25,7 +25,6 @@ events:                             # named events this machine accepts
   approve: {description: go on}
 context: {draft: null, round: 0}    # ctx: the machine's variables (JSON)
 vars: {tone: "{{ params.tone }}"}   # template vars for every agent it spawns
-sam: stategraph_sam                 # optional; default: the plugin's default_sam
 limits: {max_steps: 1000, timeout: 2h}
 initial: write
 states:
@@ -60,7 +59,7 @@ states:
 
 | Kind (`do:`) | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `sam`, `advanced`, `continue` | answer text or parsed value |
+| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {...}}` |

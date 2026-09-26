@@ -1,6 +1,6 @@
 # The example of docs/stategraph_design.md §2.1. One change: the writer is
-# chat_agent, because a shipped machine may only name agents the plugin's SAM
-# (stategraph_sam) can spawn -- the validator refuses anything else (SG007).
+# chat_agent, an agent every installation has -- the validator refuses an agent
+# that is not configured (SG007).
 #
 # Offline test (every agent and decision state mocked, the loop via $visits):
 #   mocks:

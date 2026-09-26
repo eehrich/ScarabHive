@@ -1,8 +1,8 @@
 # Patterns
 
 Each pattern is a complete machine that validates against the shipped configuration
-(agents `chat_agent` and `research_agent` through `stategraph_sam`, tools of
-`stategraph_json` through the runner). Swap in the agents and tools
+(agents `chat_agent` and `research_agent`, tools of `stategraph_json` through the
+runner). Swap in the agents and tools
 `stategraph_catalog` lists for you. The machines in `src/plugins/stategraph/machines/`
 are the same patterns, runnable.
 
@@ -287,8 +287,8 @@ states:
     status: failed
 ```
 
-Mocks per branch: `ask/optimist`, `ask/skeptic`, `ask/facts`. Branches share the
-run's session: they must not set different `vars` for the same key (SG109).
+Mocks per branch: `ask/optimist`, `ask/skeptic`, `ask/facts`. Each branch's agent
+runs on its own session, so branches may set different `vars`.
 
 ---
 

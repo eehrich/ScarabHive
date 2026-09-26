@@ -70,8 +70,8 @@ class StateGraphService:
         config = getattr(self.server, "system_config", None)
         if config is None or getattr(config, "plugins", None) is None:
             return None
-        return make_config_check(config, runner=self.server.runner_agent, default_sam=self.server.default_sam,
-                                 own_instance=self.server.name)
+        return make_config_check(config, runner=self.server.runner_agent, own_instance=self.server.name,
+                                 is_agent=getattr(self.server, "is_agent", None))
 
     def _validate(self, tree: MachineTree) -> MachineTree:
         return validate_tree(tree, self.config_check())
@@ -244,8 +244,8 @@ class StateGraphService:
                 return NoBackend()
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
                                      session_id=f"sg_{run_id}", user_id=user_id,
-                                     token=self.server.cancel_token(run_id), default_sam=self.server.default_sam,
-                                     inject_params=self.server.inject_params, tool_check=self.config_check())
+                                     token=self.server.cancel_token(run_id),
+                                     inject_params=self.server.inject_params, config_check=self.config_check())
         return make
 
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,

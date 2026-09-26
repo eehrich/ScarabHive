@@ -22,7 +22,6 @@ instances, all enabled:
 | Instance | Type | Role |
 |---|---|---|
 | `stategraph` | `stategraph` | the tools and the panel |
-| `stategraph_sam` | `sub_agent_manager` | the agents a machine may spawn (`allowed_agents`: explicit list) |
 | `stategraph_runner` | `basic_agent` | hosts runs; its tool allowlist is what a machine may call |
 | `stategraph_json` | `json_store` | JSON documents for machines' tool activities |
 | `stategraph_author` | `multi_turn_agent` | writes, validates, saves and test-runs machines |
@@ -35,17 +34,15 @@ Configuration of `stategraph` (defaults in code):
 | `writable_machine_dirs` | `data/stategraph/machines` | where saves go (not versioned: `/data` is gitignored) |
 | `runs_db` | `data/stategraph/runs.db` | runs and their journal (SQLite) |
 | `runner_agent` | `stategraph_runner` | host of runs, boundary of tool activities |
-| `default_sam` | `stategraph_sam` | SAM for machines that name none |
 | `allowed_users` | `[]` | users besides admins who may validate, save, run and control machines |
 | `inject_params` | `{}` | `{tool pattern: {param: value}}` added to tool activities after rendering (secrets) |
 | `default_max_wait` | `600` | seconds `run_machine` waits with `wait: finish` |
 
-**Letting machines use more.** An agent a machine should spawn goes into
-`stategraph_sam.allowed_agents` (it must exist, be enabled, and not be `private`); a
-tool a machine should call goes into `stategraph_runner`'s `tools.allowed` -- never a
-`stategraph/*` tool. A machine may also name another SAM (`sam: v6_story_sam`); that
-SAM's `allowed_agents` then applies. A SAM's `allowed_agents` reloads with
-`agent-cli reload`; a new agent and a changed tool allowlist need a restart.
+**Letting machines use more.** An agent activity runs any configured, enabled agent
+directly -- the registered instance, on a session of its own -- so a new agent needs no
+entry anywhere: the machine file names it, and machines are admin work. A tool a machine
+should call goes into `stategraph_runner`'s `tools.allowed` -- never a `stategraph/*` tool.
+A new agent and a changed tool allowlist need a restart.
 
 **Delegating to the author.** Another agent reaches `stategraph_author` through its SAM:
 add `stategraph_author` to that SAM's `allowed_agents`.
@@ -62,7 +59,7 @@ output as JSON. Example: `v6_story_machine`, the writer v6 story design as a mac
 
 | Tool | Parameters | Result | Admin¹ |
 |---|---|---|---|
-| `stategraph_catalog` | `sam?` | activity kinds with fields, spawnable agents, callable tools, decision profiles, example ids | |
+| `stategraph_catalog` | `agents?` (fnmatch pattern) | activity kinds with fields, the agents a machine may run, callable tools, decision profiles, example ids | |
 | `stategraph_list_machines` | | id, title, file, writable, validates | |
 | `stategraph_get_machine` | `machine_id` | `files {path: text}`, `versions {path: version}`, problems | |
 | `stategraph_validate_machine` | `files` or `yaml`, `machine_id?` | problems | yes |
@@ -90,7 +87,12 @@ and they run agents and tools. Therefore:
 - **Recursion.** The runner's allowlist never contains stategraph's own tools, and the
   validator refuses them in a machine (SG007): a machine cannot save, start or control
   machines.
-- **Agents** a machine may spawn are the SAM's explicit `allowed_agents`, never `*`.
+- **Agents** a machine runs are the ones its file names (literal, or a parameter with an
+  enum, so validation sees every one); an agent activity runs no agent the machine does not
+  name. None that reaches machines: not `stategraph_runner`, not a machine facade, not an
+  agent whose allowlist reaches a stategraph tool beyond the read-only ones (such as
+  `stategraph_author`), and none that can start such an agent through a SAM -- SG007, and
+  again at run time.
 - **Secrets** come from `inject_params`, applied after rendering, so they never appear in
   machine files or the journal's rendered inputs; a tool result that echoes them is
   redacted before the machine, the journal or an error message sees it.
@@ -125,10 +127,10 @@ the rules, the kinds, mock syntax and the validation codes. It reads
 
 Its tools, with the descriptions from `schema.yaml`:
 
-- `stategraph_catalog` -- "What a machine may use: activity kinds with their fields, the agents the SAM may spawn, the tools the runner may call, decision profiles, example machine ids. Use only what this lists."
+- `stategraph_catalog` -- "What a machine may use: activity kinds with their fields, the agents an agent activity can run, the tools the runner may call, decision profiles, example machine ids. Use only what this lists."
 - `stategraph_list_machines` -- "Machines in the machine roots: id, title, file, whether it is writable, whether it validates."
 - `stategraph_get_machine` -- "A machine as its file tree: files {relative path: text} (the YAML, its companion .py, imported machines in the same root), versions {path: version} to pass back when saving, and its validation problems."
-- `stategraph_validate_machine` -- "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents the SAM may spawn, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
+- `stategraph_validate_machine` -- "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents that exist, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
 - `stategraph_save_machine` -- "Validate, then write the machine tree into the writable machine root. Refused if validation finds errors, or if a file changed since the versions you read (pass expected_versions from get_machine; omit for new files)."
 - `stategraph_run_machine` -- "Run a machine. mocks {state path: out} answer instead of the activity ({"$visits": [out1, out2]} per use of the path in the run, {"$error": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key attaches to an unfinished run with the same key instead of starting a second one."
 - `stategraph_get_run` -- "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows."
@@ -138,7 +140,7 @@ Its tools, with the descriptions from `schema.yaml`:
 Validation problems arrive as `{level, code, message, path, file, line}`. Messages
 name the fix, e.g.:
 
-- `SG007 agent 'coder' is not in stategraph_sam.allowed_agents (the SAM refuses to spawn it)`
+- `SG007 agent 'coder' is not configured or not enabled`
 - `SG007 tool 'stategraph_run_machine' belongs to stategraph itself: a machine may not save, run or control machines`
 - `SG002 trigger 'approved' is not a declared event (declare it under events:, or use done / error)`
 - `SG004 'out' is not bound here (out: completion transitions; error: error transitions; event: event transitions)`
@@ -148,8 +150,9 @@ A failed test run's `error` names the state and the cause, e.g.
 `unmocked: <path>: mock-only run and no mock for this agent activity`, or
 `loop_limit: panel_fix entered 3 times (max_visits 2)`.
 
-**Agents a machine spawns** see only their task and the template vars the machine sets;
-nothing about stategraph. **`stategraph_runner`** is never talked to; its prompt only
+**Agents a machine runs** see only their task and the template vars the machine sets;
+nothing about stategraph. Each instance is a sub-session of the run's session
+(`sg_<run id>`), so it stays out of the session list. **`stategraph_runner`** is never talked to; its prompt only
 tells a stray visitor where to go.
 
 No hook: the plugin injects nothing into any conversation.

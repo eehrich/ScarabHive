@@ -41,7 +41,6 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
 | `vars` | name → template, or one template | | Agent template vars for every agent this machine spawns (§11). |
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
-| `sam` | string | | SAM instance for agent activities; default: the plugin's `default_sam`. |
 | `limits` | `{max_steps, timeout}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10). |
 | `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
 | `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
@@ -319,8 +318,9 @@ Durations: a number of seconds, or a string `500ms`, `30s`, `10m`, `2h`.
 
 ### agent
 
-Spawns a sub-agent through the SAM (or follows up an existing instance) and waits for
-its answer.
+Runs an agent -- a new instance, or a follow-up of an existing one -- and waits for its
+answer. Any configured agent: the backend runs the registered agent itself, on an
+instance session of its own; there is no list of spawnable agents to add it to.
 
 | Key | Meaning |
 |---|---|
@@ -330,9 +330,8 @@ its answer.
 | `parse` | A companion function name (or `package.module:function`), called as `fn(text)`; its return value is `out`. Raising `ValueError` sends the message back to the same instance as feedback. |
 | `parse_retries` | Feedback rounds for `schema`/`parse` failures (default 1, at most 5). |
 | `vars` | Template vars for this call (templates), over the machine's (§11). |
-| `sam` | SAM instance for this call. |
 | `advanced` | `true` uses the agent's advanced model profile. |
-| `continue` | Template: an instance id to follow up instead of spawning a new instance. |
+| `continue` | Template: an instance id (of this run, and of the agent `agent` names) to follow up instead of starting a new instance. The instance keeps its conversation, also across a resume. One call per instance at a time: a second concurrent `continue` of it fails with `config`. |
 
 `out` is the answer text, or the parsed value when `schema` or `parse` is set (with
 both, `parse` runs first and its result is validated against `schema`). After the
@@ -602,8 +601,8 @@ Runs several activities at once and joins when all are done.
 ```
 
 A branch may be any activity: a `machine` (a submachine per branch), a `map`, another
-`parallel`. Parallel agent activities of one run must not set different `vars` for
-the same key (SG109, §11).
+`parallel`. Each agent instance has its own session, so parallel agent activities may
+set different `vars` (§11).
 
 ### map
 
@@ -660,7 +659,7 @@ contains them -- a dict literal, a string with a colon -- goes into a block scal
 
 Exactly these: `task`, `args`, `params`, `vars`, `question`, `criteria`, `input`,
 `continue`, `output`, and a kind value of the form `"{{ params.<name> }}"`. Everything
-else is literal: `schema`, `retry`, `timeout`, `as`, `concurrency`, `fail`, `sam`,
+else is literal: `schema`, `retry`, `timeout`, `as`, `concurrency`, `fail`,
 `description`, `context` values, the kind value otherwise.
 
 A template value is literal unless it contains `{{ }}`.
@@ -877,14 +876,15 @@ one before: the calling frame's effective vars (a submachine inherits its caller
 then this machine's `vars_from` and `vars`, then the activity's own `vars`. So a
 submachine's own var overrides the caller's var of the same key -- a reusable
 submachine sets `phase: "{{ params.phase }}"` per call and the caller's `phase`
-cannot shadow it -- and an activity's `vars` win over both. The run's session holds
-exactly these effective vars during the call: they are replaced for every agent call,
-never accumulated. A follow-up (`continue`) sees the refreshed values. They are
-journaled with the activity.
+cannot shadow it -- and an activity's `vars` win over both. The instance's session
+holds exactly these effective vars during the call, over the agent's own configured
+`template_vars`: they are replaced for every agent call, never accumulated. A
+follow-up (`continue`) sees the values of its own call. They are journaled with the
+activity. Every instance has its own session, so concurrent agent activities never
+see each other's vars.
 
 Use `params` in machine-level `vars`; for values from `ctx` use the activity's own
-`vars`. Parallel agent activities of one run share the session: they must not set
-different values for the same key (SG109).
+`vars`.
 
 ---
 
@@ -919,7 +919,7 @@ any state inside waits.
 | SG004 | error | Python does not compile; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); a companion function that does not exist; `python:`/`imports:` outside the machine roots |
 | SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name), a computed `agent:`/`tool:` other than `{{ params.<name> }}` with an enum |
 | SG006 | error | Submachine: unknown alias, import cycle, missing required or unknown parameter |
-| SG007 | error | Configuration: the SAM cannot spawn the agent, the SAM is not a `sub_agent_manager`, the runner may not call the SAM's tool (add `<sam>/*` to the runner's allowlist), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
+| SG007 | error | Configuration: an agent that is not configured, not enabled or not an agent, or one that reaches machines (the runner, a machine facade -- use it as a submachine --, an agent that may save, run or control machines, or start such an agent through a SAM), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
 | SG103 | warning | A loop without `max_visits` on any of its states |
@@ -928,7 +928,6 @@ any state inside waits.
 | SG106 | warning | Impure code in a code field or template |
 | SG107 | warning | A data field whose whole value looks like a reference, without braces |
 | SG108 | warning | A root machine with `limits.timeout` used as a submachine |
-| SG109 | warning | Concurrent agent activities with `vars` (parallel branches incl. submachines, `map` with `concurrency` > 1): they share the run session |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
 
 Every problem names a path (`states.judge.transitions[1].guard`), the file and, when
