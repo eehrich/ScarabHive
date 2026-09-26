@@ -22,13 +22,15 @@ ICONS = sorted({
     "menu", "x", "minus", "maximize-2", "minimize-2", "panel-right", "panel-left",
     "picture-in-picture-2", "external-link", "pin", "pin-off", "search", "command",
     "layout-grid", "grip-vertical", "chevron-down", "chevron-right", "chevron-left",
-    "chevron-up", "ellipsis", "ellipsis-vertical", "arrow-left",
+    "chevron-up", "chevrons-down-up", "ellipsis", "ellipsis-vertical", "arrow-left",
     # theme and account
     "sun", "moon", "monitor", "user", "log-out", "settings", "key-round",
     # actions
     "refresh-cw", "play", "square", "paperclip", "send-horizontal", "plus",
     "trash-2", "pencil", "copy", "check", "download", "upload", "filter",
     "arrow-up", "arrow-down", "rotate-ccw", "save", "eye", "eye-off", "link",
+    # debugger (stategraph)
+    "pause", "step-forward", "circle-dot", "crosshair",
     # states
     "info", "triangle-alert", "circle-alert", "circle-check", "circle-x",
     "loader-circle", "clock", "circle-help", "ban",

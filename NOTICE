@@ -59,6 +59,8 @@ next to it:
     Feather, MIT License)
   - Inter and JetBrains Mono fonts, static/kit/fonts/ (SIL Open Font
     License 1.1)
+  - elkjs 0.12.0, src/plugins/stategraph/static/vendor/elkjs/ (Eclipse
+    Public License 2.0), the layout engine of the State Graph panel
 
 For complete licensing details of each dependency, refer to their
 respective repositories and documentation.

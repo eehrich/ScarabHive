@@ -1,0 +1,82 @@
+# stategraph: the tool instance (tools + panel), the SAM its machines spawn
+# agents through, the runner agent whose tool allowlist is everything a
+# machine may call directly, and the JSON store those tool activities use.
+#
+# Authorization boundaries (docs/stategraph_design.md §8.3):
+#   agent activities -> stategraph_sam.allowed_agents (or the SAM a machine names)
+#   tool activities  -> stategraph_runner's tools.allowed
+# Both are checked when a machine is validated (SG007) and again at run time.
+plugins:
+  servers:
+
+    stategraph:
+      type: stategraph
+      enabled: true
+      description: "State machines for agent workflows: model, validate, run and debug them"
+      # Machine roots in search order; the first root that has an id wins.
+      machine_dirs:
+        - data/stategraph/machines        # machines made in the panel; /data is not versioned
+        - "src/plugins*/*/machines"        # shipped next to their plugin, versioned
+      writable_machine_dirs:
+        - data/stategraph/machines
+      runs_db: data/stategraph/runs.db
+      runner_agent: stategraph_runner      # hosts runs; its allowlist bounds tool activities
+      default_sam: stategraph_sam          # for machines that name no sam of their own
+      # Besides admins (always allowed): users who may validate, save, run and
+      # control machines. Machines contain Python -- list only people you would
+      # let change plugin code.
+      allowed_users: []
+      # Params added to tool activities after rendering, by fnmatch pattern on
+      # the flat tool name (as in tool_script), so secrets never live in machine
+      # files. The config value wins over a value the machine passes. Example
+      # for a writer machine:
+      #   inject_params:
+      #     "writer_content_*": {write_key: "${WRITER_WRITE_KEY}"}
+      inject_params: {}
+      default_max_wait: 600                # seconds run_machine waits with wait: finish
+
+    # The agents a machine may spawn when it names no SAM of its own. An
+    # explicit list, never '*': every name here can be started by any machine.
+    # A writer machine names its own SAM (sam: v6_story_sam) instead; that
+    # SAM's allowed_agents then applies.
+    stategraph_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "stategraph: the agents a state machine may spawn"
+      max_sub_agents_per_type: 50          # a map over 30 items spawns 30 instances of one agent
+      max_sub_agents_per_session: 200      # one session per run (sg_<run id>)
+      auto_archive_on_limit: true
+      max_nesting_depth: 5
+      allowed_agents:
+        - chat_agent                       # plain answers, no tools
+        - research_agent                   # web research with cited sources
+
+    # Host of machine runs and the boundary for tool activities: a tool
+    # activity is dispatched through this agent's dispatch_tool_call, so only
+    # tools in its allowlist can be called from a machine. Never add a
+    # stategraph tool here (SG007 refuses them): a machine must not save,
+    # start or control machines. Nobody chats with this agent.
+    stategraph_runner:
+      type: basic_agent
+      enabled: true
+      description: "Hosts stategraph machine runs; its tool allowlist is what machines may call directly"
+      agent_config:
+        llm_profile: [structured, structured_fallback]
+        llm_profile_advanced: []
+        max_steps: 5
+        system_template: "./prompts/stategraph_runner.md"
+        tools:
+          allowed:
+            - "stategraph_json/*"           # the machines' own JSON documents
+      metadata:
+        visibility: private                # not a chat partner, not in any SAM list
+
+    # JSON working documents for machines' tool activities
+    # (tool stategraph_json_manage_json). Documents are scoped to the run's
+    # session unless a call passes a namespace. json_store's defaults apply:
+    # files under data/json_store/stategraph_json/, an idle namespace's files
+    # are deleted after 14 days (file_retention_hours).
+    stategraph_json:
+      type: json_store
+      enabled: true
+      description: "stategraph: JSON working documents of machine runs"

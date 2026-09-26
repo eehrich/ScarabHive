@@ -1,0 +1,56 @@
+# A reusable submachine: one critic reads a text and returns notes.
+# scene_review imports it; any machine can:
+#   imports: {critique_round: ./critique_round.yaml}
+#   do: {machine: critique_round, params: {text: "{{ ctx.draft }}"}}
+# Data flows in only through params and out only through the final output.
+stategraph: 1
+id: critique_round
+title: Critique round
+description: >-
+  One critic (chat_agent) reads a text and answers with JSON notes; returns
+  {notes, blocking}. A failed critic ends in a failed final, which the caller
+  receives as error submachine_failed.
+
+params:
+  text:   {type: string, required: true, description: The text to critique}
+  strict: {type: boolean, default: false, description: Judge by the standard of a publisher}
+
+context:
+  notes: null
+  blocking: false
+
+initial: critique
+
+states:
+  critique:
+    do:
+      agent: chat_agent
+      task: |
+        Critique this scene{{ ' by the standard of a publisher' if params.strict else '' }}.
+        Answer with one JSON object and nothing else:
+        {"notes": "<what to change, as a short list>", "blocking": <true if it must be revised>}
+
+        {{ params.text }}
+      schema:                    # the answer is parsed as JSON and validated
+        type: object
+        required: [notes, blocking]
+        properties:
+          notes: {type: string}
+          blocking: {type: boolean}
+      parse_retries: 1           # one feedback round to the same instance
+    transitions:
+      - target: done
+        effect: |
+          ctx.notes = out["notes"]
+          ctx.blocking = out["blocking"]
+      - trigger: error
+        target: failed
+
+  done:
+    type: final
+    output: {notes: "{{ ctx.notes }}", blocking: "{{ ctx.blocking }}"}
+
+  failed:
+    type: final
+    status: failed
+    output: {reason: the critic gave no usable answer}

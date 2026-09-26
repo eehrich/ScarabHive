@@ -1,0 +1,137 @@
+# The writer v6 coordinator ritual as a machine (docs/stategraph_design.md §10),
+# in small:
+#   1. vars phase/aufgabe steer the panel's prompt (they replace set_context)
+#   2. the panel must end its answer with a marker line; parse_marker turns it
+#      into data, and a missing marker goes back to the same instance
+#   3. merge_doc merges the panel's delta into the target document; a store
+#      error goes back to the same panel instance as feedback, at most twice
+#   4. delete_keys runs only when the marker names keys
+#   5. a checkpoint closes the phase
+#
+# MOCK-ONLY DEMO. chat_agent stands in for v6_story_panel and writes no delta
+# document, so a live run takes the retry path until max_visits ends it.
+# Offline test:
+#   params: {namespace: "demo"}
+#   mocks: {"panel": {"delta_doc": "delta_1", "status_doc": null, "delete_keys": ["draft.old"]},
+#           "merge": {"status": "success"}, "drop_keys": {"status": "success"},
+#           "checkpoint": {"status": "success"}}
+# The retry path: mock merge with {"$visits": [{"$error": {"type": "tool_failed",
+# "message": "source doc not found"}}, {"status": "success"}]} and panel_fix
+# with a marker.
+stategraph: 1
+id: v6_ritual_demo
+title: v6 ritual (demo)
+description: >-
+  Mock-only demo of the v6 ritual pattern: template vars phase/aufgabe, a panel
+  whose answer must carry a DELTA_DOC marker line (parse_marker), merge_doc
+  into the target document with the store error fed back to the same panel
+  instance (bounded by max_visits), guarded delete_keys, and a checkpoint.
+python: v6_ritual_demo.py
+
+params:
+  phase:      {type: string, enum: [idea, synopsis, audit], default: synopsis}
+  work_item:  {type: string, default: synopsis, description: "What the panel works on (v6: aufgabe)"}
+  target_doc: {type: string, default: story, description: The document the delta is merged into}
+  namespace:  {type: string, required: true, description: Store namespace shared with the panel}
+
+vars:
+  phase: "{{ params.phase }}"
+  aufgabe: "{{ params.work_item }}"   # the name the v6 prompts read
+
+context:
+  marker: null                   # {delta_doc, status_doc, delete_keys} from parse_marker
+  panel: null                    # the panel's instance id, for follow-ups
+  feedback: null
+
+initial: panel
+
+states:
+  panel:
+    do:
+      agent: chat_agent
+      task: "{{ panel_task(params) }}"
+      parse: parse_marker        # ValueError -> its message goes back to the same instance
+      parse_retries: 2
+    transitions:
+      - target: merge
+        effect: |
+          ctx.marker = out
+          ctx.panel = activity.instance_id
+      - trigger: error
+        target: failed
+        effect: ctx.feedback = error.message
+
+  merge:
+    do:
+      tool: stategraph_json_manage_json
+      args:
+        operation: merge_doc
+        namespace: "{{ params.namespace }}"
+        doc: "{{ params.target_doc }}"
+        source: "{{ ctx.marker['delta_doc'] }}"
+      idempotent: true           # merging the same delta twice gives the same document
+    transitions:
+      - target: drop_keys
+        guard: bool(ctx.marker["delete_keys"])
+      - target: checkpoint
+        guard: else
+      - trigger: error
+        guard: error.type == "tool_failed"
+        target: panel_fix
+        effect: ctx.feedback = merge_feedback(error.message, error.data)
+      - trigger: error
+        target: failed
+        effect: ctx.feedback = error.message
+
+  panel_fix:
+    max_visits: 2                # the third store error ends the ritual
+    do:
+      agent: chat_agent
+      continue: "{{ ctx.panel }}"
+      task: "{{ fix_task(ctx.feedback) }}"
+      parse: parse_marker
+    transitions:
+      - target: merge
+        effect: ctx.marker = out
+      - trigger: error           # loop_limit, or the panel failed
+        target: failed
+        effect: ctx.feedback = error.message
+
+  drop_keys:
+    do:
+      tool: stategraph_json_manage_json
+      args:
+        operation: delete_keys
+        namespace: "{{ params.namespace }}"
+        doc: "{{ params.target_doc }}"
+        paths: "{{ ctx.marker['delete_keys'] }}"
+    transitions:
+      - target: checkpoint
+      - trigger: error
+        target: failed
+        effect: ctx.feedback = error.message
+
+  checkpoint:
+    do:
+      tool: stategraph_json_manage_json
+      args:
+        operation: set_value
+        namespace: "{{ params.namespace }}"
+        doc: "{{ params.target_doc }}"
+        path: "checkpoints.{{ params.phase }}"
+        value: "{{ ctx.marker['delta_doc'] }}"
+      idempotent: true
+    transitions:
+      - target: done
+      - trigger: error
+        target: failed
+        effect: ctx.feedback = error.message
+
+  done:
+    type: final
+    output: {phase: "{{ params.phase }}", merged: "{{ ctx.marker['delta_doc'] }}"}
+
+  failed:
+    type: final
+    status: failed
+    output: {phase: "{{ params.phase }}", reason: "{{ ctx.feedback }}"}

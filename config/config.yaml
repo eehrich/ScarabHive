@@ -378,6 +378,13 @@ auth:
         min_role: "admin"
         description: "Agent editor requires admin role"
 
+      # stategraph machines contain Python and run agents and tools: editing,
+      # running and debugging them is operator work (docs/stategraph_design.md §8.3).
+      - pattern: "/plugins/stategraph/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "State machine editor, runner and debugger require admin role"
+
       # writer_admin exposes the whole writer DB (jobs.db, books.db,
       # sessions, story payloads, raw reader feedback) — operator
       # surface only. Pre-existing gap closed in Phase D after the
