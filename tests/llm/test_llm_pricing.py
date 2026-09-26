@@ -196,11 +196,16 @@ class TestPricingPath:
         A model without an entry is estimated as unknown, so a new profile or
         latest-alias slips through until someone reads a cost report and
         wonders. Local models get an entry too (0), which says "free".
+
+        Decision models as well: an answer without a billed cost (a local
+        laya-serve, TypeSafe direct) is priced from this table by the
+        configured model -- the usage tracker's only figure for it.
         """
         from agent_system.config.settings import load_settings
 
         table = pricing.load_pricing()
-        models = load_settings().llm_system.models.values()
+        llm = load_settings().llm_system
+        models = [*llm.models.values(), *llm.decision_models.values()]
         missing = sorted({m.model for m in models if m.model and m.model not in table})
         assert not missing, (
             f"no entry in config/llm_pricing.yaml for {missing} - add the "
