@@ -12,10 +12,15 @@ preserving vars the sub-agent set itself.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import copy
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent_system.services.session_manager import SessionManager
+from agent_system.services.session_service import SessionService
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
@@ -98,8 +103,11 @@ class TestMergeRule:
 
 
 class TestRefreshPersists:
-    def _manager(self):
+    def _manager(self, stored):
         session_service = MagicMock()
+        # the record on disk: the refresh merges into it as it is now
+        session_service.session_manager.load_session = AsyncMock(
+            side_effect=lambda *args, **kwargs: copy.deepcopy(stored))
         session_service.session_manager.save_session = AsyncMock()
         mgr = SubAgentManager.__new__(SubAgentManager)   # skip __init__ wiring
         mgr._session_service = session_service
@@ -112,10 +120,10 @@ class TestRefreshPersists:
 
     @pytest.mark.asyncio
     async def test_refresh_updates_and_saves(self):
-        mgr, svc = self._manager()
         sub_data = {"session_id": "sub-1",
                     "context_vars": {"aufgabe": "Idee"},
                     "context_vars_inherited": {"aufgabe": "Idee"}}
+        mgr, svc = self._manager(sub_data)
         merged = await mgr.refresh_sub_context_vars(
             user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
             parent_agent=self._parent({"aufgabe": "World"}),
@@ -124,13 +132,16 @@ class TestRefreshPersists:
         assert merged["aufgabe"] == "World"
         assert sub_data["context_vars"]["aufgabe"] == "World"
         assert sub_data["context_vars_inherited"] == {"aufgabe": "World"}
-        svc.session_manager.save_session.assert_awaited_once_with(sub_data)
+        svc.session_manager.save_session.assert_awaited_once()
+        saved = svc.session_manager.save_session.await_args.args[0]
+        assert saved["context_vars"]["aufgabe"] == "World"
+        assert saved["context_vars_inherited"] == {"aufgabe": "World"}
 
     @pytest.mark.asyncio
     async def test_no_change_means_no_write(self):
-        mgr, svc = self._manager()
         sub_data = {"context_vars": {"aufgabe": "Idee"},
                     "context_vars_inherited": {"aufgabe": "Idee"}}
+        mgr, svc = self._manager(sub_data)
         await mgr.refresh_sub_context_vars(
             user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
             parent_agent=self._parent({"aufgabe": "Idee"}),
@@ -139,11 +150,11 @@ class TestRefreshPersists:
 
     @pytest.mark.asyncio
     async def test_unreadable_parent_tracker_does_not_break_continue(self):
-        mgr, svc = self._manager()
         parent = MagicMock()
         parent._session_tracker.get_session_template_vars.side_effect = RuntimeError("boom")
         sub_data = {"context_vars": {"aufgabe": "Idee"},
                     "context_vars_inherited": {"aufgabe": "Idee"}}
+        mgr, svc = self._manager(sub_data)
         merged = await mgr.refresh_sub_context_vars(
             user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
             parent_agent=parent, parent_session_id="parent")
@@ -152,9 +163,86 @@ class TestRefreshPersists:
 
     @pytest.mark.asyncio
     async def test_missing_parent_agent(self):
-        mgr, _ = self._manager()
         sub_data = {"context_vars": {"a": 1}, "context_vars_inherited": {"a": 1}}
+        mgr, _ = self._manager(sub_data)
         merged = await mgr.refresh_sub_context_vars(
             user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
             parent_agent=None, parent_session_id="parent")
         assert merged == {"a": 1}
+
+
+class TestRefreshWritesInTurn:
+    """The refresh writes onto the record as it is now, in turn with the
+    sub-session's other writes (SessionService.save_lock)."""
+
+    async def _stored(self, tmp_path, context_vars=None):
+        manager = SessionManager(storage_path=str(tmp_path))
+        session = await manager.create_session(
+            user_id="u", session_id="sub-1", title="alt", agent_name="a", llm_profile="p")
+        session["context_vars"] = context_vars or {"aufgabe": "Idee"}
+        session["context_vars_inherited"] = {"aufgabe": "Idee"}
+        await manager.save_session(session)
+        sub_data = await manager.load_session("u", "sub-1")  # the caller's copy, at the continue's start
+        mgr = SubAgentManager.__new__(SubAgentManager)   # skip __init__ wiring
+        mgr._session_service = SessionService(manager)
+        parent = MagicMock()
+        parent._session_tracker.get_session_template_vars.return_value = {"aufgabe": "World"}
+        return manager, mgr, sub_data, parent
+
+    @pytest.mark.asyncio
+    async def test_a_rename_since_the_caller_loaded_stays(self, tmp_path):
+        manager, mgr, sub_data, parent = await self._stored(tmp_path)
+        await manager.rename_session("u", "sub-1", "Neu")
+        await mgr.refresh_sub_context_vars(
+            user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
+            parent_agent=parent, parent_session_id="parent")
+        record = await manager.load_session("u", "sub-1", bypass_cache=True)
+        assert record["title"] == "Neu"
+        assert record["context_vars"]["aufgabe"] == "World"
+
+    @pytest.mark.asyncio
+    async def test_vars_changed_since_the_caller_loaded_stay_changed(self, tmp_path):
+        manager, mgr, sub_data, parent = await self._stored(tmp_path, {"aufgabe": "Idee", "alt": "weg"})
+        record = await manager.load_session("u", "sub-1")
+        record["context_vars"] = {"aufgabe": "Idee"}  # a /vars took the sub-agent's own 'alt' out since
+        await manager.save_session(record)
+        merged = await mgr.refresh_sub_context_vars(
+            user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
+            parent_agent=parent, parent_session_id="parent")
+        stored = await manager.load_session("u", "sub-1", bypass_cache=True)
+        assert stored["context_vars"] == {"aufgabe": "World"}
+        assert merged == {"aufgabe": "World"}
+
+    @pytest.mark.asyncio
+    async def test_a_rename_during_the_refresh_is_not_written_over(self, tmp_path):
+        manager, mgr, sub_data, parent = await self._stored(tmp_path)
+        service = mgr._session_service
+        load = manager.load_session
+        loaded, go_on = asyncio.Event(), asyncio.Event()
+
+        async def held_load(*args, **kwargs):
+            record = await load(*args, **kwargs)
+            loaded.set()
+            await go_on.wait()  # read, not yet written back
+            return record
+
+        manager.load_session = held_load
+        refreshing = asyncio.create_task(mgr.refresh_sub_context_vars(
+            user_id="u", sub_session_id="sub-1", sub_session_data=sub_data,
+            parent_agent=parent, parent_session_id="parent"))
+        await asyncio.wait_for(loaded.wait(), 5)
+        manager.load_session = load
+
+        async def rename():  # as PATCH /api/sessions/{id} does
+            async with service.save_lock("sub-1"):
+                await manager.rename_session("u", "sub-1", "Neu")
+
+        renaming = asyncio.create_task(rename())
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(renaming), 0.5)
+        go_on.set()
+        await refreshing
+        await renaming
+        record = await manager.load_session("u", "sub-1", bypass_cache=True)
+        assert record["title"] == "Neu"
+        assert record["context_vars"]["aufgabe"] == "World"

@@ -865,3 +865,51 @@ class TestContextPersistence:
         mock_session_manager.save_session.assert_called_once()
         saved_data = mock_session_manager.save_session.call_args[0][0]
         assert saved_data["context_vars"]["book_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_a_rename_during_set_context_is_not_written_over(server, tmp_path):
+    """set_context reads and writes the record in turn with the session's other
+    writes (SessionService.save_lock), as a rename does: one landing between
+    its load and its save was written over."""
+    import asyncio
+    import contextlib
+
+    from agent_system.services.session_manager import SessionManager
+    from agent_system.services.session_service import SessionService
+
+    manager = SessionManager(storage_path=str(tmp_path))
+    await manager.save_session(await manager.create_session(
+        user_id="u1", session_id="s1", title="alt", agent_name="a", llm_profile="p"))
+    service = SessionService(manager)
+    load = manager.load_session
+    loaded, go_on = asyncio.Event(), asyncio.Event()
+
+    async def held_load(*args, **kwargs):
+        record = await load(*args, **kwargs)
+        loaded.set()
+        await go_on.wait()  # read, not yet written back
+        return record
+
+    agent = MagicMock()
+    agent.agent_config = AgentConfig(template_vars={})
+    agent._session_service = service
+    agent._session_tracker.get_session_metadata = MagicMock(return_value={"user_id": "u1"})
+    manager.load_session = held_load
+    setting = asyncio.create_task(server.set_context({"book_id": "42", "_agent": agent, "_session_id": "s1"}))
+    await asyncio.wait_for(loaded.wait(), 5)
+    manager.load_session = load
+
+    async def rename():  # as PATCH /api/sessions/{id} does
+        async with service.save_lock("s1"):
+            await manager.rename_session("u1", "s1", "Neu")
+
+    renaming = asyncio.create_task(rename())
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(renaming), 0.5)
+    go_on.set()
+    await setting
+    await renaming
+    record = await manager.load_session("u1", "s1", bypass_cache=True)
+    assert record["title"] == "Neu"
+    assert record["context_vars"]["book_id"] == "42"

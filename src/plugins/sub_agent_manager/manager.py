@@ -456,17 +456,23 @@ class SubAgentManager:
                     parent_session_id, e,
                 )
 
-        merged, new_inherited = self.merge_parent_context_vars(
-            sub_session_data, parent_live)
-
-        changed = (
-            merged != (sub_session_data.get("context_vars") or {})
-            or new_inherited != (sub_session_data.get("context_vars_inherited") or {})
-        )
+        # Merged into the record as it is now, one write at a time (SessionService.save_lock):
+        # the caller's copy is from before a rename, a /vars or a save since, which it would undo
+        session_manager = self._session_service.session_manager
+        async with self._session_service.save_lock(sub_session_id):
+            record = await session_manager.load_session(user_id, sub_session_id)
+            merged, new_inherited = self.merge_parent_context_vars(record, parent_live)
+            changed = (
+                merged != (record.get("context_vars") or {})
+                or new_inherited != (record.get("context_vars_inherited") or {})
+            )
+            if changed:
+                record["context_vars"] = merged
+                record["context_vars_inherited"] = new_inherited
+                await session_manager.save_session(record)
+        sub_session_data["context_vars"] = merged
+        sub_session_data["context_vars_inherited"] = new_inherited
         if changed:
-            sub_session_data["context_vars"] = merged
-            sub_session_data["context_vars_inherited"] = new_inherited
-            await self._session_service.session_manager.save_session(sub_session_data)
             logger.debug(
                 "Refreshed context_vars for sub-session %s from parent %s: %s",
                 sub_session_id, parent_session_id, sorted(merged),

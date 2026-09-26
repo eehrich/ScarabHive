@@ -238,14 +238,14 @@ class SessionService:
         return exists
 
     def save_lock(self, session_id: str) -> asyncio.Lock:
-        """One write of *session_id* at a time: its saves, and a rename
-        (update_session). The run's own save and a checkpoint overlap -- the
-        loop runs through the whole run -- and each reads the record and the
-        title to write before it writes: the later one has to see what the
-        earlier wrote, a rename included. Writers that load, change and save
-        the record without it (task_switch's context vars, sub_agent_manager's
-        refresh of a sub-session's inherited vars) can still lose a rename
-        landing in between."""
+        """One write of *session_id* at a time: its saves, a rename
+        (update_session), and the plugins that load, change and save the
+        record (task_switch's context vars, sub_agent_manager's refresh of a
+        sub-session's inherited vars). The run's own save and a checkpoint
+        overlap -- the loop runs through the whole run -- and each reads the
+        record and the title to write before it writes: the later one has to
+        see what the earlier wrote, a rename included. Not reentrant: nothing
+        that holds it may reach another of these writes."""
         lock = self._save_locks.get(session_id)
         if lock is None:
             lock = self._save_locks[session_id] = asyncio.Lock()
