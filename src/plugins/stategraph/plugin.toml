@@ -1,0 +1,16 @@
+# stategraph plugin manifest -- metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements are
+# aggregated into the build by scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "stategraph"
+version = "0.1.0"
+description = "Agent workflows as UML-style state machines in YAML: model them in a panel, run them deterministically, debug them with breakpoints and watchpoints"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server", "web"]
+category = "automation"
+tags = ["workflow", "state-machine", "statechart", "orchestration", "debugger"]
+requires = { agent_system = ">=0.7.0" }
+# Every third-party import is declared here, even when another plugin already
+# pulls it in (tests/pluginsystem/test_plugin_deps_declared.py).
+dependencies = ["ruamel.yaml>=0.18", "networkx>=3.0", "jsonschema>=4.21"]

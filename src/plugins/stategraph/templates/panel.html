@@ -1,0 +1,129 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon, empty %}
+{% block title %}State Graph{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}<pk-refresh interval="10"></pk-refresh>{% endblock %}
+{% block content %}
+<div class="sg-layout pk-sidebar-layout">
+  <nav class="sg-side pk-sidebar" id="machinesPane" aria-label="Machines">
+    <div class="pk-row sg-side-top">
+      <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search machines" aria-label="Search machines"></label>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="newMachine" title="New machine">{{ icon('plus', size='sm') }} New</button>
+    </div>
+    <div id="machineList" class="sg-list"><span class="pk-skeleton"></span></div>
+  </nav>
+
+  <section class="sg-main" aria-label="Machine">
+    <div id="placeholder" class="sg-placeholder">{{ empty('workflow', 'No machine open', 'Pick a machine on the left, or create a new one.') }}</div>
+    <div id="machineView" class="sg-machine" hidden>
+      <header id="machineHead" class="sg-head"></header>
+      <div id="debugBar" class="sg-debugbar" hidden></div>
+      <div class="pk-tabs sg-tabs" role="tablist" data-pk-tabs id="mainTabs" aria-label="Machine views">
+        <button type="button" class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-graph" data-tab="graph">Graph</button>
+        <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-yaml" data-tab="yaml">YAML <span class="pk-tab-count" id="yamlCount"></span></button>
+        <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-runs" data-tab="runs">Runs <span class="pk-tab-count" id="runCount"></span></button>
+      </div>
+
+      <section id="tab-graph" class="sg-tab sg-tab--graph" role="tabpanel">
+        <div class="pk-row sg-graphbar">
+          <div class="sg-palette" id="palette" role="group" aria-label="Add a state"></div>
+          <span class="pk-grow"></span>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">{{ icon('minus', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">{{ icon('plus', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="fit" title="Fit the machine into view">{{ icon('maximize-2', size='sm') }} Fit</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="autoLayout" title="Forget the positions dragged by hand and lay out anew">{{ icon('layout-grid', size='sm') }} Auto layout</button>
+        </div>
+        <div class="sg-canvas-wrap">
+          <svg id="canvas" class="sg-canvas" tabindex="0" role="application" aria-label="State machine graph: drag from a state's handle to another state to connect them"></svg>
+          <p class="sg-hint pk-muted" id="canvasHint"></p>
+        </div>
+      </section>
+
+      <section id="tab-yaml" class="sg-tab sg-tab--yaml" role="tabpanel" hidden>
+        <div class="pk-row sg-yamlbar">
+          <select id="yamlFile" class="pk-select pk-select--sm sg-file" aria-label="File"></select>
+          <span id="yamlState" class="pk-muted"></span>
+          <span class="pk-grow"></span>
+          <button type="button" class="pk-btn pk-btn--sm" id="yamlRevert" title="Discard the unsaved changes of every file">{{ icon('rotate-ccw', size='sm') }} Revert</button>
+          <button type="button" class="pk-btn pk-btn--sm" id="yamlValidate">{{ icon('circle-check', size='sm') }} Validate</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="yamlSave">{{ icon('save', size='sm') }} Save</button>
+        </div>
+        <div class="sg-code"><pre class="sg-code-view" aria-hidden="true"></pre><textarea id="yamlText" class="pk-textarea pk-input--mono sg-yaml" spellcheck="false" autocomplete="off" wrap="off" aria-label="File text"></textarea></div>
+        <div id="yamlProblems" class="sg-problems"></div>
+      </section>
+
+      <section id="tab-runs" class="sg-tab sg-tab--runs" role="tabpanel" hidden>
+        <form id="startForm" class="pk-card sg-start" novalidate>
+          <div class="pk-card-head"><h3 class="pk-card-title">Start a run</h3></div>
+          <div id="paramFields" class="sg-grid"></div>
+          <label class="pk-field"><span class="pk-label">Mocks</span>
+            <textarea id="mocks" class="pk-textarea pk-input--mono" rows="3" spellcheck="false"
+              placeholder='{"write": "a draft", "judge": {"$visits": [{"value": 0.2}, {"value": 0.9}]}, "publish": {"$error": {"type": "tool_failed", "message": "down"}}}'></textarea>
+            <span class="pk-help">JSON: state path → the activity's out. <code class="pk-mono">$visits</code> answers per visit, <code class="pk-mono">$error</code> fails it.</span></label>
+          <div class="pk-row sg-start-options">
+            <label class="pk-check"><input type="checkbox" id="mockOnly"> Mock only</label>
+            <label class="pk-check"><input type="checkbox" id="pauseAtStart"> Pause at start</label>
+            <span id="nextPoints" class="pk-muted"></span>
+          </div>
+          <p id="startError" class="pk-callout pk-callout--danger" hidden></p>
+          <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary" id="startRun">{{ icon('play', size='sm') }} Start</button></div>
+        </form>
+        <div id="runList"></div>
+        <div id="runHistory"></div>
+      </section>
+    </div>
+  </section>
+
+  <aside class="sg-inspector pk-sidebar" id="inspectorPane" aria-label="Inspector">
+    <div class="pk-tabs sg-tabs" role="tablist" data-pk-tabs id="sideTabs" aria-label="Inspector views">
+      <button type="button" class="pk-tab" role="tab" aria-selected="true" aria-controls="side-inspect" data-tab="inspect">Inspector</button>
+      <button type="button" class="pk-tab" role="tab" aria-selected="false" aria-controls="side-debug" data-tab="debug">Debug</button>
+    </div>
+    <div id="side-inspect" class="sg-side-body" role="tabpanel"></div>
+    <div id="side-debug" class="sg-side-body" role="tabpanel" hidden>
+      <div id="dbgRun"></div>
+      <div class="sg-section">
+        <h4 class="sg-section-title">Watch <span id="dbgWatchScope" class="pk-muted"></span></h4>
+        <div id="dbgWatch"></div>
+        <form class="pk-row sg-inline" id="watchForm">
+          <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="len(ctx.issues)" aria-label="Watch expression" autocomplete="off">
+          <button type="submit" class="pk-btn pk-btn--sm">{{ icon('eye', size='sm') }} Watch</button>
+        </form>
+      </div>
+      <div class="sg-section">
+        <h4 class="sg-section-title">Breakpoints <span id="dbgPointsScope" class="pk-muted"></span></h4>
+        <div id="dbgPoints"></div>
+      </div>
+      <div class="sg-section">
+        <h4 class="sg-section-title">Evaluate <span id="dbgEvalHint" class="pk-muted"></span></h4>
+        <form class="pk-row sg-inline" id="evalForm">
+          <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="ctx.draft[:200]" aria-label="Expression" autocomplete="off">
+          <button type="submit" class="pk-btn pk-btn--sm">Evaluate</button>
+        </form>
+        <div id="dbgEval"></div>
+        <form class="pk-row sg-inline" id="setForm">
+          <input class="pk-input pk-input--sm pk-input--mono sg-path" name="path" placeholder="ctx.round" aria-label="Path to set" autocomplete="off">
+          <input class="pk-input pk-input--sm pk-input--mono pk-grow" name="expr" placeholder="expression" aria-label="Value expression" autocomplete="off">
+          <button type="submit" class="pk-btn pk-btn--sm" title="Journaled as an edit: a resumed run applies it again">Set</button>
+        </form>
+      </div>
+      <div class="sg-section" id="eventSection" hidden>
+        <h4 class="sg-section-title">Send event</h4>
+        <form class="pk-stack" id="eventForm">
+          <div class="pk-row sg-inline">
+            <select class="pk-select pk-select--sm pk-grow" name="name" aria-label="Event"></select>
+            <select class="pk-select pk-select--sm" name="frame" aria-label="Frame" id="eventFrame"><option value="">any frame</option></select>
+          </div>
+          <textarea class="pk-textarea pk-input--mono" name="data" rows="2" placeholder="data as JSON (optional)" aria-label="Event data" spellcheck="false"></textarea>
+          <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm">{{ icon('send-horizontal', size='sm') }} Send</button></div>
+        </form>
+      </div>
+      <div class="sg-section"><h4 class="sg-section-title">Frames</h4><div id="dbgFrames"></div></div>
+    </div>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/plugins/{{ plugin }}/static/vendor/elkjs/elk.bundled.js"></script>
+<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>
+{% endblock %}

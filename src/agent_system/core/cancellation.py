@@ -114,10 +114,7 @@ class CancellationManager:
             cancelled_count += 1
         
         # Then, find all tokens with request_id as prefix (for tool-specific request IDs like "abc123_001")
-        for token_id, token in list(self._tokens.items()):
-            if token_id != request_id and token_id.startswith(request_id + "_"):
-                token.cancel()
-                cancelled_count += 1
+        cancelled_count += self.cancel_sub_requests(request_id)
         
         if cancelled_count > 0:
             logger.info("Cancelled %d request(s) with ID prefix '%s'", cancelled_count, request_id)
@@ -126,6 +123,19 @@ class CancellationManager:
         logger.warning("No cancellation tokens found for request ID '%s'", request_id)
         return False
     
+    def cancel_sub_requests(self, request_id: str) -> int:
+        """Cancel the sub-requests of a request (ids ``<request_id>_...``), not the request itself.
+
+        Its own token stays uncancelled, so the timeout monitor never force-cancels its whole prefix --
+        sub-requests it starts afterwards (cleanup work) are not cut.
+        """
+        cancelled_count = 0
+        for token_id, token in list(self._tokens.items()):
+            if token_id.startswith(request_id + "_"):
+                token.cancel()
+                cancelled_count += 1
+        return cancelled_count
+
     def register_task(self, request_id: str, task: asyncio.Task) -> None:
         """Register a task for potential forced cancellation."""
         self._tasks[request_id] = task

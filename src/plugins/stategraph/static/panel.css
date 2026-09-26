@@ -1,0 +1,168 @@
+/* State Graph: only what the kit has no component for -- three panes, the canvas and its shapes, the debug bar.
+ * Tokens only. SVG colours are CSS properties (fill, stroke), never presentation attributes with var(). */
+
+/* ---------------------------------------------------------------- panes */
+
+.pk-page-body:has(> .sg-layout) { padding: 0; overflow: hidden; }
+.sg-side { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; padding: var(--space-3); background: var(--surface-1); }
+.sg-side-top { gap: var(--space-2); }
+.sg-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.sg-item {
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; height: auto;
+  padding: var(--space-2); line-height: 1.4; text-align: left; white-space: normal; --btn-fg: var(--text-primary);
+}
+.sg-item[aria-current="true"] { --btn-bg: var(--accent-subtle); }
+.sg-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
+.sg-item-name { flex: 1 1 6rem; min-width: 0; font-size: var(--text-sm); font-weight: 600; overflow-wrap: anywhere; }
+.sg-item-sub { font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+
+.sg-main { min-height: 0; display: flex; flex-direction: column; }
+.sg-placeholder { padding: var(--space-6); }
+.sg-machine { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sg-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4) var(--space-2); }
+.sg-head-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 16rem; }
+.sg-head-name { font-size: var(--text-md); font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.sg-head-sub { font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+.sg-tabs { flex: none; padding: 0 var(--space-3); }
+.sg-tab { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.sg-tab--graph { padding: 0; gap: 0; overflow: hidden; }
+.sg-graphbar { flex: none; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.sg-palette { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.sg-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 280px; }
+.sg-hint { position: absolute; left: var(--space-3); bottom: var(--space-2); margin: 0; font-size: var(--text-xs); pointer-events: none; }
+
+/* the inspector on the right: a kit side pane, its drag corner on the left edge (rtl box, ltr content) */
+.sg-inspector { direction: rtl; border-right: 0; border-left: 1px solid var(--border-subtle); width: 22rem; background: var(--surface-1); display: flex; flex-direction: column; }
+.sg-inspector > * { direction: ltr; }
+.sg-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+.sg-side-body[hidden] { display: none; }
+.sg-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.sg-section + .sg-section { padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
+.sg-section-title { margin: 0; font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sg-inspect-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.sg-inspect-name { font-size: var(--text-md); font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.sg-transition { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-0); }
+.sg-transition[aria-current="true"] { border-color: var(--accent); }
+.sg-transition-head { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; font-size: var(--text-sm); }
+.sg-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); }
+.sg-fields > label { color: var(--text-muted); }
+.sg-fragment { min-height: 160px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }
+.sg-yaml { flex: 1 1 auto; min-height: 320px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }
+
+/* YAML with colours: a transparent textarea over a copy of its text coloured by the kit's yamlCode, same box, font
+   and padding as .sg-yaml / .sg-fragment above */
+.sg-code { position: relative; min-width: 0; display: flex; flex-direction: column; }
+.sg-code:has(> .sg-yaml) { flex: 1 1 auto; min-height: 0; }
+.sg-code > .sg-code-view {
+  position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none;
+  padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-md);
+  /* room for the textarea's scrollbars: without it the view stops scrolling short of the text above it */
+  padding-right: calc(var(--space-3) + var(--space-6)); padding-bottom: calc(var(--space-2) + var(--space-6));
+  font: 400 var(--text-xs)/1.55 var(--font-mono); color: var(--text-primary); white-space: pre; tab-size: 2;
+  background: var(--surface-0);
+}
+.sg-code > .pk-textarea {
+  position: relative; display: block; background: transparent; color: transparent; caret-color: var(--text-primary);
+  white-space: pre; overflow-wrap: normal; overflow: auto; tab-size: 2;
+}
+.sg-code > .pk-textarea::placeholder { color: var(--text-muted); }
+.sg-code:has(> .pk-textarea:read-only) > .sg-code-view { opacity: 0.6; }
+.sg-yamlbar, .sg-start-options { gap: var(--space-2); flex-wrap: wrap; }
+.sg-file { width: auto; max-width: 22rem; }
+.sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2) var(--space-3); }
+.sg-problems { display: flex; flex-direction: column; gap: var(--space-1); }
+.sg-problem { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; height: auto; padding: var(--space-1) var(--space-2); text-align: left; white-space: normal; font-size: var(--text-xs); line-height: 1.45; --btn-fg: var(--text-primary); }
+.sg-problem > .pk-badge { flex: none; }
+.sg-problem-where { color: var(--text-muted); font-family: var(--font-mono); }
+.sg-mono { font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.sg-preview { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the debug bar: the selected run and its controls, above every view */
+.sg-debugbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0 var(--space-4) var(--space-2); padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle); border-left: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface-1); font-size: var(--text-sm); }
+.sg-debugbar[data-status="paused"] { border-left-color: var(--warn); background: var(--warn-subtle); }
+.sg-debugbar[data-status="failed"] { border-left-color: var(--danger); }
+.sg-debugbar[data-status="succeeded"] { border-left-color: var(--ok); }
+.sg-debugbar .pk-select, .sg-debugbar .pk-input { width: auto; }
+.sg-step-input { width: 5rem !important; }
+.sg-frame { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-2); background: var(--surface-0); display: flex; flex-direction: column; gap: var(--space-1); }
+.sg-frame-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); font-size: var(--text-xs); }
+.sg-watch { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--text-xs); }
+.sg-watch-expr { font-family: var(--font-mono); font-weight: 600; }
+.sg-inline { gap: var(--space-1); flex-wrap: nowrap; }
+.sg-path { width: 8rem; flex: none; }
+.sg-actions { flex-wrap: wrap; gap: var(--space-1); }
+.sg-checks { gap: var(--space-3); flex-wrap: wrap; }
+.sg-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+
+/* ---------------------------------------------------------------- the canvas */
+
+.sg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--surface-0); cursor: grab; touch-action: none; user-select: none; outline: none; }
+.sg-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
+.sg-canvas:active { cursor: grabbing; }
+.sg-drag { pointer-events: none; }
+
+.sg-node { cursor: pointer; }
+.sg-node:focus { outline: none; }
+.sg-box { fill: var(--surface-1); stroke: var(--border-strong); stroke-width: 1.5; }
+.sg-node--composite > .sg-box { fill: var(--surface-2); stroke: var(--border-default); }
+.sg-node--wait > .sg-box { stroke-dasharray: 5 3; }
+.sg-rule { stroke: var(--border-default); stroke-width: 1; }
+.sg-name { font-family: var(--font-ui); font-size: 13px; font-weight: 600; fill: var(--text-primary); }
+.sg-label { font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted); }
+.sg-caption { font-family: var(--font-ui); font-size: 11px; fill: var(--text-secondary); }
+.sg-icon { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; color: var(--accent-text); }
+.sg-shape { fill: var(--surface-1); stroke: var(--text-secondary); stroke-width: 1.5; }
+.sg-shape--filled { fill: var(--text-secondary); stroke: none; }
+.sg-shape.sg-shape--failed { stroke: var(--danger); }
+.sg-shape--filled.sg-shape--failed { fill: var(--danger); }
+.sg-initial { fill: var(--text-primary); }
+.sg-handle { fill: var(--surface-0); stroke: var(--accent); stroke-width: 1.5; opacity: 0; cursor: crosshair; transition: opacity var(--duration-fast); }
+.sg-node:hover > .sg-handle, .sg-node.is-selected > .sg-handle, .sg-node:focus-visible > .sg-handle { opacity: 1; }
+@media (hover: none) { .sg-handle { opacity: 1; } }
+
+.sg-node:hover > .sg-box, .sg-node:hover > .sg-shape { stroke: var(--accent); }
+.sg-node:focus-visible > .sg-box { stroke: var(--focus-ring); stroke-width: 2.5; }
+.sg-node.is-selected > .sg-box, .sg-node.is-selected > .sg-shape { stroke: var(--accent); stroke-width: 2.5; }
+.sg-node.has-warning > .sg-box { stroke: var(--warn); }
+.sg-node.has-error > .sg-box, .sg-node.has-error > .sg-shape { stroke: var(--danger); }
+.sg-node.is-active > .sg-box { fill: var(--info-subtle); }
+.sg-node.is-sub > .sg-box { fill: var(--info-subtle); stroke-dasharray: 2 2; }
+.sg-node.is-current > .sg-box, .sg-node.is-current > .sg-shape { stroke: var(--info); stroke-width: 3; }
+.sg-node.is-paused > .sg-box, .sg-node.is-paused > .sg-shape { stroke: var(--warn); stroke-width: 3; fill: var(--warn-subtle); }
+
+.sg-badge { stroke: none; }
+.sg-badge--danger { fill: var(--danger); }
+.sg-badge--warn { fill: var(--warn); }
+.sg-badge--info { fill: var(--info); }
+.sg-badge-text { font-family: var(--font-ui); font-size: 10px; font-weight: 600; fill: var(--text-on-accent); pointer-events: none; }
+.sg-breakpoint { fill: var(--danger); stroke: var(--surface-0); stroke-width: 1.5; }
+
+.sg-link { cursor: pointer; }
+.sg-edge { fill: none; stroke: var(--text-muted); stroke-width: 1.4; }
+.sg-edge--initial { stroke: var(--text-primary); }
+.sg-edge--draft { stroke: var(--accent); stroke-dasharray: 4 3; }
+.sg-hit { fill: none; stroke: transparent; stroke-width: 12; }
+.sg-link--event > .sg-edge { stroke: var(--info); }
+.sg-link--error > .sg-edge { stroke: var(--danger); stroke-dasharray: 5 3; }
+.sg-link--else > .sg-edge { stroke-dasharray: 2 3; }
+.sg-link:hover > .sg-edge { stroke-width: 2.2; }
+.sg-link.is-last > .sg-edge { stroke: var(--info); stroke-width: 2.6; }
+.sg-link.is-selected > .sg-edge { stroke: var(--accent); stroke-width: 2.6; }
+.sg-link.has-error > .sg-edge-label { fill: var(--danger); }
+.sg-edge-label { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); pointer-events: none; }
+.sg-link--error > .sg-edge-label { fill: var(--danger); }
+.sg-edge-label-bg { fill: var(--surface-0); opacity: 0.9; }
+
+.sg-arrow path { fill: var(--text-muted); }
+.sg-arrow--error path { fill: var(--danger); }
+.sg-arrow--active path { fill: var(--info); }
+.sg-arrow--selected path { fill: var(--accent); }
+
+/* the kit's breakpoint: from there on it stacks the panes */
+@media (max-width: 640px) {
+  .pk-page-body:has(> .sg-layout) { overflow: auto; }
+  .sg-layout, .sg-main, .sg-machine { display: block; }
+  .sg-inspector { direction: ltr; border-left: 0; }
+  .sg-canvas-wrap { height: 60vh; }
+}

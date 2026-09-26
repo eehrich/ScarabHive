@@ -1,0 +1,97 @@
+# Human approval: draft, then wait for a person.
+#   awaiting_review is a WAIT STATE: no do and no completion transition. It
+#   takes the declared events approve / reject / comment (send them with
+#   stategraph_send_event or the panel) and gives up after its timeout.
+#   comment is an internal transition: its effect runs, the wait goes on.
+# Offline test: mocks {"draft": "Our new opening hours ..."}; the run stops in
+# status waiting and lists the events it accepts; then
+#   stategraph_send_event(run_id, "comment", {"text": "shorter please"})
+#   stategraph_send_event(run_id, "approve")
+stategraph: 1
+id: approval
+title: Human approval
+description: >-
+  Draft an announcement, then wait up to 48 hours for a person to approve or
+  reject it. A rejection with a reason sends it back to the writer (at most
+  three drafts); comments are collected while waiting.
+
+params:
+  topic: {type: string, required: true, description: What the announcement is about}
+
+events:
+  approve:
+    description: The reviewer accepts the draft.
+  reject:
+    description: The reviewer sends the draft back.
+    data:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string}
+  comment:
+    description: A remark while waiting; the machine keeps waiting.
+    data:
+      type: object
+      required: [text]
+      properties:
+        text: {type: string}
+
+context:
+  draft: null
+  reasons: []
+  comments: []
+  problem: null
+
+initial: draft
+
+states:
+  draft:
+    max_visits: 3                # the 4th draft raises loop_limit here
+    do:
+      agent: chat_agent
+      task: |
+        Write a short announcement about: {{ params.topic }}
+        {{ ('The reviewer rejected the last draft. Address this: ' + ctx.reasons[-1]) if ctx.reasons else '' }}
+    transitions:
+      - target: awaiting_review
+        effect: ctx.draft = out
+      - trigger: error
+        guard: error.type == "loop_limit"
+        target: rejected
+      - trigger: error
+        target: failed
+        effect: ctx.problem = error.message
+
+  awaiting_review:
+    description: Wait for approve or reject; comments do not end the wait.
+    timeout: 48h                 # then wait_timeout is raised in this state
+    transitions:
+      - trigger: comment         # no target: an internal transition
+        effect: ctx.comments.append(event.data["text"])
+      - trigger: approve
+        target: approved
+      - trigger: reject
+        target: draft
+        effect: ctx.reasons.append(event.data["reason"])
+      - trigger: error
+        guard: error.type == "wait_timeout"
+        target: expired
+
+  approved:
+    type: final
+    output: {announcement: "{{ ctx.draft }}", comments: "{{ ctx.comments }}"}
+
+  rejected:
+    type: final
+    status: failed
+    output: {reason: "rejected three times", reasons: "{{ ctx.reasons }}"}
+
+  expired:
+    type: final
+    status: failed
+    output: {reason: "no decision within 48 hours", draft: "{{ ctx.draft }}"}
+
+  failed:
+    type: final
+    status: failed
+    output: {problem: "{{ ctx.problem }}"}

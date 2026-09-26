@@ -1,0 +1,78 @@
+# Fan-out and join, twice:
+#   review     -- parallel: three critics at once; out = {branch: result}
+#   summarise  -- map: one agent call per chapter, two at a time; out = a list
+#                 in chapter order, whatever order the calls finish in
+# Offline test: a mock per parallel branch and per map item (item paths are
+# the index), e.g.
+#   mocks: {"review/style": "fine", "review/logic": "no gaps",
+#           "review/reader": {"$error": {"type": "agent_failed", "message": "down"}},
+#           "summarise/0": "Chapter one ...", "summarise/1": "Chapter two ..."}
+#   params: {text: "...", chapters: ["one", "two"]}
+stategraph: 1
+id: fan_out_review
+title: Fan-out review
+description: >-
+  Three critics read a text at the same time (parallel, joined when all are
+  done), then each chapter is summarised (map, two at a time, results in
+  chapter order). Live, it uses chat_agent through stategraph_sam.
+
+params:
+  text:     {type: string, required: true, description: The whole text}
+  chapters: {type: array, default: [], description: The chapters as a list of strings}
+
+context:
+  reviews: {}
+  failed_reviews: []
+  summaries: []
+  problem: null
+
+initial: review
+
+states:
+  review:
+    description: Three independent critics at once; with fail collect one failure does not stop the others.
+    do:
+      parallel:
+        style:
+          agent: chat_agent
+          task: "Judge only the style of this text, in at most five bullet points.\n\n{{ params.text }}"
+        logic:
+          agent: chat_agent
+          task: "List only logic and continuity errors in this text, as bullet points.\n\n{{ params.text }}"
+        reader:
+          agent: chat_agent
+          task: "Read this as a first-time reader: where did you get bored or lost? Bullet points.\n\n{{ params.text }}"
+      fail: collect              # out[branch] = {status, out} or {status, error}; nothing is raised
+    transitions:
+      - target: summarise
+        effect: |
+          ctx.reviews = {name: result["out"] for name, result in out.items() if "out" in result}
+          ctx.failed_reviews = sorted(name for name, result in out.items() if "error" in result)
+
+  summarise:
+    description: One summary per chapter, two calls at a time.
+    do:
+      map: params.chapters       # a Python expression, no braces
+      as: chapter
+      concurrency: 2
+      each:
+        agent: chat_agent
+        task: "Summarise chapter {{ index + 1 }} in two sentences.\n\n{{ chapter }}"
+    transitions:
+      - target: done
+        effect: ctx.summaries = out
+      - trigger: error           # fail: fast (the default) raises the first failure
+        target: failed
+        effect: ctx.problem = error.message
+
+  done:
+    type: final
+    output:
+      reviews: "{{ ctx.reviews }}"
+      failed_reviews: "{{ ctx.failed_reviews }}"
+      summaries: "{{ ctx.summaries }}"
+
+  failed:
+    type: final
+    status: failed
+    output: {problem: "{{ ctx.problem }}"}
