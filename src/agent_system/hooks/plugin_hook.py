@@ -74,6 +74,8 @@ class HookContext:
         llm_usage: Token usage data from the response (for post_llm_response)
         llm_finish_reason: Finish reason from the response (for post_llm_response)
         llm_is_streaming: Whether the request was streaming
+        user_id: Whose call this is -- the user its run belongs to; None when
+            no run names one (a call outside any run)
     """
     hook_type: HookType
     request_id: str
@@ -110,6 +112,9 @@ class HookContext:
     reasoning_text: Optional[str] = None
     reasoning_chars: int = 0
     previous_reasoning_chars: int = 0
+    # A consumer that keeps data per user reads None as nobody's -- shown to an
+    # admin only -- never as everybody's.
+    user_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert context to dictionary for serialization."""

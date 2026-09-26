@@ -4,7 +4,7 @@
 {% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
 {% block toolbar %}
 <pk-refresh interval="5"></pk-refresh>
-<button id="actionsButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" popovertarget="actions" aria-label="More actions" title="More actions">{{ icon('ellipsis') }}</button>
+<button id="actionsButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" popovertarget="actions" aria-label="More actions" title="More actions" hidden>{{ icon('ellipsis') }}</button>
 <div id="actions" class="pk-menu" popover>
   <button type="button" class="pk-menu-item" data-action="prune">{{ icon('hard-drive') }} Prune and reclaim disk space</button>
   <hr class="pk-menu-separator">
@@ -18,6 +18,7 @@
   <select id="filterAgent" class="pk-select pk-select--sm md-filter" aria-label="Agent"><option value="">All agents</option></select>
   <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterSession" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Session ID" aria-label="Session ID"></div>
   <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterRequest" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Request ID" aria-label="Request ID"></div>
+  <div class="pk-search pk-grow" id="userFilter" hidden>{{ icon('user') }}<input id="filterUser" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="User" aria-label="User"></div>
 </div>
 
 <div class="pk-tabs" role="tablist" data-pk-tabs>

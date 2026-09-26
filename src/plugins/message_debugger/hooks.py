@@ -125,6 +125,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                     agent_name=context.agent_name or '',
                     request_id=context.request_id or '',
                     session_id=context.session_id or '',
+                    user_id=context.user_id,
                     provider=context.llm_provider or '',
                     model=context.llm_model or '',
                     url=context.llm_request_url or '',
@@ -155,6 +156,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                     agent_name=context.agent_name or '',
                     request_id=context.request_id or '',
                     session_id=context.session_id or '',
+                    user_id=context.user_id,
                     provider=context.llm_provider or '',
                     model=context.llm_model or '',
                     url=context.llm_request_url or '',
@@ -201,6 +203,8 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                 'agent_name': context.agent_name or '',
                 'request_id': context.request_id or '',
                 'session_id': context.session_id or '',
+                # Whose turn it is: a user reads only their own (None: nobody's).
+                'user_id': context.user_id,
                 'step': context.step,
                 # Compacted here, on the loop: _compact copies, so the writer
                 # thread never reads a dict the agent is still changing.
@@ -290,6 +294,7 @@ class MessageDebuggerPlugin(SchemaBasedPluginHook):
                 context_window=ctx.get('context_window'),
                 messages=message_data,
                 llm_response=llm_response,
+                user_id=ctx.get('user_id'),
             )
 
         return len(message_data), total_tokens

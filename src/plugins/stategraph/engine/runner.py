@@ -764,6 +764,15 @@ class RunManager:
             current_request_id.set(ctx.id)
         except Exception:
             pass
+        try:  # whose run this is: a decision an activity asks is captured under the run's user
+            # (llm/hook_notify.py) -- nobody registered the run's own id. This task's context only.
+            from agent_system.core.request_context import current_run_user
+
+            run_user = (ctx.store.get_run(ctx.id) or {}).get("user_id")
+            if run_user:
+                current_run_user.set(run_user)
+        except Exception:
+            logger.debug("stategraph: the user of run %s not set", ctx.id, exc_info=True)
         timeout = parse_duration(ctx.machine.spec.limits.timeout)
         fields: dict[str, Any] = {}
         watchdog = asyncio.ensure_future(self._watch_timeout(ctx, timeout)) if timeout else None

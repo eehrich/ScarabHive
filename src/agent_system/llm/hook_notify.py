@@ -127,13 +127,18 @@ async def _dispatch(
     a hook consumer raised is worse. The failure is reported instead — once.
     """
     try:
+        from agent_system.core.request_context import current_run_user, get_request_user
         from agent_system.hooks import HookContext, HookType, get_hook_registry
 
         hook_type = getattr(HookType, hook_name)
+        request_id = current_request_id()
         context = HookContext(
             hook_type=hook_type,
-            request_id=current_request_id(),
+            request_id=request_id,
             session_id=session_id,
+            # The user of the run it is made in, else the one its id was registered
+            # under; outside a run, nobody's.
+            user_id=current_run_user.get() or (get_request_user(request_id, default=None) if request_id else None),
             # No agent: that is exactly what marks these calls for the
             # consumers that must not count them twice (a hook on
             # POST_LLM_RESPONSE sees chat calls as well).

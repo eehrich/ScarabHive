@@ -508,6 +508,15 @@ moonshotai/kimi-k3:
   cached_input: 0.30
   output: 15.00
 
+# Decision-Modell Jev (decision_models in llm_openrouter.yaml) — die Antwort
+# traegt usage.cost selbst, das hier ist nur der Fallback. Alias -> Preis des
+# Ziels typesafe/jev-1.13, Endpunkt TypeSafe: nur Eingabe-Tokens kosten
+# (GET /api/v1/models/typesafe/jev-1.13/endpoints, 2026-09-26; 367 Tokens =
+# 1.5414e-05 $, wie gemessen).
+"~typesafe/jev-latest":
+  input: 0.042
+  output: 0.00
+
 # =============================================================================
 # Lokal (Ollama) — keine Kosten. Eingetragen, damit die Schaetzung 0 sagt
 # statt "unbekannt".

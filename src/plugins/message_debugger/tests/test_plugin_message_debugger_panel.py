@@ -7,12 +7,14 @@ and a sub-agent ``r-1_sub_ab12`` (in ``s-sub``, with an entry); ``r-10``, which 
 ``r-3``, a later request of ``s-1``, with a turn; ``r-2`` (session ``s-2``) with a turn and an entry; ``r-slow`` in
 session ``s-slow``, whose lists answer after 1.5 s; and 120 turns of agent ``bulk``. The oldest turn of ``r-1``
 answers after 1.5 s too; the oldest ``bulk`` turn is gone once the list is drawn. POST /__stub/turn adds a newer
-``bulk`` turn, or with ``?session_id=s-slow`` one in ``s-slow``; GET /__stub/answered counts the turn lists answered.
+``bulk`` turn, or with ``?session_id=s-slow`` one in ``s-slow``, or with ``?user_id=alice`` alice's own ``r-alice``;
+GET /__stub/answered counts the turn lists answered. An admin looks; POST /__stub/viewer?name=alice makes it alice.
 """
 from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -24,8 +26,11 @@ from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.auth.dependencies import get_optional_user
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
+# At module level, as the plugin's other tests: a mutation probe that puts a copy of the plugins
+# first on the path reaches only what is imported before the conftest has put src first.
+from plugins.message_debugger.plugin import MessageDebuggerHybridPlugin
 from tests.ui.browser import find_browser, run_app_test_page
-from tests.session_owners import admin
+from tests.session_owners import admin, user
 
 BROWSER = find_browser()
 PAGE_TIMEOUT = 120
@@ -77,8 +82,6 @@ def seed(db) -> tuple[int, int]:
 
 
 def panel_app(tmp_path: Path):
-    from plugins.message_debugger.plugin import MessageDebuggerHybridPlugin
-
     server_config = ToolServerConfig()
     server_config.config = {"db_path": str(tmp_path / "debugger.db")}
     plugin = MessageDebuggerHybridPlugin("message_debugger", AgentSystemConfig(), server_config)
@@ -104,17 +107,29 @@ def panel_app(tmp_path: Path):
         return answered
 
     @app.post("/__stub/turn")
-    async def add_turn(session_id: str = "s-bulk"):
+    async def add_turn(session_id: str = "s-bulk", user_id: str | None = None):
         agent, request_id = ("slow", "r-slow-2") if session_id == "s-slow" else ("bulk", "r-bulk-new")
-        plugin._db.insert_turn(time.time() * 1000, "pre_llm", agent_name=agent, request_id=request_id, session_id=session_id)
+        if user_id:
+            agent, request_id, session_id = "chat", f"r-{user_id}", f"s-{user_id}"
+        plugin._db.insert_turn(time.time() * 1000, "pre_llm", agent_name=agent, request_id=request_id,
+                               session_id=session_id, user_id=user_id)
+        return {}
+
+    viewer = {"user": admin()}
+
+    @app.post("/__stub/viewer")
+    async def look_as(name: str):
+        # an account older than the rows it is to see: a newer one reads only what came after it
+        viewer["user"] = admin() if name == "admin" else user(name).model_copy(
+            update={"created_at": datetime(2020, 1, 1)})
         return {}
 
     registry = PluginWebRegistry()  # the plugin's router and static files, mounted as the app mounts them
     registry.register_web_plugin("message_debugger", plugin)
     registry.apply_to_app(app)
-    # An admin looks: this page tests what the panel draws; who may see which session is
-    # test_plugin_message_debugger_access.py.
-    app.dependency_overrides[get_optional_user] = admin
+    # An admin looks, but for the last check: this page tests what the panel draws; what a user
+    # may read is test_plugin_message_debugger_access.py.
+    app.dependency_overrides[get_optional_user] = lambda: viewer["user"]
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/message_debugger", StaticFiles(directory=TESTS), name="panel-tests")
     return app, plugin
@@ -145,6 +160,7 @@ EXPECTED = [
     'a response names the backend that served it, in the list and in the drawer',
     'clearing asks first and, confirmed, empties the lists',
     'pruning asks first and, confirmed, tells what it did, a compacted file included, and shows the lists as they are now',
+    "an admin has the user filter, the maintenance menu and the file's size; a user has none of them and sees their own captures only",
 ]
 
 

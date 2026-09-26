@@ -17,6 +17,17 @@ use it without upward imports (``servers/agent`` previously imported
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
+from typing import Optional
+
+#: The user of the run this code runs in: set where a run begins, next to
+#: current_request_id (Agent, a stategraph run). A call that reaches the hooks
+#: without an agent -- a decision, TTS -- reads its owner here first
+#: (llm/hook_notify.py): its run's id may be one nobody registered (a
+#: stategraph run's own id), and the map lets go of a run's whole tree when
+#: the request that started it ends, while its background sub-agents run on.
+current_run_user: ContextVar[Optional[str]] = ContextVar("current_run_user", default=None)
+
 # The shared map. Mutating module-level state is intentional here: the map is
 # process-wide by design (one HTTP request may be served by app code, agent
 # code and plugins, all needing the same view).

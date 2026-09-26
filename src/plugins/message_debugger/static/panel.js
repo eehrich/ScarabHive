@@ -96,7 +96,8 @@ async function loadStats({ auto = false } = {}) {
   statsBusy = true;
   let stats;
   try {
-    stats = await api(`${BASE}stats`, { quiet: true });
+    const user = $('filterUser').value.trim();
+    stats = await api(`${BASE}stats${user ? `?user_id=${encodeURIComponent(user)}` : ''}`, { quiet: true });
   } catch (error) {
     if (load === statsLoad) render($('stats'), empty('circle-alert', 'Statistics could not be loaded', error.message));
     return;
@@ -110,8 +111,12 @@ async function loadStats({ auto = false } = {}) {
     stat('Sessions', number(stats.unique_session_count)),
     stat('Agents', number(stats.unique_agents.length)),
     stat('Errors', number(stats.error_count)),
-    stat('Database', `${number(stats.db_size_mb)} MB`),
+    // The file holds everyone's captures: only an admin is told its size.
+    stats.db_size_mb === undefined ? '' : stat('Database', `${number(stats.db_size_mb)} MB`),
   ]);
+  // A user sees their own captures; the owner filter, clearing and pruning are an admin's.
+  $('userFilter').hidden = !stats.sees_everything;
+  $('actionsButton').hidden = !stats.sees_everything;
   fillOptions($('filterAgent'), stats.unique_agents);
   fillOptions($('filterProvider'), stats.unique_providers);
 }
@@ -123,6 +128,7 @@ function query(tab, limit, until = null) {
     agent_name: $('filterAgent').value,
     session_id: $('filterSession').value.trim(),
     request_id: $('filterRequest').value.trim(),
+    user_id: $('filterUser').value.trim(),
     ...(tab === 'turns'
       ? { snapshot_type: $('filterType').value }
       : { provider: $('filterProvider').value, direction: $('filterDirection').value }),
@@ -357,7 +363,7 @@ function drawTurn(turn) {
       ['Agent', turn.agent_name], ['Step', turn.step], ['Messages', number(turn.message_count)],
       ['Tokens', number(turn.total_tokens)], ['Context window', number(turn.context_window)],
       ['Time', time(turn.timestamp_ms, true)], ['Session', idFact('session', turn.session_id)],
-      ['Request', idFact('request', turn.request_id)],
+      ['Request', idFact('request', turn.request_id)], ['User', turn.user_id],
     ])}
     ${messages.length ? section(`Messages (${messages.length})`, messages, html`<div class="pk-stack">${messages.map(messageCard)}</div>`) : ''}
     ${turn.llm_response_json ? section('LLM response', turn.llm_response_json, jsonView(turn.llm_response_json)) : ''}`);
@@ -372,6 +378,7 @@ function drawRequest(entry) {
       ['Streaming', entry.is_streaming ? 'yes' : 'no'], ['Duration', duration(entry.duration_ms)],
       ['Finish reason', entry.finish_reason], ['Time', time(entry.timestamp_ms, true)],
       ['Session', idFact('session', entry.session_id)], ['Request', idFact('request', entry.request_id)],
+      ['User', entry.user_id],
     ])}
     ${entry.error ? section('Error', entry.error, html`<pre class="pk-code md-error-text">${entry.error}</pre>`) : ''}
     ${entry.usage_json ? section('Usage', entry.usage_json, jsonView(entry.usage_json)) : ''}
@@ -489,11 +496,14 @@ document.querySelector('[data-pk-tabs]').addEventListener('tabchange', (event) =
 document.addEventListener('refresh', refresh);
 
 $('filterAgent').addEventListener('change', () => startOver(Object.keys(lists)));
-for (const id of ['filterSession', 'filterRequest']) {
+for (const id of ['filterSession', 'filterRequest', 'filterUser']) {
   let typing = null;
   $(id).addEventListener('input', () => {
     clearTimeout(typing);
-    typing = setTimeout(() => startOver(Object.keys(lists)), 300);
+    typing = setTimeout(() => {
+      startOver(Object.keys(lists));
+      if (id === 'filterUser') loadStats();  // the counts are that user's
+    }, 300);
   });
 }
 $('filterType').addEventListener('change', () => startOver(['turns']));
