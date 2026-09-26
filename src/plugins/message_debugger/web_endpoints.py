@@ -67,8 +67,8 @@ class MessageDebuggerWebFactory:
         anyone else their own -- captured since their account was made, as a new
         account under a deleted user's name must not read the old one's. Naming
         another user is an admin's; so are the rows of the identities without an
-        account ("anonymous", "cli_user") -- runs whose owner nobody knew were
-        recorded under them."""
+        account: "anonymous" (nobody signed in -- and the name runs whose owner
+        nobody knew were recorded under) and "cli_user" (agent-cli's default)."""
         if sees_everything(request, current_user):
             return user_id or EVERYONE
         own = viewer(current_user)
@@ -100,8 +100,10 @@ class MessageDebuggerWebFactory:
         passes it back sees the same list -- a page more, other filters -- and nothing captured since.
         """
         owner = self._owner(request, current_user, user_id)
-        # first: a turn written meanwhile waits
-        as_of = self.db.newest_id("turns", owner=owner) if max_id is None else max_id
+        # first: a turn written meanwhile waits. An admin's point in time is everyone's newest row:
+        # the list keeps it across a change of the user filter, which one user's newest would cut short.
+        point = EVERYONE if sees_everything(request, current_user) else owner
+        as_of = self.db.newest_id("turns", owner=point) if max_id is None else max_id
         filters = dict(owner=owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                        snapshot_type=snapshot_type, max_id=as_of)
         turns = self.db.get_turns(**filters, limit=limit, offset=offset)
@@ -146,7 +148,8 @@ class MessageDebuggerWebFactory:
         Holds still at ``as_of_id`` like the turns list.
         """
         owner = self._owner(request, current_user, user_id)
-        as_of = self.db.newest_id("llm_requests", owner=owner) if max_id is None else max_id
+        point = EVERYONE if sees_everything(request, current_user) else owner  # see list_turns
+        as_of = self.db.newest_id("llm_requests", owner=point) if max_id is None else max_id
         filters = dict(owner=owner, agent_name=agent_name, session_id=session_id, request_id=request_id,
                        direction=direction, provider=provider, max_id=as_of)
         items = self.db.get_llm_requests(**filters, limit=limit, offset=offset)
@@ -176,10 +179,12 @@ class MessageDebuggerWebFactory:
         user_id: str | None = Query(default=None, description="Admins: only this user's entries"),
         current_user: Optional[User] = Depends(get_optional_user),
     ):
-        """Statistics about the captures the viewer may read; ``sees_everything`` tells the panel whether the
-        viewer is an admin (the user filter, clearing, pruning)."""
+        """Statistics about the captures the viewer may read; for an admin also the file's size."""
         owner = self._owner(request, current_user, user_id)
-        return {**self.db.get_stats(owner=owner), "sees_everything": sees_everything(request, current_user)}
+        stats = self.db.get_stats(owner=owner)
+        if sees_everything(request, current_user):  # the file's size, whichever user an admin looks at
+            stats["db_size_mb"] = self.db.size_mb()
+        return stats
     
     async def clear_all(self, request: Request, current_user: Optional[User] = Depends(get_optional_user)):
         """Clear all captured data."""
@@ -244,9 +249,12 @@ class MessageDebuggerWebFactory:
     
     # ---- Panel rendering ----
 
-    async def render_panel(self, request: Request):
-        """Render the panel; its script and stylesheet are the plugin's static assets."""
-        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.name})
+    async def render_panel(self, request: Request, current_user: Optional[User] = Depends(get_optional_user)):
+        """Render the panel; its script and stylesheet are the plugin's static assets. An admin's user
+        filter and maintenance menu come with the page, not with the statistics: a file too large or too
+        broken for them to answer is when an admin needs the menu."""
+        return self.templates.TemplateResponse(request, "panel.html", {
+            "plugin": self.name, "sees_everything": sees_everything(request, current_user)})
 
     def get_web_router(self) -> APIRouter:
         """Return FastAPI router for web UI."""

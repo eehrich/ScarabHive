@@ -6,6 +6,7 @@ does not say whose rows it wants. A row nobody owns (a call no run named a user
 for, everything from before the column) is an admin's, and so is clearing and
 pruning, which act on everyone's rows.
 """
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -61,20 +62,20 @@ def _rows(answer):
 
 
 def test_a_user_reads_only_their_own(served):
-    client, viewer, _, _ = served
+    client, viewer, _, ids = served
     viewer["user"] = member("alice")
 
     for path in ("/turns", "/llm-requests"):
         answer = client.get(f"{BASE}{path}").json()
         assert [row["request_id"] for row in _rows(answer)] == ["r-alice"], path
         assert answer["total"] == 1 and {row["user_id"] for row in _rows(answer)} == {"alice"}
+        assert answer["as_of_id"] == ids["alice"][path[1:]], "everyone's newest id tells how busy the others are"
     stats = client.get(f"{BASE}/stats").json()
     assert (stats["total_turns"], stats["total_llm_requests"], stats["unique_session_count"]) == (1, 1, 1)
-    assert stats["sees_everything"] is False
     assert "db_size_mb" not in stats, "the file's size is everyone's rows"
 
 
-@pytest.mark.parametrize("filters", [{"session_id": "s-bob"}, {"request_id": "r-bob"}, {"request_id": "r"},
+@pytest.mark.parametrize("filters", [{"session_id": "s-bob"}, {"request_id": "r-bob"},
                                      {"agent_name": "chat", "session_id": "s-nobody"}])
 def test_no_filter_reaches_past_the_owner(served, filters):
     client, viewer, _, _ = served
@@ -83,6 +84,54 @@ def test_no_filter_reaches_past_the_owner(served, filters):
     for path in ("/turns", "/llm-requests"):
         answer = client.get(f"{BASE}{path}", params=filters).json()
         assert answer["total"] == 0 and _rows(answer) == [], (path, filters)
+
+
+def test_a_request_takes_along_only_the_calls_under_it_of_the_same_owner(served):
+    """A request filter takes the calls under it along (<request>_001, <request>_sub_...);
+    one of them another user's must stay out of it."""
+    client, viewer, db, _ = served
+    db.insert_turn(time.time() * 1000, "pre_llm", agent_name="chat", request_id="r-alice_001",
+                   session_id="s-bob", user_id="bob")
+    viewer["user"] = member("alice")
+
+    answer = client.get(f"{BASE}/turns", params={"request_id": "r-alice"}).json()
+    assert [row["request_id"] for row in answer["turns"]] == ["r-alice"] and answer["total"] == 1
+
+    viewer["user"] = admin()  # the call is under the request: the filter reaches it at all
+    assert client.get(f"{BASE}/turns", params={"request_id": "r-alice"}).json()["total"] == 2
+
+
+def test_an_admins_list_holds_still_at_everyones_newest_row(served):
+    """The panel keeps a list's point in time across a change of filters. Taken from the user an
+    admin filtered by, it would cut short the list once the filter is gone."""
+    client, viewer, db, ids = served
+    viewer["user"] = admin()
+    later = {"turns": db.insert_turn(time.time() * 1000, "pre_llm", agent_name="chat", request_id="r-bob-2",
+                                     user_id="bob"),
+             "llm-requests": db.insert_llm_request(time.time() * 1000, "request", agent_name="chat",
+                                                   request_id="r-bob-2", user_id="bob")}
+
+    for path in ("/turns", "/llm-requests"):
+        as_of = client.get(f"{BASE}{path}", params={"user_id": "alice"}).json()["as_of_id"]
+        assert as_of == later[path.strip("/")], f"{path}: an admin's point in time is not everyone's newest row"
+        assert client.get(f"{BASE}{path}", params={"max_id": as_of}).json()["total"] == len(OWNERS) + 1
+
+
+def test_the_admin_controls_come_with_the_page(served):
+    """The user filter and the maintenance menu are an admin's from the start -- not only once the
+    statistics answered, which a large or broken file may not."""
+    client, viewer, _, _ = served
+
+    def hidden(page, element_id):
+        tag = re.search(rf'<[^>]*id="{element_id}"[^>]*>', page).group(0)
+        return re.search(r"\shidden[\s>]", tag) is not None
+
+    viewer["user"] = admin()
+    page = client.get(f"{BASE}/").text
+    assert not hidden(page, "actionsButton") and not hidden(page, "userFilter")
+    viewer["user"] = member("alice")
+    page = client.get(f"{BASE}/").text
+    assert hidden(page, "actionsButton") and hidden(page, "userFilter")
 
 
 @pytest.mark.parametrize("owner", ["bob", "nobody", "anonymous"])
@@ -149,8 +198,9 @@ def test_an_admin_reads_everyones_and_may_name_one(served):
                                                           params={"user_id": "bob"}).json())] == ["r-bob"]
     assert client.get(f"{BASE}/turns/{ids['nobody']['turns']}").status_code == 200
     stats = client.get(f"{BASE}/stats").json()
-    assert stats["sees_everything"] is True and stats["total_turns"] == len(OWNERS) and "db_size_mb" in stats
-    assert client.get(f"{BASE}/stats", params={"user_id": "bob"}).json()["total_llm_requests"] == 1
+    assert stats["total_turns"] == len(OWNERS) and "db_size_mb" in stats
+    bobs = client.get(f"{BASE}/stats", params={"user_id": "bob"}).json()
+    assert bobs["total_llm_requests"] == 1 and "db_size_mb" in bobs, "the file's size left with the user filter"
     assert client.post(f"{BASE}/prune?vacuum=false").status_code == 200
     assert client.delete(f"{BASE}/clear").status_code == 200
 

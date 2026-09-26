@@ -114,9 +114,6 @@ async function loadStats({ auto = false } = {}) {
     // The file holds everyone's captures: only an admin is told its size.
     stats.db_size_mb === undefined ? '' : stat('Database', `${number(stats.db_size_mb)} MB`),
   ]);
-  // A user sees their own captures; the owner filter, clearing and pruning are an admin's.
-  $('userFilter').hidden = !stats.sees_everything;
-  $('actionsButton').hidden = !stats.sees_everything;
   fillOptions($('filterAgent'), stats.unique_agents);
   fillOptions($('filterProvider'), stats.unique_providers);
 }

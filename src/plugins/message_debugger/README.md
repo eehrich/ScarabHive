@@ -47,8 +47,8 @@ In the launcher under **Debug**. The chat offers it on a response's request ID a
 both lists start filtered to that request or session.
 
 - **Turns** and **LLM requests**, newest first, 50 at a time (at most the newest 500 a filter matches), with the
-  total the filters match on each tab. Filters: agent, session, request, plus type (turns) and provider and
-  direction (requests). A request takes the calls under it along -- tool calls (`<id>_001`) and sub-agents
+  total the filters match on each tab. Filters: agent, session, request, for an admin the user, plus type
+  (turns) and provider and direction (requests). A request takes the calls under it along -- tool calls (`<id>_001`) and sub-agents
   (`<id>_sub_...`), which the request column shows by what follows the id; a session filter shows that session's
   own calls, a sub-agent's are in its own session. A click on a column head sorts the entries loaded by it.
 - With the auto refresh off -- as the panel starts -- the lists hold still at the last refresh: a page more,
@@ -58,7 +58,7 @@ both lists start filtered to that request or session.
   trees, every other field by name), the LLM response, or the request payload, response, usage and error. Each
   part copies as JSON; the arrows step to the next newer or older entry; the filter buttons narrow the lists to
   the entry's session or request.
-- The menu prunes the database and compacts the file, or clears all captured data -- cost history included,
+- The menu -- an admin's -- prunes the database and compacts the file, or clears all captured data -- cost history included,
   which `writer-costs` reads. A prune reports what it did in a dialog; after a clear, pruning gives the freed
   space back to the disk.
 
@@ -72,7 +72,7 @@ All under `/plugins/message_debugger/`:
 | `GET turns/{turn_id}` | the whole turn |
 | `GET llm-requests` | `agent_name`, `session_id`, `request_id` (with the calls under it), `direction`, `provider`, `user_id` (admins), `max_id`, `limit`, `offset` → `{total, requests, as_of_id}`, without payload and response |
 | `GET llm-requests/{entry_id}` | the whole log entry |
-| `GET stats` | `user_id` (admins) → counts, agents, providers, errors; the database size for admins; `sees_everything` |
+| `GET stats` | `user_id` (admins) → counts, agents, providers, errors; for admins the size of the whole file |
 | `POST prune?vacuum=true` | admins: retention down to ~75 %, then VACUUM when the file has free pages (can take minutes; a VACUUM failure is reported, not raised) |
 | `DELETE clear` | admins: deletes everything |
 | `GET /` | the panel |
@@ -95,8 +95,10 @@ TTS call outside a run -- and every row captured before the column are nobody's.
   recorded under it too) and `cli_user` (agent-cli's default) -- get 403.
 - **Clearing and pruning** act on everyone's rows and stay an admin's.
 
-The database takes `owner` as a required keyword on every read -- a user id, or `EVERYONE` -- and refuses a
-read that names nobody, so a forgotten owner fails instead of answering with everybody's rows. A user's reads are
+The database takes `owner` as a required keyword on every read -- `EVERYONE`, a name (every row under it: an
+admin asking for one user), or an `Account(name, since_ms)`, what a signed-in user reads with -- and refuses a
+read that names nobody, so a forgotten owner fails instead of answering with everybody's rows. A new read for
+users passes an `Account`: a bare name would hand a new account a deleted namesake's rows. A user's reads are
 served by one index alone (`idx_<table>_user`; the other columns go in as `+column`, in a select list too), and it
 holds every column a user filters and counts by: `user_id` and `error` sit behind the payloads, and reading
 either from a row walks every payload -- the statistics the panel asks for every few seconds included. Only a

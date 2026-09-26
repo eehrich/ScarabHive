@@ -50,9 +50,11 @@ class MessageDebuggerDB:
 
     Each row carries the user whose call it was (``user_id``; NULL: nobody's --
     a call no run named a user for, and every row from before the column).
-    Every read takes ``owner`` as a required keyword: a user's name, or
-    EVERYONE. There is no default, so a read that forgot whose rows it wants
-    fails instead of answering with everybody's.
+    Every read takes ``owner`` as a required keyword: EVERYONE, a name (every
+    row under it: an admin asking for one user), or an Account -- what a
+    signed-in user reads with, their rows since their account was made. There
+    is no default, so a read that forgot whose rows it wants fails instead of
+    answering with everybody's.
     """
     
     def __init__(self, db_path: str | Path, wal_mode: bool = True, max_size_mb: float = 5120,
@@ -665,9 +667,12 @@ class MessageDebuggerDB:
             "error_count": error_count,
         }
         if owner is EVERYONE:
-            db_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
-            stats["db_size_mb"] = round(db_size_bytes / (1024 * 1024), 1)
+            stats["db_size_mb"] = self.size_mb()
         return stats
+
+    def size_mb(self) -> float:
+        """The file's size in MB: everyone's rows, an admin's to know."""
+        return round((self.db_path.stat().st_size if self.db_path.exists() else 0) / (1024 * 1024), 1)
     
     # ---- Maintenance ----
     
