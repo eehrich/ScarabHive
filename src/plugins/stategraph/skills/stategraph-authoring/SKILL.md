@@ -21,8 +21,9 @@ fan-out, map, human approval, submachines, shared error handling, the v6 ritual)
 
 ## The loop
 
-1. `stategraph_catalog` -- the activity kinds and their fields, the agents the SAM may
-   spawn, the tools the runner may call, the decision profiles. Use nothing else.
+1. `stategraph_catalog` -- the activity kinds and their fields, the agents a machine may
+   run (`agents: "v6_*"` narrows the list), the tools the runner may call, the decision
+   profiles. Use nothing else.
 2. Write the tree: `<id>.yaml`, its companion `.py` if it has one, any imported machine.
 3. `stategraph_validate_machine(files={...})` until it reports no error. Fix warnings
    or say why they stay.
@@ -130,7 +131,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 - **Handle errors where they happen:** `- trigger: error` (optionally
   `guard: error.type == "tool_failed"`), on the state or on an enclosing composite.
   An unhandled error fails the machine.
-- **Only what the catalog lists:** agents the SAM may spawn, tools (flat names with
+- **Only what the catalog lists:** agents, tools (flat names with
   their instance prefix, e.g. `stategraph_json_manage_json`) the runner may call,
   decision profiles. The validator refuses anything else (SG007).
 - **Finals** have only `type`, `status` (`succeeded`/`failed`, root region only),
@@ -140,7 +141,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 
 | kind | keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `sam`, `advanced`, `continue` | answer text, or the parsed value |
+| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text, or the parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result; an error result raises `tool_failed` |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {value, confidence, probabilities}}` |
@@ -180,5 +181,5 @@ namespace, as `resources.<name>`); a `call` function may make journaled tool cal
 | SG004 | Python: syntax, unknown name, a name not bound there, braces in a code field, undeclared `params.x`, `out.x` / `ctx.a.b` / `ctx.get()` on plain data | move data into `ctx` first; drop the braces; use `out["x"]` |
 | SG005 | activity: unknown kind, several kind keys, bad fields, a computed `agent:`/`tool:` | one kind key; the kind's fields only; literal names |
 | SG006 | submachine: unknown alias, cycle, missing/unknown parameter | `imports:`, the callee's `params` |
-| SG007 | configuration: agent not spawnable, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities |
-| SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, parallel vars race, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |
+| SG007 | configuration: agent not configured or one that reaches machines, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities; another machine as a submachine |
+| SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |

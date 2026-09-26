@@ -10,7 +10,7 @@
           "type": "boolean"
         },
         "agent": {
-          "description": "agent name: a literal, or {{ params.x }} with an enum; the SAM must allow it",
+          "description": "agent name: a literal, or {{ params.x }} with an enum; any configured agent",
           "title": "Agent",
           "type": "string"
         },
@@ -24,7 +24,7 @@
             }
           ],
           "default": null,
-          "description": "instance id (template) to follow up instead of spawning",
+          "description": "instance id (template) of this agent to follow up instead of spawning",
           "title": "Continue"
         },
         "description": {
@@ -76,19 +76,6 @@
             }
           ],
           "default": null
-        },
-        "sam": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SAM instance; default: the machine's sam or the plugin's",
-          "title": "Sam"
         },
         "schema": {
           "anyOf": [
@@ -1254,19 +1241,6 @@
       "description": "external state per machine frame: open at its start, close at its end",
       "title": "Resources",
       "type": "object"
-    },
-    "sam": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "default SAM instance for agent activities",
-      "title": "Sam"
     },
     "stategraph": {
       "const": 1,

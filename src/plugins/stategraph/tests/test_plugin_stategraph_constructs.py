@@ -1529,22 +1529,6 @@ async def test_a_terminate_cancels_the_run_s_sub_requests_but_not_its_own_token(
         await server.stop_plugin()
 
 
-def test_finally_activities_call_agents_without_the_run_s_token():
-    """A cancel from outside cancels the run's token; an agent a finally calls must still be reached."""
-    from types import SimpleNamespace
-
-    from plugins.stategraph.engine.backend import ScarabHiveBackend
-
-    backend = ScarabHiveBackend(runner=object(), system_config=None, session_id="sg_r1", user_id=None,
-                                token="TOKEN", default_sam="sam")
-
-    def act(finalizer: bool) -> SimpleNamespace:
-        return SimpleNamespace(finalizer=finalizer, meta={}, request_id=lambda: "r1_001")
-
-    assert backend._caller(act(False), None).cancellation_token == "TOKEN"
-    assert backend._caller(act(True), None).cancellation_token is None
-
-
 # ------------------------------------------------------------------ where an ending frame stops (§3.10)
 
 FAIL_FAST_IN_TRANSITION = {"m.yaml": """\

@@ -251,7 +251,6 @@ class MachineSpec(Strict):
         default_factory=dict, description="agent template vars: a map of templates, or one template that renders "
                                           "to an object of names")
     vars_from: Optional[str] = Field(None, description="agent whose configured template_vars lie under vars")
-    sam: Optional[str] = Field(None, description="default SAM instance for agent activities")
     limits: LimitsSpec = Field(default_factory=LimitsSpec)
     resources: dict[str, "ResourceSpec"] = Field(
         default_factory=dict, description="external state per machine frame: open at its start, close at its end")

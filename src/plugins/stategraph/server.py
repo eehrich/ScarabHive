@@ -39,14 +39,13 @@ class StateGraphServer(SchemaBasedToolServer):
         self.writable_dirs = list(getattr(server_config, "writable_machine_dirs", None) or DEFAULT_WRITABLE)
         self.runs_db = str(getattr(server_config, "runs_db", None) or "data/stategraph/runs.db")
         self.runner_agent = str(getattr(server_config, "runner_agent", None) or "stategraph_runner")
-        self.default_sam = str(getattr(server_config, "default_sam", None) or "stategraph_sam")
         self.allowed_users = [str(u) for u in (getattr(server_config, "allowed_users", None) or [])]
         raw_inject = getattr(server_config, "inject_params", None) or {}
         self.inject_params = {str(k): dict(v) for k, v in raw_inject.items() if isinstance(v, dict)}
         self.default_max_wait = float(getattr(server_config, "default_max_wait", None) or 600)
         self.machines = MachineStore(self.machine_dirs, self.writable_dirs)
         self.run_store = RunStore(self.runs_db)
-        self.run_manager = RunManager(self.run_store, default_sam=self.default_sam, on_cancel=self._cancel_requests,
+        self.run_manager = RunManager(self.run_store, on_cancel=self._cancel_requests,
                                       on_finish=self._release_token)
         self.service = StateGraphService(self)
         self._registry: Any = None
@@ -55,7 +54,8 @@ class StateGraphServer(SchemaBasedToolServer):
 
     # ------------------------------------------------------------ plumbing
     def resolve_runner(self) -> Any:
-        """The runner agent: the host of agent and tool activities and their authorization boundary."""
+        """The runner agent: the host of tool activities (its allowlist is their boundary) and the way to the
+        registry agent activities run in."""
         for registry in self._registries():
             try:
                 return registry.get(self.runner_agent)
@@ -84,6 +84,36 @@ class StateGraphServer(SchemaBasedToolServer):
         except Exception:
             pass
         return found
+
+    def _agent_names(self) -> list[str]:
+        """The agents a machine may run: every agent there is that SG007 accepts."""
+        check = self.service.config_check()
+        configured = getattr(getattr(self.system_config, "plugins", None), "servers", None) or {}
+        for registry in self._registries():
+            try:
+                names = set(registry.list()) | set(configured)
+            except Exception:
+                continue
+            return sorted(name for name in names
+                          if self.is_agent(name) and (check is None or check("agent", name, {}) is None))
+        return []
+
+    def is_agent(self, name: str) -> Optional[bool]:
+        """Whether the running registry holds ``name`` as an agent; None when no registry knows."""
+        from agent_system.runtime import ServerView
+        from agent_system.servers.agent.server import Agent
+
+        for registry in self._registries():
+            describe = getattr(registry, "describe", None)
+            view = describe(name) if callable(describe) else None  # from the instance or a lazy declaration
+            if isinstance(view, ServerView):  # declared but not built (its start failed): nothing to run yet
+                return view.is_agent if view.built else None
+            try:  # an unbound registry: the instance answers (ToolServerRegistry.describe's contract)
+                if name in registry.list():
+                    return isinstance(registry.get(name), Agent)
+            except Exception:
+                continue
+        return None
 
     def cancel_token(self, run_id: str) -> Any:
         try:
@@ -159,12 +189,12 @@ class StateGraphServer(SchemaBasedToolServer):
     # ------------------------------------------------------------ tools: "{name}_x" -> x(params)
     async def catalog(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            return self._catalog(params.get("sam") or self.default_sam)
+            return self._catalog(str(params.get("agents") or "*"))
         return await self._run_tool(params, "catalog", body,
                                     lambda r: f"catalog: {len(r['kinds'])} kinds, {len(r['agents'])} agents, "
                                               f"{len(r['tools'])} tools")
 
-    def _catalog(self, sam_name: str) -> dict[str, Any]:
+    def _catalog(self, agent_pattern: str = "*") -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
 
         kinds = []
@@ -173,20 +203,14 @@ class StateGraphServer(SchemaBasedToolServer):
             fields = {name: (prop.get("description") or prop.get("type") or "")
                       for name, prop in (schema.get("properties") or {}).items()}
             kinds.append({"key": kind["key"], "summary": kind["summary"], "fields": fields})
-        agents: list[dict[str, Any]] = []
-        sam = get_tool_server_config(sam_name, self.system_config)
-        for name in list(getattr(sam, "allowed_agents", None) or []):
-            if any(ch in name for ch in "*?["):
-                agents.append({"name": name, "description": "(pattern: any enabled agent matching it)"})
-                continue
-            config = get_tool_server_config(name, self.system_config)
-            if config is not None and getattr(config, "enabled", False):
-                agents.append({"name": name, "description": getattr(config, "description", "") or ""})
+        agents = [{"name": name, "description": getattr(get_tool_server_config(name, self.system_config),
+                                                        "description", "") or ""}
+                  for name in self._agent_names() if fnmatch.fnmatchcase(name, agent_pattern)]
         runner = get_tool_server_config(self.runner_agent, self.system_config)
         tools_cfg = getattr(getattr(runner, "agent_config", None), "tools", None)
         patterns = list(getattr(tools_cfg, "allowed", None) or [])
         llm = getattr(self.system_config, "llm_system", None)
-        return {"kinds": kinds, "sam": sam_name, "agents": agents, "runner": self.runner_agent,
+        return {"kinds": kinds, "agents": agents, "runner": self.runner_agent,
                 "tools": patterns, "decision_profiles": sorted((getattr(llm, "decision_profiles", None) or {})),
                 "examples": [m.id for m in self.machines.list() if not m.writable]}
 

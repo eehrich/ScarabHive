@@ -34,7 +34,7 @@ this document.
 | D5 | One templating rule, for a closed list of data fields: `{{ expr }}` holds a Python expression, and a value that is exactly `{{ expr }}` keeps its type | Jinja templates | One expression language everywhere. |
 | D6 | Reuse through **parametrised submachines** imported from other files; composite states for grouping | text includes; inheritance (`extends` with overrides) | Composition keeps every file self-describing: the graph you see is the graph that runs. Inheritance hides the effective graph across files, and text includes break line numbers and validation. A submachine is a box in the editor and a frame in the debugger. |
 | D7 | Durability by **deterministic replay** of a step journal (the Temporal model) | snapshot/restore of the configuration | Replay handles nesting, parallel branches, map items and submachines uniformly and never repeats a finished activity. It also gives a what-if fork on the machine's own state; external state is not rolled back (§5.6). It requires pure guards and actions, and the engine checks that with input and context hashes (§5.4). |
-| D8 | Agents via `AgentCaller` on a SAM; tools via `dispatch_tool_call` of a dedicated runner agent; decisions via `create_decisions_from_profile` | direct `run_events` transport | These are the existing primitives. Sub-sessions show up in the Sub-Agents panel. Each kind has one authorization boundary: the SAM's `allowed_agents` for agents, the runner's tool allowlist for tools. |
+| D8 | Agents: the registered agent's own `run_events` on an instance session (a sub-session of the run's); tools via `dispatch_tool_call` of a dedicated runner agent; decisions via `create_decisions_from_profile` | `AgentCaller` on a SAM (built first, replaced 2026-09-26) | The SAM path reached the SAM's tool through the runner's `call_tool`, which a runner that never runs cannot resolve: every agent activity failed with "Unknown tool". It also kept a second list of agents next to the machine file, and its vars sat on the one run session that parallel calls shared (a race). Now the machine file names its agents (validated: configured and enabled) and each instance has its own session. The runner's tool allowlist stays the boundary for tools. |
 | D9 | Activity kinds are a **registry**; other plugins add kinds without touching the engine | a closed union | Extensibility is a requirement, and v4 migration needs code nodes and new kinds. |
 | D10 | Editor: own SVG canvas + vendored **elkjs** (EPL-2.0) for compound auto-layout; YAML edits happen server-side and keep comments | AntV X6, JointJS, diagram-js, Drawflow | The panel rules forbid CDNs and build steps. X6 (583 KB) and diagram-js (needs a bundler) bring an object model we would have to mirror. Our graphs are small (tens of states), SVG styled with kit tokens works in both themes, and ELK lays out nested states. |
 | D11 | Debugger primitives follow DAP names: breakpoints (enter/exit/error, with condition), watchpoints (expression, break on change), pause/continue/step/run_to/terminate, evaluate, set, fork | step-through only | LangGraph, Burr, Temporal and n8n converged on this set. DAP names keep a VS Code adapter possible. |
@@ -145,7 +145,6 @@ def writer_task(ctx, params):
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
 | `vars` | name → template | | Agent template vars (§3.9) for every agent this machine spawns. Submachines inherit them. |
 | `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
-| `sam` | string | | SAM instance for agent activities (default: the plugin's `default_sam`). |
 | `limits` | `{max_steps, timeout}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. |
 | `resources` | name → `{open, fork, close, description}` | | External state that belongs to each frame of this machine (§2.8). |
 | `finally` | activity | | Runs once when a frame of this machine ends, whatever the cause (§2.8). |
@@ -205,8 +204,8 @@ common keys.
 
 | Key | Meaning |
 |---|---|
-| `retry` | `attempts` counts the total tries (default 1). `backoff` is a duration, or `{initial, factor, max}`. `errors` lists the error types to retry (unknown names get SG110); the default is every type except `cancelled`, `interrupted`, `timeout`, `template_failed`, `params_invalid`, `not_serialisable`, `unmocked`, `no_backend`, `config`, `tool_denied`. A composite (`machine`, `parallel`, `map`) retries by running its children again, so two more rules apply. It is never retried once an activity inside it raised `interrupted`, whether that error ended the attempt, was handled inside a submachine, or was journaled next to another branch's failure -- except a `finally` or `close` of a frame inside it (§5.5; naming `interrupted` gets SG110). And a type from the default-excluded list in the error's chain of unhandled causes (`error.cause`, its `cause`, ...) excludes the composite too, unless `errors` names that type; a cause the submachine handled itself is not in that chain. The engine is the only retry layer: AgentCaller runs with `retries=0`. |
-| `timeout` | Deadline of **one attempt**. On expiry the attempt is cancelled (for an agent: its sub-run, through the request-id prefix) and error `timeout` is raised. A timeout is not retried unless `errors` lists it. An agent activity has no timeout by default: v6 panels run 20+ minutes. |
+| `retry` | `attempts` counts the total tries (default 1). `backoff` is a duration, or `{initial, factor, max}`. `errors` lists the error types to retry (unknown names get SG110); the default is every type except `cancelled`, `interrupted`, `timeout`, `template_failed`, `params_invalid`, `not_serialisable`, `unmocked`, `no_backend`, `config`, `tool_denied`. A composite (`machine`, `parallel`, `map`) retries by running its children again, so two more rules apply. It is never retried once an activity inside it raised `interrupted`, whether that error ended the attempt, was handled inside a submachine, or was journaled next to another branch's failure -- except a `finally` or `close` of a frame inside it (§5.5; naming `interrupted` gets SG110). And a type from the default-excluded list in the error's chain of unhandled causes (`error.cause`, its `cause`, ...) excludes the composite too, unless `errors` names that type; a cause the submachine handled itself is not in that chain. The engine is the only retry layer: an agent activity runs its agent once per attempt. |
+| `timeout` | Deadline of **one attempt**. On expiry the attempt is cancelled (for an agent: its run's request first, so the agent stops; the attempt ends when it has stopped, at most the stop grace later -- §5.8) and error `timeout` is raised. A timeout is not retried unless `errors` lists it. An agent activity has no timeout by default: v6 panels run 20+ minutes. |
 | `idempotent` | Whether a resumed run may start this activity again if it was in flight at the crash (§5.5). Default `true`, except `tool`: `false`. |
 | `description` | Free text. |
 
@@ -214,7 +213,7 @@ common keys.
 
 | Kind | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `vars` (template map, over the machine's vars); `sam`; `advanced`; `continue` (template: an instance id to follow up instead of spawning) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
+| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `vars` (template map, over the machine's vars); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
 | `tool: <flat tool name>` | `args` (template map); `error_if` (Python expression over `out`) | the tool's result. An error-shaped result (the core predicate `tools/base.py::_error_result_message`) or a true `error_if` raises `tool_failed` with `error.data` = the full result. |
 | `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` | `{name: {value, confidence, probabilities}}`, from one call. |
@@ -241,7 +240,7 @@ literal alias.
 - `{{ … }}` ends at the first `}}` that closes a parseable expression, so dict literals work.
 - A literal `{{` is written `{{ '{{' }}`.
 
-Everything else (kind keys other than the parameter form, `sam`, `schema`, `retry`,
+Everything else (kind keys other than the parameter form, `schema`, `retry`,
 `timeout`, `as`, `concurrency`, `fail`, `description`, `context` values) is literal.
 
 **Names in scope**
@@ -488,15 +487,15 @@ shared prompt blocks. stategraph makes them first-class.
   machine's own `vars_from` and `vars`, then the activity's own `vars`. A submachine's own
   vars win over its caller's: a reusable ritual sets `phase` per call from its params, and
   the caller's `phase` must not shadow it.
-- The engine sets them as template vars on the run's session right before the SAM call.
-  A sub-agent created under that session inherits them, and a `continue` sees the refreshed
-  values.
-- The run's session holds exactly the call's effective vars: they are replaced for every
-  agent call, never accumulated, so a later call does not inherit an earlier call's keys.
+- The engine sets them as template vars on the instance's own session right before the
+  run, over the agent's configured `template_vars`; a `continue` sees the values of its own
+  call. Sub-agents the agent starts through its own SAM inherit them from there.
+- The instance's session holds exactly the call's effective vars: they are replaced for
+  every agent call, never accumulated, so a later call does not inherit an earlier call's keys.
 - They are journaled with the activity.
 
-Two parallel agent activities of one run with **different** vars for the same key race,
-because the session is shared. Such branches must not set conflicting keys (SG109).
+Every instance has its own session, so parallel agent activities with different vars do
+not race.
 
 ---
 
@@ -590,7 +589,7 @@ from an AST scan.
 | SG004 | error | Python does not compile; unknown name; a name that is not bound at that place; `{{ }}` in a code field; `params.<name>` that is not declared; access that always fails on plain data (`out.value` instead of `out["value"]`, `ctx.a.b` instead of `ctx.a["b"]`, dict methods on a namespace such as `ctx.get(...)`); a companion function that does not exist; `python:`/`imports:` outside the machine roots |
 | SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name), a computed `agent:`/`tool:` value other than `{{ params.<name> }}` with an enum |
 | SG006 | error | Submachine: unknown alias, import cycle, missing required or unknown parameter |
-| SG007 | error | Configuration: the agent cannot be spawned by the SAM, the named SAM is not a `sub_agent_manager`, the runner may not call the SAM's `<sam>_manage_sub_agent` (agent activities spawn through it), the tool is not in the runner's allowlist, the tool is a SAM's (agents start through agent activities), the tool belongs to stategraph itself, an unknown decision profile, a `vars_from` agent that is not configured; enum values of a parametrised agent/tool are checked one by one (the tool check runs again at run time) |
+| SG007 | error | Configuration: the agent is not configured, not enabled or not an agent, or it reaches machines (the runner, a machine facade, an agent whose allowlist reaches a non-read-only stategraph tool, or one that can start such an agent through a SAM), the tool is not in the runner's allowlist, the tool is a SAM's (agents start through agent activities), the tool belongs to stategraph itself, an unknown decision profile, a `vars_from` agent that is not configured; enum values of a parametrised agent/tool are checked one by one (the tool check runs again at run time) |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
 | SG103 | warning | A loop without `max_visits` on any of its states |
@@ -599,7 +598,6 @@ from an AST scan.
 | SG106 | warning | Impure code in a code field or template (`random`, `time`, `datetime.now`, `uuid`, `os.environ`, `open`, `set(...)`, `hash`) |
 | SG107 | warning | A data field whose whole value looks like a reference (`ctx.x`, `out[...]`) without braces: did you mean `{{ ctx.x }}`? |
 | SG108 | warning | A root machine with `limits.timeout` used as a submachine (ignored there) |
-| SG109 | warning | Concurrent agent activities with `vars`: parallel branches (submachines included) or a `map` with `concurrency` > 1 -- they share the run session |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
 
 Every problem carries a path (`states.judge.transitions[1].guard`), the file, and the
@@ -721,9 +719,9 @@ A fork starts a new run from **top-level step N** of an existing run.
 - **External state is not forked** unless a resource says how: its `fork` hook runs in the
   fork's root frame with `fork_source` = the source's value (§2.8), e.g. to copy a store
   namespace. It sees the source's external state as the source left it, not as it was at step N.
-  Everything else -- database rows, SAM conversations -- keeps what the source did after step N.
+  Everything else -- database rows, agent conversations -- keeps what the source did after step N.
   - The fork gets its own session `sg_<fork id>`. A `continue` into an instance created
-    before the fork point therefore fails at the SAM.
+    before the fork point is therefore refused (`config`): the instance belongs to the source run.
   - `run.id` differs in a fork, so a replayed step whose inputs or effects contain it
     diverges. External things are named with `run.origin` (the first run of the fork
     chain): replayed steps match, and the fork finds what the prefix created. Isolating a
@@ -762,10 +760,10 @@ A run executes as an asyncio task in the process that started it (usually the AP
 
 | Need | Primitive |
 |---|---|
-| agent call | One `AgentCaller(runner, sam_instance, session_id=sg_<run>, user_id, request_id=<run>_NNN, cancellation_token, retries=0)` per attempt. `call_text` creates; `follow_up_text` continues and gives feedback. The caller's `last_instance_id` belongs to this one attempt. |
+| agent call | The registered agent (`runner.registry.get(name)`), run with `run_events(task, request_id=<run>_NNN, session_id=<instance>)` per attempt; the answer is the final event's summary, an `error` event or an empty answer is `agent_failed`. A create first makes the instance session with `session_manager.create_session(parent_session_id=sg_<run>)` (a sub-session: not in the session list); a continue checks that the instance's parent is this run's session and its agent the one named. `open_for_run` before and `save_session` after the run keep the instance's conversation on disk, so a continue after a resume sees it. One run per instance at a time. The run is awaited as a task of its own: a timeout or terminate cancels the run's request (its token) before the task -- a cancel that lands in one of the agent's tool calls becomes a "cancelled" tool result and the agent would run on -- and the run gets until the CancellationManager would force-cancel it (its cleanup timeout plus one monitor round, and a second: 12 s by default; `AGENT_STOP_GRACE`) to stop -- also when a terminate follows a timeout meanwhile. A run that outlives it keeps its instance busy until it ends. |
 | tool call | `runner.dispatch_tool_call(tool, args, …)`. Configured `inject_params` (fnmatch pattern → params, as in tool_script) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
 | decision | `create_decisions_from_profile(system_config, profile).decide(input, questions)` |
-| vars | `runner._session_tracker.set_session_template_vars(sg_<run>, vars)` before the SAM call |
+| vars | `session_manager.replace_session_context_vars(user, <instance>, vars)` (a save merges into the stored vars, and a sub-agent of the instance inherits them) and `agent._session_tracker.set_session_template_vars(<instance>, vars)` after clearing, both before the run |
 | cancellation | `get_cancellation_manager()`: the run's backend holds a token under the run id. Terminate calls `cancel_sub_requests(<run id>)`, which reaches every `<run>_NNN` sub-run in flight -- not the run's own token: a cancelled token has the platform force-cancel its whole request tree after the cleanup timeout, and the `finally` activities start sub-runs after the terminate. They call agents and decisions without the token (§2.8). A cancel from outside that reaches the run's token -- a caller whose request id prefixes the run id, e.g. a book cancel above the agent facade -- terminates the run the same way, so its `finally` activities run. An activity that ends because the run was cancelled is not journaled as an error, and no error transition fires. |
 | status | The run task sets `current_request_id` to the run id. The tool that started the run ends with one end line naming the result. |
 
@@ -814,7 +812,7 @@ src/plugins/stategraph/
   plugin.toml  plugin.py  server.py  schema.yaml  web_endpoints.py  store.py  README.md
   model/  kinds/  engine/                         (§5.1)
   machines/        shipped example machines (found by the root glob)
-  agents/          stategraph.yaml (tool instance, SAM, runner), stategraph_author.yaml, prompts/
+  agents/          stategraph.yaml (tool instance, runner, JSON store), stategraph_author.yaml, prompts/
   skills/stategraph-authoring/   SKILL.md + references/ (format, patterns, debugging)
   docs/            format.md (authors' reference), extending.md (new kinds)
   static/          panel.js, graph.js, panel.css, vendor/elkjs/
@@ -837,7 +835,7 @@ src/plugins/stategraph/
 
 | Tool | Parameters | Result |
 |---|---|---|
-| `catalog` | `sam?` | Activity kinds with their fields; the agents the SAM may spawn; the tools the runner may call; decision profiles; example machine ids |
+| `catalog` | `agents?` (fnmatch pattern) | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the tools the runner may call; decision profiles; example machine ids |
 | `list_machines` | | id, title, file, writable, and whether it validates |
 | `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
@@ -870,12 +868,16 @@ Machines contain Python and run agents and tools.
   read-only.
 - **Recursion.** The runner's allowlist must never contain stategraph's own tools (SG007
   refuses them), so a machine cannot rewrite or start machines.
-- **SAM.** `stategraph_sam.allowed_agents` is an explicit list, never `*`. The runner calls the SAM's
-  tool for every agent activity (AgentCaller runs as the runner), so its allowlist names each SAM
-  machines use (`stategraph_sam/*`, `v6_story_sam/*`); SG007 checks it. A `tool` activity or
-  `sg.tool()` may not call a SAM's tools (SG007, and the same check at run time): sub-agents made
-  that way would not be journaled, would outlive the run, and could cancel or delete the ones its
-  agent activities made.
+- **Agents.** A machine runs the agents its file names -- literal names, or a parameter with an
+  enum, so validation sees every one (SG005); SG007 checks that each is configured, enabled and an
+  agent. There is no second list: machines are admin work (see above). But no agent that reaches
+  machines: not the runner, not a machine facade (`type: stategraph_machine` -- a machine uses
+  another as a submachine), not an agent whose tool allowlist reaches a stategraph tool beyond the
+  read-only ones, and no agent that can start one of those through a SAM it may call (followed
+  all the way down; a SAM without `allowed_agents` allows every agent). SG007 checks it, and the
+  same check runs again before every agent run. A `tool` activity or `sg.tool()`
+  may not call a SAM's tools (SG007, and the same check at run time): sub-agents made that way
+  would not be journaled and would outlive the run.
 
 ---
 
@@ -980,5 +982,5 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 - **The v6 machine has not run live yet.** It is tested against a simulated v6 world (store
   semantics, forum, story row, agents as fakes, a crash and resume in the beats); its first run
   with real panels is a manual step, best with a breakpoint after the worlds.
-- **Cost.** AgentCaller returns no usage. `run.cost` and `limits.max_cost` need the usage
+- **Cost.** An agent run reports no usage to the backend. `run.cost` and `limits.max_cost` need the usage
   tracker's per-request-id sums; only `decide` reports cost today.

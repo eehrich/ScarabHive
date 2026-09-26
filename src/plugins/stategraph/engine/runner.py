@@ -87,7 +87,7 @@ class RunContext:
 
     def __init__(self, *, run_id: str, store: RunStore, machine: Machine, backend: Any = None,
                  mocks: Optional[dict[str, Any]] = None, mock_only: bool = False,
-                 debugger: Optional[Debugger] = None, default_sam: Optional[str] = None, token: Any = None,
+                 debugger: Optional[Debugger] = None, token: Any = None,
                  owner: Optional[str] = None, origin: Optional[str] = None):
         self.id = run_id
         self.origin = origin or run_id   # the first run of a fork chain: stable across forks (run.origin)
@@ -97,7 +97,6 @@ class RunContext:
         self.mocks = dict(mocks or {})
         self.mock_only = mock_only
         self.debugger = debugger or Debugger()
-        self.default_sam = default_sam
         self.token = token
         self.owner = owner
         self.frames: list[Frame] = []
@@ -590,11 +589,9 @@ def owner_id() -> str:
 class RunManager:
     """Starts, resumes, forks and controls the runs this process owns."""
 
-    def __init__(self, store: RunStore, *, default_sam: Optional[str] = None,
-                 on_cancel: Optional[Callable[[str], None]] = None,
+    def __init__(self, store: RunStore, *, on_cancel: Optional[Callable[[str], None]] = None,
                  on_finish: Optional[Callable[[str], None]] = None):
         self.store = store
-        self.default_sam = default_sam
         self.on_cancel = on_cancel
         self.on_finish = on_finish
         self.owner = owner_id()
@@ -728,7 +725,7 @@ class RunManager:
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
                 token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0) -> None:
         ctx = RunContext(run_id=run_id, store=self.store, machine=machine, backend=backend, mocks=mocks,
-                         mock_only=mock_only, debugger=debugger, default_sam=self.default_sam, token=token,
+                         mock_only=mock_only, debugger=debugger, token=token,
                          owner=self.owner, origin=origin)
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
         root = Frame(ctx, machine, params)

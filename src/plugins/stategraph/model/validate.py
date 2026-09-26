@@ -24,7 +24,7 @@ from .code import (BINDINGS, SCOPE_NAMES, CodeError, analyse, braced, compile_ex
 from .loader import LoadedFile, MachineTree, dotted
 from .spec import GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec
 
-#: ``kind`` is "agent" (name, sam), "tool" (name), "profile" (name), "sam" (name);
+#: ``kind`` is "agent", "tool", "profile" or "vars_from" (with the name);
 #: returns a problem text or None when the configuration can run it.
 ConfigCheck = Callable[[str, str, dict[str, Any]], Optional[str]]
 
@@ -94,7 +94,7 @@ def _validate_file(fc: _FileContext) -> None:
         _check_vars_shape(fc, spec.vars, ["vars"])
         _check_template(fc, spec.vars, ["vars"], BINDINGS["state"], set())
     if spec.vars_from and fc.config_check is not None:
-        problem = fc.config_check("agent_exists", spec.vars_from, {})
+        problem = fc.config_check("vars_from", spec.vars_from, {})
         if problem:
             fc.problem("error", "SG007", f"vars_from: {problem}", ["vars_from"])
     _pseudostate_bindings(fc)
@@ -410,7 +410,6 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
     if alias is not None:
         _check_submachine(fc, alias, getattr(spec, "params", {}) or {}, path)
     _check_references(fc, kind, spec, path)
-    _check_concurrent_vars(fc, kind, raw, path)
     if spec.retry is not None and spec.retry.errors:
         for name in spec.retry.errors:
             if name not in KNOWN_ERROR_TYPES:
@@ -466,14 +465,11 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
                                              "value)", path + [kind.key])
     if fc.config_check is None:
         return
-    sam = refs.get("sam") or fc.spec.sam
     checks: list[tuple[str, str, dict[str, Any]]] = []
     if "agent" in refs:
-        checks.append(("agent", refs["agent"], {"sam": sam}))
+        checks.append(("agent", refs["agent"], {}))
     if "agent_param" in refs and (param := fc.spec.params.get(refs["agent_param"])) and param.enum:
-        checks.extend(("agent", str(value), {"sam": sam}) for value in param.enum)
-    if "agent" not in refs and "agent_param" not in refs and "sam" in refs:
-        checks.append(("sam", refs["sam"], {}))
+        checks.extend(("agent", str(value), {}) for value in param.enum)
     if "tool" in refs:
         checks.append(("tool", refs["tool"], {}))
     if "tool_param" in refs and (param := fc.spec.params.get(refs["tool_param"])) and param.enum:
@@ -484,65 +480,6 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
         problem = fc.config_check(what, name, extra)
         if problem:
             fc.problem("error", "SG007", problem, path + [kind.key])
-
-
-def _check_concurrent_vars(fc: _FileContext, kind: ActivityKind, raw: dict[str, Any], path: list[Any]) -> None:
-    """SG109: concurrent agent calls share the run session, and every agent call REPLACES its vars.
-
-    Concurrent calls are safe only when their effective vars are identical and do not vary per
-    item: a call without vars clears what a sibling set, a call with other vars overwrites it.
-    """
-    base = [{"vars_from": fc.spec.vars_from, "vars": fc.spec.vars or {}}]
-    if kind.key == "parallel":
-        per_branch = {b: _var_signatures(fc, child, base, frozenset())
-                      for b, child in (raw.get("parallel") or {}).items()}
-        agents = [b for b, signatures in per_branch.items() if signatures]
-        union = set().union(*per_branch.values()) if per_branch else set()
-        if len(agents) > 1 and len(union) > 1:
-            fc.problem("warning", "SG109", f"parallel branches {', '.join(agents)} spawn agents with different "
-                                           "effective vars; they share the run session and every agent call "
-                                           "replaces its vars -- give concurrent agent calls identical vars, or "
-                                           "run them one after another", path + ["parallel"])
-    elif kind.key == "map" and int(raw.get("concurrency") or 1) > 1:
-        signatures = _var_signatures(fc, raw.get("each"), base, frozenset())
-        item = str(raw.get("as") or "item")
-        varying = any(re.search(rf"\b({re.escape(item)}|index)\b", s) for s in signatures)
-        if signatures and (len(signatures) > 1 or varying):
-            fc.problem("warning", "SG109", "map items with concurrency > 1 spawn agents whose effective vars differ "
-                                           "(per item, or between calls); they share the run session and every "
-                                           "agent call replaces its vars -- use concurrency: 1 or identical vars",
-                       path + ["each"])
-
-
-def _var_signatures(fc: _FileContext, raw: Any, layers: list[Any], seen: frozenset[str]) -> set[str]:
-    """The effective-vars signature of every agent call an activity can make (submachines included)."""
-    if not isinstance(raw, dict):
-        return set()
-    if "agent" in raw:
-        return {json.dumps(layers + [raw.get("vars") or {}], sort_keys=True, default=str)}
-    if "parallel" in raw:
-        found: set[str] = set()
-        for child in (raw.get("parallel") or {}).values():
-            found |= _var_signatures(fc, child, layers, seen)
-        return found
-    if "map" in raw:
-        return _var_signatures(fc, raw.get("each"), layers, seen)
-    if "machine" in raw:
-        target = fc.loaded.imports.get(str(raw.get("machine")))
-        loaded = fc.tree.files.get(target) if target else None
-        if loaded is None or loaded.spec is None or target in seen:
-            return set()
-        layer: dict[str, Any] = {"vars_from": loaded.spec.vars_from, "vars": loaded.spec.vars or {}}
-        if "params" in json.dumps(layer["vars"], default=str):  # the submachine's vars depend on its params
-            layer["params"] = raw.get("params") or {}
-        inner = _FileContext(loaded, fc.tree, loaded.spec, None)
-        _collect_states(inner, loaded.spec.states, ["states"], None)
-        found = set()
-        for state in inner.states.values():
-            if state.do:
-                found |= _var_signatures(inner, state.do, layers + [layer], seen | {target})
-        return found
-    return set()
 
 
 # ------------------------------------------------------------------ graph

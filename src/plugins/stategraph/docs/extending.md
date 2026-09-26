@@ -78,7 +78,7 @@ it is registered before machines load. A second kind with the same key raises
 | `default_idempotent` | `True` (default): a resumed run may start the activity again if it was in flight at a crash. Set `False` when a second execution does harm (sends, creates, pays); the engine then raises `interrupted` instead. A machine can override it per activity with `idempotent:`. |
 | `nested_one`, `nested_map` | Fields holding one nested activity (`each`) or a map of them (`parallel`); the validator checks them recursively. |
 | `child_scope_names(spec)` | Extra names bound inside nested activities (`map`: the item variable and `index`). |
-| `references(spec)` | Literal names for the configuration check (SG007): `agent`, `tool`, `profile`, `sam`. |
+| `references(spec)` | Literal names for the configuration check (SG007): `agent`, `tool`, `profile`. |
 | `submachine(spec)` | The import alias this activity runs, if any (SG006 checks its params). |
 | `extra_inputs(spec, act)` | Inputs besides the template fields that the input hash must cover (pure; e.g. `map`'s items). |
 | `label(spec)` | Subtitle on the canvas. |
@@ -126,7 +126,7 @@ returns the activity's result -- `out` for the machine -- or raises `ActivityErr
 | `act.request_id()` | The next request id of the run (`<run id>_NNN`), for calls that need one. |
 | `act.namespace` | The machine's companion-module namespace (`namespace.function(name, where)`). |
 | `act.run_id`, `act.machine_id`, `act.state`, `act.path`, `act.key`, `act.visit` | Where this activity runs: run, machine, state, mock/display path, journal key, visit number. |
-| `act.default_sam`, `act.cancellation_token` | The SAM for agent calls; the run's cancellation token -- `None` in a `finally` or `close` activity, which runs on after a terminate. |
+| `act.cancellation_token` | The run's cancellation token -- `None` in a `finally` or `close` activity, which runs on after a terminate. |
 
 Nested activities show how composites are built: `parallel` and `map` call
 `act.child` per branch or item and join the results (`kinds/builtin.py::join`).

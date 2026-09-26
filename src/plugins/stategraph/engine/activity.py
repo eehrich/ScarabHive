@@ -111,10 +111,6 @@ class ActivityRun:
         return self.run.id
 
     @property
-    def default_sam(self) -> Optional[str]:
-        return self.frame.machine.spec.sam or self.run.default_sam
-
-    @property
     def stopped(self) -> bool:
         """Whether nothing new may start here: it only replays into its frames' ends, or the run is ending (a
         finally or close activity runs on then, §3.10)."""
