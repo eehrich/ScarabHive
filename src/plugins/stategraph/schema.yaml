@@ -6,11 +6,11 @@ tools:
   - type: function
     function:
       name: "{{ name }}_catalog"
-      description: "What a machine may use: activity kinds with their fields, the agents the SAM may spawn, the tools the runner may call, decision profiles, example machine ids. Use only what this lists."
+      description: "What a machine may use: activity kinds with their fields, the agents an agent activity can run, the tools the runner may call, decision profiles, example machine ids. Use only what this lists."
       parameters:
         type: object
         properties:
-          sam: {type: string, description: "SAM instance the machine will use; default: the plugin's"}
+          agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. v6_*; default: every agent"}
         additionalProperties: false
 
   - type: function
@@ -33,7 +33,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_validate_machine"
-      description: "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents the SAM may spawn, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
+      description: "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents that exist, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
       parameters:
         type: object
         properties:

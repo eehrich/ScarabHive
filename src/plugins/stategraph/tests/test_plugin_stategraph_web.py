@@ -14,7 +14,10 @@ from fastapi.testclient import TestClient
 from agent_system.auth.models import UserRole
 from plugins.stategraph import web_endpoints
 from plugins.stategraph.service import ServiceError
+from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314
 from plugins.stategraph.web_endpoints import StateGraphWebEndpoints
+
+pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
 PLUGIN = Path(web_endpoints.__file__).parent
 SCHEMA = yaml.safe_load((PLUGIN / "schema.yaml").read_text(encoding="utf-8").replace("{{ name }}", "stategraph"))

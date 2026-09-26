@@ -5,20 +5,17 @@ YAML text through the real loader and ``validate_tree`` (SG007 with the
 production ``make_config_check`` over a real ``AgentSystemConfig``); runtime
 findings run the real RunManager, and where the finding sits in the production
 backend or server, the real ``ScarabHiveBackend`` / ``StateGraphServer`` with
-only the runner agent replaced (``FakeRunner``: a real ``SessionTracker``,
-recorded SAM and tool calls).
+only the runner agent replaced (``FakeRunner``: recorded tool calls). Agent
+activities are tested in test_plugin_stategraph_agents.py.
 
 Mutation checks run (each turned the named tests red, then was restored byte-exactly):
 - validate._check_graph: the composite -> initial loop edge removed               -> test_sg103_loop_through_a_composite_initial[unbounded, critique]
 - validate._check_graph: max_visits counted inside a re-entered composite         -> test_sg103_loop_through_a_composite_initial[critique]
-- backend._set_vars: the session's vars not cleared before the call              -> test_session_vars_hold_exactly_this_calls_vars
 - validate._check_references: the computed-kind-value SG005 block removed         -> test_computed_kind_value_is_sg005[all four]
 - backend.call_tool: the run-time tool_check removed                             -> test_call_tool_refuses_a_stategraph_tool_at_run_time[stategraph_tool]
 - loader._load: the id == file name check removed                                 -> test_the_id_must_match_the_file_name
 - validate._validate_file: the vars_from config check removed                    -> test_vars_from_an_unconfigured_agent_is_sg007
 - interpreter._init_vars: the ActivityError -> MachineFailed(config) wrap removed  -> test_vars_from_an_unconfigured_agent_fails_as_config_at_run_time
-- validate._check_concurrent_vars: the map branch removed                        -> test_sg109_for_concurrent_map_items_with_vars
-- validate._sets_vars: submachines never count                                     -> test_sg109_for_parallel_submachines_whose_machine_sets_vars
 - validate._check_transitions: pseudostate code bound with BINDINGS["any"] again  -> test_out_in_an_initial_choice_is_sg004
 - validate._pseudostate_bindings: the initial pseudostates' "state" way dropped   -> test_out_in_an_initial_choice_is_sg004
 - interpreter.ERROR_DEFAULTS: branch/index removed                               -> test_a_guard_on_error_branch_falls_through_for_a_branchless_error
@@ -105,8 +102,7 @@ def system_config(**extra_servers: Any):
     servers = {
         "stategraph": {"type": "stategraph", "enabled": True},
         "stategraph_runner": {"type": "basic_agent", "enabled": True,
-                              "agent_config": {"tools": {"allowed": ["stategraph", "json_store", "stategraph_sam"]}}},
-        "stategraph_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["writer"]},
+                              "agent_config": {"tools": {"allowed": ["stategraph", "json_store"]}}},
         "writer": {"type": "basic_agent", "enabled": True},
         "json_store": {"type": "json_store", "enabled": True},
     }
@@ -115,30 +111,15 @@ def system_config(**extra_servers: Any):
 
 
 def config_check(config=None):
-    return make_config_check(config or system_config(), runner="stategraph_runner", default_sam="stategraph_sam",
-                             own_instance="stategraph")
+    return make_config_check(config or system_config(), runner="stategraph_runner", own_instance="stategraph")
 
 
 class FakeRunner:
-    """The runner agent, the one seam replaced: a REAL SessionTracker, SAM and tool calls recorded.
-
-    ``call_tool`` is what AgentCaller calls for ``<sam>_manage_sub_agent``; it
-    records the session's template vars at that moment -- what the spawned
-    sub-agent would inherit. ``dispatch_tool_call`` answers tool activities.
-    """
+    """The runner agent, the one seam replaced: ``dispatch_tool_call`` answers tool activities and records them."""
 
     def __init__(self, tools: Optional[dict[str, Any]] = None):
-        from agent_system.servers.agent.components.session_tracking import SessionTracker
-
-        self._session_tracker = SessionTracker()
         self.tools = dict(tools or {})
-        self.sam_calls: list[dict[str, Any]] = []
         self.tool_calls: list[dict[str, Any]] = []
-
-    async def call_tool(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
-        seen = dict(self._session_tracker.get_session_template_vars(params.get("_session_id")))
-        self.sam_calls.append({"tool": name, "task": params.get("task"), "vars": seen})
-        return {"status": "success", "result": f"answer to {params.get('task')}", "instance_id": "inst-1"}
 
     async def dispatch_tool_call(self, tool: str, args: dict[str, Any], *, session_id=None, user_id=None,
                                  request_id=None) -> Any:
@@ -150,7 +131,7 @@ class FakeRunner:
 def backend_for(runner: FakeRunner, config=None, **options: Any):
     def make(run_id: str) -> ScarabHiveBackend:
         return ScarabHiveBackend(runner=runner, system_config=config, session_id=f"sg_{run_id}", user_id=None,
-                                 default_sam="stategraph_sam", **options)
+                                 **options)
     return make
 
 
@@ -201,28 +182,6 @@ def test_sg103_loop_through_a_composite_initial(bounded, warned):
     tree = validate(machine(text, initial="write"))
     assert not errors(tree), [p.as_dict() for p in errors(tree)]
     assert bool(found(tree, "SG103")) is warned, [p.message for p in found(tree, "SG103")]
-
-
-# ------------------------------------------------------------------ F3: session vars per call
-
-async def test_session_vars_hold_exactly_this_calls_vars(harness):
-    """F3: each agent call's session holds its own vars only -- a later call without vars sees none."""
-    runner = FakeRunner()
-    row = await harness.run(machine("""\
-        a:
-          do: {agent: writer, task: first, vars: {phase: synopsis, strict: true}}
-          transitions: [{target: b}]
-        b:
-          do: {agent: writer, task: second}
-          transitions: [{target: c}]
-        c:
-          do: {agent: writer, task: third, vars: {genre: thriller}}
-          transitions: [{target: done}]
-        done: {type: final}
-        """), backend_factory=backend_for(runner))
-    assert row["status"] == "succeeded", row["error"]
-    assert [call["vars"] for call in runner.sam_calls] == [
-        {"phase": "synopsis", "strict": True}, {}, {"genre": "thriller"}]
 
 
 # ------------------------------------------------------------------ F4: computed kind values
@@ -328,52 +287,6 @@ async def test_vars_from_an_unconfigured_agent_fails_as_config_at_run_time(harne
         """, head="vars_from: v6_story_cordinator\n"), backend_factory=backend_for(FakeRunner(), system_config()))
     assert row["status"] == "failed"
     assert row["error"]["type"] == "config", row["error"]
-
-
-# ------------------------------------------------------------------ F7: SG109 beyond direct parallel agents
-
-def test_sg109_for_concurrent_map_items_with_vars():
-    concurrent = validate(machine("""\
-        a:
-          do: {map: "[1, 2, 3]", concurrency: 3, each: {agent: w, task: t, vars: {chapter: "{{ item }}"}}}
-          transitions: [{target: done}]
-        done: {type: final}
-        """))
-    assert codes(concurrent, "SG109") == ["states.a.do.each"]
-    in_order = validate(machine("""\
-        a:
-          do: {map: "[1, 2, 3]", each: {agent: w, task: t, vars: {chapter: "{{ item }}"}}}
-          transitions: [{target: done}]
-        done: {type: final}
-        """))
-    assert found(in_order, "SG109") == [], "concurrency 1 runs one item at a time: no race"
-
-
-RITUAL = """\
-stategraph: 1
-id: ritual
-params: {phase: {type: string, required: true}}
-vars: {phase: "{{ params.phase }}"}
-initial: w
-states:
-  w:
-    do: {agent: w, task: t}
-    transitions: [{target: fin}]
-  fin: {type: final}
-"""
-
-
-def test_sg109_for_parallel_submachines_whose_machine_sets_vars():
-    tree = validate(machine("""\
-        a:
-          do:
-            parallel:
-              one: {machine: ritual, params: {phase: synopsis}}
-              two: {machine: ritual, params: {phase: outline}}
-          transitions: [{target: done}]
-        done: {type: final}
-        """, head="imports: {ritual: ./ritual.yaml}\n", ritual__yaml=RITUAL))
-    assert codes(tree, "SG109") == ["states.a.do.parallel"]
 
 
 # ------------------------------------------------------------------ F8: pseudostate bindings
@@ -871,22 +784,6 @@ async def test_the_cancellation_token_is_released_when_the_run_ends(server):
     row = await settle(server.run_manager, run_id)
     assert row["status"] == "succeeded"
     assert get_cancellation_manager().get_token(run_id) is None, "the finished run's token is still registered"
-
-
-# ------------------------------------------------------------------ S9: sam must be a sub_agent_manager
-
-@pytest.mark.parametrize("where", ["machine", "activity"])
-def test_a_sam_that_is_no_sub_agent_manager_is_sg007(where):
-    head = "sam: json_store\n" if where == "machine" else ""
-    do = "{agent: writer, task: t}" if where == "machine" else "{agent: writer, task: t, sam: json_store}"
-    tree = validate(machine(f"""\
-        a:
-          do: {do}
-          transitions: [{{target: done}}]
-        done: {{type: final}}
-        """, head=head), config_check=config_check())
-    assert codes(tree, "SG007") == ["states.a.do.agent"], [p.as_dict() for p in tree.problems]
-    assert "sub_agent_manager" in found(tree, "SG007")[0].message
 
 
 # ================================================================== review:panel

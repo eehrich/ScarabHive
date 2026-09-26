@@ -139,7 +139,7 @@ class ActivityKind(ABC):
         return None
 
     def references(self, spec: KindSpec) -> dict[str, str]:
-        """Literal names the validator checks against the configuration: ``agent``, ``tool``, ``profile``, ``sam``."""
+        """Literal names the validator checks against the configuration: ``agent``, ``tool``, ``profile``."""
         return {}
 
     @abstractmethod

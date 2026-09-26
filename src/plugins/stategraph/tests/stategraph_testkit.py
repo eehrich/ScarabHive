@@ -93,14 +93,15 @@ class FakeBackend:
             raise value
         return value
 
-    async def agent_create(self, act: Any, *, agent: str, task: str, sam: Optional[str], advanced: bool,
+    async def agent_create(self, act: Any, *, agent: str, task: str, advanced: bool,
                            vars: dict[str, Any]) -> tuple[Any, Optional[str]]:
         answer = await self._answer("agent_create", act, agent=agent, task=task, vars=dict(vars))
         return answer, f"inst-{act.path}"
 
-    async def agent_continue(self, act: Any, *, instance_id: str, message: str, sam: Optional[str],
+    async def agent_continue(self, act: Any, *, agent: str, instance_id: str, message: str,
                              advanced: bool, vars: dict[str, Any]) -> Any:
-        return await self._answer("agent_continue", act, instance_id=instance_id, message=message, vars=dict(vars))
+        return await self._answer("agent_continue", act, agent=agent, instance_id=instance_id, message=message,
+                                  vars=dict(vars))
 
     async def call_tool(self, act: Any, *, tool: str, args: dict[str, Any]) -> Any:
         return await self._answer("call_tool", act, tool=tool, args=dict(args))
@@ -110,6 +111,120 @@ class FakeBackend:
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         return dict(self.template_vars.get(agent, {}))
+
+
+class FakeAgent:
+    """A registry agent with the one seam ``ScarabHiveBackend`` uses: ``run_events``.
+
+    Everything around it is real: a ``SessionTracker`` and, through ``AgentHost``,
+    a ``SessionService`` over a ``SessionManager`` on disk. A run records what the
+    agent would see -- its session, the session's template vars, the conversation
+    so far -- and ends like ``Agent.run_events``: the answer on "final", the
+    conversation stored in the tracker before "end". ``answer`` is a value, an
+    exception instance (an "error" event), or a callable taking the call record and
+    returning either (sync or async).
+    """
+
+    def __init__(self, name: str, answer: Any = None, *, template_vars: Optional[dict[str, Any]] = None):
+        from types import SimpleNamespace
+
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+        self.name = name
+        self.answer = answer if answer is not None else (lambda call: f"{name} answers {call['task']}")
+        self.agent_config = SimpleNamespace(default_llm_profile="normal", template_vars=dict(template_vars or {}))
+        self._session_tracker = SessionTracker()
+        self._session_service: Any = None
+        self.calls: list[dict[str, Any]] = []
+
+    async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None,
+                         llm_override: Any = None, llm_profile_info_override: Any = None,
+                         use_advanced_model: bool = False):
+        from agent_system.core.cancellation import get_cancellation_manager
+        from agent_system.llm.models import ChatMessage
+
+        tracker = self._session_tracker
+        history = list(tracker.get_session_messages(session_id))
+        manager = get_cancellation_manager()
+        token = manager.create_token(request_id)  # as Agent.run_events: registered for the run, gone after it
+        call = {"agent": self.name, "task": task, "session": session_id, "request_id": request_id,
+                "advanced": use_advanced_model, "vars": dict(tracker.get_session_template_vars(session_id)),
+                "history": [message.content for message in history], "token": token}
+        self.calls.append(call)
+        try:
+            yield {"type": "start"}
+            answer = self.answer(call) if callable(self.answer) else self.answer
+            if asyncio.iscoroutine(answer):
+                answer = await answer
+            if token.is_cancelled:
+                yield {"type": "cancelled"}
+                return
+            if isinstance(answer, BaseException):
+                yield {"type": "error", "message": str(answer)}
+                return
+            tracker.set_session_messages(session_id, [*history, ChatMessage(role="user", content=task),
+                                                      ChatMessage(role="assistant", content=answer)])
+            yield {"type": "final", "summary": answer}
+            yield {"type": "end"}
+        finally:
+            manager.unregister_request(request_id)
+            call["ended"] = True
+
+
+async def inside_a_tool_call(call: dict[str, Any], answer: Any = "done", *, wind_down: float = 0.0,
+                             ignore_token_for: float = 0.0) -> Any:
+    """What a real agent does while one of its tool calls runs: a cancel that lands there becomes a
+    "cancelled" tool result and the loop goes on (tool_execution._execute_with_cancellation) -- only the
+    run's token stops it. ``wind_down``: after the token it takes that long to stop, swallowing cancels
+    too; ``ignore_token_for``: it notices its token only after that long (a stubborn agent). Gives up after
+    3 s, so a broken stop fails a test instead of hanging it."""
+    loop = asyncio.get_running_loop()
+    stubborn_until = loop.time() + ignore_token_for
+    end = None
+    for _ in range(150):
+        if call["token"].is_cancelled and loop.time() >= stubborn_until:
+            end = end or loop.time() + wind_down
+            if loop.time() >= end:
+                break
+        try:
+            await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            call["swallowed"] = call.get("swallowed", 0) + 1
+    return answer
+
+
+class AgentHost:
+    """The runner agent as the backend sees it: a registry of ``FakeAgent``\\ s, one real session store under ``root``,
+    and ``dispatch_tool_call`` for tool activities. A second host on the same ``root`` is another process."""
+
+    def __init__(self, root: Path, *agents: FakeAgent):
+        from types import SimpleNamespace
+
+        from agent_system.services.session_manager import SessionManager
+        from agent_system.services.session_service import SessionService
+
+        self.sessions = SessionManager(str(root))
+        self._session_service = SessionService(self.sessions, checkpoint_interval_seconds=0)
+        self.agents: dict[str, Any] = {}
+        self.registry = SimpleNamespace(get=self._get)
+        for agent in agents:
+            self.add(agent)
+
+    def add(self, agent: Any) -> Any:
+        agent._session_service = self._session_service
+        self.agents[agent.name] = agent
+        return agent
+
+    def _get(self, name: str) -> Any:
+        if name not in self.agents:
+            raise KeyError(name)  # as the registry does for a name it does not know
+        return self.agents[name]
+
+    def calls(self) -> list[dict[str, Any]]:
+        return [call for agent in self.agents.values() for call in getattr(agent, "calls", [])]
+
+    async def dispatch_tool_call(self, tool: str, args: dict[str, Any], **_: Any) -> Any:
+        return {"status": "error", "error": f"no tool {tool} in this test"}
 
 
 def held(gate: asyncio.Event, value: Any = "released") -> Callable[[dict[str, Any]], Any]:

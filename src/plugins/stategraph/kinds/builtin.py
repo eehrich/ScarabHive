@@ -32,7 +32,7 @@ def param_ref(value: Any) -> Optional[str]:
 class AgentSpec(KindSpec):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    agent: str = Field(description="agent name: a literal, or {{ params.x }} with an enum; the SAM must allow it")
+    agent: str = Field(description="agent name: a literal, or {{ params.x }} with an enum; any configured agent")
     task: Any = Field(description="the task text (template)")
     schema_: Optional[dict[str, Any]] = Field(
         None, alias="schema", description="JSON schema: the answer is parsed as JSON and validated")
@@ -43,10 +43,9 @@ class AgentSpec(KindSpec):
     vars: Union[dict[str, Any], str] = Field(
         default_factory=dict, description="agent template vars for this call, over the machine's: a map of "
                                           "templates, or one template that renders to an object of names")
-    sam: Optional[str] = Field(None, description="SAM instance; default: the machine's sam or the plugin's")
     advanced: bool = Field(False, description="use the agent's advanced model profile")
     continue_: Optional[str] = Field(
-        None, alias="continue", description="instance id (template) to follow up instead of spawning")
+        None, alias="continue", description="instance id (template) of this agent to follow up instead of spawning")
 
     @field_validator("parse")
     @classmethod
@@ -62,8 +61,8 @@ class AgentKind(ActivityKind):
     template_fields = ("agent", "task", "vars", "continue")
     title = "Agent"
     icon = "brain"
-    summary = ("Spawn (or continue) a sub-agent with a task; out = its answer (parsed with schema/parse); "
-               "activity.instance_id = the instance for a later continue")
+    summary = ("Run an agent (a new instance, or continue one) with a task; out = its answer (parsed with "
+               "schema/parse); activity.instance_id = the instance for a later continue")
 
     def references(self, spec: AgentSpec) -> dict[str, str]:
         refs: dict[str, str] = {}
@@ -71,8 +70,6 @@ class AgentKind(ActivityKind):
             refs["agent"] = spec.agent
         elif param_ref(spec.agent):
             refs["agent_param"] = param_ref(spec.agent) or ""
-        if spec.sam:
-            refs["sam"] = spec.sam
         return refs
 
     def extra_inputs(self, spec: AgentSpec, act: "ActivityRun") -> dict[str, Any]:
@@ -82,14 +79,13 @@ class AgentKind(ActivityKind):
         agent = str(act.render(spec.agent, "agent"))
         task = act.text(act.render(spec.task, "task"))
         variables = {**act.frame_vars(), **vars_object(act.render(spec.vars, "vars"), f"{act.path}.vars")}
-        sam = spec.sam or act.default_sam
         act.meta["agent"] = agent
         if spec.continue_:
             instance: Optional[str] = str(act.render(spec.continue_, "continue"))
-            text = await act.backend.agent_continue(act, instance_id=instance, message=task, sam=sam,
+            text = await act.backend.agent_continue(act, agent=agent, instance_id=instance, message=task,
                                                     advanced=spec.advanced, vars=variables)
         else:
-            text, instance = await act.backend.agent_create(act, agent=agent, task=task, sam=sam,
+            text, instance = await act.backend.agent_create(act, agent=agent, task=task,
                                                             advanced=spec.advanced, vars=variables)
         act.meta["instance_id"] = instance
         if spec.schema_ is None and spec.parse is None:
@@ -104,7 +100,7 @@ class AgentKind(ActivityKind):
                                     data={"text": text[:4000], "instance_id": instance})
             act.meta["feedback_rounds"] = round_ + 1
             text = await act.backend.agent_continue(
-                act, instance_id=instance, sam=sam, advanced=spec.advanced, vars=variables,
+                act, agent=agent, instance_id=instance, advanced=spec.advanced, vars=variables,
                 message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.")
         raise AssertionError("unreachable")
 

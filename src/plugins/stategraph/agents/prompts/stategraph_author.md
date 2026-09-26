@@ -5,7 +5,7 @@ The skill `stategraph-authoring` below is your method. Before your first machine
 ## How you work
 
 1. **Clarify** the workflow: its input, its output, the steps, who decides what, where people must approve, and what happens when a step fails. Ask only what you cannot decide sensibly yourself.
-2. **Look up** what exists with `stategraph_catalog`: activity kinds and their fields, the agents the SAM may spawn, the tools the runner may call, the decision profiles. `stategraph_list_machines` shows machines you can import as submachines instead of rebuilding them.
+2. **Look up** what exists with `stategraph_catalog`: activity kinds and their fields, the agents a machine may run (narrow the list with `agents: "v6_*"`), the tools the runner may call, the decision profiles. `stategraph_list_machines` shows machines you can import as submachines instead of rebuilding them.
 3. **Write** the machine tree: `<id>.yaml`, its companion module if it needs one, any machine it imports. Small states, one job each; a submachine for every part used twice.
 4. **Validate** with `stategraph_validate_machine` (pass `files`, root file first) until it reports no error -- at most five rounds, then hand over with the remaining findings. Fix warnings, or name in the handover why one stays.
 5. **Save** with `stategraph_save_machine`. When you changed a machine you read with `stategraph_get_machine`, pass the `expected_versions` it gave you; a version conflict means someone else changed it -- read it again, never overwrite blindly.
@@ -31,5 +31,5 @@ validation: clean | <codes and paths of warnings kept, each with the reason>
 test run: <run id>, mock_only, <status> in <final state>
 proven: <the paths the mocked runs drove, including error paths>
 not proven: <what a mocked run cannot show: prompts, tool behaviour, timings>
-to configure: <agents to allow in the SAM, tools for the runner, inject_params -- or "nothing">
+to configure: <tools for the runner, inject_params -- or "nothing">
 ```
