@@ -571,14 +571,14 @@ def test_sg007_fake_check_sees_every_enum_value():
     assert ("SG007", "states.a.do.agent") not in sg007
 
 
-def _system_config():
+def _system_config(runner_allows=("stategraph", "sg_copy", "json_store", "stategraph_sam")):
     from agent_system.config.models import AgentSystemConfig
 
     return AgentSystemConfig.model_validate({"plugins": {"servers": {
         "stategraph": {"type": "stategraph", "enabled": True},
         "sg_copy": {"type": "stategraph", "enabled": True},
         "stategraph_runner": {"type": "basic_agent", "enabled": True,
-                              "agent_config": {"tools": {"allowed": ["stategraph", "sg_copy", "json_store"]}}},
+                              "agent_config": {"tools": {"allowed": list(runner_allows)}}},
         "stategraph_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["writer"]},
         "writer": {"type": "basic_agent", "enabled": True},
         "critic": {"type": "basic_agent", "enabled": True},
@@ -629,6 +629,39 @@ def test_sg007_production_check_runner_allowlist_sam_and_profile():
     assert "'critic' is not in stategraph_sam.allowed_agents" in text
     assert "'writer'" not in text
     assert "decision profile 'jev' is not configured" in text
+
+
+def test_sg007_the_runner_must_reach_the_sam_agent_activities_spawn_through():
+    """AgentCaller calls <sam>_manage_sub_agent as the runner: without the SAM in the runner's allowlist every
+    agent step fails at run time with "Unknown tool" -- validation says so first, for the machine's sam too."""
+    check = make_config_check(_system_config(runner_allows=("json_store",)), runner="stategraph_runner",
+                              default_sam="stategraph_sam", own_instance="stategraph")
+    tree = validate(machine("""\
+        a:
+          do: {agent: writer, task: t}
+          transitions: [{target: done}]
+        done: {type: final}
+        """), config_check=check)
+
+    assert "agent activities spawn through stategraph_sam, but 'stategraph_sam_manage_sub_agent' is not in " \
+           "stategraph_runner's tool allowlist: add 'stategraph_sam/*' to it" in messages(tree, "SG007")
+
+
+def test_sg007_a_tool_activity_may_not_call_the_sam_s_tool():
+    """The runner may call the SAM, since agent activities spawn through it; a tool activity (or sg.tool(),
+    checked by the same function at run time) may not: its sub-agents would not be journaled, would outlive
+    the run, and could cancel the ones the run's agent activities made."""
+    check = make_config_check(_system_config(), runner="stategraph_runner", default_sam="stategraph_sam",
+                              own_instance="stategraph")
+    tree = validate(machine("""\
+        a:
+          do: {tool: stategraph_sam_manage_sub_agent, args: {action: create}}
+          transitions: [{target: done}]
+        done: {type: final}
+        """), config_check=check)
+
+    assert "tool 'stategraph_sam_manage_sub_agent' belongs to the SAM stategraph_sam" in messages(tree, "SG007")
+    assert check("agent", "writer", {"sam": None}) is None  # agent activities still reach it
 
 
 # ------------------------------------------------------------------ warnings

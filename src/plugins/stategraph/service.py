@@ -7,9 +7,11 @@ endpoints into an HTTP error. Nothing here knows about FastAPI or tool params.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -47,6 +49,13 @@ class ServiceError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+#: A run id becomes the session id sg_<run id> and a journal key: letters, digits, _ and -.
+_RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+#: How long terminate waits for the run to end (its finally activities run first) before it answers.
+TERMINATE_WAIT = 10.0
 
 
 class StateGraphService:
@@ -242,10 +251,19 @@ class StateGraphService:
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,
                         mocks: Optional[dict[str, Any]] = None, mock_only: bool = False, breakpoints: Any = (),
                         watchpoints: Any = (), pause_at_start: bool = False, user_id: Optional[str] = None,
-                        run_key: Optional[str] = None) -> dict[str, Any]:
+                        run_key: Optional[str] = None, run_id: Optional[str] = None) -> dict[str, Any]:
+        """Start a run of ``machine_id``; with ``run_key``, attach to or resume the unfinished run of that key.
+
+        ``run_id`` (the agent facade: ``<request id>_sg<n>``) keeps cancel, status and cost attribution under
+        the caller's request id; it must be a session-id-safe word of at most 128 characters.
+        """
         self._require(machine_id)
+        if run_id is not None and not _RUN_ID.fullmatch(run_id):
+            raise ServiceError(422, f"run_id {run_id!r} must match {_RUN_ID.pattern}")
         if run_key:
             existing = self.runs.find_by_key(run_key)
+            if existing is not None and existing.get("user_id") not in (None, user_id):
+                raise ServiceError(409, f"run_key {run_key!r} belongs to another user's run")
             if existing is not None:
                 if existing["id"] in self.runs.live:
                     return {"run_id": existing["id"], "attached": True}
@@ -269,7 +287,7 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(user_id), user_id=user_id,
-                run_key=run_key)
+                run_key=run_key, run_id=run_id)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
@@ -282,6 +300,32 @@ class StateGraphService:
                                    else self.backend_factory(user_id or (row or {}).get("user_id")))
         except (ValueError, CompileError) as exc:
             raise ServiceError(409, str(exc)) from None
+
+    async def _await_end(self, run_id: str, timeout: float) -> None:
+        """Until the run's task here has ended, at most ``timeout`` seconds (the run itself is never cancelled)."""
+        live = self.runs.live.get(run_id)
+        if live is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(live.task), timeout)
+        except asyncio.TimeoutError:
+            logger.info("stategraph: run %s still ends after %.0fs (finally activities)", run_id, timeout)
+
+    async def _terminate_elsewhere(self, run_id: str, user_id: Optional[str]) -> None:
+        """A run no process here runs: resume it into its termination, so its finally activities run (§3.10).
+
+        A run that ended is left alone; one another process holds is refused (409). If it cannot be resumed
+        at all (its definition no longer loads), it is marked cancelled without them.
+        """
+        row = self.run_store.get_run(run_id) or {}
+        if row.get("status") in ("succeeded", "failed", "cancelled"):
+            return
+        options = row.get("mocks") or {}
+        try:
+            await self.runs.resume(run_id, cancel=True, backend_factory=None if options.get("mock_only")
+                                   else self.backend_factory(user_id or row.get("user_id")))
+        except CompileError:
+            self.runs.control(run_id, "terminate")
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)))
@@ -307,7 +351,13 @@ class StateGraphService:
         if self.run_store.get_run(run_id) is None:
             raise ServiceError(404, f"no run {run_id!r}")
         try:
-            if action in ("pause", "continue", "step", "run_to", "terminate"):
+            if action == "terminate":
+                if run_id in self.runs.live:
+                    self.runs.control(run_id, action)
+                else:
+                    await self._terminate_elsewhere(run_id, kwargs.get("user_id"))
+                await self._await_end(run_id, TERMINATE_WAIT)  # its finally activities run first
+            elif action in ("pause", "continue", "step", "run_to"):
                 self.runs.control(run_id, action, state=kwargs.get("state"), machine=kwargs.get("machine"))
             elif action == "resume":
                 await self._resume(run_id, kwargs.get("user_id"))

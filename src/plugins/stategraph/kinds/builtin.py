@@ -6,14 +6,14 @@ import asyncio
 import importlib
 import inspect
 import re
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from plugins.stategraph.model.spec import check_name
 from plugins.stategraph.model.spec import Strict
 
-from .base import ActivityError, ActivityKind, KindSpec, register
+from .base import ActivityError, ActivityKind, KindSpec, register, vars_object
 
 if TYPE_CHECKING:
     from plugins.stategraph.engine.activity import ActivityRun
@@ -40,8 +40,9 @@ class AgentSpec(KindSpec):
         None, description="a companion function name (or package.module:function), fn(text) -> out; raising "
                           "ValueError sends its message back to the same instance as feedback (parse_retries times)")
     parse_retries: int = Field(1, ge=0, le=5, description="feedback rounds for schema/parse failures")
-    vars: dict[str, Any] = Field(
-        default_factory=dict, description="agent template vars for this call (templates), over the machine's vars")
+    vars: Union[dict[str, Any], str] = Field(
+        default_factory=dict, description="agent template vars for this call, over the machine's: a map of "
+                                          "templates, or one template that renders to an object of names")
     sam: Optional[str] = Field(None, description="SAM instance; default: the machine's sam or the plugin's")
     advanced: bool = Field(False, description="use the agent's advanced model profile")
     continue_: Optional[str] = Field(
@@ -80,7 +81,7 @@ class AgentKind(ActivityKind):
     async def run(self, spec: AgentSpec, act: "ActivityRun") -> Any:
         agent = str(act.render(spec.agent, "agent"))
         task = act.text(act.render(spec.task, "task"))
-        variables = {**act.frame_vars(), **act.render(spec.vars, "vars")}
+        variables = {**act.frame_vars(), **vars_object(act.render(spec.vars, "vars"), f"{act.path}.vars")}
         sam = spec.sam or act.default_sam
         act.meta["agent"] = agent
         if spec.continue_:
@@ -272,16 +273,22 @@ class CallKind(ActivityKind):
     title = "Python"
     icon = "terminal"
     summary = ("Call a Python function (sync or async) with rendered keyword arguments; a first parameter "
-               "named sg receives the read-only scope; out = its return value")
+               "named sg receives the read-only scope and sg.tool() for journaled tool calls; out = its "
+               "return value")
 
     async def run(self, spec: CallSpec, act: "ActivityRun") -> Any:
         fn = resolve_callable(spec.call, act, "call")
         args = act.render(spec.args, "args")
         params = list(inspect.signature(fn).parameters)
-        result = fn(act.frozen_scope(), **args) if params[:1] == ["sg"] else fn(**args)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
+        if params[:1] != ["sg"]:
+            result = fn(**args)
+            return await result if inspect.isawaitable(result) else result
+        sg = act.sg_api()
+        try:
+            result = fn(sg, **args)
+            return await result if inspect.isawaitable(result) else result
+        finally:
+            sg._close()
 
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -433,6 +440,11 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
     (so replay reproduces the original outcome), and a live failure cancels the
     rest. ``fail: collect`` -- every child runs; a result is {status, out|error}.
     With ``concurrency`` 1 the children run strictly one after another in order.
+
+    A cancel ends the children; one that is still replaying replays on into the
+    end its journal gives it (docs/stategraph_design.md §3.10), and one the crashed
+    run had started that the cancel stopped before it began here replays into its
+    end afterwards.
     """
     if fail == "fast":
         for label, _, _ in children:
@@ -440,12 +452,15 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
             if error is not None:
                 error.extra.setdefault("branch" if label.startswith("b.") else "index",
                                        label[2:] if label.startswith("b.") else int(label[2:]))
+                await _end_branches(act, [child for child in children if child[0] != label])
                 raise error
     gate = asyncio.Semaphore(concurrency)
     results: list[Any] = [None] * len(children)
+    begun: set[str] = set()
 
     async def one(index: int, label: str, raw: dict[str, Any], extra: Optional[dict[str, Any]]) -> None:
         async with gate:
+            begun.add(label)
             if fail == "fast":
                 try:
                     results[index] = await act.child(label, raw, extra)
@@ -462,9 +477,49 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
     tasks = [asyncio.ensure_future(one(i, *child)) for i, child in enumerate(children)]
     try:
         await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+    except BaseException as exc:
+        from plugins.stategraph.engine.activity import ReplayDivergence, RunAbort
+
+        for task in tasks:  # the rest ends; a branch's finally activities run to their end (§3.10)
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        # an abort (step_limit) or a divergence keeps its outcome: a terminate that comes while the rest ends
+        # does not replace it -- only a halt does
+        keep = isinstance(exc, (RunAbort, ReplayDivergence))
+        while True:
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await _end_branches(act, [child for child in children if child[0] not in begun])
+                break
+            except asyncio.CancelledError:
+                if not keep or act.run.stopping or act.run.lost:
+                    raise
+        raise exc
     return results
+
+
+async def _end_branches(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]]) -> None:
+    """Branches the crashed run had started that do not run here -- a fail-fast join had cancelled them, or a
+    cancel stopped them before they began: each replays into its frame's end, never live, so its finally and
+    close activities complete (docs/stategraph_design.md §3.10). A branch the crashed run never started has
+    nothing to end. A cancel from outside meanwhile lets the ones that began end; the rest follow, then it
+    raises on."""
+    ending = [child for child in children if act.child_key(child[0]) in act.run.started]
+    act.run.cancelled_below.update(act.child_key(child[0]) for child in ending)  # their endings are bounded
+    arrived = False
+    while ending and act.run.may_finalize():
+        begun: set[str] = set()
+
+        async def one(label: str, raw: dict[str, Any], extra: Optional[dict[str, Any]]) -> None:
+            begun.add(label)
+            await act.child(label, raw, extra, ending_only=True)
+
+        tasks = [asyncio.ensure_future(one(*child)) for child in ending]
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            arrived = True
+            await asyncio.gather(*tasks, return_exceptions=True)
+        ending = [child for child in ending if child[0] not in begun]
+    if arrived:
+        raise asyncio.CancelledError()

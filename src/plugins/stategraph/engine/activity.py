@@ -23,19 +23,23 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 import json
+import re
 import time
 import types
 from typing import TYPE_CHECKING, Any, Optional
 
 from plugins.stategraph.kinds import ActivityError, ActivityKind, KindSpec, parse_activity
-from plugins.stategraph.model.code import CodeError, Scope, fingerprint, jsonable, plain
+from plugins.stategraph.model.code import CodeError, Scope, fingerprint, jsonable, namespace_of, plain
 from plugins.stategraph.model.spec import NOT_RETRIED, parse_duration
 
 if TYPE_CHECKING:
     from .interpreter import Frame
 
 _FAILED_TYPE = {"agent": "agent_failed", "tool": "tool_failed", "decide": "decision_failed", "call": "call_failed"}
+#: A key below an activity that lies in a frame's ending -- its finally or close activities, or what runs inside one.
+_IN_ENDING = re.compile(r"(?:^|/)(?:end\.|s\d+\.fin\.)")
 
 
 class ReplayDivergence(Exception):
@@ -69,7 +73,8 @@ class ActivityRun:
     """One activity execution (or one nested child of it)."""
 
     def __init__(self, frame: "Frame", state: str, key: str, path: str, *, raw: dict[str, Any],
-                 extra_scope: Optional[dict[str, Any]] = None, visit: int = 1):
+                 extra_scope: Optional[dict[str, Any]] = None, visit: int = 1, literal: bool = False,
+                 finalizer: bool = False, ending_only: Optional[bool] = None):
         self.frame = frame
         self.run = frame.run
         self.state = state
@@ -78,9 +83,15 @@ class ActivityRun:
         self.raw = raw
         self.extra_scope = jsonable(extra_scope or {})
         self.visit = visit
+        self.literal = literal  # sg.tool(): the arguments are data from Python, never templates
+        self.finalizer = finalizer  # finally / resource close: runs even while the run is being cancelled
+        # replays into its frames' ends, never runs live -- like its frame, unless it is that frame's own finally
+        # or close (the ending itself runs live)
+        self.ending_only = frame.ending_only if ending_only is None else ending_only
         self.attempt = 1
         self.meta: dict[str, Any] = {}
         self._detached: Optional[dict[str, Any]] = None
+        self._base: Optional[dict[str, Any]] = None
 
     # ------------------------------------------------------------ for kinds
     @property
@@ -104,8 +115,16 @@ class ActivityRun:
         return self.frame.machine.spec.sam or self.run.default_sam
 
     @property
+    def stopped(self) -> bool:
+        """Whether nothing new may start here: it only replays into its frames' ends, or the run is ending (a
+        finally or close activity runs on then, §3.10)."""
+        return self.ending_only or (self.run.ending and not self.finalizer)
+
+    @property
     def cancellation_token(self) -> Any:
-        return self.run.token
+        """The token this activity's calls pass on: the run's -- none for a finally or close activity, which
+        runs on after a terminate (a halt stops it by cancelling its task, §3.10)."""
+        return None if self.finalizer else self.run.token
 
     def scope(self, **bind: Any) -> dict[str, Any]:
         """The read-only scope an activity sees -- DETACHED copies of ctx and params.
@@ -121,13 +140,42 @@ class ActivityRun:
         scope["ctx"] = Scope(self._detached["ctx"], frozen=True, label="ctx")
         scope["params"] = Scope(self._detached["params"], frozen=True, label="params")
         scope.update(copy.deepcopy(self.extra_scope))
+        if isinstance(scope.get("ending"), dict):
+            scope["ending"] = namespace_of(scope["ending"], "ending")
         scope.update(bind)
         return scope
 
-    def frozen_scope(self) -> Any:
-        return types.SimpleNamespace(**self.scope())
+    def sg_api(self) -> Any:
+        """What a call's first parameter ``sg`` sees: the read-only scope, and ``sg.tool()`` (§2.5 call).
+
+        Every ``await sg.tool(name, args)`` is a child tool activity of this call, keyed ``<key>/t.<n>`` in
+        call order within the attempt and journaled like a ``tool`` activity: on resume the function runs
+        again from the top and the finished calls replay. The path is ``<path>/<tool>`` (for mocks).
+        """
+        counter = itertools.count()
+        closed = False
+
+        async def tool(name: str, args: Optional[dict[str, Any]] = None, *, idempotent: bool = False) -> Any:
+            if closed:
+                raise RuntimeError(f"{self.path}: sg.tool() called after the call returned")
+            if not isinstance(name, str) or not name:
+                raise TypeError(f"{self.path}: sg.tool() needs a tool name, got {name!r}")
+            if args is not None and not isinstance(args, dict):
+                raise TypeError(f"{self.path}: sg.tool({name!r}) args must be a dict, got {type(args).__name__}")
+            raw = {"tool": name, "args": dict(args or {}), "idempotent": bool(idempotent)}
+            return await self.child(f"t.{next(counter)}", raw, shown=name, literal=True)
+
+        def close() -> None:
+            nonlocal closed
+            closed = True
+
+        api = types.SimpleNamespace(**self.scope(), tool=tool, Error=ActivityError)  # except sg.Error as exc
+        api._close = close
+        return api
 
     def render(self, value: Any, where: str) -> Any:
+        if self.literal:
+            return value
         return self.namespace.render(value, self.scope(), f"{self.path}.do.{where}")
 
     def evaluate(self, source: str, where: str, **bind: Any) -> Any:
@@ -160,11 +208,13 @@ class ActivityRun:
             return ActivityError.from_dict((row.get("data") or {}).get("error") or {})
         return None
 
-    async def child(self, label: str, raw: dict[str, Any], extra_scope: Optional[dict[str, Any]] = None) -> Any:
+    async def child(self, label: str, raw: dict[str, Any], extra_scope: Optional[dict[str, Any]] = None, *,
+                    shown: Optional[str] = None, literal: bool = False, ending_only: bool = False) -> Any:
         kind, spec = parse_activity(raw)
-        shown = label.split(".", 1)[-1]
+        shown = shown or label.split(".", 1)[-1]
         sub = ActivityRun(self.frame, self.state, self.child_key(label), f"{self.path}/{shown}", raw=raw,
-                          extra_scope={**self.extra_scope, **(extra_scope or {})}, visit=self.visit)
+                          extra_scope={**self.extra_scope, **(extra_scope or {})}, visit=self.visit,
+                          literal=literal, finalizer=self.finalizer, ending_only=ending_only or self.ending_only)
         return await sub.execute(kind, spec)
 
     async def run_submachine(self, alias: str, params: dict[str, Any]) -> Any:
@@ -173,7 +223,8 @@ class ActivityRun:
             raise ActivityError("config", f"{alias!r} is not an import of {self.frame.machine.id}")
         from .interpreter import Frame  # a submachine is a nested frame of the same run
 
-        child = Frame(self.run, machine, params, prefix=self.child_key("m") + "/", path=self.path, parent=self.frame)
+        child = Frame(self.run, machine, params, prefix=self.child_key("m") + "/", path=self.path, parent=self.frame,
+                      finalizer=self.finalizer, ending_only=self.ending_only)
         result = await child.execute()
         if result.status != "succeeded":
             raise ActivityError("submachine_failed", f"{alias} ended in {result.final_state} ({result.status})",
@@ -192,24 +243,37 @@ class ActivityRun:
 
     async def execute(self, kind: ActivityKind, spec: KindSpec) -> Any:
         """Result of this activity: replayed, mocked, or run live (journaled)."""
-        self.run.check_cancelled()
+        if self.run.divergence is not None:  # a replay diverged and something caught that: nothing runs any more
+            raise ReplayDivergence(self.run.divergence)
+        if self.stopped and self.key not in self.run.recorded and self.key not in self.run.started:
+            self.run.stop_here()  # past its frame's journal: nothing new starts (§3.10)
         try:
             inputs = self.inputs(kind, spec)
         except CodeError as exc:
             raise ActivityError("template_failed", exc.message) from exc
         except _NotJson as exc:
             raise ActivityError("template_failed", f"{self.path}: the inputs are not JSON data: {exc}") from exc
-        input_hash = fingerprint(inputs)
+        input_hash = fingerprint(self.frame.tokenized(inputs))  # resource values as tokens: forks replay
         base = {"kind": kind.key, "path": self.path, "state": self.state, "input_hash": input_hash}
+        self._base = base
 
         recorded = self.run.recorded.get(self.key)
         if recorded is not None:
             return self._replay(recorded, base)
+        # In flight when its frame ended (the run's terminate, or the end a fail-fast join gave it): a leaf ends
+        # here -- also before it would end interrupted. A composite goes on, so its children replay into their
+        # frames' ends first; then it ends without an outcome of its own (§3.10).
+        leaf = not (kind.nested_one or kind.nested_map or kind.submachine(spec))
+        if self.stopped and leaf:
+            self.run.stop_here()
+        self.run.went_live()
 
         started = self.run.started.pop(self.key, None)
         if started is not None:
             self._check(started.get("data") or {}, base, "started")
-            if not kind.idempotent(spec):
+            if not self.stopped and not kind.idempotent(spec):
+                if not leaf:  # the frames it had opened end first: their finally and close activities run
+                    await self._end_in_flight(kind, spec, started)
                 failure = ActivityError("interrupted", f"{self.path}: was running when the run stopped; not "
                                         "started again because it is not idempotent", data=inputs)
                 self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
@@ -238,13 +302,11 @@ class ActivityRun:
             self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
             raise failure
 
-        self.run.went_live()
         attempts = spec.retry.attempts if spec.retry else 1
         timeout = parse_duration(spec.timeout)
         # A crash is not a failed attempt: a resumed activity continues the attempt it was in, so the
         # children that attempt finished replay under their keys and the retry budget stays the same.
         first = max(1, int(((started or {}).get("data") or {}).get("attempt") or 1))
-        leaf = not (kind.nested_one or kind.nested_map or kind.submachine(spec))
         begun = time.monotonic()
         failure: Optional[ActivityError] = None
         for attempt in range(first, max(attempts, first) + 1):
@@ -274,12 +336,14 @@ class ActivityRun:
                 if leaf:
                     self.run.busy -= 1
                     self.run.refresh_status()
-            if failure is None:
+            if self.run.divergence is not None:  # a replay below it diverged and something caught that (a call's
+                raise ReplayDivergence(self.run.divergence)  # except, a join's cleanup): it ends the run all the same
+            if self.stopped and (failure is not None or not leaf):  # the run ended while it ran (a composite's
+                self.run.stop_here()    # children replayed into their ends, a leaf
+            if failure is None:                                     # failed with it): not its outcome (§3.10)
                 self.meta["duration_s"] = round(time.monotonic() - begun, 3)
                 self._journal("done", {**base, "out": out, "meta": self.meta})
                 return out
-            if self.run.cancelled:  # it ended because the run was cancelled: not the activity's outcome
-                raise asyncio.CancelledError()
             if attempt < attempts and spec.retry is not None and self._retryable(spec.retry, failure):
                 await asyncio.sleep(spec.retry.delay(attempt))
                 continue
@@ -295,12 +359,13 @@ class ActivityRun:
         A composite's retry runs its children again. So it never retries once an activity below it raised
         ``interrupted`` -- whether that error ended the attempt, was handled inside a submachine, or was
         journaled next to another branch's failure: that activity is not idempotent and must not start twice
-        (every interrupted error is journaled, so ``run.interrupted`` holds it). A cause the retry rules
-        exclude (NOT_RETRIED) in the chain of unhandled causes excludes the composite too, unless ``errors``
-        names it.
+        (every interrupted error is journaled, so ``run.interrupted`` holds it). One in a frame's ending does
+        not count: that finally or close belongs to the attempt's frame, and the retry's frame has its own.
+        A cause the retry rules exclude (NOT_RETRIED) in the chain of unhandled causes excludes the composite
+        too, unless ``errors`` names it.
         """
         below = f"{self.key}/"
-        if any(key.startswith(below) for key in self.run.interrupted):
+        if any(key.startswith(below) and not _IN_ENDING.search(key[len(below):]) for key in self.run.interrupted):
             return False
         chain = [failure.type]
         cause: Any = failure.cause
@@ -311,6 +376,32 @@ class ActivityRun:
         if any(t in NOT_RETRIED and t not in named for t in chain[1:]):
             return False
         return retry.retries(failure.type)
+
+    async def _end_in_flight(self, kind: ActivityKind, spec: KindSpec, started: dict[str, Any]) -> None:
+        """A composite in flight at the crash that is not started again (not idempotent): the frames below it
+        replay into their ends -- never live -- so their finally and close activities run before it raises
+        interrupted (§3.10, §5.5). A cancel from outside meanwhile ends it without that outcome."""
+        self.attempt = max(1, int((started.get("data") or {}).get("attempt") or 1))
+        self.ending_only = True
+        task = asyncio.current_task()
+        cancels = task.cancelling() if task is not None else 0
+        try:
+            await kind.run(spec, self)
+        except asyncio.CancelledError:  # the frames below reached their ends -- unless the cancel came from outside
+            if not self.run.may_finalize() or self.run.ending or (task is not None and task.cancelling() > cancels):
+                raise
+        except (ReplayDivergence, RunAbort):
+            raise
+        except Exception:  # a failure journaled below it: it ends interrupted all the same
+            pass
+        if self.run.divergence is not None:  # a replay below it diverged (a join took it in): not interrupted
+            raise ReplayDivergence(self.run.divergence)
+
+    def cut(self, error: dict[str, Any]) -> None:
+        """The cancel bound stopped this finally or close activity: that is its outcome, journaled so a resume
+        does not start it again (§3.10)."""
+        if self._base is not None and self.key not in self.run.recorded:
+            self._journal("error", {**self._base, "error": error, "meta": self.meta})
 
     async def _attempt(self, kind: ActivityKind, spec: KindSpec, timeout: Optional[float]) -> Any:
         """One attempt; only THIS attempt's own deadline counts as a timeout (a kind's TimeoutError does not)."""
@@ -328,7 +419,7 @@ class ActivityRun:
     def _check(self, data: dict[str, Any], base: dict[str, Any], what: str) -> None:
         for field in ("kind", "path", "input_hash"):
             if data.get(field) != base[field]:
-                raise ReplayDivergence(
+                raise self.run.diverged(
                     f"journal key {self.key}: the {what} row has {field}={data.get(field)!r}, the machine now "
                     f"has {field}={base[field]!r} (a guard, action or template is not deterministic, or the "
                     "definition changed)")

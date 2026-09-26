@@ -126,7 +126,7 @@ returns the activity's result -- `out` for the machine -- or raises `ActivityErr
 | `act.request_id()` | The next request id of the run (`<run id>_NNN`), for calls that need one. |
 | `act.namespace` | The machine's companion-module namespace (`namespace.function(name, where)`). |
 | `act.run_id`, `act.machine_id`, `act.state`, `act.path`, `act.key`, `act.visit` | Where this activity runs: run, machine, state, mock/display path, journal key, visit number. |
-| `act.default_sam`, `act.cancellation_token` | The SAM for agent calls; the run's cancellation token. |
+| `act.default_sam`, `act.cancellation_token` | The SAM for agent calls; the run's cancellation token -- `None` in a `finally` or `close` activity, which runs on after a terminate. |
 
 Nested activities show how composites are built: `parallel` and `map` call
 `act.child` per branch or item and join the results (`kinds/builtin.py::join`).

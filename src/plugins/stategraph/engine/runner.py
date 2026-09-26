@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from plugins.stategraph.kinds import ActivityError
 from plugins.stategraph.model.code import fingerprint, jsonable
@@ -39,6 +39,9 @@ JOURNAL_FORMAT = 1
 LEASE_SECONDS = 60
 HEARTBEAT_SECONDS = 20
 _STEP = re.compile(r"s(\d+)")
+#: A frame's keys without a step of their own: its resources (``r.<name>``) and its end (``end.<reason>...``).
+#: A submachine frame below one of them still counts its steps.
+_STEPLESS = ("r.", "end.")
 NO_MOCK = object()
 
 
@@ -48,9 +51,10 @@ def key_steps(key: str) -> list[tuple[str, int]]:
     prefix, rest = "", key
     while True:
         match = _STEP.match(rest)
-        if not match:
+        if match:
+            found.append((prefix, int(match.group(1))))
+        elif not rest.startswith(_STEPLESS):
             break
-        found.append((prefix, int(match.group(1))))
         cut = rest.find("/m/")
         if cut < 0:
             break
@@ -100,7 +104,14 @@ class RunContext:
         self.root: Optional[Frame] = None
         self.status = "running"
         self.finished = False
-        self.cancelled = False
+        self.cancelled = False           # the run is ending: a terminate, or limits.timeout (§3.10)
+        self.timed_out = False           # ... and it was limits.timeout: the run ends failed, not cancelled
+        self.cancel_pending = False      # a terminate journaled before a crash: carried out once replay is done
+        self.stopping = False            # the process stops: frames end without their finally (the run resumes)
+        self.divergence: Optional[str] = None  # the first replay divergence: no finally runs any more (§3.10)
+        self.begun = False               # the run's task ran its first line (a cancel before that would lose the run)
+        self.resource_sources: dict[str, Any] = {}  # a fork: the source run's resource values (§2.8)
+        self.token_watch: Optional[asyncio.Future] = None  # terminates the run when its token is cancelled
         self.lost = False                # another process owns the run now (fenced write failed)
         self.on_lost: Optional[Callable[[str], None]] = None
         self.waiting: set[str] = set()   # prefixes of frames in a wait state
@@ -111,6 +122,8 @@ class RunContext:
         self._edit_seq = 0
         # journal state for replay
         self.recorded: dict[str, dict[str, Any]] = {}
+        self.ends: dict[str, dict[str, Any]] = {}   # "<frame>end" -> how that frame ended (§3.10)
+        self.cancelled_below: set[str] = set()  # keys whose frames a cancel had reached: their endings are bounded
         self.interrupted: set[str] = set()   # keys of activities that raised interrupted (never retried, §5.5)
         self.started: dict[str, dict[str, Any]] = {}
         self.consumed: dict[str, dict[str, Any]] = {}
@@ -166,6 +179,13 @@ class RunContext:
                     self.var_snapshots[data.get("agent", "")] = data.get("vars") or {}
                 elif row["status"] == "wait":
                     self.deadlines[key] = float(data.get("deadline") or 0)
+                elif row["status"] == "cancel":
+                    self.cancel_pending = True
+                    self.timed_out = bool(data.get("timed_out"))
+                elif row["status"] == "end":
+                    self.ends[key] = data
+                elif row["status"] == "resource_sources":
+                    self.resource_sources = dict(data)
 
     def _advance(self, key: str) -> None:
         for prefix, step in key_steps(key):
@@ -182,13 +202,66 @@ class RunContext:
         return frame.step == reached and (frame.key() in self.recorded or frame.key(":event") in self.consumed
                                           or frame.key(":timer") in self.timers)
 
+    def in_journal(self, frame: Frame) -> bool:
+        """Whether the frame's journal goes on at its current step: a replay point, an activity that was in
+        flight at the crash (a composite's children replay into their ends), an edit made at the step's enter
+        hook (the frame paused there), or an end of its own the replay reaches."""
+        return (self.is_replay_point(frame) or frame.key() in self.started
+                or f"{frame.prefix}s{frame.step}:enter" in self.edits or self.ends_on_its_own(frame))
+
+    def cancel_reached(self, frame: Frame) -> bool:
+        """Whether a cancel reached this frame -- a join's before the crash, or one that reached the replay of a
+        frame above it -- and it replays into that ending: its finally and close activities run within the bound,
+        as they would have in the live run (§3.10)."""
+        return any(frame.prefix.startswith(f"{key}/") for key in self.cancelled_below)
+
+    def ends_on_its_own(self, frame: Frame) -> bool:
+        """Whether the frame's journaled end is its own -- finished or failed, not ended by a cancel: its replay
+        reaches that end, and a terminate that came meanwhile does not stop it on the way (§3.10)."""
+        end = self.ends.get(f"{frame.prefix}end")
+        return end is not None and end.get("reason") in ("finished", "failed")
+
     # ------------------------------------------------------------ for frames and activities
-    def check_cancelled(self) -> None:
-        if self.cancelled:
-            raise asyncio.CancelledError()
+    def stop_past_journal(self, frame: Frame) -> None:
+        """A frame of an ending run -- or one that only replays into its end -- goes on only as far as its journal
+        goes: it replays to the point it stood at when its end came, and ends there (§3.10)."""
+        if (frame.ending_only or (self.ending and not frame.finalizer)) and not self.in_journal(frame):
+            self.stop_here()
 
     def went_live(self) -> None:
+        """The run passes its journal here."""
         self.live = True
+
+    def stop_here(self) -> NoReturn:
+        """A frame of an ending run is where its journal ends: it ends here (§3.10). A terminate journaled before
+        a crash is carried out now -- at a leaf activity, a wait, a new step or a frame's end, never at a
+        composite that goes on."""
+        if self.cancel_pending:
+            self.carry_out_cancel()
+        raise asyncio.CancelledError()
+
+    def carry_out_cancel(self) -> None:
+        """A terminate (or timeout) journaled before a crash takes effect now, past the replayed prefix."""
+        self.cancel_pending = False
+        self._begin_ending()
+
+    @property
+    def ending(self) -> bool:
+        """A terminate or timeout reached the run, or is journaled and on its way: nothing pauses it any more."""
+        return self.cancelled or self.cancel_pending
+
+    def may_finalize(self) -> bool:
+        """Whether an ending frame runs its finally and close activities: not on a halt -- the process stops,
+        or it lost the run -- where a resume ends the frame instead; not once a replay diverged, since the run's
+        state is not trusted then (§3.10)."""
+        return not self.stopping and not self.lost and self.divergence is None
+
+    def diverged(self, message: str) -> ReplayDivergence:
+        """The divergence to raise: from here on no finally runs, in this frame or any other, and the run ends
+        diverged even where something catches it (§3.10, §5.4)."""
+        if self.divergence is None:
+            self.divergence = message
+        return ReplayDivergence(message)
 
     def next_request_id(self) -> str:
         self._request_seq += 1
@@ -223,24 +296,39 @@ class RunContext:
             apply_edit(frame.ctx, edit["path"], edit["value"])
         if self.is_replay_point(frame) or (event is not None and getattr(event, "replayed", False)):
             return
+        if self.ending or frame.ending_only:  # a terminate is under way (no breakpoint holds it, not even one in
+            return                             # a finally), or the frame only replays into its end
         await self.debugger.at_hook(self, frame, node, point, event)
+
+    def before_step(self, frame: Frame) -> None:
+        """Before a frame of an ending run takes a step: only as far as its journal goes (§3.10). Past it -- the
+        frame stood at its exit or error hook when the run was terminated -- it ends in the state it stood in,
+        before the transition runs its actions and leaves states. A frame whose journaled end is its own
+        (finished, failed) replays into it: this step raises that end."""
+        if not (frame.ending_only or (self.ending and not frame.finalizer)):
+            return
+        if f"{frame.prefix}s{frame.step + 1}:step" in self.step_hashes or self.ends_on_its_own(frame):
+            return
+        self.stop_here()
 
     async def after_step(self, frame: Frame) -> None:
         key = frame.key(":step")
-        digest = fingerprint({"ctx": frame.ctx, "config": [node.name for node in frame.config]})
+        digest = fingerprint(frame.tokenized({"ctx": frame.ctx, "config": [node.name for node in frame.config]}))
         recorded = self.step_hashes.get(key)
         if recorded is not None and recorded != digest:
-            raise ReplayDivergence(f"after {key} the context or the active states differ from the recorded run "
-                                   f"(hash {digest} != {recorded}): a guard, action or template is not "
-                                   "deterministic, or the definition changed")
+            raise self.diverged(f"after {key} the context or the active states differ from the recorded run "
+                                f"(hash {digest} != {recorded}): a guard, action or template is not "
+                                "deterministic, or the definition changed")
         if recorded is None:
+            if frame.ending_only or (self.ending and not frame.finalizer):  # past the journal (before_step let it
+                self.stop_here()                                           # through for an end of its own)
             self.step_hashes[key] = digest
             self.write("trace", key, state=frame.leaf.name if frame.leaf else None, status="step",
                               data={"ctx_hash": digest, "frame": frame.prefix, "step": frame.step})
         for edit in self.edits.get(f"{frame.prefix}s{frame.step}:watch", ()):
             apply_edit(frame.ctx, edit["path"], edit["value"])
         replaying = self.frontier.get(frame.prefix, -1) >= frame.step
-        await self.debugger.after_step(self, frame, replaying=replaying)
+        await self.debugger.after_step(self, frame, silent=replaying or self.ending)
         self.persist()
 
     # ------------------------------------------------------------ events
@@ -325,6 +413,8 @@ class RunContext:
             return recorded.get("name"), recorded.get("data"), True, False
         if frame.key(":timer") in self.timers:
             return "", None, True, True
+        if frame.ending_only or (self.ending and not frame.finalizer):  # its frame ended here before the crash
+            self.stop_here()
         self.went_live()
         deadline = None
         if timeout is not None:  # one deadline per entry: an internal transition does not restart the wait
@@ -454,8 +544,27 @@ class RunContext:
             self.lose()
             raise asyncio.CancelledError()
 
-    def cancel(self) -> None:
+    def cancel(self, *, timed_out: bool = False) -> None:
+        """The run's ending begins: a terminate, or ``limits.timeout`` (§3.10). The first one counts; it is
+        journaled, so a crash while the finally activities run still ends the run the same way."""
+        if self.cancelled:
+            return
+        if self.cancel_pending:  # a journaled one is still on its way: it counts, and takes effect now
+            self.carry_out_cancel()
+            return
+        if not self.lost:
+            try:
+                if not self.store.record(self.id, "trace", "cancel", fence=self.owner, status="cancel",
+                                         data={"timed_out": timed_out}):
+                    self.lose()
+            except Exception:
+                logger.warning("stategraph: could not journal the terminate of run %s", self.id, exc_info=True)
+        self.timed_out = timed_out
+        self._begin_ending()
+
+    def _begin_ending(self) -> None:
         self.cancelled = True
+        self.debugger.release()  # a pause -- say in a finally's submachine -- must not hold the ending
         if self.token is not None and hasattr(self.token, "cancel"):
             try:
                 self.token.cancel()
@@ -500,7 +609,8 @@ class RunManager:
                     backend_factory: Optional[Callable[[str], Any]] = None, token_factory: Optional[Callable[[str], Any]] = None,
                     user_id: Optional[str] = None, run_id: Optional[str] = None, run_key: Optional[str] = None,
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
-                    copy_rows: Optional[list[dict[str, Any]]] = None) -> str:
+                    copy_rows: Optional[list[dict[str, Any]]] = None,
+                    resource_sources: Optional[dict[str, Any]] = None) -> str:
         machine = compile_tree(tree)
         try:
             bind_params(machine.spec.params, params, machine.id)
@@ -515,6 +625,9 @@ class RunManager:
                               journal_format=JOURNAL_FORMAT)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
+        if resource_sources:  # journaled, so a resume of the fork can still run the fork hooks
+            self.store.record(run_id, "trace", "resource_sources", fence=self.owner, status="resource_sources",
+                              data=resource_sources)
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id)
@@ -532,7 +645,9 @@ class RunManager:
         return run_id
 
     async def resume(self, run_id: str, *, backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
-                     token_factory: Optional[Callable[[str], Any]] = None) -> str:
+                     token_factory: Optional[Callable[[str], Any]] = None, cancel: bool = False) -> str:
+        """Continue a run from its journal. ``cancel``: resume it into its termination -- the journaled prefix
+        replays, then it ends as cancelled and its finally and close activities run (§3.10)."""
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
@@ -549,6 +664,8 @@ class RunManager:
         if row["status"] in ("succeeded", "cancelled"):  # it ended between the first read and the lease
             self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1))
             raise ValueError(f"run {run_id} is {row['status']}; fork it to run again from a step")
+        if cancel and not self.store.has_row(run_id, "trace", "cancel"):  # an earlier one (a timeout) counts
+            self.store.record(run_id, "trace", "cancel", fence=self.owner, status="cancel", data={"timed_out": False})
         tree = load_snapshot(row["definition"])
         machine = compile_tree(tree)
         debug = row.get("debug") or {}
@@ -573,8 +690,12 @@ class RunManager:
         if row is None:
             raise KeyError(run_id)
         keep = []
+        sources: dict[str, Any] = {}  # the source's root resources, for the fork hooks (§2.8)
         for journal_row in self.store.rows(run_id, kinds=("activity", "event", "edit", "timer", "trace")):
             kind, key = journal_row["kind"], journal_row["key"]
+            name = key[2:] if key.startswith("r.") else ""
+            if kind == "activity" and journal_row["status"] == "done" and name and "." not in name and "/" not in name:
+                sources[name] = (journal_row.get("data") or {}).get("out")
             if kind == "trace" and journal_row["status"] not in ("step", "vars_from", "wait"):
                 continue
             if kind == "activity" and journal_row["status"] not in ("done", "error"):
@@ -582,13 +703,15 @@ class RunManager:
             if kind == "event" and key.startswith("pending:"):
                 continue
             anchor = (journal_row.get("data") or {}).get("at", key) if kind == "edit" else key
+            if anchor.startswith(_STEPLESS):  # the root's resources and its end: a fork opens (or forks) its own
+                continue                      # and ends its own way -- also below a root finally's submachine
             steps = key_steps(_head(anchor) if kind != "activity" else anchor)
             if at_step is not None and steps and steps[0][1] >= at_step:
                 continue
             if kind == "trace" and journal_row["status"] == "vars_from":
                 keep.append(journal_row)
                 continue
-            if steps or kind == "trace":
+            if steps:
                 keep.append(journal_row)
         debug = row.get("debug") or {}
         options = row.get("mocks") or {}
@@ -599,7 +722,7 @@ class RunManager:
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
-            fork_step=at_step, copy_rows=keep)
+            fork_step=at_step, copy_rows=keep, resource_sources=sources)
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
@@ -613,7 +736,23 @@ class RunManager:
         ctx.on_lost = self._drop
         task = asyncio.ensure_future(self._execute(ctx, root))
         self.live[run_id] = LiveRun(ctx, task, root)
+        watched = getattr(ctx.backend, "token", None)
+        if watched is not None and hasattr(watched, "wait_for_cancellation"):
+            ctx.token_watch = asyncio.ensure_future(self._watch_token(run_id, watched))
         self._ensure_heartbeat()
+
+    async def _watch_token(self, run_id: str, token: Any) -> None:
+        """A cancel from outside reaches the run's token (a caller whose request id prefixes the run id, e.g.
+        a book cancel above the agent facade): the run is terminated like by the debugger, so its finally
+        activities run and no agent activity fails as agent_failed (§5.8)."""
+        await token.wait_for_cancellation()
+        live = self.live.get(run_id)
+        if live is None or live.ctx.cancelled or live.task.done():
+            return  # ended, or already ending
+        try:
+            self.control(run_id, "terminate")
+        except (KeyError, ValueError):  # gone meanwhile, or another process owns it now
+            logger.debug("stategraph: token cancel of run %s not applied", run_id, exc_info=True)
 
     def _drop(self, run_id: str) -> None:
         live = self.live.get(run_id)
@@ -621,6 +760,7 @@ class RunManager:
             live.task.cancel()
 
     async def _execute(self, ctx: RunContext, root: Frame) -> None:
+        ctx.begun = True
         try:  # status lines of the run's activities route to the run, not to whoever started it (§5.8)
             from agent_system.tools.status import current_request_id
 
@@ -637,11 +777,13 @@ class RunManager:
             if result.error and result.error.get("type") == "step_limit":
                 fields["status"] = "failed"
         except asyncio.CancelledError:
-            if getattr(ctx, "timed_out", False):
+            if ctx.divergence is not None:  # a divergence a join's cleanup took in, and the run ended on
+                fields = {"status": "failed", "error": {"type": "diverged", "message": ctx.divergence}}
+            elif ctx.stopping:  # also mid-terminate or mid-timeout: a resume completes the ending
+                fields = {"status": "interrupted", "error": None}
+            elif ctx.timed_out:
                 fields = {"status": "failed", "error": {"type": "timed_out",
                                                         "message": f"run exceeded {timeout:g}s of running time"}}
-            elif self._stopping and not ctx.cancelled:
-                fields = {"status": "interrupted", "error": None}
             else:
                 fields = {"status": "cancelled", "error": {"type": "cancelled", "message": "terminated"}}
         except ReplayDivergence as exc:
@@ -654,6 +796,8 @@ class RunManager:
         finally:
             if watchdog is not None:
                 watchdog.cancel()
+            if ctx.token_watch is not None:
+                ctx.token_watch.cancel()
             if not ctx.lost:  # a run another process took over is not ours to finish
                 ctx.finished = True
                 ctx.set_status(fields.get("status", "failed"))
@@ -667,14 +811,19 @@ class RunManager:
                     logger.debug("on_finish(%s) raised", ctx.id, exc_info=True)
 
     async def _watch_timeout(self, ctx: RunContext, timeout: float) -> None:
+        """``limits.timeout``: the run ends like on a terminate, but failed. Once a terminate came first it
+        bounds the finally activities; a second cancel from here would only make the run fail."""
         while not ctx.finished:
             await asyncio.sleep(0.5)
-            if ctx.elapsed_running() > timeout:
-                ctx.timed_out = True  # type: ignore[attr-defined]
-                live = self.live.get(ctx.id)
-                if live is not None:
-                    live.task.cancel()
+            if ctx.cancelled:
                 return
+            if ctx.cancel_pending or ctx.elapsed_running() <= timeout:  # a journaled one takes effect first
+                continue
+            ctx.cancel(timed_out=True)
+            live = self.live.get(ctx.id)
+            if live is not None and not ctx.lost:
+                live.task.cancel()
+            return
 
     def _ensure_heartbeat(self) -> None:
         if self._heartbeat is None or self._heartbeat.done():
@@ -702,6 +851,8 @@ class RunManager:
 
     async def shutdown(self) -> None:
         self._stopping = True
+        for live in self.live.values():
+            live.ctx.stopping = True
         tasks = [live.task for live in self.live.values()]
         for task in tasks:
             task.cancel()
@@ -731,13 +882,18 @@ class RunManager:
             return
         live = self._live(run_id)
         if action == "terminate":
+            if live.ctx.cancelled:  # already on its way; a second cancel would cut its finally activities
+                return
             live.ctx.cancel()
+            if live.ctx.lost:  # the journaled terminate was refused: another process owns the run now
+                raise _lost(run_id)
             if self.on_cancel is not None:
                 try:
                     self.on_cancel(run_id)
                 except Exception:
                     logger.debug("on_cancel(%s) raised", run_id, exc_info=True)
-            live.task.cancel()
+            if live.ctx.begun:  # a task cancelled before its first line ends without running one, and the run
+                live.task.cancel()  # would stay 'running': it carries the terminate out itself when it begins
             return
         live.ctx.debugger.command(action, state=state, machine=machine)
         self._persist_control(run_id, live)

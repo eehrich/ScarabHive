@@ -113,7 +113,11 @@ class ScarabHiveBackend:
         request_id = act.request_id()
         act.meta["request_id"] = request_id
         return AgentCaller(self.runner, sam_instance=sam, session_id=self.session_id, user_id=self.user_id,
-                           request_id=request_id, cancellation_token=self.token, retries=0)
+                           request_id=request_id, cancellation_token=self._token_for(act), retries=0)
+
+    def _token_for(self, act: "ActivityRun") -> Any:
+        """The run's token -- none for a finally or close activity: it runs on after a terminate (§3.10)."""
+        return None if act.finalizer else self.token
 
     def _set_vars(self, variables: dict[str, Any]) -> None:
         """The run's session holds exactly this call's effective vars -- replaced, never accumulated (§3.9)."""
@@ -185,7 +189,7 @@ class ScarabHiveBackend:
         except ToolDispatchError as exc:
             raise ActivityError("tool_denied", str(exc)) from exc
         result = _redact(result, tool, self.inject_params)  # before anything reads it: out, error text, error_if
-        if isinstance(result, dict) and result.get("cancelled") is True and act.run.cancelled:
+        if isinstance(result, dict) and result.get("cancelled") is True and act.run.cancelled and not act.finalizer:
             raise asyncio.CancelledError()
         message = _error_result_message(result)
         if message is not None:
@@ -199,7 +203,7 @@ class ScarabHiveBackend:
 
         try:
             client = create_decisions_from_profile(self.system_config, profile)
-            result = await client.decide(input, questions, cancellation_token=self.token,
+            result = await client.decide(input, questions, cancellation_token=self._token_for(act),
                                          session_id=self.session_id)
         except asyncio.CancelledError:
             raise
@@ -248,6 +252,19 @@ def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[
             return None
         return config if config is not None and getattr(config, "enabled", False) else None
 
+    def runner_refuses(tool: str, prefix: str) -> Optional[str]:
+        """Why the runner may not call ``tool`` (None: it may). Tool activities and the SAM calls of agent
+        activities both go through the runner's allowlist."""
+        host = server(runner)
+        if host is None:
+            return f"runner agent {runner!r} is not configured or not enabled"
+        tools = getattr(getattr(host, "agent_config", None), "tools", None)
+        allowed = list(getattr(tools, "allowed", None) or [])
+        blocked = list(getattr(tools, "blocked", None) or [])
+        if not tool_matches_patterns(tool, prefix, allowed) or tool_matches_patterns(tool, prefix, blocked):
+            return f"{tool!r} is not in {runner}'s tool allowlist"
+        return None
+
     def check(what: str, name: str, extra: dict[str, Any]) -> Optional[str]:
         if what in ("agent", "sam"):
             sam_name = name if what == "sam" else (extra.get("sam") or default_sam)
@@ -258,6 +275,10 @@ def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[
                 return f"SAM {sam_name!r} is not configured or not enabled"
             if getattr(sam, "type", "") != "sub_agent_manager":
                 return f"SAM {sam_name!r} is not a sub_agent_manager (it is {getattr(sam, 'type', '?')!r})"
+            refused = runner_refuses(f"{sam_name}_manage_sub_agent", sam_name)
+            if refused is not None:  # AgentCaller spawns through the SAM's tool, as the runner
+                return refused if server(runner) is None else (
+                    f"agent activities spawn through {sam_name}, but {refused}: add '{sam_name}/*' to it")
             if what == "agent":
                 from plugins.sub_agent_manager.server import agent_allowed
 
@@ -274,15 +295,13 @@ def make_config_check(system_config: Any, *, runner: str, default_sam: Optional[
                 return f"tool {name!r}: no configured server owns it (tool names carry the server prefix)"
             if prefix == own_instance or server(prefix) is not None and getattr(server(prefix), "type", "") == "stategraph":
                 return f"tool {name!r} belongs to stategraph itself: a machine may not save, run or control machines"
-            host = server(runner)
-            if host is None:
-                return f"runner agent {runner!r} is not configured or not enabled"
-            tools = getattr(getattr(host, "agent_config", None), "tools", None)
-            allowed = list(getattr(tools, "allowed", None) or [])
-            blocked = list(getattr(tools, "blocked", None) or [])
-            if not tool_matches_patterns(name, prefix, allowed) or tool_matches_patterns(name, prefix, blocked):
-                return f"tool {name!r} is not in {runner}'s tool allowlist (the runner is the boundary)"
-            return None
+            if getattr(server(prefix), "type", "") == "sub_agent_manager":  # the runner may call it, for agent steps
+                return (f"tool {name!r} belongs to the SAM {prefix}: a machine starts agents with an agent activity, "
+                        "which the run journals and cancels with itself")
+            refused = runner_refuses(name, prefix)
+            if refused is None:
+                return None
+            return refused if server(runner) is None else f"tool {refused} (the runner is the boundary)"
         if what == "agent_exists":
             return None if server(name) is not None else f"agent {name!r} is not configured or not enabled"
         if what == "profile":

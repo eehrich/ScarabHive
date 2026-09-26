@@ -152,6 +152,11 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 Common keys: `retry: {attempts, backoff, errors}`, `timeout` (per attempt), `idempotent`,
 `description`. Durations: `500ms`, `30s`, `10m`, `2h` or seconds.
 
+A state or the machine may have `finally: <activity>` (runs once on every exit, reads
+`ending`); a machine may declare `resources` (external state per frame, e.g. a store
+namespace, as `resources.<name>`); a `call` function may make journaled tool calls with
+`await sg.tool(name, args)`. Details: `references/format.md` §14.
+
 ## Mocks for the test run
 
 - Keys are state paths: `write`; a submachine's state `review/critique`; a parallel
@@ -175,5 +180,5 @@ Common keys: `retry: {attempts, backoff, errors}`, `timeout` (per attempt), `ide
 | SG004 | Python: syntax, unknown name, a name not bound there, braces in a code field, undeclared `params.x`, `out.x` / `ctx.a.b` / `ctx.get()` on plain data | move data into `ctx` first; drop the braces; use `out["x"]` |
 | SG005 | activity: unknown kind, several kind keys, bad fields, a computed `agent:`/`tool:` | one kind key; the kind's fields only; literal names |
 | SG006 | submachine: unknown alias, cycle, missing/unknown parameter | `imports:`, the callee's `params` |
-| SG007 | configuration: agent not spawnable, tool not callable, stategraph's own tool | pick from `stategraph_catalog` |
+| SG007 | configuration: agent not spawnable, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities |
 | SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, parallel vars race, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |

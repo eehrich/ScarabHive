@@ -128,10 +128,17 @@
           "title": "Timeout"
         },
         "vars": {
-          "additionalProperties": true,
-          "description": "agent template vars for this call (templates), over the machine's vars",
-          "title": "Vars",
-          "type": "object"
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "agent template vars for this call, over the machine's: a map of templates, or one template that renders to an object of names",
+          "title": "Vars"
         }
       },
       "required": [
@@ -826,6 +833,56 @@
       "title": "QuestionSpec",
       "type": "object"
     },
+    "ResourceSpec": {
+      "additionalProperties": false,
+      "description": "External state that belongs to one machine frame (docs/stategraph_design.md \u00a72.8).",
+      "properties": {
+        "close": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "activity run when the frame ends (not when the process stops); reads ending",
+          "title": "Close"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "fork": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "activity a forked run's root frame runs instead of open; source is the source run's value",
+          "title": "Fork"
+        },
+        "open": {
+          "additionalProperties": true,
+          "description": "activity run when the frame starts; its out is resources.<name>",
+          "title": "Open",
+          "type": "object"
+        }
+      },
+      "required": [
+        "open"
+      ],
+      "title": "ResourceSpec",
+      "type": "object"
+    },
     "RetrySpec": {
       "additionalProperties": false,
       "description": "Retries of an activity before its error becomes the state's error event.",
@@ -937,6 +994,20 @@
           "default": null,
           "description": "Python statements, run on exit",
           "title": "Exit"
+        },
+        "finally": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "an activity that runs once on every exit of this state, whatever the cause (transition, unhandled error, cancel); reads ending",
+          "title": "Finally"
         },
         "initial": {
           "anyOf": [
@@ -1123,6 +1194,20 @@
       "title": "Events",
       "type": "object"
     },
+    "finally": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "an activity that runs once when the machine frame ends, whatever the cause (final state, failure, cancel); reads ending",
+      "title": "Finally"
+    },
     "id": {
       "title": "Id",
       "type": "string"
@@ -1162,6 +1247,14 @@
       "description": "companion module, relative to this file",
       "title": "Python"
     },
+    "resources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ResourceSpec"
+      },
+      "description": "external state per machine frame: open at its start, close at its end",
+      "title": "Resources",
+      "type": "object"
+    },
     "sam": {
       "anyOf": [
         {
@@ -1194,10 +1287,17 @@
       "type": "string"
     },
     "vars": {
-      "additionalProperties": true,
-      "description": "agent template vars (templates)",
-      "title": "Vars",
-      "type": "object"
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "agent template vars: a map of templates, or one template that renders to an object of names",
+      "title": "Vars"
     },
     "vars_from": {
       "anyOf": [

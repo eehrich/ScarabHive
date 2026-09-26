@@ -39,15 +39,17 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `params` | name → field | | The machine's parameters (run input, or a submachine's `params:`). |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§7). |
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
-| `vars` | name → template | | Agent template vars for every agent this machine spawns (§11). |
+| `vars` | name → template, or one template | | Agent template vars for every agent this machine spawns (§11). |
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
 | `sam` | string | | SAM instance for agent activities; default: the plugin's `default_sam`. |
 | `limits` | `{max_steps, timeout}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10). |
+| `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
+| `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
 | `initial` | state name | yes | The first state: a top-level state, a choice or a junction. |
 | `states` | name → state | yes | The top-level region (§3). |
 
 **Names** -- ids, states, params, context keys, aliases, events, parallel branches,
-question names -- match `[a-z][a-z0-9_]*`. `done`, `error` and `completion` are
+question names, resources -- match `[a-z][a-z0-9_]*`. `finally` and `resources` are not state names. `done`, `error` and `completion` are
 reserved and cannot name an event, parameter or context key.
 
 ### params
@@ -94,6 +96,7 @@ always a plain name.
 | `description` | all | Free text for the editor |
 | `entry` / `exit` | state | Python statements run on entering / leaving |
 | `do` | simple state | The activity (§5); its end is the state's completion |
+| `finally` | simple and composite state | An activity that runs once on every exit of the state, however it is left (§14) |
 | `states` + `initial` | composite | A nested region; `initial` names a direct child |
 | `transitions` | state, choice, junction | Ordered list (§4) |
 | `max_visits` | state | The (n+1)-th entry within one activation of the parent region raises `loop_limit` in this state (§10) |
@@ -296,7 +299,8 @@ A retry of a composite (`machine`, `parallel`, `map`) runs its children again, s
 rules apply:
 
 - Once an activity inside the composite raised `interrupted`, the composite is not retried --
-  handled or not. That activity is not idempotent; a retry would start it a second time.
+  handled or not. That activity is not idempotent; a retry would start it a second time. A
+  `finally` or `close` inside does not count: the retry's frame runs its own.
 - A type from the list above in the error's chain of **unhandled** causes (`error.cause`, its
   `cause`, ...) stops the composite's retry too, unless `errors` names it.
   `errors: [submachine_failed, timeout]` retries a submachine that ended because a child
@@ -505,6 +509,8 @@ on the scale counted from 0 (score; it may fall between points, e.g. `2.96`). Fo
 ### call
 
 Calls a Python function: a companion function by name, or `package.module:function`.
+A first parameter named `sg` receives the read-only scope, `sg.tool()` for journaled tool
+calls and `sg.Error` (§14).
 
 | Key | Meaning |
 |---|---|
@@ -695,13 +701,16 @@ literal text `ctx.draft` -- warning SG107.
 | `error` | `type`, `message`, `state`, `data`, `cause` (and `branch` / `index` from parallel / map) | error transitions |
 | `event` | `name`, `data` | event transitions |
 | item variable, `index` | the map variables (name set by `as`) | inside `map.each` |
+| `resources` | `resources.<name>`: what each resource's `open` (or `fork`) returned, read-only | everywhere, in a machine that declares `resources` |
+| `ending` | `reason` (`transition`, `finished`, `failed`, `cancelled`), `state`, `error` | `finally` activities and resource `close` |
+| `fork_source` | the source run's value of this resource | a resource's `fork` |
 
 `entry`, `exit`, activity templates, `map` and a final's `output` see only the
 "everywhere" names. Using a name where it is not bound (`out` in an entry, `error` in
 a completion transition) is SG004. Python builtins are available (`len`, `sorted`,
 `min`, `any`, `str`, …).
 
-**Access rules.** `ctx`, `params`, `run`, `error`, `event` and `activity` allow
+**Access rules.** `ctx`, `params`, `run`, `error`, `event`, `activity`, `resources` and `ending` allow
 attribute access at the top level (`ctx.draft`, `error.type`) and item access
 (`ctx["draft"]`). Below the top level the values are plain JSON data -- dicts, lists,
 strings, numbers -- so use item access: `ctx.critique["notes"]`,
@@ -795,7 +804,9 @@ events:
 - `interrupted`: a non-idempotent activity (by default every `tool`) was in flight
   when the process stopped; a resume does not start it again. `error.data` holds its
   rendered inputs. Handle it where a second call would do harm, e.g. by looking up
-  whether the first call took effect.
+  whether the first call took effect. A non-idempotent submachine first ends the frame it
+  had started (its `finally` and `close` run); in a run being terminated it ends
+  `cancelled` instead.
 - `unmocked`: a mock-only run met an agent, tool or decide activity without a mock.
 
 ---
@@ -908,7 +919,7 @@ any state inside waits.
 | SG004 | error | Python does not compile; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); a companion function that does not exist; `python:`/`imports:` outside the machine roots |
 | SG005 | error | Activity: unknown kind, several kind keys, invalid fields (including decide criteria shapes, per-question keys, a map `as` that shadows a scope name), a computed `agent:`/`tool:` other than `{{ params.<name> }}` with an enum |
 | SG006 | error | Submachine: unknown alias, import cycle, missing required or unknown parameter |
-| SG007 | error | Configuration: the SAM cannot spawn the agent, the SAM is not a `sub_agent_manager`, the runner may not call the tool, the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
+| SG007 | error | Configuration: the SAM cannot spawn the agent, the SAM is not a `sub_agent_manager`, the runner may not call the SAM's tool (add `<sam>/*` to the runner's allowlist), the runner may not call the tool, the tool is a SAM's (use an agent activity), the tool is stategraph's own, an unknown decision profile, a `vars_from` agent that is not configured |
 | SG101 | warning | A state is unreachable from `initial` |
 | SG102 | warning | No path leads from a state to a root final |
 | SG103 | warning | A loop without `max_visits` on any of its states |
@@ -922,3 +933,66 @@ any state inside waits.
 
 Every problem names a path (`states.judge.transitions[1].guard`), the file and, when
 known, the line.
+
+## 14. Multi-call steps, cleanup, external state
+
+**`sg.tool()` in a call.** A companion function whose first parameter is `sg` may call
+tools: `await sg.tool("v6_story_json_manage_json", {"operation": "read", ...})`.
+
+- Each call is journaled as a child tool activity (`<key>/t.<n>`, path
+  `<call path>/<tool>`, e.g. `review/store_read`: mocks answer by that path, `$visits` for
+  repeated calls).
+- The function runs again from the top on a resume: finished calls replay, so it must be
+  deterministic apart from these calls. `args` is data, not a template.
+- A call in flight at a crash raises `interrupted` unless `idempotent=True`; catch it
+  with `except sg.Error as exc:` and reconcile. Tool failures are `sg.Error` too.
+- Use it for steps whose data must not pass through `ctx`: read documents, map them,
+  write a row, check it.
+
+**`finally`.** An activity on a state or on the machine.
+
+- It runs once per exit of its state, however the state is left: a transition (after it
+  committed), an unhandled error, terminate, the run timeout, a failing parallel sibling.
+  The machine's `finally` runs when the frame ends. Innermost first.
+- It reads `ending.reason` (`transition`, `finished`, `failed`, `cancelled`),
+  `ending.state` and `ending.error`; it cannot change `ctx`; its result is dropped.
+- A failing `finally` is journaled and traced (`finally_failed`); the exit goes on.
+- It does not run when the process stops -- the run is `interrupted`, and the resume
+  completes the ending. After a terminate it runs although the run is cancelled (60 s unless it
+  has a `timeout`, counted from the terminate; one the bound cuts ends `timeout` and is not run
+  again after a crash); agents and decisions there are called without the run's cancellation token.
+  Under a cancelled caller (the agent facade) the platform still stops the caller's requests
+  after its cleanup timeout (10 s by default): prefer a tool or a call, and keep it short.
+- A terminate that arrives while a `finally` runs lets it finish (and the rest, within the
+  60 s); a second terminate is ignored, and the run's timeout no longer fires. Nothing pauses
+  an ending run: breakpoints stay silent, a held pause lets go. After a crash each frame ends
+  where it stood when the terminate came, so the `finally` of the states it stood in runs, not
+  of the states a transition after it would have entered. No `finally` runs once a resumed run
+  diverged, and the run ends `diverged` even if a call catches that error. Mock paths: `<state>/finally`,
+  and the machine's `<machine id>.finally` (under a submachine: `<calling state>/<machine id>.finally`).
+
+**`resources`.** Per-frame external state, e.g. a store namespace per run.
+
+```yaml
+resources:
+  store:
+    open:  {call: namespace_for, args: {run_id: "{{ run.id }}"}}
+    fork:  {call: copy_store, args: {source: "{{ fork_source }}", run_id: "{{ run.id }}"}}
+    close: {tool: v6_story_json_manage_json, args: {operation: stats, namespace: "{{ resources.store }}"}}
+vars: {json_namespace: "{{ resources.store }}"}
+```
+
+- `open` runs when the frame starts (before `vars`), in declaration order; its result is
+  `resources.<name>` everywhere in the machine. A resume replays it.
+- `fork` runs instead of `open` in a forked run's root frame; without it a fork opens
+  afresh. `close` runs when the frame ends, in reverse order, like a `finally`.
+- Replay compares hashes with each resource value replaced by a token, so a fork with its
+  own namespace still replays its prefix. Make resource values distinctive ids: strings of
+  6+ characters, whole objects and lists, and the 6+-character strings inside them are
+  replaced; numbers are not.
+- An `open` or `fork` sees only the resources declared before it.
+
+**`vars` as one template.** `vars: "{{ {**ctx.vars, 'phase': 'idee'} }}"` passes a whole
+object (machine or agent activity); it must render to an object of names (else
+`template_failed`; a string that is not exactly one template is SG005).
+

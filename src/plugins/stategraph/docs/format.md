@@ -64,12 +64,17 @@ states:
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {...}}` |
-| `call: <function>` | `args` | return value |
+| `call: <function>` | `args` | return value; `fn(sg, …)` gets `sg.tool()` (journaled tool calls) and `sg.Error` |
 | `machine: <alias>` | `params` | the submachine's final output |
 | `parallel: {branch: activity}` | `fail: fast\|collect` | `{branch: out}` |
 | `map: <expression>` | `each`, `as`, `concurrency`, `fail` | list in item order |
 
 Common keys: `retry {attempts, backoff, errors}`, `timeout`, `idempotent`, `description`.
+
+Cleanup and external state: `finally: <activity>` on a state or the machine runs once on every
+exit (reads `ending.reason/state/error`); `resources: {name: {open, fork, close}}` gives each
+frame its own external state as `resources.<name>`. `vars` may be one template that renders to
+an object.
 
 | Field kind | Fields | Syntax |
 |---|---|---|

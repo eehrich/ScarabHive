@@ -28,7 +28,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from .spec import GUARD_ELSE
 
 #: Names the engine binds (depending on where the code runs; see BINDINGS).
-SCOPE_NAMES = frozenset({"ctx", "params", "out", "error", "event", "run", "activity", "sg"})
+SCOPE_NAMES = frozenset({"ctx", "params", "out", "error", "event", "run", "activity", "sg", "resources", "ending",
+                         "fork_source"})
 BUILTIN_NAMES = frozenset(dir(builtins))
 
 #: Which scope names are bound for which trigger of a transition (§2.6).
@@ -139,6 +140,7 @@ class NameUse:
     impure: tuple[str, ...]
     params_reads: frozenset[str] = frozenset()
     misuse: tuple[str, ...] = ()
+    resources_reads: frozenset[str] = frozenset()
 
 
 def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
@@ -155,6 +157,7 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
     writes: set[str] = set()
     impure: list[str] = []
     params_reads: set[str] = set()
+    resources_reads: set[str] = set()
     misuse: list[str] = []
     called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     for node in ast.walk(tree):
@@ -179,6 +182,9 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
         param = _ctx_field(node, "params")
         if param is not None:
             params_reads.add(param)
+        resource = _ctx_field(node, "resources")
+        if resource is not None:
+            resources_reads.add(resource)
         field = _ctx_field(node)
         if field is not None:
             if isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
@@ -191,11 +197,12 @@ def analyse(source: str, *, mode: str, allowed: Iterable[str]) -> NameUse:
                 reads.add(target)
     known = set(allowed) | SCOPE_NAMES | BUILTIN_NAMES | stores
     unknown = tuple(sorted({name for name in loads if name not in known}))
-    return NameUse(frozenset(loads), unknown, frozenset(reads), frozenset(writes), tuple(dict.fromkeys(impure)),
-                   frozenset(params_reads), tuple(dict.fromkeys(misuse)))
+    free = frozenset(name for name in loads if name not in stores)  # a local `for event in ...` is not the scope's
+    return NameUse(free, unknown, frozenset(reads), frozenset(writes), tuple(dict.fromkeys(impure)),
+                   frozenset(params_reads), tuple(dict.fromkeys(misuse)), frozenset(resources_reads))
 
 
-_NAMESPACES = ("ctx", "params", "error", "event", "run", "activity")
+_NAMESPACES = ("ctx", "params", "error", "event", "run", "activity", "resources", "ending")
 _DICT_METHODS = {"get", "keys", "items", "values", "pop", "update", "setdefault", "copy", "clear"}
 #: Methods of JSON values: passing one as a value (``max(out, key=out.get)``) is valid Python.
 _DATA_METHODS = frozenset(name for kind in (dict, list, str, int, float) for name in dir(kind)
@@ -208,6 +215,7 @@ NAMESPACE_FIELDS = {
     "error": ("type", "message", "state", "data", "cause", "branch", "index", "visits"),
     "event": ("name", "data"),
     "run": ("id", "origin", "step", "machine", "state", "visits", "frame"),
+    "ending": ("reason", "state", "error"),
 }
 
 
@@ -225,7 +233,8 @@ def _misuse(node: ast.AST, called: set[int]) -> list[str]:
     if isinstance(base, ast.Name) and base.id in _NAMESPACES and node.attr in _DICT_METHODS and id(node) in called:
         return [f"{base.id} has no dict methods: use '{node.attr == 'get' and 'x' or node.attr}' in {base.id} and "
                 f"{base.id}['x'] (it is a namespace of fields)"]
-    if (isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name) and base.value.id in ("ctx", "params")
+    if (isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name)
+            and base.value.id in ("ctx", "params", "resources")
             and id(node) not in called and node.attr not in _DATA_METHODS):
         return [f"{base.value.id}.{base.attr}.{node.attr}: below the top level values are plain data -- write "
                 f"{base.value.id}.{base.attr}[{node.attr!r}]"]

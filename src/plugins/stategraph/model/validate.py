@@ -44,6 +44,12 @@ class _FileContext:
     ctx_reads: dict[str, list[Any]] = field(default_factory=dict)
     ctx_writes: set[str] = field(default_factory=set)
     pseudo_bound: dict[str, frozenset[str]] = field(default_factory=dict)
+    open_resources: Optional[set[str]] = None  # while a resource's open/fork is checked: the ones before it
+
+    @property
+    def always_bound(self) -> frozenset[str]:
+        """Names bound in every code field of this machine: resources, once it declares any (§2.8)."""
+        return frozenset({"resources"}) if self.spec.resources else frozenset()
 
     def problem(self, level: str, code: str, message: str, path: list[Any]) -> None:
         self.tree.add(level, code, message, file=self.loaded.path, path=dotted(path),  # type: ignore[arg-type]
@@ -74,7 +80,18 @@ def _validate_file(fc: _FileContext) -> None:
             json.dumps(value, allow_nan=False)
         except (TypeError, ValueError):
             fc.problem("error", "SG001", f"context.{name} is not JSON data", ["context", name])
+    for index, (name, resource) in enumerate(spec.resources.items()):
+        fc.open_resources = set(list(spec.resources)[:index])
+        _check_activity(fc, resource.open, ["resources", name, "open"], set())
+        if resource.fork is not None:
+            _check_activity(fc, resource.fork, ["resources", name, "fork"], {"fork_source"})
+        fc.open_resources = None
+        if resource.close is not None:
+            _check_activity(fc, resource.close, ["resources", name, "close"], {"ending"})
+    if spec.finally_ is not None:
+        _check_activity(fc, spec.finally_, ["finally"], {"ending"})
     if spec.vars:
+        _check_vars_shape(fc, spec.vars, ["vars"])
         _check_template(fc, spec.vars, ["vars"], BINDINGS["state"], set())
     if spec.vars_from and fc.config_check is not None:
         problem = fc.config_check("agent_exists", spec.vars_from, {})
@@ -169,6 +186,9 @@ def _accepts_somewhere(fc: _FileContext, name: str) -> bool:
 
 def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any]) -> None:
     kind = state.type
+    if state.finally_ is not None and kind != "state":
+        fc.problem("error", "SG003", f"a {kind} state has no finally (only states that are entered and left do)",
+                   path + ["finally"])
     if kind == "final":
         for key in ("do", "entry", "exit", "states", "max_visits", "initial", "timeout"):
             if getattr(state, key):
@@ -225,6 +245,8 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
             _check_code(fc, source, path + [key], mode="exec", bound=BINDINGS["state"])
     if state.do is not None:
         _check_activity(fc, state.do, path + ["do"], set())
+    if state.finally_ is not None and kind == "state":
+        _check_activity(fc, state.finally_, path + ["finally"], {"ending"})
     _check_transitions(fc, name, state, path)
 
 
@@ -280,13 +302,20 @@ def _check_code(fc: _FileContext, source: str, path: list[Any], *, mode: str, bo
     for unknown in use.unknown:
         fc.problem("error", "SG004", f"unknown name {unknown!r} (in scope: ctx, params, out, error, event, run, "
                                      f"activity, the companion module, builtins)", path)
-    unbound = sorted((use.loads & SCOPE_NAMES) - set(bound) - {"sg"})
+    unbound = sorted((use.loads & SCOPE_NAMES) - set(bound) - fc.always_bound - {"sg"})
     for name in unbound:
         fc.problem("error", "SG004", f"{name!r} is not bound here (out: completion transitions; error: error "
                                      "transitions; event: event transitions)", path)
     for name in sorted(use.params_reads - set(fc.spec.params)):
         fc.problem("error", "SG004", f"params has no field {name!r} (declared: {', '.join(fc.spec.params) or 'none'})",
                    path)
+    for name in sorted(use.resources_reads - set(fc.spec.resources)):
+        fc.problem("error", "SG004", f"resources has no {name!r} (declared: {', '.join(fc.spec.resources) or 'none'})",
+                   path)
+    if fc.open_resources is not None:
+        for name in sorted((use.resources_reads & set(fc.spec.resources)) - fc.open_resources):
+            fc.problem("error", "SG004", f"resources.{name} is not open yet here: a resource's open and fork see "
+                                         "only the resources declared before it", path)
     for slip in use.misuse:
         fc.problem("error", "SG004", slip, path)
     for impure in use.impure:
@@ -324,6 +353,20 @@ def _lint_bare_references(fc: _FileContext, value: Any, path: list[Any]) -> None
 
 # ------------------------------------------------------------------ activities
 
+def _check_vars_shape(fc: _FileContext, value: Any, path: list[Any]) -> None:
+    """``vars`` is a map of templates, or ONE template (it must render to an object of names)."""
+    if not isinstance(value, str):
+        return
+    try:
+        expressions = list(template_expressions(value))
+    except CodeError:
+        return  # reported by the template check
+    text = value.strip()
+    if len(expressions) != 1 or not (text.startswith("{{") and text.endswith("}}")):
+        fc.problem("error", "SG005", "vars must be a map, or exactly one {{ }} template that renders to an object",
+                   path)
+
+
 def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]) -> None:
     try:
         kind, spec = parse_activity(raw)
@@ -340,6 +383,8 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
         return
 
     bound = set(BINDINGS["state"]) | extra
+    if "vars" in kind.template_fields and "vars" in raw:
+        _check_vars_shape(fc, raw["vars"], path + ["vars"])
     for key in kind.template_fields:
         if key in raw:
             _check_template(fc, raw[key], path + [key], bound, extra)

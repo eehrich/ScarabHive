@@ -105,7 +105,7 @@ def system_config(**extra_servers: Any):
     servers = {
         "stategraph": {"type": "stategraph", "enabled": True},
         "stategraph_runner": {"type": "basic_agent", "enabled": True,
-                              "agent_config": {"tools": {"allowed": ["stategraph", "json_store"]}}},
+                              "agent_config": {"tools": {"allowed": ["stategraph", "json_store", "stategraph_sam"]}}},
         "stategraph_sam": {"type": "sub_agent_manager", "enabled": True, "allowed_agents": ["writer"]},
         "writer": {"type": "basic_agent", "enabled": True},
         "json_store": {"type": "json_store", "enabled": True},

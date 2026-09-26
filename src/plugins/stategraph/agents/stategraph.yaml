@@ -6,6 +6,8 @@
 #   agent activities -> stategraph_sam.allowed_agents (or the SAM a machine names)
 #   tool activities  -> stategraph_runner's tools.allowed
 # Both are checked when a machine is validated (SG007) and again at run time.
+# Agent activities spawn through the SAM's tool as the runner, so the runner's
+# allowlist names every SAM a machine may use (SG007 checks that too).
 plugins:
   servers:
 
@@ -67,7 +69,10 @@ plugins:
         system_template: "./prompts/stategraph_runner.md"
         tools:
           allowed:
+            - "stategraph_sam/*"            # agent activities spawn through it (AgentCaller, as this agent)
             - "stategraph_json/*"           # the machines' own JSON documents
+            - "v6_story_sam/*"              # their SAM (sam: v6_story_sam)
+            - "debate_forum/*"              # the coordination log
       metadata:
         visibility: private                # not a chat partner, not in any SAM list
 

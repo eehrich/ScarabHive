@@ -4,7 +4,7 @@
 import {
   abandon, api, autoRefresh, confirm, copyText, dialog, emptyState, errorText, html, icon, isAborted, jsonView,
   localTime, navigate, notice, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast, update,
-  withBusy,
+  withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import { Canvas, fragmentLock, problemIndex, runOverlay, shorten, stateFragment } from './graph.js';
 
@@ -483,7 +483,8 @@ function drawInspector() {
     <div class="sg-section">
       <h4 class="sg-section-title">YAML</h4>
       <form data-form="set-state" class="pk-stack">
-        <textarea class="pk-textarea pk-input--mono sg-fragment" name="yaml" spellcheck="false" aria-label="The state's YAML" ${applies ? '' : 'readonly'}>${fragment}</textarea>
+        ${codeBox(fragment, html`<textarea class="pk-textarea pk-input--mono sg-fragment" name="yaml" spellcheck="false" wrap="off"
+          aria-label="The state's YAML" ${applies ? '' : 'readonly'}>${fragment}</textarea>`)}
         ${lock ? html`<p class="pk-help">${lock}: edit it in the YAML tab.</p>` : ''}
         <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${applies ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
       </form>
@@ -575,6 +576,10 @@ $('side-inspect').addEventListener('change', async (event) => {
   await toggleBreakpoint(S.selection.id, box.dataset.breakpoint, box.checked);
 });
 
+// paint() and followScroll() no-op for anything but the coloured YAML box: harmless on every other field here
+$('side-inspect').addEventListener('input', (event) => paint(event.target));
+$('side-inspect').addEventListener('scroll', (event) => followScroll(event.target), true);
+
 /** A breakpoint of the open machine: it stops in that machine's frames only, not in a submachine's same-named state. */
 async function toggleBreakpoint(name, at, on) {
   const kept = shownBreakpoints().filter((p) => !(p.state === name && (p.at || 'enter') === at && ofThisMachine(p)));
@@ -590,6 +595,35 @@ async function toggleBreakpoint(name, at, on) {
   }
 }
 
+// ------------------------------------------------------------------ coloured YAML boxes
+
+// a pre drops a last empty line: pad so the coloured copy never ends one line short of the textarea's text
+const padded = (text) => `${text}${text.endsWith('\n') || !text ? ' ' : ''}`;
+
+/** A YAML textarea over a coloured copy of `text` (the YAML tab's file, the inspector's state fragment): the copy
+ * starts coloured already, so a fresh render never shows plain text first; `paint` repaints it when the textarea's
+ * own value changes without a fresh render (typing, a revert, a reload). */
+const codeBox = (text, textarea) => html`<div class="sg-code"><pre class="sg-code-view" aria-hidden="true">${yamlCode(padded(text))}</pre>${textarea}</div>`;
+
+function paint(area) {
+  const view = area.previousElementSibling;
+  if (!view?.classList.contains('sg-code-view')) return;
+  render(view, yamlCode(padded(area.value)));
+  followScroll(area);
+}
+
+function followScroll(area) {
+  const view = area.previousElementSibling;
+  if (!view?.classList.contains('sg-code-view')) return;
+  view.scrollTop = area.scrollTop;
+  view.scrollLeft = area.scrollLeft;
+}
+
+function setCode(area, text) {
+  area.value = text;
+  paint(area);
+}
+
 // ------------------------------------------------------------------ YAML tab
 
 function yamlText(path) {
@@ -602,7 +636,7 @@ function drawYaml() {
   if (!files.includes(S.yamlFile)) S.yamlFile = m.root_file;
   render($('yamlFile'), files.map((path) => html`<option value="${path}" ${path === S.yamlFile ? 'selected' : ''}>${path}${path in S.drafts ? ' (unsaved)' : ''}</option>`));
   const area = $('yamlText');
-  if (area.value !== yamlText(S.yamlFile)) area.value = yamlText(S.yamlFile);
+  if (area.value !== yamlText(S.yamlFile)) setCode(area, yamlText(S.yamlFile));
   area.readOnly = !m.writable;
   $('yamlSave').disabled = !m.writable || !hasDrafts();
   $('yamlRevert').disabled = !hasDrafts();
@@ -625,10 +659,11 @@ function drawProblems(element, problems, label) {
 
 $('yamlFile').addEventListener('change', () => {
   S.yamlFile = $('yamlFile').value;
-  $('yamlText').value = yamlText(S.yamlFile);
+  setCode($('yamlText'), yamlText(S.yamlFile));
 });
 
 $('yamlText').addEventListener('input', () => {
+  paint($('yamlText'));
   const text = $('yamlText').value;
   if (text === S.machine.files[S.yamlFile]) delete S.drafts[S.yamlFile];
   else S.drafts[S.yamlFile] = text;
@@ -638,6 +673,8 @@ $('yamlText').addEventListener('input', () => {
   $('yamlState').textContent = hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved` : 'saved';
   $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
 });
+
+$('yamlText').addEventListener('scroll', () => followScroll($('yamlText')));
 
 $('yamlText').addEventListener('keydown', (event) => {
   if (event.key !== 'Tab' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;

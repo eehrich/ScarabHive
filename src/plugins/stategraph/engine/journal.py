@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS journal (
     PRIMARY KEY (run_id, seq)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS journal_key ON journal(run_id, kind, key);
+-- the agent facade: which run a caller's session belongs to (a continue in any process finds it)
+CREATE TABLE IF NOT EXISTS callers (
+    caller TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL
+);
 """
 
 _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug")
@@ -222,6 +227,24 @@ class RunStore:
                 (owner, until, utc_now(), run_id, now, owner))
             return cursor.rowcount == 1
 
+    def set_caller(self, caller: str, run_id: str) -> None:
+        """Remember the run of a caller (``<agent>:<session id>``)."""
+        with self._lock:
+            self._db().execute("INSERT INTO callers (caller, run_id) VALUES (?, ?) ON CONFLICT(caller) DO UPDATE "
+                               "SET run_id = excluded.run_id", (caller, run_id))
+
+    def run_of_caller(self, caller: str) -> Optional[str]:
+        with self._lock:
+            row = self._db().execute("SELECT run_id FROM callers WHERE caller = ?", (caller,)).fetchone()
+        return row["run_id"] if row else None
+
+    def latest_by_key(self, run_key: str) -> Optional[dict[str, Any]]:
+        """The newest run with this key, whatever its status (the facade answers a succeeded one again)."""
+        with self._lock:
+            row = self._db().execute("SELECT * FROM runs WHERE run_key = ? ORDER BY created_at DESC LIMIT 1",
+                                     (run_key,)).fetchone()
+        return self._run_row(row) if row else None
+
     def find_by_key(self, run_key: str) -> Optional[dict[str, Any]]:
         """The newest run with this key that has not ended."""
         with self._lock:
@@ -288,6 +311,11 @@ class RunStore:
             args += kinds
         with self._lock:
             return [self._journal_row(r) for r in self._db().execute(sql + " ORDER BY seq", args).fetchall()]
+
+    def has_row(self, run_id: str, kind: str, key: str) -> bool:
+        with self._lock:
+            return self._db().execute("SELECT 1 FROM journal WHERE run_id = ? AND kind = ? AND key = ?",
+                                      (run_id, kind, key)).fetchone() is not None
 
     def page(self, run_id: str, *, after: int = 0, limit: int = 200,
              kinds: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:

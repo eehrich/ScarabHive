@@ -96,7 +96,9 @@ class StateGraphServer(SchemaBasedToolServer):
     def _cancel_requests(self, run_id: str) -> None:
         from agent_system.core.cancellation import get_cancellation_manager
 
-        get_cancellation_manager().cancel_request(run_id)  # reaches every <run>_NNN sub-run
+        # every <run>_NNN sub-run in flight -- not the run's own token: its finally activities start
+        # sub-runs after this, and a cancelled run token would have them force-cancelled (§3.10)
+        get_cancellation_manager().cancel_sub_requests(run_id)
 
     def _release_token(self, run_id: str) -> None:
         from agent_system.core.cancellation import get_cancellation_manager
@@ -107,6 +109,11 @@ class StateGraphServer(SchemaBasedToolServer):
         agent = params.get("_agent")
         if agent is not None and getattr(agent, "registry", None) is not None:
             self._registry = agent.registry
+
+    def use_registry(self, registry: Any) -> None:
+        """The registry runs resolve their runner agent in (the agent facade hands over its own)."""
+        if registry is not None:
+            self._registry = registry
 
     def _authorize(self, params: dict[str, Any], tool: str) -> Optional[str]:
         """None when the caller may use ``tool``; else the refusal (§8.3)."""

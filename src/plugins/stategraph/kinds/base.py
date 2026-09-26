@@ -195,3 +195,10 @@ __all__ = [
     "ActivityError", "ActivityKind", "KindLookupError", "KindSpec", "REGISTRY",
     "ValidationError", "describe_kinds", "kind_of", "parse_activity", "register",
 ]
+
+
+def vars_object(value: Any, where: str) -> dict[str, Any]:
+    """Rendered agent vars: an object of names (a single-template ``vars`` must render to one)."""
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ActivityError("template_failed", f"{where} must render to an object of names, got {type(value).__name__}")
+    return value

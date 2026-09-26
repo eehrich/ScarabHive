@@ -141,7 +141,7 @@ Conditions and watch expressions are read-only Python over the scope at that hoo
 | `run_to` + `state` | a one-off breakpoint on that state's entry |
 | `evaluate` + `expr` | a read-only expression against the paused scope: `ctx.draft[:200]`, `out` |
 | `set` + `path` + `expr` | while paused: `ctx.<path> = <expr>` (e.g. `path="round"`, `expr="0"`); journaled, so a resume applies it again |
-| `terminate` | cancel the run and its running agent calls |
+| `terminate` | cancel the run and its running agent calls; its `finally` activities run first. An interrupted run is resumed into its termination, so they run there too |
 
 `run_machine` with `wait: "finish"` also returns when the run pauses, so you can
 inspect and continue.
@@ -159,7 +159,8 @@ definition snapshot:
 - An activity that was **in flight** at the stop runs again if it is idempotent (the
   default, except `tool`). A non-idempotent one raises `interrupted` in its state, with
   `error.data` holding its rendered inputs: handle it, e.g. by checking whether the
-  first call took effect.
+  first call took effect. A non-idempotent submachine ends the frame it had started first,
+  so its `finally` and `close` run.
 - A wait state's deadline is stored; the resumed run waits only for the rest.
 - If the machine does not repeat the recorded run -- another kind or path at a step,
   other rendered inputs, another `ctx` after a step -- the run stops with `diverged`,

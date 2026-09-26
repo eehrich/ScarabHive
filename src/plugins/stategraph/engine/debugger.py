@@ -127,7 +127,8 @@ class Debugger:
         if reason:
             await self.pause(run, frame, node, point, reason, event)
 
-    async def after_step(self, run: "RunContext", frame: "Frame", *, replaying: bool) -> None:
+    async def after_step(self, run: "RunContext", frame: "Frame", *, silent: bool) -> None:
+        """Update the watchpoints' values; pause on a change unless ``silent`` (replay, or the run is ending)."""
         for point in self.watchpoints:
             if not point.enabled or point.machine not in (None, frame.machine.id):
                 continue
@@ -141,7 +142,7 @@ class Debugger:
             old = self._values.get(key, _MISSING)
             self._values[key] = value
             self.watch[point.id] = {**shown, "frame": frame.prefix or "top", "step": frame.step}
-            if old is _MISSING or old == value or replaying:
+            if old is _MISSING or old == value or silent:
                 continue
             if point.condition:
                 check = dict(scope, old=old, new=value)
@@ -156,6 +157,8 @@ class Debugger:
     async def pause(self, run: "RunContext", frame: "Frame", node: Optional["Node"], point: str, reason: str,
                     event: Optional["Event"]) -> None:
         async with self._pausing:
+            if run.ending:  # the run began to end while this pause waited its turn: nothing holds it (§3.10)
+                return
             self.mode = "run"
             record = {"frame": frame.prefix or "", "machine": frame.machine.id,
                       "state": node.name if node else None, "hook": point, "step": frame.step, "reason": reason,
@@ -195,6 +198,13 @@ class Debugger:
             self._resume.set()
         else:
             raise ValueError(f"unknown debugger action {action!r}")
+
+    def release(self) -> None:
+        """The run is ending: a pause lets go, and no step or run_to holds it again."""
+        self.mode = "run"
+        self.run_to = None
+        self.run_to_machine = None
+        self._resume.set()
 
     def evaluate(self, expr: str) -> Any:
         frame = self._paused()

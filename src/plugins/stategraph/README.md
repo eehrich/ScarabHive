@@ -50,6 +50,14 @@ SAM's `allowed_agents` then applies. A SAM's `allowed_agents` reloads with
 **Delegating to the author.** Another agent reaches `stategraph_author` through its SAM:
 add `stategraph_author` to that SAM's `allowed_agents`.
 
+**A machine as an agent.** The plugin type `stategraph_machine`
+([src/plugins/stategraph_machine](../stategraph_machine/README.md)) makes one machine
+addressable like any agent -- SAM spawns, AgentCaller, writer_jobs' `/events`. It runs the
+machine through this instance (the panel sees and controls those runs) and answers with the
+output as JSON. Example: `v6_story_machine`, the writer v6 story design as a machine
+(`src/plugins_writer/writer_pipeline_v6/machines/`). A writer machine's tools are in
+`stategraph_runner`'s allowlist; the issues write key comes from `inject_params`.
+
 ## Tools
 
 | Tool | Parameters | Result | Admin¹ |

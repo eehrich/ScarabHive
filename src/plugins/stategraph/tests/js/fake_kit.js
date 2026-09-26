@@ -11,6 +11,7 @@ export function update(el, content) { const m = fragment(content); if (el._drawn
 export const icon = (name) => { globalThis.ICONS.add(name); return new SafeHtml(`<svg><use href="#${escapeHtml(name)}"/></svg>`); };
 export const emptyState = (name, title, text = '') => html`<div class="pk-empty">${icon(name)}${title}${text}</div>`;
 export const jsonView = (v) => html`<pre>${JSON.stringify(v)}</pre>`;
+export const yamlCode = (v) => html`${v ?? ''}`;
 export const errorText = (e) => `${e.status}: ${e.message}`;
 export const isAborted = (e) => e?.name === 'AbortError';
 export const localTime = (v) => String(v ?? '');

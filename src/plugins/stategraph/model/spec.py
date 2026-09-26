@@ -58,6 +58,17 @@ def check_name(value: str, what: str) -> str:
     return value
 
 
+#: Activity paths use these words next to state names (``finally``, ``resources/<name>/open``).
+RESERVED_STATE_NAMES = frozenset({"finally", "resources"})
+
+
+def check_state_name(value: str) -> str:
+    check_name(value, "state name")
+    if value in RESERVED_STATE_NAMES:
+        raise ValueError(f"state name {value!r} is reserved (the paths of finally and resource activities use it)")
+    return value
+
+
 class Strict(BaseModel):
     """Base for every format model: unknown keys are errors, never silently dropped."""
 
@@ -180,6 +191,9 @@ class StateSpec(Strict):
     states: Optional[dict[str, "StateSpec"]] = Field(None, description="composite state: nested states")
     status: Optional[Literal["succeeded", "failed"]] = Field(None, description="final state of the root region only")
     output: Any = Field(None, description="final state only: template value")
+    finally_: Optional[dict[str, Any]] = Field(
+        None, alias="finally", description="an activity that runs once on every exit of this state, whatever the "
+                                           "cause (transition, unhandled error, cancel); reads ending")
 
     @field_validator("timeout")
     @classmethod
@@ -191,12 +205,23 @@ class StateSpec(Strict):
     @classmethod
     def _state_names(cls, value: Optional[dict[str, "StateSpec"]]) -> Optional[dict[str, "StateSpec"]]:
         for name in value or {}:
-            check_name(name, "state name")
+            check_state_name(name)
         return value
 
     @property
     def is_composite(self) -> bool:
         return bool(self.states)
+
+
+class ResourceSpec(Strict):
+    """External state that belongs to one machine frame (docs/stategraph_design.md §2.8)."""
+
+    description: str = ""
+    open: dict[str, Any] = Field(description="activity run when the frame starts; its out is resources.<name>")
+    fork: Optional[dict[str, Any]] = Field(
+        None, description="activity a forked run's root frame runs instead of open; source is the source run's value")
+    close: Optional[dict[str, Any]] = Field(
+        None, description="activity run when the frame ends (not when the process stops); reads ending")
 
 
 class LimitsSpec(Strict):
@@ -222,10 +247,17 @@ class MachineSpec(Strict):
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     events: dict[str, EventSpec] = Field(default_factory=dict, description="named events this machine accepts")
     context: dict[str, Any] = Field(default_factory=dict)
-    vars: dict[str, Any] = Field(default_factory=dict, description="agent template vars (templates)")
+    vars: Union[dict[str, Any], str] = Field(
+        default_factory=dict, description="agent template vars: a map of templates, or one template that renders "
+                                          "to an object of names")
     vars_from: Optional[str] = Field(None, description="agent whose configured template_vars lie under vars")
     sam: Optional[str] = Field(None, description="default SAM instance for agent activities")
     limits: LimitsSpec = Field(default_factory=LimitsSpec)
+    resources: dict[str, "ResourceSpec"] = Field(
+        default_factory=dict, description="external state per machine frame: open at its start, close at its end")
+    finally_: Optional[dict[str, Any]] = Field(
+        None, alias="finally", description="an activity that runs once when the machine frame ends, whatever the "
+                                           "cause (final state, failure, cancel); reads ending")
     initial: str
     states: dict[str, StateSpec]
 
@@ -256,8 +288,16 @@ class MachineSpec(Strict):
         if not value:
             raise ValueError("a machine needs at least one state")
         for name in value:
-            check_name(name, "state name")
+            check_state_name(name)
+        return value
+
+    @field_validator("resources")
+    @classmethod
+    def _resource_names(cls, value: dict[str, "ResourceSpec"]) -> dict[str, "ResourceSpec"]:
+        for name in value:
+            check_name(name, "resource name")
         return value
 
 
 StateSpec.model_rebuild()
+MachineSpec.model_rebuild()

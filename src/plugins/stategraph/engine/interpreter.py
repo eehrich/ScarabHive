@@ -9,11 +9,15 @@ keys of a run stay deterministic (§5.2).
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
-from plugins.stategraph.kinds import ActivityError
+from plugins.stategraph.kinds import ActivityError, parse_activity
+from plugins.stategraph.kinds.base import vars_object
 from plugins.stategraph.model.code import NAMESPACE_FIELDS, CodeError, Scope, jsonable, namespace_of, plain
 from plugins.stategraph.model.spec import GUARD_ELSE, TRIGGER_DONE, TRIGGER_ERROR, ParamSpec, TransitionSpec, parse_duration
 from .activity import ActivityRun, ReplayDivergence, RunAbort
@@ -25,6 +29,14 @@ if TYPE_CHECKING:
 _TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "object": dict, "array": list}
 
 #: Fields ``activity`` and ``error`` always have in code, so a mocked activity reads the same (§2.6).
+logger = logging.getLogger(__name__)
+
+#: A finally or close activity without its own timeout gets this long while the run is being cancelled.
+FINALLY_CANCEL_TIMEOUT = 60.0
+#: How often a running finally looks whether the run's ending began elsewhere (a resumed terminate carried out
+#: in another branch reaches it without a cancel): from then on the bound counts.
+_WATCH_ENDING = 0.25
+
 ACTIVITY_DEFAULTS = {**{name: None for name in NAMESPACE_FIELDS["activity"]}, "mocked": False}
 #: Meta the journal keeps but code must not see: it differs between a live run and its replay.
 _HIDDEN_META = ("replayed",)
@@ -104,7 +116,8 @@ def bind_params(declared: dict[str, ParamSpec], given: Optional[dict[str, Any]],
 
 class Frame:
     def __init__(self, run: "RunContext", machine: Machine, params: Optional[dict[str, Any]], *,
-                 prefix: str = "", path: str = "", parent: Optional["Frame"] = None):
+                 prefix: str = "", path: str = "", parent: Optional["Frame"] = None, finalizer: bool = False,
+                 ending_only: bool = False):
         self.run = run
         self.machine = machine
         self.prefix = prefix
@@ -120,6 +133,16 @@ class Frame:
         self.pending_error: Optional[dict[str, Any]] = None
         self.last_event: Optional[Event] = None
         self._enter_hooked = False
+        self.finalizer = finalizer        # the frame of a finally activity: runs on while the run is cancelled
+        self.ending_only = ending_only    # replays into its end, never runs live (a branch a join had cancelled,
+                                          # a frame a cancel reached while it replayed, §3.10)
+        self.resources: dict[str, Any] = {}
+        # the finally activities of the states the last transition left: (state, error, journal key)
+        self._pending_finally: list[tuple[Node, Optional[dict[str, Any]], str]] = []
+        self._left: dict[str, int] = {}   # state -> times left within step ``_left_step`` (keys stay unique)
+        self._left_step = -1
+        self._finalized = False
+        self._terminating = False       # a terminate reached this frame: finally activities run within the bound
 
     # ------------------------------------------------------------ helpers
     @property
@@ -142,6 +165,7 @@ class Frame:
                                  "machine": self.machine.id,
                                  "state": leaf.name if leaf else None, "visits": dict(self.visits),
                                  "frame": self.prefix}, "run"),
+            "resources": namespace_of(self.resources, "resources"),
             "out": None, "error": None, "event": None, "activity": None,
         }
         if event is not None:
@@ -184,23 +208,251 @@ class Frame:
     async def execute(self) -> FrameResult:
         self.run.frame_started(self)
         try:
-            self._init_vars()
-            await self._enter_initial()
-            while True:
-                self.run.check_cancelled()
-                leaf = self.leaf
-                if leaf is None:
-                    raise MachineFailed(self.pending_error or self._error("no_transition", "no active state", None))
-                if leaf.is_final and leaf.parent is None and self.pending_error is None:
-                    return self._finish(leaf)
-                event = await self._next_event()
-                await self._dispatch(event)
-                await self.run.after_step(self)
-        except MachineFailed as failed:
-            self.run.trace(self, "failed", state=self.leaf.name if self.leaf else None, data=failed.error)
-            return FrameResult("failed", None, self.leaf.name if self.leaf else None, failed.error)
+            try:
+                await self._open_resources()
+                self._init_vars()
+                await self._enter_initial()
+                while True:
+                    self.run.stop_past_journal(self)
+                    leaf = self.leaf
+                    if leaf is None:
+                        raise MachineFailed(self.pending_error or self._error("no_transition", "no active state", None))
+                    if leaf.is_final and leaf.parent is None and self.pending_error is None:
+                        result = self._finish(leaf)
+                        await self._finalize("finished", None)
+                        return result
+                    event = await self._next_event()
+                    await self._dispatch(event)
+                    await self.run.after_step(self)
+                    await self._run_pending_finally()
+            except MachineFailed as failed:
+                self.run.trace(self, "failed", state=self.leaf.name if self.leaf else None, data=failed.error)
+                await self._finalize("failed", failed.error)
+                return FrameResult("failed", None, self.leaf.name if self.leaf else None, failed.error)
+            except RunAbort as abort:
+                try:
+                    await self._finalize("failed", abort.error)
+                except asyncio.CancelledError:
+                    if not self.run.may_finalize():
+                        raise
+                    # a terminate during these finally activities: the abort came first, and it ends the run
+                raise abort
+            except asyncio.CancelledError:
+                if self.run.may_finalize():  # not on a halt: a resume ends the frame then
+                    await self._finalize("cancelled", self._cancel_error())
+                raise
         finally:
             self.run.frame_ended(self)
+
+    # ------------------------------------------------------------ resources and finally (§2.8, §3.10)
+    def tokenized(self, value: Any) -> Any:
+        """``value`` with every resource value of this frame and its parents replaced by its token.
+
+        Hashes are taken over this form (§5.4): a fork's resources differ from its source's on purpose, and
+        the replayed prefix -- rendered with the source's values -- must still match. Only distinctive values
+        count (strings of 6+ characters, objects, lists); a short one would also replace unrelated text.
+        """
+        pairs: list[tuple[Any, str]] = []
+        frame: Optional[Frame] = self
+        while frame is not None:
+            values = dict(frame.resources)
+            sources = self.run.resource_sources if frame.parent is None else {}
+            for name, real in [*values.items(), *sources.items()]:  # a fork's replayed outputs hold the source's
+                pairs.extend(_token_pairs(real, f"resources.{name}"))
+            frame = frame.parent
+        pairs.sort(key=lambda pair: -len(json.dumps(pair[0], sort_keys=True, default=str)))  # longest first
+        return _substitute(value, pairs) if pairs else value
+
+    def _own_path(self, suffix: str) -> str:
+        return f"{self.path}/{suffix}" if self.path else suffix
+
+    async def _open_resources(self) -> None:
+        """Open this machine's resources in declaration order; a forked run's root frame forks them instead."""
+        sources = self.run.resource_sources if self.parent is None else {}
+        for name, resource in self.machine.spec.resources.items():
+            if resource.fork is not None and name in sources:
+                raw, hook, extra = resource.fork, "fork", {"fork_source": sources[name]}
+            else:
+                raw, hook, extra = resource.open, "open", {}
+            kind, spec = parse_activity(raw)
+            act = ActivityRun(self, None, f"{self.prefix}r.{name}", self._own_path(f"resources/{name}/{hook}"),
+                              raw=raw, extra_scope=extra, finalizer=self.finalizer)
+            try:
+                self.resources[name] = await act.execute(kind, spec)
+            except ActivityError as exc:
+                failure = {**exc.as_dict(), "state": None}
+                failure["message"] = f"resources.{name}: {exc.message}"
+                raise MachineFailed(failure) from exc
+
+    async def _run_pending_finally(self) -> None:
+        """The finally activities of the states the last transition left: after it committed, innermost first.
+
+        A cancel that arrives meanwhile lets the running one finish; then the frame ends as cancelled and the rest
+        runs in its finalization -- where its journal ends: a replay takes no time, so a cancel that reaches one
+        takes effect at the point the crashed run had reached. The frame replays on as far as that and ends
+        there (§3.10), instead of ending in states the crashed run had already left.
+        """
+        while self._pending_finally:
+            node, error, key = self._pending_finally[0]
+            arrived = await self._run_finally(node.spec.finally_, key, f"{self.state_path(node)}/finally", node.name,
+                                              "transition", error)
+            self._pending_finally.pop(0)
+            if arrived:
+                if not self.run.in_journal(self):
+                    raise asyncio.CancelledError()
+                self.ending_only = True
+                if self.prefix:  # the frames it replays into below it end within the bound, as the cancel reached it
+                    self.run.cancelled_below.add(self.prefix[:-1])
+
+    def _left_key(self, node: Node) -> str:
+        """Journal key of the finally of ``node``, left by this step's transition: ``s<N>.fin.<state>`` -- beside
+        the step's activity ``s<N>``, not below it (a key below it would count as that activity's child, §5.5).
+        A state left again within the same step (through initial pseudostates) gets ``.2``, ``.3``, ..."""
+        if self._left_step != self.step:
+            self._left_step, self._left = self.step, {}
+        count = self._left[node.name] = self._left.get(node.name, 0) + 1
+        key = f"{self.prefix}s{self.step}.fin.{node.name}"
+        return key if count == 1 else f"{key}.{count}"
+
+    def _finalizers(self, reason: str, error: Optional[dict[str, Any]]) -> list[tuple[Any, ...]]:
+        """What a frame's end runs, in order: the pending finally activities, the finally of every state still
+        active (innermost first), the machine's finally, the resources' close (reverse order).
+
+        The end's keys carry its reason (``end.<reason>.<state>``, ``end.<reason>.finally``,
+        ``end.<reason>.close.<resource>``): a resumed frame that ends another way than the crashed one (§3.10)
+        runs its own finally activities instead of meeting the other ending's.
+        """
+        steps: list[tuple[Any, ...]] = [
+            (node.spec.finally_, key, f"{self.state_path(node)}/finally", node.name, "transition", pending_error)
+            for node, pending_error, key in self._pending_finally]
+        self._pending_finally = []
+        end = f"{self.prefix}end.{reason}"
+        steps += [(node.spec.finally_, f"{end}.{node.name}", f"{self.state_path(node)}/finally", node.name, reason,
+                   error) for node in reversed(self.config) if node.spec.finally_ is not None]
+        if self.machine.spec.finally_ is not None:
+            steps.append((self.machine.spec.finally_, f"{end}.finally", self._own_path(f"{self.machine.id}.finally"),
+                          None, reason, error))
+        for name in reversed(list(self.resources)):
+            close = self.machine.spec.resources[name].close
+            if close is not None:
+                steps.append((close, f"{end}.close.{name}", self._own_path(f"resources/{name}/close"), None,
+                              reason, error))
+        return steps
+
+    def _cancel_error(self) -> Optional[dict[str, Any]]:
+        """``ending.error`` of a cancelled frame: set when limits.timeout ended the run, None on a terminate."""
+        return self._error("timed_out", "the run exceeded limits.timeout", None) if self.run.timed_out else None
+
+    async def _finalize(self, reason: str, error: Optional[dict[str, Any]]) -> None:
+        """What runs once when this frame ends (§3.10): its finally activities and its resources' close.
+
+        How it ends is journaled first (``<frame>end``). A resumed frame that the run's terminate had ended
+        ends that way again, even where the replay reaches another end (a terminate that came while the
+        transition into a final state ran a finally left no live step to be carried out at); and a frame
+        reaching its end while a journaled terminate waits to be carried out ends as cancelled.
+
+        A terminate that arrives while these run does not cut them: each finishes, within the cancel bound.
+        Then a frame that had finished or failed keeps that outcome at the root, and a nested one passes the
+        terminate on to its parent. Only a halt -- the process stops, or it lost the run -- stops them.
+        """
+        if self._finalized:
+            return
+        if not self.run.may_finalize():
+            raise asyncio.CancelledError()
+        self._finalized = True
+        computed, key = reason, f"{self.prefix}end"
+        end = self.run.ends.get(key)
+        if end is not None and end.get("reason") == "cancelled" and not end.get("terminated") and not self.ending_only:
+            end = None  # a local cancel (a fail-fast join, an activity timeout) is not journaled: decide anew
+        if end is not None:
+            reason, error = str(end.get("reason")), end.get("error")
+            if reason != computed and "cancelled" not in (reason, computed):
+                raise self.run.diverged(f"{key}: the frame ended {reason} in the recorded run and {computed} now (a "
+                                        "guard, action or template is not deterministic, or the definition changed)")
+        else:
+            if self.run.cancel_pending and not self.finalizer:  # the journaled terminate came before this end
+                self.run.carry_out_cancel()
+                reason, error = "cancelled", self._cancel_error()
+            end = {"reason": reason, "error": error,
+                   "terminated": reason == "cancelled" and self.run.cancelled and not self.finalizer}
+            self.run.ends[key] = end
+            self.run.write("trace", key, state=self.leaf.name if self.leaf else None, status="end",
+                           data={**end, "frame": self.prefix, "machine": self.machine.id})
+        if reason == "cancelled":
+            self._terminating = True
+        arrived = False
+        for step in self._finalizers(reason, error):
+            if not self.run.may_finalize():
+                raise asyncio.CancelledError()
+            arrived = await self._run_finally(*step) or arrived
+        if reason == "cancelled":
+            if computed == "cancelled":
+                return  # the caller raises on
+            if end.get("terminated") and not self.run.cancelled:
+                self.run.carry_out_cancel()
+            raise asyncio.CancelledError()  # it ended cancelled before the crash: so it does now
+        if arrived or (self.run.ending and not self.finalizer):  # the terminate came during this end -- or a
+            if self.parent is not None:                              # sibling carried it out meanwhile
+                if self.run.cancel_pending:
+                    self.run.carry_out_cancel()
+                raise asyncio.CancelledError()  # a nested frame passes it on: its parent is terminated
+            self.run.cancel_pending = False  # the root had ended: its outcome stands
+            task = asyncio.current_task()
+            if arrived and task is not None and task.cancelling():
+                task.uncancel()
+
+    async def _run_finally(self, raw: dict[str, Any], key: str, path: str, state: Optional[str], reason: str,
+                           error: Optional[dict[str, Any]]) -> bool:
+        """One finally or close activity, journaled like any activity; a failure is traced, never raised.
+
+        A terminate that arrives meanwhile does not cut it: it runs on, within the cancel bound, and the result
+        says whether one arrived. Only a halt -- the process stops, or it lost the run -- stops it; that raises
+        once the activity has ended, so nothing of it writes after the run.
+        """
+        kind, spec = parse_activity(raw)
+        act = ActivityRun(self, state, key, path, raw=raw, finalizer=True, ending_only=False,  # the ending runs live
+                          extra_scope={"ending": {"reason": reason, "state": state, "error": error}})
+        bound = None if spec.timeout is not None else FINALLY_CANCEL_TIMEOUT  # its own timeout bounds it anyway
+        loop = asyncio.get_running_loop()
+        work = asyncio.ensure_future(act.execute(kind, spec))
+        arrived = False
+        deadline: Optional[float] = None
+        try:
+            while not work.done():
+                if (self._terminating or self.run.ending or self.run.cancel_reached(self)) and bound and deadline is None:
+                    deadline = loop.time() + bound
+                if deadline is not None and loop.time() >= deadline:
+                    raise TimeoutError()
+                wait = None if not bound else _WATCH_ENDING if deadline is None else deadline - loop.time()
+                try:
+                    await asyncio.wait({work}, timeout=wait)
+                except asyncio.CancelledError:
+                    if not self.run.may_finalize():
+                        raise
+                    self._terminating = arrived = True  # a terminate: this one still finishes, within the bound
+                    continue
+            try:
+                work.result()
+            except asyncio.CancelledError as exc:  # it cancelled itself (say, a caller whose token was cancelled)
+                if not self.run.may_finalize():
+                    raise
+                raise ActivityError("cancelled", f"{path}: cancelled") from exc
+        except asyncio.CancelledError:
+            await _stopped(work)
+            raise
+        except (ActivityError, RunAbort, TimeoutError) as exc:
+            if isinstance(exc, ActivityError):
+                failure = exc.as_dict()
+            elif isinstance(exc, RunAbort):
+                failure = dict(exc.error or {})
+            else:
+                if await _stopped(work):
+                    arrived = True  # a halt meanwhile stops the next one (_finalize checks before each)
+                failure = {"type": "timeout", "message": f"no result within {bound:g}s while the run was cancelled"}
+                act.cut(failure)  # its outcome: a resume does not start it again
+            self.run.trace(self, "finally_failed", state=path, data={"key": key, "error": failure})
+            logger.warning("stategraph run %s: %s failed: %s", self.run.id, path, failure.get("message"))
+        return arrived
 
     def _init_vars(self) -> None:
         spec = self.machine.spec
@@ -212,9 +464,12 @@ class Frame:
                 raise MachineFailed(self._error("config", exc.message, None)) from exc
         if spec.vars:
             try:
-                merged.update(self.machine.namespace.render(spec.vars, self.scope(), f"{self.machine.id}.vars"))
+                merged.update(vars_object(self.machine.namespace.render(spec.vars, self.scope(), f"{self.machine.id}.vars"),
+                                          f"{self.machine.id}.vars"))
             except CodeError as exc:
                 raise MachineFailed(self._error("template_failed", exc.message, None)) from exc
+            except ActivityError as exc:
+                raise MachineFailed(self._error(exc.type, exc.message, None)) from exc
         self.vars = merged
 
     async def _enter_initial(self) -> None:
@@ -255,7 +510,7 @@ class Frame:
             await self.run.hook("enter", self, leaf)
         if leaf.kind is not None:
             act = ActivityRun(self, leaf.name, self.key(), self.state_path(leaf), raw=leaf.activity_raw or {},
-                              visit=self.visits.get(leaf.name, 1))
+                              visit=self.visits.get(leaf.name, 1), finalizer=self.finalizer)
             try:
                 out = await act.execute(leaf.kind, leaf.activity)
             except ActivityError as exc:
@@ -277,6 +532,7 @@ class Frame:
         leaf = self.leaf
         assert leaf is not None
         await self.run.hook("error" if event.name == TRIGGER_ERROR else "exit", self, leaf, event)
+        self.run.before_step(self)  # an ending run: past the journal the frame ends here, in the state it stands in
         self.step += 1
         limit = self.machine.spec.limits.max_steps
         if self.step > limit:
@@ -318,6 +574,8 @@ class Frame:
                message: str, state: Optional[str]) -> None:
         """Atomic transitions: restore ctx, configuration and visits, then raise the error in the source leaf."""
         self.ctx, self.config, self.visits = copy.deepcopy(snapshot[0]), list(snapshot[1]), dict(snapshot[2])
+        self._pending_finally = []  # the states were not left after all
+        self._left = {}
         error = self._error(type_, message, state)
         if event.name == TRIGGER_ERROR:  # failing while handling an error: nothing is left to handle it
             error["cause"] = event.error
@@ -411,6 +669,9 @@ class Frame:
                 self._check_context(node)
             self.config.pop()
             self.run.trace(self, "exit", state=node.name)
+            if node.spec.finally_ is not None:  # runs once the transition committed (_run_pending_finally)
+                self._pending_finally.append((node, event.error if event is not None and event.name == TRIGGER_ERROR
+                                              else None, self._left_key(node)))
 
     async def _enter_to(self, target: Node, event: Optional[Event]) -> None:
         if target.is_pseudo:
@@ -470,6 +731,52 @@ class Frame:
                 raise _TransitionFailed("action_failed", exc.message, node.name) from exc
             self._check_context(node)
         return True
+
+
+async def _stopped(work: "asyncio.Future[Any]") -> bool:
+    """Cancel ``work`` and wait until it has ended -- a finally's task must not outlive the run's end.
+    Returns whether a cancel reached the caller meanwhile."""
+    work.cancel()
+    cancelled = False
+    while not work.done():
+        try:
+            await asyncio.wait({work})
+        except asyncio.CancelledError:
+            cancelled = True
+    if not work.cancelled():
+        work.exception()  # retrieved: no "exception was never retrieved" warning
+    return cancelled
+
+
+def _token_pairs(real: Any, name: str) -> list[tuple[Any, str]]:
+    """(value, token) pairs of one resource value: the whole value, and for an object or a list also each
+    distinctive string inside it (6+ characters: a short one would also replace unrelated text)."""
+    pairs: list[tuple[Any, str]] = []
+    if isinstance(real, str):
+        if len(real) >= 6:
+            pairs.append((real, f"\u27e8{name}\u27e9"))
+    elif isinstance(real, (dict, list)) and real:
+        pairs.append((real, f"\u27e8{name}\u27e9"))
+        items = real.items() if isinstance(real, dict) else enumerate(real)
+        for key, item in items:
+            pairs.extend(_token_pairs(item, f"{name}.{key}"))
+    return pairs
+
+
+def _substitute(value: Any, pairs: list[tuple[Any, str]]) -> Any:
+    for real, token in pairs:
+        if not isinstance(real, str) and value == real:
+            return token
+    if isinstance(value, str):
+        for real, token in pairs:
+            if isinstance(real, str) and real in value:
+                value = value.replace(real, token)
+        return value
+    if isinstance(value, dict):
+        return {key: _substitute(item, pairs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_substitute(item, pairs) for item in value]
+    return value
 
 
 def jsonable_strict(value: Any) -> Any:

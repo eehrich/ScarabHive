@@ -21,6 +21,8 @@ Mutation checks run (each turned the named test red, then was restored from a co
 - author prompt names ``stategraph_delete_machine``                -> test_prompt_and_skill_name_only_tools_the_author_may_call
 - patterns.md names ``stategraph_fly``                             -> test_the_references_name_only_real_tools
 - hello_agent.yaml: ``agent: coder``                               -> test_every_shipped_machine_validates_against_the_shipped_config
+- stategraph.yaml: runner loses ``stategraph_sam/*`` (every agent step failed with "Unknown tool:
+  stategraph_sam_manage_sub_agent")                                -> test_every_shipped_machine_validates_against_the_shipped_config
 - stategraph.yaml: machine root glob ``src/plugins*/*/machine``    -> test_the_machine_roots_find_the_shipped_machines
 - patterns.md review_loop: ``agent: coder``                        -> test_every_machine_in_the_docs_validates
 """

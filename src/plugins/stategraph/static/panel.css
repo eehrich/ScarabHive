@@ -46,8 +46,27 @@
 .sg-transition-head { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; font-size: var(--text-sm); }
 .sg-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-2); align-items: center; font-size: var(--text-xs); }
 .sg-fields > label { color: var(--text-muted); }
-.sg-fragment { min-height: 160px; font-size: var(--text-xs); }
+.sg-fragment { min-height: 160px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }
 .sg-yaml { flex: 1 1 auto; min-height: 320px; font-size: var(--text-xs); line-height: 1.55; tab-size: 2; white-space: pre; }
+
+/* YAML with colours: a transparent textarea over a copy of its text coloured by the kit's yamlCode, same box, font
+   and padding as .sg-yaml / .sg-fragment above */
+.sg-code { position: relative; min-width: 0; display: flex; flex-direction: column; }
+.sg-code:has(> .sg-yaml) { flex: 1 1 auto; min-height: 0; }
+.sg-code > .sg-code-view {
+  position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none;
+  padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-md);
+  /* room for the textarea's scrollbars: without it the view stops scrolling short of the text above it */
+  padding-right: calc(var(--space-3) + var(--space-6)); padding-bottom: calc(var(--space-2) + var(--space-6));
+  font: 400 var(--text-xs)/1.55 var(--font-mono); color: var(--text-primary); white-space: pre; tab-size: 2;
+  background: var(--surface-0);
+}
+.sg-code > .pk-textarea {
+  position: relative; display: block; background: transparent; color: transparent; caret-color: var(--text-primary);
+  white-space: pre; overflow-wrap: normal; overflow: auto; tab-size: 2;
+}
+.sg-code > .pk-textarea::placeholder { color: var(--text-muted); }
+.sg-code:has(> .pk-textarea:read-only) > .sg-code-view { opacity: 0.6; }
 .sg-yamlbar, .sg-start-options { gap: var(--space-2); flex-wrap: wrap; }
 .sg-file { width: auto; max-width: 22rem; }
 .sg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2) var(--space-3); }
