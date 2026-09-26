@@ -111,7 +111,19 @@ class HookIntegrationManager:
         
         # No override - use global enabled state from metadata
         return default_enabled
-    
+
+    def user_of(self, session_id: str, request_id: str) -> Optional[str]:
+        """Whose call this is: the user the session's run was opened for (the
+        API and agent-cli both record it before the first step), else the user
+        the request was registered under; None when neither names one."""
+        tracker = getattr(self.agent, '_session_tracker', None)
+        metadata = tracker.get_session_metadata(session_id) if tracker is not None and session_id else None
+        user_id = metadata.get('user_id') if isinstance(metadata, dict) else None
+        if user_id:
+            return user_id
+        from ....core.request_context import get_request_user
+        return get_request_user(request_id, default=None) if request_id else None
+
     def wire_llm_hooks(self, llm_client: Any) -> None:
         """Wire LLM-client-level hooks to the given LLM client.
         
@@ -131,6 +143,7 @@ class HookIntegrationManager:
             return
         
         agent_ref = self.agent
+        manager = self
         registry = self.registry
         hook_filter = self.is_hook_enabled
 
@@ -151,6 +164,7 @@ class HookIntegrationManager:
                     hook_type=HookType.PRE_LLM_REQUEST,
                     request_id=req_id,
                     session_id=_session_of(req_id),
+                    user_id=manager.user_of(_session_of(req_id), req_id),
                     agent=agent_ref,
                     agent_name=agent_ref.name if agent_ref else '',
                     llm_request_payload=info.get("payload"),
@@ -175,6 +189,7 @@ class HookIntegrationManager:
                     hook_type=HookType.POST_LLM_RESPONSE,
                     request_id=req_id,
                     session_id=_session_of(req_id),
+                    user_id=manager.user_of(_session_of(req_id), req_id),
                     agent=agent_ref,
                     agent_name=agent_ref.name if agent_ref else '',
                     llm_response_data=info.get("response_data"),
@@ -241,6 +256,7 @@ class HookIntegrationManager:
             hook_type=HookType.PRE_LLM_CALL,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
@@ -349,6 +365,7 @@ class HookIntegrationManager:
             hook_type=HookType.POST_LLM_CALL,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
@@ -403,6 +420,7 @@ class HookIntegrationManager:
             hook_type=HookType.LLM_PROGRESS,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             step=step,
@@ -443,6 +461,7 @@ class HookIntegrationManager:
             hook_type=HookType.PRE_TOOL_CALL,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             tool_call=tool_call,
@@ -488,6 +507,7 @@ class HookIntegrationManager:
             hook_type=HookType.POST_TOOL_CALL,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             tool_call=tool_call,
@@ -537,6 +557,7 @@ class HookIntegrationManager:
             hook_type=HookType.FORMAT_OUTPUT,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             output=output,
@@ -583,6 +604,7 @@ class HookIntegrationManager:
             hook_type=HookType.SESSION_START,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
@@ -623,6 +645,7 @@ class HookIntegrationManager:
             hook_type=HookType.SESSION_END,
             request_id=request_id,
             session_id=session_id,
+            user_id=self.user_of(session_id, request_id),
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,

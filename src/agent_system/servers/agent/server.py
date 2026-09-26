@@ -164,6 +164,7 @@ class ConversationContext:
     context_reset_token: Any  # Token for resetting contextvars
     status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
     session_id: Optional[str] = None  # Session ID for session-scoped operations
+    user_reset_token: Any = None  # Token for resetting current_run_user
 
 
 class Agent(ToolServer):
@@ -1637,6 +1638,13 @@ class Agent(ToolServer):
         except Exception as e:
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
+        # Whose run this is, for the calls in it that reach the hooks without an
+        # agent (a decision, TTS: llm/hook_notify.py) -- also once the request
+        # that started a background sub-agent has ended and let go of its tree.
+        from ...core.request_context import current_run_user
+        metadata = self._session_tracker.get_session_metadata(session_id) if self._session_tracker else None
+        run_user = metadata.get("user_id") if isinstance(metadata, dict) else None
+        user_reset_token = current_run_user.set(run_user) if run_user else None
 
         # Status forwarder is passed in from caller (created before status_scope context managers)
         # This ensures forwarder is subscribed to status_bus before any START events are generated
@@ -1747,7 +1755,8 @@ class Agent(ToolServer):
             main_token=main_token,
             context_reset_token=context_reset_token,
             status_forwarder=status_forwarder,
-            session_id=session_id
+            session_id=session_id,
+            user_reset_token=user_reset_token,
         )
 
     def _presence_hold(self, session_id: str, request_id: str) -> None:
@@ -1950,6 +1959,12 @@ class Agent(ToolServer):
         if context and context.context_reset_token is not None:
             try:
                 current_request_id.reset(context.context_reset_token)
+            except Exception:
+                pass
+        if context and context.user_reset_token is not None:
+            from ...core.request_context import current_run_user
+            try:
+                current_run_user.reset(context.user_reset_token)
             except Exception:
                 pass
 

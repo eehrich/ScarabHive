@@ -301,6 +301,11 @@ class HookRegistry:
                         )
                         # Use modified context for next hook
                         current_context = result.context
+                        # Whose call it is is no hook's to change, and a hook
+                        # that rebuilds the context field by field drops the
+                        # fields it does not name (context_engineer and
+                        # context_summarizer do).
+                        current_context.user_id = context.user_id
 
                         # Merge hook result metadata into context metadata
                         if result.metadata:
@@ -566,6 +571,7 @@ class HookRegistry:
             reasoning_text=context.reasoning_text,  # String is immutable
             reasoning_chars=context.reasoning_chars,
             previous_reasoning_chars=context.previous_reasoning_chars,
+            user_id=context.user_id,
         )
 
     # Keys managed by the hook system itself — stripped from hook_config
