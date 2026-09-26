@@ -11,7 +11,7 @@ import textwrap
 
 import pytest
 
-from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314, Harness
+from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314, FakeBackend, Harness
 
 pytestmark = pytest.mark.filterwarnings(FASTAPI_PY314)
 
@@ -51,3 +51,15 @@ async def test_inside_a_run_the_user_is_the_runs(harness, user_id):
 
     assert row["status"] == "succeeded", row["error"]
     assert (row["output"] or None) == user_id
+
+
+async def test_a_run_is_the_user_its_agents_run_as(harness):
+    """A resumed run's agents run as whoever resumed it -- the backend's user -- and its
+    decisions must not stay with the row's user: one run, one user."""
+    backend = FakeBackend()
+    backend.user_id = "admin"
+
+    row = await harness.run(MACHINE, user_id="alice", backend=backend)
+
+    assert row["status"] == "succeeded", row["error"]
+    assert row["output"] == "admin"

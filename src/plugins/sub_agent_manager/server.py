@@ -666,15 +666,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         # cleared at the ending event, and nothing said after it. The finally is for a run that
         # raised.
         result_text, over = "", False
+        events = agent.run_events(
+            task=task,
+            request_id=request_id,
+            session_id=instance_id,
+            use_advanced_model=use_advanced_model,
+            # Note: config_overrides would go here if Agent.run_events supported them
+            # For now, sub-agent uses its default configuration
+        )
         try:
-            async for event in agent.run_events(
-                task=task,
-                request_id=request_id,
-                session_id=instance_id,
-                use_advanced_model=use_advanced_model,
-                # Note: config_overrides would go here if Agent.run_events supported them
-                # For now, sub-agent uses its default configuration
-            ):
+            async for event in events:
                 if run is not None and run.pop("early", False):  # cancelled while it was prepared
                     await agent.cancel_request(request_id)
                 event_type = event.get("type")
@@ -719,6 +720,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     break  # Stop waiting for more events
         finally:
             await track(None)
+            # Closed here, not left to the garbage collector: that closes it in another task, and
+            # this one would keep the run's request id and user (Agent.run_events restores them).
+            await events.aclose()
         return result_text
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:

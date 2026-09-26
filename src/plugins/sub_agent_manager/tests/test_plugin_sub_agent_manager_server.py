@@ -3630,6 +3630,30 @@ class TestWhatEveryRunSetsUpAndReports:
         assert said[-1] is None, said
 
     @pytest.mark.asyncio
+    async def test_a_run_it_stops_reading_leaves_nothing_of_itself_in_this_task(self, server):
+        """A run sets its request id in the context of whoever reads it and restores it as it ends
+        (Agent.run_events). A stream left to the garbage collector ends in another task, and this
+        one would keep the run's."""
+        from agent_system.tools.status import current_request_id
+        manager, agent = self.manager(), Mock()
+
+        async def run_events(**kwargs):
+            before = current_request_id.get()
+            current_request_id.set(kwargs["request_id"])
+            try:
+                yield {"type": "error", "message": "provider down"}
+                yield {"type": "end"}
+            finally:
+                current_request_id.set(before)
+
+        agent.run_events = run_events
+        current_request_id.set("the tool's")
+        await server._consume_run(agent, manager, parent_session_id="parent1",
+                                  instance_id="sub_1", task="t", request_id="sub-run")
+
+        assert current_request_id.get() == "the tool's"
+
+    @pytest.mark.asyncio
     async def test_a_run_is_over_when_it_says_end(self, server):
         """"final" does not stop the loop -- the generator has to run out for the messages to be
         persisted -- so "end" is what stops it. Reading on past it consumes events of a run that

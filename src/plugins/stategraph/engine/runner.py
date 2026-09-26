@@ -769,9 +769,11 @@ class RunManager:
             pass
         try:  # whose run this is: a decision an activity asks is captured under the run's user
             # (llm/hook_notify.py) -- nobody registered the run's own id. This task's context only.
+            # The backend's user first: a resumed run's agents run as whoever resumed it
+            # (service._resume), and its decisions go with them.
             from agent_system.core.request_context import current_run_user
 
-            run_user = (ctx.store.get_run(ctx.id) or {}).get("user_id")
+            run_user = getattr(ctx.backend, "user_id", None) or (ctx.store.get_run(ctx.id) or {}).get("user_id")
             if run_user:
                 current_run_user.set(run_user)
         except Exception:

@@ -1538,6 +1538,15 @@ class Agent(ToolServer):
             except Exception as e:
                 logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
 
+        # The run sets its request id and its user in the context it runs in -- the
+        # caller's: this generator runs in whoever iterates it. Its cleanup resets
+        # them once a conversation context was built; a setup that failed before, or
+        # a consumer that closed the stream early, left them to the caller. What they
+        # were is what they are again when this generator ends -- and at "end", its
+        # last event: a consumer that stops there (app, agent_service) never closes
+        # it, and the garbage collector closes it in another task.
+        from ...core.request_context import current_run_user
+        request_before, user_before = current_request_id.get(), current_run_user.get()
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
@@ -1558,6 +1567,9 @@ class Agent(ToolServer):
                 # end, error or cancel (sub_agent_manager does), and the event it
                 # stops at would never be relayed.
                 relay_run_event(status_forwarder, event, self.name)
+                if event.get("type") == "end":
+                    current_request_id.set(request_before)
+                    current_run_user.set(user_before)
                 yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
@@ -1581,6 +1593,8 @@ class Agent(ToolServer):
                     await self._session_service.stop_checkpoint_loop(checkpoint_session_id)
                 except Exception as e:
                     logger.debug(f"Failed to stop checkpoint loop for {checkpoint_session_id}: {e}")
+            current_request_id.set(request_before)
+            current_run_user.set(user_before)
 
     async def _initialize_request_and_conversation(
         self,
