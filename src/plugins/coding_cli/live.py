@@ -8,7 +8,8 @@ the forms parse_request_id_hierarchy and the chat's copy of it know, which hang
 the box under the call and the lines at their depth.
 
 Nothing here may cost the run: a failure is logged and the view is lost, the run
-and its ring go on.
+and its ring go on. A relay that fails costs the box, not the status lines: while
+the view runs, the terminal has no other line for Claude Code's tool calls.
 """
 from __future__ import annotations
 
@@ -71,6 +72,7 @@ class LiveRun:
         self._calls = 0
         self._open: dict[str, tuple[str, str, str]] = {}   # tool_use id -> (request id, tool, line)
         self._closed = False
+        self._relay_broken = False
 
     @property
     def request_id(self) -> str:
@@ -96,7 +98,12 @@ class LiveRun:
             return None
 
     def _relay(self, event: dict) -> None:
-        relay_run_event(self._forwarder, event, AGENT)
+        try:
+            relay_run_event(self._forwarder, event, AGENT)
+        except Exception:  # noqa: BLE001 - see the module docstring
+            if not self._relay_broken:
+                logger.exception("coding_cli: relaying a run's events failed")
+            self._relay_broken = True
 
     async def feed(self, events: list[dict]) -> None:
         """Relay what the stream said since the last feed."""

@@ -135,8 +135,12 @@ async def test_a_broken_relay_costs_the_view_not_the_run(parent, tmp_path, monke
         raise RuntimeError("relay down")
 
     monkeypatch.setattr(live_module, "relay_run_event", broken)
-    await view.feed([_assistant("m1", {"type": "text", "text": "hi"})])
+    await view.feed([_assistant("m1", {"type": "text", "text": "hi"},
+                                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}})])
     await view.close({"state": "done", "result": "ok"})   # neither raises
+    # The terminal's only line for the call: a broken box must not take it along.
+    assert [(e["message"], e["phase"]) for e in _status(parent)] == [
+        ("Bash ls", "start"), ("Bash ls: no result, the run ended", "error")], _status(parent)
 
 
 async def test_the_box_goes_on_after_the_call_answered(repo, parent):  # noqa: F811
@@ -219,3 +223,50 @@ async def test_what_the_process_wrote_just_before_it_exited_arrives(tmp_path, mo
     await server._monitor(record, Exiting())
 
     assert seen == ["head", "tail", "closed"], seen
+
+
+@pytest.mark.parametrize("with_view", [True, False])
+async def test_a_tool_call_the_view_shows_is_not_repeated_as_progress(tmp_path, monkeypatch, with_view):
+    """The terminal prints every status line. With a live view each tool call
+    already has its own line, with its result; the call's progress then only
+    carries what Claude Code says. Without a view the progress is all there is."""
+    from plugins.coding_cli import server as server_module
+
+    monkeypatch.setattr(server_module, "POLL_S", 0.01)
+    server = make_server(tmp_path)
+    record = {"run_id": "prog01", "worktree": str(tmp_path), "started_at": 1e12}
+    server._file("prog01", "jsonl").parent.mkdir(parents=True, exist_ok=True)
+    server._save(record)
+    server._file("prog01", "jsonl").write_text(json.dumps(_assistant(
+        "m1", {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": str(tmp_path / "a.py")}},
+        {"type": "text", "text": "Checking the parser."})) + "\n", encoding="utf-8")
+
+    class Exiting:
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            return None if self.polls < 3 else 0
+
+    class Silent:
+        async def feed(self, events):
+            pass
+
+        async def close(self, record):
+            pass
+
+    progress = []
+
+    class Listener:
+        async def progress(self, message, meta=None):
+            progress.append(message)
+
+    server._listeners["prog01"] = Listener()
+    if with_view:
+        server._live["prog01"] = Silent()
+    await server._monitor(record, Exiting())
+
+    if with_view:
+        assert progress == ["Checking the parser."], progress
+    else:
+        assert progress == ["Checking the parser. (+1)"], progress

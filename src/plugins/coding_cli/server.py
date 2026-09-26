@@ -562,7 +562,8 @@ class CodingCliServer(SchemaBasedToolServer):
                 if listener is None:
                     continue
                 # At most one line per poll: the rest is counted, not lost from the record.
-                lines = [line for event in found for line in cli.actions(event, root)]
+                # A live view shows each tool call as a line of its own, with its result.
+                lines = [line for event in found for line in cli.actions(event, root, tools=live is None)]
                 if lines:
                     await listener.progress(lines[-1] if len(lines) == 1 else f"{lines[-1]} (+{len(lines) - 1})")
             live = self._live.get(run_id)
