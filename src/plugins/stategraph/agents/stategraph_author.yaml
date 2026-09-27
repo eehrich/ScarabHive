@@ -36,6 +36,7 @@ plugins:
             - "+stategraph/stategraph_save_machine"
             - "+stategraph/stategraph_run_machine"
             - "+stategraph/stategraph_get_run"
+            - "+stategraph/stategraph_list_runs"   # read-only: a run whose id got lost
             - "+stategraph/stategraph_control_run"
             - "+stategraph/stategraph_send_event"   # a test run of a wait state reaches a final only by an event
             - "+skills/*"

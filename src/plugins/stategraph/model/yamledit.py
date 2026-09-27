@@ -304,7 +304,7 @@ def _update_state(edit: "_Edit", op: dict[str, Any]) -> str:
             value = None  # the default: no key
         _put(edit, what, body, key, _value(value, key), before=("transitions", "states"))
     if activity:
-        from ..kinds.base import REGISTRY  # the kind keys go first, where readers look
+        from plugins.stategraph.kinds.base import REGISTRY  # the kind keys go first, where readers look
 
         do = body.get("do")
         if do is None:

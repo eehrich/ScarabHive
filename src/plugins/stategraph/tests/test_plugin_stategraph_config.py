@@ -50,7 +50,7 @@ INSTANCE = "stategraph"
 # The author's loop (design §9): look up, write, validate, save, test-run, read the
 # run, drive a waiting test run with an event, control its own runs.
 AUTHOR_TOOLS = {"catalog", "list_machines", "get_machine", "validate_machine", "save_machine",
-                "run_machine", "get_run", "control_run", "send_event"}
+                "run_machine", "get_run", "list_runs", "control_run", "send_event"}
 # Instance names that share the tools' prefix; the docs name them, they are not tools.
 NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design", "example_agent"}
 _TOOL_REF = re.compile(r"\bstategraph_([a-z_]+)\b")

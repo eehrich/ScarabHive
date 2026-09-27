@@ -156,7 +156,8 @@ class StateGraphService:
         files, versions = self._files_of(machine_id, tree)
         return {"id": machine_id, "file": str(found.path), "writable": found.writable,
                 "root_file": f"{machine_id}.yaml", "files": files, "versions": versions,
-                "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id)}
+                "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id),
+                "agents": self.server.agents_of(machine_id)}
 
     def create_machine(self, machine_id: str, title: Optional[str] = None) -> dict[str, Any]:
         from .model.spec import check_name
@@ -438,8 +439,10 @@ class StateGraphService:
             raise ServiceError(404, f"no run {run_id!r}")
         return row
 
-    def list_runs(self, machine_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
-        return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)))
+    def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
+                  user_id: Optional[str] = None, all_users: bool = True) -> list[dict[str, Any]]:
+        return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)), status=status,
+                                        user_id=user_id, all_users=all_users)
 
     def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
                 kinds: Optional[list[str]] = None, state: Optional[str] = None) -> dict[str, Any]:

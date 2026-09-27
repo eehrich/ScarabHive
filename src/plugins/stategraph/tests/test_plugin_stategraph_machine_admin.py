@@ -78,7 +78,7 @@ def service_over(tmp_path: Path, *files: tuple[str, str]):
     runs = RunStore(tmp_path / "runs.db")
     server = types.SimpleNamespace(name="stategraph", system_config=None, runner_agent="r", inject_params={},
                                    machines=MachineStore([str(own), str(shipped)], [str(own)], base=tmp_path),
-                                   run_store=runs, run_manager=RunManager(runs))
+                                   run_store=runs, run_manager=RunManager(runs), agents_of=lambda machine_id: [])
     return StateGraphService(server), own, shipped
 
 

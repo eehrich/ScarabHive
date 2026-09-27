@@ -181,13 +181,24 @@ class RunStore:
             row = self._db().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return self._run_row(row) if row else None
 
-    def list_runs(self, machine_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
+                  user_id: Optional[str] = None, all_users: bool = True) -> list[dict[str, Any]]:
+        """The newest runs; ``all_users=False``: only ``user_id``'s and runs of nobody (what that user may see)."""
         sql = ("SELECT id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id,"
                " parent_run, fork_step, run_key FROM runs")
+        where: list[str] = []
         args: list[Any] = []
         if machine_id:
-            sql += " WHERE machine_id = ?"
+            where.append("machine_id = ?")
             args.append(machine_id)
+        if status:
+            where.append("status = ?")
+            args.append(status)
+        if not all_users:
+            where.append("(user_id IS NULL OR user_id = ?)")
+            args.append(user_id)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC LIMIT ?"
         args.append(int(limit))
         with self._lock:

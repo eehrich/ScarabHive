@@ -616,6 +616,39 @@ function drawInspector() {
     </div>`);
 }
 
+/** The machine agents that run this machine (a SAM, the chat, agent-cli --agent reach it through them), and the
+ * entry that offers it as one. */
+function agentSection(m) {
+  const agents = m.agents || [];
+  const listed = agents.length ? html`<ul class="sg-plain-list">${agents.map((a) => html`<li class="sg-watch">
+      <span class="pk-mono">${a.name}</span> ${badge(a.visibility, a.visibility === 'private' ? '' : 'info')}
+      <span class="pk-muted">input ${a.input}, on a wait: ${a.on_wait}</span>
+      ${a.problems.length ? html`<div class="pk-text--danger">${a.problems.join('; ')}</div>` : ''}</li>`)}</ul>
+    ${agents.some((a) => a.visibility === 'private') ? html`<p class="pk-help">A private agent is reached only by its name
+      (agent-cli --agent, writer_jobs): a SAM does not offer it, the chat does not list it.</p>` : ''}`
+    : html`<p class="pk-help">No agent runs this machine. An entry like this one in a config file (config/agents/*.yaml)
+      offers it as one after a restart:</p>`;
+  const entry = agentEntry(m);
+  return html`${listed}<details class="pk-details" ${agents.length ? '' : 'open'}><summary>Entry for a machine agent</summary>
+    <pre class="sg-result-text" id="agentEntry">${entry}</pre>
+    <button type="button" class="pk-btn pk-btn--sm" data-act="copy-agent-entry">${icon('copy', { size: 'sm' })} Copy</button></details>`;
+}
+
+/** A config entry that offers the machine as an agent: one param is the message, more take a JSON object. */
+function agentEntry(m) {
+  const g = m.graph;
+  const params = Object.keys(g.params || {});
+  const text = params.length === 1;
+  return ['plugins:', '  servers:', `    ${m.id}_agent:`, '      type: stategraph_machine', '      enabled: true',
+    `      description: ${JSON.stringify(g.title || g.description || `Runs the state machine ${m.id}`)}`,
+    `      machine: ${m.id}`,
+    text ? `      input: text        # the message is the param ${params[0]}` : '      input: json        # the message is a JSON object of the params',
+    ...(text ? [`      task_param: ${params[0]}`] : []),
+    '      on_wait: ask       # a wait state asks in the conversation; block: the request waits until the run ends',
+    '      metadata:',
+    '        visibility: tool # a SAM may start it; both: the chat lists it too; private: only by its name'].join('\n');
+}
+
 function machineOverview() {
   const m = S.machine;
   const g = m.graph;
@@ -638,6 +671,7 @@ function machineOverview() {
     <div class="sg-section"><h4 class="sg-section-title">Imports</h4>
       ${table(Object.entries(g.imports || {}).map(([alias, ref]) => html`<tr><td class="pk-mono">${alias}</td>
         <td><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-machine="${importedId(ref)}">${ref}</button></td></tr>`), ['Alias', 'Machine'])}</div>
+    <div class="sg-section"><h4 class="sg-section-title">As an agent</h4>${agentSection(m)}</div>
     <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
       <form data-form="machine-fields" class="pk-stack">
         <div class="sg-fields">${Object.keys(MACHINE_FIELD_SCHEMA).map((name) => field(name, MACHINE_FIELD_SCHEMA[name],
@@ -1534,6 +1568,11 @@ function drawDebugPane() {
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
     </div>`) : html`<p class="pk-help">${run ? 'No live frames: the run has not started or has ended.' : 'Frames show while a run is selected.'}</p>`);
 }
+
+$('side-inspect').addEventListener('click', (event) => {
+  if (!event.target.closest?.('[data-act="copy-agent-entry"]') || !S.machine) return;
+  copyText(agentEntry(S.machine));  // it says itself that it copied
+});
 
 $('side-debug').addEventListener('click', async (event) => {
   const target = event.target.closest('button');

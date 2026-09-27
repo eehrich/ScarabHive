@@ -6,11 +6,24 @@ tools:
   - type: function
     function:
       name: "{{ name }}_catalog"
-      description: "What a machine may use: activity kinds with their fields, the agents an agent activity can run, the tools the runner may call, decision profiles, example machine ids. Use only what this lists."
+      description: "What a machine may use: activity kinds with their fields, the agents an agent activity can run, the tools a tool activity may call (flat name, what it does, its parameters and which are required), decision profiles, example machine ids. Use only what this lists."
       parameters:
         type: object
         properties:
           agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. v6_*; default: every agent"}
+          tools: {type: string, description: "fnmatch pattern on the flat tool name that narrows the tool list, e.g. *json*; default: every tool the runner may call"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_runs"
+      description: "The newest runs you may see (yours, and runs of nobody; an admin every run): id, machine, status, final state, times, run_key. Find a run whose id you lost here, then read it with get_run."
+      parameters:
+        type: object
+        properties:
+          machine_id: {type: string, description: "only runs of this machine"}
+          status: {type: string, enum: ["running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled"], description: "only runs in this status"}
+          limit: {type: integer, minimum: 1, maximum: 200, default: 20, description: "at most this many, newest first"}
         additionalProperties: false
 
   - type: function
@@ -63,6 +76,7 @@ tools:
         type: object
         properties:
           machine_id: {type: string, description: "id of the machine to run"}
+          request: {type: string, description: "instead of machine_id: '<machine id> {json params}' or '<machine id> key=value ...' (the slash command's line)"}
           params: {type: object, description: "the machine's params (run input)"}
           mocks: {type: object, description: "state path -> out; {\"$visits\": [...]} per visit; {\"$error\": {type, message}} to fail"}
           mock_only: {type: boolean, default: false, description: "refuse every unmocked agent, tool or decision"}
@@ -73,7 +87,6 @@ tools:
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits; background: return at once"}
           max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish before returning status running"}
-        required: [machine_id]
         additionalProperties: false
 
   - type: function
@@ -88,6 +101,8 @@ tools:
           after: {type: integer, minimum: 0, description: "the rows after this journal seq (to page forward through a long run); without it, the last ones"}
           kinds: {type: array, items: {type: string, enum: ["activity", "trace", "event", "edit", "timer"]}, description: "only rows of these kinds (activity: what each activity was given and answered; trace: transitions with the guards they evaluated, pauses, finals)"}
           state: {type: string, description: "only rows of this state"}
+          wait: {type: string, enum: ["now", "finish"], default: "now", description: "finish: a running run is waited for until it ends, pauses or waits (at most max_wait seconds)"}
+          max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish"}
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
         required: [run_id]
         additionalProperties: false
@@ -133,9 +148,20 @@ commands:
   - name: stategraph-run
     description: "run a state machine in the background"
     tool: "{{ name }}_run_machine"
-    argument: machine_id
-    argument_hint: "<machine id>"
+    argument: request
+    argument_hint: "<machine id> [{json params} | key=value ...]"
     params: {wait: background}
+  - name: stategraph-runs
+    description: "the newest state machine runs you may see"
+    tool: "{{ name }}_list_runs"
+    argument: machine_id
+    argument_hint: "[machine id]"
+  - name: stategraph-stop
+    description: "terminate a state machine run (its finally activities run)"
+    tool: "{{ name }}_control_run"
+    argument: run_id
+    argument_hint: "<run id>"
+    params: {action: terminate}
 
 web_ui:
   panel:

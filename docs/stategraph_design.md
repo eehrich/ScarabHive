@@ -975,20 +975,23 @@ src/plugins/stategraph/
 
 | Tool | Parameters | Result |
 |---|---|---|
-| `catalog` | `agents?` (fnmatch pattern) | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the tools the runner may call; decision profiles; example machine ids |
+| `catalog` | `agents?`, `tools?` (fnmatch patterns) | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the tools the runner may call (flat name, description, parameters, required); decision profiles; example machine ids |
 | `list_machines` | | id, title, file, writable, and whether it validates |
 | `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
-| `run_machine` | `machine_id`, `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
-| `get_run` | `run_id`, `steps?`, `after?` (a journal seq: the rows after it), `kinds?`, `state?` | `run_status`, `state`, `output`, `error`, `frames` (with their context, and a wait state's `waiting_since`/`deadline`), `inbox`, journal rows (texts over 2,000 characters cut, the output over 20,000) |
+| `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
+| `list_runs` | `machine_id?`, `status?`, `limit?` | the newest runs the caller may see (own and nobody's; an admin every run) |
+| `get_run` | `run_id`, `steps?`, `after?` (a journal seq: the rows after it), `kinds?`, `state?`, `wait?` (`finish`: wait for a running run's end, pause or wait; `max_wait`), `full_output?` | `run_status`, `state`, `output`, `error`, `frames` (with their context, and a wait state's `waiting_since`/`deadline`), `inbox`, journal rows (texts over 2,000 characters cut, the output over 20,000) |
 | `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args (a fork: `at_step`, `definition`, `pause`, `mocks`), `steps?` | run state (with `steps`: its journal rows) |
 | `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not |
 
 `get_run`, `control_run` and `send_event` answer another user's run as missing unless the asker
 is an admin or auth is off (§8.3).
 
-Slash command: `/stategraph-run <id>`, with `wait: background`.
+Slash commands: `/stategraph-run <id> [{json} | key=value ...]` (`run_machine` with `request`, `wait:
+background`), `/stategraph-runs [machine id]` (`list_runs`), `/stategraph-stop <run id>` (`control_run`,
+`action: terminate`). A run's tool answer carries `next`: what its status asks of the caller.
 
 ### 8.2 REST (`/plugins/stategraph/…`, JSON)
 
@@ -1128,6 +1131,10 @@ covered by tests.
    - A cancel of the request (or any request above it) terminates the run -- its `finally` runs; a
      bare task cancel (the process stops, the client leaves) leaves it `interrupted`.
    - A `continue` answers the output again, resumes an interrupted run, and never starts a second one.
+   - `on_wait: ask`: a run that waits for an event ends the turn with a question (the waiting state, the
+     events it takes, how to reply); the next message in the session is sent as the event -- its name, or
+     `{"event", "data"}` -- and the run goes on to its end or next wait. `block` (the default) waits for the
+     end, as writer_jobs needs. A request that does not fit the params is told what the machine takes.
    - The same request id again from a new session attaches, resumes, or answers the ended run's
      outcome again: its output, its failure, its cancel. Only a failure that is transient
      (`interrupted`, `timeout`, `agent_failed`, `decision_failed`, `internal`, `diverged` as the

@@ -86,7 +86,11 @@ nothing acts); with `steps` its answer carries that many journal rows;
 `repr`), as do watch values. The debugger's state -- pause, step, `run_to` -- survives a stop
 and resume.
 
-Slash command: `/stategraph-run <machine id>` starts a run in the background.
+Slash commands: `/stategraph-run <machine id> [{json params} | key=value ...]` starts a run in the
+background; `/stategraph-runs [machine id]` lists the newest runs you may see; `/stategraph-stop
+<run id>` terminates one (its `finally` activities run). Every tool answer about a run says in
+`next` what it asks of you (running: wait with `get_run(wait='finish')`; waiting: `send_event`;
+paused: `continue` or `step`; interrupted: `resume`).
 REST for the panel: `/plugins/stategraph/api/…` (design §8.2), admin-only. It also deletes a
 machine, which no tool does: `DELETE /plugins/stategraph/api/machines/{id}` with
 `{"expected_version": …}` removes the file, its layout sidecar and its companion module unless

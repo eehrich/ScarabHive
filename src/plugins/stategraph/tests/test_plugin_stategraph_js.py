@@ -392,6 +392,8 @@ PANEL_CASES = [
     "the_history_shows_the_time_and_one_kind_of_row_on_request",
     "a_fork_can_be_held_at_its_fork_point",
     "a_waiting_frame_says_what_it_waits_for_and_since_when",
+    "a_machine_without_an_agent_offers_the_entry_that_makes_one",
+    "a_machine_with_one_param_takes_the_message_as_it_and_lists_its_agents",
     "a_shared_activity_is_locked_with_a_hint",
     "another_kind_without_its_key_is_refused",
     "a_text_over_lines_is_a_text_area",

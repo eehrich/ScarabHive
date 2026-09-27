@@ -21,6 +21,7 @@ plugins:
       task_param: task
       params: {}                 # literal params, under the ones from the message
       promote: [story_id]        # output keys copied onto the final event's top level
+      on_wait: block             # ask: a wait state asks in the conversation (below); block: the request waits
       metadata:
         visibility: tool         # tool: a SAM offers it to its LLM; both: the chat's agent list too
 ```
@@ -49,11 +50,18 @@ a SAM's `max_nesting_depth` bounds them as if the facade had spawned them.
 | a cancel of the request or of any request above it | the run is terminated; its `finally` activities run -- within 10 s: then the platform force-cancels the caller's request tree, their tool calls and agent runs included; the answer is `cancelled` |
 | the process stops, or the client goes away | the run is left alone and ends `interrupted`; the next dispatch resumes it |
 | the machine fails | an `error` event (never a `final`: writer_jobs counts any `final` as success) |
+| the run waits for an event, `on_wait: ask` | the turn ends with a question: the waiting state (and its `description`), the events it takes with their descriptions and data schema, how to reply. The `final` event carries `waiting: {states, events}`. The next message in the session is the answer: the event's name (`approve`, case does not matter; data may follow it), or `{"event": "reject", "data": {...}}`. One the run does not take gets the question again with the reason (`Not sent: ...`); a taken one runs the machine on to its end or its next wait |
+| the run waits for an event, `on_wait: block` (default) | the request waits until the run ends; the event comes from elsewhere (the panel, `send_event`). writer_jobs needs this: it takes any answer for the result |
+| a message that does not fit the params | the error names what the machine takes: `it takes: task (string, required) -- ...` |
 
 ## Model Experience
 
 A caller sees an agent that takes one message and, when the machine has finished, answers
 with a single JSON object -- the machine's output, e.g. `{"story_id": 812, "title": "…"}`
-(a non-object output comes as `{"output": …}`). There is no conversation: a follow-up does
-not reach an LLM, it gets the same answer again. Errors arrive as the SAM's usual
+(a non-object output comes as `{"output": …}`). A follow-up does not reach an LLM: it gets
+the same answer again -- except, with `on_wait: ask`, while the run waits: then the answer
+is a question, and the follow-up is the event that answers it.
+
+The State Graph panel shows, for each machine, the machine agents that run it (their
+visibility, `on_wait`, and what keeps one from running) and a ready entry to add one. Errors arrive as the SAM's usual
 `Error: …` with the run id, so the run can be inspected in the State Graph panel.

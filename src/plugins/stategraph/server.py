@@ -34,7 +34,15 @@ MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
 ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
 ANSWER_CHARS = 200000  # a whole get_run answer: many short texts add up too
-READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run"})
+READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
+RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
+#: What a run's state asks of whoever reads it next (tool answers carry it as ``next``).
+NEXT = {
+    "running": "it goes on by itself: stategraph_get_run(run_id, wait='finish') waits for its end, a pause or a wait",
+    "waiting": "it waits for an event: stategraph_send_event(run_id, name, data) with one of `accepts`",
+    "paused": "the debugger holds it: stategraph_control_run(run_id, action='continue' or 'step')",
+    "interrupted": "its process stopped: stategraph_control_run(run_id, action='resume') goes on from its journal",
+}
 
 
 class StateGraphServer(SchemaBasedToolServer):
@@ -209,7 +217,9 @@ class StateGraphServer(SchemaBasedToolServer):
     # ------------------------------------------------------------ tools: "{name}_x" -> x(params)
     async def catalog(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            return self._catalog(str(params.get("agents") or "*"))
+            found = self._catalog(str(params.get("agents") or "*"))
+            found["tools"] = await self._runner_tools(str(params.get("tools") or "*"))
+            return found
         return await self._run_tool(params, "catalog", body,
                                     lambda r: f"catalog: {len(r['kinds'])} kinds, {len(r['agents'])} agents, "
                                               f"{len(r['tools'])} tools")
@@ -233,6 +243,58 @@ class StateGraphServer(SchemaBasedToolServer):
         return {"kinds": kinds, "agents": agents, "runner": self.runner_agent,
                 "tools": patterns, "decision_profiles": sorted((getattr(llm, "decision_profiles", None) or {})),
                 "examples": [m.id for m in self.machines.list() if not m.writable]}
+
+    async def _runner_tools(self, pattern: str) -> list[dict[str, Any]]:
+        """The tools a machine's tool activity may call: every registered tool the runner's allowlist lets through
+        (the matcher dispatch uses), flat name, what it does and its parameters -- not the allowlist's patterns."""
+        from agent_system.config.settings import get_tool_server_config
+        from agent_system.plugins.tool_adapter import plugin_tool_registry
+        from agent_system.servers.agent.server import Agent
+        from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
+
+        runner = get_tool_server_config(self.runner_agent, self.system_config)
+        tools_cfg = getattr(getattr(runner, "agent_config", None), "tools", None)
+        allowed = list(getattr(tools_cfg, "allowed", None) or [])
+        blocked = list(getattr(tools_cfg, "blocked", None) or [])
+        found: list[dict[str, Any]] = []
+        for server_name in sorted(plugin_tool_registry.list_servers()):
+            adapter = plugin_tool_registry.get_server(server_name)
+            if adapter is None or isinstance(getattr(adapter, "plugin_server", None), Agent):
+                continue  # an agent is run by an agent activity, not called as a tool
+            try:
+                tools = await adapter.list_tools()
+            except Exception:  # one broken server must not cost the catalog
+                logger.debug("stategraph: tools of %s not listed", server_name, exc_info=True)
+                continue
+            for tool in tools:
+                if not (tool_matches_patterns(tool.name, server_name, allowed)
+                        and not tool_matches_patterns(tool.name, server_name, blocked)):
+                    continue
+                if not fnmatch.fnmatchcase(tool.name, pattern):
+                    continue
+                schema = tool.input_schema or {}
+                found.append({"name": tool.name, "description": (tool.description or "")[:300],
+                              "parameters": {name: {key: (str(value)[:200] if key == "description" else value)
+                                                    for key, value in (spec or {}).items()
+                                                    if key in ("type", "enum", "description", "default")}
+                                             for name, spec in (schema.get("properties") or {}).items()},
+                              "required": list(schema.get("required") or [])})
+        return found
+
+    async def list_runs(self, params: dict[str, Any]) -> dict[str, Any]:
+        async def body() -> dict[str, Any]:
+            status = params.get("status") or None
+            if status is not None and status not in RUN_STATUSES:
+                raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
+            user = params.get("_user_id")
+            mine = self._auth_enabled() and not self._is_admin(user)
+            rows = self.service.list_runs(params.get("machine_id") or None, int(_number(params, "limit", 20, 1, 200)),
+                                          status=status, user_id=user, all_users=not mine)
+            return {"runs": [{key: row.get(key) for key in ("id", "machine_id", "status", "final_state", "created_at",
+                                                              "finished_at", "run_key", "parent_run")}
+                             | ({"error": _capped((row.get("error") or {}).get("message"), 300)} if row.get("error")
+                                else {}) for row in rows]}
+        return await self._run_tool(params, "list_runs", body, lambda r: f"{len(r['runs'])} run(s)")
 
     async def list_machines(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
@@ -274,11 +336,16 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def run_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            machine_id = _need(params, "machine_id")
+            run_params = _object(params, "params") or {}
+            if not params.get("machine_id") and params.get("request"):
+                machine_id, given = _request(str(params["request"]))
+                run_params = {**given, **run_params}
+            else:
+                machine_id = _need(params, "machine_id")
             wait = _choice(params, "wait", ("finish", "background"))
             max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
             started = await self.service.start_run(
-                machine_id, params=_object(params, "params") or {}, mocks=_object(params, "mocks"),
+                machine_id, params=run_params, mocks=_object(params, "mocks"),
                 mock_only=_flag(params, "mock_only"), pause_at_start=_flag(params, "pause_at_start"),
                 breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
@@ -293,24 +360,38 @@ class StateGraphServer(SchemaBasedToolServer):
         return await self._run_tool(params, "run_machine", body,
                                     lambda r: f"run {r['run_id']}: {r.get('run_status')} in {r.get('state') or '-'}")
 
-    async def _wait(self, run_id: str, max_wait: float, token: Any) -> dict[str, Any]:
+    async def _wait(self, run_id: str, max_wait: float, token: Any, *, terminate: bool = True) -> dict[str, Any]:
+        """Wait for a run to leave running. A cancelled caller stops waiting; one that started the run (terminate)
+        takes the run with it -- a reader (get_run) does not: it may not control a run it only sees."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max_wait
         while True:
             row = await self.run_manager.wait(run_id, timeout=1.0)
             if row["status"] not in ("running",) or loop.time() >= deadline:
                 return row
+            if token is None or not getattr(token, "is_cancelled", False):
+                continue
+            if not terminate:
+                return row
             live = self.run_manager.live.get(run_id)
-            if token is not None and getattr(token, "is_cancelled", False) and live is not None and not live.ctx.lost:
+            if live is not None and not live.ctx.lost:
                 self.run_manager.control(run_id, "terminate")  # the caller stopped: so does its run
                 return await self.run_manager.wait(run_id, timeout=5.0)
 
     async def get_run(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
             kinds = params.get("kinds")
-            row = self.service.get_run(_need(params, "run_id"), steps=params.get("steps") or 30,
-                                       user_id=params.get("_user_id"), after=params.get("after"),
-                                       kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
+            wait = _choice(params, "wait", ("now", "finish"))
+            max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
+
+            def read() -> dict[str, Any]:
+                return self.service.get_run(_need(params, "run_id"), steps=params.get("steps") or 30,
+                                            user_id=params.get("_user_id"), after=params.get("after"),
+                                            kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
+            row = read()  # the user's right to see it, and the filters, before any wait
+            if wait == "finish" and row["status"] == "running":  # a run of another process too: wait polls its row
+                await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
+                row = read()
             view = row.get("view") or {}
             return _bounded({**_summary(row, full_output=_flag(params, "full_output")), "run_id": row["id"],
                              "frames": _capped(view.get("frames", []), ROW_CHARS),
@@ -385,10 +466,19 @@ class StateGraphServer(SchemaBasedToolServer):
         """What keeps each machine agent over this instance (``type: stategraph_machine``) from running: its machine
         is missing or has errors, or the params it passes leave a required one out -- else only the first request's
         answer would say so."""
+        found: dict[str, list[str]] = {}
+        for name, config in self._facades():
+            problems = self._facade_problems(config)
+            if problems:
+                found[name] = problems
+        return found
+
+    def _facades(self) -> list[tuple[str, Any]]:
+        """The enabled machine agents over this instance: (name, its resolved config)."""
         from agent_system.config.settings import _resolve_server_inheritance, get_tool_server_config
 
         servers = getattr(getattr(self.system_config, "plugins", None), "servers", None) or {}
-        found: dict[str, list[str]] = {}
+        found = []
         for name, raw in servers.items():
             if not getattr(raw, "enabled", False):
                 continue
@@ -400,10 +490,21 @@ class StateGraphServer(SchemaBasedToolServer):
                 continue
             config = get_tool_server_config(name, self.system_config)
             if str(getattr(config, "stategraph", None) or "stategraph") == self.name:
-                problems = self._facade_problems(config)
-                if problems:
-                    found[name] = problems
+                found.append((name, config))
         return found
+
+    def agents_of(self, machine_id: str) -> list[dict[str, Any]]:
+        """The machine agents that run ``machine_id``: how they are offered, and what keeps one from running."""
+        agents = []
+        for name, config in self._facades():
+            if str(getattr(config, "machine", None) or "") != machine_id:
+                continue
+            metadata = getattr(config, "metadata", None)
+            agents.append({"name": name, "visibility": getattr(metadata, "visibility", None) or "private",
+                           "input": str(getattr(config, "input", None) or "text"),
+                           "on_wait": str(getattr(config, "on_wait", None) or "block"),
+                           "problems": self._facade_problems(config)})
+        return agents
 
     def _facade_problems(self, config: Any) -> list[str]:
         machine_id = str(getattr(config, "machine", None) or "")
@@ -450,6 +551,31 @@ def _need(params: dict[str, Any], key: str) -> str:
     if not value:
         raise ServiceError(422, f"{key} is required")
     return str(value)
+
+
+def _request(text: str) -> tuple[str, dict[str, Any]]:
+    """``<machine id> [params]`` (the slash command's line): params as a JSON object or as ``key=value`` words."""
+    machine_id, _, rest = text.strip().partition(" ")
+    rest = rest.strip()
+    if not machine_id:
+        raise ServiceError(422, "name the machine: <machine id> [{json params} | key=value ...]")
+    if not rest:
+        return machine_id, {}
+    if rest.startswith("{"):
+        try:
+            given = json.loads(rest)
+        except ValueError as exc:
+            raise ServiceError(422, f"the params after the machine id are no JSON object: {exc}") from None
+        if not isinstance(given, dict):
+            raise ServiceError(422, "the params after the machine id must be a JSON object")
+        return machine_id, given
+    given = {}
+    for word in rest.split():
+        key, sep, value = word.partition("=")
+        if not sep or not key:
+            raise ServiceError(422, f"params: key=value words or a JSON object, not {word!r}")
+        given[key] = value
+    return machine_id, given
 
 
 def _object(params: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
@@ -543,7 +669,7 @@ def _summary(row: dict[str, Any], *, full_output: bool = False) -> dict[str, Any
     return {"run_status": row.get("status"), "state": row.get("final_state") or root.get("state"),
             "output": row.get("output") if full_output else _capped(row.get("output"), OUTPUT_CHARS),
             "error": _capped(row.get("error"), ROW_CHARS),
-            "paused": debug.get("paused"),
+            "paused": debug.get("paused"), **({"next": NEXT[row["status"]]} if row.get("status") in NEXT else {}),
             "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
             **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}
 
