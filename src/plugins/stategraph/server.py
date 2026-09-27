@@ -30,6 +30,10 @@ DEFAULT_MACHINE_DIRS = ("data/stategraph/machines", "src/plugins*/*/machines")
 DEFAULT_WRITABLE = ("data/stategraph/machines",)
 SWEEP_SECONDS = 60
 MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
+# a tool answer bounds itself (plugin rules): texts in journal rows, frames and errors, and in a run's output
+ROW_CHARS = 2000
+OUTPUT_CHARS = 20000
+ANSWER_CHARS = 200000  # a whole get_run answer: many short texts add up too
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run"})
 
 
@@ -275,7 +279,8 @@ class StateGraphServer(SchemaBasedToolServer):
             max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
             started = await self.service.start_run(
                 machine_id, params=_object(params, "params") or {}, mocks=_object(params, "mocks"),
-                mock_only=_flag(params, "mock_only"), breakpoints=params.get("breakpoints") or (),
+                mock_only=_flag(params, "mock_only"), pause_at_start=_flag(params, "pause_at_start"),
+                breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
                 run_key=params.get("run_key"), caller_session=params.get("_session_id"))
             run_id = started["run_id"]
@@ -284,7 +289,7 @@ class StateGraphServer(SchemaBasedToolServer):
                 row = self.run_store.get_run(run_id) or {}
                 return {**started, **_summary(row)} if row else {**started, "state": None, "run_status": "running"}
             row = await self._wait(run_id, max_wait, params.get("_cancellation_token"))
-            return {**started, **_summary(row)}
+            return {**started, **_summary(row, full_output=_flag(params, "full_output"))}
         return await self._run_tool(params, "run_machine", body,
                                     lambda r: f"run {r['run_id']}: {r.get('run_status')} in {r.get('state') or '-'}")
 
@@ -302,10 +307,15 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def get_run(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
+            kinds = params.get("kinds")
             row = self.service.get_run(_need(params, "run_id"), steps=params.get("steps") or 30,
-                                       user_id=params.get("_user_id"))
-            return {**_summary(row), "run_id": row["id"], "frames": (row.get("view") or {}).get("frames", []),
-                    "journal": row.get("journal", []), "debug": row.get("debug")}
+                                       user_id=params.get("_user_id"), after=params.get("after"),
+                                       kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
+            view = row.get("view") or {}
+            return _bounded({**_summary(row, full_output=_flag(params, "full_output")), "run_id": row["id"],
+                             "frames": _capped(view.get("frames", []), ROW_CHARS),
+                             **({"inbox": view["inbox"]} if view.get("inbox") else {}),
+                             "journal": _capped(row.get("journal", []), ROW_CHARS), "debug": row.get("debug")})
         return await self._run_tool(params, "get_run", body,
                                     lambda r: f"run {r['run_id']}: {r['run_status']} in {r.get('state') or '-'}")
 
@@ -313,13 +323,15 @@ class StateGraphServer(SchemaBasedToolServer):
         async def body() -> dict[str, Any]:
             run_id, action = _need(params, "run_id"), _need(params, "action")
             kwargs = {k: params[k] for k in ("state", "machine", "at_step", "definition", "breakpoints", "watchpoints",
-                                              "expr", "path") if k in params}
+                                              "expr", "path", "pause") if k in params}
+            if "mocks" in params:
+                kwargs["mocks"] = _object(params, "mocks")
             if params.get("steps") is not None:  # as get_run's: the answer carries that many journal rows
                 kwargs["steps"] = params["steps"]
             result = await self.service.control_run(run_id, action, user_id=params.get("_user_id"), **kwargs)
             if "id" in result:  # a run row
                 return {**_summary(result), "run_id": result["id"], "action": action,
-                        **({"journal": result.get("journal", [])} if "steps" in kwargs else {})}
+                        **({"journal": _capped(result.get("journal", []), ROW_CHARS)} if "steps" in kwargs else {})}
             return {"action": action, **result}
         return await self._run_tool(params, "control_run", body,
                                     lambda r: f"{r['action']}: " + (f"run {r['run_id']} {r.get('run_status', '')}"
@@ -477,6 +489,39 @@ def _number(params: dict[str, Any], key: str, default: float, low: float, high: 
     return number
 
 
+def _capped(value: Any, limit: int) -> Any:
+    """Every text in ``value`` of more than ``limit`` characters cut, saying how long it was."""
+    if isinstance(value, str):
+        return value if len(value) <= limit else f"{value[:limit]}... ({len(value)} characters)"
+    if isinstance(value, dict):
+        return {key: _capped(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_capped(item, limit) for item in value]
+    return value
+
+
+def _bounded(answer: dict[str, Any]) -> dict[str, Any]:
+    """A get_run answer of at most ANSWER_CHARS: the oldest journal rows go first, then each frame's ctx is
+    replaced by its keys and their sizes -- each step said in the answer, with how to read what was left out."""
+    size = lambda value: len(json.dumps(value, default=str))  # noqa: E731
+    journal = list(answer.get("journal") or [])
+    dropped = 0
+    while journal and size({**answer, "journal": journal}) > ANSWER_CHARS:
+        journal.pop(0)
+        dropped += 1
+    answer = {**answer, "journal": journal}
+    if dropped:
+        answer["journal_cut"] = (f"{dropped} older row(s) left out to keep the answer small: page with after=<seq>, "
+                                 "or narrow with kinds or state")
+    if size(answer) > ANSWER_CHARS:
+        answer["frames"] = [{**frame, "ctx": {"$too_large": {key: size(value) for key, value in
+                                                               (frame.get("ctx") or {}).items()}}}
+                            for frame in answer.get("frames") or []]
+        answer["frames_cut"] = ("ctx replaced by its keys and their sizes: read single values with "
+                                "control_run(action=evaluate) while the run is paused")
+    return answer
+
+
 def _choice(params: dict[str, Any], key: str, choices: tuple[str, ...]) -> str:
     """One of ``choices``; the first when the argument is missing."""
     value = params.get(key) or choices[0]
@@ -490,13 +535,15 @@ def _counts(problems: list[dict[str, Any]]) -> str:
     return f"{errors} error(s), {len(problems) - errors} warning(s)"
 
 
-def _summary(row: dict[str, Any]) -> dict[str, Any]:
+def _summary(row: dict[str, Any], *, full_output: bool = False) -> dict[str, Any]:
     view = row.get("view") or {}
     frames = view.get("frames") or []
     root = frames[0] if frames else {}
     debug = row.get("debug") or {}
     return {"run_status": row.get("status"), "state": row.get("final_state") or root.get("state"),
-            "output": row.get("output"), "error": row.get("error"), "paused": debug.get("paused"),
+            "output": row.get("output") if full_output else _capped(row.get("output"), OUTPUT_CHARS),
+            "error": _capped(row.get("error"), ROW_CHARS),
+            "paused": debug.get("paused"),
             "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
             **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}
 

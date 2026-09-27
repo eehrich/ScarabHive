@@ -322,24 +322,31 @@ class RunStore:
                                       (run_id, kind, key)).fetchone() is not None
 
     def page(self, run_id: str, *, after: int = 0, limit: int = 200,
-             kinds: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+             kinds: Optional[Iterable[str]] = None, state: Optional[str] = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM journal WHERE run_id = ? AND seq > ?"
         args: list[Any] = [run_id, int(after)]
         if kinds:
             kinds = list(kinds)
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             args += kinds
+        if state is not None:
+            sql += " AND state = ?"
+            args.append(state)
         with self._lock:
             return [self._journal_row(r) for r in
                     self._db().execute(sql + " ORDER BY seq LIMIT ?", (*args, int(limit))).fetchall()]
 
-    def tail(self, run_id: str, limit: int = 50, kinds: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+    def tail(self, run_id: str, limit: int = 50, kinds: Optional[Iterable[str]] = None,
+             state: Optional[str] = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM journal WHERE run_id = ?"
         args: list[Any] = [run_id]
         if kinds:
             kinds = list(kinds)
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             args += kinds
+        if state is not None:
+            sql += " AND state = ?"
+            args.append(state)
         with self._lock:
             rows = self._db().execute(sql + " ORDER BY seq DESC LIMIT ?", (*args, int(limit))).fetchall()
         return [self._journal_row(r) for r in reversed(rows)]

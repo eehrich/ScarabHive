@@ -78,19 +78,25 @@ bekommt `[x]` und den Commit.
 
 ## Phase 2: Debug-Fähigkeit
 
-- [ ] **G1 Gerenderte Eingabe bleibt im Journal** (Task, Tool-Args, Call-Args, Decide-Input) — heute
+Stand: gebaut, Review der Fix-Runde eingearbeitet (Traceback behält sein Ende; ein angehaltener Fork hält am
+Fork-Punkt, nicht an einem State ohne `do` davor; `waiting_since` einmal pro Eintritt, über Resume und in der
+gespeicherten Ansicht; `failures` überleben einen Absturz im Backoff; Guards auch bei Initial-Choice und
+verworfenem Event; `full_output` und ein Gesamtdeckel von 200.000 Zeichen für `get_run`; ein Toast beim Kopieren).
+N3 (gedeckelte Antworten) ist hier mit erledigt.
+
+- [x] **G1 Gerenderte Eingabe bleibt im Journal** (Task, Tool-Args, Call-Args, Decide-Input) — heute
   überschreibt die End-Zeile `inputs`. Anzeige im Panel.
-- [ ] **G2 Guard-Auswertung** `[{owner, index, guard, result|error}]` in die Transition-Trace und in
+- [x] **G2 Guard-Auswertung** `[{owner, index, guard, result|error}]` in die Transition-Trace und in
   `error.data` von `no_transition`.
-- [ ] **G3 Traceback** (gekürzt, Frames im Companion-Modul) in `error.data.traceback`; `logger.warning`
+- [x] **G3 Traceback** (gekürzt, Frames im Companion-Modul) in `error.data.traceback`; `logger.warning`
   für activity_failed/agent_failed/internal.
-- [ ] **G4 Fehlgeschlagene Retry-Versuche** in `meta.failures`.
-- [ ] **G5 Fork mit `pause` und `mocks`** (RunManager.fork kann es schon; Service/Tool/Panel reichen es
+- [x] **G4 Fehlgeschlagene Retry-Versuche** in `meta.failures`.
+- [x] **G5 Fork mit `pause` und `mocks`** (RunManager.fork kann es schon; Service/Tool/Panel reichen es
   durch); `pause_at_start` auch am Tool `run_machine`.
-- [ ] **G6 `get_run` mit `after`/`kinds`/`key`** und Kappung langer Felder; Panel-History mit Zeitstempel
+- [x] **G6 `get_run` mit `after`/`kinds`/`key`** und Kappung langer Felder; Panel-History mit Zeitstempel
   und Filter.
-- [ ] **G7 Warten sichtbar**: `waiting_since`, `deadline` in der Frame-View, `inbox` in der Tool-Antwort.
-- [ ] **G8 Panel zeigt `error.data`/`cause`** bei Aktivitätsfehlern; Request-ID kopierbar.
+- [x] **G7 Warten sichtbar**: `waiting_since`, `deadline` in der Frame-View, `inbox` in der Tool-Antwort.
+- [x] **G8 Panel zeigt `error.data`/`cause`** bei Aktivitätsfehlern; Request-ID kopierbar.
 
 ## Phase 3: Nutzung durch Nutzer und Agent
 
@@ -98,7 +104,7 @@ bekommt `[x]` und den Commit.
   `/stategraph-runs`, `/stategraph-stop`.
 - [ ] **N2 Weiterwarten**: `wait`/`max_wait` an `get_run`; Antwort bei `running` sagt, wie es weitergeht;
   `max_wait` gedeckelt.
-- [ ] **N3 Ergebnisse gedeckelt**: `out`/ctx-Werte in Tool-Antworten gekappt, mit Längenangabe.
+- [x] **N3 Ergebnisse gedeckelt**: `out`/ctx-Werte in Tool-Antworten gekappt, mit Längenangabe.
 - [ ] **N4 `/stategraph-run` mit Params** (`<id> {json}`).
 - [ ] **N5 `catalog` liefert echte Tools** mit Beschreibung und Parametern statt Allowlist-Mustern.
 - [ ] **N6 Fassade: Warte-State im Gespräch** — wartet der Lauf auf ein Event, beendet die Fassade die

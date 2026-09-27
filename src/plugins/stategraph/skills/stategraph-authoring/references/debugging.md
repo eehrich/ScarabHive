@@ -75,7 +75,11 @@ run with `stategraph_get_run`. A run in status `paused` stopped at a breakpoint
 ## 2. Reading a run
 
 `stategraph_get_run(run_id, steps=30)` returns (besides `status`, the call's own
-`success` or `error`):
+`success` or `error`). `after=<seq>` pages forward (the first `steps` rows after that
+journal seq), `kinds=["activity"]` and `state="judge"` narrow the rows. Texts longer
+than 2,000 characters (20,000 in `output`; `full_output=true` gives it whole) are cut and
+say how long they were; a very large answer leaves out its oldest rows first (it says so
+in `journal_cut`):
 
 - `run_status`: `running`, `waiting` (a wait state waits for an event), `paused`
   (debugger), `interrupted` (the process stopped; resumable), `succeeded`, `failed`,
@@ -84,11 +88,20 @@ run with `stategraph_get_run`. A run in status `paused` stopped at a breakpoint
   `output`, `error` (`type`, `message`, `state`, `data`, `cause`), `paused` (where the
   debugger holds it), `mocks_unused`.
 - `frames`: one entry per active frame (the root, and every running submachine):
-  its active states, `ctx`, `params`, step, visit counts, and the events it accepts.
-- `accepts`: per waiting frame, the events it takes now.
+  its active states, `ctx`, `params`, step, visit counts, the events it accepts, and
+  for a wait state `waiting_since` and `deadline` (its `timeout`).
+- `accepts`: per waiting frame, the events it takes now; `inbox`: events sent that no
+  frame takes yet.
 - `journal`: the last rows -- `activity` (key, state, status `started`/`done`/`error`,
-  `out` or `error`, meta with `mocked`, `attempts`, `instance_id`), `trace` (enter,
-  exit, transition, final), `event`, `edit`, `timer`.
+  `inputs` (the rendered task, args or input it was given), `out` or `error`, meta with
+  `mocked`, `attempts`, `failures` (the attempts a retry ran again), `instance_id`,
+  `request_id`), `trace` (enter, exit, transition with the `guards` it evaluated and
+  their results, final), `event`, `edit`, `timer`.
+
+A Python error in a `call` (or a bug in a kind) keeps the last frames of its traceback
+in `error.data.traceback`: file, line and function of the companion module. A
+`no_transition` or `guard_failed` error lists the guards evaluated in `error.data.guards`
+-- which one you expected to hold, and what it gave.
 
 Journal keys name the step: `s3` is the activity of top-level step 3, `s3/b.style` a
 parallel branch, `s3/i.2` map item 2, `s3/m/s1` step 1 inside the submachine that
@@ -199,6 +212,11 @@ transient -- `interrupted`, `timeout`, `agent_failed`, `decision_failed`, `inter
 `stategraph_control_run(run_id, action="fork", at_step=N)` starts a new run that
 replays the source run's journal below top-level step N and runs live from there.
 
+- `pause: true` holds the fork at the fork point (the replayed steps before it run
+  silently): read `ctx` with `evaluate`, change it with `set`, then `step` or `continue`.
+- `mocks: {path: out}` go over the source run's mocks -- for the steps from the fork
+  point on; a replayed step keeps its recorded outcome.
+- A fork point on a top-level final has no hook to hold at: that fork ends at once.
 - `definition: "snapshot"` (default) uses the source run's definition;
   `definition: "current"` uses the machine as it is now -- fix a guard, then fork from
   the step before it. A divergence in the replayed part aborts the fork and names the

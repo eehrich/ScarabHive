@@ -441,9 +441,19 @@ class StateGraphService:
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)))
 
-    def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None) -> dict[str, Any]:
+    def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
+                kinds: Optional[list[str]] = None, state: Optional[str] = None) -> dict[str, Any]:
+        """A run and its journal rows: the last ``steps`` -- or, with ``after``, the first ``steps`` after that seq;
+        only rows of ``kinds`` and of ``state`` when given."""
         self._run(run_id, user_id)
         _check_steps(steps)
+        if after is not None and not (_is_int(after) and after >= 0):
+            raise ServiceError(422, f"after must be a journal seq (0 or more), not {after!r}")
+        unknown = sorted(set(kinds or ()) - set(JOURNAL_KINDS))
+        if unknown or (kinds is not None and not isinstance(kinds, list)):
+            raise ServiceError(422, f"kinds: a list of {', '.join(JOURNAL_KINDS)}, not {kinds!r}")
+        if state is not None and not isinstance(state, str):
+            raise ServiceError(422, f"state must be a state name, not {state!r}")
         try:
             row = self.runs.describe(run_id)
         except KeyError:
@@ -451,7 +461,9 @@ class StateGraphService:
         view = row.get("view") or {}
         row["accepts"] = [{"frame": f.get("prefix", ""), "state": f.get("state"), "events": f.get("accepts") or []}
                           for f in view.get("frames", []) if f.get("accepts")]
-        row["journal"] = self.run_store.tail(run_id, limit=steps, kinds=("activity", "trace", "event", "edit", "timer"))
+        wanted = kinds or JOURNAL_KINDS
+        row["journal"] = (self.run_store.tail(run_id, limit=steps, kinds=wanted, state=state) if after is None
+                          else self.run_store.page(run_id, after=after, limit=steps, kinds=wanted, state=state))
         return row
 
     def journal(self, run_id: str, after: int = 0, limit: int = 200, kinds: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -522,7 +534,8 @@ class StateGraphService:
         try:
             new_id = await self.runs.fork(run_id, at_step=kwargs.get("at_step"), tree=tree,
                                           backend_factory=None if options.get("mock_only")
-                                          else self.backend_factory(), user_id=user_id or row.get("user_id"))
+                                          else self.backend_factory(), user_id=user_id or row.get("user_id"),
+                                          pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"))
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}
@@ -539,8 +552,12 @@ class StateGraphService:
 
 
 #: control_run's arguments besides the action, and their types (the tool's and the panel's parameters).
+#: The journal rows a run's answer carries (not the bookkeeping rows: request counts, leases).
+JOURNAL_KINDS = ("activity", "trace", "event", "edit", "timer")
+
 _CONTROL_ARGS: dict[str, type] = {"state": str, "machine": str, "at_step": int, "definition": str,
-                                  "breakpoints": list, "watchpoints": list, "expr": str, "path": str}
+                                  "breakpoints": list, "watchpoints": list, "expr": str, "path": str,
+                                  "pause": bool, "mocks": dict}
 
 
 def _is_int(value: Any) -> bool:

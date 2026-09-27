@@ -428,6 +428,67 @@ const CASES = {
     check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'the click did not select');
   },
 
+  async an_activitys_error_shows_its_traceback_input_failed_attempts_and_a_copyable_request() {
+    journalOf = { ...journalOf, r2: [{ seq: 3, kind: 'activity', key: 's1', state: 'write', status: 'error',
+      data: { kind: 'call', path: 'write', inputs: { call: 'explode', args: { n: 7 } },
+        error: { type: 'call_failed', message: "KeyError: 'missing'", data: { traceback: 'File "m.py", line 13, in explode' },
+          cause: { type: 'tool_failed', message: 'deeper' } },
+        meta: { request_id: 'r2_004', attempts: 2, failures: [{ attempt: 1, type: 'call_failed', message: 'ValueError: first' }] } } }] };
+    await boot('?machine=review&run=r2');
+    const details = element('details', { 'data-result': '3' });
+    details.open = true;
+    const body = details.appendChild(element('div', { class: 'sg-result-body' }));
+    await $('runResult').fire('toggle', { target: details });
+    const shown = body.innerHTML;
+    check(shown.includes('File &quot;m.py&quot;, line 13, in explode') || shown.includes('File "m.py", line 13, in explode'),
+      `no traceback: ${shown}`);
+    check(shown.includes('caused by tool_failed: deeper'), 'no cause');
+    check(shown.includes('<summary>Input</summary>') && shown.includes('explode'), 'no input');
+    check(shown.includes('Failed attempts (1)') && shown.includes('ValueError: first'), 'no failed attempts');
+    check(shown.includes('data-copy="r2_004"'), 'the request id cannot be copied');
+    await $('runResult').fire('click', { target: element('button', { 'data-copy': 'r2_004' }) });
+    await settle();
+    check(JSON.stringify(globalThis.COPIED) === '["r2_004"]', `copied ${JSON.stringify(globalThis.COPIED)}`);
+  },
+
+  async a_run_that_took_no_transition_shows_the_guards_it_evaluated() {
+    runAnswer = { ...RUN, status: 'failed', error: { type: 'no_transition', message: 'read completed and no completion transition is enabled',
+      state: 'read', data: { guards: [{ at: 'read.transitions', guard: 'ctx.round > 3', result: false }] } } };
+    await boot('?machine=review&run=r1');
+    const result = $('runResult').innerHTML;
+    check(result.includes('Guards evaluated') && result.includes('ctx.round &gt; 3') && result.includes('false'),
+      `the guards: ${result}`);
+  },
+
+  async the_history_shows_the_time_and_one_kind_of_row_on_request() {
+    await boot('?machine=review&run=r1');
+    check($('runHistory').innerHTML.includes('<th>Time</th>'), 'no time column');
+    const traces = RUN.journal.filter((row) => row.kind === 'trace').length;
+    check(traces > 0 && traces < RUN.journal.length, 'fixture: the run has trace rows and others');
+    await $('runHistory').fire('change', { target: Object.assign(element('select', { id: 'historyKind' }), { value: 'trace' }) });
+    const rows = ($('runHistory').innerHTML.match(/<tr>/g) || []).length - 1;  // less the head row
+    check(rows === traces, `${rows} rows shown, ${traces} traces`);
+  },
+
+  async a_fork_can_be_held_at_its_fork_point() {
+    await boot('?machine=review&run=r1');
+    $('forkStep').value = '2';
+    $('forkPause').checked = true;
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'fork' }) });
+    await settle();
+    const sent = CALLS.filter(([, path]) => path.endsWith('/control')).pop();
+    check(sent && sent[2].action === 'fork' && sent[2].at_step === 2 && sent[2].pause === true, `sent ${JSON.stringify(sent && sent[2])}`);
+  },
+
+  async a_waiting_frame_says_what_it_waits_for_and_since_when() {
+    const frames = RUN.view.frames.map((f) => ({ ...f, accepts: ['approve'], waiting_since: '2026-09-27T10:00:00.000+00:00',
+      deadline: '2026-09-27T11:00:00.000+00:00' }));
+    runAnswer = { ...RUN, status: 'waiting', view: { ...RUN.view, frames } };
+    await boot('?machine=review&run=r1');
+    const shown = $('dbgFrames').innerHTML;
+    check(shown.includes('waits for approve since') && shown.includes('until'), `frames: ${shown}`);
+  },
+
   async the_result_shows_every_activitys_answer_and_the_end_states() {
     await boot('?machine=review&run=r2');
     const result = $('runResult').innerHTML;

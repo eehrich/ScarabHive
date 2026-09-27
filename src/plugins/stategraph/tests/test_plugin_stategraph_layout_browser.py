@@ -50,7 +50,7 @@ CHOICES = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <select id="event"><option value="approve">approve</option><option value="reject">reject</option></select>
 <select id="bare"><option value="approve">approve</option><option value="reject">reject</option></select>
 <div id="bar"><select id="runTo"><option value="a">a</option><option value="b">b</option></select>
-<input id="forkStep" type="number"></div>
+<input id="forkStep" type="number"><input id="forkPause" type="checkbox"></div>
 <script type="module">
 import { keepingChoices } from '/src/plugins/stategraph/static/graph.js';
 const $ = (id) => document.getElementById(id);
@@ -61,10 +61,12 @@ $('bare').value = 'reject';
 $('bare').innerHTML = options;  // the browser without the helper: back to the first option
 $('runTo').value = 'b';
 $('forkStep').value = '7';
+$('forkPause').checked = true;
 $('forkStep').focus();
 keepingChoices($('bar'), () => { $('bar').innerHTML = $('bar').innerHTML.replace('>a<', '>a (here)<'); return true; });
 fetch('/__results', { method: 'POST', body: JSON.stringify({ event: $('event').value, bare: $('bare').value,
-  runTo: $('runTo').value, forkStep: $('forkStep').value, focused: document.activeElement.id }) });
+  runTo: $('runTo').value, forkStep: $('forkStep').value, forkPause: $('forkPause').checked,
+  focused: document.activeElement.id }) });
 </script></body></html>"""
 
 
@@ -80,4 +82,5 @@ def test_a_redraw_keeps_what_the_viewer_chose_and_typed():
         page.unlink(missing_ok=True)
 
     assert seen["bare"] == "approve", "fixture: a redraw of the options resets a select in this browser"
-    assert (seen["event"], seen["runTo"], seen["forkStep"], seen["focused"]) == ("reject", "b", "7", "forkStep"), seen
+    assert (seen["event"], seen["runTo"], seen["forkStep"], seen["forkPause"], seen["focused"]) == (
+        "reject", "b", "7", True, "forkStep"), seen

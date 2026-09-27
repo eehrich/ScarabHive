@@ -154,6 +154,8 @@ class RunContext:
         self.step_hashes: dict[str, str] = {}
         self.var_snapshots: dict[str, dict[str, Any]] = {}
         self.deadlines: dict[str, float] = {}
+        self.wait_since: dict[str, float] = {}  # since when a wait state waits, per entry (a resume keeps it)
+        self.fork_step: Optional[int] = None    # a fork: the top-level step it runs live from
         self.frontier: dict[str, int] = {}
         self.mock_uses: dict[str, int] = {}   # path -> mocks consumed (restored from the journal on resume)
         # events
@@ -200,7 +202,10 @@ class RunContext:
                 elif row["status"] == "vars_from":
                     self.var_snapshots[data.get("agent", "")] = data.get("vars") or {}
                 elif row["status"] == "wait":
-                    self.deadlines[key] = float(data.get("deadline") or 0)
+                    if data.get("deadline") is not None:
+                        self.deadlines[key] = float(data["deadline"])
+                    if data.get("since") is not None:
+                        self.wait_since[key] = float(data["since"])
                 elif row["status"] == "cancel":
                     self.cancel_pending = True
                     self.timed_out = bool(data.get("timed_out"))
@@ -323,9 +328,17 @@ class RunContext:
             apply_edit(frame.ctx, edit["path"], edit["value"])
         if self.is_replay_point(frame) or (event is not None and getattr(event, "replayed", False)):
             return
+        if self.fork_step is not None and self._top_step(frame) < self.fork_step:
+            return  # a fork's prefix: replayed -- a state without do there leaves no row that says so
         if self.ending or frame.ending_only:  # a terminate is under way (no breakpoint holds it, not even one in
             return                             # a finally), or the frame only replays into its end
         await self.debugger.at_hook(self, frame, node, point, event)
+
+    @staticmethod
+    def _top_step(frame: Frame) -> int:
+        while frame.parent is not None:
+            frame = frame.parent
+        return frame.step
 
     def before_step(self, frame: Frame) -> None:
         """Before a frame of an ending run takes a step: only as far as its journal goes (§3.10). Past it -- the
@@ -389,6 +402,7 @@ class RunContext:
             return {"accepted": False, "reason": "another process owns this run now; send the event there"}
         self.inbox.append(pending)
         self._inbox_changed.set()
+        self.persist()  # the view shows the inbox: an event no frame takes yet waits there visibly
         return {"accepted": True, "frame": target, "queued": target is None}
 
     def _check_payload(self, name: str, data: Any, target: Optional[str]) -> Optional[str]:
@@ -443,18 +457,23 @@ class RunContext:
         if frame.ending_only or (self.ending and not frame.finalizer):  # its frame ended here before the crash
             self.stop_here()
         self.went_live()
-        deadline = None
-        if timeout is not None:  # one deadline per entry: an internal transition does not restart the wait
-            wait_key = f"{frame.prefix}s{frame.entered_step.get(leaf.name, frame.step)}:wait"
-            deadline = self.deadlines.get(wait_key)
-            if deadline is None:
-                deadline = time.time() + timeout
+        # one wait per entry: an internal transition restarts neither its deadline nor its "since"
+        wait_key = f"{frame.prefix}s{frame.entered_step.get(leaf.name, frame.step)}:wait"
+        since = self.wait_since.get(wait_key)
+        deadline = self.deadlines.get(wait_key) if timeout is not None else None
+        if since is None or (timeout is not None and deadline is None):
+            since = since if since is not None else time.time()
+            if timeout is not None and deadline is None:
+                deadline = since + timeout
                 self.deadlines[wait_key] = deadline
-                self.write("trace", wait_key, state=leaf.name, status="wait",
-                                  data={"deadline": deadline, "frame": frame.prefix})
+            self.wait_since[wait_key] = since
+            self.write("trace", wait_key, state=leaf.name, status="wait",
+                       data={"deadline": deadline, "since": since, "frame": frame.prefix})
         accepts = frame.accepts()
         self.waiting.add(frame.prefix)
+        frame.waiting_since, frame.wait_deadline = since, deadline
         self.refresh_status()
+        self.persist()  # the stored view shows the wait (the status may have been waiting already)
         try:
             while True:
                 self._inbox_changed.clear()  # before looking: an event arriving after the look still wakes us
@@ -480,6 +499,7 @@ class RunContext:
                     continue
         finally:
             self.waiting.discard(frame.prefix)
+            frame.waiting_since = frame.wait_deadline = None
             self.refresh_status()
 
     # ------------------------------------------------------------ debugger edits, trace, view
@@ -694,7 +714,8 @@ class RunManager:
                               data=resource_sources)
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
-                     token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id)
+                     token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id,
+                     fork_step=fork_step if parent_run else None)
         return run_id
 
     def _refuse_while_stopping(self) -> None:
@@ -747,7 +768,8 @@ class RunManager:
                          bool(options.get("mock_only")), debugger,
                          backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                          token_factory(run_id) if token_factory else None, origin=self._origin(run_id),
-                         running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0))
+                         running_seconds=float((row.get("view") or {}).get("running_seconds") or 0.0),
+                         fork_step=row.get("fork_step") if row.get("parent_run") else None)
         except BaseException:  # nothing runs it here: the lease goes back, so another process may take it at once
             try:
                 self.store.update_run(run_id, fence=self.owner, lease_until=_utc(-1), status=row["status"])
@@ -759,8 +781,12 @@ class RunManager:
     async def fork(self, run_id: str, *, at_step: Optional[int] = None, tree: Optional[MachineTree] = None,
                    backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                    token_factory: Optional[Callable[[str], Any]] = None, breakpoints: Any = None,
-                   watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None) -> str:
+                   watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None,
+                   mocks: Optional[dict[str, Any]] = None) -> str:
         """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live.
+
+        ``mocks`` go over the source's (an activity replayed from the journal keeps its outcome); ``pause_at_start``
+        holds the fork at its first live hook -- the fork point: the replayed hooks before it are silent.
 
         ``tree`` is the definition to use (``definition: current``); default: the source run's snapshot. The fork
         is ``user_id``'s run, and its own: no caller's place in a sub-agent tree (``nesting``) comes with it -- the
@@ -799,7 +825,7 @@ class RunManager:
         options = row.get("mocks") or {}
         return await self.start(
             tree if tree is not None else load_snapshot(row["definition"]), params=row.get("params") or {},
-            mocks=options.get("mocks"), mock_only=bool(options.get("mock_only")),
+            mocks={**(options.get("mocks") or {}), **(mocks or {})} or None, mock_only=bool(options.get("mock_only")),
             breakpoints=debug.get("breakpoints") if breakpoints is None else breakpoints,
             strict_points=breakpoints is not None,  # the source's own points may name states the current file lost
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
@@ -809,11 +835,13 @@ class RunManager:
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,
-                token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0) -> None:
+                token: Any, *, origin: Optional[str] = None, running_seconds: float = 0.0,
+                fork_step: Optional[int] = None) -> None:
         ctx = RunContext(run_id=run_id, store=self.store, machine=machine, backend=backend, mocks=mocks,
                          mock_only=mock_only, debugger=debugger, token=token,
                          owner=self.owner, origin=origin)
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
+        ctx.fork_step = fork_step
         root = Frame(ctx, machine, params)
         ctx.root = root
         ctx.on_lost = self._drop
@@ -905,6 +933,10 @@ class RunManager:
                     stored = await ctx.persist_end(
                         finished_at=utc_now() if fields.get("status") != "interrupted" else None,
                         **{k: v for k, v in fields.items() if k != "status"})
+                    error = fields.get("error") or {}
+                    logger.info("stategraph: run %s of %s %s in %s%s", ctx.id, ctx.machine.id, fields.get("status"),
+                                fields.get("final_state") or "-",
+                                f" ({error.get('type')}: {str(error.get('message') or '')[:200]})" if error else "")
                     ended = getattr(ctx.backend, "run_ended", None)
                     # only an end the store took: else the row is not ended (a resume goes on from there, or the
                     # process that took the run over ends it) -- and an interrupted run is not ended either

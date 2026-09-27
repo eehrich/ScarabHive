@@ -24,7 +24,7 @@ from agent_system.ui.resources import ui_templates
 
 #: Arguments control_run takes besides the action (schema.yaml, tool control_run).
 CONTROL_ARGS = frozenset({"state", "machine", "at_step", "definition", "breakpoints", "watchpoints", "expr", "path",
-                          "steps"})
+                          "steps", "pause", "mocks"})
 
 
 def _field(body: dict[str, Any], key: str, kind: type | tuple[type, ...], *, required: bool = False) -> Any:

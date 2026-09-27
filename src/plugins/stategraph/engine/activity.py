@@ -25,8 +25,10 @@ import asyncio
 import copy
 import itertools
 import json
+import logging
 import re
 import time
+import traceback
 import types
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -37,6 +39,7 @@ from plugins.stategraph.model.spec import NOT_RETRIED, parse_duration
 if TYPE_CHECKING:
     from .interpreter import Frame
 
+logger = logging.getLogger(__name__)
 _FAILED_TYPE = {"agent": "agent_failed", "tool": "tool_failed", "decide": "decision_failed", "call": "call_failed"}
 #: A key below an activity that lies in a frame's ending -- its finally or close activities, or what runs inside one.
 _IN_ENDING = re.compile(r"(?:^|/)(?:end\.|s\d+\.fin\.)")
@@ -259,6 +262,7 @@ class ActivityRun:
         input_hash = fingerprint(self.frame.tokenized(inputs))  # resource values as tokens: forks replay
         base = {"kind": kind.key, "path": self.path, "state": self.state, "input_hash": input_hash}
         self._base = base
+        self._inputs = inputs  # kept in the done or error row: what the activity was given (§6)
 
         recorded = self.run.recorded.get(self.key)
         if recorded is not None:
@@ -316,6 +320,8 @@ class ActivityRun:
         # A crash is not a failed attempt: a resumed activity continues the attempt it was in, so the
         # children that attempt finished replay under their keys and the retry budget stays the same.
         first = max(1, int(begun_row.get("attempt") or 1))
+        if begun_row.get("failures"):  # the attempts that failed before the crash
+            self.meta["failures"] = list(begun_row["failures"])
         begun = time.monotonic()
         failure: Optional[ActivityError] = None
         for attempt in range(first, max(attempts, first) + 1):
@@ -324,7 +330,7 @@ class ActivityRun:
             failure = None  # this attempt's outcome, not the previous attempt's
             self.attempt = attempt
             self.meta["attempts"] = attempt
-            self._journal("started", {**base, "attempt": attempt, "inputs": inputs})
+            self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._failures()})
             if leaf:
                 self.run.busy += 1
                 self.run.refresh_status()
@@ -348,8 +354,10 @@ class ActivityRun:
                 failure = ActivityError("not_serialisable", f"{self.path}: the result is not JSON data: {exc}")
             except CodeError as exc:
                 failure = ActivityError("template_failed", exc.message)
-            except Exception as exc:  # a kind or backend bug must not kill the run silently
-                failure = ActivityError(_FAILED_TYPE.get(kind.key, "activity_failed"), f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # a kind or backend bug -- or a call's own code -- must not kill the run silently
+                logger.warning("stategraph: run %s: %s raised", self.run.id, self.path, exc_info=exc)
+                failure = ActivityError(_FAILED_TYPE.get(kind.key, "activity_failed"), f"{type(exc).__name__}: {exc}",
+                                        data={"traceback": _traceback(exc)})
             finally:
                 if leaf:
                     self.run.busy -= 1
@@ -363,16 +371,23 @@ class ActivityRun:
                 self._journal("done", {**base, "out": out, "meta": self.meta})
                 return out
             if attempt < attempts and spec.retry is not None and self._retryable(spec.retry, failure):
+                # the attempts that failed stay readable: the row keeps only the last outcome
+                self.meta.setdefault("failures", []).append(
+                    {"attempt": attempt, "type": failure.type, "message": failure.message[:_CAUSE_CHARS]})
                 # journaled with the time the next attempt is due: a resume within the backoff does not take this
                 # attempt for in flight (interrupted, or run once more over the budget) (§5.5)
                 due = time.time() + spec.retry.delay(attempt)
-                self._journal("started", {**base, "attempt": attempt + 1, "inputs": inputs, "backoff_until": due})
+                self._journal("started", {**base, "attempt": attempt + 1, "inputs": inputs, "backoff_until": due,
+                                          **self._failures()})
                 continue
             break
         assert failure is not None
         self.meta["duration_s"] = round(time.monotonic() - begun, 3)
         self._journal("error", {**base, "error": failure.as_dict(), "meta": self.meta})
         raise failure
+
+    def _failures(self) -> dict[str, Any]:
+        return {"failures": list(self.meta["failures"])} if self.meta.get("failures") else {}
 
     def _cancelled_by_run(self, task: Optional["asyncio.Task[Any]"], cancels: int) -> bool:
         """Whether a CancelledError out of an attempt is the run's (§5.8): this task is being cancelled (a
@@ -465,9 +480,18 @@ class ActivityRun:
         return data.get("out")
 
     def _journal(self, status: str, data: dict[str, Any]) -> None:
+        if status in ("done", "error") and getattr(self, "_inputs", None) is not None:
+            data = {**data, "inputs": self._inputs}  # the started row had them; its end replaces it
         self.run.write("activity", self.key, state=self.state, status=status, data=data)  # fenced by the owner
         if status in ("done", "error"):
             self.run.note_outcome(self.key, status, data)
+
+
+def _traceback(exc: BaseException, frames: int = 8) -> str:
+    """The last frames of an exception's traceback (where a call's own code raised), at most 2000 characters --
+    from the end, where the error line is (a tool answer cuts longer texts at their end)."""
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__, limit=-frames))
+    return text[-2000:]
 
 
 __all__ = ["ActivityRun", "ReplayDivergence", "RunAbort", "Scope"]

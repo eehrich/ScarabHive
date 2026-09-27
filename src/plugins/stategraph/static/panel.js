@@ -34,6 +34,7 @@ const S = {
   inspectorDrafts: new Set(),  // the inspector's forms with text typed and not applied: 'state', 'transition:<id>'
   yamlFile: null,
   runs: [],
+  historyKind: '',      // the history shows the rows of this kind only ('': every row)
   runId: null,
   run: null,            // get_run of the selected run
   evaluation: null,     // {expr, value} | {expr, error}
@@ -1413,6 +1414,7 @@ function drawDebugBar() {
     <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-control="terminate" ${can.terminate ? '' : 'disabled'}>${icon('square', { size: 'sm' })} Terminate</button>
     ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="Resume the interrupted run: finished activities are replayed, not repeated">${icon('rotate-ccw', { size: 'sm' })} Resume</button>` : ''}
     <input class="pk-input pk-input--sm sg-step-input" type="number" min="0" id="forkStep" aria-label="Top-level step to fork from" placeholder="step">
+    <label class="pk-check" title="Hold the fork at the fork point, to look at or set ctx before it goes on"><input type="checkbox" id="forkPause"> paused</label>
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from this top-level step (current definition with Shift)">${icon('git-branch', { size: 'sm' })} Fork</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
@@ -1435,6 +1437,7 @@ $('debugBar').addEventListener('click', async (event) => {
     }
     extra.at_step = step;
     extra.definition = event.shiftKey ? 'current' : 'snapshot';
+    if ($('forkPause').checked) extra.pause = true;
   }
   await withBusy(button, () => control(action, extra));
 });
@@ -1526,6 +1529,7 @@ function drawDebugPane() {
       <div class="sg-frame-head">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
         ${f.path ? html`<span class="pk-muted">under ${f.path}</span>` : ''}<span class="pk-grow"></span>
         <span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span></div>
+      ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
       <details class="pk-details" ${i === 0 ? 'open' : ''}><summary>ctx</summary>${jsonView(f.ctx ?? {})}</details>
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
     </div>`) : html`<p class="pk-help">${run ? 'No live frames: the run has not started or has ended.' : 'Frames show while a run is selected.'}</p>`);
@@ -1638,7 +1642,10 @@ function historyRow(row) {
     detail = row.status === 'error' ? `${data.error?.type || 'error'}: ${data.error?.message || ''}` : preview(data.out);
     if (data.meta?.mocked) what += ' (mocked)';
   } else if (row.kind === 'trace') {
-    if (row.status === 'transition') detail = `${data.from} → ${data.to ?? '(internal)'} on ${data.event}`;
+    if (row.status === 'transition') {
+      detail = `${data.from} → ${data.to ?? '(internal)'} on ${data.event}`
+        + (data.guards ? ` [${data.guards.map((g) => `${g.guard} = ${'error' in g ? 'error' : g.result}`).join('; ')}]` : '');
+    }
     else if (row.status === 'paused') detail = data.reason || '';
     else if (row.status === 'failed') detail = `${data.type || ''} ${data.message || ''}`;
     else if (row.status === 'final') detail = data.status || '';
@@ -1652,6 +1659,7 @@ function historyRow(row) {
   const duration = data.meta?.duration_s;
   return html`<tr>
     <td class="pk-num" data-sort-value="${row.seq}">${row.seq}</td>
+    <td data-sort-value="${row.ts || ''}">${localTime(row.ts, { seconds: true })}</td>
     <td class="pk-mono">${row.key}</td>
     <td>${WHAT[row.kind] || row.kind}</td>
     <td>${kind ? html`<span class="pk-text--${kind}">${what}</span>` : what}</td>
@@ -1662,14 +1670,24 @@ function historyRow(row) {
 }
 
 function drawHistory() {
-  const rows = S.run?.journal || [];
-  update($('runHistory'), S.run ? html`<div class="pk-card">
-    <div class="pk-card-head"><h3 class="pk-card-title">History of ${shorten(S.run.id, 16)}</h3><span class="pk-muted">the last ${rows.length} journal rows</span></div>
+  const all = S.run?.journal || [];
+  const rows = S.historyKind ? all.filter((row) => row.kind === S.historyKind) : all;
+  keepingChoices($('runHistory'), () => update($('runHistory'), S.run ? html`<div class="pk-card">
+    <div class="pk-card-head"><h3 class="pk-card-title">History of ${shorten(S.run.id, 16)}</h3><span class="pk-muted">the last ${all.length} journal rows</span>
+      <span class="pk-grow"></span>
+      <select class="pk-select pk-select--sm" id="historyKind" aria-label="Rows to show">
+        <option value="">every row</option>${Object.keys(WHAT).map((kind) => html`<option value="${kind}" ${kind === S.historyKind ? 'selected' : ''}>${kind}</option>`)}</select></div>
     ${rows.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="history">
-      <thead><tr><th class="pk-num" aria-sort="descending">#</th><th>Key</th><th>Row</th><th>What</th><th>State</th><th class="pk-num">Took</th><th>Detail</th></tr></thead>
-      <tbody>${rows.map(historyRow)}</tbody></table></div>` : html`<p class="pk-help">Nothing journaled yet.</p>`}
-  </div>` : '');
+      <thead><tr><th class="pk-num" aria-sort="descending">#</th><th>Time</th><th>Key</th><th>Row</th><th>What</th><th>State</th><th class="pk-num">Took</th><th>Detail</th></tr></thead>
+      <tbody>${rows.map(historyRow)}</tbody></table></div>` : html`<p class="pk-help">${all.length ? 'No row of that kind among them.' : 'Nothing journaled yet.'}</p>`}
+  </div>` : ''));
 }
+
+$('runHistory').addEventListener('change', (event) => {
+  if (event.target.id !== 'historyKind') return;
+  S.historyKind = event.target.value;
+  drawHistory();
+});
 
 // ------------------------------------------------------------------ runs: result
 
@@ -1776,8 +1794,7 @@ function drawResult() {
       <span class="pk-grow"></span>
       ${run.mocks?.mock_only || !ownSessions(run) ? '' : html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${run.session_id || `sg_${run.id}`}"
         title="The run's session in the chat: what it was asked, how it ended, its agents' conversations below it">${icon('message-square', { size: 'sm' })} Session</button>`}</div>
-    ${run.error ? html`<div class="pk-callout pk-callout--danger"><strong>${run.error.type || 'error'}</strong> ${run.error.message || ''}
-      ${run.error.state ? html`<div class="sg-problem-where">in ${run.error.state}</div>` : ''}</div>` : ''}
+    ${run.error ? errorView(run.error) : ''}
     ${run.output !== undefined && run.output !== null
     ? html`<details class="pk-details" open><summary>Output</summary>${resultValue(run.output)}</details>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No output.' : 'The output comes when the run ends.'}</p>`}
@@ -1809,6 +1826,24 @@ function resultActivity(row) {
   </details>`;
 }
 
+/** An error as the journal keeps it: type and message, what caused it, and its data (a traceback, the guards that
+ * were evaluated, a tool's result, an answer that did not parse). */
+function errorView(error) {
+  const e = error || {};
+  const causes = [];
+  for (let cause = e.cause; cause && causes.length < 5; cause = cause.cause) causes.push(`${cause.type || 'error'}: ${cause.message || ''}`);
+  const data = e.data;
+  return html`<div class="pk-callout pk-callout--danger"><strong>${e.type || 'error'}</strong> ${e.message || ''}
+      ${e.state ? html`<div class="sg-problem-where">in ${e.state}</div>` : ''}
+      ${causes.map((text) => html`<div class="sg-problem-where">caused by ${text}</div>`)}</div>
+    ${data?.traceback ? html`<pre class="sg-result-text">${data.traceback}</pre>` : ''}
+    ${data?.guards ? html`<details class="pk-details" open><summary>Guards evaluated</summary><ul class="sg-plain-list">
+      ${data.guards.map((g) => html`<li><span class="pk-mono">${g.at}</span> <span class="pk-mono">${g.guard}</span> →
+        ${'error' in g ? html`<span class="pk-text--danger">${g.error}</span>` : String(g.result)}</li>`)}</ul></details>` : ''}
+    ${data !== undefined && data !== null && !data.traceback && !data.guards
+    ? html`<details class="pk-details"><summary>Error data</summary>${jsonView(data)}</details>` : ''}`;
+}
+
 function resultValue(value) {
   return typeof value === 'string' ? html`<pre class="sg-result-text">${value}</pre>` : jsonView(value);
 }
@@ -1817,14 +1852,17 @@ function resultValue(value) {
 function resultBody(row) {
   const data = row.data || {};
   const meta = data.meta || {};
-  return html`${row.status === 'error'
-    ? html`<div class="pk-callout pk-callout--danger"><strong>${data.error?.type || 'error'}</strong> ${data.error?.message || ''}</div>`
-    : resultValue(data.out)}
+  return html`${row.status === 'error' ? errorView(data.error) : resultValue(data.out)}
+    ${data.inputs ? html`<details class="pk-details"><summary>Input</summary>${jsonView(data.inputs)}</details>` : ''}
+    ${meta.failures?.length ? html`<details class="pk-details"><summary>Failed attempts (${meta.failures.length})</summary>
+      <ul class="sg-plain-list">${meta.failures.map((f) => html`<li><span class="pk-mono">#${f.attempt}</span> ${f.type}: ${f.message}</li>`)}</ul></details>` : ''}
     <dl class="pk-kv">
       ${meta.instance_id ? html`<dt>session</dt><dd><span class="pk-mono">${meta.instance_id}</span>
         ${ownSessions(S.run) ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-session="${meta.instance_id}" title="Open the agent's conversation in the chat">${icon('message-square', { size: 'sm' })} Open</button>`
     : html`<span class="pk-muted">${S.run?.user_id || 'anonymous'}'s</span>`}</dd>` : ''}
-      ${meta.request_id ? html`<dt>request</dt><dd class="pk-mono">${meta.request_id}</dd>` : ''}
+      ${meta.request_id ? html`<dt>request</dt><dd><span class="pk-mono">${meta.request_id}</span>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-copy="${meta.request_id}"
+          title="Copy the request id: the message debugger finds its LLM calls by it" aria-label="Copy the request id">${icon('copy', { size: 'sm' })}</button></dd>` : ''}
       ${meta.model ? html`<dt>model</dt><dd class="pk-mono">${meta.model}</dd>` : ''}
       ${meta.attempts > 1 ? html`<dt>attempts</dt><dd>${meta.attempts}</dd>` : ''}
       <dt>step</dt><dd class="pk-mono">${row.key}</dd>
@@ -1850,6 +1888,11 @@ $('runResult').addEventListener('toggle', (event) => {
 }, true);
 
 $('runResult').addEventListener('click', (event) => {
+  const copy = event.target.closest('[data-copy]');
+  if (copy) {
+    copyText(copy.dataset.copy);  // it says itself that it copied
+    return;
+  }
   const button = event.target.closest('[data-open-session]');
   if (!button) return;
   const id = button.dataset.openSession;

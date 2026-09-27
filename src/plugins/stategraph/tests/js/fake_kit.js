@@ -24,7 +24,7 @@ export const navigate = () => {};
 export const openSession = (id) => { (globalThis.OPENED ||= []).push(id); return true; };
 export const selectTab = (list, name) => { globalThis.TABS[list.id] = name; return true; };
 export const toast = (m, { kind = 'info' } = {}) => { globalThis.TOASTS.push([kind, String(m)]); };
-export const copyText = async () => true;
+export const copyText = async (text) => { (globalThis.COPIED ||= []).push(text); return true; };
 export async function withBusy(controls, fn) { return fn(); }
 export function autoRefresh(fn, ms) { let on = false; return { get running() { return on; }, start() { on = true; }, stop() { on = false; } }; }
 export const confirm = async (m) => { globalThis.ASKED.push(['confirm', m]); return globalThis.ANSWERS.confirm ?? true; };

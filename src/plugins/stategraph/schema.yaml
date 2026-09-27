@@ -69,6 +69,8 @@ tools:
           breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
           run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (only a transient failure starts a new run)"}
+          pause_at_start: {type: boolean, default: false, description: "hold the run at its first hook (then step or continue with control_run)"}
+          full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits; background: return at once"}
           max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish before returning status running"}
         required: [machine_id]
@@ -82,7 +84,11 @@ tools:
         type: object
         properties:
           run_id: {type: string, description: "id from run_machine"}
-          steps: {type: integer, minimum: 1, maximum: 200, default: 30, description: "how many of the last journal rows to return"}
+          steps: {type: integer, minimum: 1, maximum: 200, default: 30, description: "how many journal rows to return: the last ones, or the first after `after`"}
+          after: {type: integer, minimum: 0, description: "the rows after this journal seq (to page forward through a long run); without it, the last ones"}
+          kinds: {type: array, items: {type: string, enum: ["activity", "trace", "event", "edit", "timer"]}, description: "only rows of these kinds (activity: what each activity was given and answered; trace: transitions with the guards they evaluated, pauses, finals)"}
+          state: {type: string, description: "only rows of this state"}
+          full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
         required: [run_id]
         additionalProperties: false
 
@@ -99,6 +105,8 @@ tools:
           machine: {type: string, description: "run_to: the machine that state belongs to (default: any frame)"}
           at_step: {type: integer, minimum: 0, description: "fork: the top-level step to fork from"}
           definition: {type: string, enum: ["snapshot", "current"], default: "snapshot", description: "fork: the run's own definition, or the machine as it is now"}
+          pause: {type: boolean, default: false, description: "fork: hold the fork at the fork point (its first live hook), to look at or set ctx before it goes on"}
+          mocks: {type: object, description: "fork: mocks over the source run's ({state path: out}); what the fork replays keeps its outcome"}
           breakpoints: {type: array, items: {}, description: "set_breakpoints: 'state', 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "set_watchpoints: Python expressions, or {expr, condition}"}
           expr: {type: string, description: "evaluate / set: a read-only Python expression over the paused scope"}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import datetime
 import json
 import logging
 from dataclasses import dataclass
@@ -114,6 +115,13 @@ def bind_params(declared: dict[str, ParamSpec], given: Optional[dict[str, Any]],
     return bound
 
 
+def _stamp(seconds: Optional[float]) -> Optional[str]:
+    """A time.time() value as the UTC time the journal writes."""
+    if seconds is None:
+        return None
+    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
 class Frame:
     def __init__(self, run: "RunContext", machine: Machine, params: Optional[dict[str, Any]], *,
                  prefix: str = "", path: str = "", parent: Optional["Frame"] = None, finalizer: bool = False,
@@ -143,6 +151,9 @@ class Frame:
         self._left_step = -1
         self._finalized = False
         self._terminating = False       # a terminate reached this frame: finally activities run within the bound
+        self.guards: list[dict[str, Any]] = []  # the guards the last dispatch evaluated, with their results (§6)
+        self.waiting_since: Optional[float] = None  # a wait state's wait: since when, and until when (timeout)
+        self.wait_deadline: Optional[float] = None
 
     # ------------------------------------------------------------ helpers
     @property
@@ -191,7 +202,8 @@ class Frame:
         return {"machine": self.machine.id, "prefix": self.prefix, "path": self.path, "step": self.step,
                 "state": self.leaf.name if self.leaf else None, "config": [n.name for n in self.config],
                 "visits": dict(self.visits), "ctx": self.ctx, "params": self.params,
-                "accepts": sorted(self.accepts()) if self._waiting() else []}
+                "accepts": sorted(self.accepts()) if self._waiting() else [],
+                "waiting_since": _stamp(self.waiting_since), "deadline": _stamp(self.wait_deadline)}
 
     def _waiting(self) -> bool:
         leaf = self.leaf
@@ -484,7 +496,7 @@ class Frame:
         try:
             await self._enter_to(self.machine.initial, None)
         except _TransitionFailed as failed:
-            raise MachineFailed(self._error(failed.type, failed.message, failed.state)) from None
+            raise MachineFailed(self._error(failed.type, failed.message, failed.state, data=self._guard_data())) from None
 
     def _finish(self, leaf: Node) -> FrameResult:
         status = leaf.spec.status or "succeeded"
@@ -543,6 +555,7 @@ class Frame:
     # ------------------------------------------------------------ dispatch
     async def _dispatch(self, event: Event) -> None:
         self.last_event = event
+        self.guards = []
         leaf = self.leaf
         assert leaf is not None
         await self.run.hook("error" if event.name == TRIGGER_ERROR else "exit", self, leaf, event)
@@ -573,7 +586,8 @@ class Frame:
                 return
             self.run.trace(self, "transition", state=owner.name,
                            data={"from": owner.name, "to": target.name if target else None, "event": event.name,
-                                 "index": owner.transitions.index(transition)})
+                                 "index": owner.transitions.index(transition),
+                                 **({"guards": self.guards} if self.guards else {})})
             if event.name == TRIGGER_ERROR and self.pending_error is not None:
                 # the error transition entered a state past its max_visits: an error raised while an error
                 # transition is executed ends the frame, it is not handled again (§3.5)
@@ -585,9 +599,10 @@ class Frame:
         if event.name == TRIGGER_DONE:
             owner = event.source or leaf
             self.pending_error = self._error("no_transition", f"{owner.name} completed and no completion "
-                                             "transition is enabled", owner.name)
+                                             "transition is enabled", owner.name, data=self._guard_data())
             return
-        self.run.trace(self, "event_discarded", state=leaf.name, data={"event": event.name})
+        self.run.trace(self, "event_discarded", state=leaf.name,
+                       data={"event": event.name, **({"guards": self.guards} if self.guards else {})})
 
     def _abort(self, snapshot: tuple[dict[str, Any], list[Node], dict[str, int]], event: Event, type_: str,
                message: str, state: Optional[str]) -> None:
@@ -595,7 +610,7 @@ class Frame:
         self.ctx, self.config, self.visits = copy.deepcopy(snapshot[0]), list(snapshot[1]), dict(snapshot[2])
         self._pending_finally = []  # the states were not left after all
         self._left = {}
-        error = self._error(type_, message, state)
+        error = self._error(type_, message, state, data=self._guard_data())
         if event.name == TRIGGER_ERROR:  # failing while handling an error: nothing is left to handle it
             error["cause"] = event.error
             raise MachineFailed(error)
@@ -604,7 +619,18 @@ class Frame:
     def _guard(self, transition: TransitionSpec, event: Event, where: str) -> bool:
         if transition.guard is None or transition.guard.strip() == GUARD_ELSE:
             return True
-        return self.machine.namespace.guard(transition.guard, self.scope(event=event), where)
+        seen = {"at": where, "guard": transition.guard}
+        try:
+            result = self.machine.namespace.guard(transition.guard, self.scope(event=event), where)
+        except CodeError as exc:
+            self.guards.append({**seen, "error": exc.message})
+            raise
+        self.guards.append({**seen, "result": bool(result)})
+        return result
+
+    def _guard_data(self) -> Optional[dict[str, Any]]:
+        """The guards the dispatch evaluated, for an error that says no transition was taken."""
+        return {"guards": list(self.guards)} if self.guards else None
 
     def _resolve(self, owner: Node, transition: TransitionSpec, event: Event) -> Optional[list[tuple[Node, TransitionSpec]]]:
         """Guard, then through junctions (static branches). None = not enabled."""

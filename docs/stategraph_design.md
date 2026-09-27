@@ -727,11 +727,11 @@ frame := "" | frame "s" N "/" ("m" | "b." NAME | "i." INDEX) "/"
 
 | Kind | Key | Content |
 |---|---|---|
-| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `out` or `error`, meta (instance id, vars, cost, mocked). A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
+| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `inputs` (the rendered fields the hash covers -- kept in the done or error row, what the activity was given), `out` or `error`, meta (instance id, request id, vars, cost, mocked, attempts, `failures`: `[{attempt, type, message}]` of the attempts a retry ran again, also in the started rows so a resume keeps them). An error raised by Python code (a `call`, a kind or backend bug) keeps the last frames of its traceback in `error.data.traceback` (2,000 characters from the end) and is logged. A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
 | `event` | `pending:<id>`, then `<frame>s<N>:event` once consumed | name and data (the inbox) |
 | `edit` | `<frame>s<N>:<hook>:<n>` | a debugger `set`: path and the evaluated JSON value |
 | `timer` | `<frame>s<N>:timer` | a fired wait timeout |
-| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records, the `ctx_hash` after each dispatch, the wait deadline, `finally_failed`; unkeyed by step: `cancel` (a journaled terminate), `resource_sources` (a fork's source values) and `request_seq` (the counter of the run's request ids, written before each id is used, so the ids `<run>_NNN` stay unique across resumes -- an agent run in flight at a crash left no outcome that names its id) |
+| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records (a transition and a discarded event with the `guards` the dispatch evaluated: `[{at, guard, result \| error}]`; `no_transition` and `guard_failed` errors carry the same list in `error.data.guards`), the `ctx_hash` after each dispatch, a wait's entry (`since`, and its `deadline` under a timeout), `finally_failed`; unkeyed by step: `cancel` (a journaled terminate), `resource_sources` (a fork's source values) and `request_seq` (the counter of the run's request ids, written before each id is used, so the ids `<run>_NNN` stay unique across resumes -- an agent run in flight at a crash left no outcome that names its id) |
 
 ### 5.3 Resume
 
@@ -803,6 +803,10 @@ A fork starts a new run from **top-level step N** of an existing run.
 - **Waits start afresh.** A wait's deadline is absolute and is not copied: a wait state the fork
   reaches at the fork point gets a new deadline, not the source's (which may have expired long
   ago).
+- **Held at the fork point, new mocks.** `pause: true` holds the fork at its first hook from
+  top-level step N on -- the hooks of the replayed prefix stay silent, also those of a state
+  without `do` there. A fork point on a top-level final has no hook: that fork ends at once.
+  `mocks` go over the source's for the live part; a replayed activity keeps its outcome.
 - **External state is not forked** unless a resource says how: its `fork` hook runs in the
   fork's root frame with `fork_source` = the source's value (§2.8), e.g. to copy a store
   namespace. It sees the source's external state as the source left it, not as it was at step N.
@@ -899,7 +903,7 @@ across resumes. The terminal statuses are `succeeded`, `failed` and `cancelled`;
 | terminate | Cancel the run (§5.8). |
 | evaluate | A read-only Python expression against the paused scope. The answer is JSON data; a value that is not (a function, a module) comes as its `repr` -- as do watch values. |
 | set | `ctx.<path> = <expr>` while paused. The evaluated JSON value is journaled as an `edit`; several edits at one hook replay in `seq` order. |
-| fork | New run from a top-level step (§5.6). |
+| fork | New run from a top-level step (§5.6); `pause` holds it at the fork point, `mocks` go over the source's. |
 
 - **Storage.** Breakpoints and watchpoints belong to the run and are stored with it, and so is
   the debugger's state -- pause, step, `run_to`, mode -- which survives a stop and resume
@@ -911,6 +915,12 @@ across resumes. The terminal statuses are `succeeded`, `failed` and `cancelled`;
   (a wrong one is 422); `run_to` needs a `state`. Its answer is the run as `get_run` gives it;
   `steps` (REST and tool) sets how many journal rows it carries (the tool's answer carries none
   without it).
+- **What a run tells** (§5.2): an activity's `inputs`, its failed attempts, a Python traceback; the
+  guards a dispatch evaluated; a wait state's `waiting_since` and `deadline` in the frame view; the
+  events in the inbox. `get_run` pages (`after`), narrows (`kinds`, `state`) and bounds its answer
+  (texts cut at 2,000 characters, the output at 20,000 unless `full_output`; the whole answer at
+  200,000 -- older journal rows first, then each frame's ctx as its keys and sizes). A run can start
+  held (`pause_at_start`).
 - **Watchpoints** compare values between dispatches: the first value is taken after the
   first dispatch of a frame, so the initial context never counts as a change.
 - **After a resume** a breakpoint at the last recorded step may pause again: that step is
@@ -970,9 +980,9 @@ src/plugins/stategraph/
 | `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
-| `run_machine` | `machine_id`, `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
-| `get_run` | `run_id`, `steps?` | `run_status`, `state`, `output`, `error`, `frames` (with their context), recent journal rows |
-| `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args, `steps?` | run state (with `steps`: its journal rows) |
+| `run_machine` | `machine_id`, `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
+| `get_run` | `run_id`, `steps?`, `after?` (a journal seq: the rows after it), `kinds?`, `state?` | `run_status`, `state`, `output`, `error`, `frames` (with their context, and a wait state's `waiting_since`/`deadline`), `inbox`, journal rows (texts over 2,000 characters cut, the output over 20,000) |
+| `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args (a fork: `at_step`, `definition`, `pause`, `mocks`), `steps?` | run state (with `steps`: its journal rows) |
 | `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not |
 
 `get_run`, `control_run` and `send_event` answer another user's run as missing unless the asker

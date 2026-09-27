@@ -222,14 +222,15 @@ export function pathData(points) {
  */
 export function keepingChoices(element, draw) {
   const controls = () => (element.tagName === 'SELECT' ? [element] : [...element.querySelectorAll('select[id], input[id]')]);
-  const kept = controls().map((c) => ({ id: c.id, value: c.value, focused: document.activeElement === c }));
+  const kept = controls().map((c) => ({ id: c.id, value: c.value, checked: c.checked, focused: document.activeElement === c }));
   const drawn = draw();
   if (!drawn) return drawn;
   const now = new Map(controls().map((c) => [c.id, c]));
-  for (const { id, value, focused } of kept) {
+  for (const { id, value, checked, focused } of kept) {
     const control = now.get(id);
     if (!control) continue;
-    if (control.tagName !== 'SELECT' || [...control.options].some((o) => o.value === value)) control.value = value;
+    if (control.type === 'checkbox') control.checked = checked;
+    else if (control.tagName !== 'SELECT' || [...control.options].some((o) => o.value === value)) control.value = value;
     if (focused) control.focus();
   }
   return drawn;
