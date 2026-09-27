@@ -507,3 +507,69 @@ class TestCloseReleasesChromaSystem:
         assert len(hits) == 1, (
             f"expected exactly one warning for the whole process, got {len(hits)}"
         )
+
+
+class TestTheDefaultModelNeedsNoTorch:
+    """all-MiniLM-L6-v2 runs on chromadb's ONNX export: sentence-transformers, and torch with it,
+    is no dependency of the core any more. Any other model still needs it."""
+
+    @pytest.fixture
+    def fresh_models(self, monkeypatch):
+        from agent_system.utils import vector_store
+        monkeypatch.setattr(vector_store, "_embedding_models", {})
+        return vector_store
+
+    def test_the_default_model_embeds_without_sentence_transformers(self, fresh_models, monkeypatch):
+        import sys
+        for name in ("sentence_transformers", "transformers", "torch"):
+            monkeypatch.setitem(sys.modules, name, None)  # their import raises now
+
+        vectors = fresh_models.compute_embeddings(["how is the config loaded", "a second text"])
+        single = fresh_models.compute_embedding("one text")
+
+        assert [len(vector) for vector in vectors] == [384, 384]
+        assert len(single) == 384 and isinstance(single[0], float), single[:3]
+
+    def test_its_vectors_are_the_ones_sentence_transformers_computes(self, fresh_models):
+        import numpy as np
+        sentence_transformers = pytest.importorskip("sentence_transformers")
+        texts = ["def load_settings(config_path=None)", "Die Heldin verlässt das Dorf im Morgengrauen."]
+
+        onnx = np.array(fresh_models.compute_embeddings(texts))
+        try:
+            model = sentence_transformers.SentenceTransformer("all-MiniLM-L6-v2", device="cpu", local_files_only=True)
+        except OSError:  # not cached here: fetched once
+            model = sentence_transformers.SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+        reference = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+
+        np.testing.assert_allclose(onnx, reference, atol=1e-5)  # direction and unit length
+
+    def test_another_model_without_sentence_transformers_names_what_is_missing(self, fresh_models, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+
+        with pytest.raises(ImportError) as raised:
+            fresh_models._load_embedding_model("paraphrase-multilingual-MiniLM-L12-v2")
+
+        assert "paraphrase-multilingual-MiniLM-L12-v2" in str(raised.value)
+        assert "sentence-transformers" in str(raised.value)
+
+    def test_the_fallback_store_without_a_model_refuses_instead_of_hashing(self, fresh_models, monkeypatch):
+        """sqlite-vec is the backend without chromadb: with no sentence-transformers either, it stored hash
+        vectors for good, and every later query ranked by noise."""
+        import sys
+        monkeypatch.setattr(fresh_models, "get_vector_backend", lambda: "sqlite-vec")
+        for name in ("chromadb", "sentence_transformers"):
+            monkeypatch.setitem(sys.modules, name, None)
+        tmpdir_obj = create_temp_dir()
+        store = VectorStore(persist_path=tmpdir_obj.name)
+        try:
+            with pytest.raises(ImportError) as raised:
+                store.add(collection="docs", ids=["doc1"], documents=["Hello world"])
+
+            assert "chromadb" in str(raised.value) and "sentence-transformers" in str(raised.value), raised.value
+            assert store.count("docs") == 0
+        finally:
+            store.close()
+            gc.collect()
+            tmpdir_obj.cleanup()
