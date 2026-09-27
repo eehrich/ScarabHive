@@ -12,6 +12,8 @@ from typing import Any, Optional, Dict
 from uuid import uuid4
 import logging
 
+from agent_system.paths import data_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,7 @@ def default_cache_root() -> Path:
     else:
         # Fallback to current working directory
         project_root = Path.cwd()
-    return project_root / "data" / "cache"
+    return project_root / data_path("cache")
 
 
 class PluginCache:

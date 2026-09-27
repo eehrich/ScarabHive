@@ -54,6 +54,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 import psutil
 
 from ..config.models import SessionPresenceConfig
+from ..paths import data_path
 
 if os.name == "nt":
     import ctypes
@@ -102,8 +103,12 @@ class SessionBusy(RuntimeError):
 
 
 def sessions_dir() -> Path:
-    """Where the session files are, by the API's rule (app.py)."""
-    return Path(os.getenv("AGENT_SESSION_STORAGE_PATH") or REPO_ROOT / "data" / "sessions")
+    """Where the session files are -- the one rule every process uses.
+
+    AGENT_SESSION_STORAGE_PATH if set (a woken run inherits it from the
+    process that woke it), else ``sessions`` in the data directory.
+    """
+    return Path(os.getenv("AGENT_SESSION_STORAGE_PATH") or REPO_ROOT / data_path("sessions"))
 
 
 def alive(pid: Optional[int], started: Optional[float] = None) -> bool:

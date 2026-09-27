@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.models import ChatMessage
+from agent_system.paths import data_path
 from agent_system.tools.status import StatusScope, status_bus
 
 from .window import build_excerpt, parse_verdict
@@ -95,7 +96,7 @@ class AgentWatchdogPlugin(SchemaBasedPluginHook):
 
         root = Path(project_root) if project_root else Path.cwd()
         self._root = root
-        log_path = Path(config.get("log_path") or "data/agent_watchdog/verdicts.jsonl")
+        log_path = Path(config.get("log_path") or data_path("agent_watchdog", "verdicts.jsonl"))
         self._log_path = log_path if log_path.is_absolute() else root / log_path
 
         # Each prompt file is read once, not per check: saving it mid-run must

@@ -37,6 +37,7 @@ from fnmatch import fnmatchcase
 from typing import Any, Awaitable, Callable, Iterator, NamedTuple
 
 from agent_system.llm.message_roles import is_input, opens_a_turn
+from agent_system.paths import resolve_data_path
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.llm.token_utils import (
@@ -1489,7 +1490,8 @@ class LayeredCompactionStrategy:
         
         # Fallback: check file path and get actual file size
         # This is important for multimodal_content items that reference files
-        file_path = item.get("path", "")
+        # where the request encodes it from: data/... lands in the data directory
+        file_path = str(resolve_data_path(item.get("path", ""))) if item.get("path") else ""
         if file_path and os.path.isfile(file_path):
             try:
                 file_size = os.path.getsize(file_path)

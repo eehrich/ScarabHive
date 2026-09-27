@@ -22,6 +22,7 @@ import re
 
 from pydantic import BaseModel, Field, field_serializer
 
+from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.vector_store import VectorStore
@@ -136,7 +137,7 @@ class MemoryServer(SchemaBasedHookToolServer):
         if config_storage:
             self.storage_path = Path(config_storage)
         else:
-            self.storage_path = Path("data/memories")
+            self.storage_path = data_path("memories")
         
         self.vector_store_path = self.storage_path / "vectors"
 

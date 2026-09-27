@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 import yaml
 from agent_system.utils import yaml_io
+from agent_system.paths import relocate_data_paths, set_config_data_dir
 import glob as glob_module
 
 from .models import AgentSystemConfig, ToolServerConfig, strip_empty_yaml_keys
@@ -177,6 +178,23 @@ def config_files(config_path: Optional[str] = None) -> list[Path]:
     return [cfg_path, *(path for path in included if path.exists())]
 
 
+def master_data_dir(config_path: Optional[str] = None) -> Optional[str]:
+    """``paths.data_dir`` of the master config, for a process that never loads settings.
+
+    Only the master can set it: the loader takes top-level sections from that
+    file alone. Credentials are loaded and ``${VAR}`` expanded first, so the
+    value is what load_settings would see.
+    """
+    cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
+    if not cfg_path.exists():
+        return None
+    _load_secrets_file(cfg_path.parent / "secrets.env")
+    master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    section = master.get("paths") if isinstance(master, dict) else None
+    value = section.get("data_dir") if isinstance(section, dict) else None
+    return expand_env(str(value)) if value is not None else None
+
+
 def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     """Load and return an `AgentSystemConfig` using environment variables and
     optional YAML config file. Environment variables take precedence for
@@ -309,6 +327,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             len(_missing_vars), ", ".join(sorted(_missing_vars)),
             cfg_path.parent / "secrets.env",
         )
+
+    # One data directory for every path the configuration names under data/
+    # (paths.py). Recorded first, since the move resolves against it. The
+    # paths section itself stays as written: `data_dir: data/x` would
+    # otherwise be read as a path inside itself.
+    section = data.get("paths")
+    set_config_data_dir(section.get("data_dir") if isinstance(section, dict) else None)
+    data = {key: value if key == "paths" else relocate_data_paths(value)
+            for key, value in data.items()}
 
     # Resolve plugin_dirs to absolute paths
     # Paths are resolved relative to the configuration file directory first,

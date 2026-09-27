@@ -19,6 +19,8 @@ from uuid import uuid4
 from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
+from ..paths import data_path
+
 logger = logging.getLogger(__name__)
 
 #: How long an index edit waits for another process holding the same index.
@@ -88,13 +90,14 @@ class SessionManager:
     - metadata (message_count, token_count, tags, etc.)
     """
 
-    def __init__(self, storage_path: str = "data/sessions"):
+    def __init__(self, storage_path: Optional[str] = None):
         """Initialize SessionManager.
-        
+
         Args:
-            storage_path: Base directory for session storage (default: data/sessions)
+            storage_path: Base directory for session storage (default:
+                ``sessions`` in the data directory, agent_system/paths.py)
         """
-        self.storage_path = Path(storage_path)
+        self.storage_path = Path(storage_path) if storage_path is not None else data_path("sessions")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         # In-memory cache: {session_id: (session_data, timestamp)}

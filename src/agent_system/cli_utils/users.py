@@ -69,11 +69,9 @@ def get_configured_db() -> UserDatabase:
     """Get database instance from configuration."""
     try:
         config = load_settings(CONFIG_PATH)
-        if config.auth and config.auth.database_path:
-            db_path = Path(config.auth.database_path)
-        else:
-            db_path = Path("data/users.db")
-        
+        # None: UserDatabase's own default, users.db in the data directory
+        db_path = (Path(config.auth.database_path)
+                   if config.auth and config.auth.database_path else None)
         return setup_database(db_path)
     except typer.Exit:
         # Deliberate exits (cancel, not-found) must not be re-reported as errors

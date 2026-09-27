@@ -11,6 +11,8 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+
+from agent_system.paths import data_path
 from typing import Any, Callable
 
 import aiohttp
@@ -47,7 +49,7 @@ class ComfyUIClient:
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.ws_url = f"ws://{host}:{port}/ws"
-        self.output_dir = output_dir or Path("data/comfyui/outputs")
+        self.output_dir = output_dir or data_path("comfyui", "outputs")
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.client_id = str(uuid.uuid4())
     

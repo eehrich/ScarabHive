@@ -826,6 +826,7 @@ The server is the core of your plugin. It handles tool routing, validation, and 
 3. **Tool Methods**: Tool `{name}_x` → method `x`; tool exactly `{name}` → `execute`; any other tool name → the method of the same name
 4. **Type Hints**: Use modern Python type hints (`| None` instead of `Optional[]`)
 5. **Configuration**: Extract from `server_config` (plugin-specific) and `system_config` (system-wide)
+6. **Datenpfade**: Das Datenverzeichnis ist konfigurierbar (`AGENT_DATA_DIR`, sonst `paths.data_dir` in `config/config.yaml`). Einen Default nie als `"data/..."` oder `ROOT / "data" / ...` schreiben, sondern `data_path("mein_plugin", "x.db")` aus `agent_system.paths` — erst zur Laufzeit aufrufen, nicht auf Modulebene. Einen Wert aus Umgebung, Kommandozeile oder einer Datenbankzeile mit `resolve_data_path(wert)` auflösen. Werte aus `plugins.yaml` und die Defaults aus `schema.yaml` verschiebt der Loader selbst. Der Wächter `tests/config/test_no_hardcoded_data_dir.py` schlägt bei einem neuen Literal an.
 
 ### Method 1: Schema-Based Server (Recommended)
 

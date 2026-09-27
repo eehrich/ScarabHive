@@ -16,6 +16,8 @@ from typing import Any, cast
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+from agent_system.paths import resolve_data_path
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SIZE = (1024, 1536)  # 2:3 portrait book cover
@@ -1244,9 +1246,8 @@ def _load_image_src(src: str, project_root: Path) -> Image.Image:
             return Image.open(io.BytesIO(raw)).convert("RGBA")
         except Exception as e:
             raise CompositionError(f"failed to decode data URI: {e}")
-    p = Path(src)
-    if not p.is_absolute():
-        p = (project_root / src).resolve()
+    # data/... lands in the data directory (agent_system/paths.py)
+    p = (project_root / resolve_data_path(src)).resolve()
     if not p.exists():
         raise CompositionError(f"image src not found: {p}")
     try:

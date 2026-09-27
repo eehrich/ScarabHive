@@ -2065,6 +2065,26 @@
       "type": "object",
       "additionalProperties": false
     },
+    "PathsConfig": {
+      "description": "Where the system keeps what it writes (agent_system/paths.py).\n\n``data_dir`` moves the whole data directory: every relative ``data/...``\npath -- in this configuration, in plugin schema defaults, in the code --\nthen lands in it. Relative values are relative to the project; the\nenvironment variable AGENT_DATA_DIR wins over this. Only the master config\ncan set it, and changing it needs a restart.",
+      "properties": {
+        "data_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Dir"
+        }
+      },
+      "title": "PathsConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
     "PluginSecurityConfig": {
       "description": "Security configuration for plugin web endpoints.\n\nControls how plugin-provided HTTP endpoints are secured.\nBy default, all plugin endpoints require authentication.",
       "properties": {

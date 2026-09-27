@@ -49,6 +49,7 @@ import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
@@ -236,11 +237,13 @@ class GodotServer(SchemaBasedToolServer):
         self._port: int = int(getattr(server_config, "port", 6550))
         self._timeout: float = float(getattr(server_config, "timeout", 60))
         self._long_timeout: float = float(getattr(server_config, "long_timeout", 600))
-        self._projects_root: Path = self._abs(getattr(server_config, "projects_root", "data/workspace"))
-        self._out_dir: Path = self._abs(getattr(server_config, "output_directory", "data/workspace/godot"))
+        self._projects_root: Path = self._abs(
+            getattr(server_config, "projects_root", None) or data_path("workspace"))
+        self._out_dir: Path = self._abs(
+            getattr(server_config, "output_directory", None) or data_path("workspace", "godot"))
 
     @staticmethod
-    def _abs(value: str) -> Path:
+    def _abs(value: str | Path) -> Path:
         path = Path(value)
         return path if path.is_absolute() else Path.cwd() / path
 

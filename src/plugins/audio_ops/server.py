@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ class AudioOpsServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
         
         # Storage path configuration - supports {session_id} template for session isolation
-        self._storage_path_template = getattr(server_config, 'storage_path', "data/audio_ops")
+        self._storage_path_template = str(getattr(server_config, 'storage_path', None) or data_path("audio_ops"))
         # Base storage path (without session_id substitution) for cleanup and fallback
         self._storage_path_base = Path(self._storage_path_template.replace("{session_id}", "").rstrip("/\\"))
         # Don't create directory on init - only when needed for write operations

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 from ..config.models import AgentSystemConfig
+from ..core.session_presence import sessions_dir
 from ..tools.base import ToolServerRegistry
 from .session_manager import SessionManager
 from .session_service import SessionService
@@ -64,12 +64,11 @@ class InitializationService:
     def session_manager(self) -> SessionManager:
         """Get or create the SessionManager."""
         if self._session_manager is None:
-            # Same rule as the API (app.py): a woken run (core/session_presence)
-            # is an agent-cli process that inherits this variable, and reading
-            # sessions from somewhere else than the process that woke it means
-            # continuing a session it cannot find.
-            storage_path = Path(os.getenv("AGENT_SESSION_STORAGE_PATH")
-                                or Path(__file__).parents[3] / "data" / "sessions")
+            # One rule for every process: a woken run (core/session_presence)
+            # is an agent-cli process that inherits AGENT_SESSION_STORAGE_PATH,
+            # and reading sessions from somewhere else than the process that
+            # woke it means continuing a session it cannot find.
+            storage_path = sessions_dir()
             self._session_manager = SessionManager(storage_path=str(storage_path))
             logger.debug("SessionManager initialized at %s", storage_path)
         return self._session_manager

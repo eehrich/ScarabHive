@@ -307,6 +307,19 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 
 All configuration sections can be defined in the main config or in separate files that are included via the `includes:` list. The system uses deep-merge to combine configurations from multiple files.
 
+**Datenverzeichnis (`agent_system/paths.py`):** Alles, was das System schreibt —
+Sessions, Datenbanken, Caches, die Bücher des Writers — liegt unter einem
+Verzeichnis. Standard ist `data` im Projekt; verschoben wird es mit
+`AGENT_DATA_DIR` (Umgebung, gewinnt) oder `paths: data_dir:` in
+`config/config.yaml` (nur dort, Neustart nötig; relativ = relativ zum Projekt).
+Die Regel: ein relativer Pfad, dessen erster Teil `data` ist, landet im
+Datenverzeichnis — der Loader schreibt so die Werte aus der Konfiguration und
+den `schema.yaml`-Defaults um, `PathSandbox` die Pfade, die das Modell aus
+Prompts kennt, `resolve_data_path` Werte aus Umgebung und Datenbank (etwa die
+portablen Cover-Pfade in `books.db`). Ist nichts gesetzt, ändert sich nichts.
+Nicht erfasst: Shell-Befehle im `terminal` (ein `ls data/...` läuft im
+Arbeitsverzeichnis) und die `ReadWritePaths` der systemd-Units.
+
 ---
 
 ## 5. Key Design Decisions

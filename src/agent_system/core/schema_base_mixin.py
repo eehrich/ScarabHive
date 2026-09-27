@@ -13,6 +13,8 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from agent_system.paths import relocate_data_paths
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,6 +170,9 @@ def config_defaults_from_schema(schema_config: dict[str, Any] | None) -> dict[st
     for a plugin that is a tool server as well as a hook
     (``tools.hook_tool_server``). A third copy had already grown inside the
     todo plugin and drifted into ignoring the plugins.yaml block.
+
+    A default under ``data/`` moves with the data directory, as the same value
+    in plugins.yaml would (paths.py).
     """
     values: dict[str, Any] = {}
     for key, value in (schema_config or {}).items():
@@ -175,4 +180,4 @@ def config_defaults_from_schema(schema_config: dict[str, Any] | None) -> dict[st
             values[key] = value["default"]
         else:
             values[key] = value
-    return values
+    return relocate_data_paths(values)

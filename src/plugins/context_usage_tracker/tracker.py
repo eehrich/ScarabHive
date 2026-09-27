@@ -5,6 +5,8 @@ import logging
 import threading
 import time
 from pathlib import Path
+
+from agent_system.paths import data_path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict, fields as dataclass_fields
 
@@ -114,8 +116,8 @@ class UsageTracker:
         # database gets its OWN directory rather than sitting next to it: WAL
         # mode adds a -wal and a -shm file, and three files per store scattered
         # through data/ is what this is moving away from.
-        self.storage_path = Path(storage_path) if storage_path else Path(
-            "data/context_usage_tracker.json")
+        self.storage_path = Path(storage_path) if storage_path else data_path(
+            "context_usage_tracker.json")
         self.data_dir = self.storage_path.parent / self.storage_path.stem
         self.db_path = self.data_dir / "usage.db"
         self._db: Optional[UsageDatabase] = None

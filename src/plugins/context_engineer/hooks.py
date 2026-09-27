@@ -22,6 +22,7 @@ from typing import Any
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.llm.message_roles import DEVELOPER, is_injected_note
 from agent_system.llm.models import ChatMessage
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.status import StatusScope, status_bus
 
 from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
@@ -479,7 +480,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self._session_data_ttl_days = int(merged.get("session_data_ttl_days", 0))
         self.enable_semantic_search = bool(merged.get("enable_semantic_search", False))
         self.core_memory_max_tokens = int(merged.get("core_memory_max_tokens", 2000))
-        self._storage_base = Path(merged.get("storage_path", "data/context_engineer"))
+        self._storage_base = Path(merged.get("storage_path") or data_path("context_engineer"))
 
     def _cleanup_expired_sessions(self) -> None:
         """Remove expired session components based on TTL and max count."""
@@ -1608,9 +1609,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         Returns:
             Status and file info, or error if file not found
         """
-        from pathlib import Path
-
-        file_path = Path(path)
+        # data/... lands in the data directory (agent_system/paths.py)
+        file_path = resolve_data_path(path)
 
         # SECURITY: `path` comes straight from LLM tool args
         # (read(ref="/path/to/file.wav")). Without containment this is an
@@ -1620,7 +1620,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         # (context_engineer media store, comfyui outputs, audio, covers - all
         # under data/). Reject anything outside, including symlink escapes.
         allowed_roots = []
-        for root in (self._storage_base, Path("data")):
+        for root in (self._storage_base, data_path()):
             try:
                 allowed_roots.append(root.resolve())
             except Exception:

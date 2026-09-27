@@ -59,6 +59,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from agent_system.paths import resolve_data_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,9 +97,11 @@ class PathSandbox:
         where the process was started.
         """
         resolved_base = Path(base).resolve()
+        # A data/... root lands in the data directory like a data/... request
+        # does (resolve below) -- a root left behind would deny every one.
         roots = []
         for entry in allowed_directories or ():
-            root = Path(entry)
+            root = resolve_data_path(entry)
             roots.append((root if root.is_absolute() else resolved_base / root).resolve())
         if not roots:
             logger.warning(
@@ -129,6 +133,10 @@ class PathSandbox:
                     f"Path starts with '~', which is not expanded here and "
                     f"would create a directory literally named '~': {path}. "
                     f"Use an explicit path under: {self.describe_roots()}")
+            # A relative data/... names the data directory, wherever it is
+            # configured (agent_system/paths.py) -- prompts and skills brief
+            # the model with those paths. Nothing configured, nothing moves.
+            candidate = resolve_data_path(candidate)
             full = (candidate if candidate.is_absolute() else self.base / candidate).resolve()
         except (OSError, ValueError) as exc:
             # Embedded null bytes (ValueError on every platform) and

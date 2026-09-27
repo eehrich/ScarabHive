@@ -13,6 +13,7 @@ from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from .comfyui_client import ComfyUIClient
 from .job_tracker import ACTIVE_STATUSES, ComfyUIJobTracker
@@ -77,7 +78,7 @@ class ComfyUIServer(SchemaBasedToolServer):
             self._servers = [{"host": self.host, "port": self.port}]
         
         # Output directory - supports {session_id} template for session isolation
-        self._output_dir_template = getattr(server_config, 'output_dir', "data/comfyui/outputs")
+        self._output_dir_template = str(getattr(server_config, 'output_dir', None) or data_path("comfyui", "outputs"))
         # Base output dir (without session_id substitution) for cleanup and fallback
         self._output_dir_base = Path(self._output_dir_template.replace("{session_id}", "").rstrip("/\\"))
         self._output_dir_base.mkdir(parents=True, exist_ok=True)
@@ -104,8 +105,8 @@ class ComfyUIServer(SchemaBasedToolServer):
         if raw_allowlist is None:
             raw_allowlist = [
                 str(self._output_dir_base),
-                "data/comfyui",
-                "data/writer/assets",
+                str(data_path("comfyui")),
+                str(data_path("writer", "assets")),
             ]
         # Normalise a string config to a single-entry list so a misset
         # YAML value (e.g. upload_source_dirs: "data/img") doesn't get
@@ -1847,8 +1848,9 @@ class ComfyUIServer(SchemaBasedToolServer):
                 await status.error(err)
             return {"error": err}
 
-        raw = Path(file_path_str)
-        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / file_path_str]
+        # data/... lands in the data directory (agent_system/paths.py)
+        raw = resolve_data_path(file_path_str)
+        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / raw]
         file_path: Path | None = None
         for candidate in candidates:
             try:

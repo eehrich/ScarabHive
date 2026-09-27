@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.utils.id import short_id
 from .base import BatchProviderClient
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
@@ -70,12 +71,15 @@ class BatchQueueManager:
         self.batch_system_config = batch_system_config
         
         # Determine storage path
+        # Resolved either way: the callers pass Path(config.storage_path), and
+        # the model's own default ("data/batch_jobs") never passed the loader
+        # that moves configured paths.
         if storage_path:
-            self.storage_path = storage_path
+            self.storage_path = resolve_data_path(storage_path)
         elif batch_system_config:
-            self.storage_path = Path(batch_system_config.storage_path)
+            self.storage_path = resolve_data_path(batch_system_config.storage_path)
         else:
-            self.storage_path = Path("data/batch_jobs")
+            self.storage_path = data_path("batch_jobs")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         # Per-provider configurations — every configured provider, whatever

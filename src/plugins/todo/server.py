@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, field_serializer
 
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.paths import data_path
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -179,7 +180,7 @@ class TodoServer(SchemaBasedHookToolServer):
 
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
-            getattr(server_config, "storage_path", "data/todos")
+            getattr(server_config, "storage_path", None) or data_path("todos")
         )
         self._max_tasks = int(getattr(server_config, "max_tasks_per_session", 1000))
         self._enable_deps = bool(getattr(server_config, "enable_dependencies", True))

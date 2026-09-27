@@ -17,6 +17,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Optional
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
@@ -27,8 +28,6 @@ from .store import MachineStore
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MACHINE_DIRS = ("data/stategraph/machines", "src/plugins*/*/machines")
-DEFAULT_WRITABLE = ("data/stategraph/machines",)
 SWEEP_SECONDS = 60
 MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
 # a tool answer bounds itself (plugin rules): texts in journal rows, frames and errors, and in a run's output
@@ -51,9 +50,11 @@ class StateGraphServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
         self.system_config = system_config
         # flat keys, defaults in code: the framework does not validate plugin config
-        self.machine_dirs = list(getattr(server_config, "machine_dirs", None) or DEFAULT_MACHINE_DIRS)
-        self.writable_dirs = list(getattr(server_config, "writable_machine_dirs", None) or DEFAULT_WRITABLE)
-        self.runs_db = str(getattr(server_config, "runs_db", None) or "data/stategraph/runs.db")
+        own_machines = str(data_path("stategraph", "machines"))
+        self.machine_dirs = list(getattr(server_config, "machine_dirs", None)
+                                 or (own_machines, "src/plugins*/*/machines"))
+        self.writable_dirs = list(getattr(server_config, "writable_machine_dirs", None) or (own_machines,))
+        self.runs_db = str(getattr(server_config, "runs_db", None) or data_path("stategraph", "runs.db"))
         self.runner_agent = str(getattr(server_config, "runner_agent", None) or "stategraph_runner")
         self.allowed_users = [str(u) for u in (getattr(server_config, "allowed_users", None) or [])]
         raw_inject = getattr(server_config, "inject_params", None) or {}

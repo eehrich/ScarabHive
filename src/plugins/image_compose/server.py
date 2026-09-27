@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from .compositor import CompositionError, analyze_image, compose, find_text_region
@@ -31,7 +32,7 @@ class ImageComposeServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
 
         project_root = Path.cwd()
-        fonts_dir_cfg = getattr(server_config, "fonts_dir", "data/fonts") or "data/fonts"
+        fonts_dir_cfg = getattr(server_config, "fonts_dir", None) or data_path("fonts")
 
         self.project_root = project_root
         self.fonts_dir = (project_root / fonts_dir_cfg).resolve() \
@@ -241,9 +242,10 @@ class ImageComposeServer(SchemaBasedToolServer):
         ``output_directories`` says.
 
         ``base / absolute`` is that absolute path, so absolutes need no
-        branch of their own.
+        branch of their own -- nor does a configured data directory: a
+        ``data/...`` path lands there (agent_system/paths.py), absolute.
         """
-        return (self.project_root / Path(value)).resolve()
+        return (self.project_root / resolve_data_path(value)).resolve()
 
     def _confine(self, path: Path, what: str) -> Path:
         """``path`` if it lies inside one of ``output_directories`` (or the
@@ -277,9 +279,7 @@ class ImageComposeServer(SchemaBasedToolServer):
         ):
             return _error("region must be [x, y, w, h] (4 numbers)", "ValidationError")
 
-        full = Path(path)
-        if not full.is_absolute():
-            full = (self.project_root / full).resolve()
+        full = (self.project_root / resolve_data_path(path)).resolve()
         if not full.exists():
             return _error(f"image not found: {full}", "FileNotFoundError")
 
@@ -330,9 +330,7 @@ class ImageComposeServer(SchemaBasedToolServer):
         if not isinstance(prefer, str):
             return _error("prefer must be a string", "ValidationError")
 
-        full = Path(path)
-        if not full.is_absolute():
-            full = (self.project_root / full).resolve()
+        full = (self.project_root / resolve_data_path(path)).resolve()
         if not full.exists():
             return _error(f"image not found: {full}", "FileNotFoundError")
 

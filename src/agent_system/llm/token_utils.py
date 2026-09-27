@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Union
+
+from ..paths import resolve_data_path
 from .models import ChatMessage
 
 
@@ -247,7 +249,9 @@ def estimate_file_tokens(path: Union[str, Path], file_type: str | None = None) -
         Estimated token count, or 0 if file doesn't exist or can't be read
     """
     try:
-        file_path = Path(path)
+        # Read where the request encodes it from: a stored data/... path
+        # lands in the data directory (multimodal_tool_content)
+        file_path = resolve_data_path(path)
         if not file_path.exists():
             return 0
         

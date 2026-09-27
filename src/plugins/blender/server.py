@@ -35,6 +35,7 @@ import socket
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
@@ -95,7 +96,7 @@ class BlenderServer(SchemaBasedToolServer):
         self._timeout: float = float(getattr(server_config, "timeout", 60))
         # Renders and heavy scripts run for minutes; the plain queries do not.
         self._long_timeout: float = float(getattr(server_config, "long_timeout", 600))
-        out = getattr(server_config, "output_directory", "data/workspace/blender")
+        out = getattr(server_config, "output_directory", None) or data_path("workspace", "blender")
         self._out_dir: Path = Path(out) if Path(out).is_absolute() else Path.cwd() / out
 
     # ── the wire ────────────────────────────────────────────────────────

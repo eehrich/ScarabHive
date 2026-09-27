@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 
 from .atomic_json import write_json_atomically
@@ -71,7 +72,7 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
 
         # Web UI history tracking - load from persistent storage
         self.stats_history: list[dict[str, Any]] = []
-        self._history_file = Path("data/context_engineer/history.json")
+        self._history_file = data_path("context_engineer", "history.json")
         self._load_history()
 
         # Import and instantiate the hook implementation

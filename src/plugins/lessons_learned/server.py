@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.paths import data_path
 from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.utils.json_utils import repair_json
 from agent_system.utils.vector_store import VectorStore
@@ -200,7 +201,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         # Resolve paths from server_config (runtime overrides) with sensible defaults
         # Follows pattern from todo/memory plugins: getattr(server_config, key, default)
-        db_path_str = str(getattr(server_config, "database_path", "data/lessons_learned/lessons.db"))
+        db_path_str = str(getattr(server_config, "database_path", None)
+                          or data_path("lessons_learned", "lessons.db"))
         # Also support dict-style config (used in tests via MagicMock)
         if hasattr(server_config, "config") and isinstance(server_config.config, dict):
             db_path_str = server_config.config.get("database_path", db_path_str)

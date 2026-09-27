@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
+from agent_system.paths import data_path
 from agent_system.tools.base import ToolDef
 from agent_system.tools.status import StatusPhase, publish_status
 
@@ -517,12 +518,11 @@ def _describe(error: BaseException) -> str:
     return "; ".join(seen) if seen else f"{type(error).__name__}: {error}"
 
 
-#: Where image blocks from external tool results are written. Relative to the
-#: repo root that API and CLI start from (the same assumption the stdio
-#: server paths in mcp_servers.yaml make) and inside media_ops' sandbox
-#: root (data/), so the model can re-load or save them. Tests point this
-#: at a tmp_path.
-_MEDIA_DIR = Path("data/media/external_mcp")
+#: Where image blocks from external tool results are written. None:
+#: ``media/external_mcp`` in the data directory, looked up when used -- inside
+#: media_ops' sandbox root (the data directory), so the model can re-load or
+#: save them. Tests point this at a tmp_path.
+_MEDIA_DIR: Path | None = None
 
 _MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
              "image/gif": ".gif", "audio/wav": ".wav", "audio/mpeg": ".mp3",
@@ -553,7 +553,7 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
             continue
         try:
             raw = base64.b64decode(data)
-            target_dir = _MEDIA_DIR / server
+            target_dir = (_MEDIA_DIR or data_path("media", "external_mcp")) / server
             target_dir.mkdir(parents=True, exist_ok=True)
             filename = f"{tool}-{int(time.time() * 1000)}-{index}{_MIME_EXT.get(mime, '.bin')}"
             target = target_dir / filename

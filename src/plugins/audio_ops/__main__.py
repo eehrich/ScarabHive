@@ -21,6 +21,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+from agent_system.paths import data_path, resolve_data_path
+
 # Global workdir override (set by CLI --workdir)
 _workdir_override: Path | None = None
 
@@ -51,7 +53,7 @@ def get_config() -> dict:
     audio_config = config.get("plugins", {}).get("servers", {}).get("audio_ops", {})
     if not audio_config:
         # Return default config
-        return {"storage_path": "data/audio_ops"}
+        return {"storage_path": str(data_path("audio_ops"))}
     
     return audio_config
 
@@ -62,7 +64,8 @@ def get_storage_path() -> Path:
     if _workdir_override is not None:
         return _workdir_override
     config = get_config()
-    return Path(config.get("storage_path", "data/audio_ops"))
+    # Read from the YAML directly, past the loader that moves data/ paths
+    return resolve_data_path(config.get("storage_path") or data_path("audio_ops"))
 
 
 def _safe_join(storage: Path, filename: str) -> Path:

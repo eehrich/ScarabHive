@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent_system.core.session_presence import alive, presence_for, wake_blocked, wake_depth, wake_session
-from agent_system.paths import PROJECT_ROOT
+from agent_system.paths import PROJECT_ROOT, data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import run as cli
@@ -239,7 +239,7 @@ class CodingCliServer(SchemaBasedToolServer):
     # ── paths ──
 
     def _root(self) -> Path:
-        return DATA_ROOT if DATA_ROOT is not None else PROJECT_ROOT / "data" / "coding_cli"
+        return DATA_ROOT if DATA_ROOT is not None else PROJECT_ROOT / data_path("coding_cli")
 
     def _file(self, run_id: str, suffix: str) -> Path:
         return self._root() / "runs" / f"{run_id}.{suffix}"

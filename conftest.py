@@ -18,6 +18,24 @@ os.environ["WRITER_DISABLE_WAL"] = "true"
 _TEST_SESSION_DIR = Path(tempfile.mkdtemp(prefix="agent_test_sessions_"))
 os.environ["AGENT_SESSION_STORAGE_PATH"] = str(_TEST_SESSION_DIR)
 
+# The data directory is configurable (agent_system/paths.py). Tests run on the
+# relative default whatever the developer's shell or config/config.yaml says:
+# a test that isolates its writes by chdir into a temporary directory is only
+# isolated while data paths are relative. Settled here, at import, so that no
+# load_settings -- a module-scoped fixture's included, which runs before any
+# function fixture -- records the real config's paths.data_dir; the fixture
+# relative_data_dir below restores the pin for each test.
+os.environ.pop("AGENT_DATA_DIR", None)
+
+
+def _pin_relative_data_dir():
+    import agent_system.paths as paths
+    paths._config_data_dir = None
+    paths._settled = True
+
+
+_pin_relative_data_dir()
+
 # Patch SessionManager to force test storage path
 # This must happen before agent_system is imported
 def _patch_session_manager():
@@ -266,6 +284,23 @@ class WokeForReal(BaseException):
     """Not an Exception on purpose: session_presence.notify() catches Exception
     and turns a failed wake into a queued message. A guard that is an Exception
     is swallowed there -- the test goes green and measures nothing."""
+
+
+@pytest.fixture(autouse=True)
+def relative_data_dir(monkeypatch):
+    """Every test starts on the relative data directory, as if nothing were configured.
+
+    ``paths.data_dir`` in config/config.yaml would otherwise reach the tests
+    through a load_settings of the real config -- and move every ``data/...``
+    of a chdir-isolated test (21 test files) into the real, configured
+    directory. The import-time pin above covers loads outside a test; this
+    one undoes whatever a test left behind (tests/config/test_data_dir.py
+    unsettles it on purpose).
+    """
+    from agent_system import paths
+
+    monkeypatch.setattr(paths, "_config_data_dir", None)
+    monkeypatch.setattr(paths, "_settled", True)
 
 
 @pytest.fixture(autouse=True)

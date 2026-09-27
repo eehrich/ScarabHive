@@ -26,6 +26,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.multimodal_tool_content import extract_inline_media
 from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
@@ -90,7 +91,7 @@ class MediaOpsServer(SchemaBasedToolServer):
         # idea. read_only belongs to that vocabulary: when set, this server
         # still loads but no longer writes anything back.
         self.sandbox = PathSandbox.from_config(
-            cfg.get("allowed_directories") or ["data"],
+            cfg.get("allowed_directories") or [str(data_path())],
             base=project_root,
             read_only=bool(cfg.get("read_only", False)),
         )

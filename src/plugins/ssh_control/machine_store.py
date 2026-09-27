@@ -46,14 +46,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from agent_system.paths import data_path
 from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
 
-#: Relative like every other plugin's data path (see
-#: ``mcp_client/connection.py`` and ``context_engineer/server.py``). Tests
-#: point this at a tmp_path.
-STORE_DIR = Path("data/ssh_control")
+#: None: ``ssh_control`` in the data directory, looked up when used
+#: (agent_system/paths.py). Tests point this at a tmp_path.
+STORE_DIR: Path | None = None
 
 #: What ssh_control wrote before 2026-09-03, and nothing ever read.
 LEGACY_PATH = Path("config/mcp.yaml")
@@ -61,7 +61,7 @@ LEGACY_PATH = Path("config/mcp.yaml")
 
 def store_path(instance: str) -> Path:
     """The store file for one plugin instance."""
-    return STORE_DIR / f"machines.{instance}.yaml"
+    return (STORE_DIR or data_path("ssh_control")) / f"machines.{instance}.yaml"
 
 
 def load(instance: str) -> list[dict[str, Any]]:

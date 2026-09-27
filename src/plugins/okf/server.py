@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from filelock import FileLock, Timeout
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.suggest import siblings_of, suggest_path
 
@@ -178,7 +179,7 @@ class OkfServer(SchemaBasedToolServer):
         # Sandbox roots — same contract as file_ops: relative paths resolve
         # against the project root; every bundle/concept path a tool touches
         # MUST resolve inside one of these.
-        allowed = cfg.get("allowed_directories") or ["data/okf"]
+        allowed = cfg.get("allowed_directories") or [str(data_path("okf"))]
         project_root = Path.cwd()
         self._roots: List[Path] = []
         for d in allowed:
@@ -222,7 +223,8 @@ class OkfServer(SchemaBasedToolServer):
         Raises ValueError with an agent-actionable message otherwise."""
         if not bundle:
             raise ValueError("missing 'bundle' path")
-        p = Path(bundle)
+        # data/... lands in the data directory (agent_system/paths.py)
+        p = resolve_data_path(bundle)
         p = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
         for root in self._roots:
             if p == root or root in p.parents:

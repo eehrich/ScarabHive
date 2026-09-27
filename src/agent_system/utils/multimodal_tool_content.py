@@ -33,8 +33,11 @@ import base64
 import io
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+# A stored data/... path (session history, a media store's index) lands in
+# the data directory, wherever it is configured.
+from agent_system.paths import resolve_data_path
 
 if TYPE_CHECKING:
     from ..llm.models import MultimodalToolContent
@@ -219,12 +222,12 @@ def encode_multimodal_item(
     """
     # Handle both Pydantic model and dict
     if hasattr(item, "path"):
-        path = Path(item.path)
+        path = resolve_data_path(item.path)
         content_type = item.type
         mime_type = item.mime_type
         description = getattr(item, "description", None)
     else:
-        path = Path(item.get("path", ""))
+        path = resolve_data_path(item.get("path", ""))
         content_type = item.get("type", "image")
         mime_type = item.get("mime_type", "application/octet-stream")
         description = item.get("description")
@@ -449,7 +452,7 @@ def create_multimodal_injection(
         desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
         
-        if path and not Path(path).exists():
+        if path and not resolve_data_path(path).exists():
             # File doesn't exist - this is an error!
             error_items.append({
                 'type': item_type,
@@ -494,7 +497,7 @@ def create_multimodal_injection(
         for item in multimodal_content:
             path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
             
-            if path and not Path(path).exists():
+            if path and not resolve_data_path(path).exists():
                 # File doesn't exist - add error note
                 item_type = item.get('type') if isinstance(item, dict) else getattr(item, 'type', 'unknown')
                 text_notes.append(f"⚠️ {item_type} file not found: {path}")

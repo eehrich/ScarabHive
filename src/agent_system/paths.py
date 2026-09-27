@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +108,132 @@ def enter_project() -> Path:
     started_in = launch_dir()
     os.chdir(PROJECT_ROOT)
     return started_in
+
+
+# --- The data directory -------------------------------------------------------
+#
+# Everything the system keeps -- sessions, databases, caches, the writer's
+# books -- lives under one directory, written as "data/..." in code and
+# configuration alike. One setting moves all of it:
+#
+#   AGENT_DATA_DIR (environment)  >  paths.data_dir (config.yaml)  >  data
+#
+# A relative setting is relative to the project, like every relative path in
+# the configuration. With nothing set, nothing changes: a data path stays the
+# relative "data/..." it always was, resolved against the working directory
+# (tests that chdir into a temporary directory rely on exactly that).
+
+#: The environment variable that names the data directory. It wins over the
+#: configuration, as a machine's own setting should: a server, a second
+#: instance on the same checkout, a test run.
+DATA_DIR_ENV = "AGENT_DATA_DIR"
+
+_UNREAD = object()
+#: ``paths.data_dir`` of the configuration this process runs with. Set by the
+#: first load_settings; a process that never loads settings reads the master
+#: config on first use instead (provisionally -- a load still overrides it).
+_config_data_dir: object = _UNREAD
+#: Whether a load_settings has recorded the setting. Only the first one does.
+_settled = False
+
+
+def set_config_data_dir(value: str | None) -> None:
+    """Record ``paths.data_dir`` of the configuration the process runs with.
+
+    The first load decides; later ones leave it alone. A helper that calls
+    ``load_settings()`` bare reads the default config, not the one the process
+    was started with (``--config``, ``build_app("config_x/...")``), and a hot
+    reload of a changed setting would move half the process and leave the
+    other half -- the data directory needs a restart to change.
+    """
+    global _config_data_dir, _settled
+    if _settled:
+        return
+    text = "" if value is None else str(value).strip()
+    _config_data_dir = text or None
+    _settled = True
+
+
+def configured_data_dir() -> Path | None:
+    """The data directory if one is configured; None means the default, ``data``.
+
+    Read on every call rather than at import: a module-level path would freeze
+    whatever was known when the module happened to be imported -- before
+    ``--config`` was parsed, before a test set the variable.
+    """
+    global _config_data_dir
+    value = os.environ.get(DATA_DIR_ENV, "").strip()
+    if not value:
+        if _config_data_dir is _UNREAD:
+            # Deferred: settings imports the config models, and this module
+            # is imported by every entry point long before they are needed.
+            # Provisional, not settled: the load that follows may name another
+            # config (--config).
+            from agent_system.config.settings import master_data_dir
+            _config_data_dir = (master_data_dir() or "").strip() or None
+        value = _config_data_dir  # type: ignore[assignment]
+    if not value:
+        return None
+    path = Path(os.path.expanduser(str(value)))
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def data_path(*parts: str) -> Path:
+    """A path in the data directory: ``data_path("writer", "books.db")``.
+
+    Relative when nothing is configured -- ``data/writer/books.db``, exactly
+    the literal it replaces. A site that must not depend on the working
+    directory joins it onto PROJECT_ROOT: a configured directory is absolute
+    and wins that join, the default gets anchored.
+    """
+    root = configured_data_dir()
+    return (root if root is not None else Path("data")).joinpath(*parts)
+
+
+def _names_data(value: str) -> bool:
+    """Is ``value`` a relative path whose first part is ``data``?"""
+    if "\n" in value:
+        return False
+    path = Path(value)
+    return not path.is_absolute() and path.parts[:1] == ("data",)
+
+
+def resolve_data_path(value: str | os.PathLike[str]) -> Path:
+    """A path from configuration, the environment or a database row.
+
+    ``data/...`` lands in the data directory; anything else -- absolute, or
+    relative to somewhere else -- is returned as it is. Applying it twice
+    changes nothing, so a value the loader already moved can pass through
+    it again.
+    """
+    path = Path(value)
+    if _names_data(str(value)):
+        return data_path(*path.parts[1:])
+    return path
+
+
+def relocate_data_paths(value: Any) -> Any:
+    """``value`` with every relative ``data/...`` string moved into the data directory.
+
+    For configuration read from YAML, whose paths are written against the
+    default location. Nothing configured, nothing changes. A moved path is
+    written with forward slashes, as the YAML wrote it, and keeps a trailing
+    slash: an allowlist entry ``data/workspace/`` must not start admitting
+    ``workspace2`` because pathlib dropped the separator.
+    """
+    if configured_data_dir() is None:
+        return value
+    return _relocate(value)
+
+
+def _relocate(value: Any) -> Any:
+    if isinstance(value, str):
+        if not _names_data(value):
+            return value
+        moved = resolve_data_path(value).as_posix()
+        return moved + "/" if value.endswith(("/", "\\")) else moved
+    if isinstance(value, dict):
+        return {key: _relocate(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_relocate(item) for item in value]
+    return value

@@ -1177,6 +1177,18 @@ class SessionArchiveConfig(BaseModel):
     archive_path: Optional[str] = None  # default: <sessions>/../session_archive
 
 
+class PathsConfig(BaseModel):
+    """Where the system keeps what it writes (agent_system/paths.py).
+
+    ``data_dir`` moves the whole data directory: every relative ``data/...``
+    path -- in this configuration, in plugin schema defaults, in the code --
+    then lands in it. Relative values are relative to the project; the
+    environment variable AGENT_DATA_DIR wins over this. Only the master config
+    can set it, and changing it needs a restart.
+    """
+    data_dir: Optional[str] = None  # default: data (in the project)
+
+
 class VisionConfig(BaseModel):
     """Vision/image processing configuration"""
     image_warn_size_mb: float = 10.0  # Warn when images exceed this size (MB)
@@ -1433,6 +1445,7 @@ class AgentSystemConfig(BaseModel):
     includes: Optional[List[str]] = None
 
     # Core configurations
+    paths: PathsConfig = Field(default_factory=PathsConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     status: StatusConfig = Field(default_factory=StatusConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)

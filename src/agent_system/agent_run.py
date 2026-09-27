@@ -163,11 +163,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
     try:
         # Handle --list-sessions flag (needs session_manager only)
         if list_sessions is not None:
-            from pathlib import Path as PathLib
+            from .core.session_presence import sessions_dir
             from .services.session_manager import SessionManager
 
-            storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
-            session_manager = SessionManager(storage_path=str(storage_path))
+            # The rule every process uses: this listing ignored
+            # AGENT_SESSION_STORAGE_PATH and read the checkout's sessions.
+            session_manager = SessionManager(storage_path=str(sessions_dir()))
 
             # Every session, pipeline runs included: which agents the chat
             # offers is in the configuration, and this listing deliberately

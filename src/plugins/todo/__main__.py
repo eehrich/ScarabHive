@@ -530,12 +530,13 @@ def cli_main():
     
     # Create server instance with proper config objects
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from agent_system.paths import data_path
     
     system_config = AgentSystemConfig()
     server_config = ToolServerConfig(
         type="todo",
         enabled=True,
-        storage_path="data/todos",
+        storage_path=str(data_path("todos")),
         max_tasks_per_session=1000,
         enable_dependencies=True,
         auto_save=True,

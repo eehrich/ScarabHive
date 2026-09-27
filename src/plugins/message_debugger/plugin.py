@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_system.paths import data_path
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 from .database import MessageDebuggerDB
 from .hooks import MessageDebuggerPlugin
@@ -43,8 +44,8 @@ class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
         
         db_path = config.get('db_path', None)
         if not db_path:
-            # Default: data/message_debugger/debugger.db
-            data_dir = Path('data') / 'message_debugger'
+            # Default: message_debugger/debugger.db in the data directory
+            data_dir = data_path('message_debugger')
             data_dir.mkdir(parents=True, exist_ok=True)
             db_path = str(data_dir / 'debugger.db')
         else:

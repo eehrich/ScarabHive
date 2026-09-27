@@ -15,6 +15,8 @@ from fastapi import APIRouter
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
+from agent_system.paths import data_path
+
 from .database import DebateForumDB
 from .server import DebateForumServer
 from .hooks import DebateForumHooks
@@ -47,7 +49,7 @@ class DebateForumHybridPlugin:
 
         db_path = config.get("db_path")
         if not db_path:
-            db_path = str(Path("data") / "debate_forum" / "forum.db")
+            db_path = str(data_path("debate_forum", "forum.db"))
 
         # Create shared database
         self._db = DebateForumDB(db_path)

@@ -112,6 +112,11 @@ cfg = getattr(server_config, "config", None) or {}              # nested config:
   restarts.**
 - If a config **model** changes (`src/agent_system/config/models.py`), update the
   JSON schema under `schemas/` too.
+- **Datenpfade nie selbst buchstabieren.** Das Datenverzeichnis ist verschiebbar
+  (`AGENT_DATA_DIR`, sonst `paths.data_dir`). Default: `data_path("plugin", "x.db")`
+  aus `agent_system.paths`, zur Laufzeit aufgerufen; ein Wert aus Umgebung, CLI oder
+  DB-Zeile: `resolve_data_path(wert)`. `plugins.yaml`-Werte und `schema.yaml`-Defaults
+  unter `data/` verschiebt der Loader. Wächter: `tests/config/test_no_hardcoded_data_dir.py`.
 
 ## Rules that have already caused damage
 

@@ -54,6 +54,7 @@ from agent_system.utils.suggest import suggest_path
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
+from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.utils.id import short_id
 from agent_system.utils.json_utils import repair_json, strip_markdown_fences
@@ -133,7 +134,7 @@ class JsonStoreServer(SchemaBasedToolServer):
         # disk in _bucket(). Undo history stays volatile by design.
         self._persist: bool = bool(config_dict.get("persist", True))
         self._storage_dir: Path = (
-            Path(str(config_dict.get("storage_path", "data/json_store")))
+            Path(str(config_dict.get("storage_path") or data_path("json_store")))
             / self._safe_filename(name))
         # Files (not memory) are cleaned by this retention; 0 keeps them forever.
         self._file_retention_s: float = float(

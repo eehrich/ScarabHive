@@ -28,6 +28,7 @@ import aiofiles
 from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
+from agent_system.paths import data_path
 from agent_system.utils.vector_store import (
     VectorStore,
     VectorStoreError,
@@ -248,10 +249,9 @@ class FileSearchEngine:
 
     def _persist_path(self) -> Path:
         """Where the semantic index lives -- one answer for the store and its lock."""
-        return Path(self.config.get(
-            "chroma_db_path",  # Keep old config name for compatibility
-            "data/cache/file_ops_chromadb"
-        ))
+        # "chroma_db_path": the old config name, kept for compatibility
+        return Path(self.config.get("chroma_db_path")
+                    or data_path("cache", "file_ops_chromadb"))
 
     def _pass_lock(self) -> Optional[FileLock]:
         """The cross-process lock for one index pass, next to the store it writes.

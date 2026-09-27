@@ -18,25 +18,25 @@ from pydantic import ValidationError
 
 from agent_system.auth.models import UserInDB, UserCreate, UserUpdate, UserRole, UserPreferences
 from agent_system.auth.security import get_password_hash, generate_api_key, hash_api_key
+from agent_system.paths import data_path, resolve_data_path
 
 
 logger = logging.getLogger(__name__)
 
-# Default database path (override via config)
-DEFAULT_DB_PATH = Path("data/users.db")
-
 
 class UserDatabase:
     """User database manager using SQLite."""
-    
+
     def __init__(self, db_path: Optional[Path] = None):
         """
         Initialize the user database.
-        
+
         Args:
-            db_path: Path to SQLite database file (default: data/users.db)
+            db_path: Path to SQLite database file (default: users.db in the
+                data directory). A ``data/...`` value -- the configuration's
+                own default among them -- lands in the data directory.
         """
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = resolve_data_path(db_path) if db_path else data_path("users.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
     
