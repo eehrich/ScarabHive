@@ -30,7 +30,7 @@ from typing import Any, Callable, Iterator, Optional
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq, merge_attrib
 from ruamel.yaml.error import ReusedAnchorWarning, YAMLError
-from ruamel.yaml.scalarstring import LiteralScalarString, ScalarString
+from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString, ScalarString
 
 from plugins.agent_editor.store import splice
 
@@ -41,6 +41,11 @@ from .spec import NAME_PATTERN
 INDENTS = ((2, 4, 2), (2, 2, 0))
 STATE_TYPES = ("state", "choice", "junction", "final")
 TRANSITION_FIELDS = ("trigger", "target", "guard", "effect", "description")
+#: What the inspector's forms set with update_state / update_machine; structure (states, transitions, initial) has
+#: its own operations, and a machine's id is its file name.
+STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout", "status", "output", "finally", "do")
+MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "params", "events", "context", "vars",
+                  "imports", "resources", "finally")
 _NAME = re.compile(NAME_PATTERN)
 
 
@@ -279,6 +284,87 @@ def _set_initial(edit: "_Edit", op: dict[str, Any]) -> str:
     return edit.result()
 
 
+def _update_state(edit: "_Edit", op: dict[str, Any]) -> str:
+    """Keys of a state and of its activity: ``fields`` {key: value}, ``do`` {key: value}; null or "" removes one,
+    ``{"$yaml": text}`` is a value typed as YAML (an object). Another activity kind is its key set and the old one's
+    removed: ``{"agent": null, "task": null, "decide": "noul", ...}``."""
+    found = edit.state(op.get("name"))
+    fields, activity = op.get("fields") or {}, op.get("do")
+    if not isinstance(fields, dict) or not (activity is None or isinstance(activity, dict)) or not (fields or activity):
+        raise EditError("fields: state keys to set (null removes one); do: keys of its activity to set")
+    unknown = sorted(set(fields) - set(STATE_FIELDS))
+    if unknown:
+        raise EditError(f"unknown state keys {', '.join(unknown)}; they are {', '.join(STATE_FIELDS)}")
+    if fields.get("type") not in (None, "", *STATE_TYPES):
+        raise EditError(f"type {fields['type']!r}: one of {', '.join(STATE_TYPES)}")
+    what = f"state {found.name!r}"
+    body = _state_body(found)
+    for key, value in fields.items():
+        if key == "type" and value == "state":
+            value = None  # the default: no key
+        _put(edit, what, body, key, _value(value, key), before=("transitions", "states"))
+    if activity:
+        from ..kinds.base import REGISTRY  # the kind keys go first, where readers look
+
+        do = body.get("do")
+        if do is None:
+            do = CommentedMap()
+        elif not isinstance(do, CommentedMap):
+            raise EditError(f"{what}: its do is not a mapping; fix it in the YAML tab")
+        else:  # an activity another state aliases: _put refuses each key (untied_key)
+            edit.untied_key(what, body, "do")
+        for key, value in activity.items():
+            _put(edit, what, do, str(key), _value(value, f"do.{key}"), first=key in REGISTRY)
+        if not do:
+            _put(edit, what, body, "do", None)
+        elif body.get("do") is not do:  # a new activity (also where `do:` stood empty)
+            _put(edit, what, body, "do", do, before=("transitions", "states"))
+    return edit.result()
+
+
+def _update_machine(edit: "_Edit", op: dict[str, Any]) -> str:
+    """Top-level keys of the machine, as update_state sets a state's."""
+    fields = op.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        raise EditError("fields: machine keys to set (null removes one)")
+    unknown = sorted(set(fields) - set(MACHINE_FIELDS))
+    if unknown:
+        raise EditError(f"unknown machine keys {', '.join(unknown)}; they are {', '.join(MACHINE_FIELDS)}")
+    for key, value in fields.items():
+        _put(edit, "the machine", edit.doc, key, _value(value, key), before=("initial", "states"))
+    return edit.result()
+
+
+def _value(value: Any, where: str) -> Any:
+    """A form's value: "" is none, {"$yaml": text} the nodes the text reads as (its comments kept)."""
+    if isinstance(value, dict) and set(value) == {"$yaml"}:
+        text = value["$yaml"]
+        if not isinstance(text, str):
+            raise EditError(f"{where}: $yaml is YAML text")
+        return _parse(text, where) if text.strip() else None
+    return None if value == "" else value
+
+
+def _put(edit: "_Edit", what: str, mapping: CommentedMap, key: str, value: Any, *, before: tuple[str, ...] = (),
+         first: bool = False) -> None:
+    """Set or (None) remove one key of ``mapping``; a new key goes first or before the first of ``before``."""
+    edit.untied_key(what, mapping, key)
+    old = mapping.get(key)
+    if isinstance(old, (CommentedMap, CommentedSeq)) and edit.tied(old, whole=True):
+        raise EditError(_shared(f"{what}: {key}"))  # its anchor, or a merge in it: other places see it
+    if value is None:
+        mapping.pop(key, None)
+        return
+    node = value if isinstance(value, (CommentedMap, CommentedSeq)) else (
+        _like(old, value) if key in mapping and isinstance(value, str) and "\n" not in value else _node(value))
+    if key in mapping:
+        mapping[key] = node
+        return
+    keys = list(mapping)
+    at = 0 if first else min((keys.index(name) for name in before if name in mapping), default=len(keys))
+    mapping.insert(at, key, node)
+
+
 _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
     "add_state": _add_state,
     "remove_state": _remove_state,
@@ -289,6 +375,8 @@ _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
     "remove_transition": _remove_transition,
     "move_transition": _move_transition,
     "set_initial": _set_initial,
+    "update_state": _update_state,
+    "update_machine": _update_machine,
 }
 
 
@@ -432,8 +520,29 @@ def _node(value: Any) -> Any:
 
 
 def _like(old: Any, new: Any) -> Any:
-    """``new`` in the quoting ``old`` was written with."""
+    """``new`` in the quoting ``old`` was written with; a folded text (``>``) folded again at its width."""
+    if isinstance(old, FoldedScalarString) and isinstance(new, str):
+        return _refold(old, new)
     return type(old)(new) if isinstance(old, ScalarString) and isinstance(new, str) else _node(new)
+
+
+def _refold(old: FoldedScalarString, new: str) -> FoldedScalarString:
+    """``new`` as a folded text broken at spaces no wider than ``old``'s longest line."""
+    text = str(old)
+    cuts = [0, *(getattr(old, "fold_pos", None) or []), len(text)]
+    width = max(b - a for a, b in zip(cuts, cuts[1:]))
+    folded = FoldedScalarString(new)
+    positions, start = [], 0
+    while len(new) - start > width:
+        cut = new.rfind(" ", start, start + width + 1)
+        if cut <= start:  # a word longer than the line: it stays whole
+            cut = new.find(" ", start + width)
+            if cut < 0:
+                break
+        positions.append(cut)
+        start = cut + 1
+    folded.fold_pos = positions
+    return folded
 
 
 # ------------------------------------------------------------------ text

@@ -99,7 +99,13 @@ another machine imports it. Its runs keep their snapshot.
 one, "My machines" for the writable root, else the plugin the machine comes with); the open
 folders are remembered, and a search opens what it finds. The machines pane and the inspector
 fold away (toolbar buttons). A writable machine can be deleted; a double-click on a state
-renames it; inspector edits not yet applied are asked about before they are dropped. A state's
+renames it; inspector edits not yet applied are asked about before they are dropped. The
+inspector has a form for every field: a state's activity (its kind, and each field of that kind's
+schema: `decide`, `input`, `question`, `criteria`, `by`, `timeout`, `retry` ...), its settings
+(type, description, max_visits, timeout, entry, exit, a final's status and output, finally) and,
+with nothing selected, the machine's (title, description, group, vars_from, params, events,
+context, vars, imports, resources, limits, finally). Objects are YAML text; Apply sends the
+changed fields only (edits `update_state` / `update_machine`), the file's comments stay. A state's
 YAML in the inspector is read in its place in the file, so it may use an alias of an anchor
 elsewhere. In the YAML tab, **Python module** gives a writable machine without one its companion
 module: `python: <id>.py` after the id line and the file, both drafts until Save (a file of that

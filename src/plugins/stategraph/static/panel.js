@@ -50,8 +50,9 @@ const transitionOf = (id) => S.machine?.graph?.transitions?.find((t) => t.id ===
 const hasDrafts = () => Object.keys(S.drafts).length > 0;
 const unsaved = () => hasDrafts() || S.inspectorDrafts.size > 0;
 /** The inspector form an input belongs to, as S.inspectorDrafts names it. */
-const draftKey = (form) => (form?.dataset.form === 'set-state' ? 'state'
-  : form?.dataset.transition ? `transition:${form.dataset.transition}` : null);
+const FORM_DRAFTS = { 'set-state': 'state', activity: 'activity', 'state-fields': 'fields', 'machine-fields': 'machine' };
+const draftKey = (form) => (FORM_DRAFTS[form?.dataset.form]
+  || (form?.dataset.transition ? `transition:${form.dataset.transition}` : null));
 const liveRun = () => (S.run && !TERMINAL.has(S.run.status) && S.run.active ? S.run : null);
 /** Breakpoints of the live run, else those the next run starts with. */
 const shownBreakpoints = () => (liveRun() ? (liveRun().debug?.breakpoints || []) : S.nextBreakpoints);
@@ -547,6 +548,28 @@ function drawInspector() {
       </div>
       ${problemList(pinned?.problems)}
     </div>
+    ${state.type === 'state' && !state.composite ? html`<div class="sg-section">
+      <h4 class="sg-section-title">Activity</h4>
+      <form data-form="activity" class="pk-stack">
+        ${state.locked?.includes('do') ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
+        <div class="sg-fields"><label for="af-kind">kind</label>
+          <select class="pk-select pk-select--sm" id="af-kind" name="kind" ${m.writable && !state.locked?.includes('do') ? '' : 'disabled'}>
+            <option value="">(none: waits, or passes on)</option>
+            ${S.kinds.map((k) => html`<option value="${k.key}" ${k.key === state.kind ? 'selected' : ''}>${k.title} (${k.key})</option>`)}
+          </select></div>
+        <div id="activityFields">${activityFields(state.kind, state)}</div>
+        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+      </form>
+    </div>` : ''}
+    <div class="sg-section">
+      <h4 class="sg-section-title">Settings</h4>
+      <form data-form="state-fields" class="pk-stack">
+        ${stateFieldNames(state).some((name) => state.locked?.includes(name)) ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
+        <div class="sg-fields">${stateFieldNames(state).map((name) => field(name, STATE_FIELD_SCHEMA[name], stateValue(state, name), {
+          text: state.yaml?.[name], locked: state.locked?.includes(name), prefix: 'sf' }))}</div>
+        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+      </form>
+    </div>
     <div class="sg-section">
       <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${shorten(live.id, 12)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
       ${hooks.length ? html`<div class="pk-row sg-checks">
@@ -594,8 +617,179 @@ function machineOverview() {
     <div class="sg-section"><h4 class="sg-section-title">Context</h4>${jsonView(g.context || {})}</div>
     <div class="sg-section"><h4 class="sg-section-title">Imports</h4>
       ${table(Object.entries(g.imports || {}).map(([alias, ref]) => html`<tr><td class="pk-mono">${alias}</td>
-        <td><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-machine="${importedId(ref)}">${ref}</button></td></tr>`), ['Alias', 'Machine'])}</div>`;
+        <td><button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-machine="${importedId(ref)}">${ref}</button></td></tr>`), ['Alias', 'Machine'])}</div>
+    <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
+      <form data-form="machine-fields" class="pk-stack">
+        <div class="sg-fields">${Object.keys(MACHINE_FIELD_SCHEMA).map((name) => field(name, MACHINE_FIELD_SCHEMA[name],
+          g[name] ?? undefined, { text: g.yaml?.[name], locked: g.locked?.includes(name), prefix: 'mf' }))}</div>
+        ${g.python ? html`<p class="pk-help">Companion module: <span class="pk-mono">${g.python}</span> (YAML tab)</p>` : ''}
+        <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
+      </form></div>`;
 }
+
+// ------------------------------------------------------------------ inspector forms: fields from the schemas
+
+/** A state's own keys (StateSpec, model/spec.py), in the shape a kind's JSON schema gives its fields. */
+const STATE_FIELD_SCHEMA = {
+  type: { enum: ['state', 'choice', 'junction', 'final'], description: 'state: may run an activity; choice / junction: decided within a transition; final: ends its region' },
+  description: { type: 'string' },
+  max_visits: { type: 'integer', description: 'entries of this state per frame; one more raises loop_limit' },
+  timeout: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'wait state: raise wait_timeout after this long (30s, 5m)' },
+  entry: { type: 'string', 'x-code': true, description: 'Python statements, run on entry' },
+  exit: { type: 'string', 'x-code': true, description: 'Python statements, run on exit' },
+  status: { enum: ['succeeded', 'failed'], description: 'final state of the root region: how the run ends' },
+  output: { 'x-yaml': true, description: 'final state: what the run or the calling state gets (templates)' },
+  finally: { type: 'object', description: 'an activity that runs once on every exit of this state' },
+};
+/** The machine's own keys (MachineSpec) the inspector sets; id is the file, states and initial have their own edits. */
+const MACHINE_FIELD_SCHEMA = {
+  title: { type: 'string' },
+  description: { type: 'string' },
+  group: { type: 'string', description: 'its folder in the machine list, nested by / (Writer/v6)' },
+  vars_from: { type: 'string', description: 'agent whose configured template_vars lie under vars' },
+  params: { type: 'object', description: 'name: {type, required, default, enum, description}' },
+  events: { type: 'object', description: 'name: {description, data (JSON schema)}' },
+  context: { type: 'object', description: 'the run context and its start values' },
+  vars: { type: 'object', description: 'agent template vars: a map of templates' },
+  imports: { type: 'object', description: 'alias: ./file.yaml or machine id' },
+  resources: { type: 'object', description: 'name: {open, fork, close} activities' },
+  limits: { type: 'object', description: 'max_steps, timeout' },
+  finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
+};
+const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last
+const SHARED_HINT = 'Some of this is shared with another place through a YAML anchor, alias or merge: those fields are edited in the YAML tab.';
+
+function stateFieldNames(state) {
+  if (state.composite) return ['description', 'max_visits', 'entry', 'exit', 'finally'];
+  if (state.type === 'final') return ['type', 'description', 'status', 'output'];
+  if (state.type !== 'state') return ['type', 'description'];
+  return ['type', 'description', 'max_visits', ...(state.wait || state.timeout != null ? ['timeout'] : []), 'entry', 'exit', 'finally'];
+}
+
+const stateValue = (state, name) => (name === 'type' ? state.type : state[name] ?? undefined);
+
+/** How a field is edited: enum, bool, number, duration (a number or 30s), line, text (a template), code, yaml. */
+function shapeOf(p = {}, value) {
+  if (value !== null && typeof value === 'object') return 'yaml';
+  if (p['x-yaml']) return 'yaml';
+  if (p['x-code']) return 'code';
+  const options = [p, ...(p.anyOf || [])];
+  if (options.some((o) => o.enum)) return 'enum';
+  const types = new Set(options.flatMap((o) => [].concat(o.type || (o.$ref || o.allOf ? 'object' : []))));
+  types.delete('null');
+  if (!types.size) return 'text';
+  if (types.has('object') || types.has('array')) return 'yaml';
+  if (types.size === 1 && types.has('boolean')) return 'bool';
+  if ([...types].every((t) => t === 'integer' || t === 'number')) return 'number';
+  return types.has('number') || types.has('integer') ? 'duration' : 'line';
+}
+
+/** One labelled control; data-orig holds what it showed, so a submit sends only what changed. */
+function field(name, p = {}, value, { text, locked = false, required = false, prefix = 'af' } = {}) {
+  let shape = shapeOf(p, value);
+  const id = `${prefix}-${name}`;
+  const orig = shape === 'yaml' ? (text ?? (value === undefined || value === null ? '' : JSON.stringify(value)))
+    : value === undefined || value === null ? '' : String(value);
+  if ((shape === 'line' || shape === 'duration') && orig.includes('\n')) shape = 'text';  // an input drops line breaks
+  const off = !S.machine.writable || locked;
+  const common = { id, name, shape, orig, off };
+  const label = html`<label for="${id}" title="${p.description || ''}">${name}${required ? ' *' : ''}</label>`;
+  if (shape === 'enum' || shape === 'bool') {
+    const options = shape === 'bool' ? ['true', 'false'] : [...new Set([p, ...(p.anyOf || [])].flatMap((o) => o.enum || []))];
+    return html`${label}<select class="pk-select pk-select--sm" ${attrs(common)}>
+      <option value="">${required ? '(choose)' : '(default)'}</option>
+      ${options.map((o) => html`<option value="${o}" ${String(o) === orig ? 'selected' : ''}>${o}</option>`)}</select>`;
+  }
+  if (shape === 'yaml' || shape === 'text' || shape === 'code') {
+    const rows = Math.min(8, Math.max(2, orig.split('\n').length));
+    return html`${label}<div class="pk-stack"><textarea class="pk-textarea pk-input--mono sg-field-text" rows="${rows}" spellcheck="false"
+      placeholder="${shape === 'yaml' ? 'YAML' : shape === 'code' ? 'Python' : 'text, {{ templates }}'}" ${attrs(common)}>
+${orig}</textarea>
+      ${locked ? html`<span class="pk-help">Uses a YAML anchor, alias or merge: edit it in the YAML tab.</span>` : ''}</div>`;
+  }
+  // (the line break after <textarea> above is dropped by the parser: a value that starts with one keeps it)
+  return html`${label}<input class="pk-input pk-input--sm${shape === 'line' ? '' : ' pk-input--mono'}" ${shape === 'number' ? html`type="number"` : ''}
+    value="${orig}" ${attrs(common)}>`;
+}
+
+const attrs = ({ id, name, shape, orig, off }) => html`id="${id}" name="${name}" data-shape="${shape}" data-orig="${orig}" ${off ? 'disabled' : ''}`;
+
+/** The fields of an activity kind (its JSON schema from /kinds): the kind's key first, then what it needs. */
+function activityFields(kind, state) {
+  if (!kind) return html`<p class="pk-help">No activity: the state waits for an event, or its transitions go on at once.</p>`;
+  const spec = S.kinds.find((k) => k.key === kind);
+  if (!spec) return html`<p class="pk-help">The kind ${kind} is not known here: edit it in the YAML.</p>`;
+  const props = spec.schema.properties || {};
+  const required = new Set(spec.schema.required || []);
+  const names = [kind, ...Object.keys(props).filter((n) => n !== kind && required.has(n)),
+    ...Object.keys(props).filter((n) => n !== kind && !required.has(n) && !COMMON_FIELDS.includes(n)),
+    ...COMMON_FIELDS.filter((n) => n in props)];
+  // another kind chosen: what the file keeps through the change (timeout, retry, ...) shows, the rest is empty
+  return html`${spec.summary ? html`<p class="pk-help">${spec.summary}</p>` : ''}<div class="sg-fields">${names.map((name) => field(name, props[name],
+    state?.do?.[name], { text: state?.yaml?.[`do.${name}`],
+      locked: state?.locked?.includes('do') || state?.locked?.includes(`do.${name}`),
+      required: required.has(name) }))}</div>`;
+}
+
+/** A control's value as the edit sends it; `changed` compares it with what it showed. */
+function fieldValue(control) {
+  const raw = control.value;
+  switch (control.dataset.shape) {
+    case 'yaml': return raw.trim() ? { $yaml: raw } : null;
+    case 'number': {
+      if (raw.trim() === '') return null;
+      if (Number.isNaN(Number(raw))) throw new FormError(`${control.name}: ${raw.trim()} is not a number.`);
+      return Number(raw);
+    }
+    case 'duration': return raw.trim() === '' ? null : /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : raw.trim();
+    case 'bool': return raw === '' ? null : raw === 'true';
+    case 'text': case 'code': return raw.replace(/\s+$/, '') || null;
+    default: return raw.trim() || null;
+  }
+}
+const changed = (control) => control.dataset.shape !== undefined && !control.disabled
+  && control.value.replace(/\s+$/, '') !== (control.dataset.orig ?? '').replace(/\s+$/, '');
+
+/** The changed fields of a form: {name: value}. */
+function changedFields(form) {
+  const out = {};
+  for (const control of form.elements) if (control.name && control.name !== 'kind' && changed(control)) out[control.name] = fieldValue(control);
+  return out;
+}
+
+/** The activity form as an update_state: the changed keys; another kind drops the old one's keys it has not. */
+function activityEdit(form, state) {
+  const kind = form.elements.kind.value;
+  if (!kind) return state.kind ? { fields: { do: null } } : null;
+  const edits = changedFields(form);
+  if (kind !== state.kind) {
+    // without its key, dropping the old kind's would leave no activity at all
+    if (edits[kind] == null) throw new FormError(`Set ${kind} first: it says what the activity does.`);
+    const props = S.kinds.find((k) => k.key === kind)?.schema.properties || {};
+    for (const key of Object.keys(state.do || {})) if (!(key in props)) edits[key] = null;
+  }
+  return Object.keys(edits).length ? { do: edits } : null;
+}
+
+/** A form value the edit cannot take; the panel says why instead of sending it. */
+class FormError extends Error {}
+
+const nonEmpty = (fields) => (Object.keys(fields).length ? fields : null);
+/** The field forms as edits: the request, or null when nothing changed. */
+const FIELD_FORMS = {
+  activity: (form, state) => {
+    const op = state && activityEdit(form, state);
+    return op ? { op: 'update_state', name: state.name, ...op } : null;
+  },
+  'state-fields': (form, state) => {
+    const fields = state && nonEmpty(changedFields(form));
+    return fields ? { op: 'update_state', name: state.name, fields } : null;
+  },
+  'machine-fields': (form) => {
+    const fields = nonEmpty(changedFields(form));
+    return fields ? { op: 'update_machine', fields } : null;
+  },
+};
 
 function importedId(ref) {
   const base = String(ref).split('/').pop();
@@ -636,7 +830,17 @@ $('side-inspect').addEventListener('submit', async (event) => {
   const form = event.target;
   const button = form.querySelector('[type="submit"]');
   await withBusy(button, async () => {
-    if (form.dataset.form === 'set-state' && S.selection?.kind === 'state') {
+    if (form.dataset.form in FIELD_FORMS) {
+      let request;
+      try {
+        request = FIELD_FORMS[form.dataset.form](form, S.selection?.kind === 'state' ? stateOf(S.selection.id) : null);
+      } catch (error) {
+        if (!(error instanceof FormError)) throw error;
+        return toast(error.message, { kind: 'warn' });
+      }
+      if (!request) return toast('Nothing changed', { kind: 'info' });
+      await edit(request, { from: FORM_DRAFTS[form.dataset.form] });
+    } else if (form.dataset.form === 'set-state' && S.selection?.kind === 'state') {
       await edit({ op: 'set_state', name: S.selection.id, yaml: form.elements.yaml.value }, { from: 'state' });
     } else if (form.dataset.form === 'add-transition' && S.selection?.kind === 'state') {
       await connect(S.selection.id, form.elements.target.value);
@@ -653,6 +857,13 @@ $('side-inspect').addEventListener('submit', async (event) => {
 });
 
 $('side-inspect').addEventListener('change', async (event) => {
+  if (event.target.name === 'kind' && event.target.closest('[data-form="activity"]')) {
+    const state = S.selection?.kind === 'state' ? stateOf(S.selection.id) : null;
+    if (state) render($('activityFields'), activityFields(event.target.value, state));
+    S.inspectorDrafts.add('activity');
+    setDirty(true);
+    return;
+  }
   const box = event.target.closest('[data-breakpoint]');
   if (!box || S.selection?.kind !== 'state') return;
   await toggleBreakpoint(S.selection.id, box.dataset.breakpoint, box.checked);
@@ -661,7 +872,7 @@ $('side-inspect').addEventListener('change', async (event) => {
 // paint() and followScroll() no-op for anything but the coloured YAML box: harmless on every other field here
 $('side-inspect').addEventListener('input', (event) => {
   paint(event.target);
-  const key = draftKey(event.target.closest('[data-form="set-state"], [data-transition]'));
+  const key = draftKey(event.target.closest('form'));
   if (key) {
     S.inspectorDrafts.add(key);
     setDirty(true);

@@ -228,8 +228,9 @@
         },
         "criteria": {
           "default": null,
-          "description": "single question: its criteria",
-          "title": "Criteria"
+          "description": "single question: its criteria -- choice: {option: meaning}; score: [lowest, ..., highest]",
+          "title": "Criteria",
+          "x-yaml": true
         },
         "decide": {
           "description": "noul: probability of yes; choice: one option of criteria; score: a point on criteria's scale; questions: several named questions in one call",

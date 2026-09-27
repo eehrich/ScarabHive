@@ -207,10 +207,50 @@ def smoke_fixtures() -> str:
              "finished_at": None, "final_state": None, "error": None, "user_id": "ada", "parent_run": None, "fork_step": None}]
     return "".join(f"export const {name} = {json.dumps(value)};\n"
                    for name, value in (("MACHINE", machine), ("RUN", run), ("RUNS", runs), ("KINDS", describe_kinds()),
-                                       ("HOOKS", machine_answer("hooks", HOOKS_MACHINE))))
+                                       ("HOOKS", machine_answer("hooks", HOOKS_MACHINE)),
+                                       ("FIELDS", machine_answer("fields", FIELDS_MACHINE))))
 
 
 #: A state of each type the inspector offers breakpoints for differently, and one it cannot apply (the anchor).
+FIELDS_MACHINE = """\
+stategraph: 1
+id: fields
+title: Fields
+group: Writer/demo
+params:
+  text: {type: string, required: true}
+context: {verdict: null}
+initial: judge
+states:
+  judge:
+    do:
+      decide: choice
+      input: "{{ params.text }}"
+      question: Is it done?
+      criteria: {done: finished, open: needs more}
+      timeout: 5m
+    transitions:
+      - target: done
+        effect: ctx.verdict = out
+  idle:
+    description: |
+      line one
+      line two
+    transitions:
+      - target: done
+  share_a:
+    do: &job {agent: w, task: t}
+    transitions:
+      - target: share_b
+  share_b:
+    do: *job
+    transitions:
+      - target: done
+  done:
+    type: final
+    output: {verdict: "{{ ctx.verdict }}"}
+"""
+
 HOOKS_MACHINE = """\
 stategraph: 1
 id: hooks
@@ -330,6 +370,19 @@ PANEL_CASES = [
     "a_machine_that_names_its_module_or_cannot_be_written_offers_none",
     "a_module_line_typed_into_the_yaml_or_a_missing_id_line_adds_nothing",
     "a_module_whose_name_a_file_has_already_is_used_as_it_is",
+    "a_decision_state_shows_its_fields_from_the_kinds_schema",
+    "an_activity_apply_sends_only_what_changed",
+    "another_kind_keeps_what_survives_and_drops_the_rest",
+    "no_kind_removes_the_activity",
+    "a_final_s_settings_send_status_and_output_as_yaml",
+    "the_machine_settings_are_an_update_machine",
+    "an_apply_without_a_change_sends_nothing",
+    "a_read_only_machine_shows_its_fields_disabled",
+    "a_new_decision_takes_its_criteria_as_yaml",
+    "a_number_field_is_a_number_input_and_a_typo_is_refused",
+    "a_shared_activity_is_locked_with_a_hint",
+    "another_kind_without_its_key_is_refused",
+    "a_text_over_lines_is_a_text_area",
     "an_activity_read_while_it_ran_is_read_again_when_it_ends",
     "a_poll_leaves_a_result_read_that_is_out_alone",
     "a_run_switched_to_takes_the_result_of_the_one_left_away_at_once",

@@ -10,7 +10,12 @@ problems carry, so the panel can pin a problem to the state or transition it is 
 
 from __future__ import annotations
 
+import io
+import json
 from typing import Any, Optional
+
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq, merge_attrib
 
 from plugins.stategraph.kinds import kind_of, parse_activity
 from .loader import MachineTree, dotted, line_of, to_plain
@@ -27,7 +32,7 @@ def empty_graph(machine_id: Optional[str] = None) -> dict[str, Any]:
 def graph_view(tree: MachineTree) -> dict[str, Any]:
     """States (pre-order, a composite before its children) and transitions of the root machine file."""
     loaded = tree.files.get(tree.root)
-    doc = loaded.doc if loaded is not None else None
+    doc = _quoted(loaded.text, loaded.doc) if loaded is not None else None
     if not isinstance(doc, dict):
         return empty_graph()
     graph = empty_graph(_text(doc.get("id")))
@@ -41,6 +46,9 @@ def graph_view(tree: MachineTree) -> dict[str, Any]:
     graph["events"] = {str(name): to_plain(event) if isinstance(event, dict) else {}
                        for name, event in _mapping(doc.get("events")).items()}
     graph["context"] = to_plain(_mapping(doc.get("context")))
+    for key in ("group", "python", "vars_from"):
+        graph[key] = _text(doc.get(key))
+    graph["yaml"], graph["locked"] = _texts({key: doc[key] for key in MACHINE_OBJECTS if key in doc})
     _walk(doc, _mapping(doc.get("states")), None, ["states"], graph)
     return graph
 
@@ -71,9 +79,21 @@ def _walk(doc: Any, states: dict[Any, Any], parent: Optional[str], prefix: list[
             "timeout": to_plain(body.get("timeout")) if isinstance(body.get("timeout"), (int, float, str)) else None,
             "status": _text(body.get("status")),
             "description": _text(body.get("description")) or "",
+            "do": to_plain(body["do"]) if isinstance(body.get("do"), dict) else None,
+            "output": to_plain(body.get("output")),
+            "finally": to_plain(body.get("finally")),
             "line": line_of(doc, path),
             "path": dotted(path),
         })
+        # what the inspector shows as YAML text: the activity's objects, a final's output, the finally activity
+        activity = body.get("do") if isinstance(body.get("do"), dict) else {}
+        texts, locked = _texts({
+            **{f"do.{key}": value for key, value in activity.items() if isinstance(value, (dict, list))},
+            **{key: body[key] for key in ("output", "finally") if key in body}})
+        shared = _shared_keys(body)
+        if "do" in shared or getattr(getattr(activity, "anchor", None), "value", None) or getattr(activity, merge_attrib, None):
+            shared.append("do")  # the whole activity is another place's too: edited in the YAML tab
+        graph["states"][-1]["yaml"], graph["states"][-1]["locked"] = texts, sorted(set(locked + shared))
         for index, item in enumerate(transitions):
             if not isinstance(item, dict):
                 continue  # the index stays the list index: edits address transitions by it
@@ -111,6 +131,70 @@ def _activity(raw: Any) -> tuple[Optional[str], str, Optional[str]]:
         value = raw.get(kind.key)
         label = value if isinstance(value, str) else kind.title
     return kind.key, str(label or ""), kind.icon
+
+
+#: Machine keys the inspector edits as YAML text.
+MACHINE_OBJECTS = ("limits", "params", "events", "context", "vars", "imports", "resources", "finally")
+
+
+def _texts(values: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """``({path: YAML text}, [locked paths])``: a value with an anchor, an alias or a merge in it is edited in the
+    YAML tab (the text alone would lose what ties it to the rest of the file)."""
+    texts: dict[str, str] = {}
+    locked: list[str] = []
+    for path, value in values.items():
+        if _tied(value):
+            locked.append(path)
+        elif isinstance(value, (CommentedMap, CommentedSeq)):
+            buffer = io.StringIO()
+            yaml = YAML(typ="rt")
+            yaml.width = 4096
+            yaml.indent(mapping=2, sequence=4, offset=2)
+            yaml.dump(value, buffer)
+            texts[path] = buffer.getvalue()
+        else:  # a scalar: as JSON, which reads back as the same YAML scalar
+            texts[path] = json.dumps(to_plain(value), ensure_ascii=False)
+    return texts, locked
+
+
+def _quoted(text: str, doc: Any) -> Any:
+    """The file read again with its quotes kept, for texts the editor sends back (``doc``: where that fails)."""
+    try:
+        yaml = YAML(typ="rt")
+        yaml.preserve_quotes = True
+        return yaml.load(text)
+    except Exception:  # the loader read it: this does not fail in practice, and doc says the same without quotes
+        return doc
+
+
+def _shared_keys(body: Any) -> list[str]:
+    """A state's keys another place sees: inherited through its own merge, inherited by a state that merges it, or
+    every key of a state other places alias."""
+    if not isinstance(body, CommentedMap):
+        return []
+    heirs = list(getattr(body, "_ref", None) or [])
+    aliased = bool(getattr(getattr(body, "anchor", None), "value", None)) and not heirs
+    return [str(key) for key in body
+            if aliased or not body._unmerged_contains(key) or any(not heir._unmerged_contains(key) for heir in heirs)]
+
+
+def _tied(value: Any) -> bool:
+    """An anchor (and so an alias of it) or a merge anywhere in ``value``."""
+    todo, seen = [value], set()
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (dict, list)):
+            if id(node) in seen:
+                return True  # reached twice: an alias
+            seen.add(id(node))
+        anchor = getattr(node, "anchor", None)
+        if getattr(anchor, "value", None) or getattr(node, merge_attrib, None):
+            return True
+        if isinstance(node, dict):
+            todo.extend(node.values())
+        elif isinstance(node, list):
+            todo.extend(node)
+    return False
 
 
 def _mapping(value: Any) -> dict[Any, Any]:

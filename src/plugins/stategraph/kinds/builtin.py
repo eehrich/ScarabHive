@@ -189,7 +189,8 @@ class DecideSpec(KindSpec):
                     "scale; questions: several named questions in one call")
     input: Any = Field(description="the content to judge (template: text or object, not empty)")
     question: Any = Field(None, description="single question (template)")
-    criteria: Any = Field(None, description="single question: its criteria")
+    criteria: Any = Field(None, description="single question: its criteria -- choice: {option: meaning}; score: "
+                                            "[lowest, ..., highest]", json_schema_extra={"x-yaml": True})
     questions: Optional[dict[str, QuestionSpec]] = Field(None, description="decide: questions -> name: question")
     profile: Optional[str] = Field(
         None, description="decision profile (llm_system.decision_profiles); default: the configured default")

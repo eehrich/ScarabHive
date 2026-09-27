@@ -3,7 +3,7 @@
 // against fake_kit_held.js (the real kit's timing: answers later or when released, `latest` and abandon() abort) and
 // fake_dom.js, without ELK (the canvas falls back to its grid). Prints "PASS <case>" or "FAIL <case>: ...".
 import { CASE } from './case.js';
-import { HOOKS, MACHINE, RUN, RUNS, KINDS } from './fixtures.js';
+import { FIELDS, HOOKS, MACHINE, RUN, RUNS, KINDS } from './fixtures.js';
 import { ApiError } from './fake_kit.js';
 
 load('./fake_dom.js');
@@ -16,6 +16,7 @@ const READ_ONLY = { ...MACHINE, id: 'ro', writable: false };
 const PLAIN_TEXT = 'stategraph: 1\nid: plain\ntitle: Plain\ninitial: a\nstates:\n  a: {type: final}\n';
 const PLAIN = { ...MACHINE, id: 'plain', root_file: 'plain.yaml', files: { 'plain.yaml': PLAIN_TEXT }, versions: { 'plain.yaml': 'v1' } };
 let plainAnswer = PLAIN;
+let fieldsAnswer = FIELDS;
 const plainErrors = [];  // answers of the next PUTs of plain, before the good one
 const EMPTY = { ...MACHINE, id: 'empty', graph: { ...MACHINE.graph, initial: null, states: [], transitions: [] },
   problems: [{ level: 'error', code: 'SG001', message: 'a machine needs at least one state', path: 'states', file: '/m/empty.yaml', line: 1 }] };
@@ -39,7 +40,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p === '/kinds') return KINDS;
   if (p === '/machines' && method === 'GET') {
     const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
-    return ['review', 'other', 'hooks', 'ro', 'empty', 'plain'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
+    return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
       group: groups[id] || 'My machines' }));
   }
   if (p === '/machines/review' && method === 'GET') return MACHINE;
@@ -48,6 +49,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p === '/machines/ro' && method === 'GET') return READ_ONLY;
   if (p === '/machines/empty' && method === 'GET') return EMPTY;
   if (p === '/machines/plain' && method === 'GET') return plainAnswer;
+  if (p === '/machines/fields' && method === 'GET') return fieldsAnswer;
   if (p === '/machines/plain' && method === 'PUT') {
     if (plainErrors.length) return plainErrors.shift();
     plainAnswer = { ...PLAIN, files: { ...PLAIN.files, ...json.files }, versions: { 'plain.yaml': 'v2', 'plain.py': 'p1' } };
@@ -119,6 +121,21 @@ const submit = async (form, values) => {
 const confirms = () => ASKED.filter(([kind]) => kind === 'confirm').length;
 const runGets = () => CALLS.filter(([, path]) => path.includes('/runs/r1?')).length;
 const headName = () => ($('machineHead').innerHTML.match(/<h2 class="sg-head-name">([^<]*)<\/h2>/) || [])[1];
+/** A submitted inspector form: {name: [shape, shown, typed]} (shape 'kind' for the kind select). */
+function formOf(kind, controls) {
+  const form = element('form', { 'data-form': kind });
+  for (const [name, [shape, orig, value]] of Object.entries(controls)) {
+    const control = form.elements[name];
+    control.name = name;
+    control.value = value;
+    if (shape !== 'kind') {
+      control.dataset.shape = shape;
+      control.dataset.orig = orig;
+    }
+  }
+  return form;
+}
+const lastEdit = () => CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json.op).pop();
 async function typeDraft() {
   $('yamlText').value = `${MACHINE.files['review.yaml']}\n# unsaved\n`;
   await $('yamlText').fire('input', {});
@@ -697,6 +714,151 @@ const CASES = {
     check(puts.length === 2 && 'plain.py' in puts[0].files && !('plain.py' in puts[1].files)
       && puts[1].files['plain.yaml'].includes('python: plain.py'), `not saved with the file as it is: ${JSON.stringify(puts)}`);
     check(!DIRTY, 'the drafts outlived the save');
+  },
+
+  async a_decision_state_shows_its_fields_from_the_kinds_schema() {
+    await boot('?machine=fields');
+    await choose('judge');
+    const shown = $('side-inspect').innerHTML;
+    check(/<option value="decide" selected>/.test(shown), 'the kind is not chosen');
+    check(/name="decide" data-shape="enum" data-orig="choice"/.test(shown) && /<option value="choice" selected>/.test(shown), 'the decision kind is not shown');
+    check(/name="question" data-shape="text" data-orig="Is it done\?"/.test(shown), 'the question is not shown');
+    check(/name="criteria" data-shape="yaml"/.test(shown) && shown.includes('done: finished'), 'the criteria are not YAML text');
+    check(/name="timeout" data-shape="duration" data-orig="5m"/.test(shown), 'the timeout is not shown');
+    const at = (name) => shown.indexOf(`name="${name}"`);
+    check(at('decide') < at('input') && at('input') < at('question') && at('question') < at('timeout'),
+      'the kind first, then what it needs, the common fields last');
+    check(/name="max_visits"/.test(shown) && /name="entry" data-shape="code"/.test(shown), 'the state settings are missing');
+  },
+
+  async an_activity_apply_sends_only_what_changed() {
+    await boot('?machine=fields');
+    await choose('judge');
+    const form = formOf('activity', { kind: ['kind', 'decide', 'decide'], question: ['text', 'Is it done?', 'Finished?'],
+      input: ['text', '{{ params.text }}', '{{ params.text }}'], criteria: ['yaml', 'done: finished\n', 'done: finished\n'],
+      timeout: ['duration', '5m', '30'] });
+    await $('side-inspect').fire('submit', { target: form });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'judge', do: { question: 'Finished?', timeout: 30 } }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async another_kind_keeps_what_survives_and_drops_the_rest() {
+    await boot('?machine=fields');
+    await choose('judge');
+    const kind = element('select', { name: 'kind' });
+    kind.name = 'kind';
+    kind.value = 'agent';
+    element('form', { 'data-form': 'activity' }).appendChild(kind);
+    await $('side-inspect').fire('change', { target: kind });
+    check(/name="task" data-shape="text" data-orig=""/.test($('activityFields').innerHTML), 'the agent kind has no empty task field');
+    check(/name="timeout" data-shape="duration" data-orig="5m"/.test($('activityFields').innerHTML), 'the timeout the file keeps is not shown');
+    check(DIRTY, 'another kind is an unapplied change');
+    const form = formOf('activity', { kind: ['kind', 'agent', 'agent'], agent: ['line', '', 'critic'], task: ['text', '', 'Judge it'],
+      timeout: ['duration', '5m', '5m'] });
+    await $('side-inspect').fire('submit', { target: form });
+    await settle();
+    check(JSON.stringify(lastEdit()?.do) === JSON.stringify({ agent: 'critic', task: 'Judge it', decide: null, input: null,
+      question: null, criteria: null }), `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async no_kind_removes_the_activity() {
+    await boot('?machine=fields');
+    await choose('judge');
+    await $('side-inspect').fire('submit', { target: formOf('activity', { kind: ['kind', 'decide', ''] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'judge', fields: { do: null } }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_final_s_settings_send_status_and_output_as_yaml() {
+    await boot('?machine=fields');
+    await choose('done');
+    const shown = $('side-inspect').innerHTML;
+    check(/name="status" data-shape="enum"/.test(shown) && /name="output" data-shape="yaml"/.test(shown)
+      && shown.includes('verdict:'), 'a final shows no status or output');
+    check(!/data-form="activity"/.test(shown), 'a final has no activity');
+    await $('side-inspect').fire('submit', { target: formOf('state-fields', { status: ['enum', '', 'failed'],
+      output: ['yaml', 'verdict: x\n', 'verdict: y\n'], description: ['line', '', ''] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'done',
+      fields: { status: 'failed', output: { $yaml: 'verdict: y\n' } } }), `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async the_machine_settings_are_an_update_machine() {
+    await boot('?machine=fields');
+    const shown = $('side-inspect').innerHTML;
+    check(/name="group" data-shape="line" data-orig="Writer\/demo"/.test(shown) && /name="params" data-shape="yaml"/.test(shown),
+      'the machine settings are not shown');
+    await $('side-inspect').fire('submit', { target: formOf('machine-fields', { title: ['line', 'Fields', 'Judge'],
+      group: ['line', 'Writer/demo', ''] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_machine', fields: { title: 'Judge', group: null } }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async an_apply_without_a_change_sends_nothing() {
+    await boot('?machine=fields');
+    await choose('judge');
+    await $('side-inspect').fire('submit', { target: formOf('state-fields', { description: ['line', '', ''] }) });
+    await $('side-inspect').fire('submit', { target: formOf('activity', { kind: ['kind', 'decide', 'decide'], question: ['text', 'q', 'q'] }) });
+    await settle();
+    check(!lastEdit() && TOASTS.filter(([, text]) => text === 'Nothing changed').length === 2, `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_read_only_machine_shows_its_fields_disabled() {
+    fieldsAnswer = { ...FIELDS, writable: false };
+    await boot('?machine=fields');
+    await choose('judge');
+    const shown = $('side-inspect').innerHTML;
+    check(/name="question" data-shape="text" data-orig="[^"]*" disabled/.test(shown) && /id="af-kind" name="kind" disabled/.test(shown),
+      'a read-only machine offers its fields for editing');
+  },
+
+  async a_new_decision_takes_its_criteria_as_yaml() {
+    await boot('?machine=fields');
+    await choose('idle');
+    const kind = element('select', { name: 'kind' });
+    kind.name = 'kind';
+    kind.value = 'decide';
+    element('form', { 'data-form': 'activity' }).appendChild(kind);
+    await $('side-inspect').fire('change', { target: kind });
+    check(/name="criteria" data-shape="yaml" data-orig=""/.test($('activityFields').innerHTML), 'empty criteria are taken as text');
+  },
+
+  async a_number_field_is_a_number_input_and_a_typo_is_refused() {
+    await boot('?machine=fields');
+    await choose('judge');
+    check(/ type="number"\s+value="" id="sf-max_visits"/.test($('side-inspect').innerHTML), 'max_visits is no number input');
+    await $('side-inspect').fire('submit', { target: formOf('state-fields', { max_visits: ['number', '', '3,5'] }) });
+    await settle();
+    check(!lastEdit() && TOASTS.some(([kind, text]) => kind === 'warn' && text.includes('not a number')), `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_shared_activity_is_locked_with_a_hint() {
+    await boot('?machine=fields');
+    await choose('share_b');
+    const shown = $('side-inspect').innerHTML;
+    check(/id="af-kind" name="kind" disabled/.test(shown) && /name="task" data-shape="text" data-orig="t" disabled/.test(shown),
+      'the aliased activity is offered for editing');
+    check(shown.includes('shared with another place'), 'no word why');
+  },
+
+  async another_kind_without_its_key_is_refused() {
+    await boot('?machine=fields');
+    await choose('judge');
+    await $('side-inspect').fire('submit', { target: formOf('activity', { kind: ['kind', 'agent', 'agent'], agent: ['line', '', ''],
+      task: ['text', '', 'Judge it'] }) });
+    await settle();
+    check(!lastEdit() && TOASTS.some(([kind, text]) => kind === 'warn' && text.startsWith('Set agent first')),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_text_over_lines_is_a_text_area() {
+    await boot('?machine=fields');
+    await choose('idle');
+    check(/name="description" data-shape="text"[^>]*>\nline one\nline two/.test($('side-inspect').innerHTML),
+      'a description over two lines sits in a one-line field');
   },
 
   async an_empty_machine_asks_for_a_first_state() {

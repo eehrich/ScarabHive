@@ -1000,7 +1000,11 @@ Slash command: `/stategraph-run <id>`, with `wait: background`.
 **The panel.** The machine list shows collapsible folders by group (the open ones are
 remembered; a search opens every folder it finds something in). The machines pane and the
 inspector fold away (toolbar buttons). A writable machine has a delete button. Double-click on
-a state renames it. The YAML tab adds a companion module to a writable machine that has none
+a state renames it. The inspector has a form for every field of a state (its activity's fields
+come from the kind's JSON schema, `GET /api/kinds`) and of the machine; Apply sends only the
+changed keys as `update_state` / `update_machine` (objects as YAML text, `{"$yaml": ...}`), set
+in place with the file's comments; a value with an anchor, alias or merge in it is edited in the
+YAML tab. The YAML tab adds a companion module to a writable machine that has none
 (`python: <id>.py` and the file, as drafts saved with the next Save) and colours `.py` files as
 Python. Inspector edits not yet applied are asked about before a selection, an
 edit or another machine drops them. Each run has a **Result** card: its output or error, the
