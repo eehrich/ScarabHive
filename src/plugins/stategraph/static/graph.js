@@ -236,6 +236,50 @@ export function keepingChoices(element, draw) {
   return drawn;
 }
 
+/** What a form shows: {name: data-orig} of its controls that have one. */
+const shownBy = (form) => Object.fromEntries([...form.elements].filter((c) => c.name && c.dataset.orig !== undefined)
+  .map((c) => [c.name, c.dataset.orig]));
+
+/**
+ * What was typed into the forms under `root` that `keep` names (`keyOf(form)`: its key) and is not applied: every
+ * control with a data-orig (what it showed) whose value differs from it, and what the whole form showed --
+ * {key: {controls: [{name, value}], shown}}. `putTyped` gives it back after a redraw.
+ */
+export function typedIn(root, keep, keyOf) {
+  const typed = new Map();
+  for (const form of root.querySelectorAll('form')) {
+    const key = keyOf(form);
+    if (!key || !keep.has(key)) continue;
+    const controls = [...form.elements].filter((c) => c.name && c.dataset.orig !== undefined && c.value !== c.dataset.orig)
+      .map((c) => ({ name: c.name, value: c.value }));
+    if (controls.length) typed.set(key, { controls, shown: shownBy(form) });
+  }
+  return typed;
+}
+
+/**
+ * Give what `typedIn` kept back to the redrawn forms: a form gets its typed values when it shows all it showed
+ * then -- one the edit changed underneath (a field of it, or another thing now under its key: a transition moved
+ * or removed) or that is gone keeps what is drawn. Returns the keys of the forms that got their text back, and
+ * "key: name" of each typed control that did not.
+ */
+export function putTyped(root, typed, keyOf) {
+  const restored = new Set();
+  const dropped = [];
+  const forms = new Map([...root.querySelectorAll('form')].map((form) => [keyOf(form), form]));
+  for (const [key, { controls, shown }] of typed) {
+    const form = forms.get(key);
+    const now = form ? shownBy(form) : null;
+    const same = now && Object.keys({ ...shown, ...now }).every((name) => shown[name] === now[name]);
+    for (const { name, value } of controls) {
+      if (same) form.elements[name].value = value;
+      else dropped.push(`${key}: ${name}`);
+    }
+    if (same) restored.add(key);
+  }
+  return { restored, dropped };
+}
+
 /** A file path with forward slashes: a server on Windows names files with backslashes. */
 export function posixPath(path) {
   return path ? String(path).replace(/\\/g, '/') : path;
@@ -677,10 +721,18 @@ export class Canvas {
   bindPointer() {
     const svg = this.svg;
     let gesture = null;
+    // the wheel scrolls the view (Shift: sideways), Ctrl+wheel zooms -- a touchpad's pinch comes as Ctrl+wheel too
     svg.addEventListener('wheel', (event) => {
       event.preventDefault();
-      const rect = svg.getBoundingClientRect();
-      this.zoom(event.deltaY < 0 ? 1.1 : 1 / 1.1, event.clientX - rect.left, event.clientY - rect.top);
+      if (event.ctrlKey || event.metaKey) {
+        const rect = svg.getBoundingClientRect();
+        this.zoom(event.deltaY < 0 ? 1.1 : 1 / 1.1, event.clientX - rect.left, event.clientY - rect.top);
+        return;
+      }
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? svg.getBoundingClientRect().height : 1;
+      const [dx, dy] = event.shiftKey && !event.deltaX ? [event.deltaY, 0] : [event.deltaX, event.deltaY];
+      this.view = { ...this.view, x: this.view.x - dx * unit, y: this.view.y - dy * unit };
+      this.applyView();
     }, { passive: false });
     svg.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;

@@ -35,7 +35,6 @@ ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
 ANSWER_CHARS = 200000  # a whole get_run answer: many short texts add up too
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
-RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
 #: What a run's state asks of whoever reads it next (tool answers carry it as ``next``).
 NEXT = {
     "running": "it goes on by itself: stategraph_get_run(run_id, wait='finish') waits for its end, a pause or a wait",
@@ -285,9 +284,7 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def list_runs(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            status = params.get("status") or None
-            if status is not None and status not in RUN_STATUSES:
-                raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
+            status = params.get("status") or None  # the service checks it
             user = params.get("_user_id")
             mine = self._auth_enabled() and not self._is_admin(user)
             rows = self.service.list_runs(params.get("machine_id") or None, int(_number(params, "limit", 20, 1, 200)),

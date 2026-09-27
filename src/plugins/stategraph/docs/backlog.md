@@ -128,23 +128,29 @@ dem deklarierten Typ und behält Backslashes; ungültiges `on_wait` zeigt auch d
 
 ## Phase 4: Bedienung
 
-- [ ] **U1 Mehrere Apply-Formulare** eines States: Änderungen in einem anderen Formular überleben das
+Stand: gebaut, Review eingearbeitet (Duplizieren schreibt keine importierten Dateien in die beschreibbare Wurzel,
+sondern verweist per Maschinen-id, und ersetzt die ganze `python:`-Zeile; Undo/Redo einer nach dem anderen, auch
+per Taste; ein Formular bekommt sein Getipptes nur zurück, wenn es noch dasselbe zeigt; ein umbenannter State bleibt
+gezeigt; „Neues Event…“ deklariert und wählt aus, statt das Formular zu übergehen; `events:` ohne Wert; Löschen
+vergisst Params und Undo-Schritte; ein Maschinenwechsel beginnt die Runs-Liste neu). Redo auf Wunsch des Nutzers.
+
+- [x] **U1 Mehrere Apply-Formulare** eines States: Änderungen in einem anderen Formular überleben das
   Apply (oder "Apply all").
-- [ ] **U2 Agent/Tool/`by`/Profil/Maschine als Auswahl** (`<datalist>` aus dem Katalog, neue Route);
+- [x] **U2 Agent/Tool/`by`/Profil/Maschine als Auswahl** (`<datalist>` aus dem Katalog, neue Route);
   Feldbeschreibungen sichtbar statt nur im Tooltip.
-- [ ] **U3 Undo** für Graph-Edits (letzten Dateitext zurückschreiben); Auto-Layout mit Rückfrage.
-- [ ] **U4 Warte-State beantworten**: Knöpfe der angenommenen Events in der Debug-Leiste, Event
+- [x] **U3 Undo** für Graph-Edits (letzten Dateitext zurückschreiben); Auto-Layout mit Rückfrage.
+- [x] **U4 Warte-State beantworten**: Knöpfe der angenommenen Events in der Debug-Leiste, Event
   vorausgewählt, Beschreibung sichtbar.
-- [ ] **U5 Runs-Tab**: Result-Karte sichtbar (über der Liste oder Liste im Scroller); ältere Läufe
+- [x] **U5 Runs-Tab**: Result-Karte sichtbar (über der Liste oder Liste im Scroller); ältere Läufe
   (Cursor), Status-Filter.
-- [ ] **U6 Params/Events**: Settings-Formular der Maschine oben, doppelte Tabellen weg, Form als Hilfe;
+- [x] **U6 Params/Events**: Settings-Formular der Maschine oben, doppelte Tabellen weg, Form als Hilfe;
   "Neues Event…" im Trigger-Select.
-- [ ] **U7 State-Suche** in der Graph-Leiste; Mausrad schwenkt, Strg+Rad zoomt.
-- [ ] **U8 Duplizieren** einer (auch mitgelieferten) Maschine unter neuer id.
-- [ ] **U9 Schmale Breite**: Maschinen-Liste klappt ein, sobald eine Maschine offen ist; Palette als Menü.
-- [ ] **U10 "Nochmal mit diesen Eingaben"** auf der Result-Karte; Params pro Maschine gemerkt.
-- [ ] **U11 Namensdialoge** behalten die Eingabe beim Fehler; unveränderter Name ist kein Fehler.
-- [ ] **U12 Fehler-Badge klickbar**; Übersicht zeigt alle Probleme.
+- [x] **U7 State-Suche** in der Graph-Leiste; Mausrad schwenkt, Strg+Rad zoomt.
+- [x] **U8 Duplizieren** einer (auch mitgelieferten) Maschine unter neuer id.
+- [x] **U9 Schmale Breite**: Maschinen-Liste klappt ein, sobald eine Maschine offen ist; Palette als Menü.
+- [x] **U10 "Nochmal mit diesen Eingaben"** auf der Result-Karte; Params pro Maschine gemerkt.
+- [x] **U11 Namensdialoge** behalten die Eingabe beim Fehler; unveränderter Name ist kein Fehler.
+- [x] **U12 Fehler-Badge klickbar**; Übersicht zeigt alle Probleme.
 
 ## Phase 5: Features
 

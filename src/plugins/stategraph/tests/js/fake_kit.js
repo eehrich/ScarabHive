@@ -6,7 +6,7 @@ export const escapeHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ESC[
 const fragment = (v) => (v instanceof SafeHtml ? v.value : Array.isArray(v) ? v.map(fragment).join('') : v == null || v === false ? '' : escapeHtml(v));
 export const html = (strings, ...values) => new SafeHtml(String.raw({ raw: strings }, ...values.map(fragment)));
 export const trusted = (m) => new SafeHtml(String(m));
-export function render(el, content) { el.innerHTML = fragment(content); globalThis.RENDERS.push([el.id, el.innerHTML.length]); }
+export function render(el, content) { el.innerHTML = fragment(content); globalThis.RENDERS.push([el.id, el.innerHTML.length, el.innerHTML]); }
 export function update(el, content) { const m = fragment(content); if (el._drawn === m) return false; el._drawn = m; render(el, content); return true; }
 export const icon = (name) => { globalThis.ICONS.add(name); return new SafeHtml(`<svg><use href="#${escapeHtml(name)}"/></svg>`); };
 export const emptyState = (name, title, text = '') => html`<div class="pk-empty">${icon(name)}${title}${text}</div>`;
@@ -25,10 +25,21 @@ export const openSession = (id) => { (globalThis.OPENED ||= []).push(id); return
 export const selectTab = (list, name) => { globalThis.TABS[list.id] = name; return true; };
 export const toast = (m, { kind = 'info' } = {}) => { globalThis.TOASTS.push([kind, String(m)]); };
 export const copyText = async (text) => { (globalThis.COPIED ||= []).push(text); return true; };
-export async function withBusy(controls, fn) { return fn(); }
+const busyControls = new Set();
+/** As the kit's: its controls disabled while fn runs and freed after it -- a call while one of them is busy does not run. */
+export async function withBusy(controls, fn) {
+  const list = (Array.isArray(controls) ? controls : [controls]).filter(Boolean);
+  if (list.some((control) => busyControls.has(control))) return undefined;
+  list.forEach((control) => { busyControls.add(control); control.disabled = true; });
+  try {
+    return await fn();
+  } finally {
+    list.forEach((control) => { busyControls.delete(control); control.disabled = false; });
+  }
+}
 export function autoRefresh(fn, ms) { let on = false; return { get running() { return on; }, start() { on = true; }, stop() { on = false; } }; }
 export const confirm = async (m) => { globalThis.ASKED.push(['confirm', m]); return globalThis.ANSWERS.confirm ?? true; };
-export const prompt = async (m) => { globalThis.ASKED.push(['prompt', m]); return globalThis.ANSWERS.prompt.shift() ?? null; };
+export const prompt = async (m, o = {}) => { globalThis.ASKED.push(['prompt', m, o.value]); return globalThis.ANSWERS.prompt.shift() ?? null; };
 export const dialog = async (spec) => { globalThis.ASKED.push(['dialog', spec.title, spec.message]); return globalThis.ANSWERS.dialog ?? null; };
 export class ApiError extends Error { constructor(status, detail) { super(String(detail)); this.status = status; this.detail = detail; } }
 export async function api(path, { method = 'GET', json } = {}) {

@@ -183,6 +183,7 @@ web_ui:
     - {path: "/api/machines/{machine_id}/layout", method: PUT, handler: api_save_layout, response_type: json}
     - {path: "/api/validate", method: POST, handler: api_validate, response_type: json}
     - {path: "/api/kinds", method: GET, handler: api_kinds, response_type: json}
+    - {path: "/api/catalog", method: GET, handler: api_catalog, response_type: json}
     - {path: "/api/runs", method: GET, handler: api_list_runs, response_type: json}
     - {path: "/api/runs", method: POST, handler: api_start_run, response_type: json}
     - {path: "/api/runs/{run_id}", method: GET, handler: api_get_run, response_type: json}

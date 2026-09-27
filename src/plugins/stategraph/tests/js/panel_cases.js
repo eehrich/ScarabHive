@@ -32,12 +32,16 @@ const JOURNAL2 = [
   { seq: 9, kind: 'trace', key: 's4:final:done', state: 'done', status: 'final', data: { frame: '', status: 'succeeded' } },
 ];
 let journalOf = { r1: RUN.journal, r2: JOURNAL2 };
+const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
+  profiles: ['fast'] };
 let editAnswer = null;
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
+let runsAnswer = null;  // (query) -> the runs list, when not the two runs
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
+  if (p === '/catalog') return CATALOG;
   if (p === '/machines' && method === 'GET') {
     const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
     return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
@@ -55,10 +59,15 @@ globalThis.SERVER = (method, path, json) => {
     plainAnswer = { ...PLAIN, files: { ...PLAIN.files, ...json.files }, versions: { 'plain.yaml': 'v2', 'plain.py': 'p1' } };
     return { machine_id: 'plain', versions: plainAnswer.versions, problems: [], graph: PLAIN.graph };
   }
+  if (p === '/machines/review' && method === 'PUT') return { machine_id: 'review', versions: MACHINE.versions, problems: [], graph: MACHINE.graph };
+  const copy = p.match(/^\/machines\/(\w+_copy)$/);
+  if (copy) return method === 'PUT' ? { machine_id: copy[1], versions: {}, problems: [], graph: MACHINE.graph } : { ...MACHINE, id: copy[1] };
   if (p === '/machines/review' && method === 'DELETE') return { deleted: 'review', files: ['review.yaml'], kept_module: null };
   if (p.endsWith('/edit')) return editAnswer || MACHINE;
   if (p.endsWith('/layout')) return {};
-  if (p.startsWith('/runs?')) return [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
+  if (p.startsWith('/runs?')) return runsAnswer ? runsAnswer(new URLSearchParams(p.split('?')[1]))
+    : [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
+  if (p === '/runs/r1/events') return { accepted: true, frame: '' };
   if (p === '/runs' && method === 'POST') return { run_id: 'r1' };
   if (p.startsWith('/runs/r1?')) return runAnswer;
   if (p === '/runs/r1/control') return controlAnswer || runAnswer;
@@ -428,6 +437,295 @@ const CASES = {
     check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'the click did not select');
   },
 
+  async a_bad_state_name_is_asked_again_with_what_was_typed_and_an_unchanged_one_is_no_error() {
+    await boot('?machine=review');
+    ANSWERS.prompt.push('Bad Name', 'write', 'fresh_one');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    const prompts = ASKED.filter(([kind]) => kind === 'prompt');
+    check(prompts.length === 3, `asked ${JSON.stringify(prompts)}`);
+    check(prompts[1][1].startsWith('"Bad Name" is no state name') && prompts[1][2] === 'Bad Name', `second: ${JSON.stringify(prompts[1])}`);
+    check(prompts[2][1].startsWith('A state "write" exists already') && prompts[2][2] === 'write', `third: ${JSON.stringify(prompts[2])}`);
+    check(lastEdit()?.op === 'add_state' && lastEdit().name === 'fresh_one', `edit ${JSON.stringify(lastEdit())}`);
+    await choose('write');
+    const edits = CALLS.filter(([, path]) => path.endsWith('/edit')).length;
+    const toasts = TOASTS.length;
+    const asked = ASKED.length;
+    ANSWERS.prompt.push('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'rename' }) });
+    await settle();
+    check(CALLS.filter(([, path]) => path.endsWith('/edit')).length === edits && TOASTS.length === toasts && ASKED.length === asked + 1,
+      `the same name renamed, complained or asked again: ${JSON.stringify(ASKED.slice(asked))} ${JSON.stringify(TOASTS.slice(toasts))}`);
+  },
+
+  async the_problem_badge_opens_the_overview_that_lists_every_problem() {
+    await boot('?machine=review');
+    await choose('write');
+    check($('machineHead').innerHTML.includes('data-act="show-problems"'), `no problem button: ${$('machineHead').innerHTML}`);
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'show-problems' }) });
+    await settle();
+    const shown = $('side-inspect').innerHTML;
+    const at = MACHINE.problems.findIndex((p) => p.code === 'SG004');
+    check(shown.includes('data-form="machine-fields"') && shown.includes('unknown name x') && shown.includes(`data-problem="${at}"`),
+      `overview: ${shown}`);
+    await $('side-inspect').fire('click', { target: element('button', { 'data-problem': String(at) }) });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-transition="write#0"') && $('side-inspect').innerHTML.includes('>Transition<'),
+      `not at the transition: ${$('side-inspect').innerHTML.slice(0, 400)}`);
+  },
+
+  async an_agent_field_offers_the_catalog_s_agents_and_says_what_it_is() {
+    await boot('?machine=review');
+    await choose('write');
+    const shown = $('side-inspect').innerHTML;
+    check(/list="sgAgents"[^>]*id="af-agent"/.test(shown), `agent field: ${shown}`);
+    check($('sgAgents').innerHTML.includes('value="scene_writer"') && $('sgTools').innerHTML.includes('value="store_put"')
+      && $('sgProfiles').innerHTML.includes('value="fast"'), `offered: ${$('sgAgents').innerHTML} ${$('sgTools').innerHTML}`);
+    check($('sgMachines').innerHTML.includes('value="review"') && $('sgMachines').innerHTML.includes('value="fields"'), 'machines offered');
+    check(shown.includes('class="pk-help sg-field-help"'), 'no description shown');
+  },
+
+  async a_new_event_from_the_trigger_select_is_declared_and_becomes_the_trigger() {
+    await boot('?machine=review');
+    await choose('write');
+    check($('side-inspect').innerHTML.includes('New event…'), 'no new event option');
+    ANSWERS.prompt.push('retry_now', 'second');
+    // the answer: a machine whose events key is written without a value (events:), as the next one reads it
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, events: {}, yaml: { ...MACHINE.graph.yaml, events: 'null' } } };
+    const newEvent = async () => {
+      const form = element('form', { 'data-transition': 'write#0' });
+      const select = element('select', { 'data-orig': 'done' });
+      select.name = 'trigger';
+      select.value = '+new-event';
+      form.appendChild(select);
+      await $('side-inspect').fire('change', { target: select });
+      await settle();
+      return select;
+    };
+    const select = await newEvent();
+    const edits = () => CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json.op);
+    check(edits().length === 1 && edits()[0].op === 'update_machine'
+      && edits()[0].fields.events.$yaml === 'approve: {description: a human says yes}\nretry_now: {description: ""}',
+      `declared: ${JSON.stringify(edits())}`);
+    check(select.value === 'done', 'the select still says New event');
+    await newEvent();
+    check(edits().length === 2 && JSON.stringify(edits()[1].fields.events) === '{"second":{"description":""}}',
+      `events: without a value: ${JSON.stringify(edits()[1])}`);
+  },
+
+  async the_machine_overview_puts_its_settings_first_without_the_tables_they_repeat() {
+    await boot('?machine=review');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.indexOf('data-form="machine-fields"') < shown.indexOf('As an agent'), 'settings not first');
+    check(!shown.includes('<th>Type</th>') && !shown.includes('<th>Description</th>'), 'a params or events table');
+  },
+
+  async a_waiting_run_offers_its_events_in_the_bar_and_the_form_chooses_and_explains_one() {
+    runAnswer = { ...RUN, status: 'waiting', debug: { ...RUN.debug, paused: null }, accepts: [{ frame: '', state: 'read', events: ['approve'] }] };
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('data-send-event="approve"') && bar.includes('title="a human says yes"'), `bar: ${bar}`);
+    check($('eventForm').elements.name.value === 'approve' && $('eventHelp').textContent === 'a human says yes',
+      `form: ${$('eventForm').elements.name.value} / ${$('eventHelp').textContent}`);
+    await $('debugBar').fire('click', { target: element('button', { 'data-send-event': 'approve' }) });
+    await settle();
+    const sent = CALLS.filter(([, path]) => path.endsWith('/runs/r1/events')).map(([, , json]) => json);
+    check(sent.length === 1 && sent[0].name === 'approve' && sent[0].data === null && sent[0].frame === null, `sent ${JSON.stringify(sent)}`);
+  },
+
+  async an_event_two_frames_wait_for_goes_to_the_form_to_pick_one() {
+    runAnswer = { ...RUN, status: 'waiting', debug: { ...RUN.debug, paused: null },
+      accepts: [{ frame: '', state: 'read', events: ['approve'] }, { frame: 's3/m/', state: 'done', events: ['approve'] }] };
+    await boot('?machine=review&run=r1');
+    check($('debugBar').innerHTML.includes('2 frames wait for it'), `bar: ${$('debugBar').innerHTML}`);
+    $('eventForm').elements.name.value = '';
+    await $('debugBar').fire('click', { target: element('button', { 'data-send-event': 'approve' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/events')), 'sent without a frame');
+    check(TABS.sideTabs === 'debug' && $('eventForm').elements.name.value === 'approve', `form: ${$('eventForm').elements.name.value}`);
+  },
+
+  async the_runs_list_pages_back_and_filters_by_status() {
+    runsAnswer = (query) => (query.get('before') ? [{ ...RUNS[0], id: 'old1' }]
+      : Array.from({ length: Number(query.get('limit')) }, (_, i) => ({ ...RUNS[0], id: `n${i}` })));
+    await boot('?machine=review');
+    check(!$('olderRuns').hidden && $('runCount').textContent === '50+', `first page: ${$('runCount').textContent}`);
+    const last = () => {
+      const paths = CALLS.filter(([, path]) => path.includes('/runs?')).map(([, path]) => path);
+      return new URLSearchParams(paths[paths.length - 1].split('?')[1]);
+    };
+    await $('olderRuns').fire('click', {});
+    await settle();
+    check(last().get('before') === 'n49', `older: ${last()}`);
+    check($('runCount').textContent === '51' && $('olderRuns').hidden, `after: ${$('runCount').textContent}`);
+    await Promise.all(DOC_LISTENERS.refresh.map((fn) => fn({ detail: { auto: true } })));
+    await settle();
+    check(last().get('limit') === '51' && !last().get('before'), `a refresh dropped the older page: ${last()}`);
+    $('runStatus').value = 'failed';
+    await $('runStatus').fire('change', {});
+    await settle();
+    check(last().get('status') === 'failed' && !last().get('before') && last().get('limit') === '50', `status: ${last()}`);
+    await $('olderRuns').fire('click', {});
+    await settle();
+    await clickMachine('other');
+    await settle();
+    check(last().get('machine_id') === 'other' && last().get('limit') === '50', `another machine reads on: ${last()}`);
+  },
+
+  async run_again_starts_with_the_run_s_inputs_and_the_form_keeps_them_for_the_machine() {
+    runAnswer = { ...RUN, mocks: { mocks: { write: 'a draft' }, mock_only: true } };
+    await boot('?machine=review&run=r1');
+    check($('runResult').innerHTML.includes('data-act="rerun"'), `no run again: ${$('runResult').innerHTML.slice(0, 300)}`);
+    await $('runResult').fire('click', { target: element('button', { 'data-act': 'rerun' }) });
+    await settle();
+    const started = CALLS.filter(([method, path]) => method === 'POST' && path.endsWith('/runs')).map(([, , json]) => json);
+    check(started.length === 1 && JSON.stringify(started[0].params) === '{"premise":"x"}'
+      && JSON.stringify(started[0].mocks) === '{"write":"a draft"}' && started[0].mock_only === true, `started ${JSON.stringify(started)}`);
+    check(JSON.parse(localStorage.getItem('stategraph:params:review')).premise === 'x', 'params not kept');
+    check($('paramFields').innerHTML.includes('data-type="string">x</textarea>'), `form: ${$('paramFields').innerHTML}`);
+  },
+
+  async an_apply_keeps_what_another_field_form_holds_without_asking() {
+    await boot('?machine=review');
+    await choose('write');
+    const fields = element('form', { 'data-form': 'state-fields' });
+    await $('side-inspect').fire('input', { target: fields.appendChild(element('input', { name: 'description' })) });
+    const other = formOf('transition', { target: ['enum', 'review', 'write'] });
+    other.setAttribute('data-transition', 'write#0');
+    await $('side-inspect').fire('submit', { target: other });
+    await settle();
+    check(!confirms() && lastEdit()?.op === 'update_transition', `asked ${confirms()}, sent ${JSON.stringify(lastEdit())}`);
+  },
+
+  async an_edit_is_undone_with_the_file_as_it_was_and_auto_layout_asks_first() {
+    editAnswer = { ...MACHINE, files: { ...MACHINE.files, 'review.yaml': 'changed' }, versions: { ...MACHINE.versions, 'review.yaml': 'v2' } };
+    await boot('?machine=review');
+    check($('undo').disabled, 'undo offered before any edit');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check(!$('undo').disabled, 'no undo after an edit');
+    editAnswer = null;
+    await $('undo').fire('click', {});
+    await settle();
+    const put = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/machines/review')).map(([, , json]) => json);
+    check(put.length === 1 && put[0].files['review.yaml'] === MACHINE.files['review.yaml']
+      && put[0].expected_versions['review.yaml'] === 'v2' && put[0].force === true, `put ${JSON.stringify(put)}`);
+    check($('undo').disabled && !$('redo').disabled, `after the undo: undo ${$('undo').disabled}, redo ${$('redo').disabled}`);
+    await $('canvas').fire('keydown', { key: 'y', ctrlKey: true, target: $('canvas'), preventDefault() {} });
+    await settle();
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/machines/review')).map(([, , json]) => json);
+    const redone = puts()[1];
+    check(redone && redone.files['review.yaml'] === 'changed' && redone.expected_versions['review.yaml'] === 'v1'
+      && redone.force === true, `redo put ${JSON.stringify(redone)}`);
+    check(!$('undo').disabled && $('redo').disabled, 'after the redo: undo offered, redo not');
+    await $('canvas').fire('keydown', { key: 'z', ctrlKey: true, target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(puts().length === 3 && puts()[2].files['review.yaml'] === MACHINE.files['review.yaml'] && !$('redo').disabled,
+      `Ctrl+Z: ${JSON.stringify(puts()[2])}`);
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check($('redo').disabled, 'a new edit left the undone step to redo over it');
+    const before = puts().length;
+    await Promise.all([1, 2].map(() => $('canvas').fire('keydown', { key: 'z', ctrlKey: true, target: $('canvas'), preventDefault() {} })));
+    await settle();
+    check(puts().length === before + 1, `a repeated Ctrl+Z undid ${puts().length - before} times at once`);
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).length;
+    const asked = confirms();
+    ANSWERS.confirm = false;
+    await $('autoLayout').fire('click', {});
+    await settle();
+    check(confirms() === asked + 1 && layouts() === 0, `laid out unasked: ${confirms()} ${layouts()}`);
+    ANSWERS.confirm = true;
+    await $('autoLayout').fire('click', {});
+    await settle();
+    check(layouts() === 1, 'not laid out after yes');
+  },
+
+  async the_wheel_scrolls_the_graph_ctrl_wheel_zooms_and_the_search_finds_a_state() {
+    await boot('?machine=review');
+    const view = () => $('canvas').querySelector('.sg-viewport').getAttribute('transform');
+    const scale = () => Number(view().match(/scale\(([^)]+)\)/)[1]);
+    const place = () => view().match(/translate\(([-\d.e]+) ([-\d.e]+)\)/).slice(1).map(Number);
+    const [x, y] = place();
+    const k = scale();
+    await $('canvas').fire('wheel', { deltaX: 0, deltaY: 120, deltaMode: 0, clientX: 100, clientY: 100 });
+    check(place()[0] === x && place()[1] === y - 120 && scale() === k, `scrolled: ${view()}`);
+    await $('canvas').fire('wheel', { deltaX: 0, deltaY: -120, deltaMode: 0, ctrlKey: true, clientX: 100, clientY: 100 });
+    check(scale() > k, `zoomed: ${view()}`);
+    check($('sgStates').innerHTML.includes('value="verdict"'), 'states offered');
+    $('stateSearch').value = 'verd';
+    await $('stateSearch').fire('change', {});
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">verdict</h3>'), 'not at verdict');
+    $('stateSearch').value = 'e';
+    await $('stateSearch').fire('change', {});
+    check(TOASTS.some(([, text]) => /^\d+ states match: /.test(text)), `no word on several: ${JSON.stringify(TOASTS)}`);
+  },
+
+  async a_machine_is_duplicated_under_a_new_id_with_its_own_module() {
+    await boot('?machine=ro');
+    ANSWERS.prompt.push('ro_copy');
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'duplicate-machine' }) });
+    await settle();
+    const puts = (id) => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith(`/machines/${id}`)).map(([, , json]) => json);
+    const prompts = ASKED.filter(([kind]) => kind === 'prompt');
+    check(prompts[0][2] === 'ro_copy', `offered ${JSON.stringify(prompts)}`);
+    const ro = puts('ro_copy')[0];
+    check(ro && Object.keys(ro.files).join() === 'ro_copy.yaml', `read-only copy: ${JSON.stringify(ro && Object.keys(ro.files))}`);
+    check(ro.files['ro_copy.yaml'].includes('\nid: ro_copy\n') && !ro.files['ro_copy.yaml'].includes('id: review'), 'the id stays');
+    check(CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/ro_copy/layout')), 'layout not copied');
+    plainAnswer = { ...PLAIN, graph: { ...PLAIN.graph, python: 'plain.py', imports: { sub: './sub.yaml' } },
+      files: { 'plain.yaml': PLAIN_TEXT.replace('title: Plain\n', 'title: Plain\npython: plain.py   # its module\nimports: {sub: ./sub.yaml}\n'),
+        'plain.py': 'X = 1\n', 'sub.yaml': 'stategraph: 1\n' } };
+    await clickMachine('plain');
+    await settle();
+    ANSWERS.prompt.push('plain_copy');
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'duplicate-machine' }) });
+    await settle();
+    const plain = puts('plain_copy')[0];
+    check(plain && Object.keys(plain.files).sort().join() === 'plain_copy.py,plain_copy.yaml'
+      && plain.files['plain_copy.yaml'].includes('\npython: plain_copy.py\n') && plain.files['plain_copy.py'] === 'X = 1\n'
+      && plain.files['plain_copy.yaml'].includes('imports: {sub: sub}\n'), `writable copy: ${JSON.stringify(plain)}`);
+  },
+
+  async a_narrow_panel_folds_the_machine_list_once_a_machine_is_open_and_offers_the_palette_as_a_menu() {
+    let narrow = false;
+    globalThis.matchMedia = (query) => ({ matches: narrow && query === '(max-width: 900px)' });
+    await boot('?machine=review');
+    check(!$('machinesPane').hidden, 'folded wide');
+    narrow = true;
+    await clickMachine('other');
+    await settle();
+    check($('machinesPane').hidden === true, 'not folded narrow');
+    check($('paletteMenu').innerHTML.includes('data-add-kind="agent"') && $('paletteMenu').innerHTML.includes('class="pk-menu-item"'), 'no menu');
+    ANSWERS.prompt.push('from_menu');
+    await $('paletteMenu').fire('click', { target: element('button', { 'data-add-type': 'final' }) });
+    await settle();
+    check(lastEdit()?.op === 'add_state' && lastEdit().type === 'final' && lastEdit().name === 'from_menu', `edit ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_renamed_state_stays_shown_with_what_its_forms_hold() {
+    const renamed = (name) => (name === 'write' ? 'written' : name);
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph,
+      initial: 'written',
+      states: MACHINE.graph.states.map((s) => ({ ...s, name: renamed(s.name) })),
+      transitions: MACHINE.graph.transitions.map((t) => ({ ...t, source: renamed(t.source), target: renamed(t.target),
+        id: t.id.replace(/^write#/, 'written#') })) } };
+    await boot('?machine=review');
+    await choose('write');
+    ANSWERS.prompt.push('written');
+    const drawn = RENDERS.length;
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'rename' }) });
+    await settle();
+    check(lastEdit()?.op === 'rename_state' && $('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">written</h3>'),
+      `after the rename: ${$('side-inspect').innerHTML.slice(0, 300)}`);
+    // the edit's own redraw shows the renamed state -- not the overview, whose redraw drops what the forms held
+    check(!RENDERS.slice(drawn).some(([id, , shown]) => id === 'side-inspect' && shown.includes('data-form="machine-fields"')),
+      'the overview was drawn over the renamed state');
+  },
+
   async a_machine_without_an_agent_offers_the_entry_that_makes_one() {
     await boot('?machine=review');
     const shown = $('side-inspect').innerHTML;
@@ -668,11 +966,18 @@ const CASES = {
 
   async a_deleted_machine_leaves_nothing_of_itself_behind() {
     localStorage.setItem('stategraph:breakpoints:review', '[{"state":"write","at":"enter"}]');
+    localStorage.setItem('stategraph:params:review', '{"premise":"secret"}');
     await boot('?machine=review');
     await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'initial' }) });  // an undo step
+    await settle();
     await $('machineHead').fire('click', { target: element('button', { 'data-act': 'delete-machine' }) });
     await settle();
     check(!$('side-inspect').innerHTML.includes('sg-inspect-name'), 'the inspector still shows the deleted machine');
+    check(localStorage.getItem('stategraph:params:review') === null, 'its params stay');
+    await clickMachine('review');  // a machine of the same id again (made anew): the old steps are not its own
+    await settle();
+    check($('undo').disabled, 'its undo steps stay');
     check(localStorage.getItem('stategraph:breakpoints:review') === null, 'its breakpoints wait for a machine of the same id');
   },
 
@@ -931,7 +1236,7 @@ const CASES = {
     await boot('?machine=fields');
     await choose('judge');
     const shown = $('side-inspect').innerHTML;
-    check(/name="question" data-shape="text" data-orig="[^"]*" disabled/.test(shown) && /id="af-kind" name="kind" disabled/.test(shown),
+    check(/name="question" data-shape="text" data-orig="[^"]*" disabled/.test(shown) && /id="af-kind" name="kind" data-orig="[^"]*" disabled/.test(shown),
       'a read-only machine offers its fields for editing');
   },
 
@@ -973,7 +1278,7 @@ const CASES = {
     await boot('?machine=fields');
     await choose('share_b');
     const shown = $('side-inspect').innerHTML;
-    check(/id="af-kind" name="kind" disabled/.test(shown) && /name="task" data-shape="text" data-orig="t" disabled/.test(shown),
+    check(/id="af-kind" name="kind" data-orig="[^"]*" disabled/.test(shown) && /name="task" data-shape="text" data-orig="t" disabled/.test(shown),
       'the aliased activity is offered for editing');
     check(shown.includes('shared with another place'), 'no word why');
   },

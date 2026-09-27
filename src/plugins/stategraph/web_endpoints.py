@@ -150,12 +150,23 @@ class StateGraphWebEndpoints:
         await self._user(request)
         return await self._call("kinds")
 
+    async def api_catalog(self, request: Request):
+        """What the inspector's fields offer: the agents a machine may run, the tools its runner may call, the
+        decision profiles."""
+        await self._user(request)
+        found = self.server._catalog()
+        tools = await self.server._runner_tools("*")
+        return {"agents": found["agents"], "profiles": found["decision_profiles"],
+                "tools": [{"name": tool["name"], "description": tool["description"]} for tool in tools]}
+
     # ------------------------------------------------------------------ runs
 
     async def api_list_runs(self, request: Request, machine_id: Optional[str] = None,
-                            limit: int = Query(50, ge=1, le=500)):
+                            limit: int = Query(50, ge=1, le=500), status: Optional[str] = None,
+                            before: Optional[str] = None):
         await self._user(request)
-        return await self._call("list_runs", machine_id=machine_id, limit=limit)
+        return await self._call("list_runs", machine_id=machine_id, limit=limit, status=status or None,
+                                before=before or None)
 
     async def api_start_run(self, request: Request):
         user = await self._user(request)

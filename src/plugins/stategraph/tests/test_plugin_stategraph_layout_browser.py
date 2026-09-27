@@ -70,6 +70,46 @@ fetch('/__results', { method: 'POST', body: JSON.stringify({ event: $('event').v
 </script></body></html>"""
 
 
+TYPED = """<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root">
+<form data-key="a"><input name="x" data-orig="1" value="1"><select name="kind" data-orig="agent"><option value="agent">agent</option><option value="tool">tool</option></select></form>
+<form data-key="b"><input name="y" data-orig="5" value="5"><input name="w" data-orig="3" value="3"></form>
+<form data-key="c"><input name="z" data-orig="9" value="9"></form>
+<form data-key="d"><input name="guard" data-orig="" value=""><input name="target" data-orig="failed" value="failed"></form></div>
+<script type="module">
+import { putTyped, typedIn } from '/src/plugins/stategraph/static/graph.js';
+const root = document.getElementById('root');
+const key = (form) => form.dataset.key;
+const at = (name) => root.querySelector(`[name="${name}"]`);
+at('x').value = '2';
+at('kind').value = 'tool';
+at('y').value = '6';
+at('z').value = '10';
+at('guard').value = 'x > 1';
+const typed = typedIn(root, new Set(['a', 'b', 'd']), key);
+root.innerHTML = root.innerHTML.replace('name="y" data-orig="5" value="5"', 'name="y" data-orig="7" value="7"')
+  .replace('name="w" data-orig="3" value="3"', 'name="w" data-orig="4" value="4"')  // w untyped: nothing to give back
+  .replace('data-orig="failed" value="failed"', 'data-orig="review" value="review"');  // another transition under d now
+const { restored, dropped } = putTyped(root, typed, key);
+fetch('/__results', { method: 'POST', body: JSON.stringify({ x: at('x').value, kind: at('kind').value, y: at('y').value,
+  z: at('z').value, guard: at('guard').value, restored: [...restored], dropped }) });
+</script></body></html>"""
+
+
+def test_an_apply_gives_the_other_forms_what_was_typed_into_them_unless_the_edit_changed_it():
+    """An edit redraws the inspector: what the other forms held comes back where the field still shows what it
+    showed; a field the edit changed underneath shows the new value, and says so."""
+    page = REPO / "tmp" / f"sg_typed_{uuid.uuid4().hex}.html"
+    page.parent.mkdir(exist_ok=True)
+    page.write_text(TYPED, encoding="utf-8")
+    try:
+        seen = run_test_page(BROWSER, f"tmp/{page.name}", timeout=60)
+    finally:
+        page.unlink(missing_ok=True)
+
+    assert seen == {"x": "2", "kind": "tool", "y": "7", "z": "9", "guard": "", "restored": ["a"],
+                    "dropped": ["b: y", "d: guard"]}, seen
+
+
 def test_a_redraw_keeps_what_the_viewer_chose_and_typed():
     """A poll redraws the event select when a wait state marks its events "(accepted now)": without keepingChoices
     the browser puts the first event back in the viewer's choice, and "Send" sends that one."""

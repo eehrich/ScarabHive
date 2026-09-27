@@ -73,6 +73,8 @@ _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: How long terminate waits for the run to end (its finally activities run first) before it answers.
 TERMINATE_WAIT = 10.0
+#: The statuses a run row has.
+RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
 #: The folder of machines in the writable roots that name none: the author's own.
 OWN_GROUP = "My machines"
 
@@ -440,9 +442,13 @@ class StateGraphService:
         return row
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
-                  user_id: Optional[str] = None, all_users: bool = True) -> list[dict[str, Any]]:
+                  user_id: Optional[str] = None, all_users: bool = True,
+                  before: Optional[str] = None) -> list[dict[str, Any]]:
+        """A page of the newest runs; ``before``: the last run id of the page before."""
+        if status is not None and status not in RUN_STATUSES:
+            raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)), status=status,
-                                        user_id=user_id, all_users=all_users)
+                                        user_id=user_id, all_users=all_users, before=before)
 
     def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
                 kinds: Optional[list[str]] = None, state: Optional[str] = None) -> dict[str, Any]:

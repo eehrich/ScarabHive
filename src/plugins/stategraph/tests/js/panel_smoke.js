@@ -54,7 +54,7 @@ await step('the machine is drawn', () => {
   if (!$('canvas').querySelectorAll('.sg-node').length) throw new Error('no nodes on the canvas');
   if ($('canvas').querySelectorAll('.sg-link').length < 4) throw new Error('too few edges');
   if (!$('palette').innerHTML.includes('data-add-kind="agent"')) throw new Error('palette without kinds');
-  if (!$('side-inspect').innerHTML.includes('Params')) throw new Error('no machine overview');
+  if (!$('side-inspect').innerHTML.includes('data-form="machine-fields"')) throw new Error('no machine overview');
 });
 await step('the run is shown: debug bar, pane, history, overlay', () => {
   if ($('debugBar').hidden) throw new Error('debug bar hidden');

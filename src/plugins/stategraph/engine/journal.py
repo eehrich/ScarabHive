@@ -182,8 +182,10 @@ class RunStore:
         return self._run_row(row) if row else None
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
-                  user_id: Optional[str] = None, all_users: bool = True) -> list[dict[str, Any]]:
-        """The newest runs; ``all_users=False``: only ``user_id``'s and runs of nobody (what that user may see)."""
+                  user_id: Optional[str] = None, all_users: bool = True,
+                  before: Optional[str] = None) -> list[dict[str, Any]]:
+        """The newest runs; ``all_users=False``: only ``user_id``'s and runs of nobody (what that user may see);
+        ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id)."""
         sql = ("SELECT id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id,"
                " parent_run, fork_step, run_key FROM runs")
         where: list[str] = []
@@ -197,9 +199,12 @@ class RunStore:
         if not all_users:
             where.append("(user_id IS NULL OR user_id = ?)")
             args.append(user_id)
+        if before:
+            where.append("(created_at, id) < (SELECT created_at, id FROM runs WHERE id = ?)")
+            args.append(before)
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         args.append(int(limit))
         with self._lock:
             rows = self._db().execute(sql, args).fetchall()

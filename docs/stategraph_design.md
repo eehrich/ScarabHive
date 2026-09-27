@@ -995,7 +995,8 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 
 ### 8.2 REST (`/plugins/stategraph/…`, JSON)
 
-- `GET /` is the panel.
+- `GET /` is the panel. `GET /api/catalog` gives its fields the agents, the runner's tools and the
+  decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
   `POST /api/machines/{id}/edit` (graph operations); `PUT /api/machines/{id}/layout`;
@@ -1024,6 +1025,22 @@ Python. Inspector edits not yet applied are asked about before a selection, an
 edit or another machine drops them. Each run has a **Result** card: its output or error, the
 end state of every frame, and every finished activity folded, with its full answer when opened;
 an agent's instance session and the run's own session (§5.8) open in the chat.
+
+**Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
+before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
+scrolls the graph, Ctrl+wheel zooms; narrow, the state palette is a menu and the machine list folds
+away once a machine is open. **Duplicate** copies a machine (a shipped one too) under a new id into
+the writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
+with every problem, each a link to its place. The machine's settings stand first in the overview;
+an agent, tool, `by`, `profile` or `machine` field offers the catalog's names (`GET /api/catalog`),
+every field says what it is for, and a transition's trigger has **New event…**, which declares the
+event and picks it as the trigger (Apply applies it). Applying one form keeps what the other forms hold (the state's
+YAML box is asked about: the edit changes the state it shows). A name that is no name, or taken, is
+asked again with what was typed. A waiting run has a button per event it takes in the debug bar (an
+event with data, or one several frames wait for, opens the event form, which picks the event the
+wait takes and says what it is). The runs list scrolls, filters by status and loads older runs;
+**Run again** on the Result card starts the run's params and mocks anew, and the start form keeps a
+machine's last params.
 
 **Graph edits and YAML anchors.** An edit changes only the state's own text. It is refused where
 another place would see the change: a transitions list the state inherits through its own `<<:`

@@ -9,6 +9,7 @@
 {% endblock %}
 {% block content %}
 <div class="sg-layout pk-sidebar-layout" data-viewer="{{ viewer }}">
+  <datalist id="sgAgents"></datalist><datalist id="sgTools"></datalist><datalist id="sgProfiles"></datalist><datalist id="sgMachines"></datalist>
   <nav class="sg-side pk-sidebar" id="machinesPane" aria-label="Machines">
     <div class="pk-row sg-side-top">
       <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search machines" aria-label="Search machines"></label>
@@ -31,7 +32,13 @@
       <section id="tab-graph" class="sg-tab sg-tab--graph" role="tabpanel">
         <div class="pk-row sg-graphbar">
           <div class="sg-palette" id="palette" role="group" aria-label="Add a state"></div>
+          <button type="button" class="pk-btn pk-btn--sm sg-palette-toggle" popovertarget="paletteMenu">{{ icon('plus', size='sm') }} Add a state {{ icon('chevron-down', size='sm') }}</button>
+          <div class="pk-menu" id="paletteMenu" popover></div>
+          <label class="pk-search sg-state-search">{{ icon('search') }}<input id="stateSearch" class="pk-input pk-input--sm" type="search" list="sgStates" placeholder="Find a state" aria-label="Find a state" autocomplete="off"></label>
+          <datalist id="sgStates"></datalist>
           <span class="pk-grow"></span>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="undo" title="Undo the last edit (Ctrl+Z)" disabled>{{ icon('rotate-ccw', size='sm') }} Undo</button>
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost sg-flip" id="redo" title="Redo what was undone (Ctrl+Shift+Z, Ctrl+Y)" disabled>{{ icon('rotate-ccw', size='sm') }} Redo</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomOut" title="Zoom out" aria-label="Zoom out">{{ icon('minus', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" id="zoomIn" title="Zoom in" aria-label="Zoom in">{{ icon('plus', size='sm') }}</button>
           <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="fit" title="Fit the machine into view">{{ icon('maximize-2', size='sm') }} Fit</button>
@@ -73,7 +80,13 @@
           <p id="startError" class="pk-callout pk-callout--danger" hidden></p>
           <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary" id="startRun">{{ icon('play', size='sm') }} Start</button></div>
         </form>
-        <div id="runList"></div>
+        <div class="pk-row sg-runbar">
+          <select id="runStatus" class="pk-select pk-select--sm" aria-label="Runs of this status">
+            <option value="">every status</option>{% for status in ['running', 'paused', 'waiting', 'interrupted', 'succeeded', 'failed', 'cancelled'] %}<option value="{{ status }}">{{ status }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="runList" class="sg-runlist"></div>
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="olderRuns" hidden>{{ icon('chevron-down', size='sm') }} Older runs</button>
         <div id="runResult"></div>
         <div id="runHistory"></div>
       </section>
@@ -120,6 +133,7 @@
             <select class="pk-select pk-select--sm pk-grow" name="name" aria-label="Event"></select>
             <select class="pk-select pk-select--sm" name="frame" aria-label="Frame" id="eventFrame"><option value="">any frame</option></select>
           </div>
+          <p class="pk-help" id="eventHelp"></p>
           <textarea class="pk-textarea pk-input--mono" name="data" rows="2" placeholder="data as JSON (optional)" aria-label="Event data" spellcheck="false"></textarea>
           <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm">{{ icon('send-horizontal', size='sm') }} Send</button></div>
         </form>
