@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
-from .engine.debugger import Breakpoint, Watchpoint, parse_points
+from .engine.debugger import Breakpoint, UnknownState, Watchpoint, parse_points
 from .engine.journal import ACTIVE_STATUSES, RunStore
 from .engine.machine import CompileError
 from .engine.runner import RunManager, failed_transiently
@@ -43,6 +43,22 @@ states:
   done:
     type: final
 """
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value or {}, sort_keys=True, default=str)
+
+
+def _other_request(row: dict[str, Any], machine_id: str, params: Optional[dict[str, Any]],
+                   mocks: Optional[dict[str, Any]], mock_only: bool) -> str:
+    """What differs between a run's row and a new request under its key: "" when it is the same request."""
+    options = row.get("mocks") or {}
+    differs = [name for name, equal in (
+        ("machine", row.get("machine_id") == machine_id),
+        ("params", _canonical(row.get("params")) == _canonical(params)),
+        ("mocks", _canonical(options.get("mocks")) == _canonical(mocks)),
+        ("mock_only", bool(options.get("mock_only")) == bool(mock_only))) if not equal]
+    return ", ".join(differs)
 
 
 class ServiceError(Exception):
@@ -203,6 +219,10 @@ class StateGraphService:
                    machine_id: Optional[str]) -> tuple[str, dict[str, str], MachineTree]:
         if files is None and yaml is None:
             raise ServiceError(422, "pass files {relative path: text} or yaml")
+        if files is not None and not isinstance(files, dict):
+            raise ServiceError(422, f"files must be an object {{relative path: text}}, not {type(files).__name__}")
+        if yaml is not None and not isinstance(yaml, str):
+            raise ServiceError(422, f"yaml must be the machine's text, not {type(yaml).__name__}")
         if files is None:
             files = {}
         files = {str(k): str(v) for k, v in files.items()}
@@ -310,6 +330,11 @@ class StateGraphService:
         in its sub-agent tree.
         """
         self._require(machine_id)
+        for name, value in (("params", params), ("mocks", mocks)):
+            if value is not None and not isinstance(value, dict):
+                raise ServiceError(422, f"{name} must be an object, not {type(value).__name__}")
+        if not isinstance(mock_only, bool):
+            raise ServiceError(422, f"mock_only must be true or false, not {mock_only!r}")
         if run_id is not None and not _RUN_ID.fullmatch(run_id):
             raise ServiceError(422, f"run_id {run_id!r} must match {_RUN_ID.pattern}")
         nesting = await self._nesting(user_id, caller_session)  # before the key's lookup: nothing awaits past it
@@ -318,6 +343,10 @@ class StateGraphService:
             if existing is not None and existing.get("user_id") not in (None, user_id):
                 raise ServiceError(409, f"run_key {run_key!r} belongs to another user's run")
             if existing is not None:
+                other = _other_request(existing, machine_id, params, mocks, mock_only)
+                if other:  # a mock test's outcome must never answer a live request that reuses its key
+                    raise ServiceError(409, f"run_key {run_key!r} names run {existing['id']} with other {other}; "
+                                            "the same key is the same request -- use a new key for a new one")
                 if existing["id"] in self.runs.live:
                     return {"run_id": existing["id"], "attached": True}
                 if existing["status"] in ACTIVE_STATUSES:
@@ -464,6 +493,8 @@ class StateGraphService:
                 raise ServiceError(422, f"unknown action {action!r}")
         except ServiceError:
             raise
+        except UnknownState as exc:
+            raise ServiceError(422, str(exc)) from None
         except ValueError as exc:
             raise ServiceError(409, str(exc)) from None
         except Exception as exc:

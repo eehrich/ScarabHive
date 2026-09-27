@@ -6,7 +6,7 @@ import {
   localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast,
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
-import { Canvas, fragmentLock, posixPath, problemIndex, runOverlay, shorten, stateFragment } from './graph.js';
+import { Canvas, fragmentLock, keepingChoices, posixPath, problemIndex, runOverlay, shorten, stateFragment } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
 const $ = (id) => document.getElementById(id);
@@ -384,6 +384,7 @@ async function renameState(old) {
   const name = await askName(`New name for ${old} (every transition to it and every initial naming it follows):`, old);
   if (!name || name === old) return;
   if (!await edit({ op: 'rename_state', old, new: name })) return;
+  keepNextPoints((p) => (p.state === old ? { ...p, state: name } : p));  // the next run's breakpoints follow it
   if (Object.hasOwn(positions(), old)) {
     const moved = { ...positions(), [name]: positions()[old] };
     delete moved[old];
@@ -391,6 +392,20 @@ async function renameState(old) {
     await savePositions(moved);
   }
   choose({ kind: 'state', id: name });
+}
+
+/** The next run's breakpoints of this machine through ``change`` (a point, or null to drop it); stored and shown. */
+function keepNextPoints(change) {
+  const kept = S.nextBreakpoints.flatMap((p) => {
+    const changed = ofThisMachine(p) ? change(p) : p;
+    return changed ? [changed] : [];
+  });
+  if (kept.length === S.nextBreakpoints.length && kept.every((p, i) => p === S.nextBreakpoints[i])) return [];
+  const dropped = S.nextBreakpoints.filter((p) => !kept.includes(p) && ofThisMachine(p) && !change(p));
+  S.nextBreakpoints = kept;
+  remember(`breakpoints:${S.machine.id}`, kept);
+  if (S.machine) drawStartForm();
+  return dropped;
 }
 
 async function removeState(name) {
@@ -485,13 +500,17 @@ function transitionEditor(t) {
     </div>
     <div class="sg-fields">
       <label for="tr-trigger-${t.id}">Trigger</label>
-      <select class="pk-select pk-select--sm" id="tr-trigger-${t.id}" name="trigger">${triggers.map((name) => html`<option value="${name}" ${name === t.trigger ? 'selected' : ''}>${name === 'done' ? 'done (completion)' : name}</option>`)}</select>
+      <select class="pk-select pk-select--sm" id="tr-trigger-${t.id}" name="trigger" data-shape="enum" data-orig="${t.trigger}">${triggers.map((name) => html`<option value="${name}" ${name === t.trigger ? 'selected' : ''}>${name === 'done' ? 'done (completion)' : name}</option>`)}</select>
       <label for="tr-target-${t.id}">Target</label>
-      <select class="pk-select pk-select--sm" id="tr-target-${t.id}" name="target"><option value="">(internal: no target)</option>${states.map((name) => html`<option value="${name}" ${name === t.target ? 'selected' : ''}>${name}</option>`)}</select>
+      <select class="pk-select pk-select--sm" id="tr-target-${t.id}" name="target" data-shape="enum" data-orig="${t.target ?? ''}"><option value="">(internal: no target)</option>${states.map((name) => html`<option value="${name}" ${name === t.target ? 'selected' : ''}>${name}</option>`)}</select>
       <label for="tr-guard-${t.id}">Guard</label>
-      <input class="pk-input pk-input--sm pk-input--mono" id="tr-guard-${t.id}" name="guard" value="${t.guard ?? ''}" placeholder="Python expression, or else">
+      ${(t.guard ?? '').includes('\n')  // an input drops line breaks: a guard over lines needs a text area
+        ? html`<textarea class="pk-textarea pk-input--mono" id="tr-guard-${t.id}" name="guard" rows="3" data-shape="code" data-orig="${t.guard}">
+${t.guard}</textarea>`
+        : html`<input class="pk-input pk-input--sm pk-input--mono" id="tr-guard-${t.id}" name="guard" value="${t.guard ?? ''}" data-shape="line" data-orig="${t.guard ?? ''}" placeholder="Python expression, or else">`}
       <label for="tr-effect-${t.id}">Effect</label>
-      <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" placeholder="Python statements">${t.effect ?? ''}</textarea>
+      <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" data-shape="code" data-orig="${t.effect ?? ''}" placeholder="Python statements">
+${t.effect ?? ''}</textarea>
     </div>
     ${problemList(pinned?.problems)}
     <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
@@ -528,8 +547,8 @@ function drawInspector() {
   const { hooks, why } = hooksOf(state);
   const live = liveRun();
   const parentInitial = state.parent ? stateOf(state.parent)?.initial : m.graph.initial;
-  const fragment = stateFragment(m.files[m.root_file], state.line);
-  const lock = fragmentLock(m.files[m.root_file], state.line);
+  const fragment = stateFragment(m.files[m.root_file], state.line, state.name);
+  const lock = fragmentLock(m.files[m.root_file], state.line, state.name);
   const applies = m.writable && !lock;
   render(pane, html`
     <div class="sg-section">
@@ -737,6 +756,8 @@ function fieldValue(control) {
   switch (control.dataset.shape) {
     case 'yaml': return raw.trim() ? { $yaml: raw } : null;
     case 'number': {
+      // a browser gives '' for what does not parse as a number: without this, a typo would remove the value
+      if (control.validity?.badInput) throw new FormError(`${control.name}: that is not a number.`);
       if (raw.trim() === '') return null;
       if (Number.isNaN(Number(raw))) throw new FormError(`${control.name}: ${raw.trim()} is not a number.`);
       return Number(raw);
@@ -748,7 +769,7 @@ function fieldValue(control) {
   }
 }
 const changed = (control) => control.dataset.shape !== undefined && !control.disabled
-  && control.value.replace(/\s+$/, '') !== (control.dataset.orig ?? '').replace(/\s+$/, '');
+  && (control.validity?.badInput || control.value.replace(/\s+$/, '') !== (control.dataset.orig ?? '').replace(/\s+$/, ''));
 
 /** The changed fields of a form: {name: value}. */
 function changedFields(form) {
@@ -847,10 +868,10 @@ $('side-inspect').addEventListener('submit', async (event) => {
     } else if (form.dataset.transition) {
       const t = transitionOf(form.dataset.transition);
       if (!t) return;
-      const value = (name) => form.elements[name].value.trim() || null;
-      const trigger = value('trigger');
-      const fields = { trigger: trigger === 'done' ? null : trigger, target: value('target'), guard: value('guard'),
-        effect: form.elements.effect.value.replace(/\s+$/, '') || null };
+      // only what changed: a key sent unchanged would be written anew (a guard's layout, an explicit trigger: done)
+      const fields = changedFields(form);
+      if ('trigger' in fields && fields.trigger === 'done') fields.trigger = null;  // completion: no trigger key
+      if (!Object.keys(fields).length) return toast('Nothing changed', { kind: 'info' });
       await edit({ op: 'update_transition', source: t.source, index: t.index, fields }, { from: draftKey(form) });
     }
   });
@@ -1213,6 +1234,12 @@ $('startForm').addEventListener('submit', (event) => {
     }
     notice(error, '');
     remember(`mocks:${S.machine.id}`, $('mocks').value);
+    // a point on a state the file no longer has (removed, renamed in the YAML tab) would be refused by the server
+    const stale = keepNextPoints((p) => (hooksOf(stateOf(p.state) || { type: 'choice' }).hooks.includes(p.at || 'enter') ? p : null));
+    if (stale.length) {
+      toast(`Dropped ${stale.length} breakpoint${stale.length > 1 ? 's' : ''} the machine cannot stop at any more: `
+        + stale.map((p) => `${p.state}@${p.at || 'enter'}`).join(', '), { kind: 'warn' });
+    }
     try {
       const started = await api(`${API}/runs`, {
         method: 'POST',
@@ -1370,7 +1397,7 @@ function drawDebugBar() {
     terminate: (live && !TERMINAL.has(run.status)) || run.status === 'interrupted',
     restart: run.status === 'interrupted',
   };
-  update(bar, html`
+  keepingChoices(bar, () => update(bar, html`
     <strong class="pk-mono" title="${run.id}">${shorten(run.id, 16)}</strong> ${statusBadge(run.status)}
     ${run.machine_id !== S.machine?.id ? badge(`machine ${run.machine_id}`, 'warn') : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
@@ -1387,7 +1414,7 @@ function drawDebugBar() {
     ${can.restart ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" data-control="resume" title="Resume the interrupted run: finished activities are replayed, not repeated">${icon('rotate-ccw', { size: 'sm' })} Resume</button>` : ''}
     <input class="pk-input pk-input--sm sg-step-input" type="number" min="0" id="forkStep" aria-label="Top-level step to fork from" placeholder="step">
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from this top-level step (current definition with Shift)">${icon('git-branch', { size: 'sm' })} Fork</button>
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`);
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
 
 $('debugBar').addEventListener('click', async (event) => {
@@ -1489,8 +1516,10 @@ function drawDebugPane() {
   const events = Object.keys(S.machine?.graph?.events || {});
   $('eventSection').hidden = !events.length;
   const accepted = new Set((run?.accepts || []).flatMap((a) => a.events || []));
-  update($('eventForm').elements.name, events.map((name) => html`<option value="${name}">${name}${accepted.has(name) ? ' (accepted now)' : ''}</option>`));
-  update($('eventFrame'), html`<option value="">any frame</option>${frames.map((f) => html`<option value="${f.prefix}">${f.prefix || 'top'}</option>`)}`);
+  // a wait state marks its events "(accepted now)": the redraw must not put another event in the viewer's choice
+  const eventName = $('eventForm').elements.name;
+  keepingChoices(eventName, () => update(eventName, events.map((name) => html`<option value="${name}">${name}${accepted.has(name) ? ' (accepted now)' : ''}</option>`)));
+  keepingChoices($('eventFrame'), () => update($('eventFrame'), html`<option value="">any frame</option>${frames.map((f) => html`<option value="${f.prefix}">${f.prefix || 'top'}</option>`)}`));
   for (const control of $('eventForm').elements) control.disabled = !run || TERMINAL.has(run.status);
 
   update($('dbgFrames'), frames.length ? frames.map((f, i) => html`<div class="sg-frame">

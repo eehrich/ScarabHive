@@ -77,10 +77,13 @@ def _validate_file(fc: _FileContext) -> None:
         fc.problem("error", "SG002", f"initial {spec.initial!r} is {where}; it must name a top-level state",
                    ["initial"])
     for name, value in spec.context.items():
-        try:
-            json.dumps(value, allow_nan=False)
-        except (TypeError, ValueError):
+        if not _is_json(value):
             fc.problem("error", "SG001", f"context.{name} is not JSON data", ["context", name])
+    for name, param in spec.params.items():  # a YAML date (2024-01-01) reads as a date: the run could not store it
+        for key, value in (("default", param.default), ("enum", param.enum)):
+            if not _is_json(value):
+                fc.problem("error", "SG001", f"params.{name}.{key} is not JSON data (a date or a tagged value? "
+                                             "quote it)", ["params", name, key])
     for name, event in spec.events.items():
         _check_schema(fc, event.data, ["events", name, "data"], "SG001")
     for index, (name, resource) in enumerate(spec.resources.items()):
@@ -167,6 +170,14 @@ def _pseudostate_bindings(fc: _FileContext) -> None:
         fc.pseudo_bound[name] = frozenset(bound)
 
 
+def _is_json(value: Any) -> bool:
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _can_fail(fc: _FileContext, target: Optional[str], seen: frozenset[str]) -> bool:
     """Whether a transition into ``target`` can be disabled by a junction whose branches all fail (§3.2)."""
     state = fc.states.get(target or "")
@@ -240,6 +251,14 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
     if is_wait and not _accepts_somewhere(fc, name):
         fc.problem("error", "SG003", f"{name!r} is a wait state (no do, no completion transition) but neither it "
                                      "nor an enclosing state accepts an event: it would wait forever", path)
+    # completion is local (§3.3): the enclosing state's transitions do not take it. A warning, not an error: an
+    # activity that only ever fails (its error transitions lead on) is a machine that works
+    ends = ("its activity" if state.do is not None else
+            "a final state inside it" if any(child.type == "final" for child in (state.states or {}).values()) else None)
+    if kind == "state" and ends and not any(t.trigger == TRIGGER_DONE for t in state.transitions):
+        fc.problem("warning", "SG109", f"{name!r} completes when {ends} ends but has no completion transition (one "
+                                       "without a trigger): should it complete, the run fails with no_transition",
+                   path + ["transitions"] if state.transitions else path)
 
     for key in ("entry", "exit"):
         source = getattr(state, key)

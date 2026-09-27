@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
 import logging
+import math
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MACHINE_DIRS = ("data/stategraph/machines", "src/plugins*/*/machines")
 DEFAULT_WRITABLE = ("data/stategraph/machines",)
 SWEEP_SECONDS = 60
+MAX_WAIT = 3600.0  # seconds a tool call may wait for its run
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run"})
 
 
@@ -127,7 +130,8 @@ class StateGraphServer(SchemaBasedToolServer):
         from agent_system.core.cancellation import get_cancellation_manager
 
         # every <run>_NNN sub-run in flight -- not the run's own token: its finally activities start
-        # sub-runs after this, and a cancelled run token would have them force-cancelled (§3.10)
+        # sub-runs after this, and a cancelled run token would have them force-cancelled (§3.10); the
+        # finally and close activities already running are protected (backend._cleanup_request)
         get_cancellation_manager().cancel_sub_requests(run_id)
 
     def _release_token(self, run_id: str) -> None:
@@ -244,7 +248,7 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def validate_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            result = self.service.validate(files=params.get("files"), yaml=params.get("yaml"),
+            result = self.service.validate(files=_object(params, "files"), yaml=params.get("yaml"),
                                            machine_id=params.get("machine_id"))
             result.pop("graph", None)
             result["valid"] = not any(p["level"] == "error" for p in result["problems"])
@@ -254,10 +258,10 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def save_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            files = params.get("files")
-            if not isinstance(files, dict) or not files:
+            files = _object(params, "files")
+            if not files:
                 raise ServiceError(422, "files is required: {relative path: text}, root machine <id>.yaml")
-            result = self.service.save_machine(params.get("machine_id"), files, params.get("expected_versions"))
+            result = self.service.save_machine(params.get("machine_id"), files, _object(params, "expected_versions"))
             result.pop("graph", None)
             return result
         return await self._run_tool(params, "save_machine", body,
@@ -267,17 +271,18 @@ class StateGraphServer(SchemaBasedToolServer):
     async def run_machine(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
             machine_id = _need(params, "machine_id")
+            wait = _choice(params, "wait", ("finish", "background"))
+            max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
             started = await self.service.start_run(
-                machine_id, params=params.get("params") or {}, mocks=params.get("mocks") or None,
-                mock_only=bool(params.get("mock_only")), breakpoints=params.get("breakpoints") or (),
+                machine_id, params=_object(params, "params") or {}, mocks=_object(params, "mocks"),
+                mock_only=_flag(params, "mock_only"), breakpoints=params.get("breakpoints") or (),
                 watchpoints=params.get("watchpoints") or (), user_id=params.get("_user_id"),
                 run_key=params.get("run_key"), caller_session=params.get("_session_id"))
             run_id = started["run_id"]
-            if (params.get("wait") or "finish") == "background" or started.get("attached") is False:
+            if wait == "background" or started.get("attached") is False:
                 # background -- or a run another process owns: nothing here to wait on, report its row
                 row = self.run_store.get_run(run_id) or {}
                 return {**started, **_summary(row)} if row else {**started, "state": None, "run_status": "running"}
-            max_wait = float(params.get("max_wait") or self.default_max_wait)
             row = await self._wait(run_id, max_wait, params.get("_cancellation_token"))
             return {**started, **_summary(row)}
         return await self._run_tool(params, "run_machine", body,
@@ -356,12 +361,70 @@ class StateGraphServer(SchemaBasedToolServer):
         self._sweeper = asyncio.ensure_future(self._sweep_loop())
 
     async def _sweep_loop(self) -> None:
+        await self._report_facades()  # after the start, off its path: a machine agent's mistake shows in the log
         while True:
             await asyncio.sleep(SWEEP_SECONDS)
             try:
                 self.run_manager.sweep_expired()
             except Exception:
                 logger.debug("stategraph: lease sweep failed", exc_info=True)
+
+    def facade_problems(self) -> dict[str, list[str]]:
+        """What keeps each machine agent over this instance (``type: stategraph_machine``) from running: its machine
+        is missing or has errors, or the params it passes leave a required one out -- else only the first request's
+        answer would say so."""
+        from agent_system.config.settings import _resolve_server_inheritance, get_tool_server_config
+
+        servers = getattr(getattr(self.system_config, "plugins", None), "servers", None) or {}
+        found: dict[str, list[str]] = {}
+        for name, raw in servers.items():
+            if not getattr(raw, "enabled", False):
+                continue
+            try:
+                kind = _resolve_server_inheritance(name, self.system_config)[0]
+            except Exception:
+                kind = str(getattr(raw, "type", "") or "")
+            if kind != "stategraph_machine":
+                continue
+            config = get_tool_server_config(name, self.system_config)
+            if str(getattr(config, "stategraph", None) or "stategraph") == self.name:
+                problems = self._facade_problems(config)
+                if problems:
+                    found[name] = problems
+        return found
+
+    def _facade_problems(self, config: Any) -> list[str]:
+        machine_id = str(getattr(config, "machine", None) or "")
+        if not machine_id:
+            return ["no machine configured (machine: <machine id>)"]
+        if self.machines.find(machine_id) is None:
+            return [f"no machine {machine_id!r} in {', '.join(self.machine_dirs)}"]
+        tree = self.service._validate(self.machines.load(machine_id))
+        errors = [p for p in tree.problems if p.level == "error"]
+        if errors:
+            return [f"machine {machine_id} has {len(errors)} error(s), the first: {errors[0].code} {errors[0].message}"]
+        declared = tree.files[tree.root].spec.params
+        given = set(getattr(config, "params", None) or {})
+        problems = []
+        if str(getattr(config, "input", None) or "text") == "text":  # json: the message brings the params
+            task = str(getattr(config, "task_param", None) or "task")
+            if task not in declared:
+                problems.append(f"task_param {task!r} is no param of {machine_id} (it has: "
+                                f"{', '.join(declared) or 'none'})")
+            given.add(task)
+            missing = sorted(name for name, spec in declared.items() if spec.required and name not in given)
+            if missing:
+                problems.append(f"{machine_id} requires {', '.join(missing)}: neither in params nor the task_param")
+        return problems
+
+    async def _report_facades(self) -> None:
+        """In a worker thread: validating the machines (SG007 walks every configured server) takes a few hundred
+        milliseconds the loop would otherwise stand still."""
+        try:
+            for name, problems in (await asyncio.to_thread(self.facade_problems)).items():
+                logger.error("stategraph: machine agent %s cannot run: %s", name, "; ".join(problems))
+        except Exception:
+            logger.warning("stategraph: checking the machine agents failed", exc_info=True)
 
     async def stop_plugin(self) -> None:
         if self._sweeper is not None:
@@ -377,6 +440,51 @@ def _need(params: dict[str, Any], key: str) -> str:
     return str(value)
 
 
+def _object(params: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
+    """An object argument; a model often sends it as a JSON string, which is taken when it holds an object."""
+    value = params.get(key)
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ServiceError(422, f"{key} must be an object, not a string (JSON that does not parse)") from None
+    if not isinstance(value, dict):
+        raise ServiceError(422, f"{key} must be an object, not {type(value).__name__}")
+    return value
+
+
+def _flag(params: dict[str, Any], key: str) -> bool:
+    value = params.get(key)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ServiceError(422, f"{key} must be true or false, not {value!r}")
+    return value
+
+
+def _number(params: dict[str, Any], key: str, default: float, low: float, high: float) -> float:
+    value = params.get(key)
+    if value is None or value == "":
+        return float(default)
+    try:
+        number = float(value) if not isinstance(value, bool) else math.nan
+    except (TypeError, ValueError):
+        number = math.nan
+    if not low <= number <= high:  # NaN fails it too
+        raise ServiceError(422, f"{key} must be a number from {low:g} to {high:g}, not {value!r}")
+    return number
+
+
+def _choice(params: dict[str, Any], key: str, choices: tuple[str, ...]) -> str:
+    """One of ``choices``; the first when the argument is missing."""
+    value = params.get(key) or choices[0]
+    if value not in choices:
+        raise ServiceError(422, f"{key} must be one of {', '.join(choices)}, not {value!r}")
+    return value
+
+
 def _counts(problems: list[dict[str, Any]]) -> str:
     errors = sum(1 for p in problems if p["level"] == "error")
     return f"{errors} error(s), {len(problems) - errors} warning(s)"
@@ -389,7 +497,8 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
     debug = row.get("debug") or {}
     return {"run_status": row.get("status"), "state": row.get("final_state") or root.get("state"),
             "output": row.get("output"), "error": row.get("error"), "paused": debug.get("paused"),
-            "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")]}
+            "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
+            **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}
 
 
 PLUGIN_FACTORY = StateGraphServer

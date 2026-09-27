@@ -21,9 +21,17 @@ plugins:
       task_param: task
       params: {}                 # literal params, under the ones from the message
       promote: [story_id]        # output keys copied onto the final event's top level
+      metadata:
+        visibility: tool         # tool: a SAM offers it to its LLM; both: the chat's agent list too
 ```
 
-The keys sit next to `type`, not under `agent_config` (which forbids unknown keys). The
+The keys sit next to `type`, not under `agent_config` (which forbids unknown keys).
+**Without `metadata.visibility` the agent is private:** a SAM leaves it out of the agents its LLM
+may start, even when `allowed_agents` names it, and the chat does not list it -- only callers that
+address it by name (writer_jobs, AgentCaller, `agent-cli --agent`) reach it. `v6_story_machine`
+is private on purpose. The stategraph instance checks every machine agent over it shortly after
+its start and logs what keeps one from running (a missing or broken machine, a `task_param` the
+machine does not declare, a required param nothing passes). The
 machine's agents get their prompt vars from the machine (`vars`, `vars_from`), not from the
 caller's session. The run's own session (`sg_<run id>`, with its agents' sessions below it)
 sits below the facade's session, and its agents count one sub-agent level below the facade:

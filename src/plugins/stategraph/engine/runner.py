@@ -28,7 +28,7 @@ from plugins.stategraph.model.loader import MachineTree, load_snapshot
 from plugins.stategraph.model.spec import parse_duration
 from .activity import ReplayDivergence
 from .backend import NoBackend
-from .debugger import Debugger, apply_edit
+from .debugger import Debugger, UnknownState, apply_edit, check_points, known_states, unknown_state
 from .interpreter import Frame, RunAbort, bind_params
 from .journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
 from .machine import Machine, compile_tree
@@ -538,7 +538,9 @@ class RunContext:
     def view(self) -> dict[str, Any]:
         return {"frames": [frame.view() for frame in self.frames], "live": self.live,
                 "running_seconds": round(self.elapsed_running(), 1),
-                "inbox": [{"name": p.name, "frame": p.frame} for p in self.inbox]}
+                "inbox": [{"name": p.name, "frame": p.frame} for p in self.inbox],
+                # mock paths no activity used (yet): at the end, a typo -- the activity it meant ran for real
+                "mocks_unused": sorted(path for path in self.mocks if not self.mock_uses.get(path))}
 
     def persist(self, **extra: Any) -> None:
         if self.lost:
@@ -658,9 +660,10 @@ class RunManager:
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     resource_sources: Optional[dict[str, Any]] = None,
-                    nesting: Optional[dict[str, Any]] = None) -> str:
+                    nesting: Optional[dict[str, Any]] = None, strict_points: bool = True) -> str:
         """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
-        with the run so its agent instances count as one level below the caller (backend.agent_create)."""
+        with the run so its agent instances count as one level below the caller (backend.agent_create).
+        ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
         self._refuse_while_stopping()
         machine = compile_tree(tree)
         try:
@@ -669,6 +672,16 @@ class RunManager:
             raise ValueError(exc.message) from exc
         run_id = run_id or uuid.uuid4().hex[:12]
         debugger = Debugger(breakpoints=breakpoints, watchpoints=watchpoints, pause_at_start=pause_at_start)
+        states = known_states(machine)
+        kept = []
+        for point in debugger.breakpoints:
+            problem = unknown_state(states, point.state, point.machine, point.at,
+                                    f"breakpoint {point.state}@{point.at}")
+            if problem and strict_points:
+                raise UnknownState(problem)
+            if problem is None:
+                kept.append(point)
+        debugger.breakpoints = kept
         self.store.create_run(run_id, machine.id, tree.snapshot(), params=params or {},
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
@@ -788,6 +801,7 @@ class RunManager:
             tree if tree is not None else load_snapshot(row["definition"]), params=row.get("params") or {},
             mocks=options.get("mocks"), mock_only=bool(options.get("mock_only")),
             breakpoints=debug.get("breakpoints") if breakpoints is None else breakpoints,
+            strict_points=breakpoints is not None,  # the source's own points may name states the current file lost
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
@@ -992,6 +1006,8 @@ class RunManager:
             if live.ctx.begun:  # a task cancelled before its first line ends without running one, and the run
                 live.task.cancel()  # would stay 'running': it carries the terminate out itself when it begins
             return
+        if action == "run_to":
+            check_points(live.ctx.machine, run_to=state, run_to_machine=machine)
         live.ctx.debugger.command(action, state=state, machine=machine)
         self._persist_control(run_id, live)
 
@@ -1012,12 +1028,19 @@ class RunManager:
     def set_points(self, run_id: str, *, breakpoints: Any = None, watchpoints: Any = None) -> None:
         if run_id in self.live:
             live = self._live(run_id)
+            check_points(live.ctx.machine, breakpoints)
             live.ctx.debugger.set_points(breakpoints=breakpoints, watchpoints=watchpoints)
             self._persist_control(run_id, live)
             return
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
+        try:
+            machine = compile_tree(load_snapshot(row["definition"]))
+        except Exception:  # a definition that no longer loads: its points cannot be checked, only stored
+            machine = None
+        if machine is not None:
+            check_points(machine, breakpoints)
         debug = row.get("debug") or {}
         debugger = Debugger.from_state(debug, run_id)
         debugger.set_points(breakpoints=breakpoints, watchpoints=watchpoints)

@@ -169,7 +169,8 @@ class MachineStore:
         return load_tree(root, FileSources(self, overrides), execute_python=execute_python)
 
     def relative(self, machine_id: str, path: str) -> str:
-        return os.path.relpath(path, str(self.base_dir(machine_id)))
+        """With / on every platform: the panel matches problems' files to these keys."""
+        return Path(os.path.relpath(path, str(self.base_dir(machine_id)))).as_posix()
 
     def layout(self, machine_id: str) -> dict[str, Any]:
         found = self.find(machine_id)
@@ -196,7 +197,8 @@ class MachineStore:
         for rel in files:
             target = Path(os.path.normpath(str(base / rel)))
             if not self.is_writable(target) and not self.is_writable(target.parent / "x"):
-                raise PermissionError(f"{rel}: {target} is not in a writable machine root")
+                raise PermissionError(f"{rel}: {target} is not in a writable machine root -- a shipped machine is "
+                                      "read-only: save a copy under a new id")
             if target.exists():
                 if rel not in expected_versions:
                     raise FileInTheWay(rel)

@@ -214,6 +214,27 @@ export function pathData(points) {
   return points.map(([x, y], i) => `${i ? 'L' : 'M'}${Math.round(x * 10) / 10} ${Math.round(y * 10) / 10}`).join(' ');
 }
 
+/**
+ * Run `draw`, a redraw of `element`, keeping what the viewer chose or typed meanwhile: redrawn options reset a select
+ * to its first one, and a redrawn input is empty -- a poll that changes one label is enough. The controls are
+ * `element` itself (a select whose options are redrawn) or the selects and inputs with an id inside it; a value the
+ * new options no longer offer is not forced back. Returns what `draw` returns.
+ */
+export function keepingChoices(element, draw) {
+  const controls = () => (element.tagName === 'SELECT' ? [element] : [...element.querySelectorAll('select[id], input[id]')]);
+  const kept = controls().map((c) => ({ id: c.id, value: c.value, focused: document.activeElement === c }));
+  const drawn = draw();
+  if (!drawn) return drawn;
+  const now = new Map(controls().map((c) => [c.id, c]));
+  for (const { id, value, focused } of kept) {
+    const control = now.get(id);
+    if (!control) continue;
+    if (control.tagName !== 'SELECT' || [...control.options].some((o) => o.value === value)) control.value = value;
+    if (focused) control.focus();
+  }
+  return drawn;
+}
+
 /** A file path with forward slashes: a server on Windows names files with backslashes. */
 export function posixPath(path) {
   return path ? String(path).replace(/\\/g, '/') : path;
@@ -310,20 +331,32 @@ function valueAt(text, line) {
 }
 
 /**
+ * Whether the key at `line` is the state `name` (plain or quoted); true without a name. In flow style
+ * (`states: {a: ..., b: ...}`) a state's line starts with another key, and what follows that colon is not its value.
+ */
+function keyedBy(text, line, name) {
+  if (name === undefined) return true;
+  const head = String(text ?? '').split('\n')[line - 1] ?? '';
+  const key = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^(?:${key}|"${key}"|'${key}')\\s*:(?:\\s|$)`).test(head.trim());
+}
+
+/**
  * A state's value as YAML text, dedented, from the file text and the 1-based line of its key ('' if it is empty).
  * A value on the key line keeps its comment, so an Apply writes it back.
  */
-export function stateFragment(text, line) {
+export function stateFragment(text, line, name) {
   const value = valueAt(text, line);
-  if (!value) return '';
+  if (!value || !keyedBy(text, line, name)) return '';
   if (!value.rest || PROPERTIES_ONLY.test(value.rest)) return value.body;
   return value.continued ? `${value.rest}\n${value.body}` : value.rest;
 }
 
 /** Why the inspector cannot apply a state's YAML ('' when it can): set_state refuses these key lines. */
-export function fragmentLock(text, line) {
+export function fragmentLock(text, line, name) {
   const value = valueAt(text, line);
   if (!value) return '';
+  if (!keyedBy(text, line, name)) return 'It is written in flow style, on the line of another key';
   if (value.rest && /^[&!*]/.test(value.rest)) return 'It has an anchor, a tag or an alias on its key line';
   return value.rest && value.continued ? 'It starts on its key line and goes on below it' : '';
 }

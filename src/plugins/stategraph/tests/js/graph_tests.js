@@ -201,6 +201,16 @@ test('stateFragment cuts a state body out of the file, dedented, up to its next 
   equal([2, 11, 12].map((line) => fragmentLock(text, line)), ['', '', ''], 'nothing locked in plain layouts');
 });
 
+test('stateFragment and fragmentLock: a state in a flow mapping on the line of another key is locked, not shown', () => {
+  const text = 'stategraph: 1\nstates: {x: {transitions: [{target: y}]}, y: {type: final}}\n';
+  equal(stateFragment(text, 2, 'x'), '', 'the line of states: shows no state');
+  assert(fragmentLock(text, 2, 'x').includes('flow style'), 'x in states: {...} is not locked');
+  const own = 'states:\n  x: {transitions: [{target: y}]}\n  "y": {type: final}\n';
+  equal([stateFragment(own, 2, 'x'), stateFragment(own, 3, 'y')], ['{transitions: [{target: y}]}', '{type: final}'],
+    'a flow value on its own key line (plain or quoted) is shown');
+  equal([fragmentLock(own, 2, 'x'), fragmentLock(own, 3, 'y')], ['', ''], 'and not locked');
+});
+
 test('stateFragment and fragmentLock: an anchor, a tag, an alias or a flow value over several lines', () => {
   const text = [
     'states:',                      // 1

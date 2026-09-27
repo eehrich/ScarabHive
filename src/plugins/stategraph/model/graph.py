@@ -32,7 +32,9 @@ def empty_graph(machine_id: Optional[str] = None) -> dict[str, Any]:
 def graph_view(tree: MachineTree) -> dict[str, Any]:
     """States (pre-order, a composite before its children) and transitions of the root machine file."""
     loaded = tree.files.get(tree.root)
-    doc = _quoted(loaded.text, loaded.doc) if loaded is not None else None
+    # a document the loader dropped (it does not parse, or it is too big -- yaml_bounds) is not read again: an
+    # alias bomb would expand here, on every open of the machine
+    doc = _quoted(loaded.text, loaded.doc) if loaded is not None and loaded.doc is not None else None
     if not isinstance(doc, dict):
         return empty_graph()
     graph = empty_graph(_text(doc.get("id")))

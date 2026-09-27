@@ -84,6 +84,7 @@ class CancellationManager:
         self.monitor_interval = monitor_interval
         self._tokens: Dict[str, CancellationToken] = {}
         self._tasks: Dict[str, asyncio.Task] = {}
+        self._protected: Set[str] = set()  # cleanup requests no cascade cancels (protect)
         self._monitor_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
     
@@ -109,7 +110,7 @@ class CancellationManager:
         
         # First, try exact match
         token = self._tokens.get(request_id)
-        if token:
+        if token and not self._is_protected(request_id):
             token.cancel()
             cancelled_count += 1
         
@@ -123,15 +124,27 @@ class CancellationManager:
         logger.warning("No cancellation tokens found for request ID '%s'", request_id)
         return False
     
+    def protect(self, request_id: str) -> None:
+        """Keep ``request_id`` and its sub-requests out of every cascade -- cancel_request of an id above it,
+        cancel_sub_requests: cleanup work that must run to its end while the requests around it are cancelled.
+        The timeout monitor's forced cancel of a cancelled prefix still reaches it."""
+        self._protected.add(request_id)
+
+    def unprotect(self, request_id: str) -> None:
+        self._protected.discard(request_id)
+
+    def _is_protected(self, token_id: str) -> bool:
+        return any(token_id == kept or token_id.startswith(kept + "_") for kept in self._protected)
+
     def cancel_sub_requests(self, request_id: str) -> int:
         """Cancel the sub-requests of a request (ids ``<request_id>_...``), not the request itself.
 
         Its own token stays uncancelled, so the timeout monitor never force-cancels its whole prefix --
-        sub-requests it starts afterwards (cleanup work) are not cut.
+        sub-requests it starts afterwards (cleanup work) are not cut. Nor are protected ones (``protect``).
         """
         cancelled_count = 0
         for token_id, token in list(self._tokens.items()):
-            if token_id.startswith(request_id + "_"):
+            if token_id.startswith(request_id + "_") and not self._is_protected(token_id):
                 token.cancel()
                 cancelled_count += 1
         return cancelled_count

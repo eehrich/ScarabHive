@@ -193,6 +193,7 @@ class ScarabHiveBackend:
         act.meta["request_id"] = request_id
         user = self.user_id or "anonymous"
         profile = getattr(agent.agent_config, "default_llm_profile", None) or "normal"
+        _protect(act, request_id)
         self._busy.add(instance_id)
         register_request_user(request_id, user)
         work: Optional[asyncio.Future[str]] = None
@@ -218,6 +219,7 @@ class ScarabHiveBackend:
             def release(*_: Any) -> None:
                 self._busy.discard(instance_id)
                 release_request_user_tree(request_id)  # with the ids its tool calls registered
+                _unprotect(act, request_id)
 
             if work is not None and not work.done():  # it outlived its grace: the instance stays busy until it ends
                 work.add_done_callback(release)
@@ -395,12 +397,15 @@ class ScarabHiveBackend:
                 raise ActivityError("tool_denied", problem)
         request_id = act.request_id()
         act.meta["request_id"] = request_id
+        _protect(act, request_id)
         try:
             result = await self.runner.dispatch_tool_call(tool, inject(tool, args, self.inject_params),
                                                           session_id=self.session_id, user_id=self.user_id,
                                                           request_id=request_id)
         except ToolDispatchError as exc:
             raise ActivityError("tool_denied", str(exc)) from exc
+        finally:
+            _unprotect(act, request_id)
         result = _redact(result, tool, self.inject_params)  # before anything reads it: out, error text, error_if
         if isinstance(result, dict) and result.get("cancelled") is True and act.run.cancelled and not act.finalizer:
             raise asyncio.CancelledError()
@@ -459,6 +464,23 @@ def _control_tools() -> tuple[str, ...]:
 
     text = (Path(__file__).resolve().parents[1] / "schema.yaml").read_text(encoding="utf-8")
     return tuple(tool for tool in re.findall(r'name: "\{\{ name \}\}_(\w+)"', text) if tool not in READ_ONLY_TOOLS)
+
+
+def _protect(act: "ActivityRun", request_id: str) -> None:
+    """A finally or close activity's request runs to its end (§3.10): no cancel of the requests around it cuts it --
+    a terminate of its run, nor a cancel of the caller's request tree above the run; only the platform's forced
+    cancel after the cleanup timeout does."""
+    if act.finalizer:
+        from agent_system.core.cancellation import get_cancellation_manager
+
+        get_cancellation_manager().protect(request_id)
+
+
+def _unprotect(act: "ActivityRun", request_id: str) -> None:
+    if act.finalizer:
+        from agent_system.core.cancellation import get_cancellation_manager
+
+        get_cancellation_manager().unprotect(request_id)
 
 
 def make_config_check(system_config: Any, *, runner: str, own_instance: str,

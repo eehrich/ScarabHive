@@ -35,7 +35,7 @@ from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString, Sc
 from plugins.agent_editor.store import splice
 
 from .loader import to_plain, yaml_bounds
-from .spec import NAME_PATTERN
+from .spec import NAME_PATTERN, check_state_name
 
 #: (mapping, sequence, offset) indentation tried per file; the rendering closest to the file wins.
 INDENTS = ((2, 4, 2), (2, 2, 0))
@@ -432,6 +432,10 @@ def _transition(edit: "_Edit", op: dict[str, Any]) -> tuple[_State, CommentedSeq
 def _new_name(edit: "_Edit", name: Any) -> str:
     if not isinstance(name, str) or not _NAME.fullmatch(name):
         raise EditError(f"state name {name!r} must match {NAME_PATTERN} (lowercase, digits, underscore)")
+    try:
+        check_state_name(name)
+    except ValueError as exc:  # finally, resources: the machine would not load
+        raise EditError(str(exc)) from None
     if any(state.name == name for state in edit.states()):
         raise EditError(f"a state {name!r} exists already; state names are unique within a machine")
     return name

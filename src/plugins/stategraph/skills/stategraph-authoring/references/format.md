@@ -985,7 +985,7 @@ any state inside waits.
 
 | Code | Level | Check |
 |---|---|---|
-| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
+| SG001 | error | YAML syntax, duplicate keys, a non-string mapping key (an unquoted `{{ … }}`, or a `true`/`yes` key read as a boolean), a format version other than the integer `1`, schema (unknown key, wrong type, a param default that does not fit its type or enum, a param default or enum that is no JSON data such as an unquoted date), an `events.<name>.data` that is not a valid JSON schema, YAML nested more than 100 levels deep or expanding through its aliases to more than 100,000 values or 10,000,000 characters of text (an alias inside the node it names counts as too deep), a machine whose file is not `<id>.yaml` |
 | SG002 | error | Unknown or duplicate state name; unknown target or `initial`; an undeclared event trigger |
 | SG003 | error | Structure: a choice without `else`; `else` not last; triggers on choice/junction; a final with other keys; `status` on a nested final; a composite with `do` or without `initial`; an internal completion or error transition; a wait state that accepts no event; a cycle of pseudostates only |
 | SG004 | error | Python does not compile, or is nested too deeply for Python's parser; unknown name; a name not bound at that place; `{{ }}` in a code field; `params.<name>` not declared; `out.value` (write `out["value"]`), `ctx.a.b` (write `ctx.a["b"]`), `ctx.get(...)` (namespaces have no dict methods); assigning or deleting a field of `params`, `run`, `resources`, `error`, `event`, `activity` or `ending`; a companion function that does not exist; `python:`/`imports:` outside the machine roots |
@@ -1000,6 +1000,7 @@ any state inside waits.
 | SG106 | warning | Impure code in a code field or template |
 | SG107 | warning | A data field whose whole value looks like a reference, without braces |
 | SG108 | warning | A root machine with `limits.timeout` used as a submachine |
+| SG109 | warning | A state completes (it has `do`, or a final inside it) but has no completion transition: should it complete, the run fails with `no_transition` |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
 
 Every problem names a path (`states.judge.transitions[1].guard`), the file and, when

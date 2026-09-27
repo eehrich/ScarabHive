@@ -163,7 +163,15 @@ class MachineAgent(Agent):
         caller = f"{self.name}:{session_id}"
         stopped = lambda: token.is_cancelled or entry["cancel"].is_set()  # noqa: E731
         run_id = server.run_store.run_of_caller(caller)
-        if run_id is None:  # a create -- or the same request again, which start_run answers with its run
+        row = server.run_store.get_run(run_id) if run_id is not None else None
+        if row is not None and not server.sees_run(user_id, row.get("user_id")):
+            yield await refuse(f"{self.name}: session {session_id} holds another user's run")
+            return
+        if run_id is None or (row or {}).get("run_key") == f"{self.name}:{request_id}":
+            # a create -- or the same request again, which start_run answers with its run (or a new one after a
+            # transient failure): never the continue path's "no new run"
+            if row is not None:  # the session has an exchange already: keep it
+                await self._load_transcript(session_id, user_id)
             if stopped():
                 yield await refuse(f"{self.name}: cancelled before the run started", "cancelled")
                 return
@@ -176,7 +184,6 @@ class MachineAgent(Agent):
             server.run_store.set_caller(caller, run_id)
         else:  # a continue: never a second run
             await self._load_transcript(session_id, user_id)
-            row = server.run_store.get_run(run_id)
             state = (row or {}).get("status")
             if state == "interrupted":
                 if stopped():

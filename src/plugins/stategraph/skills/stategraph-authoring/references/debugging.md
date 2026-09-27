@@ -63,7 +63,9 @@ Special forms:
 
 A machine is proven when a mocked run reaches a final state along the path that
 matters, and each error path you rely on has been driven once with `$error`. Check
-`status` and `final_state` of the result. A run in status `waiting` lists the events
+`run_status` and `state` of the result -- its `status` is the tool call's own (`success`
+or `error`), not the run's. A mock path no activity used shows in `mocks_unused`: a
+typo there lets the real activity run. A run in status `waiting` lists the events
 it `accepts`: send one with `stategraph_send_event(run_id, name, data)`, then read the
 run with `stategraph_get_run`. A run in status `paused` stopped at a breakpoint
 (section 4).
@@ -72,13 +74,16 @@ run with `stategraph_get_run`. A run in status `paused` stopped at a breakpoint
 
 ## 2. Reading a run
 
-`stategraph_get_run(run_id, steps=30)` returns:
+`stategraph_get_run(run_id, steps=30)` returns (besides `status`, the call's own
+`success` or `error`):
 
-- `status`: `running`, `waiting` (a wait state waits for an event), `paused`
+- `run_status`: `running`, `waiting` (a wait state waits for an event), `paused`
   (debugger), `interrupted` (the process stopped; resumable), `succeeded`, `failed`,
   `cancelled`.
-- `final_state`, `output`, `error` (`type`, `message`, `state`, `data`, `cause`).
-- `view.frames`: one entry per active frame (the root, and every running submachine):
+- `state` (the final state once the run ended, else the root's active state),
+  `output`, `error` (`type`, `message`, `state`, `data`, `cause`), `paused` (where the
+  debugger holds it), `mocks_unused`.
+- `frames`: one entry per active frame (the root, and every running submachine):
   its active states, `ctx`, `params`, step, visit counts, and the events it accepts.
 - `accepts`: per waiting frame, the events it takes now.
 - `journal`: the last rows -- `activity` (key, state, status `started`/`done`/`error`,

@@ -175,11 +175,11 @@ with `await sg.tool(name, args)`. Details: `references/format.md` §14.
 
 | code | means | usual fix |
 |---|---|---|
-| SG001 | YAML or schema: unknown key, wrong type, file not named `<id>.yaml`, a param default that does not fit, `stategraph:` not the integer 1, an invalid JSON schema in `events.<x>.data` | check the key against `references/format.md` |
+| SG001 | YAML or schema: unknown key, wrong type, file not named `<id>.yaml`, a param default that does not fit, a param default or enum that is no JSON data (an unquoted date), `stategraph:` not the integer 1, an invalid JSON schema in `events.<x>.data` | check the key against `references/format.md` |
 | SG002 | unknown state, target, `initial` or undeclared event | declare it; fix the name |
 | SG003 | structure: choice without `else`, `else` not last, bad final, wait state without events | see the rule it names |
 | SG004 | Python: syntax, unknown name, a name not bound there, braces in a code field, undeclared `params.x`, `out.x` / `ctx.a.b` / `ctx.get()` on plain data, assigning to `params`/`run`/`error`/`event`/… (only `ctx` is writable) | move data into `ctx` first; drop the braces; use `out["x"]` |
-| SG005 | activity: unknown kind, several kind keys, bad fields, an invalid JSON `schema`, a computed `agent:`/`tool:`/`by:` | one kind key; the kind's fields only; literal names |
+| SG005 | activity: unknown kind, several kind keys, bad fields, an invalid JSON `schema`, a computed `agent:`/`tool:`/`by:` | one kind key; the kind's fields only; literal names, or `"{{ params.x }}"` of a param with an `enum` |
 | SG006 | submachine: unknown alias, cycle, missing/unknown parameter | `imports:`, the callee's `params` |
 | SG007 | configuration: agent not configured or one that reaches machines, tool not callable, stategraph's own tool, a SAM's tool | pick from `stategraph_catalog`; agents through agent activities; another machine as a submachine |
-| SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |
+| SG101-SG110 | warnings: unreachable, no path to a final, unbounded loop, dead transition, undeclared ctx field, impure code, forgotten braces, ignored timeout, no completion transition where a state completes, `retry.errors` type unknown or `interrupted` | fix, or explain in the handover |

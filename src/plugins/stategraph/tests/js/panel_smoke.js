@@ -119,11 +119,16 @@ await step('inspector: apply a transition and the fragment, toggle a breakpoint 
   await $('canvas').fire('pointerdown', { button: 0, target: node, clientX: 10, clientY: 10, pointerId: 1 });
   await $('canvas').fire('pointerup', { target: node, clientX: 10, clientY: 10 });
   const form = new FakeElement('form'); form.setAttribute('data-transition', 'write#0');
-  form.elements.trigger.value = 'done'; form.elements.target.value = 'review'; form.elements.guard.value = 'ctx.ok'; form.elements.effect.value = '';
+  for (const [name, shape, orig, value] of [['trigger', 'enum', 'error', 'done'], ['target', 'enum', 'review', 'review'],
+    ['guard', 'line', '', 'ctx.ok'], ['effect', 'code', '', '']]) {
+    Object.assign(form.elements[name], { name, value });
+    form.elements[name].dataset.shape = shape;
+    form.elements[name].dataset.orig = orig;
+  }
   form.querySelector = () => new FakeElement('button');
   await $('side-inspect').fire('submit', { target: form });
   const update = CALLS.filter(([m, p]) => p.endsWith('/edit')).pop();
-  if (update[2].op.op !== 'update_transition' || update[2].op.fields.trigger !== null || update[2].op.fields.guard !== 'ctx.ok') throw new Error(JSON.stringify(update[2]));
+  if (update[2].op.op !== 'update_transition' || JSON.stringify(update[2].op.fields) !== '{"trigger":null,"guard":"ctx.ok"}') throw new Error(JSON.stringify(update[2]));
   const frag = new FakeElement('form'); frag.setAttribute('data-form', 'set-state'); frag.elements.yaml.value = 'type: final';
   frag.querySelector = () => new FakeElement('button');
   await $('side-inspect').fire('submit', { target: frag });

@@ -185,6 +185,31 @@ const CASES = {
     check(JSON.stringify(start[2].watchpoints) === '[{"expr":"ctx.round","machine":"review"}]', JSON.stringify(start[2].watchpoints));
   },
 
+  async a_renamed_state_takes_the_next_runs_breakpoint_along() {
+    await boot('?machine=review');
+    await choose('write');
+    await toggle('enter', true);
+    ANSWERS.prompt = ['drafting'];
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'rename' }) });
+    await settle();
+    check(lastEdit()?.op === 'rename_state', `sent: ${JSON.stringify(lastEdit())}`);
+    const stored = JSON.parse(localStorage.getItem('stategraph:breakpoints:review'));
+    check(JSON.stringify(stored) === '[{"state":"drafting","at":"enter","machine":"review"}]', `stored ${JSON.stringify(stored)}`);
+  },
+
+  async a_breakpoint_the_machine_cannot_stop_at_any_more_is_dropped_at_the_start() {
+    localStorage.setItem('stategraph:breakpoints:review', JSON.stringify([
+      { state: 'write', at: 'enter', machine: 'review' }, { state: 'gone', at: 'enter', machine: 'review' },
+      { state: 'inner', at: 'enter', machine: 'critique' }]));
+    await boot('?machine=review');
+    await $('startForm').fire('submit', {});
+    await settle();
+    const start = CALLS.find(([method, path]) => method === 'POST' && path.endsWith('/api/runs'));
+    check(start && JSON.stringify(start[2].breakpoints.map((p) => p.state)) === '["write","inner"]',
+      `sent: ${JSON.stringify(start && start[2].breakpoints)}`);
+    check(TOASTS.some(([kind, text]) => kind === 'warn' && text.includes('gone@enter')), `toasts: ${JSON.stringify(TOASTS)}`);
+  },
+
   async a_live_run_shows_and_changes_only_the_open_machines_breakpoints() {
     const point = (state, at, machine, id) => ({ state, at, machine, condition: null, enabled: true, id });
     runAnswer = { ...RUN, debug: { ...RUN.debug, breakpoints: [point('write', 'enter', 'critique', 'b1'), point('read', 'enter', null, 'b2')] } };
@@ -536,7 +561,9 @@ const CASES = {
     await settle();
     check(RENDERS.filter(([id]) => id === 'side-inspect').length === drawn && !confirms(), 'choosing it again redrew over the text');
     ANSWERS.confirm = false;
-    await $('side-inspect').fire('submit', { target: element('form', { 'data-transition': 'write#0' }) });
+    const other = formOf('transition', { target: ['enum', 'review', 'write'] });
+    other.setAttribute('data-transition', 'write#0');
+    await $('side-inspect').fire('submit', { target: other });
     await settle();
     check(confirms() === 1 && !CALLS.some(([, path]) => path.endsWith('/edit')), 'another form applied over the text unasked');
     $('yamlText').value = `${MACHINE.files['review.yaml']}\n# unsaved\n`;
@@ -826,6 +853,20 @@ const CASES = {
     check(/name="criteria" data-shape="yaml" data-orig=""/.test($('activityFields').innerHTML), 'empty criteria are taken as text');
   },
 
+  async a_number_the_browser_cannot_read_is_refused_not_removed() {
+    await boot('?machine=fields');
+    await choose('judge');
+    for (const orig of ['3', '']) {  // the browser's value is '' for "abc": the old value, or none, is kept
+      const form = formOf('state-fields', { max_visits: ['number', orig, ''] });
+      form.elements.max_visits.validity = { badInput: true };
+      TOASTS.length = 0;
+      await $('side-inspect').fire('submit', { target: form });
+      await settle();
+      check(!lastEdit() && TOASTS.some(([kind, text]) => kind === 'warn' && text.includes('not a number')),
+        `orig ${orig}: sent ${JSON.stringify(lastEdit())}, toasts ${JSON.stringify(TOASTS)}`);
+    }
+  },
+
   async a_number_field_is_a_number_input_and_a_typo_is_refused() {
     await boot('?machine=fields');
     await choose('judge');
@@ -852,6 +893,21 @@ const CASES = {
     await settle();
     check(!lastEdit() && TOASTS.some(([kind, text]) => kind === 'warn' && text.startsWith('Set agent first')),
       `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_transition_sends_only_what_changed_and_a_guard_over_lines_keeps_them() {
+    await boot('?machine=fields');
+    await choose('idle');
+    check(/<textarea[^>]*id="tr-guard-idle#0" name="guard"[^>]*data-shape="code"/.test($('side-inspect').innerHTML),
+      'a guard over two lines sits in a one-line input, which drops its line breaks');
+    const guard = '(ctx.verdict is None\n and True)';
+    const form = formOf('transition', { trigger: ['enum', 'done', 'done'], target: ['enum', 'done', 'judge'],
+      guard: ['code', guard, guard], effect: ['code', '', ''] });
+    form.setAttribute('data-transition', 'idle#0');
+    await $('side-inspect').fire('submit', { target: form });
+    await settle();
+    const sent = lastEdit();
+    check(sent?.op === 'update_transition' && JSON.stringify(sent.fields) === '{"target":"judge"}', `sent: ${JSON.stringify(sent)}`);
   },
 
   async a_text_over_lines_is_a_text_area() {

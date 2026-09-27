@@ -238,6 +238,9 @@ states:
       line two
     transitions:
       - target: done
+        guard: |
+          (ctx.verdict is None
+           and True)
   share_a:
     do: &job {agent: w, task: t}
     transitions:
@@ -380,6 +383,10 @@ PANEL_CASES = [
     "a_read_only_machine_shows_its_fields_disabled",
     "a_new_decision_takes_its_criteria_as_yaml",
     "a_number_field_is_a_number_input_and_a_typo_is_refused",
+    "a_number_the_browser_cannot_read_is_refused_not_removed",
+    "a_transition_sends_only_what_changed_and_a_guard_over_lines_keeps_them",
+    "a_renamed_state_takes_the_next_runs_breakpoint_along",
+    "a_breakpoint_the_machine_cannot_stop_at_any_more_is_dropped_at_the_start",
     "a_shared_activity_is_locked_with_a_hint",
     "another_kind_without_its_key_is_refused",
     "a_text_over_lines_is_a_text_area",

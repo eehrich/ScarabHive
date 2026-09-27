@@ -19,7 +19,7 @@ from plugins.stategraph.model.code import CodeError, jsonable, plain
 
 if TYPE_CHECKING:
     from .interpreter import Event, Frame
-    from .machine import Node
+    from .machine import Machine, Node
     from .runner import RunContext
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,65 @@ def parse_points(raw: Any, kind: type[Breakpoint] | type[Watchpoint]) -> list[An
     return [kind.parse(item) for item in raw]
 
 
+class UnknownState(ValueError):
+    """A breakpoint or run_to names no state of the run's machines."""
+
+
+def known_states(machine: "Machine") -> dict[str, dict[str, "Node"]]:
+    """The states of a machine and of every submachine it imports, by machine id and name."""
+    states: dict[str, dict[str, "Node"]] = {}
+    pending = [machine]
+    while pending:
+        current = pending.pop()
+        if current.id not in states:
+            states[current.id] = dict(current.nodes)
+            pending.extend(current.imports.values())
+    return states
+
+
+def hooks_of(node: "Node") -> tuple[str, ...]:
+    """The hooks that can stop in a state (§6; the panel's hooksOf says the same): a pseudostate is decided within
+    a transition, a top-level final ends the run as it is entered, a nested final completes its composite (exit
+    only), a composite stops in the states inside it (error, when its max_visits is exceeded)."""
+    if node.type in ("choice", "junction"):
+        return ()
+    if node.type == "final":
+        return ("exit",) if node.parent is not None else ()
+    if node.composite:
+        return ("error",) if node.spec.max_visits else ()
+    return HOOKS
+
+
+def check_points(machine: "Machine", breakpoints: Any = None, run_to: Optional[str] = None,
+                 run_to_machine: Optional[str] = None) -> None:
+    """Refuse (UnknownState) breakpoints or a run_to that name no state of ``machine`` or its submachines."""
+    states = known_states(machine)
+    wanted = [(p.state, p.machine, p.at, f"breakpoint {p.state}@{p.at}")
+              for p in parse_points(breakpoints, Breakpoint)]
+    if run_to:
+        wanted.append((run_to, run_to_machine, "enter", f"run_to {run_to}"))
+    for state, machine_id, at, what in wanted:
+        problem = unknown_state(states, state, machine_id, at, what)
+        if problem:
+            raise UnknownState(problem)
+
+
+def unknown_state(states: dict[str, dict[str, "Node"]], state: str, machine: Optional[str], at: str,
+                  what: str) -> Optional[str]:
+    """Why a breakpoint or run_to at hook ``at`` of ``state`` (of ``machine``) would never stop the run; None when
+    it can. A typo there looks like a condition that did not hold."""
+    if machine is not None and machine not in states:
+        return f"{what}: no machine {machine!r} in this run (machines: {', '.join(sorted(states))})"
+    nodes = [found[state] for machine_id, found in states.items() if machine in (None, machine_id) and state in found]
+    if not nodes:
+        return f"{what}: no state {state!r} in " + (f"machine {machine}" if machine else "the machine or its submachines")
+    if not any(at in hooks_of(node) for node in nodes):
+        offered = sorted({hook for node in nodes for hook in hooks_of(node)})
+        return (f"{what}: {state!r} never stops at {at} -- its hooks: {', '.join(offered) or 'none'} (a pseudostate, a "
+                "top-level final and a composite stop nowhere; set it on a state inside the composite)")
+    return None
+
+
 def stored_points(raw: Any, kind: type[Breakpoint] | type[Watchpoint], run: str = "") -> list[Any]:
     """The points a run's row holds. One that no longer parses -- stored before points were checked -- is dropped
     with a warning: else neither a resume nor a terminate (which resumes) of its run would get past it."""
@@ -110,11 +169,17 @@ def stored_points(raw: Any, kind: type[Breakpoint] | type[Watchpoint], run: str 
     return points
 
 
+def _related(prefix: str, other: str) -> bool:
+    """One frame runs inside the other (frame prefixes nest: a child's starts with its parent's)."""
+    return prefix.startswith(other) or other.startswith(prefix)
+
+
 class Debugger:
     def __init__(self, *, breakpoints: Any = (), watchpoints: Any = (), pause_at_start: bool = False):
         self.breakpoints: list[Breakpoint] = parse_points(breakpoints, Breakpoint)
         self.watchpoints: list[Watchpoint] = parse_points(watchpoints, Watchpoint)
-        self.mode = "pause" if pause_at_start else "run"   # run | pause | step
+        self.mode = "pause" if pause_at_start else "run"   # run | pause | step (a step is pending: steps)
+        self.steps: set[str] = set()  # prefixes of the frames a pending step belongs to; "" (the top): any frame
         self.run_to: Optional[str] = None
         self.run_to_machine: Optional[str] = None
         self.paused: Optional[dict[str, Any]] = None
@@ -129,7 +194,8 @@ class Debugger:
     def state(self) -> dict[str, Any]:
         return {"breakpoints": [asdict(b) for b in self.breakpoints],
                 "watchpoints": [asdict(w) for w in self.watchpoints],
-                "watch": self.watch, "paused": self.paused, "mode": self.mode, "run_to": self.run_to,
+                "watch": self.watch, "paused": self.paused, "mode": self.mode, "steps": sorted(self.steps),
+                "run_to": self.run_to,
                 "run_to_machine": self.run_to_machine}
 
     @classmethod
@@ -143,6 +209,10 @@ class Debugger:
         debugger.watchpoints = stored_points(debug.get("watchpoints"), Watchpoint, run)
         mode = debug.get("mode")
         debugger.mode = "pause" if debug.get("paused") else (mode if mode in MODES else "run")
+        if debugger.mode == "step":  # a row without its frames (written before steps were per frame): any frame
+            stored = debug.get("steps")
+            debugger.steps = {s for s in stored if isinstance(s, str)} if isinstance(stored, list) else set()
+            debugger.steps = debugger.steps or {""}
         debugger.run_to = debug.get("run_to") if isinstance(debug.get("run_to"), str) else None
         debugger.run_to_machine = (debug.get("run_to_machine") if isinstance(debug.get("run_to_machine"), str)
                                    else None)
@@ -161,8 +231,9 @@ class Debugger:
     async def at_hook(self, run: "RunContext", frame: "Frame", node: Optional["Node"], point: str,
                       event: Optional["Event"]) -> None:
         reason = None
-        if self.mode in ("pause", "step"):
+        if self.mode == "pause" or any(_related(frame.prefix, mine) for mine in self.steps):
             reason = "paused" if self.mode == "pause" else "step"
+            self._take(frame)  # taken by this hook at once: no other frame's hook takes it meanwhile
         elif (self.run_to and node is not None and node.name == self.run_to and point == "enter"
               and self.run_to_machine in (None, frame.machine.id)):
             reason = f"reached {self.run_to}"
@@ -217,10 +288,10 @@ class Debugger:
 
     async def pause(self, run: "RunContext", frame: "Frame", node: Optional["Node"], point: str, reason: str,
                     event: Optional["Event"]) -> None:
+        self._take(frame)  # a watchpoint's halt too: a pending pause is answered, not held again elsewhere
         async with self._pausing:
             if run.ending:  # the run began to end while this pause waited its turn: nothing holds it (§3.10)
                 return
-            self.mode = "run"
             record = {"frame": frame.prefix or "", "machine": frame.machine.id,
                       "state": node.name if node else None, "hook": point, "step": frame.step, "reason": reason,
                       "out": plain(event.out) if event is not None else None,
@@ -245,9 +316,15 @@ class Debugger:
     # ------------------------------------------------------------ commands
     def command(self, action: str, *, state: Optional[str] = None, machine: Optional[str] = None) -> None:
         if action == "continue":
-            self.mode = "run"
+            # the paused frame's own step goes; a step another frame is still on its way to (a parallel branch) stays
+            here = self.paused_frame.prefix if self.paused_frame is not None else None
+            self.steps = set() if here is None else {mine for mine in self.steps if not _related(here, mine)}
+            self.mode = "step" if self.steps else "run"
             self._resume.set()
         elif action == "step":
+            # the paused frame's next hook -- or one of a frame it runs, or of one it returns to; not a parallel
+            # branch's: that one's own breakpoint must not take the step away from it, nor its step this one's
+            self.steps.add(self.paused_frame.prefix if self.paused_frame is not None else "")
             self.mode = "step"
             self._resume.set()
         elif action == "pause":
@@ -257,14 +334,20 @@ class Debugger:
                 raise ValueError("run_to needs a state")
             self.run_to = state
             self.run_to_machine = machine  # a state of that machine only, not a same-named state of a submachine
-            self.mode = "run"
+            self.mode, self.steps = "run", set()
             self._resume.set()
         else:
             raise ValueError(f"unknown debugger action {action!r}")
 
+    def _take(self, frame: "Frame") -> None:
+        """``frame`` halts: that answers a pending pause, and the steps of this frame, of a frame inside it or of
+        one it runs in -- not a parallel branch's."""
+        self.steps = {mine for mine in self.steps if not _related(frame.prefix, mine)}
+        self.mode = "step" if self.steps else "run"
+
     def release(self) -> None:
         """The run is ending: a pause lets go, and no step or run_to holds it again."""
-        self.mode = "run"
+        self.mode, self.steps = "run", set()
         self.run_to = None
         self.run_to_machine = None
         self._resume.set()
