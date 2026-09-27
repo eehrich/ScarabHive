@@ -87,7 +87,8 @@ nothing acts); with `steps` its answer carries that many journal rows;
 and resume.
 
 Slash commands: `/stategraph-run <machine id> [{json params} | key=value ...]` starts a run in the
-background; `/stategraph-runs [machine id]` lists the newest runs you may see; `/stategraph-stop
+background (a `key=value` value reads as the param's declared type -- `n=3`, `flag=true` --, quotes group a
+value with spaces, a backslash stays); `/stategraph-runs [machine id]` lists the newest runs you may see; `/stategraph-stop
 <run id>` terminates one (its `finally` activities run). Every tool answer about a run says in
 `next` what it asks of you (running: wait with `get_run(wait='finish')`; waiting: `send_event`;
 paused: `continue` or `step`; interrupted: `resume`).

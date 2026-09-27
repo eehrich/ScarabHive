@@ -100,20 +100,31 @@ N3 (gedeckelte Antworten) ist hier mit erledigt.
 
 ## Phase 3: Nutzung durch Nutzer und Agent
 
-- [ ] **N1 Tool `stategraph_list_runs`** (read-only, per `sees_run` gefiltert); Slash-Befehle
+Stand: gebaut; Zwischencommit 8b016ff6b, danach die Befunde des Reviews: ein abgebrochenes `get_run` beendet
+den Lauf nicht mehr und wartet auch auf Läufe anderer Prozesse; eine Antwort nach Neustart (oder aus agent-cli,
+ein Prozess je Nachricht) setzt den Lauf fort und beantwortet seinen Warte-State; als Tool eines anderen Agents
+blockiert `ask`; Frames, die dasselbe Event nehmen, werden genannt und per `frame` gewählt; ein vom Guard
+verworfenes Event wird mit den Guards gemeldet; Daten nach dem Event-Namen bleiben ganz; `key=value` liest nach
+dem deklarierten Typ und behält Backslashes; ungültiges `on_wait` zeigt auch das Panel.
+
+- [x] **N1 Tool `stategraph_list_runs`** (read-only, per `sees_run` gefiltert); Slash-Befehle
   `/stategraph-runs`, `/stategraph-stop`.
-- [ ] **N2 Weiterwarten**: `wait`/`max_wait` an `get_run`; Antwort bei `running` sagt, wie es weitergeht;
+- [x] **N2 Weiterwarten**: `wait`/`max_wait` an `get_run`; Antwort bei `running` sagt, wie es weitergeht;
   `max_wait` gedeckelt.
 - [x] **N3 Ergebnisse gedeckelt**: `out`/ctx-Werte in Tool-Antworten gekappt, mit Längenangabe.
-- [ ] **N4 `/stategraph-run` mit Params** (`<id> {json}`).
-- [ ] **N5 `catalog` liefert echte Tools** mit Beschreibung und Parametern statt Allowlist-Mustern.
-- [ ] **N6 Fassade: Warte-State im Gespräch** — wartet der Lauf auf ein Event, beendet die Fassade die
+- [x] **N4 `/stategraph-run` mit Params** (`<id> {json}`).
+- [x] **N5 `catalog` liefert echte Tools** mit Beschreibung und Parametern statt Allowlist-Mustern.
+- [x] **N6 Fassade: Warte-State im Gespräch** — wartet der Lauf auf ein Event, beendet die Fassade die
   Runde mit der Frage (Beschreibung, erlaubte Events, Schema); die nächste Nachricht in der Session wird
   das Event. `on_wait: ask | block` (v6_story_machine bleibt `block`, writer_jobs zählt jede Antwort als
   Erfolg).
-- [ ] **N7 Freigabe als Agent in der Maschinendatei** (`agent:`-Block) statt eigener Config — erst prüfen,
+- [x] **N7 Freigabe als Agent in der Maschinendatei** (`agent:`-Block) statt eigener Config — erst prüfen,
   ob die Registry Plugin-Agenten zur Laufzeit annimmt; sonst Knopf, der den YAML-Eintrag zeigt.
-- [ ] **N8 Params in der Fassaden-Beschreibung**, `input: json` nimmt ein Objekt.
+  Geprüft: sie nimmt keine an (neue Agents beim Reload sind ausdrücklich nicht unterstützt; dafür bräuchte der
+  Kern ein `Runtime.declare(name, ToolServerConfig)` samt Materialisierung -- Entscheidung des Nutzers, anderes
+  Ressort). Gebaut ist der Ausweg: das Panel zeigt die Agents einer Maschine, ihre Probleme und einen Eintrag
+  zum Kopieren.
+- [x] **N8 Params in der Fassaden-Beschreibung**, `input: json` nimmt ein Objekt.
 
 ## Phase 4: Bedienung
 

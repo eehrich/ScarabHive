@@ -435,6 +435,7 @@ const CASES = {
     check(shown.includes('    review_agent:') && shown.includes('type: stategraph_machine') && shown.includes('machine: review')
       && shown.includes('input: json') && !shown.includes('task_param') && shown.includes('on_wait: ask')
       && shown.includes('visibility: tool'), `the entry: ${shown}`);
+    check(shown.includes('open><summary>Entry for a machine agent'), 'the entry is open where no agent runs it');
     await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'copy-agent-entry' }) });
     check((globalThis.COPIED || []).some((text) => text.includes('machine: review') && text.includes('\n')),
       `copied ${JSON.stringify(globalThis.COPIED)}`);
@@ -448,6 +449,15 @@ const CASES = {
     check(shown.includes('input: text') && shown.includes('task_param: text'), `one param: ${shown}`);
     check(shown.includes('fields_agent') && shown.includes('task_param task is no param of fields')
       && shown.includes('A private agent is reached only by its name'), 'the agent, its problem and what private means');
+    check(!shown.includes('open><summary>Entry for a machine agent'), 'the entry is folded where an agent runs it');
+  },
+
+  async a_machine_whose_one_param_is_no_text_takes_a_json_message() {
+    fieldsAnswer = { ...FIELDS, graph: { ...FIELDS.graph, params: { n: { type: 'integer', required: true } } } };
+    await boot('?machine=fields');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('input: json') && !shown.includes('task_param'), `a number is no message: ${shown}`);
+    check(shown.includes('called as a tool it waits'), 'what ask does as a tool');
   },
 
   async an_activitys_error_shows_its_traceback_input_failed_attempts_and_a_copyable_request() {

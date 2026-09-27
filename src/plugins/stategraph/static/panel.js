@@ -634,17 +634,17 @@ function agentSection(m) {
     <button type="button" class="pk-btn pk-btn--sm" data-act="copy-agent-entry">${icon('copy', { size: 'sm' })} Copy</button></details>`;
 }
 
-/** A config entry that offers the machine as an agent: one param is the message, more take a JSON object. */
+/** A config entry that offers the machine as an agent: one text param is the message, else a JSON object. */
 function agentEntry(m) {
   const g = m.graph;
   const params = Object.keys(g.params || {});
-  const text = params.length === 1;
+  const text = params.length === 1 && [undefined, 'string', 'any'].includes(g.params[params[0]].type);
   return ['plugins:', '  servers:', `    ${m.id}_agent:`, '      type: stategraph_machine', '      enabled: true',
     `      description: ${JSON.stringify(g.title || g.description || `Runs the state machine ${m.id}`)}`,
     `      machine: ${m.id}`,
     text ? `      input: text        # the message is the param ${params[0]}` : '      input: json        # the message is a JSON object of the params',
     ...(text ? [`      task_param: ${params[0]}`] : []),
-    '      on_wait: ask       # a wait state asks in the conversation; block: the request waits until the run ends',
+    '      on_wait: ask       # a wait state asks in the conversation (called as a tool it waits); block: the request waits until the run ends',
     '      metadata:',
     '        visibility: tool # a SAM may start it; both: the chat lists it too; private: only by its name'].join('\n');
 }

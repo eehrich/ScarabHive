@@ -16,6 +16,7 @@ Config (flat keys next to ``type``; ``agent_config`` forbids unknown keys)::
       task_param: task
       params: {}                 # literal params, under the ones from the message
       promote: [story_id]        # output keys copied onto the final event (writer_jobs reads them there)
+      on_wait: block             # ask: a wait state asks in the conversation (as a tool it blocks)
 
 Request ids: the run key is ``<agent>:<request id>`` (and belongs to the user who started the
 run), the run id ``<request id>_sg<n>``. So a re-dispatch of the same request attaches to its
@@ -33,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Optional, Union
 
 from agent_system.core.cancellation import get_cancellation_manager
@@ -69,15 +71,9 @@ class MachineAgent(Agent):
         promote = getattr(server_config, "promote", None)
         self.fixed_params = dict(params) if isinstance(params, dict) else {}
         self.promote = [str(key) for key in promote] if isinstance(promote, list) else []
-        problems = [
-            "no machine configured (machine: <machine id>)" if not self.machine_id else "",
-            f"input must be text or json, not {self.input_mode!r}" if self.input_mode not in ("text", "json") else "",
-            f"on_wait must be ask or block, not {self.on_wait!r}" if self.on_wait not in ("ask", "block") else "",
-            f"params must be a mapping, not {type(params).__name__}" if params is not None and not isinstance(params, dict)
-            else "",
-            f"promote must be a list of output keys, not {type(promote).__name__}"
-            if promote is not None and not isinstance(promote, list) else ""]
-        self.config_error = f"{name}: " + "; ".join(p for p in problems if p) if any(problems) else None
+        self._as_tool: set[str] = set()  # the requests of call(): another agent's tool has no conversation to ask in
+        problems = config_problems(server_config)
+        self.config_error = f"{name}: " + "; ".join(problems) if problems else None
         if self.config_error:
             logger.warning("%s", self.config_error)
 
@@ -88,12 +84,17 @@ class MachineAgent(Agent):
         caller = params.get("request_id") or params.get("_request_id")
         own = {key: value for key, value in params.items()
                if key not in ("session_id", "_session_id", "request_id", "_request_id")}
+        own["_request_id"] = f"{caller}_{short_id(6)}" if caller else short_id()
         if caller:
-            own["_request_id"] = f"{caller}_{short_id(6)}"
             user = params.get("_user_id") or get_request_user(str(caller), default="")
             if user:  # the run belongs to the caller's user (released with the caller's request tree)
                 register_request_user(own["_request_id"], str(user))
-        return await super().call(tool, own)
+        # A question would end the call, and the reply would come as a new call -- a new run: a wait blocks
+        self._as_tool.add(own["_request_id"])
+        try:
+            return await super().call(tool, own)
+        finally:
+            self._as_tool.discard(own["_request_id"])
 
     # ------------------------------------------------------------ the one method every caller uses
     async def run_events(self, task: Union[str, ChatMessage], request_id: Optional[str] = None,
@@ -167,12 +168,14 @@ class MachineAgent(Agent):
         user_id = self._user_id(session_id, request_id)
         caller = f"{self.name}:{session_id}"
         stopped = lambda: token.is_cancelled or entry["cancel"].is_set()  # noqa: E731
+        ask = self.on_wait == "ask" and request_id not in self._as_tool
         run_id = server.run_store.run_of_caller(caller)
         row = server.run_store.get_run(run_id) if run_id is not None else None
         if row is not None and not server.sees_run(user_id, row.get("user_id")):
             yield await refuse(f"{self.name}: session {session_id} holds another user's run")
             return
         asked: Optional[frozenset[tuple[str, int]]] = None  # the waits a reply of this request answered
+        since: Optional[int] = None  # the journal's last row before the reply: what the run made of it comes after
         if run_id is None or (row or {}).get("run_key") == f"{self.name}:{request_id}":
             # a create -- or the same request again, which start_run answers with its run (or a new one after a
             # transient failure): never the continue path's "no new run"
@@ -191,14 +194,10 @@ class MachineAgent(Agent):
         else:  # a continue: never a second run
             await self._load_transcript(session_id, user_id)
             state = (row or {}).get("status")
-            if state == "waiting" and self.on_wait == "ask":  # the message answers the question the run asked
-                problem = self._reply(server, row, text, user_id)
-                if problem is not None:
-                    yield {"type": "_outcome", "event": {"request_id": request_id,
-                                                         **await self._ask(server, row, text, session_id, status,
-                                                                           problem)}}
-                    return
-                asked = _waits(row)  # the wait answered: the next question is a new wait, not this one again
+            if ask and state == "waiting" and run_id not in server.run_manager.live:
+                # a wait no process here runs -- agent-cli is a process per message, or the API restarted before
+                # the sweep: resume it (refused while another process's lease holds it), then answer its wait
+                state = "interrupted"
             if state == "interrupted":
                 if stopped():
                     yield await refuse(f"{self.name}: cancelled before run {run_id} resumed", "cancelled")
@@ -208,10 +207,22 @@ class MachineAgent(Agent):
                 except Exception as exc:  # ServiceError: another process holds it, or it no longer loads
                     yield await refuse(f"{self.name}: run {run_id} cannot resume: {exc}")
                     return
+                if ask:  # the replay stands in the wait again: the message answers it, not a question anew
+                    row = await self._settled(server, run_id, stopped)
+                    state = row["status"]
             elif state in ("failed", "cancelled") or state is None:
                 yield await refuse(f"{self.name}: run {run_id} is {state or 'gone'}; a continue does not start "
                                    "a new run")
                 return
+            if ask and state == "waiting":  # the message answers the question the run asked
+                since = _last_seq(server, run_id)
+                problem = self._reply(server, row, text, user_id)
+                if problem is not None:
+                    yield {"type": "_outcome", "event": {"request_id": request_id,
+                                                         **await self._ask(server, row, text, session_id, status,
+                                                                           problem)}}
+                    return
+                asked = _waits(row)  # the wait answered: the next question is a new wait, not this one again
 
         stopping = False
         last_state = None
@@ -224,9 +235,10 @@ class MachineAgent(Agent):
                 return
             if row["status"] in ENDED and ended_here:
                 break
-            if self.on_wait == "ask" and row["status"] == "waiting" and _waits(row) != asked:
+            if ask and row["status"] == "waiting" and _waits(row) != asked:
                 yield {"type": "_outcome", "event": {"request_id": request_id,
-                                                     **await self._ask(server, row, text, session_id, status)}}
+                                                     **await self._ask(server, row, text, session_id, status,
+                                                                       since=since)}}
                 return
             if not stopping and stopped():
                 stopping = True  # an explicit cancel of this request: the run ends terminated, finally included
@@ -242,20 +254,28 @@ class MachineAgent(Agent):
                                              **await self._answer(row, text, session_id, status)}}
 
     async def _ask(self, server: Any, row: dict[str, Any], text: str, session_id: str, status: Any,
-                   problem: Optional[str] = None) -> dict[str, Any]:
-        """The turn's answer while the run waits: what for, which events it takes, and how to reply."""
+                   problem: Optional[str] = None, since: Optional[int] = None) -> dict[str, Any]:
+        """The turn's answer while the run waits: what for, which events it takes, and how to reply -- and, after
+        a reply, why it did not move the run (``since``: the journal's last row before it)."""
         waits = [frame for frame in (row.get("view") or {}).get("frames") or [] if frame.get("accepts")]
         names = sorted({name for frame in waits for name in frame["accepts"]})
         events, states = _declared(row, [(frame.get("machine"), frame.get("state")) for frame in waits])
-        lines = [f"Not sent: {problem}." if problem else "",
+        lines = [f"Not sent: {problem}." if problem else "", *_discarded(server, row["id"], since),
                  f"{self.machine_id} waits for an answer in {', '.join(f'{name!r}' for name, _ in states) or 'a wait state'}."]
         lines += [f"{name}: {description}" for name, description in states if description]
         lines.append("It takes:")
+        shared = False
         for name in names:
             spec = events.get(name) or {}
             data = f" (data: {json.dumps(spec['data'], ensure_ascii=False)[:300]})" if spec.get("data") else ""
-            lines.append(f"- {name}{': ' + spec['description'] if spec.get('description') else ''}{data}")
-        lines.append('Reply with the event\'s name, or with JSON {"event": "<name>", "data": ...} to send data along.')
+            frames = [f"{frame.get('prefix', '')!r} in {frame.get('state')!r}" for frame in waits
+                      if name in frame["accepts"]]
+            shared = shared or len(frames) > 1
+            where = f" (in frames {', '.join(frames)})" if len(frames) > 1 else ""
+            lines.append(f"- {name}{': ' + spec['description'] if spec.get('description') else ''}{data}{where}")
+        lines.append('Reply with the event\'s name, or with JSON {"event": "<name>", "data": ...} to send data along'
+                     + ('; name the frame of an event several frames take: {"event": ..., "frame": "<frame>"}.'
+                        if shared else '.'))
         question = "\n".join(line for line in lines if line)
         self._remember(session_id, text, question)
         await status.end(f"{self.machine_id} {row['id']}: waits for {', '.join(names)}"[:140])
@@ -269,9 +289,9 @@ class MachineAgent(Agent):
         found = _event_of(text, accepts)
         if isinstance(found, str):
             return found
-        name, data = found
+        name, data, frame = found
         try:
-            answer = server.service.send_event(row["id"], name, data, None, user_id=user_id)
+            answer = server.service.send_event(row["id"], name, data, frame, user_id=user_id)
         except Exception as exc:  # ServiceError: the run is gone, another user's, ...
             return str(exc)
         return None if answer.get("accepted") else str(answer.get("reason") or "the run did not take it")
@@ -320,7 +340,7 @@ class MachineAgent(Agent):
                                                          run_key=run_key, run_id=f"{request_id}_sg{short_id(6)}",
                                                          caller_session=session_id)
             except Exception as exc:  # ServiceError (unknown machine, invalid params, config, key of another user)
-                takes = self._takes(server) if "param" in str(exc) else ""
+                takes = self._takes(server) if getattr(exc, "status", None) == 422 else ""  # the request's fault
                 raise _Refused(f"the machine {self.machine_id} did not start: {exc}{takes}") from exc
             if started.get("attached") is not False:
                 return str(started["run_id"])
@@ -328,6 +348,14 @@ class MachineAgent(Agent):
                 raise _Refused(f"run {started['run_id']} of this request runs in {started.get('owner')}; "
                                "send the request there or again later")
             await asyncio.sleep(5.0)
+
+    @staticmethod
+    async def _settled(server: Any, run_id: str, stopped: Any) -> dict[str, Any]:
+        """The run's row once it no longer runs (it waits, pauses or ended) -- or when the request stops."""
+        while True:
+            row = await server.run_manager.wait(run_id, timeout=1.0)
+            if row["status"] != "running" or stopped():
+                return row
 
     async def _tick(self, server: Any, run_id: str) -> tuple[Optional[dict[str, Any]], bool]:
         """At most a second of waiting for the run; then its row, and whether it really ended: a run that
@@ -411,25 +439,49 @@ class _Refused(Exception):
     """The request cannot run: its message is the error event's."""
 
 
+def config_problems(server_config: Any) -> list[str]:
+    """What in a machine agent's own keys keeps it from running: the answer of its every request, and what the
+    State Graph panel and the start's log say about it."""
+    input_mode = str(getattr(server_config, "input", None) or "text")
+    on_wait = str(getattr(server_config, "on_wait", None) or "block")
+    params = getattr(server_config, "params", None)
+    promote = getattr(server_config, "promote", None)
+    problems = [
+        "no machine configured (machine: <machine id>)" if not getattr(server_config, "machine", None) else "",
+        f"input must be text or json, not {input_mode!r}" if input_mode not in ("text", "json") else "",
+        f"on_wait must be ask or block, not {on_wait!r}" if on_wait not in ("ask", "block") else "",
+        f"params must be a mapping, not {type(params).__name__}" if params is not None and not isinstance(params, dict)
+        else "",
+        f"promote must be a list of output keys, not {type(promote).__name__}"
+        if promote is not None and not isinstance(promote, list) else ""]
+    return [problem for problem in problems if problem]
+
+
 def _waits(row: dict[str, Any]) -> frozenset[tuple[str, int]]:
     """The waits a run stands in (frame, step): a reply answers these; a new one is another question."""
     return frozenset((frame.get("prefix", ""), int(frame.get("step") or 0))
                      for frame in (row.get("view") or {}).get("frames") or [] if frame.get("accepts"))
 
 
-def _event_of(text: str, accepts: list[str]) -> Union[tuple[str, Any], str]:
-    """``(name, data)`` a reply sends -- ``{"event": name, "data": ...}``, or the event's name with the data after
-    it -- or why it names none the run takes now."""
+#: A reply's event name, then its data: ``reject: {...}``, ``reject {...}``, the data on the next line.
+_REPLY = re.compile(r"^(\S+?)(?::\s*|\s+|$)(.*)$", re.S)
+
+
+def _event_of(text: str, accepts: list[str]) -> Union[tuple[str, Any, Optional[str]], str]:
+    """``(name, data, frame)`` a reply sends -- ``{"event": name, "data": ..., "frame": ...}``, or the event's name
+    with the data after it -- or why it names none the run takes now."""
     text = text.strip()
     try:
         parsed = json.loads(text)
     except ValueError:
         parsed = None
+    frame = None
     if isinstance(parsed, dict) and isinstance(parsed.get("event"), str):
         name, data = parsed["event"], parsed.get("data")
+        frame = parsed["frame"] if isinstance(parsed.get("frame"), str) else None
     else:
-        head, _, rest = text.replace(":", " ", 1).partition(" ")
-        name, rest = head.strip(), rest.strip()
+        found = _REPLY.match(text)
+        name, rest = (found.group(1), found.group(2).strip()) if found else ("", "")
         try:
             data = json.loads(rest) if rest else None
         except ValueError:
@@ -437,7 +489,28 @@ def _event_of(text: str, accepts: list[str]) -> Union[tuple[str, Any], str]:
     match = next((event for event in accepts if event.lower() == name.lower()), None)
     if match is None:
         return f"{name[:60]!r} is none of the events it takes now ({', '.join(accepts) or 'none'})"
-    return match, data
+    return match, data, frame
+
+
+def _last_seq(server: Any, run_id: str) -> int:
+    rows = server.run_store.tail(run_id, 1)
+    return int(rows[-1]["seq"]) if rows else 0
+
+
+def _discarded(server: Any, run_id: str, since: Optional[int]) -> list[str]:
+    """Why a reply did not move the run: the events a dispatch discarded after ``since``, with its guards."""
+    if since is None:
+        return []
+    lines = []
+    for row in server.run_store.page(run_id, after=since, kinds=["trace"]):
+        data = row.get("data") or {}
+        if row.get("status") != "event_discarded":
+            continue
+        guards = "; ".join(f"{guard.get('guard')} -> {guard['error'] if 'error' in guard else guard.get('result')}"
+                           for guard in data.get("guards") or [])
+        lines.append(f"Not taken: {data.get('event')!r} in {row.get('state')!r} -- no transition took it"
+                     + (f" (guards: {guards})" if guards else "") + ".")
+    return lines
 
 
 def _declared(row: dict[str, Any], waits: list[tuple[Any, Any]]) -> tuple[dict[str, dict[str, Any]],
@@ -449,7 +522,7 @@ def _declared(row: dict[str, Any], waits: list[tuple[Any, Any]]) -> tuple[dict[s
     events: dict[str, dict[str, Any]] = {}
     specs: dict[str, Any] = {}
     try:
-        tree = load_snapshot(row.get("definition") or {})
+        tree = load_snapshot(row.get("definition") or {}, execute_python=False)  # descriptions only
         for loaded in tree.files.values():
             spec = loaded.spec
             if spec is None:

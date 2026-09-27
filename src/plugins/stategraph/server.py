@@ -13,6 +13,7 @@ import fnmatch
 import json
 import logging
 import math
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -338,7 +339,7 @@ class StateGraphServer(SchemaBasedToolServer):
         async def body() -> dict[str, Any]:
             run_params = _object(params, "params") or {}
             if not params.get("machine_id") and params.get("request"):
-                machine_id, given = _request(str(params["request"]))
+                machine_id, given = _request(str(params["request"]), self._param_types)
                 run_params = {**given, **run_params}
             else:
                 machine_id = _need(params, "machine_id")
@@ -506,10 +507,21 @@ class StateGraphServer(SchemaBasedToolServer):
                            "problems": self._facade_problems(config)})
         return agents
 
+    def _param_types(self, machine_id: str) -> dict[str, str]:
+        """{param: declared type} of a machine; nothing when it does not load (start_run says why)."""
+        try:
+            tree = self.machines.load(machine_id)
+            return {name: spec.type for name, spec in tree.files[tree.root].spec.params.items()}
+        except Exception:
+            return {}
+
     def _facade_problems(self, config: Any) -> list[str]:
+        from plugins.stategraph.facade import config_problems
+
+        own = config_problems(config)  # the facade answers every request with these
+        if own:
+            return own
         machine_id = str(getattr(config, "machine", None) or "")
-        if not machine_id:
-            return ["no machine configured (machine: <machine id>)"]
         if self.machines.find(machine_id) is None:
             return [f"no machine {machine_id!r} in {', '.join(self.machine_dirs)}"]
         tree = self.service._validate(self.machines.load(machine_id))
@@ -553,8 +565,9 @@ def _need(params: dict[str, Any], key: str) -> str:
     return str(value)
 
 
-def _request(text: str) -> tuple[str, dict[str, Any]]:
-    """``<machine id> [params]`` (the slash command's line): params as a JSON object or as ``key=value`` words."""
+def _request(text: str, types: Any = lambda machine_id: {}) -> tuple[str, dict[str, Any]]:
+    """``<machine id> [params]`` (the slash command's line): params as a JSON object or as ``key=value`` words
+    (shell-quoted; ``types(machine_id)`` -- {param: declared type} -- says which values read as JSON)."""
     machine_id, _, rest = text.strip().partition(" ")
     rest = rest.strip()
     if not machine_id:
@@ -569,13 +582,30 @@ def _request(text: str) -> tuple[str, dict[str, Any]]:
         if not isinstance(given, dict):
             raise ServiceError(422, "the params after the machine id must be a JSON object")
         return machine_id, given
+    lexer = shlex.shlex(rest, posix=True)
+    lexer.whitespace_split, lexer.escape = True, ""  # quotes group words; a backslash stays (C:\data\x.txt)
+    try:
+        words = list(lexer)
+    except ValueError as exc:
+        raise ServiceError(422, f"params: {exc} (quote a value with spaces: key='two words')") from None
+    declared = types(machine_id)
     given = {}
-    for word in rest.split():
+    for word in words:
         key, sep, value = word.partition("=")
         if not sep or not key:
             raise ServiceError(422, f"params: key=value words or a JSON object, not {word!r}")
-        given[key] = value
+        given[key] = _word_value(value, declared.get(key))
     return machine_id, given
+
+
+def _word_value(value: str, declared: Optional[str]) -> Any:
+    """A key=value word is text; a param declared as another type reads it as JSON (n=3, flag=true, ids=[1,2])."""
+    if declared in (None, "string", "any"):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value  # the run's param check says what is wrong
 
 
 def _object(params: dict[str, Any], key: str) -> Optional[dict[str, Any]]:

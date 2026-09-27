@@ -990,7 +990,7 @@ src/plugins/stategraph/
 is an admin or auth is off (§8.3).
 
 Slash commands: `/stategraph-run <id> [{json} | key=value ...]` (`run_machine` with `request`, `wait:
-background`), `/stategraph-runs [machine id]` (`list_runs`), `/stategraph-stop <run id>` (`control_run`,
+background`; a `key=value` value reads as the param's declared type, quotes group words), `/stategraph-runs [machine id]` (`list_runs`), `/stategraph-stop <run id>` (`control_run`,
 `action: terminate`). A run's tool answer carries `next`: what its status asks of the caller.
 
 ### 8.2 REST (`/plugins/stategraph/…`, JSON)
@@ -1133,7 +1133,9 @@ covered by tests.
    - A `continue` answers the output again, resumes an interrupted run, and never starts a second one.
    - `on_wait: ask`: a run that waits for an event ends the turn with a question (the waiting state, the
      events it takes, how to reply); the next message in the session is sent as the event -- its name, or
-     `{"event", "data"}` -- and the run goes on to its end or next wait. `block` (the default) waits for the
+     `{"event", "data", "frame"}` -- and the run goes on to its end or next wait. A wait no process holds
+     (a restart, agent-cli) is resumed first and answered there; a reply a guard discards is asked again with
+     the guards; as another agent's tool (`call`) there is no conversation, and a wait blocks. `block` (the default) waits for the
      end, as writer_jobs needs. A request that does not fit the params is told what the machine takes.
    - The same request id again from a new session attaches, resumes, or answers the ended run's
      outcome again: its output, its failure, its cancel. Only a failure that is transient
