@@ -548,6 +548,13 @@ function drawInspector() {
       </div>
       ${problemList(pinned?.problems)}
     </div>
+    <div class="sg-section">
+      <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${shorten(live.id, 12)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
+      ${hooks.length ? html`<div class="pk-row sg-checks">
+        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${at}</label>`)}
+      </div>` : ''}
+      ${why ? html`<p class="pk-help">${why}</p>` : ''}
+    </div>
     ${state.type === 'state' && !state.composite ? html`<div class="sg-section">
       <h4 class="sg-section-title">Activity</h4>
       <form data-form="activity" class="pk-stack">
@@ -569,13 +576,6 @@ function drawInspector() {
           text: state.yaml?.[name], locked: state.locked?.includes(name), prefix: 'sf' }))}</div>
         <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${m.writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
       </form>
-    </div>
-    <div class="sg-section">
-      <h4 class="sg-section-title">Breakpoints ${live ? html`<span class="pk-badge pk-badge--info">run ${shorten(live.id, 12)}</span>` : html`<span class="pk-muted">(next run)</span>`}</h4>
-      ${hooks.length ? html`<div class="pk-row sg-checks">
-        ${hooks.map((at) => html`<label class="pk-check"><input type="checkbox" data-breakpoint="${at}" ${points.has(at) ? 'checked' : ''}> ${at}</label>`)}
-      </div>` : ''}
-      ${why ? html`<p class="pk-help">${why}</p>` : ''}
     </div>
     <div class="sg-section">
       <h4 class="sg-section-title">Transitions (tried in this order)</h4>
