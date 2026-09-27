@@ -450,6 +450,42 @@
     return opened === true && told;
   });
 
+  await check('a panel opens in a browser tab of its own, docked or in a window, pinned to the chat\'s session where it shows one', async () => {
+    // A tab has no chat to follow: the probe (it has a session entry) gets s-1 pinned, settings nothing.
+    const opened = [];
+    const open = win().open;
+    win().open = (...args) => { opened.push(args); return null; };
+    try {
+      const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
+      tab('Probe').querySelector('[data-act="tab"]').click();
+      tab('Settings').querySelector('[data-act="tab"]').click();
+      tab('Probe').querySelector('[data-act="float"]').click();
+      const window_ = await until('the window', () => $('#floatingLayer .app-window'));
+      window_.querySelector('[data-act="tab"]').click();
+      window_.querySelector('[data-act="dock"]').click();
+      await until('the tab again', () => !$('#floatingLayer .app-window') && $$('.dock-tab').length === 2);
+      await until('the probe loaded in the dock again', () => probe()?.pk);
+      // pinned to another session already (a link sent it there): it stays pinned there
+      probe().pk.navigate('/tests/ui/shell_probe_panel.html?session_id=s-2');
+      await sleep(200);
+      tab('Probe').querySelector('[data-act="tab"]').click();
+      probe().pk.navigate();  // back to the path the probe shows
+      await sleep(200);
+      const url = (n) => new URL(opened[n][0], location.origin);
+      need(opened.length === 4, `${opened.length} tabs opened`);
+      need(url(3).searchParams.get('session_id') === 's-2', `the pinned probe went to ${opened[3][0]}`);
+      need(opened.every(([, target, features]) => target === '_blank' && features === 'noopener'), 'not a new tab of its own');
+      need(url(0).pathname === '/tests/ui/shell_probe_panel.html' && url(0).searchParams.get('session_id') === 's-1',
+        `the docked probe went to ${opened[0][0]}`);
+      need(url(1).pathname.startsWith('/ui/panels/settings') && !url(1).searchParams.has('session_id'),
+        `settings went to ${opened[1][0]}`);
+      return need(url(2).pathname === url(0).pathname && url(2).searchParams.get('session_id') === 's-1',
+        `the probe's window went to ${opened[2][0]}`);
+    } finally {
+      win().open = open;
+    }
+  });
+
   await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
     sessionButton('s-1', 'expand').click();
     await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));

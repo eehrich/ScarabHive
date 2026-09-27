@@ -1607,6 +1607,7 @@ EXPECTED = [
     'a window gets its size back once the browser window grows again',
     'loading a session names it in the header and tells the panels',
     'a panel opens a session in the chat, a sub-session too',
+    "a panel opens in a browser tab of its own, docked or in a window, pinned to the chat's session where it shows one",
     'an open branch of the session tree stays open and current when the list refreshes',
     'a session started from the chat is named once the server has named it',
     'the last session clicked wins, not the last answer',

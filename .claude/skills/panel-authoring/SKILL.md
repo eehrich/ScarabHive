@@ -21,6 +21,10 @@ offen; ein zweites Öffnen holt es nach vorn. Geöffnet wird es über den
 **Katalog** (`GET /api/ui/catalog`): Panel-Starter, Befehlspalette und die
 Einstiege im Chat lesen alle dieselbe Liste. Direkt im Browser-Tab geöffnet
 funktioniert dieselbe Seite auch — dann zeigt sie Dialoge und Toasts selbst.
+Dorthin bringt sie auch der Knopf „Open in a new browser tab“ an Tab und
+Fensterleiste. Ein eigener Tab hat keinen Chat, dem er folgen könnte: ein Panel
+mit `session`-Kontext bekommt dabei die Session des Chats als `?session_id=`
+angeheftet und zeigt so dasselbe wie im Frame.
 
 Das iframe ist Stil-, Absturz- und Lebenszyklus-Grenze, **keine**
 Sicherheitsgrenze: Panels laufen mit `allow-same-origin` und dem Cookie der

@@ -120,6 +120,21 @@ export class Workspace {
     return item.path.startsWith(base) ? item.path : base.replace(/\/?$/, '/') + item.path.replace(/^\//, '');
   }
 
+  /**
+   * The panel's page in a browser tab of its own, as it stands. A tab has no chat to follow: a panel that shows
+   * the chat's session (it has a session entry) gets that session pinned the kit's way, ?session_id=.
+   */
+  openInTab(key) {
+    const item = this.items.get(key);
+    if (!item) return;
+    const url = new URL(this.url(item), window.location.origin);
+    const chatSession = this.session()?.id;
+    if (chatSession && this.panel(item.panelId).contexts?.session && !url.searchParams.has('session_id')) {
+      url.searchParams.set('session_id', chatSession);
+    }
+    window.open(url.href, '_blank', 'noopener');
+  }
+
   createFrame(item) {
     const frame = document.createElement('iframe');
     frame.className = 'panel-frame';
@@ -230,6 +245,7 @@ export class Workspace {
         ${icon(this.panel(item.panelId).icon, { size: 'sm' })}
         <span class="dock-tab-title">${item.title}</span>
         <span class="dock-tab-actions">
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" data-key="${item.key}:tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
           <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="float" data-key="${item.key}:float" title="Detach into a window">${icon('picture-in-picture-2', { size: 'sm' })}</button>
           <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" data-key="${item.key}:close" title="Close">${icon('x', { size: 'sm' })}</button>
         </span>
@@ -245,6 +261,7 @@ export class Workspace {
       const act = event.target.closest('[data-act]')?.dataset.act;
       if (act === 'close') this.close(tab.dataset.key);
       else if (act === 'float') this.move(tab.dataset.key, 'float');
+      else if (act === 'tab') this.openInTab(tab.dataset.key);
       else this.focus(tab.dataset.key);
     });
     this.tabBar.addEventListener('keydown', (event) => {
@@ -351,6 +368,7 @@ export class Workspace {
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-back" data-act="aside" title="Back to the chat">${icon('arrow-left', { size: 'sm' })}</button>
         ${icon(panel.icon, { size: 'sm' })}
         <span class="app-window-title pk-truncate"></span>
+        <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="dock" title="Dock beside the chat">${icon('panel-right', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" title="Close">${icon('x', { size: 'sm' })}</button>
       </header>
@@ -366,6 +384,7 @@ export class Workspace {
     element.querySelector('[data-act="aside"]').addEventListener('click', () => this.stepAside());
     element.querySelector('[data-act="close"]').addEventListener('click', () => this.close(item.key));
     element.querySelector('[data-act="dock"]').addEventListener('click', () => this.move(item.key, 'dock'));
+    element.querySelector('[data-act="tab"]').addEventListener('click', () => this.openInTab(item.key));
     this.dragging(element.querySelector('.app-window-bar'), item, (rect, dx, dy) => ({ ...rect, x: rect.x + dx, y: rect.y + dy }));
     this.dragging(element.querySelector('.app-window-resize'), item,
       (rect, dx, dy) => ({ ...rect, w: Math.max(MIN_WIDTH, rect.w + dx), h: Math.max(MIN_HEIGHT, rect.h + dy) }));
