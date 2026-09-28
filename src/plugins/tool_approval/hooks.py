@@ -198,8 +198,13 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
         # An agent that says off keeps the instance's deny rules (and anything it
         # inherits); only its own rules and its questions are off.
         own_deny = settings.instance_deny if settings.mode == "off" else settings.deny
+        # A person's "allow for this session" is kept in the session the person works in: an agent called
+        # as a tool runs on a sub-session of its own below its caller's (Agent.tool_session_id), and its
+        # grants are its caller's session's, as they were when it ran on that session itself.
+        from agent_system.servers.agent.components.session_tracking import callers_session
+
         policy = Policy.own(settings.mode, own_deny, settings.allow, settings.unattended,
-                            session=(context.user_id, context.session_id or "")).under(
+                            session=(context.user_id, callers_session(context.session_id or ""))).under(
             self.policies.inherited(context.request_id))
         # Before anything else: a spawn this call makes starts its sub-run only
         # after the hook, and the sub-run looks its inheritance up here. (A

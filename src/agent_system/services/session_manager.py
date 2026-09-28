@@ -445,6 +445,16 @@ class SessionManager:
             return False
         return True
 
+    def lift_tombstone(self, session_id: str) -> None:
+        """Let this manager write *session_id* again after it deleted it (is_deleted).
+
+        For an id that comes back on purpose -- the session of an agent called as a tool has the same id for every
+        call in one caller session (Agent.tool_session_id), and tombstoned, it was never stored again in this
+        process (Agent._open_tool_session makes it afresh) -- by a caller that knows no run of this process still
+        has it: the tombstone is what keeps such a run's late save from bringing it back.
+        """
+        self._deleted.discard(session_id)
+
     async def _write_session_file(self, path: Path, session_data: Dict[str, Any]) -> None:
         """Write a session file -- never one of a deleted session (see ``is_deleted``).
 
@@ -807,6 +817,8 @@ class SessionManager:
         llm_profile: str = "default",
         session_id: Optional[str] = None,
         parent_session_id: Optional[str] = None,
+        depth: Optional[int] = None,
+        depth_budget: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Create a new session.
 
@@ -821,6 +833,9 @@ class SessionManager:
                 immediately so the index entry lands in
                 ``.subs.<parent>.index.json`` on first write — no migration
                 cleanup, no main-index contention from parallel sub-spawns.
+            depth, depth_budget: the session's place in a sub-agent tree (see
+                the sub-agent manager), written with the record -- not by a
+                second save that can fail on its own.
 
         Returns:
             Session data dictionary
@@ -883,6 +898,10 @@ class SessionManager:
                     "session_id": safe_parent,
                     "created_at": now,
                 }
+            if depth is not None:
+                session_data["depth"] = depth
+            if depth_budget is not None:
+                session_data["depth_budget"] = depth_budget
 
             await self._write_session_file(path, session_data)
             
@@ -1174,6 +1193,37 @@ class SessionManager:
             self._saw(session_id, self._cache[session_id][1])  # written here: seen
             
             logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
+
+    async def set_session_place(self, user_id: str, session_id: str, *, depth: Optional[int] = None,
+                                depth_budget: Optional[int] = None) -> None:
+        """Set a session's place in a sub-agent tree (``depth``, ``depth_budget``), atomically as
+        update_session_metadata changes its metadata: read, changed and written back under the session's lock, so a
+        write that landed since a caller loaded the record is not written over -- as it was by a caller that set
+        the two on its copy and saved the whole record (save_session merges only the metadata on disk). The index
+        row carries ``depth`` too.
+
+        Raises:
+            SessionNotFoundError: If session doesn't exist
+            SessionPermissionError: If user doesn't own the session
+        """
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
+            path = self._get_session_path(user_id, session_id)
+            if not path.exists():
+                raise SessionNotFoundError(f"Session {session_id} not found")
+            session_data = await self._read_session_file_async(path)
+            if session_data["user_id"] != user_id:
+                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+            if depth is not None:
+                session_data["depth"] = depth
+            if depth_budget is not None:
+                session_data["depth_budget"] = depth_budget
+            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await self._write_session_file(path, session_data)
+            self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
+            async with self._lock:
+                await self._update_index_entry(user_id, session_id, self._index_metadata(session_data))
 
     async def drop_session_metadata_entry(self, user_id: str, session_id: str, key: str, entry: str) -> bool:
         """Remove one entry of a dict in a session's metadata (``metadata[key][entry]``), atomically as

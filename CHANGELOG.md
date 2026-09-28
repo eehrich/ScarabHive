@@ -101,6 +101,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent called as a tool (`Agent.call`, `<name>_execute_task`) no longer runs
+  on its caller's session: it saved its own transcript into the caller's session
+  file (creating a new one with its own agent name and a title from the
+  sub-task, or replacing a stored one's history until the caller's next save),
+  and kept every caller session in memory for the life of the process,
+  throwaway ones included. It now runs on a session of its own per caller session
+  and agent -- it still remembers its earlier calls there -- saved under the
+  call's user below the caller's session (hidden from the session list, like a
+  sub-agent's), refused to another user, and gone from memory with the caller's
+  session; a throwaway caller's is never saved (if the agent starts sub-agents,
+  the sub-agent manager files it as the listed "Coordinator Session" it makes
+  for any parent it does not find). A person's "allow for this session"
+  (tool_approval) in the caller's session still covers it, and
+  `/pending?session_id=<session>` lists the questions asked at every level
+  below. Sub-agents it starts hang below its session, not the caller's: the
+  caller no longer sees them in its injected sub-agent list or through `poll`,
+  and their wake goes to nobody. Its session carries the caller's sub-agent
+  nesting budget from its first write; a call whose session cannot be stored
+  with it does not run (`error_type: "tool_session_unavailable"`). One the
+  person deleted is forgotten: the next call starts it afresh (it was never
+  stored again until a restart). A second call while the first still runs on
+  the session is answered as an error (`session_locked`), not as a "success"
+  with the refusal inside. A call to an agent that runs above it already --
+  itself, directly or through other agents called as tools -- is refused with
+  `error_type: "recursive_call"` (on the caller's session it was refused at
+  that session's lock); across a SAM or stategraph hop the sub-agent nesting
+  budget bounds it (a stategraph agent activity only where a SAM above set
+  one, as before). The ids stay short enough for a file name at any depth. An
+  openai_api turn that is put back puts these sessions back with the
+  conversation where only its own runs wrote them: a run of another request
+  -- of this process or another, an agent-cli run too -- leaves one as it is
+  (every run names itself in the session), and so does an append made in this
+  process. Writes that name no run are not told apart and are put back with
+  the rest: an /undo, a rename or a variables write, and an append made in
+  another process. A run of another process still going on the session when
+  the turn is put back writes it again afterwards.
 - `agent-api` loads the config `AGENT_CONFIG_PATH` names, as `agent-cli` and
   `agent-run` do; `/health` reads the config the server was started with.
 - A tool method or cleanup callback that returns an awaitable without being a

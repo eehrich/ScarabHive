@@ -31,7 +31,7 @@ from agent_system.auth.models import UserCreate, UserRole
 from agent_system.config.models import AgentConfig, AgentSystemConfig, AuthConfig, ToolConfig, ToolServerConfig
 from agent_system.core.request_context import register_request_user, release_request_user_tree
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-from agent_system.servers.agent.server import Agent
+from agent_system.servers.agent.server import Agent, tool_session_id
 from agent_system.tools.base import ToolServerRegistry
 from test_agent_finish_reason_transport import _llm_system
 
@@ -222,7 +222,8 @@ async def test_a_call_without_a_request_id_is_its_injected_users_and_the_next_ca
     second = json.loads(complete["messages"][0].content)
 
     assert (first["status"], second["status"]) == ("success", "success"), (first, second)
-    assert agent._session_tracker.get_session_metadata("S")["user_id"] == "alice"
+    # called as a tool, it runs on a session of its own below the caller's (tool_session_id)
+    assert agent._session_tracker.get_session_metadata(tool_session_id("S", "b"))["user_id"] == "alice"
     assert [params["_user_id"] for params in tool_params] == ["alice", "alice"], tool_params
     assert left_behind == set(), f"the call's own request ids outlived it: {left_behind}"
 
@@ -244,7 +245,7 @@ async def test_a_basic_agents_task_without_a_request_id_is_its_injected_users(st
     left_behind = set(request_user_map) - before
 
     assert answer["status"] == "success", answer
-    assert agent._session_tracker.get_session_metadata("S")["user_id"] == "alice"
+    assert agent._session_tracker.get_session_metadata(tool_session_id("S", "bb"))["user_id"] == "alice"
     assert left_behind == set(), f"the task's own request ids outlived it: {left_behind}"
 
 
@@ -266,7 +267,7 @@ async def test_an_ungated_basic_agent_runs_for_the_registered_owner_not_an_injec
                                                   "_user_id": "root"})
 
     assert answer["status"] == "success", answer
-    assert agent._session_tracker.get_session_metadata("S")["user_id"] == "bob"
+    assert agent._session_tracker.get_session_metadata(tool_session_id("S", "bb"))["user_id"] == "bob"
     assert [params["_user_id"] for params in tool_params] == ["bob"], tool_params
 
 
@@ -307,5 +308,5 @@ async def test_a_preloaded_tool_runs_for_the_runs_user_and_the_models_next_call_
     second = json.loads(complete["messages"][0].content)
 
     assert (preloaded["status"], second["status"]) == ("success", "success"), (preloaded, second)
-    assert target._session_tracker.get_session_metadata("S")["user_id"] == "cli_user"
+    assert target._session_tracker.get_session_metadata(tool_session_id("S", "b"))["user_id"] == "cli_user"
     assert [params["_user_id"] for params in tool_params] == ["cli_user", "cli_user"], tool_params

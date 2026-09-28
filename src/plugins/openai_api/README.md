@@ -147,8 +147,21 @@ the `openai` SDK raises its `AuthenticationError` for it all the same.
   out (also after the agent finished), and a save or an id that could not be
   written (the client gets an error). A new conversation is deleted then; a
   continued one is only ever restored, never deleted — its messages and its
-  variables (what the turn's tools set). The sub-agents a failed turn started
-  stay, as they do in the web UI.
+  variables (what the turn's tools set). The sessions of the agents the turn
+  called as tools (each runs on one of its own, below the conversation) are put
+  back with it: one the turn made goes, one it wrote gets its record back as it
+  was when the turn opened -- where only the turn's runs wrote it. One that
+  another request ran on meanwhile (the person in the web UI, another agent on
+  the conversation), or that a message was appended to, stays as it is, as the
+  conversation keeps what was appended to it; so does one a run of this
+  process still has, and everything below it. A run is told apart in any
+  process -- every run names itself in the session, an `agent-cli` run too --
+  an append only in this one. Writes that name no run are put back with the
+  turn's own: an /undo, a rename or a variables write, and an append made in
+  another process (a second worker, `agent-cli`). A run of another process
+  still going on such a session when the turn is put back writes it again
+  afterwards. The sub-agents a failed turn started stay, as they do in the web
+  UI.
 - A client that disconnects stops the agent — a stream hears it at once, a JSON
   answer asks the connection every second, and once more before its turn is
   kept. The run's request is cancelled (its token) before the task, so an agent

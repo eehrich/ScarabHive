@@ -209,9 +209,13 @@ async def test_an_agent_called_as_a_tool_is_refused_with_a_tool_error(store):
 
 async def test_an_agent_called_as_a_tool_in_another_users_session_says_so(store, requests):
     """Agent.call asks what run_events asks, and answers with the same error_type: the calling model -- and
-    the SAM, the openai_api -- tell a refusal from a run that failed by it."""
+    the SAM, the openai_api -- tell a refusal from a run that failed by it. Called as a tool it runs on a
+    session of its own below the caller's (tool_session_id); that one is held for bob."""
+    from agent_system.servers.agent.server import tool_session_id
+
     agent, seen = _agent(min_role=None)
-    agent._session_tracker.set_session_metadata("s-bob", {"user_id": "bob", "agent_name": agent.name})
+    agent._session_tracker.set_session_metadata(tool_session_id("s-bob", agent.name),
+                                                {"user_id": "bob", "agent_name": agent.name})
     rid = requests("rq-root", "root")
 
     answer = await agent.call(agent.name, {"task": "do it", "_request_id": rid, "_session_id": "s-bob"})

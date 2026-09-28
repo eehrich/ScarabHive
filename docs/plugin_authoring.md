@@ -1424,12 +1424,25 @@ class MyAgent(SchemaBasedAgent):
         context = params.get("context", "")
         prompt = f"{task}\n\nContext: {context}" if context else task
 
+        # Never on the caller's session: on one of this agent's own below it
+        # (tool_session). Refused -- nothing ran -- when it is another user's
+        # ("foreign_session"), when this agent runs above the call already
+        # ("recursive_call"), or when it cannot be stored with the caller's
+        # sub-agent budget ("tool_session_unavailable"). A session that cannot be
+        # read at all raises, as any other failure of the call.
+        session_id, refusal = await self.tool_session(params)
+        if refusal:
+            return {"status": "error", **refusal}  # "error" and "error_type"
+
         # Runs the agent loop (LLM + allowed tools) and returns the final result
         result = await collect_final_result(
             self, prompt,
             request_id=params.get("request_id") or params.get("_request_id"),
-            session_id=params.get("_session_id"),
+            session_id=session_id,
         )
+        if result.get("refused"):  # refused at its start: another call runs on the session
+            return {"status": "error", "error": (result.get("errors") or ["refused"])[-1],
+                    "error_type": result["refused"]}
         return {"status": "success", "result": result}
 
     # Tool "{name}_list_available_tools" -> method list_available_tools
@@ -1512,6 +1525,24 @@ An agent instance is a server entry (see the example under
 - **`metadata.visibility`** — `private` (default: neither tool nor UI), `tool`
   or `both` (callable as a tool by other agents), `ui` or `both` (listed in the UI).
   Display only: it hides an agent, it does not stop anyone who knows its name.
+  Called as a tool, an agent runs on a session of its own per caller session
+  (`Agent.tool_session`: `<caller session>--<agent>-<digest>`), not on the caller's:
+  it remembers its earlier calls in that caller session, is saved under the call's
+  user below the caller's session (hidden from the session list, like a sub-agent's),
+  and a throwaway caller's is never saved and leaves memory with the caller's session
+  (if the agent starts sub-agents, the sub-agent manager files it as the listed
+  "Coordinator Session" it makes for any parent it does not find). A call to an
+  agent that runs above it already -- itself, directly or through other agents called
+  as tools -- is refused with `error_type: "recursive_call"`; across a SAM or
+  stategraph hop the sub-agent nesting budget bounds it instead (a stategraph agent
+  activity only where a SAM above set one). A call whose session cannot be stored
+  with the caller's sub-agent budget is refused (`"tool_session_unavailable"`). A
+  session the person deleted (`DELETE /sessions/<id>`) is forgotten: the next call
+  starts it afresh. An `execute_task` of your own gets that session, or the
+  refusal, from `await self.tool_session(params)` (see the example above); a run
+  refused at its start -- a second call while the first still runs on the session
+  -- comes back from `collect_final_result` with `refused` set to its error_type,
+  and is answered as an error with it, as `Agent.call` does.
 - **`metadata.min_role`** — `guest`, `user` or `admin`: the lowest account role that
   may *run* the agent, on every path (HTTP, SAM, agent as a tool, stategraph, wakes,
   each of its `<name>_*` tools); absent = no gate. Give `admin` to every agent that

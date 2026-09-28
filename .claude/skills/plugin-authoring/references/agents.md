@@ -39,6 +39,22 @@ plugins:
 - Prompt language: English outside `src/plugins_writer/`.
 - Visibility: `tool`/`both` → callable as a tool by other agents; `ui`/`both` → in the UI.
   It only hides; it does not stop a run by name.
+- Called as a tool, an agent runs on a session of its own per caller session
+  (`Agent.tool_session` → `tool_session_id(caller, name)`), never on the caller's:
+  it remembers its calls in that caller session, is saved under the call's user
+  below the caller's session (hidden like a SAM sub-session), and a throwaway
+  caller's is never saved (if the agent starts sub-agents, the SAM files it as the
+  listed "Coordinator Session" it makes for any missing parent). A call to an
+  agent that runs above it already (itself, directly or through agents called as
+  tools) is refused: `error_type: "recursive_call"`; across a SAM or stategraph hop
+  the nesting budget bounds it (stategraph only where a SAM above set one). A session
+  that cannot be stored with the caller's budget: `"tool_session_unavailable"`. A
+  deleted one is forgotten; the next call starts it afresh. A custom
+  `execute_task` takes it from
+  `session_id, refusal = await self.tool_session(params)` and answers a refusal
+  with `{"status": "error", **refusal}` (and a `collect_final_result` whose
+  `refused` is set with that error_type) -- passing `params["_session_id"]` to the
+  run writes the agent's transcript into the caller's session file.
 - `min_role` gates who may run the agent on every path -- HTTP (answered like an
   unknown agent, except `/run`/`/events` for the default agent with no name and
   `POST /api/sessions`: 403), SAM (`error_type: "agent_role_gate"`), agent as a tool, stategraph, wakes,
