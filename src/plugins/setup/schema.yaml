@@ -11,8 +11,9 @@ tools:
         the config sections that name it (other entries inherit it through `extends`). A missing key
         matters only for what uses it; whether the chat answers, setup_probe_chat tells. Also: the
         default chat agent and its first LLM profile, whether an admin still opens with a publicly
-        known password, whether logins are signed with a publicly known key. In auth, null means it cannot
-        be told from here, never "no". Never returns a key's value.
+        known password, whether logins are signed with a publicly known key, and whether the config file
+        names one (a restart applies it). In auth, null means it cannot be told from here, never "no".
+        Never returns a key's value.
         Administrators only. Never ask for a key in the chat: the user puts it into
         config/secrets.env and restarts the API; the Setup panel shows its state.
       parameters:

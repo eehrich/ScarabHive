@@ -437,7 +437,8 @@ def test_the_detail_separates_own_inherited_and_effective(web, tmp_path):
     assert detail(web, "helper")["prompt"] == {"path": "config/prompts/system_prompt.md", "exists": True}
 
 
-def test_secrets_show_as_placeholders(db, tree, tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])  # utf-16: PowerShell 5.1's `>`, which the loader reads
+def test_secrets_show_as_placeholders(db, tree, tmp_path, encoding):
     state = started_app(tree)
     assert state.config.plugins.servers["writer"].api_hint == f"Bearer {SECRET}", "the fixture must expand the variable"
     web = make_client(tree, state)
@@ -453,7 +454,7 @@ def test_secrets_show_as_placeholders(db, tree, tmp_path):
     path.write_bytes(path.read_bytes().split(b"    # --- a helper")[0].replace(b"    writer:", b"    old_writer:")
                      .replace(b"type: writer", b"type: old_writer")
                      .replace(b'      api_hint: "Bearer ${AGENT_EDITOR_TEST_KEY}"\r\n', b""))
-    (tmp_path / "config/secrets.env").write_text("# local credentials\nAGENT_EDITOR_TEST_KEY=from-the-file\n", encoding="utf-8")
+    (tmp_path / "config/secrets.env").write_text("# local credentials\nAGENT_EDITOR_TEST_KEY=from-the-file\n", encoding=encoding)
     forget_snapshots(web)
     removed = web.get(f"{BASE}/agents/writer", headers=as_user("root"))
     assert removed.json()["state"] == "removed"

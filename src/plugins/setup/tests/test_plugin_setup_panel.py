@@ -23,7 +23,9 @@ BROWSER = find_browser()
 TESTS = Path(__file__).parent
 PAGE_TIMEOUT = 120
 
-pytestmark = pytest.mark.skipif(BROWSER is None, reason="no Chromium-based browser installed")
+# the page gets PAGE_TIMEOUT, and a page out of time fails these tests; pytest.ini's 120 s would end the whole run
+pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based browser installed"),
+              pytest.mark.timeout(PAGE_TIMEOUT + 60)]
 
 
 def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
@@ -36,15 +38,16 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
     real = module.installation_state(config)  # the shape the panel gets in production
     stub: dict[str, Any] = {"state": copy.deepcopy(real), "probe": {"ok": True}, "probe_delay": 0.0, "probe_fails": False,
                             "me": "admin", "me_fails": False, "me_delays": [], "patched": [], "state_fails": False,
-                            "state_delays": [], "calls": {"state": 0, "me": 0}}
+                            "state_delays": [], "calls": {"state": 0, "me": 0, "late": 0}}
 
-    def state(config, auth_config=None, signing_key=None):
+    def state(config, signing_key=None):
         stub["calls"]["state"] += 1
         if stub["state_fails"]:
             raise RuntimeError("config.yaml does not parse")
         answer = copy.deepcopy(stub["state"])
         if stub["state_delays"]:
             time.sleep(stub["state_delays"].pop(0))  # answers with the state of the moment it was asked
+            stub["calls"]["late"] += 1
         return answer
 
     async def probe(config):
@@ -69,6 +72,7 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
         stub["calls"]["me"] += 1
         if stub["me_delays"]:
             await asyncio.sleep(stub["me_delays"].pop(0))
+            stub["calls"]["late"] += 1
         if stub["me_fails"]:
             raise HTTPException(status_code=503, detail="for a moment")
         return {"username": stub["me"]}
@@ -122,7 +126,7 @@ EXPECTED = [
     'a configuration that names no key says so',
     'a refresh, or a failed /auth/me, keeps a half-typed password; a wrong current one keeps the form; the right one changes it',
     'another admin sees the warning without the form, and what cannot be told reads Unknown',
-    'the signing key line says a known key needs fixing, and a pending restart',
+    'the signing key line says a known key needs fixing, a pending restart, and a known key a restart would bring',
     'a chat test locks its button and says it runs, then shows the answer or the provider’s error as text',
     'a refresh during a chat test keeps it running, and a failed test replaces the answer before it',
     'a state that cannot be read says so, a chat test still shows its outcome, and the next read clears it',

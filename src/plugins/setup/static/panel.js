@@ -37,6 +37,17 @@ function line(flag, bad, good, unknown) {
   return html`${badge('', 'Unknown')} ${unknown}`;
 }
 
+/** The key the config file names, which a restart applies: a known one there turns a restart into the harm. */
+function nextKey(auth) {
+  if (auth.configured_signing_key_known === null) {
+    return html` — ${badge('warn', 'Unknown')} the config file’s auth section cannot be read`;
+  }
+  if (!auth.signing_key_needs_restart) return '';
+  return auth.configured_signing_key_known
+    ? html` — ${badge('danger', 'Fix')} the config file gives a known or empty key: replace it before the next restart`
+    : html` — ${badge('warn', 'Restart')} the config file names another key; it applies after a restart`;
+}
+
 function renderAccess(auth, me) {
   // Only the default admin can change the default admin's password: PATCH /auth/me changes the viewer's own.
   const own = auth.default_admin_password === true && me?.username === auth.admin;
@@ -45,9 +56,8 @@ function renderAccess(auth, me) {
       html`<code>${auth.admin}</code> still opens with a publicly known password${own ? '' : ' — log in as that user to change it'}`,
       'no admin opens with a publicly known one', 'not checked: authentication is off, or the user database is missing or cannot be read')}</dd>
     <dt>Signing key</dt><dd>${line(auth.shared_signing_key,
-      'a known one (shipped in the repository, or empty): anyone can sign a valid login',
-      'this installation’s own', 'cannot be told here')}${auth.signing_key_needs_restart
-      ? html` — ${badge('warn', 'Restart')} the configuration names another key; it applies after a restart` : ''}</dd>
+      'a known one (printed in the repository, the model’s default, or empty): replace it',
+      'this installation’s own', 'cannot be told here')}${nextKey(auth)}</dd>
   </dl>
   ${own ? html`<form id="password" class="pk-form pk-stack" autocomplete="off">
     <div class="pk-row">
@@ -74,8 +84,8 @@ $('access').addEventListener('submit', async (event) => {
       return;  // the kit's toast says why (a wrong current password); the form stays as typed
     }
     form.reset();
-    // Tokens are not tied to the password: a login made before the change stays valid until it expires.
-    toast('Password changed. Logins made before stay valid until they expire.', { kind: 'ok' });
+    // Nothing on other logins: whether they end with the password is the auth system's (token generations).
+    toast('Password changed.', { kind: 'ok' });
     await load();
   });
 });

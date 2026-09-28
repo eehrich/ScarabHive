@@ -15,17 +15,24 @@ entered in `config/secrets.env`; the panel takes them once the loader reads
   password (the configured default, and `admin`/`admin123`, which `config.yaml`
   ships: the admin is created once, so a default changed later is not its
   password). The logged-in admin concerned can change it right there, through
-  `PATCH /auth/me`, which asks for the current one; logins made before stay
-  valid until they expire. Asked of the configured user database; without
-  authentication it is not asked. And whether tokens are signed with a known
-  key — the model's default, an empty one, or one `config.yaml` has shipped,
-  known for good to whoever has the repository's history — taken from the key
-  the API set at start, which it signs with as long as it runs. A key reloaded
-  into the config since (`/admin/reload-config`) reads as *needs a restart*, and
-  a known one there needs fixing as well; an edit not reloaded is not seen.
-  Without authentication the configured key is judged: it counts once
-  authentication is on.
-- **API keys** — every `${VAR}` the loaded config files name, as *set*,
+  `PATCH /auth/me`, which asks for the current one. Asked of the configured
+  user database; without authentication it is not asked. And whether tokens
+  are signed with a key the repository has printed (`config.yaml`, the
+  examples in the docs and reviews, the tests) — known for good to whoever has
+  its history — taken from the key the API set at start, which it signs with
+  as long as it runs, whatever a reload does. An empty key and the model's
+  default count as known too; the API refuses to start with either. Where the
+  config file names another key now, it reads as *needs a restart*; where that
+  one is known, as a key to replace *before the next restart* — an own key
+  running and a shipped one brought back by a pull, where the restart is the
+  harm (or does not start at all). The file's key is expanded as a process
+  started now would: `config/secrets.env` as it reads now, the real
+  environment winning (`settings.environment_at_restart`). Without
+  authentication the configured key is judged: it counts once authentication
+  is on.
+- **API keys** — every `${VAR}` the loaded config files name, and every
+  `*_env` entry naming a variable its plugin reads itself (forge's
+  `token_env`), as *set*,
   *missing* or *placeholder* (a copied template value such as `sk-or-v1-...`,
   which the loader cannot tell from a key and the provider refuses), with the
   sections that name it. Never a value.
@@ -61,7 +68,10 @@ where the variable is written, not every entry that inherits it through
 tool's description tells the model never to ask for a key in the chat: the user puts it into
 `config/secrets.env` and restarts; the panel shows its state.
 A `null` in the status's `auth` means "cannot be told from here", never "no"
-(`chat.profile` null: the default agent names none).
+(`chat.profile` null: the default agent names none). `shared_signing_key` is the
+key that signs where the tool runs in the API (a chat's tool call); elsewhere the
+configured one, and an own one there reads `null`. `configured_signing_key_known`
+is the one the config file names, which a restart applies.
 `setup_probe_chat` answers `ok: true`, or `ok: false` with the provider's error
 cut to 300 characters; an unknown profile is answered with the profiles it can
 probe (not the batch ones). Refused, both say why: "only an administrator may
@@ -74,16 +84,19 @@ probe costs one short request on the probed profile.
 **Known gaps.**
 - A key entered in `config/secrets.env` needs a restart: the loader reads the
   file once per process (`docs/einrichtung_konzept.md`, step 1 of the build).
-- Which key the API signs with only the panel can tell: it runs in the API.
-  `setup_status` may run elsewhere (agent-cli, a woken session), so it answers
-  `null` for a restart pending, and for an own key configured -- a known one
-  configured is `true` wherever it is read. A CLI run reads the configured user
+- Which key the API signs with only the API can tell: the panel, and
+  `setup_status` called in a chat. Run elsewhere (agent-cli, a woken session)
+  the tool answers `null` for a restart pending, and for an own key configured
+  -- a known one configured is `true` wherever it is read. A CLI run reads the configured user
   database without setting it up (opened read-only), and answers `null` for the
   admin's password where there is none yet (only `cli_user` gets that far then);
   one that cannot be read lets nobody in, `cli_user` included.
+- `cli_user` is a run without a user of its own (agent-cli without
+  `--session-user`, `agent_run`): at the machine, but also the runs the writer
+  starts for a book (`graph_audit`, `publish_pipeline`), whoever asked for it. None of their agents is allowed these tools; an agent
+  that is must not be one such a run starts.
 - A session the API wakes runs in an agent-cli process that loads the
-  configuration from disk: whether authentication is on is judged there, not
-  by the running API. Turned off in `config.yaml` without a restart, the woken
-  session of any user is the owner while the API still checks logins. The
-  same holds for every plugin in that process; which configuration a woken run
-  follows is the core's to settle (handed over, `tmp/comm.txt` 28.09.2026).
+  configuration from disk, with authentication on whenever the API that woke it
+  enforces it (`HIVE_AUTH_REQUIRED`, 741006b6d). A wake from a process that
+  does not (an API started without authentication, agent-cli at the machine)
+  leaves the woken run to the disk: as open as its waker, or stricter.

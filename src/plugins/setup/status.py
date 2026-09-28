@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from agent_system.auth import database
-from agent_system.config.settings import _ENV_PLACEHOLDER, config_files
+from agent_system.config.settings import _ENV_PLACEHOLDER, config_files, environment_at_restart, expand_env
 from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
@@ -43,17 +43,45 @@ class ReadOnlyUsers(database.UserDatabase):
 #: first start changes nothing: the admin is created once, while there are no users.
 SHIPPED_ADMINS = (("admin", "admin123"),)
 
-#: The signing keys config/config.yaml has shipped. The repository's history keeps them known
-#: for good, whatever the file says today; the model's own default and an empty key are too.
-SHIPPED_SIGNING_KEYS = ("published-signing-key-replace-with-your-own-0000000000",
-                        "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION_USE_RANDOM_STRING")
+#: Every signing key the repository has printed -- config.yaml's, the examples in the docs,
+#: reviews and templates, the tests' -- found in its history on 28.09.2026. The history keeps
+#: them known for good, whatever the files say today; the model's own default and an empty key
+#: are too. test_every_key_the_repository_prints_is_known holds every literal key a commit of this
+#: branch put into a file outside the tests against this list.
+SHIPPED_SIGNING_KEYS = (
+    "published-signing-key-replace-with-your-own-0000000000",
+    "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION_USE_RANDOM_STRING",
+    "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars",
+    "your-secret-key-min-32-chars",
+    "your-secret-here",
+    "your-generated-secret",
+    "YOUR_VERY_LONG_RANDOM_SECRET_KEY_HERE",
+    "e4c8f2b9a7d3e1f5c6b8a2d9e7f1c3b5a8d2e6f9c1b4a7d3e8f2c5b9a1d6e3f7",
+    "generate-secure-random-key",
+    "generated-secure-key",
+    "test-secret-key",
+    "test-secret-key-12345",
+    "test-secret-key-for-jwt",
+    "test-secret-key-do-not-use-in-production",
+    "test-key-min-32-chars-long-secure",
+    "secure-secret-key-32chars!",
+    "not-the-secret-" * 4,
+    "your-secure-key-here-min-32-chars",  # user_management's auth_disabled.html offered it to paste, for months
+    "test-only-secret-not-the-config-one",
+    "test-only-secret-not-the-config-one-0123456789",
+    "jwt-signing-key-42",
+    "generated-for-this-installation",
+    "own-key-of-this-installation-0123456789",
+    "reloaded-own-key-0123456789abcdef",
+)
 
 
 def referenced_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
     """Every ``${VAR}`` the loaded config files name, with the sections naming it.
 
     Read from the files the loader reads, parsed -- a commented-out line names
-    nothing -- and matched as the loader expands them. A section is the first
+    nothing -- and matched as the loader expands them; a ``*_env`` entry whose
+    value is a variable's name names that one. A section is the first
     three steps of the path to the value (``llm_system.models.openrouter-base``,
     ``plugins.servers.tavily_search``): where the variable is written, not every
     entry that inherits it through ``extends``.
@@ -72,6 +100,10 @@ def referenced_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
 def _collect(node: Any, trail: tuple[str, ...], found: dict[str, list[str]]) -> None:
     if isinstance(node, dict):
         for key, value in node.items():
+            if str(key).endswith("_env") and isinstance(value, str):
+                # the variable a plugin reads itself (forge's token_env: FORGE_GITLAB_TOKEN); matched below as the
+                # loader matches a placeholder, so a value that is no variable's name names nothing
+                value = f"${{{value}}}"
             _collect(value, (*trail, str(key)), found)
     elif isinstance(node, list):
         for item in node:
@@ -120,26 +152,27 @@ def user_database(auth: Any) -> Any:
     return ReadOnlyUsers(path) if path.is_file() else None
 
 
-def auth_status(config: Any, signing_key: Optional[str] = None, reloaded: Any = None) -> dict[str, Any]:
+def auth_status(config: Any, signing_key: Optional[str] = None) -> dict[str, Any]:
     """Whether an admin still opens with a publicly known password, and whether tokens
     are signed with a known key -- anyone who has it forges a login.
 
     *config* is the configuration the process started with: whether logins are
     checked, against which user database and with which key, is settled at start.
     *signing_key* is the key it signs with, which only the API with authentication
-    has; *reloaded* a configuration a reload set since, whose key a restart applies.
-    The admin's password is ``None`` without authentication, or where no user
-    database is there or can be read; the signing key is judged all the same --
-    it counts once authentication is on.
+    has; the key a restart applies is read from the config file
+    (configured_signing_key). The admin's password is ``None`` without
+    authentication, or where no user database is there or can be read; the
+    signing key is judged all the same -- it counts once authentication is on.
     """
     auth = config.auth
     admin, known_password = _admin_with_a_known_password(auth)
-    signing = _signing_key_state((reloaded or config).auth, signing_key)
+    signing = _signing_key_state(configured_signing_key(config), signing_key)
     return {
         "admin": admin or auth.default_admin_username,
         "default_admin_password": known_password,
         "shared_signing_key": signing["shared"],
         "signing_key_needs_restart": signing["needs_restart"],
+        "configured_signing_key_known": signing["configured_known"],
     }
 
 
@@ -166,13 +199,46 @@ def _admin_with_a_known_password(auth: Any) -> tuple[Optional[str], Optional[boo
     return None, False
 
 
-def _signing_key_state(auth: Any, signing_key: Optional[str]) -> dict[str, Optional[bool]]:
-    """Whether a known key signs tokens -- or will after a restart -- and whether the
-    configuration names another key than the running one, which only a restart applies."""
+def configured_signing_key(config: Any) -> Optional[str]:
+    """The signing key a restart applies: ``auth.secret_key`` as the config file says it now.
+
+    Read from the file, never from a config in memory: the API signs with its
+    start key until a restart, whatever a reload does, and only the master file
+    can set auth (settings.master_data_dir). ``${VAR}`` expands as it would in a
+    process started now -- secrets.env as it reads now included
+    (settings.environment_at_restart). The loaded key where the config came from
+    no file; None where the file or its auth section would not load, as a restart
+    would not either.
+    """
     from agent_system.config.models import AuthConfig
-    configured = auth.secret_key or ""
+    path = getattr(config, "source_path", None)
+    if path is None:
+        return config.auth.secret_key
+    try:
+        master = yaml_io.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        # a master or an auth section that is no mapping raises here, as it fails the loader
+        section = master.get("auth", {})
+        return AuthConfig(**expand_env(section, environ=environment_at_restart(path))).secret_key
+    except Exception as error:  # unreadable, broken YAML, an auth section that fails validation
+        # Only the kind: a validation error quotes the value, which may be the key. The panel shows the state,
+        # and the loader reports the error in full at the next start.
+        logger.debug("setup status: the auth section of %s does not load (%s)", path, type(error).__name__)
+        return None
+
+
+def _signing_key_state(configured: Optional[str], signing_key: Optional[str]) -> dict[str, Optional[bool]]:
+    """Whether a known key signs tokens, whether the config file names another key than the
+    running one -- which only a restart applies -- and whether that one is known: a restart then
+    breaks what runs, rather than fixes it. None where it cannot be told: the running key outside
+    the API (the configured one is judged in its place), the configured one where the file does
+    not load."""
+    from agent_system.config.models import AuthConfig
     running = configured if signing_key is None else signing_key
-    # an empty key signs too: jose takes "" as a key
-    known = {"", AuthConfig.model_fields["secret_key"].default, *SHIPPED_SIGNING_KEYS}
-    return {"shared": running in known or configured in known,
-            "needs_restart": None if signing_key is None else running != configured}
+    printed = {AuthConfig.model_fields["secret_key"].default, *SHIPPED_SIGNING_KEYS}
+
+    def known(key: Optional[str]) -> Optional[bool]:
+        # a blank key too: jose signs with it -- the API refuses to start with one, a restart does not fix it
+        return None if key is None else (not key.strip() or key in printed)
+    return {"shared": known(running),
+            "needs_restart": None if signing_key is None or configured is None else running != configured,
+            "configured_known": known(configured)}

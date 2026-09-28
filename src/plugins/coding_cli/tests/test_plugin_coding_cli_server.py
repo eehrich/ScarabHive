@@ -176,11 +176,12 @@ def fresh_repo(path):
     return path
 
 
-def test_every_file_holding_an_excluded_secret_is_hidden_too(tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16"])  # as the loader reads it: a BOM, PowerShell
+def test_every_file_holding_an_excluded_secret_is_hidden_too(tmp_path, encoding):
     """A key copied into a doc or a test: the exclude alone would leave it readable."""
     repo = fresh_repo(tmp_path / "repo")
     (repo / "config").mkdir()
-    (repo / "config" / "secrets.env").write_text('API_KEY="k3y-value-123"\nSHORT=abc\n', encoding="utf-8")
+    (repo / "config" / "secrets.env").write_text('API_KEY="k3y-value-123"\nSHORT=abc\n', encoding=encoding)
     (repo / "config" / "config.yaml").write_text(
         "auth:\n  secret_key: jwt-signing-key-42\n  expire_minutes: 12345678\n  title: public-name-value\n",
         encoding="utf-8")
@@ -195,6 +196,23 @@ def test_every_file_holding_an_excluded_secret_is_hidden_too(tmp_path):
     assert made.hidden == ["check.py", "config/config.yaml", "config/secrets.env", "docs/review.md"]
     assert not any((worktree / rel).exists() for rel in made.hidden) and (worktree / "plain.md").exists()
     assert git(worktree, "status", "--porcelain") == ""
+
+
+def test_a_key_rotated_by_a_second_line_is_hidden_too(tmp_path):
+    """The loader takes a name's first line; wherever the last line wins (python-dotenv, compose) the new key is
+    the live one."""
+    repo = fresh_repo(tmp_path / "repo")
+    (repo / "config").mkdir()
+    (repo / "config" / "secrets.env").write_text(
+        "API_KEY=old-key-value-1\nAPI_KEY=new-key-value-2\nOTHER_KEY='\"quoted-twice-3\"'\n", encoding="utf-8")
+    (repo / "notes.md").write_text("the live one: new-key-value-2\n", encoding="utf-8")
+    (repo / "quoted.md").write_text("pasted bare: quoted-twice-3\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "rotated")
+
+    made = cli.make_worktree(repo, tmp_path / "wt", "b1", ["config/secrets.env"])
+
+    assert made.hidden == ["config/secrets.env", "notes.md", "quoted.md"]
 
 
 async def test_a_rewritten_git_file_does_not_move_the_commit(repo):

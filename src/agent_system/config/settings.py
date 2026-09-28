@@ -8,6 +8,7 @@ behavior explicit and testable.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import re
 from typing import Any, Optional
@@ -25,6 +26,112 @@ logger = logging.getLogger(__name__)
 #: Loaded at most once per process — the file is read on every load_settings()
 #: call otherwise (config reload, tests, every CLI subcommand).
 _secrets_loaded: set[str] = set()
+
+#: What this process took from a secrets file: name -> a fingerprint of the value. The rest of its environment
+#: is the real one, which a process started now would get again (environment_at_restart). Handed on to the
+#: processes it starts in the environment, which carries the values on as well (a woken run, spawn_wake): theirs
+#: are no real ones either -- unless the starter set the name itself, to another value (a terminal's env_vars).
+SECRETS_FROM_FILE_ENV = "HIVE_SECRETS_FROM_FILE"
+
+
+def _env_name(name: str) -> str:
+    """A variable's name as os.environ compares it: blind to case on Windows."""
+    return name.upper() if os.name == "nt" else name
+
+
+def _fingerprint(value: str) -> str:
+    # surrogatepass: a variable of undecodable bytes arrives as lone surrogates on POSIX
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+
+
+def _handed_on() -> dict[str, str]:
+    entries = (item.rpartition(":") for item in os.environ.get(SECRETS_FROM_FILE_ENV, "").split(",") if item)
+    return {_env_name(name): fingerprint for name, _, fingerprint in entries if name}
+
+
+_secrets_from_file: dict[str, str] = _handed_on()
+
+
+def _secrets_file_entries(path: Path, skipped: Optional[list[str]] = None) -> list[tuple[str, str]]:
+    """Every ``KEY=value`` line of a secrets file, in order -- a name may come twice. Raises OSError.
+
+    UTF-8, with a BOM or without, or UTF-16 with one (PowerShell 5.1's `>`). A line that does not decode, holds
+    no KEY=value, or a NUL no environment takes, is left out and named in *skipped* -- never its value. One
+    umlaut saved in another encoding, or a line appended in another, must not take every key with it: a signing
+    key given by ${VAR} would be "" then.
+
+    Quotes are stripped so `KEY="v"` and `KEY=v` behave the same; values are used verbatim otherwise (no escape
+    processing -- an API key is an opaque string).
+    """
+    data = path.read_bytes()
+    utf16 = data[:2] in (b"\xff\xfe", b"\xfe\xff")
+    encoding = "utf-16" if utf16 else "utf-8-sig"  # utf-8-sig drops a BOM
+    try:
+        lines, broken = data.decode(encoding).splitlines(), False
+    except UnicodeDecodeError:
+        # Split as the text would be: the lines that decode keep their numbers and ends. UTF-8 keeps a byte that
+        # does not decode as a lone surrogate, so a U+FFFD in a value is not taken for one; UTF-16 has no such way.
+        lines, broken = data.decode(encoding, "replace" if utf16 else "surrogateescape").splitlines(), True
+    entries: list[tuple[str, str]] = []
+    for number, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, value = line.partition("=")
+        name = name.strip()
+        if broken and _undecoded(line, utf16):
+            reason = f"not {'UTF-16' if utf16 else 'UTF-8'} text"
+        elif not (sep and name):
+            reason = "no KEY=value"
+        elif "\0" in line:
+            reason = "a NUL character"
+        else:
+            entries.append((name, value.strip().strip('"').strip("'")))
+            continue
+        if skipped is not None:
+            skipped.append(f"line {number}: {reason}")
+    return entries
+
+
+def _undecoded(line: str, utf16: bool) -> bool:
+    if utf16:
+        return chr(0xFFFD) in line
+    return any(0xDC80 <= ord(char) <= 0xDCFF for char in line)
+
+
+def _read_secrets_file(path: Path, skipped: Optional[list[str]] = None) -> dict[str, str]:
+    """The secrets file as the loader takes it: the first line of a name winning. Raises OSError."""
+    found: dict[str, str] = {}
+    for name, value in _secrets_file_entries(path, skipped):
+        found.setdefault(name, value)
+    return found
+
+
+def environment_at_restart(config_path: str) -> dict[str, str]:
+    """The environment a process started now would expand *config_path* with.
+
+    This one's, less what it took from the secrets file beside the config, and that
+    file as it reads now -- where the real environment still wins, as in
+    _load_secrets_file. The real environment is taken as the next start gets it
+    again.
+    """
+    env = {name: value for name, value in os.environ.items()
+           if _secrets_from_file.get(_env_name(name)) != _fingerprint(value)}
+    path = Path(config_path).parent / "secrets.env"
+    try:
+        found = _read_secrets_file(path) if path.is_file() else {}
+    except OSError:  # a start goes on without it (_load_secrets_file), and says so then
+        found = {}
+    for name, value in found.items():
+        if _environment_takes(name, value):
+            env.setdefault(_env_name(name), value)
+    return env
+
+
+def _environment_takes(name: str, value: str) -> bool:
+    """What a start can put into its environment: Windows takes `name=value` up to 32767 UTF-16 units (os.putenv
+    raises past it, measured 28.09.2026; a character past U+FFFF is two), POSIX any length."""
+    return os.name != "nt" or len(f"{name}={value}".encode("utf-16-le", "surrogatepass")) // 2 <= 32767
 
 
 def _load_secrets_file(path: Path) -> None:
@@ -45,27 +152,34 @@ def _load_secrets_file(path: Path) -> None:
     _secrets_loaded.add(key)
     if not path.is_file():
         return
+    skipped: list[str] = []
     try:
-        loaded = 0
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            name, sep, value = line.partition("=")
-            if not sep:
-                continue
-            name = name.strip()
-            if not name or name in os.environ:
-                continue
-            # Quotes are stripped so `KEY="v"` and `KEY=v` behave the same;
-            # values are used verbatim otherwise (no escape processing —
-            # an API key is an opaque string).
-            os.environ[name] = value.strip().strip('"').strip("'")
-            loaded += 1
-        # Count only — never the names' values.
-        logger.info("Loaded %d credential(s) from %s", loaded, path)
+        found = _read_secrets_file(path, skipped)
     except OSError as e:
         logger.warning("Could not read %s: %s", path, e)
+        return
+    loaded = 0
+    for name, value in found.items():
+        try:
+            if name in os.environ:
+                continue
+            os.environ[name] = value
+        except (ValueError, OSError):  # longer than Windows lets a variable be; a setenv that fails
+            skipped.append(f"{name}: not taken by the environment")
+            continue
+        _secrets_from_file[_env_name(name)] = _fingerprint(value)
+        loaded += 1
+    if skipped:
+        logger.warning("Left out of %s: %s", path, "; ".join(skipped))
+    if loaded:
+        try:
+            os.environ[SECRETS_FROM_FILE_ENV] = ",".join(f"{name}:{fingerprint}"
+                                                         for name, fingerprint in sorted(_secrets_from_file.items()))
+        except (ValueError, OSError):  # more names than a Windows variable holds
+            logger.warning("The processes this one starts are not told which of %d credentials came from %s",
+                           len(_secrets_from_file), path)
+    # Count only — never the names' values.
+    logger.info("Loaded %d credential(s) from %s", loaded, path)
 
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -123,25 +237,27 @@ def _resolve_relative_paths(data: dict, base_dir: Path) -> dict:
 _ENV_PLACEHOLDER = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
-def expand_env(value: Any, missing: Optional[set[str]] = None) -> Any:
+def expand_env(value: Any, missing: Optional[set[str]] = None, environ: Optional[dict[str, str]] = None) -> Any:
     """`value` with every ${VAR} replaced from the environment, as the loader reads the YAML.
 
     An unset variable becomes "" and its name goes into `missing` -- collected, not silently blanked: an unset key
     used to surface hours later as an opaque 401 from a provider; the operator needs the VARIABLE NAME.
+    `environ` stands in for this process's environment (environment_at_restart).
     """
+    env = os.environ if environ is None else environ
     if isinstance(value, str):
         def repl(match: re.Match) -> str:
             name = match.group(1)
-            if name not in os.environ:
+            if name not in env:
                 if missing is not None:
                     missing.add(name)
                 return ""
-            return os.environ[name]
+            return env[name]
         return _ENV_PLACEHOLDER.sub(repl, value)
     if isinstance(value, dict):
-        return {k: expand_env(v, missing) for k, v in value.items()}
+        return {k: expand_env(v, missing, environ) for k, v in value.items()}
     if isinstance(value, list):
-        return [expand_env(v, missing) for v in value]
+        return [expand_env(v, missing, environ) for v in value]
     return value
 
 

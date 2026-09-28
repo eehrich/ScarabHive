@@ -40,6 +40,12 @@
     await until(`the reload's ${which}`, async () => (await calls())[which] > before[which]);
     await sleep(150);
   }
+  // a delayed answer is being sent: the page has it, and whatever it asks next, well within half a second --
+  // a check that it draws nothing reads the screen after that
+  async function lateAnswered(before) {
+    await until('the late answer', async () => (await calls()).late > before.late);
+    await sleep(500);
+  }
   const refresh = () => doc().dispatchEvent(new frame.contentWindow.CustomEvent('refresh', { detail: { auto: false } }));
   const toasts = () => all('.pk-toast').map((one) => one.textContent.replace(/\s+/g, ' ').trim()).join(' | ');
   const MARKUP = '<img src=x onerror=parent.__xss=1>';
@@ -93,11 +99,11 @@
     await until('the warning gone', () => !$('#password') && text('#access').includes('no admin opens with a publicly known one'));
     const sent = (await recorded()).at(-1);
     return kept && stayed && sent.current_password === 'admin123' && sent.password === 'a-long-own-password'
-      && toasts().includes('Logins made before stay valid');
+      && toasts().includes('Password changed');
   });
 
   await check('another admin sees the warning without the form, and what cannot be told reads Unknown', async () => {
-    await stub({ me: 'other', auth: { default_admin_password: true, shared_signing_key: null } });
+    await stub({ me: 'other', auth: { default_admin_password: true, shared_signing_key: null, configured_signing_key_known: false } });
     await open();
     await until('the access drawn', () => text('#access').includes('Admin password'));
     const hint = !$('#password') && text('#access').includes('log in as that user');
@@ -108,8 +114,8 @@
     return hint && unknown.filter((one) => one === 'Unknown').length === 2 && !unknown.includes('OK');
   });
 
-  await check('the signing key line says a known key needs fixing, and a pending restart', async () => {
-    await stub({ auth: { shared_signing_key: true, signing_key_needs_restart: true } });
+  await check('the signing key line says a known key needs fixing, a pending restart, and a known key a restart would bring', async () => {
+    await stub({ auth: { shared_signing_key: true, signing_key_needs_restart: true, configured_signing_key_known: false } });
     await open();
     await until('the signing line', () => text('#access').includes('Signing key'));
     const line = [...$('#access dl').children].find((one) => one.previousElementSibling?.textContent === 'Signing key');
@@ -117,7 +123,16 @@
     await stub({ auth: { shared_signing_key: false, signing_key_needs_restart: false } });
     refresh();
     await until('the own key', () => text('#access').includes('this installation’s own'));
-    return shared && !text('#access').includes('Restart');
+    const own = !text('#access').includes('Restart') && !text('#access').includes('Fix');
+    // an own key runs, and a pull put a known one into the file: the restart is the harm, not the remedy
+    await stub({ auth: { signing_key_needs_restart: true, configured_signing_key_known: true } });
+    refresh();
+    await until('the known key coming', () => text('#access').includes('replace it before the next restart'));
+    const coming = text('#access').includes('this installation’s own') && !text('#access').includes('Restart');
+    await stub({ auth: { signing_key_needs_restart: null, configured_signing_key_known: null } });
+    refresh();
+    await until('the unreadable file', () => text('#access').includes('auth section cannot be read'));
+    return shared && own && coming;
   });
 
   await check('a chat test locks its button and says it runs, then shows the answer or the provider’s error as text', async () => {
@@ -180,7 +195,7 @@
     await stub({ keys: NEW });
     refresh();
     await until('the new state', () => text('#keys').includes('NEW_KEY'));
-    await sleep(1300);  // the late answer has come
+    await lateAnswered(before);
     const shown = text('#keys');
     const neverDrawn = shown.includes('NEW_KEY') && !shown.includes('OLD_KEY');
     // overtaken while it waits for /auth/me, its state read: the newer load's state cannot be read
@@ -191,7 +206,7 @@
     await stub({ state_fails: true });
     refresh();
     await until('the notice', () => !$('#problem').hidden);
-    await sleep(1300);  // the slow /auth/me has answered
+    await lateAnswered(before);
     const noticeKept = !$('#problem').hidden;
     await stub({ state_fails: false, keys: KEYS });
     refresh();

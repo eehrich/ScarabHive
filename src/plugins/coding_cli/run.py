@@ -20,7 +20,9 @@ from typing import Any, Iterable, NamedTuple, Optional, Sequence
 import psutil
 import yaml
 
+from agent_system.config.settings import _secrets_file_entries
 from agent_system.core.session_presence import alive
+from agent_system.utils import yaml_io
 
 # Planning reads; editing also writes. --tools is always explicit: under
 # --restricted the list still held Artifact, SendMessage, PushNotification and
@@ -43,7 +45,6 @@ ENV_NAMES = frozenset({
     "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"})
 CAP_ACTION = 100
 # Secret values an excluded file holds: a .env line's value, a YAML key named like one.
-_ENV_LINE = re.compile(r"\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=(.*)$")
 _SECRET_KEY = re.compile(r"(?i)secret|password|passwd|token|api[_-]?key|private[_-]?key")
 MIN_SECRET_CHARS = 8
 
@@ -287,19 +288,23 @@ def secret_values(path: Path) -> set[str]:
     """What an excluded file keeps secret: every value of a .env file, the
     string values of secret-named keys in a YAML file. Short ones would hide
     half the repository and are no key."""
+    found: set[str] = set()
+    if path.name.endswith(".env"):
+        # read as the loader reads it (a BOM, UTF-16, a line in another encoding), every line: a key rotated by
+        # a second line of the same name is the live one wherever the last line wins
+        try:
+            # the loader strips `"` and then `'`; `KEY='"v"'` keeps the inner quotes there -- the key is v either way
+            found = {form for _, value in _secrets_file_entries(path) for form in (value, value.strip("'\""))}
+        except OSError:
+            return set()
+        return {v for v in found if len(v) >= MIN_SECRET_CHARS and "\n" not in v and "${" not in v}
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, ValueError):
         return set()
-    found: set[str] = set()
-    if path.name.endswith(".env"):
-        for line in text.splitlines():
-            match = _ENV_LINE.match(line)
-            if match:
-                found.add(match.group(1).strip().strip("'\""))
-    elif path.suffix in (".yaml", ".yml"):
+    if path.suffix in (".yaml", ".yml"):
         try:
-            _secret_leaves(yaml.safe_load(text), found)
+            _secret_leaves(yaml_io.safe_load(text), found)
         except yaml.YAMLError:
             return set()
     return {v for v in found if len(v) >= MIN_SECRET_CHARS and "\n" not in v and "${" not in v}

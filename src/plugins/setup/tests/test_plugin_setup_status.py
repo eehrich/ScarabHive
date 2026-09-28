@@ -1,5 +1,8 @@
 """The setup status: which keys the configuration names and what state they are in, the admin's
 password and the signing key. Read through the files the loader reads, never a hand-built list."""
+import json
+import os
+import secrets
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +36,18 @@ class TestTheKeysTheConfigurationNames:
 
         assert found == {"FAST_KEY": ["llm_system.models.fast", "llm_system.models.other"],
                          "SEARCH_KEY": ["plugins.servers.search"]}
+
+    def test_an_env_entry_names_the_variable_its_plugin_reads(self, tmp_path):
+        """forge reads token_env's variable itself: set or not, it is a key of this configuration. A list of
+        variables handed on (coding_cli's pass_env) names no key."""
+        config = write_config(
+            tmp_path, "includes:\n  - plugins.yaml\n",
+            plugins="plugins:\n  servers:\n    forge:\n      hosts:\n        lab:\n          token_env: FORGE_TOKEN\n"
+                    "          webhook_secret_env: \"HOOK_SECRET\"\n          name_env: not a variable\n"
+                    "    coder:\n      pass_env: [PATH]\n")
+
+        assert status.referenced_keys(config) == {"FORGE_TOKEN": ["plugins.servers.forge"],
+                                                  "HOOK_SECRET": ["plugins.servers.forge"]}
 
     def test_a_file_the_master_does_not_include_names_nothing(self, tmp_path):
         config = write_config(tmp_path, "includes:\n  - llm.yaml\n",
@@ -87,42 +102,216 @@ def _no_users_here(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "NO_USERS", tmp_path / "absent" / "users.db")
 
 
-def auth(secret_key=None, username="admin", password="admin123", enabled=True, database_path=None):
+def auth(secret_key=None, username="admin", password="admin123", enabled=True, database_path=None, source_path=None):
     return SimpleNamespace(auth=SimpleNamespace(secret_key=secret_key, default_admin_username=username,
                                                 default_admin_password=password, enabled=enabled,
-                                                database_path=str(database_path or NO_USERS)))
+                                                database_path=str(database_path or NO_USERS)),
+                           source_path=source_path)
+
+
+def written(folder: Path, key: str, started_with=None):
+    """A config started with *started_with* (else *key*), loaded from a master file that names *key* now."""
+    master = folder / "config.yaml"
+    master.write_text(f"auth:\n  secret_key: {json.dumps(key)}\n", encoding="utf-8")
+    return auth(secret_key=key if started_with is None else started_with, source_path=str(master))
+
+
+#: A key of this installation's own: made now, printed nowhere.
+OWN_KEY = secrets.token_urlsafe(32)
+#: Other keys of no one's: made now as well, so the repository prints no key it does not list as known.
+WRITTEN_KEY, ENVIRONMENT_KEY, START_KEY = (secrets.token_urlsafe(24) for _ in range(3))
 
 
 class TestTheSigningKey:
-    @pytest.mark.parametrize("key", [*status.SHIPPED_SIGNING_KEYS, "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION", "", None])
-    def test_the_shipped_keys_the_models_default_and_none_are_known(self, key):
-        """An unset ${AUTH_SECRET_KEY} expands to "": the API signs with it, and so can anyone."""
-        assert status.auth_status(auth(secret_key=key))["shared_signing_key"] is True
+    @staticmethod
+    def verdict(result):
+        return result["shared_signing_key"], result["signing_key_needs_restart"], result["configured_signing_key_known"]
 
-    def test_an_own_key_is_not_shared_even_when_the_master_names_it(self):
+    @pytest.mark.parametrize("key", [*status.SHIPPED_SIGNING_KEYS, "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION", "", "   "])
+    def test_the_printed_keys_the_models_default_and_an_empty_one_are_known(self, key, tmp_path):
+        """An unset ${AUTH_SECRET_KEY} expands to "": jose signs with it, and the API refuses to start with it -- a
+        restart does not fix it either."""
+        assert self.verdict(status.auth_status(written(tmp_path, key))) == (True, None, True)
+
+    def test_an_own_key_is_not_shared_even_when_the_master_names_it(self, tmp_path):
         """The master file on disk is where one writes one's own key today; what counts is whether it is known."""
-        assert status.auth_status(auth(secret_key="generated-for-this-installation"))["shared_signing_key"] is False
+        assert self.verdict(status.auth_status(written(tmp_path, OWN_KEY))) == (False, None, False)
 
-    def test_the_api_signs_with_its_start_key_until_a_restart(self):
-        """set_jwt_config runs once, at start: a key reloaded into the config since signs nothing yet."""
-        result = status.auth_status(auth(secret_key="generated-for-this-installation"),
-                                    signing_key=status.SHIPPED_SIGNING_KEYS[0])
+    def test_the_api_signs_with_its_start_key_until_a_restart(self, tmp_path):
+        """set_jwt_config runs once, at start: an own key written into the file since signs nothing yet."""
+        result = status.auth_status(written(tmp_path, OWN_KEY), signing_key=status.SHIPPED_SIGNING_KEYS[0])
 
-        assert (result["shared_signing_key"], result["signing_key_needs_restart"]) == (True, True), result
+        assert self.verdict(result) == (True, True, False), result
 
-    def test_a_known_key_a_restart_would_apply_is_to_fix_now(self):
-        """A pull and a reload brought the shipped key back: the running one is the installation's own until the
-        restart that makes every login forgeable."""
-        own = "generated-for-this-installation"
-        result = status.auth_status(auth(secret_key=own), signing_key=own,
-                                    reloaded=auth(secret_key=status.SHIPPED_SIGNING_KEYS[0]))
+    def test_a_known_key_a_restart_would_apply_is_told_apart(self, tmp_path):
+        """A pull brought the shipped key back: what runs is the installation's own, and the restart is what makes
+        every login forgeable -- not the remedy. Seen in the file, whatever a reload did."""
+        result = status.auth_status(written(tmp_path, status.SHIPPED_SIGNING_KEYS[0], started_with=OWN_KEY),
+                                    signing_key=OWN_KEY)
 
-        assert (result["shared_signing_key"], result["signing_key_needs_restart"]) == (True, True), result
+        assert self.verdict(result) == (False, True, True), result
 
-    def test_without_the_key_it_signs_with_a_restart_cannot_be_told(self):
-        result = status.auth_status(auth(secret_key="generated-for-this-installation"))
+    def test_its_own_key_running_and_on_disk_is_all_well(self, tmp_path):
+        result = status.auth_status(written(tmp_path, OWN_KEY), signing_key=OWN_KEY)
 
-        assert (result["shared_signing_key"], result["signing_key_needs_restart"]) == (False, None), result
+        assert self.verdict(result) == (False, False, False), result
+
+    @pytest.mark.parametrize("master", ["auth: [not, a, section\n", "auth: nope\n", "auth:\n", "- a\n- list\n"],
+                             ids=["broken", "no-mapping", "null", "a-list"])
+    @pytest.mark.parametrize("running, shared", [(OWN_KEY, False), (status.SHIPPED_SIGNING_KEYS[0], True)],
+                             ids=["own", "shipped"])
+    def test_a_file_that_does_not_load_tells_nothing_of_the_restart(self, tmp_path, master, running, shared):
+        """A restart would not start with it either (load_settings raises on each): what signs after it cannot be
+        told, what signs now can."""
+        config = written(tmp_path, OWN_KEY)
+        Path(config.source_path).write_text(master, encoding="utf-8")
+
+        assert self.verdict(status.auth_status(config, signing_key=running)) == (shared, None, None)
+
+    @pytest.mark.parametrize("master", [
+        f'auth:\n  secret_key: "{WRITTEN_KEY}"\n',
+        'auth:\n  enabled: true\n',
+        'paths: {}\n',
+        '',
+        'auth:\n  secret_key: "${SETUP_TEST_SIGNING_KEY}"\n',
+        'auth:\n  secret_key: "${SETUP_TEST_UNSET_KEY}"\n',
+    ], ids=["literal", "no-key", "no-auth", "empty", "variable", "unset-variable"])
+    def test_the_key_read_is_the_one_the_loader_loads_from_the_file_now(self, tmp_path, monkeypatch, master):
+        """What a restart applies is what load_settings makes of the file as it is now -- defaults and ${VAR}
+        included -- not the key the process started with."""
+        from agent_system.config.settings import load_settings
+        monkeypatch.setenv("SETUP_TEST_SIGNING_KEY", ENVIRONMENT_KEY)
+        monkeypatch.delenv("SETUP_TEST_UNSET_KEY", raising=False)
+        started = load_settings(write_config(tmp_path, f'auth:\n  secret_key: "{OWN_KEY}"\n'))
+        write_config(tmp_path, master)
+
+        assert status.configured_signing_key(started) == load_settings(started.source_path).auth.secret_key
+
+    @pytest.fixture
+    def secrets_env(self, tmp_path, monkeypatch):
+        """A config naming ${SETUP_TEST_FILE_KEY}, and a secrets.env beside it: as the loader reads them, in a
+        process of this test's own -- what it took from the file, and the variable, go with the test."""
+        from agent_system.config import settings
+        monkeypatch.setattr(settings, "_secrets_from_file", {})
+        # set by the loader below; as they were again after the test
+        monkeypatch.setenv(settings.SECRETS_FROM_FILE_ENV, os.environ.get(settings.SECRETS_FROM_FILE_ENV, ""))
+        monkeypatch.setenv("SETUP_TEST_FILE_KEY", "")
+        monkeypatch.delenv("SETUP_TEST_FILE_KEY")
+        write_config(tmp_path, 'auth:\n  secret_key: "${SETUP_TEST_FILE_KEY}"\n')
+        return tmp_path / "secrets.env"
+
+    def test_a_key_written_into_secrets_env_since_the_start_is_the_one_a_restart_applies(self, secrets_env):
+        """The file is read once per process: the key the process has is "", a restart takes the file's."""
+        from agent_system.config.settings import load_settings
+        started = load_settings(str(secrets_env.parent / "config.yaml"))
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={OWN_KEY}\n", encoding="utf-8")
+
+        assert (started.auth.secret_key, status.configured_signing_key(started)) == ("", OWN_KEY)
+
+    def test_a_key_the_process_took_from_secrets_env_is_read_there_again(self, secrets_env):
+        """A pull changed the tracked file to a shipped key: this process still has the old one, a restart the new."""
+        from agent_system.config.settings import load_settings
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={OWN_KEY}\n", encoding="utf-8")
+        started = load_settings(str(secrets_env.parent / "config.yaml"))
+        secrets_env.write_text(f'SETUP_TEST_FILE_KEY="{status.SHIPPED_SIGNING_KEYS[0]}"\n', encoding="utf-8")
+
+        assert started.auth.secret_key == OWN_KEY, "the loader did not take the key from the file"
+        assert status.configured_signing_key(started) == status.SHIPPED_SIGNING_KEYS[0]
+
+    def test_the_real_environment_still_wins_over_secrets_env(self, secrets_env, monkeypatch):
+        from agent_system.config.settings import load_settings
+        monkeypatch.setenv("SETUP_TEST_FILE_KEY", OWN_KEY)
+        started = load_settings(str(secrets_env.parent / "config.yaml"))
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={status.SHIPPED_SIGNING_KEYS[0]}\n", encoding="utf-8")
+
+        assert status.configured_signing_key(started) == OWN_KEY
+
+    def test_a_process_this_one_starts_knows_what_came_from_the_file(self, secrets_env):
+        """A woken run gets the API's environment, secrets.env's values in it (session_presence.spawn_wake): no real
+        environment there either -- a restart takes the file's."""
+        import subprocess
+        from agent_system.config.settings import load_settings
+        master = str(secrets_env.parent / "config.yaml")
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={OWN_KEY}\n", encoding="utf-8")
+        load_settings(master)  # the key taken from the file, as the API takes it
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={status.SHIPPED_SIGNING_KEYS[0]}\n", encoding="utf-8")
+        script = ("import sys\nfrom agent_system.config.settings import load_settings\n"
+                  "from plugins.setup.status import configured_signing_key\n"
+                  "print(configured_signing_key(load_settings(sys.argv[1])))\n")
+
+        child = subprocess.run([sys.executable, "-c", script, master], capture_output=True, text=True, timeout=90,
+                               env={**os.environ, "PYTHONPATH": str(REPO / "src")}, cwd=REPO)
+
+        assert child.returncode == 0 and child.stdout.strip(), child.stderr[-800:]
+        assert child.stdout.strip().splitlines()[-1] == status.SHIPPED_SIGNING_KEYS[0], child.stdout[-300:]
+
+    def test_a_name_set_again_to_another_value_is_real_environment(self, secrets_env, monkeypatch):
+        """A starter that sets a name the file gave (a terminal's env_vars, `KEY=x agent-cli`) means that value: a
+        start the same way gets it again, whatever the file says."""
+        from agent_system.config.settings import load_settings
+        secrets_env.write_text(f"SETUP_TEST_FILE_KEY={status.SHIPPED_SIGNING_KEYS[0]}\n", encoding="utf-8")
+        started = load_settings(str(secrets_env.parent / "config.yaml"))
+        monkeypatch.setenv("SETUP_TEST_FILE_KEY", OWN_KEY)
+
+        assert status.configured_signing_key(started) == OWN_KEY
+
+    @pytest.mark.skipif(os.name != "nt", reason="the environment is blind to case on Windows only")
+    def test_a_name_the_file_writes_in_lower_case_is_the_same_variable(self, secrets_env):
+        """On Windows os.environ takes `setup_test_file_key` for SETUP_TEST_FILE_KEY, at a start as well."""
+        from agent_system.config.settings import load_settings
+        secrets_env.write_text(f"setup_test_file_key={START_KEY}\n", encoding="utf-8")
+        started = load_settings(str(secrets_env.parent / "config.yaml"))
+        secrets_env.write_text(f"setup_test_file_key={OWN_KEY}\n", encoding="utf-8")
+
+        assert started.auth.secret_key == START_KEY, "the loader did not take it for the variable"
+        assert status.configured_signing_key(started) == OWN_KEY
+
+    def test_a_secrets_file_that_cannot_be_read_is_gone_without(self, tmp_path, monkeypatch):
+        """A start warns and goes on without it (_load_secrets_file): the key the master names is still told."""
+        from agent_system.config import settings
+        (tmp_path / "secrets.env").write_text("ANY=value\n", encoding="utf-8")
+
+        def unreadable(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        monkeypatch.setattr(settings, "_read_secrets_file", unreadable)
+
+        assert status.configured_signing_key(written(tmp_path, OWN_KEY)) == OWN_KEY
+
+    def test_a_key_that_does_not_load_is_not_logged(self, tmp_path, caplog):
+        """A validation error quotes the value -- here the key itself -- and the panel asks on every refresh."""
+        import logging
+        config = written(tmp_path, OWN_KEY)
+        Path(config.source_path).write_text("auth:\n  secret_key: 8237492384792384\n", encoding="utf-8")
+        caplog.set_level(logging.DEBUG)
+
+        assert status.configured_signing_key(config) is None
+        assert caplog.records and "8237492384792384" not in caplog.text, caplog.text
+
+    def test_a_config_from_no_file_is_judged_by_its_own_key(self):
+        assert status.configured_signing_key(auth(secret_key=OWN_KEY)) == OWN_KEY
+
+    def test_every_key_the_repository_prints_is_known(self):
+        """A key a commit put into a file is known to whoever has the history, for good -- a doc's example, a
+        template's snippet to paste (every file type, whatever it is now). Outside the tests: their own were listed
+        once from the history, and a test may make up more. This branch's history only: a stash may hold this
+        machine's secrets.env, and the working tree does."""
+        import re
+        import subprocess
+        log = subprocess.run(["git", "log", "HEAD", "-p", "--no-color", "--no-ext-diff", "--format=",
+                              "-G", "(secret_key|SECRET_KEY)", "--", ".", ":(exclude)tests/**", ":(exclude)**/tests/**"],
+                             cwd=REPO, capture_output=True, check=True).stdout.decode("utf-8", "replace")
+        added = "\n".join(line[1:] for line in log.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        # a value, not a placeholder (${VAR}, <generated_secret>) nor code (secret_key=config.auth.secret_key)
+        quoted = re.compile(r"""\w*(?:secret_key|SECRET_KEY)["']?\s*[:=]\s*["']([^"'$<>{}\s]{8,})["']""")
+        bare = re.compile(r"""^[\s>-]*(?:export\s+)?\w*(?:secret_key|SECRET_KEY)\s*(?::\s*|=)"""
+                          r"""([^\s"'$<>{}\[\](),#`]{8,})\s*(?:#.*)?$""", re.M)
+        assert bare.search("auth:\n  secret_key: an-unquoted-key-0123\n"), "the scan misses a key written bare"
+        printed = {match.group(1) for pattern in (quoted, bare) for match in pattern.finditer(added)}
+        printed = {key for key in printed if "..." not in key}  # an abbreviation in prose, no key
+        assert len(printed) >= 10, f"found {printed}: the scan finds too little -- this test would be vacuous"
+
+        unlisted = printed - set(status.SHIPPED_SIGNING_KEYS) - {"CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"}
+        assert not unlisted, f"printed in the repository, missing from SHIPPED_SIGNING_KEYS: {unlisted}"
 
 
 class TestTheAdminsPassword:

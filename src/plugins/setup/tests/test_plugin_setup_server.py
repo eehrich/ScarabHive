@@ -1,5 +1,7 @@
 """The setup server: its two tools through call_with_status, the panel's endpoints through the router the
 app mounts. The real configuration throughout; the root conftest fakes only the LLM's network edge."""
+import json
+import secrets
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,28 @@ def without_auth(config):
     return with_auth(config, enabled=False)
 
 
+def written(config, folder: Path, key: str):
+    """*config*, loaded from a master file of its own naming *key*: the file a restart reads, as load_settings
+    records it. The key this machine's config.yaml names must not decide a test."""
+    master = folder / "config.yaml"
+    master.write_text(f"auth:\n  secret_key: {json.dumps(key)}\n", encoding="utf-8")
+    config = config.model_copy()
+    config._source_path = str(master)
+    return config
+
+
+#: A key of this installation's own: made now, printed nowhere.
+OWN_KEY = secrets.token_urlsafe(32)
+
+
+@pytest.fixture(autouse=True)
+def _not_the_api(monkeypatch):
+    """This process signs nothing unless a test says it is the API: an app another test built with authentication
+    may have left set_jwt_config's state behind."""
+    from agent_system.auth import security
+    monkeypatch.setattr(security, "AUTH_ENFORCED", False)
+
+
 #: agent-cli at the machine, where no account of that name exists: the owner.
 AT_THE_MACHINE = {"_user_id": "cli_user"}
 
@@ -91,7 +115,8 @@ class TestTheTools:
         assert result["status"] == "error" and "no-such-profile" in result["error"], result
         assert "omit it" in result["error"] and "chat" in result["error"], result
         named = result["error"].split("name one of: ")[1].split(" and ")[0].split(", ")
-        assert named and not set(named) & set(batch), named
+        probed = sorted(name for name in config.llm_system.profiles if name not in batch)
+        assert named == probed[:30], named
 
     async def test_probe_chat_uses_the_configuration_the_server_runs_with(self, server, monkeypatch):
         """A fresh load read a different file under --config, and a key entered since reaches neither."""
@@ -160,16 +185,33 @@ class TestTheTools:
         refusals = [result["error"] for result in results.values() if result["status"] == "error"]
         assert refusals and all(said in refusal for refusal in refusals), refusals  # the tool's own refusal
 
-    @pytest.mark.parametrize("key, shared", [("own-key-of-this-installation-0123456789", None),
-                                             (status.SHIPPED_SIGNING_KEYS[0], True)])
-    async def test_the_tool_does_not_vouch_for_the_key_the_api_signs_with(self, config, key, shared):
+    @pytest.mark.parametrize("key, shared, known", [(OWN_KEY, None, False), (status.SHIPPED_SIGNING_KEYS[0], True, True)],
+                             ids=["own", "shipped"])
+    async def test_the_tool_does_not_vouch_for_the_key_the_api_signs_with(self, config, tmp_path, key, shared, known):
         """The tool may run outside the API (agent-cli, a woken session): an own key configured there says nothing
-        of the running API's -- that is null, never "no". A known key configured is to fix wherever it is read."""
-        server = SetupServer("setup", with_auth(config, secret_key=key), ToolServerConfig(type="setup", enabled=True))
+        of the running API's -- that is null, never "no". What the config file names it can tell; a known key
+        configured is to fix wherever it is read."""
+        server = SetupServer("setup", written(with_auth(config, secret_key=key), tmp_path, key),
+                             ToolServerConfig(type="setup", enabled=True))
 
         result = await server.call_with_status("setup_status", AT_THE_MACHINE)
 
-        assert result["auth"]["shared_signing_key"] is shared, result["auth"]
+        assert (result["auth"]["shared_signing_key"], result["auth"]["configured_signing_key_known"]) == (shared, known)
+
+    async def test_in_the_api_the_tool_judges_the_key_it_signs_with(self, config, tmp_path, monkeypatch):
+        """A chat's tool call runs in the API: an own key signs, a pull put the shipped one into the file -- the
+        running key is fine, the next restart is not."""
+        from agent_system.auth import security
+        monkeypatch.setattr(security, "SECRET_KEY", OWN_KEY)
+        monkeypatch.setattr(security, "AUTH_ENFORCED", True)
+        started = with_auth(config, secret_key=OWN_KEY)
+        server = SetupServer("setup", written(started, tmp_path, status.SHIPPED_SIGNING_KEYS[0]),
+                             ToolServerConfig(type="setup", enabled=True))
+
+        auth = (await server.call_with_status("setup_status", AT_THE_MACHINE))["auth"]
+
+        assert (auth["shared_signing_key"], auth["signing_key_needs_restart"],
+                auth["configured_signing_key_known"]) == (False, True, True), auth
 
     async def test_an_account_named_cli_user_is_judged_as_the_account(self, server, users, monkeypatch):
         """The name is reserved since 22.09.2026: an account made before still logs in, and is no owner for its name."""
@@ -201,7 +243,7 @@ class TestThePanelContract:
         assert state["keys"] and set(state["keys"][0]) == {"name", "state", "named_in"}
         assert set(state["chat"]) == {"agent", "profile"}
         assert set(state["auth"]) == {"admin", "default_admin_password", "shared_signing_key",
-                                      "signing_key_needs_restart"}
+                                      "signing_key_needs_restart", "configured_signing_key_known"}
 
 
 @pytest.fixture
@@ -263,31 +305,36 @@ class TestThePanelEndpoints:
 
         assert probe["agent"] == state["chat"]["agent"] == config.default_agent, (probe, state["chat"])
 
-    @pytest.mark.parametrize("reloaded_with_auth", [True, False])
-    def test_a_key_reloaded_since_the_start_waits_for_a_restart(self, app, server, config, monkeypatch,
-                                                                reloaded_with_auth):
-        """The API signs with the key it set at start for as long as it runs, whatever a reload says -- authentication
-        turned off included. The start is set here: config.yaml's own key must not decide the test."""
+    @pytest.mark.parametrize("now_on_disk, verdict", [("own", (True, True, False)), ("shipped", (False, True, True))])
+    def test_a_key_written_since_the_start_waits_for_a_restart(self, app, server, config, monkeypatch, tmp_path,
+                                                               now_on_disk, verdict):
+        """The API signs with the key it set at start for as long as it runs, whatever the file or a reload says
+        since. An own key written over the shipped one is not in use yet; the shipped one back on disk (a pull)
+        is to fix before the restart makes every login forgeable -- told apart from the first."""
         from agent_system.auth import security
         shipped = status.SHIPPED_SIGNING_KEYS[0]
-        monkeypatch.setattr(server, "system_config", with_auth(config, enabled=True, secret_key=shipped))
-        monkeypatch.setattr(security, "SECRET_KEY", shipped)  # as set_jwt_config did at start
-        app.state.config = with_auth(config, enabled=reloaded_with_auth, secret_key="reloaded-own-key-0123456789abcdef")
+        running, on_disk = (shipped, OWN_KEY) if now_on_disk == "own" else (OWN_KEY, shipped)
+        started = with_auth(config, enabled=True, secret_key=running)
+        monkeypatch.setattr(server, "system_config", written(started, tmp_path, on_disk))
+        monkeypatch.setattr(security, "SECRET_KEY", running)  # as set_jwt_config did at start
+        monkeypatch.setattr(security, "AUTH_ENFORCED", True)
         app.dependency_overrides[require_admin_viewer] = lambda: None
 
         state = TestClient(app).get("/plugins/setup/state").json()["auth"]
 
-        assert (state["shared_signing_key"], state["signing_key_needs_restart"]) == (True, True), state
+        assert (state["shared_signing_key"], state["signing_key_needs_restart"],
+                state["configured_signing_key_known"]) == verdict, state
 
-    def test_started_without_authentication_nothing_signs_to_compare(self, app, server, config, monkeypatch):
-        own = "own-key-of-this-installation-0123456789"
-        monkeypatch.setattr(server, "system_config", with_auth(config, enabled=False, secret_key=own))
-        app.state.config = server.system_config
+    def test_started_without_authentication_nothing_signs_to_compare(self, app, server, config, monkeypatch,
+                                                                      tmp_path):
+        started = with_auth(config, enabled=False, secret_key=OWN_KEY)
+        monkeypatch.setattr(server, "system_config", written(started, tmp_path, OWN_KEY))
         app.dependency_overrides[require_admin_viewer] = lambda: None
 
         state = TestClient(app).get("/plugins/setup/state").json()["auth"]
 
-        assert (state["shared_signing_key"], state["signing_key_needs_restart"]) == (False, None), state
+        assert (state["shared_signing_key"], state["signing_key_needs_restart"],
+                state["configured_signing_key_known"]) == (False, None, False), state
 
     def test_the_page_renders_on_the_kit(self, app):
         page = TestClient(app).get("/plugins/setup/")

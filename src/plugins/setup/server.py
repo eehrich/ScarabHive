@@ -27,17 +27,24 @@ logger = logging.getLogger(__name__)
 templates = ui_templates(Path(__file__).parent / "templates")
 
 
-def installation_state(config: Any, auth_config: Any = None, signing_key: Optional[str] = None) -> dict[str, Any]:
+def installation_state(config: Any, signing_key: Optional[str] = None) -> dict[str, Any]:
     """Keys (never a value), the default chat, the admin's password and the signing key.
 
     *config* is the one the process started with -- the chat's entry agent and its
     client stay until a restart, whatever a reload says, and so do the checking of
-    logins and the key they are signed with (*signing_key*). *auth_config* is the one
-    a reload set since: its signing key is what a restart applies.
+    logins and the key they are signed with (*signing_key*). The key a restart
+    applies is read from the config file.
     """
     agent, profile = default_chat_profile(config)
     return {"keys": keys_status(getattr(config, "source_path", None)), "chat": {"agent": agent, "profile": profile},
-            "auth": auth_status(config, signing_key, auth_config)}
+            "auth": auth_status(config, signing_key)}
+
+
+def running_signing_key() -> Optional[str]:
+    """The key this process signs logins with -- only the API with authentication does (set_jwt_config, at start,
+    whatever a reload says since). None anywhere else: agent-cli, a woken run, an API without authentication."""
+    from agent_system.auth import security
+    return security.SECRET_KEY if security.AUTH_ENFORCED else None
 
 
 #: agent-cli's identity when no --session-user is given: a name no account may take (reserved
@@ -96,9 +103,10 @@ class SetupServer(SchemaBasedToolServer):
         refused = await refusal(params, self.system_config, status, "setup status", "read the setup status")
         if refused:
             return refused
-        state = await asyncio.to_thread(installation_state, self.system_config)
-        if state["auth"]["shared_signing_key"] is False:
-            # This process need not be the API: an own key configured says nothing of the one it signs with.
+        signing_key = running_signing_key()
+        state = await asyncio.to_thread(installation_state, self.system_config, signing_key)
+        if signing_key is None and state["auth"]["shared_signing_key"] is False:
+            # Not the API: an own key configured says nothing of the one it signs with.
             state["auth"]["shared_signing_key"] = None
         unset = [key["name"] for key in state["keys"] if key["state"] != "set"]
         await status.end(f"{len(state['keys'])} keys, {len(unset)} not set"
@@ -144,11 +152,7 @@ class SetupServer(SchemaBasedToolServer):
         return templates.TemplateResponse(request, "panel.html", {"plugin": self.name})
 
     async def get_state(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
-        from agent_system.auth import security
-        # Whether the API signs is settled at start (set_jwt_config, the middleware), whatever a
-        # reload says since; a reload replaces app.state.config, whose key a restart applies.
-        signing_key = security.SECRET_KEY if self.system_config.auth.enabled else None
-        return await asyncio.to_thread(installation_state, self.system_config, request.app.state.config, signing_key)
+        return await asyncio.to_thread(installation_state, self.system_config, running_signing_key())
 
     async def post_probe(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
         # A probe costs a request: JSON only, so a page elsewhere cannot send one on the admin's cookie
