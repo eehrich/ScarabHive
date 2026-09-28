@@ -655,8 +655,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Re-read a session another process continued while this one had it
         loaded but not yet held.
 
-        SessionManager says whether the file moved since this process last read
-        or wrote it. Where it has no stamp -- its cache is bounded -- the longer
+        SessionManager says whether the file moved since this process last wrote
+        it or read it into a tracker -- not since the web UI last showed it, a
+        load that puts nothing in memory. Where it has no stamp -- it is bounded with its cache -- the longer
         conversation wins: re-reading unasked undoes a run of this process whose
         save is still to come, and that run's answer is nowhere else.
         """

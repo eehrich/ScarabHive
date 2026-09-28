@@ -153,17 +153,16 @@ class SessionService:
         try:
             session_data = await self.session_manager.load_session(user_id, session_id)
 
-            if not session_data.get("messages"):
-                logger.debug(f"[SESSION] Session {session_id} found but has no messages")
-                return True, 0
-
+            # A record with no messages is read in like any other -- its metadata and vars included. Left out,
+            # a copy in memory that another process emptied since (/undo down to nothing) stayed, and the next
+            # save wrote it back.
             # Convert dict messages to ChatMessage objects
             from agent_system.llm.models import ChatMessage
             messages_objects = []
 
             from agent_system.utils.json_utils import history_safe_tool_calls
 
-            for msg_dict in session_data["messages"]:
+            for msg_dict in session_data.get("messages") or []:
                 try:
                     # Sanitize on restore: invalid arguments JSON in persisted
                     # tool calls poisons every later request of the session.
@@ -203,6 +202,12 @@ class SessionService:
                             agent._session_tracker.set_session_template_vars(session_id, default_vars)
                             logger.debug(f"[SESSION] Initialized session template_vars from agent config defaults: {list(default_vars.keys())}")
 
+            # In the tracker now: what the load read is what this process has (changed_on_disk). Not allowed
+            # to turn the restore into a failure: open_for_run would take the session for a new one and drop it.
+            try:
+                self.session_manager.mark_seen(session_id)
+            except Exception as e:  # noqa: BLE001 - a stamp missed means a guess by length at the next claim
+                logger.warning("[SESSION] Could not mark %s as seen: %s", session_id, e)
             logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
 

@@ -435,6 +435,34 @@ async def test_an_append_while_a_run_opens_the_session_is_not_read_over(api, mon
     assert [m["content"] for m in stored["messages"]][-1] == "follow-up", "read over by the opening"
 
 
+async def test_what_another_process_wrote_is_read_back_after_the_web_ui_showed_the_session(api):
+    """The web UI opening a session loads it (GET /api/sessions/{id}) through the same session manager, and that
+    load counted as seen: the next append's claim took what another process had written before it for this
+    process's own, appended to the stale copy in memory and saved it over the other process's turn."""
+    await _stored(api, messages=[{"role": "user", "content": "first question"}])  # written here: seen
+    api.app.state.agent._session_tracker.set_session_messages(
+        "s1", [ChatMessage(role="user", content="first question")])
+    await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+    woken = SessionManager(storage_path=str(api.manager.storage_path))  # another process continues it
+    session = await woken.load_session(USER, "s1")
+    session["messages"].append({"role": "assistant", "content": "answer of the woken run"})
+    await woken.save_session(session)
+
+    from agent_system.api import session_endpoints
+
+    # The web UI opens it: GET /api/sessions/{id}, through the session manager the app runs on
+    shown = await session_endpoints.get_session("s1", current_user=None, session_manager=api.manager,
+                                                default_agent=None, tool_registry=None)
+    async with _client(api.app) as client:
+        response = await client.post("/sessions/s1/append", json={"content": "follow-up"}, timeout=60.0)
+
+    assert [m["content"] for m in shown["messages"]] == ["first question", "answer of the woken run"]
+    assert response.status_code == 200, response.text
+    stored = await woken.load_session(USER, "s1", bypass_cache=True)
+    assert [m["content"] for m in stored["messages"]] == [
+        "first question", "answer of the woken run", "follow-up"], "the other process's turn was saved over"
+
+
 async def test_a_session_that_cannot_be_read_is_not_left_held(api, monkeypatch):
     # Everything between taking the hold and handing it back has to let go
     # again: in this long-lived process a hold nobody releases refuses every

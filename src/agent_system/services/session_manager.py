@@ -99,6 +99,11 @@ class SessionManager:
         
         # In-memory cache: {session_id: (session_data, timestamp)}
         self._cache: Dict[str, tuple[Dict[str, Any], float]] = {}
+        # When this process last had a session's file as it is: its own writes, and a load read into a tracker
+        # (mark_seen). Apart from the cache: a load only to show or ask a session caches it, and counted as seen
+        # it hid what another process wrote from changed_on_disk. Bounded on its own (SEEN_KEPT): tied to the
+        # cache, sessions only browsed pushed out the stamps of sessions that sit in a tracker.
+        self._seen: dict[str, float] = {}
         self._cache_ttl = 300  # 5 minutes
         self._max_cache_size = 200  # Maximum cached sessions to prevent memory leak
         self._lock = asyncio.Lock()
@@ -884,6 +889,7 @@ class SessionManager:
             # Cache the new session (with cleanup if needed)
             self._cleanup_cache()
             self._cache[sid] = (session_data, time.time())
+            self._saw(sid, self._cache[sid][1])  # written here: seen
             
             # Update index
             await self._update_index_entry(
@@ -923,28 +929,46 @@ class SessionManager:
             return False
 
     def changed_on_disk(self, user_id: str, session_id: str) -> Optional[bool]:
-        """Whether the file holds something this manager has not seen -- another
+        """Whether the file holds something this process has not seen -- another
         process continued the session.
 
-        Its own loads and saves both stamp the cache, so they are not a change:
-        a caller that has newer messages in memory than on disk (between a run
-        and its save) must not be sent back to the file for them. None where
-        there is no stamp: the cache is bounded (TTL and LRU), so a session
-        missing from it is not an answer either way.
+        Seen is what this manager wrote, and a load read into a tracker
+        (SessionService.load_and_restore_session marks it): a caller that has
+        newer messages in memory than on disk (between a run and its save)
+        must not be sent back to the file for them. A load that only shows or
+        asks the session (the web UI opening it) is not seen: counted, what
+        another process wrote before it was hidden from the next claim, which
+        ran on its stale copy and saved it over that turn. None where there is
+        no stamp: it is bounded (SEEN_KEPT), so a session missing from it is
+        not an answer either way.
         """
-        cached = self._cache.get(session_id)
-        if cached is None:
+        seen = self._seen.get(session_id)
+        if seen is None:
             return None
-        return self._written_since(user_id, session_id, cached[1])
+        return self._written_since(user_id, session_id, seen)
+
+    def mark_seen(self, session_id: str) -> None:
+        """The session's last load went into a tracker: what it read counts as seen (changed_on_disk)."""
+        cached = self._cache.get(session_id)
+        if cached is not None:
+            self._saw(session_id, cached[1])
+
+    #: How many sessions keep what was seen of them (changed_on_disk). A stamp does not grow old -- the file is
+    #: newer than it or not -- so it goes only when newer ones push it out.
+    SEEN_KEPT = 10000
+
+    def _saw(self, session_id: str, when: float) -> None:
+        self._seen.pop(session_id, None)
+        self._seen[session_id] = when
+        while len(self._seen) > self.SEEN_KEPT:
+            del self._seen[next(iter(self._seen))]
 
     async def peek_session(self, user_id: str, session_id: str) -> dict[str, Any]:
-        """The session as it lies on disk, read without taking it as seen.
+        """The session as it lies on disk, read past the cache and without a trace in it.
 
-        load_session stamps the cache, and changed_on_disk then counts what the
-        file holds as this manager's own: a caller that only asks the record
-        something (which agent it ran with) before it claims the session made
-        the claim miss what another process wrote meanwhile -- the copy in
-        memory stayed stale and was written back over it.
+        For a caller that only asks the record something (which agent it ran
+        with) before it claims the session: nothing of the answer may count as
+        seen (changed_on_disk), and none of it needs caching.
 
         Raises:
             SessionNotFoundError: If session doesn't exist
@@ -1082,6 +1106,7 @@ class SessionManager:
             
             # Update cache
             self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
             
             # Update index (use global lock for index file)
             async with self._lock:
@@ -1146,6 +1171,7 @@ class SessionManager:
             
             # Update cache
             self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
             
             logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
@@ -1188,6 +1214,7 @@ class SessionManager:
             session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             await self._write_session_file(path, session_data)
             self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
             logger.debug("Replaced context_vars for session %s: keys=%s",
                          session_id, sorted(context_vars))
             return True
@@ -1259,6 +1286,7 @@ class SessionManager:
 
             # Remove from cache
             self._cache.pop(session_id, None)
+            self._seen.pop(session_id, None)
             
             # Remove from index (target the right partition based on parent)
             await self._remove_index_entry(
@@ -1306,6 +1334,7 @@ class SessionManager:
 
             await self._atomic_write_async(path, session_data)
             self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
             await self._update_index_entry(
                 user_id, session_id, self._index_metadata(session_data),
             )
@@ -1543,6 +1572,7 @@ class SessionManager:
     def clear_cache(self) -> None:
         """Clear the in-memory session cache."""
         self._cache.clear()
+        self._seen.clear()
         logger.debug("Session cache cleared")
 
     def get_cache_stats(self) -> Dict[str, Any]:
