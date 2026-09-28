@@ -424,6 +424,26 @@ class SessionTracker:
         self._sessions.setdefault(session_id, [])
         # Map request to session
         self._request_to_session[request_id] = session_id
+        self._forget_ended_requests()
+
+    #: How many ended requests keep their request -> session mapping. It outlives the request on purpose -- an
+    #: append to a run that ended a moment ago still finds its session (app: /events/{id}/append falls back to
+    #: it), and the admin view and the job manager name a finished job's session -- but kept for every request,
+    #: a one-shot call's included (hundreds per book), it grew for the life of the process.
+    ENDED_REQUESTS_KEPT = 1000
+
+    def _forget_ended_requests(self) -> None:
+        """The oldest mappings of ended requests, past ENDED_REQUESTS_KEPT. An active request's never goes: a run
+        and whatever waits on its lock (the sub-agent manager) look it up while it lasts."""
+        excess = len(self._request_to_session) - self.ENDED_REQUESTS_KEPT
+        if excess <= 0:
+            return
+        for request_id in list(self._request_to_session):
+            if excess <= 0:
+                break
+            if request_id not in self._active_requests:
+                del self._request_to_session[request_id]
+                excess -= 1
 
     def unregister_request(self, request_id: str) -> None:
         """
