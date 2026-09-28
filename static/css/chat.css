@@ -171,13 +171,26 @@
 .operation-progress.unfinished .progress-message { color: var(--text-muted); }
 .progress-open-note { color: var(--text-muted); font-style: italic; flex: none; }
 
-/* A question a hook put to the person watching the run (tool_approval): the
-   call's arguments and the three answers, under the row that asks. */
-.approval-actions {
+/* A question the run put to the person watching it, under the row that asks:
+   tool_approval's (the call's arguments and three answers) or ask_user's (the
+   model's question, its options, a field for an answer in one's own words). */
+.question-actions {
   margin: var(--space-1) 0 var(--space-2) var(--space-5); padding: var(--space-2);
   border-left: 2px solid var(--accent); background: var(--surface-1);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+.ask-user-question {
+  margin: 0 0 var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--text-sm); color: var(--text-primary);
+}
+.ask-user-options { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
+/* an option is the model's text: it wraps rather than running out of the box */
+.ask-user-options .pk-btn { height: auto; min-height: var(--control-h-sm); white-space: normal; text-align: left; }
+label.ask-user-option {
+  display: inline-flex; align-items: center; gap: var(--space-1); cursor: pointer;
+  font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere;
+}
+.ask-user-text { flex: 1 1 14em; min-width: 0; height: var(--control-h-sm); font-size: var(--text-xs); }
 .approval-arguments {
   margin: 0 0 var(--space-2); max-height: 24em; overflow: auto; white-space: pre-wrap;
   overflow-wrap: anywhere; font: 400 var(--text-xs)/1.5 var(--font-mono); color: var(--text-secondary);

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -32,6 +33,18 @@ def is_volatile_note(msg: object) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+#: Every tracker of this process -- one per agent. A run's messages wait in the
+#: tracker of the agent that runs it, and a question asked in a sub-run (another
+#: agent) looks up whether the person wrote to a run above it (ask_user).
+_trackers: "weakref.WeakSet[SessionTracker]" = weakref.WeakSet()
+
+
+def message_waits_for(request_id: str) -> bool:
+    """Whether a message the person wrote into the active run ``request_id``
+    waits for that run's next step, whichever agent runs it."""
+    return bool(request_id) and any(tracker.has_appended(request_id) for tracker in list(_trackers))
 
 
 class SessionTracker:
@@ -117,6 +130,7 @@ class SessionTracker:
 
         # Lock for concurrent access (appends/drains/lock bookkeeping)
         self._lock = asyncio.Lock()
+        _trackers.add(self)
 
     async def is_request_active(self, request_id: str) -> bool:
         """Check if a request is currently active (still running).
@@ -401,6 +415,13 @@ class SessionTracker:
                     except Exception as e:
                         logger.debug(f"Failed to clear message event: {e}")
         return messages
+
+    def has_appended(self, request_id: str) -> bool:
+        """Whether a message appended to the active request waits for its next
+        step (append_user_message, not yet drained): a person wrote into the
+        run. A tool that waits for that person (ask_user) stops waiting then."""
+        entry = self._active_requests.get(request_id)
+        return isinstance(entry, dict) and bool(entry.get('appended'))
 
     def register_request(self, request_id: str, session_id: str, request_entry: Dict[str, Any]) -> None:
         """
