@@ -1,5 +1,5 @@
 // Lessons Learned: the lessons the agents keep, of every agent; edited, searched, consolidated and cleaned up here.
-import { api, html, render, icon, confirm } from '/static/kit/panel-kit.js';
+import { api, html, render, icon, confirm, toast } from '/static/kit/panel-kit.js';
 
 const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
 const $ = (id) => document.getElementById(id);
@@ -7,6 +7,8 @@ const PAGE = 50;
 const FIELDS = ['agent_name', 'category', 'title', 'content', 'status', 'source_type', 'priority', 'confidence'];
 const STATUSES = { active: 'ok', draft: 'warn', inactive: '', archived: '' };
 const SOURCES = { manual: 'Manual', cross_agent: 'Cross-agent', reflection: 'Reflection', auto: 'Auto' };
+/** What an answer that still did its job could not do: a lesson stored, but out of the search index. */
+const warn = (answer) => (answer?.warnings || []).forEach((text) => toast(text, { kind: 'warn' }));
 
 /** The lessons shown. */
 let lessons = [];
@@ -197,7 +199,7 @@ async function save(event) {
   if (fields.tags.value !== shownTags) lesson.tags = fields.tags.value.split(',');  // trimmed and emptied out by the store
   $('save').disabled = true;
   try {
-    await api(editing ? lessonUrl(editing) : `${BASE}lessons`, { method: editing ? 'PUT' : 'POST', json: lesson });
+    warn(await api(editing ? lessonUrl(editing) : `${BASE}lessons`, { method: editing ? 'PUT' : 'POST', json: lesson }));
     $('editor').close();
     refresh();
   } catch {
@@ -245,11 +247,14 @@ function consolidated(result) {
     if (item.action === 'merged' || item.action === 'would_merge') {
       const merged = item.action === 'merged';
       return html`<li>${badge(merged ? 'ok' : 'info', merged ? 'Merged' : 'Would merge')} <strong>${item.merged_title}</strong>:
-        keeps ${ids([item.primary_id])}, ${merged ? 'deleted' : 'would delete'} ${ids(item.deleted)}</li>`;
+        keeps ${ids([item.primary_id])}, ${merged ? 'deleted' : 'would delete'} ${ids(item.deleted)}
+        ${(item.warnings || []).map((text) => html`<div>${badge('warn', 'Not re-indexed')} ${text}</div>`)}</li>`;
     }
     if (item.action === 'skipped') return html`<li>${badge('warn', 'Skipped')} ${ids(item.lessons)}: ${item.reason}</li>`;
     return html`<li>${badge('', 'Kept separate')} ${ids(item.lessons)}</li>`;
   };
+  // agents whose lessons could not be compared: "no similar lessons" would be a verdict nobody made
+  const unscanned = (result.warnings || []).map((text) => html`<li>${badge('warn', 'Not scanned')} ${text}</li>`);
   return html`<div class="pk-stack">
     <dl class="pk-kv">
       <dt>Run</dt><dd>${result.dry_run ? 'Dry run, nothing changed' : 'Merged'}</dd>
@@ -258,7 +263,7 @@ function consolidated(result) {
       <dt>${result.dry_run ? 'Lessons that would go' : 'Lessons merged away'}</dt><dd data-cell="merged">${result.lessons_merged}</dd>
       <dt>Clusters skipped</dt><dd>${result.clusters_skipped}</dd>
     </dl>
-    ${result.details.length ? html`<ul class="ll-details">${result.details.map(detail)}</ul>`
+    ${result.details.length || unscanned.length ? html`<ul class="ll-details">${unscanned}${result.details.map(detail)}</ul>`
     : html`<div class="pk-muted">No similar lessons found.</div>`}
   </div>`;
 }

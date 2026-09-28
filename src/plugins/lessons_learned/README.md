@@ -379,7 +379,9 @@ Automatically extracts lessons from conversation history using LLM analysis.
 2. Sends to LLM with extraction prompt (turbo profile by default)
 3. LLM identifies patterns, corrections, preferences, mistakes
 4. Returns structured JSON with lesson candidates
-5. Each candidate goes through deduplication check
+5. Each candidate goes through deduplication check; a candidate whose check
+   cannot run (no embedding model) is skipped, not stored unchecked — it would
+   come back as a new copy at every session end
 6. New lessons stored with `source_type="auto"` (confidence: 0.4)
 7. Similar lessons get merged (evidence added instead of duplicate)
 8. Logs extraction attempt (success/failure, token usage)
@@ -566,6 +568,13 @@ When storing a new lesson:
 3. If similarity > 0.95 (exact duplicate): Add evidence to existing lesson
 4. If 0.82 < similarity < 0.95: Return conflict warning, let user decide
 5. If similarity < 0.82: Store as new lesson
+
+Without the embedding model (a core install without torch) no vector call
+works, and every answer says so instead of passing for a verdict: `store` and
+`teach` still store the row but return `warnings` (no duplicate check ran; not
+in the semantic index, so search will not find it — `list` does), and `search`
+returns an error rather than zero results. A search where only some agents'
+indexes fail returns the hits it has plus `warnings` naming the others.
 
 ### Confidence Dynamics
 

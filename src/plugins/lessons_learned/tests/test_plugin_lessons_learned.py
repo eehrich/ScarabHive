@@ -1209,6 +1209,180 @@ class TestWhatAgentsSend:
         assert found == {"Raw": ["a", "b"], "Quoted": ["c", "d"]}
 
 
+class TestWithoutAnEmbeddingModel:
+    """No embedding model (a core install without torch, say): every vector call
+    fails. Each answer used to read as a verdict -- "no duplicate", "stored" as
+    if searchable, "0 results" -- while nothing had been checked."""
+
+    @pytest.fixture
+    def no_model(self, monkeypatch):
+        from agent_system.utils import vector_store
+
+        def missing():
+            raise RuntimeError("no embedding model")
+
+        monkeypatch.setattr(vector_store, "get_embedding_model", missing)
+
+    async def test_the_duplicate_check_says_it_did_not_run(self, server, no_model):
+        result = await server.check_duplicate("a", "Title", "Content")
+        assert not result.is_duplicate
+        assert result.error and "no embedding model" in result.error
+
+    @pytest.mark.parametrize("operation", ["store", "teach"])
+    async def test_a_lesson_stored_unchecked_and_unindexed_says_both(self, server, no_model, operation):
+        result = await server.execute({"operation": operation, "title": "T", "content": "C",
+                                       "target_agent": "b", "_agent_name": "a", "_session_id": "s"})
+        assert result["status"] == "stored"
+        # one for the check that did not run, one for the vector that was not written
+        assert sum("no embedding model" in warning for warning in result["warnings"]) == 2
+
+    async def test_a_search_that_could_not_run_is_an_error_not_an_empty_answer(self, server, no_model):
+        await server.store_lesson(agent_name="a", title="Pin the data dir", content="C", status="active")
+        result = await server.execute({"operation": "search", "query": "data dir",
+                                       "_agent_name": "a", "_session_id": "s"})
+        assert "no embedding model" in result["error"]
+
+    async def test_the_panel_search_answers_an_error_too(self, server, no_model):
+        from fastapi import HTTPException
+
+        from plugins.lessons_learned.web_endpoints import LessonsWebFactory, SearchForm
+
+        await server.store_lesson(agent_name="a", title="Pin the data dir", content="C", status="active")
+        with pytest.raises(HTTPException) as raised:
+            await LessonsWebFactory(server).search_lessons(MagicMock(), SearchForm(query="data dir"))
+        assert raised.value.status_code == 503 and "no embedding model" in raised.value.detail
+
+    async def test_an_update_not_re_indexed_says_so(self, server, no_model):
+        stored = await server.store_lesson(agent_name="a", title="Old", content="Old text")
+        result = await server.update_lesson(stored["lesson_id"], content="New text")
+        assert result["status"] == "updated"
+        assert "no embedding model" in " ".join(result["warnings"])
+
+    async def test_a_merge_not_re_indexed_says_so(self, server, no_model):
+        first = await server.store_lesson(agent_name="a", title="One", content="C")
+        second = await server.store_lesson(agent_name="a", title="Two", content="C")
+        lessons = [await server.get_lesson(first["lesson_id"]), await server.get_lesson(second["lesson_id"])]
+        result = await server._execute_merge(agent="a", lessons=lessons, merge_decision={
+            "primary_id": first["lesson_id"], "title": "Both", "content": "Merged"})
+        assert result["action"] == "merged" and result["deleted"] == [second["lesson_id"]]
+        assert "no embedding model" in " ".join(result["warnings"])
+
+    async def test_a_consolidation_that_compared_nothing_says_so(self, server, no_model):
+        """"clusters_found: 0" read as "no similar lessons" -- nothing had been compared."""
+        await server.store_lesson(agent_name="a", title="Pin the data dir", content="C")
+        await server.store_lesson(agent_name="a", title="Pin the data dir!", content="C")
+        result = await server.consolidate_lessons(agent_name="a", dry_run=True)
+        assert result["clusters_found"] == 0
+        assert "no embedding model" in " ".join(result["warnings"])
+
+    async def test_extraction_stores_nothing_it_could_not_check(self, server, no_model, monkeypatch):
+        """Stored unchecked, the same lesson came back as a new copy at every
+        session end until the agent's limit was full."""
+        from agent_system.llm import factory
+        from plugins.lessons_learned.extraction import extract_lessons_from_conversation
+
+        llm = MagicMock()
+        llm.chat = AsyncMock(return_value=json.dumps(
+            {"lessons": [{"title": "Pin the data dir", "content": "Tests pin it relative."}]}))
+        monkeypatch.setattr(factory, "create_llm_from_profile", lambda **kwargs: llm)
+        messages = [{"role": "user", "content": "x" * 200}, {"role": "assistant", "content": "y" * 200}]
+
+        result = await extract_lessons_from_conversation(messages, "a", "s-1", server)
+
+        llm.chat.assert_awaited_once()
+        assert (result.created_count, result.skipped_count) == (0, 1)
+        assert (await server.list_lessons(agent_name="a"))["lessons"] == []
+
+
+async def test_a_search_names_the_agents_it_could_not_search(server):
+    """Only one agent's index fails: the other's hits are real, but the answer
+    must not pass for the whole picture."""
+    await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative in tests.", status="active")
+    await server.store_lesson(agent_name="b", title="Pin the data dir", content="Relative in tests.", status="active")
+    real_query, broken = server.vector_store.query, server._collection_name("b")
+
+    def query(**kwargs):
+        if kwargs["collection"] == broken:
+            raise RuntimeError("index of b unreadable")
+        return real_query(**kwargs)
+
+    server.vector_store.query = query
+    result = await server.search_lessons("data dir", status=None)
+
+    assert [hit["agent_name"] for hit in result["results"]] == ["a"]
+    assert "index of b unreadable" in " ".join(result["warnings"])
+
+
+async def test_a_lesson_moved_to_another_agent_keeps_its_vector_when_the_add_fails(server):
+    """The old vector was deleted before the add to the new agent's collection,
+    so a failed add left the lesson in no index at all."""
+    stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative in tests.")
+
+    def no_add(**kwargs):
+        raise RuntimeError("index full")
+
+    server.vector_store.add = no_add
+    result = await server.update_lesson(stored["lesson_id"], agent_name="b")
+    found = await server.search_lessons("data dir", agent_name="a", status=None)
+
+    assert "index full" in " ".join(result["warnings"])
+    assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+
+
+async def test_a_move_between_names_of_one_collection_keeps_the_vector(server):
+    """web-research and web_research share a collection: deleting from the "old"
+    one after the add removed the vector just written."""
+    stored = await server.store_lesson(agent_name="web-research", title="Pin the data dir", content="Relative.")
+    assert server._collection_name("web-research") == server._collection_name("web_research")
+
+    await server.update_lesson(stored["lesson_id"], agent_name="web_research")
+    found = await server.search_lessons("data dir", agent_name="web_research", status=None)
+
+    assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+
+
+async def test_a_save_that_changes_no_text_does_not_re_index(server):
+    """The panel sends every field on every save. Re-embedding an unchanged text
+    warned, with the store down, that search no longer saw the lesson."""
+    stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+
+    def no_add(**kwargs):
+        raise RuntimeError("index full")
+
+    server.vector_store.add = no_add
+    result = await server.update_lesson(stored["lesson_id"], title="Pin the data dir", content="Relative.",
+                                        priority=7)
+
+    assert result["status"] == "updated" and "warnings" not in result
+
+
+async def test_a_merge_indexes_the_primary_by_its_own_text(server):
+    """Where the merge decision leaves title and content out, the primary keeps
+    its own -- its vector had been written from lessons[0], a duplicate."""
+    duplicate = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+    primary = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+    lessons = [await server.get_lesson(duplicate["lesson_id"]), await server.get_lesson(primary["lesson_id"])]
+
+    await server._execute_merge(agent="a", lessons=lessons, merge_decision={"primary_id": primary["lesson_id"]})
+    stored = server.vector_store.query(collection=server._collection_name("a"), query_text="Pin the data dir",
+                                       n_results=5, include=["documents"])
+
+    assert dict(zip(stored["ids"][0], stored["documents"][0])) == {primary["lesson_id"]: "Pin the data dir. Relative."}
+
+
+async def test_the_search_status_line_counts_what_was_found(server):
+    """It read a key the answer never had and said "Found 0 lessons" after every search."""
+    await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative in tests.", status="active")
+    status = MagicMock()
+    status.progress, status.end = AsyncMock(), AsyncMock()
+
+    result = await server.execute({"operation": "search", "query": "data dir", "_agent_name": "a",
+                                   "_session_id": "s", "_status": status})
+
+    assert result["count"] == 1
+    assert f"Found {result['count']} " in status.end.call_args.args[0]
+
+
 def stored_tags(server: LessonsLearnedServer, lesson_id: str):
     conn = server._get_connection()
     try:

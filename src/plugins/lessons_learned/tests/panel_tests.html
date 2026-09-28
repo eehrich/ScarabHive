@@ -598,6 +598,48 @@
       && head('Prio.').getAttribute('aria-sort') === 'ascending';
   });
 
+  await check('without the embedding model a save warns that search will miss the lesson, and a consolidation names what it could not scan', async () => {
+    const warnings = () => [...doc().querySelectorAll('.pk-toast--warn')].map((toast) => toast.textContent);
+    if (!$('#clearSearch').hidden) $('#clearSearch').click();
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => rows().length && ids().every((id) => id.startsWith('coder_')));
+    await stub('no-model');
+    try {
+      $('#create').click();
+      type('editorForm', 'title', 'Stored without the model');
+      type('editorForm', 'content', 'Out of the search index.');
+      $('#save').click();
+      await until('the editor closed', () => !$('#editor').open);
+      const warned = await until('the warning', () => warnings().some((text) => text.includes('No embedding model installed')));
+      $('#consolidate').click();
+      $('#runConsolidate').click();
+      await until('the consolidation done', () => $('#consolidateResult [data-cell="merged"]'));
+      const result = $('#consolidateResult').textContent;
+      $('#consolidator [data-close]').click();
+      return warned && result.includes('Not scanned') && result.includes('No embedding model installed')
+        && !result.includes('No similar lessons found');
+    } finally {
+      await stub('model');
+    }
+  });
+
+  await check('a merge the search index could not take says so under the merge', async () => {
+    await stub('llm-works');
+    await stub('no-add');
+    try {
+      $('#consolidate').click();
+      type('consolidateForm', 'agent_name', 'bulk');
+      field('consolidateForm', 'dry_run').checked = false;
+      $('#runConsolidate').click();
+      await until('the merge done', () => $('#consolidateResult [data-cell="merged"]'));
+      const result = $('#consolidateResult').textContent;
+      $('#consolidator [data-close]').click();
+      return result.includes('Merged:') && result.includes('Not re-indexed') && result.includes('No embedding model installed');
+    } finally {
+      await stub('model');
+    }
+  });
+
   await fetch('/__results', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
 </script>

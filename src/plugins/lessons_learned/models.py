@@ -102,6 +102,9 @@ class DeduplicationResult(BaseModel):
     existing_lesson_id: Optional[str] = None
     similarity: float = 0.0
     action: str = "create"  # create, confirm, merge
+    #: Why the check could not run. Set, is_duplicate False means "not
+    #: checked", not "no duplicate".
+    error: Optional[str] = None
 
 
 class LessonCandidate(BaseModel):

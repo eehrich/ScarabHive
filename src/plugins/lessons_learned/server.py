@@ -92,6 +92,20 @@ def _tags(value: Any) -> List[str]:
         value = str(value).split(",")
     return [str(tag).strip() for tag in value if str(tag).strip()]
 
+
+def _reason(error: Exception) -> str:
+    return f"{type(error).__name__}: {error}"[:300]
+
+
+def _unchecked(result: Dict[str, Any], dedup: DeduplicationResult) -> Dict[str, Any]:
+    """A lesson stored without the duplicate check says so -- "stored" alone
+    reads as "checked, and new"."""
+    if dedup.error and "error" not in result:
+        result.setdefault("warnings", []).append(
+            f"No duplicate check ran ({dedup.error}); if a similar lesson exists, "
+            "this is a second copy. Search or list before storing another one.")
+    return result
+
 # ==============================================================================
 # SQL Schema
 # ==============================================================================
@@ -359,6 +373,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             conn.close()
 
         # Store in VectorStore for semantic search
+        warnings: List[str] = []
         try:
             vector_text = f"{title}. {content}"
             await asyncio.to_thread(
@@ -369,16 +384,23 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 metadatas=[{"lesson_id": lesson_id, "agent_name": agent_name, "category": category}],
             )
         except Exception as e:
-            logger.warning(f"VectorStore add failed (non-critical): {e}")
+            # The row stands, so "stored" is true -- but search and the
+            # duplicate check read only the vectors and will never see it.
+            logger.warning(f"VectorStore add failed: {e}")
+            warnings.append(f"Not in the semantic index ({_reason(e)}): search and the "
+                            "duplicate check will not find this lesson; list shows it.")
 
         logger.info(f"Stored lesson {lesson_id} for agent '{agent_name}': {title}")
-        return {
+        result: Dict[str, Any] = {
             "status": "stored",
             "lesson_id": lesson_id,
             "agent_name": agent_name,
             "title": title,
             "lesson_status": status,
         }
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     async def search_lessons(
         self,
@@ -401,6 +423,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 conn.close()
 
         all_results: List[Dict[str, Any]] = []
+        failed: List[str] = []
         for agent in agents_to_search:
             try:
                 results = await asyncio.to_thread(
@@ -421,13 +444,18 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                             "similarity": round(similarity, 3),
                         })
             except Exception as e:
-                logger.debug(f"VectorStore query for {agent} failed: {e}")
+                logger.warning(f"VectorStore query for {agent} failed: {e}")
+                failed.append(f"{agent}: {_reason(e)}")
 
         # Sort by similarity, take top N
         all_results.sort(key=lambda r: r["similarity"], reverse=True)
         top_ids = [r["lesson_id"] for r in all_results[:limit]]
 
         if not top_ids:
+            if failed:
+                # "count 0" would read as "no such lesson" -- it is "not searched".
+                return {"error": f"The semantic search failed ({'; '.join(failed[:3])}). "
+                                 "List the lessons instead."}
             return {"query": query, "results": [], "count": 0}
 
         # Fetch full lesson data from SQLite
@@ -456,7 +484,10 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 lesson["tags"] = _tags(lesson.get("tags"))
                 results.append(lesson)
 
-        return {"query": query, "results": results, "count": len(results)}
+        answer: Dict[str, Any] = {"query": query, "results": results, "count": len(results)}
+        if failed:
+            answer["warnings"] = [f"Not searched: {'; '.join(failed[:3])}"]
+        return answer
 
     async def list_lessons(
         self,
@@ -546,11 +577,12 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         conn = self._get_connection()
         try:
             old_lesson = conn.execute(
-                "SELECT agent_name FROM lessons WHERE lesson_id = ?", (lesson_id,)
+                "SELECT agent_name, title, content FROM lessons WHERE lesson_id = ?", (lesson_id,)
             ).fetchone()
             if not old_lesson:
                 return {"error": f"Lesson '{lesson_id}' not found."}
             old_agent_name = old_lesson["agent_name"]
+            old_text = (old_lesson["title"], old_lesson["content"])
         finally:
             conn.close()
 
@@ -573,9 +605,14 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         finally:
             conn.close()
 
-        # Re-index in VectorStore if content/title/agent changed
+        # Re-index when what the vector is made of changed. Not when the key is
+        # merely there: the panel sends every field on every save, and each
+        # re-embedded an unchanged text -- with the store down, warning that
+        # search no longer sees a lesson it saw all along.
+        warnings: List[str] = []
         agent_name_changed = "agent_name" in updates and updates["agent_name"] != old_agent_name
-        if "title" in updates or "content" in updates or agent_name_changed:
+        text_changed = (to_update.get("title", old_text[0]), to_update.get("content", old_text[1])) != old_text
+        if text_changed or agent_name_changed:
             lesson = await self.get_lesson(lesson_id)
             if lesson:
                 new_agent_name = lesson["agent_name"]
@@ -587,8 +624,20 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 }
 
                 try:
-                    # If agent changed, delete from old collection
-                    if agent_name_changed:
+                    # Add/update in the (new) collection first: deleting from
+                    # the old one before an add that then failed left the
+                    # lesson in no index at all.
+                    await asyncio.to_thread(
+                        self.vector_store.add,
+                        collection=self._collection_name(new_agent_name),
+                        ids=[lesson_id],
+                        documents=[vector_text],
+                        metadatas=[metadata],
+                    )
+                    # Two names can share a collection (web-research, web_research):
+                    # the delete would then remove the vector just written.
+                    if agent_name_changed and (self._collection_name(old_agent_name)
+                                               != self._collection_name(new_agent_name)):
                         try:
                             await asyncio.to_thread(
                                 self.vector_store.delete,
@@ -597,19 +646,16 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                             )
                         except Exception as e:
                             logger.debug(f"VectorStore delete from old collection failed: {e}")
-
-                    # Add/update in (new) collection
-                    await asyncio.to_thread(
-                        self.vector_store.add,
-                        collection=self._collection_name(new_agent_name),
-                        ids=[lesson_id],
-                        documents=[vector_text],
-                        metadatas=[metadata],
-                    )
                 except Exception as e:
                     logger.warning(f"VectorStore re-index failed: {e}")
+                    warnings.append(f"Not re-indexed ({_reason(e)}): search and the duplicate "
+                                    "check do not see this version of the lesson.")
 
-        return {"status": "updated", "lesson_id": lesson_id, "updated_fields": list(updates.keys())}
+        result: Dict[str, Any] = {"status": "updated", "lesson_id": lesson_id,
+                                  "updated_fields": list(updates.keys())}
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     async def delete_lesson(self, lesson_id: str) -> Dict[str, Any]:
         """Delete a lesson from SQLite + VectorStore."""
@@ -975,6 +1021,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         total_merged = 0
         total_skipped = 0
         merge_details: List[Dict[str, Any]] = []
+        unscanned: List[str] = []  # agents whose lessons could not be compared at all
 
         async def _progress(phase: str, message: str, percent: int) -> None:
             if progress_callback:
@@ -989,7 +1036,11 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             agent_range_pct = int(90 / max(1, len(agents_to_process)))
 
             await _progress("scan", f"Scanning agent '{agent}' for similar lessons...", agent_base_pct)
-            clusters = await self._find_similar_clusters(agent, threshold)
+            try:
+                clusters = await self._find_similar_clusters(agent, threshold)
+            except Exception as e:
+                unscanned.append(f"{agent}: {_reason(e)}")
+                continue
             if not clusters:
                 continue
 
@@ -1083,7 +1134,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         await _progress("done", f"Consolidation complete: {total_merged} lessons merged, {total_skipped} clusters skipped", 100)
 
-        return {
+        answer: Dict[str, Any] = {
             "status": "completed",
             "agents_processed": len(agents_to_process),
             "clusters_found": total_clusters,
@@ -1092,6 +1143,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             "dry_run": dry_run,
             "details": merge_details,
         }
+        if unscanned:
+            answer["warnings"] = [f"Not scanned for similar lessons: {'; '.join(unscanned[:3])}"]
+        return answer
 
     async def _find_similar_clusters(
         self, agent_name: str, threshold: float
@@ -1113,6 +1167,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         # Build adjacency: for each lesson, find similar ones
         adjacency: Dict[str, set] = {lesson["lesson_id"]: set() for lesson in lessons}
+        failures: List[Exception] = []
 
         for lesson in lessons:
             try:
@@ -1136,7 +1191,13 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                             adjacency[lesson["lesson_id"]].add(rid)
                             adjacency[rid].add(lesson["lesson_id"])
             except Exception as e:
-                logger.debug(f"Similarity query failed for {lesson['lesson_id']}: {e}")
+                # One failed query costs little: similarity is symmetric, the
+                # other lessons' queries still find this one.
+                logger.warning(f"Similarity query failed for {lesson['lesson_id']}: {e}")
+                failures.append(e)
+        if failures and len(failures) == len(lessons):
+            # Nothing was compared -- "no cluster" would read as "no similar lessons".
+            raise failures[0]
 
         # Union-Find to build clusters
         parent: Dict[str, str] = {lid: lid for lid in adjacency}
@@ -1417,8 +1478,13 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 logger.debug(f"VectorStore delete after merge failed: {e}")
 
         # Re-index primary in VectorStore
+        warnings: List[str] = []
         try:
-            vector_text = f"{new_title or lessons[0]['title']}. {new_content or lessons[0]['content']}"
+            # What the primary holds now: its own row where the merge left a
+            # field out -- lessons[0] may be a duplicate just deleted.
+            primary = next(lesson for lesson in lessons if lesson["lesson_id"] == primary_id)
+            vector_text = (f"{update_fields.get('title', primary['title'])}. "
+                           f"{update_fields.get('content', primary['content'])}")
             await asyncio.to_thread(
                 self.vector_store.add,
                 collection=self._collection_name(agent),
@@ -1427,9 +1493,11 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 metadatas=[{"lesson_id": primary_id, "agent_name": agent}],
             )
         except Exception as e:
-            logger.debug(f"VectorStore re-index after merge failed: {e}")
+            logger.warning(f"VectorStore re-index after merge failed: {e}")
+            warnings.append(f"{primary_id} not re-indexed ({_reason(e)}): search and the "
+                            "duplicate check do not see its merged version.")
 
-        return {
+        merged: Dict[str, Any] = {
             "action": "merged",
             "primary_id": primary_id,
             "merged_title": new_title,
@@ -1437,6 +1505,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             "deleted_count": len(deleted_ids),
             "total_evidence": total_evidence,
         }
+        if warnings:
+            merged["warnings"] = warnings
+        return merged
 
     async def check_duplicate(
         self, agent_name: str, title: str, content: str
@@ -1464,7 +1535,10 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                         action=action,
                     )
         except Exception as e:
-            logger.debug(f"Dedup check failed (treating as new): {e}")
+            # Not "no duplicate": the check did not run, and a caller that
+            # stores anyway has to say so.
+            logger.warning(f"Dedup check failed: {e}")
+            return DeduplicationResult(is_duplicate=False, action="create", error=_reason(e))
 
         return DeduplicationResult(is_duplicate=False, action="create")
 
@@ -1497,7 +1571,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     if "error" in result:
                         await status_reporter.error(f"Search failed: {result['error']}")
                     else:
-                        await status_reporter.end(f"Found {result.get('result_count', 0)} lessons")
+                        await status_reporter.end(f"Found {result.get('count', 0)} lessons")
             elif operation == "list":
                 if status_reporter:
                     await status_reporter.progress("Listing lessons...")
@@ -1586,7 +1660,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             result["similar_to"] = dedup.existing_lesson_id
             return result
 
-        return await self.store_lesson(
+        return _unchecked(await self.store_lesson(
             agent_name=agent_name,
             title=title,
             content=content,
@@ -1596,7 +1670,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             source_type="reflection",
             source_session=session_id,
             status="draft",
-        )
+        ), dedup)
 
     async def _op_search(self, params: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
         query = params.get("query", "")
@@ -1667,7 +1741,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             result["similar_to"] = dedup.existing_lesson_id
             return result
 
-        return await self.store_lesson(
+        return _unchecked(await self.store_lesson(
             agent_name=target,
             title=title,
             content=content,
@@ -1678,7 +1752,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             source_agent=source_agent,
             source_session=session_id,
             status="draft",
-        )
+        ), dedup)
 
     async def _op_delete(self, params: Dict[str, Any]) -> Dict[str, Any]:
         lesson_id = params.get("lesson_id", "")
@@ -1810,7 +1884,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
             logger.info(
                 f"Extraction for '{agent_name}': created={result.created_count}, "
-                f"merged={result.merged_count}, confirmed={result.confirmed_count}"
+                f"merged={result.merged_count}, confirmed={result.confirmed_count}, "
+                f"skipped={result.skipped_count}"
             )
             return HookResult(
                 success=True, modified=False,
@@ -1818,6 +1893,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     "extracted": result.created_count,
                     "merged": result.merged_count,
                     "confirmed": result.confirmed_count,
+                    "skipped": result.skipped_count,
                 },
             )
         except Exception as e:

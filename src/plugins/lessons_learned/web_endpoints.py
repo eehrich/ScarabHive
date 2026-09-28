@@ -125,8 +125,9 @@ class LessonsWebFactory:
 
     async def search_lessons(self, request: Request, form: SearchForm) -> dict:
         """Every status unless one is asked for (the store's own default is active only)."""
-        return await self.server.search_lessons(query=form.query, agent_name=form.agent_name, status=form.status,
-                                                category=form.category, limit=form.limit)
+        return answered(await self.server.search_lessons(query=form.query, agent_name=form.agent_name,
+                                                         status=form.status, category=form.category,
+                                                         limit=form.limit), 503)
 
     async def get_stats(self, request: Request, agent_name: Optional[str] = None) -> dict:
         return await self.server.get_stats(agent_name=agent_name)

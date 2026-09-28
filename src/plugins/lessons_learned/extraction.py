@@ -238,6 +238,12 @@ async def extract_lessons_from_conversation(
         for candidate in candidates:
             dedup = await server.check_duplicate(agent_name, candidate.title, candidate.content)
 
+            if dedup.error:
+                # Stored unchecked, the same lesson came back as a new copy at
+                # every session end until the agent's limit was full. Skipped,
+                # it is extracted again once the check works.
+                logger.warning(f"Lesson '{candidate.title}' not stored: no duplicate check ({dedup.error})")
+                continue
             if dedup.is_duplicate:
                 if dedup.action == "confirm":
                     # Exact duplicate → add evidence

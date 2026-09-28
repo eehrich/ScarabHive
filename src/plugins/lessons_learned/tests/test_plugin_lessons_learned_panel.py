@@ -11,7 +11,9 @@ its first lesson, titled "Merged: <that title>", after 0.6 s; after POST /__stub
 Behind the panel's back: POST /__stub/delete/{lesson_id} deletes a lesson, POST /__stub/update/{lesson_id} sets the
 fields posted, POST /__stub/draft adds a writer draft, POST /__stub/add adds a coder lesson, POST /__stub/shrink deletes
 bulk lessons 41 to 55, POST /__stub/raw/{lesson_id} writes fields as they are, past the store, POST /__stub/fill adds
-``count`` lessons of filler agents. GET /__stub/asked counts the lesson lists asked for. With
+``count`` lessons of filler agents, POST /__stub/no-model makes every vector query and add raise and POST
+/__stub/no-add only the adds, until POST /__stub/model; POST /__stub/llm-works undoes llm-fails. GET /__stub/asked
+counts the lesson lists asked for. With
 the cookie ``ll_lessons=fails`` the lesson list fails, with ``slowfails`` after 1.5 s; with ``slow`` it and the cleanup
 take 1.5 s. The agents may keep 55 lessons each: bulk is full.
 """
@@ -138,6 +140,32 @@ def panel_app(tmp_path: Path):
                                       status="active")
         return {}
 
+    vectors = server.vector_store
+    working = {"query": vectors.query, "add": vectors.add}
+
+    def no_model(**kwargs):
+        raise RuntimeError("No embedding model installed")
+
+    @app.post("/__stub/no-model")
+    async def model_gone():
+        vectors.query = vectors.add = no_model
+        return {}
+
+    @app.post("/__stub/no-add")
+    async def add_gone():
+        vectors.add = no_model
+        return {}
+
+    @app.post("/__stub/llm-works")
+    async def llm_works():
+        llm["fails"] = False
+        return {}
+
+    @app.post("/__stub/model")
+    async def model_back():
+        vectors.query, vectors.add = working["query"], working["add"]
+        return {}
+
     @app.post("/__stub/shrink")
     async def shrink():
         return await server.cleanup_lessons(agent_name="bulk", lesson_ids=[f"bulk_les_{n:03d}" for n in range(41, 56)],
@@ -178,6 +206,9 @@ EXPECTED = [
     'a tick of the auto refresh leaves a load still on its way alone',
     'a tick of the auto refresh brings a lesson an agent added',
     'a click on a head sorts the lessons found, the paged list stays in the order of the server',
+    'without the embedding model a save warns that search will miss the lesson, and a consolidation names what it '
+    'could not scan',
+    'a merge the search index could not take says so under the merge',
 ]
 
 
