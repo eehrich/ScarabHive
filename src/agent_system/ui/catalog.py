@@ -2,7 +2,7 @@
 
 Three sources, one shape:
 
-* core panels served by agent_system.ui.routes (system, session, settings, kit),
+* core panels served by agent_system.ui.routes (system, session, settings, help, kit),
 * admin dashboards that exist only while their feature is on,
 * plugin panels, declared in a plugin's schema.yaml under ``web_ui.panel``::
 
@@ -91,6 +91,10 @@ def core_panels(*, audit_enabled: bool, profiling_enabled: bool,
         Panel("settings", "Settings", "/ui/panels/settings", "settings", "system",
               "Profile, password and appearance", ["profile", "password", "theme", "account"],
               window={"width": 520, "height": 600}),
+        Panel("help", "Help", "/ui/panels/help", "circle-help", "system",
+              "The ScarabHive manual and every plugin's guide, in AmigaGuide format",
+              ["documentation", "manual", "guide", "amigaguide", "docs", "plugins"],
+              window={"width": 860, "height": 680}),
         Panel("ui_kit", "UI Kit", "/ui/kit", "layers", "system",
               "Every standard control in every state -- the reference for panel authors",
               ["components", "design", "tokens"], window={"width": 1000, "height": 720}),

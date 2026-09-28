@@ -575,3 +575,101 @@ table[data-pk-select] > tbody > tr[data-id]:focus-visible { outline: 2px solid v
 /* code shown in full, without the height cap */
 .pk-code--full { max-height: none; }
 
+
+/* ------------------------------------------------------------ guide viewer */
+/* <pk-guide> (static/kit/guide.js): an AmigaGuide page. The guide's pens map onto the tokens. */
+pk-guide { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
+pk-guide[address] { flex: 1 1 0; }  /* the page's own viewer fills the page and scrolls itself */
+.pk-guide-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.pk-guide-search { margin-left: auto; }
+/* This box scrolls both ways, not the page inside it: a sideways scrollbar at the page's end would sit far below
+   the view (see .pk-panel above) */
+.pk-guide-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.pk-guide-page {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  tab-size: 8;
+  outline: none;
+}
+.pk-guide-line { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1lh; margin: 0; }
+.pk-guide-pre { white-space: pre; overflow-wrap: normal; }
+.pk-guide-center { text-align: center; }
+.pk-guide-right { text-align: right; }
+.pk-guide-problems { margin-top: var(--space-3); }
+
+.pk-guide-b { font-weight: 700; }
+.pk-guide-i { font-style: italic; }
+.pk-guide-u { text-decoration: underline; }
+.pk-guide-fg-shine { color: var(--brand); }
+.pk-guide-fg-highlight { color: var(--accent-text); }
+.pk-guide-fg-shadow { color: var(--text-muted); }
+.pk-guide-fg-fill { color: var(--accent); }
+.pk-guide-fg-filltext { color: var(--text-on-accent); }
+.pk-guide-fg-background { color: var(--surface-0); }
+.pk-guide-bg-text { background: var(--text-primary); color: var(--surface-0); }
+.pk-guide-bg-shine { background: var(--surface-3); }
+.pk-guide-bg-shadow { background: var(--border-strong); }
+.pk-guide-bg-fill { background: var(--accent); color: var(--text-on-accent); }
+.pk-guide-bg-filltext { background: var(--text-primary); color: var(--surface-0); }
+.pk-guide-bg-highlight { background: var(--accent-subtle); }
+
+/* A link is a button, as on the Workbench. The frame is a shadow, not a border: a border would widen the label
+   and push every column after it out of line. */
+.pk-guide-button {
+  color: var(--text-primary);
+  text-decoration: none;
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+a.pk-guide-button:hover { background: var(--accent-subtle); box-shadow: inset 0 0 0 1px var(--accent); }
+a.pk-guide-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.pk-guide-web .pk-icon { margin-left: 2px; vertical-align: -2px; }
+.pk-guide-broken { color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); text-decoration: line-through; cursor: not-allowed; }
+.pk-guide-inert { color: var(--text-muted); box-shadow: inset 0 0 0 1px var(--border-default); cursor: not-allowed; }
+.pk-guide-image { max-width: 100%; height: auto; vertical-align: middle; }
+
+.pk-guide-hit { padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
+.pk-guide-snippet { margin-top: var(--space-1); font-family: var(--font-ui); font-size: var(--text-sm); color: var(--text-secondary); }
+
+/* A Markdown file in the viewer (a README, a docs/*.md page, an @embed-ed .md): prose, rendered and sanitised by the server */
+.pk-guide-md { font-family: var(--font-ui); white-space: normal; max-width: 90ch; }
+.pk-guide-md :is(h1, h2, h3, h4, h5, h6) { margin: var(--space-4) 0 var(--space-2); line-height: 1.3; }
+.pk-guide-md h1 { font-size: var(--text-xl); }
+.pk-guide-md h2 { font-size: var(--text-lg); }
+.pk-guide-md :is(h3, h4, h5, h6) { font-size: var(--text-md); }
+.pk-guide-md :is(ul, ol) { margin: 0 0 var(--space-3); padding-left: var(--space-6); }
+.pk-guide-md li { margin: var(--space-1) 0; }
+.pk-guide-md a { color: var(--accent-text); }
+.pk-guide-md a:not([href]) { color: inherit; }
+.pk-guide-md code { font-family: var(--font-mono); font-size: 0.92em; background: var(--surface-3); padding: 0 3px; border-radius: var(--radius-sm); }
+.pk-guide-md pre { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); overflow-x: auto; margin: 0 0 var(--space-3); }
+.pk-guide-md pre code { background: none; padding: 0; font-size: inherit; }
+.pk-guide-md blockquote { margin: 0 0 var(--space-3); padding: var(--space-1) var(--space-3); border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
+.pk-guide-md table { border-collapse: collapse; margin: 0 0 var(--space-3); font-size: var(--text-sm); }
+.pk-guide-md :is(th, td) { border: 1px solid var(--border-default); padding: var(--space-1) var(--space-2); text-align: left; vertical-align: top; }
+.pk-guide-md th { background: var(--surface-1); }
+.pk-guide-md hr { border: 0; border-top: 1px solid var(--border-default); margin: var(--space-4) 0; }
+
+/* The AmigaGuide extensions: headings, list items, quotes, rules, code blocks, tables, inline code, struck text */
+/* blank lines in the guide give the spacing, as on the Amiga: the blocks add little of their own */
+.pk-guide-h1 { font-size: var(--text-xl); font-weight: 700; margin: var(--space-1) 0 0; }
+.pk-guide-h2 { font-size: var(--text-lg); font-weight: 700; margin: var(--space-1) 0 0; }
+.pk-guide-h3 { font-weight: 700; }
+.pk-guide-level-1 { --pk-guide-indent: 3ch; }
+.pk-guide-level-2 { --pk-guide-indent: 6ch; }
+.pk-guide-level-3 { --pk-guide-indent: 9ch; }
+:is(.pk-guide-bullet, .pk-guide-number) { position: relative; padding-left: var(--pk-guide-indent); }
+.pk-guide-marker { position: absolute; left: calc(var(--pk-guide-indent) - 3ch); width: 2.5ch; text-align: right; color: var(--text-muted); }
+.pk-guide-quote { margin: var(--space-1) 0; padding-left: var(--space-3); border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
+.pk-guide-rule { border: 0; border-top: 1px solid var(--border-default); margin: var(--space-3) 0; }
+.pk-guide-codeblock { margin: var(--space-1) 0; padding: var(--space-3); overflow-x: auto; font-size: var(--text-sm); line-height: 1.5;
+  background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.pk-guide-table-wrap { overflow-x: auto; margin: var(--space-1) 0; }
+.pk-guide-table { border-collapse: collapse; font-size: var(--text-sm); }
+.pk-guide-table :is(th, td) { padding: var(--space-1) var(--space-2); border: 1px solid var(--border-default); text-align: left; vertical-align: top; white-space: normal; }
+.pk-guide-table th { background: var(--surface-1); }
+.pk-guide-tt { background: var(--surface-3); border-radius: var(--radius-sm); }
+.pk-guide-s { text-decoration: line-through; }
+.pk-guide-u.pk-guide-s { text-decoration: underline line-through; }

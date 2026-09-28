@@ -1,0 +1,225 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Help panel tests</title>
+  <style>body { margin: 0; } iframe { width: 900px; height: 700px; border: 0; }</style>
+</head>
+<body>
+<!-- Taller than any window together with the frame: a panel that scrolls the page around it is seen doing so. -->
+<div style="height: 2000px"></div>
+<iframe id="panel" title="panel"></iframe>
+<div style="height: 2000px"></div>
+<script type="module">
+  // The real Help panel (the kit's <pk-guide>) against the real help routes and fixture guides, on its own (no shell).
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const pageText = () => $('.pk-guide-page').textContent;
+  const button = (name) => $(`[data-nav="${name}"]`);
+  async function open(path) {
+    const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+    frame.src = `${path}${path.includes('?') ? '&' : '?'}t=${Date.now()}`;
+    await loaded;
+    return doc();
+  }
+
+  await check('the manual opens on its main node with Retrace and Browse back off', async () => {
+    await open('/ui/panels/help');
+    await until('the main node', () => pageText().includes('Welcome to the probe.'));
+    return button('retrace').disabled && button('prev').disabled && !button('next').disabled
+      && !button('help').disabled && !button('contents').disabled
+      && doc().querySelectorAll('.pk-guide-bar button svg.pk-icon').length === 6
+      && frame.contentWindow.location.search.includes('node=main') && doc().title.startsWith('Probe manual');
+  });
+
+  await check('a button opens its node and Retrace comes back', async () => {
+    const link = $('a[data-node="second"]');
+    // as a keyboard would: the focus must not fall out of the viewer with the link (without preventScroll the
+    // focus itself would scroll this page to the frame, and every later "the page stays put" check would fail)
+    link.focus({ preventScroll: true });
+    link.click();
+    await until('the second node', () => pageText().includes('This is the second page.'));
+    const there = frame.contentWindow.location.search.includes('node=second') && !button('retrace').disabled
+      && doc().activeElement === $('.pk-guide-page');
+    button('retrace').click();
+    await until('the main node again', () => pageText().includes('Welcome to the probe.'));
+    return there && button('retrace').disabled;
+  });
+
+  await check('an overtaken Retrace keeps its station', async () => {
+    $('a[data-node="second"]').click();
+    await until('the second node', () => pageText().includes('This is the second page.'));
+    button('retrace').click();  // starts loading main ...
+    button('next').click();     // ... and this overtakes it: second -> help
+    await until('the help node', () => pageText().includes('Help text.'));
+    button('retrace').click();
+    await until('the second node again', () => pageText().includes('This is the second page.'));
+    button('retrace').click();
+    await until('the main node', () => pageText().includes('Welcome to the probe.'));
+    return button('retrace').disabled && $('a[data-node="second"]').getAttribute('href').startsWith('?');
+  });
+
+  await check('Browse forward walks the file and code keeps its lines', async () => {
+    button('next').click();
+    await until('the second node', () => pageText().includes('This is the second page.'));
+    const code = [...doc().querySelectorAll('.pk-guide-line.pk-guide-pre')].map((line) => line.textContent);
+    return code.join('|') === '  code line one|  code line two' && !button('prev').disabled;
+  });
+
+  await check('a link into a plugin guide opens it with its picture', async () => {
+    button('contents').click();
+    await until('the main node', () => pageText().includes('Welcome to the probe.'));
+    $('a[data-guide="probe"]').click();
+    await until('the plugin node', () => pageText().includes('Plugin line one.'));
+    const image = await until('the picture', () => {
+      const img = $('img.pk-guide-image');
+      return img && img.complete && img.naturalWidth > 0 && img;
+    });
+    return image.alt === 'Probe picture' && frame.contentWindow.location.search.includes('guide=probe');
+  });
+
+  await check('a jump to a line scrolls only the viewer, a new page starts at its top', async () => {
+    const scroller = $('.pk-guide-scroll');
+    const line = [...doc().querySelectorAll('.pk-guide-line')].find((one) => one.textContent === 'Line sixty.');
+    const offset = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    const toolbar = button('index').getBoundingClientRect();
+    const jumped = scroller.scrollTop > 0 && Math.abs(offset) < 30 && window.scrollY === 0
+      && frame.contentWindow.location.search.includes('line=60')
+      && document.scrollingElement.scrollTop === 0 && $('.pk-page-body').scrollTop === 0
+      && toolbar.top >= 0 && toolbar.bottom > 0;
+    scroller.scrollLeft = 120;  // the box itself scrolls sideways, its scrollbar in view
+    const sideways = scroller.scrollLeft > 0;
+    button('next').click();  // from the scrolled page to another long, wide one
+    await until('the extra node', () => pageText().includes('Extra page.'));
+    const fresh = scroller.scrollTop === 0 && scroller.scrollLeft === 0;
+    button('retrace').click();
+    await until('the plugin node again', () => pageText().includes('Plugin line one.'));
+    return jumped && sideways && fresh;
+  });
+
+  await check('a dead link is crossed out and named below the page', async () => {
+    button('retrace').click();
+    await until('the main node', () => pageText().includes('Welcome to the probe.'));
+    const problems = $('.pk-guide-problems');
+    return $('.pk-guide-broken')?.textContent === ' Dead '
+      && !problems.hidden && problems.textContent.includes("'nowhere' leads nowhere");
+  });
+
+  await check('a web link opens in a new tab and nothing else', async () => {
+    const link = $('a.pk-guide-web');
+    return link.getAttribute('href') === 'https://example.org/' && link.target === '_blank'
+      && link.rel.includes('noopener') && !link.hasAttribute('data-guide');
+  });
+
+  await check('a search lists its hits, a hit opens, Retrace returns to the hits', async () => {
+    const form = $('.pk-guide-search');
+    form.q.value = 'this is the second';
+    form.requestSubmit();
+    const hit = await until('the hits', () => $('.pk-guide-hit a[data-node="second"]'));
+    const listed = doc().querySelectorAll('.pk-guide-hit').length === 1 && button('next').disabled;
+    hit.click();
+    // not its text: the hit's snippet carries that too, and the check would go on before the node is open
+    await until('the second node', () => !$('.pk-guide-hit') && $('.pk-guide-line.pk-guide-pre'));
+    button('retrace').click();
+    await until('the hits again', () => $('.pk-guide-hit'));
+    return listed && frame.contentWindow.location.search.includes('q=this');
+  });
+
+  await check('a node that does not exist says so and offers the manual', async () => {
+    await open('/ui/panels/help?guide=nope&node=main');
+    await until('the empty state', () => $('.pk-guide-page .pk-empty'));
+    return !$('.pk-guide-stale').hidden
+      && $('.pk-guide-page a[data-guide="scarabhive"][data-node="main"]') !== null;
+  });
+
+  await check('a search as the first page still offers the manual', async () => {
+    await open('/ui/panels/help?q=zzz-nowhere-zzz');
+    await until('the empty search', () => $('.pk-guide-page .pk-empty'));
+    const offered = !button('contents').disabled && !button('index').disabled && !button('help').disabled;
+    button('contents').click();
+    await until('the main node', () => pageText().includes('Welcome to the probe.'));
+    return offered;
+  });
+
+  await check('the extended format is drawn; its buttons open a node and a Markdown file', async () => {
+    await open('/ui/panels/help?guide=scarabhive&node=md');
+    await until('the blocks page', () => $('.pk-guide-h1'));
+    const drawn = $('.pk-guide-h1').textContent === 'Heading' && $('.pk-guide-h1').getAttribute('role') === 'heading'
+      && $('.pk-guide-bullet .pk-guide-marker')?.textContent === '•' && $('.pk-guide-bullet').textContent.includes('item one')
+      && $('pre.pk-guide-codeblock code.language-yaml')?.textContent === 'key: 1'
+      && [...doc().querySelectorAll('.pk-guide-table th')].map((th) => th.textContent).join() === 'A,B'
+      && [...doc().querySelectorAll('.pk-guide-table td')].map((td) => td.textContent).join() === '1,2';
+    $('a[data-node="second"]').click();
+    await until('the second node', () => $('.pk-guide-line.pk-guide-pre'));
+    button('retrace').click();
+    await until('the blocks page again', () => $('a[data-file]'));
+    $('a[data-file]').click();
+    await until('the design file', () => $('.pk-guide-md h1')?.textContent === 'Design');
+    const file = frame.contentWindow.location.search.includes('file=docs%2Fdesign.md') && doc().title.startsWith('design.md');
+    button('retrace').click();
+    await until('the blocks page once more', () => $('.pk-guide-h1')?.textContent === 'Heading');
+    return drawn && file;
+  });
+
+  await check('an embedded viewer leaves the page alone and follows its attributes', async () => {
+    await open('/tests/ui/help_embed_probe.html?keep=1');
+    const before = frame.contentWindow.location.search;
+    await until('the plugin node', () => pageText().includes('Plugin line one.'));
+    const fallback = await until('the missing node\'s way back', () => $('#missing .pk-guide-page a[data-guide]'));
+    const absolute = fallback.getAttribute('href').startsWith('/ui/panels/help?');
+    const viewer = $('pk-guide');
+    viewer.setAttribute('node', 'extra');
+    await until('the extra node', () => pageText().includes('Extra page.'));
+    const followed = absolute && frame.contentWindow.location.search === before && doc().title === 'Embed probe'
+      && !$('.pk-guide-search') && !button('retrace').disabled
+      && doc().querySelectorAll('.pk-guide-page a[data-guide]').length > 0
+      && [...doc().querySelectorAll('.pk-guide-page a[data-guide]')].every((a) => a.getAttribute('href').startsWith('/ui/panels/help?'));
+    const back = $('.pk-guide-page a[data-node="main"]');
+    back.focus({ preventScroll: true });
+    // the panel moves the focus when the page changes: its listener has the last word, not the viewer
+    const elsewhere = $('#missing .pk-guide-page');
+    viewer.addEventListener('guidechange', () => elsewhere.focus({ preventScroll: true }), { once: true });
+    back.click();  // the reader moves on ...
+    await until('the main node', () => pageText().includes('Plugin line one.'));
+    const listened = doc().activeElement === elsewhere;
+    viewer.setAttribute('node', 'extra');  // ... and the panel asks for the same node again
+    await until('the extra node again', () => pageText().includes('Extra page.'));
+    viewer.setAttribute('file', 'docs/notes.md');
+    await until('the notes file', () => $('.pk-guide-md h1')?.textContent === 'Notes');
+    viewer.setAttribute('node', 'main');  // a node asked for after a file: the node, not the file again
+    await until('the main node once more', () => pageText().includes('Plugin line one.'));
+    return followed && listened;
+  });
+
+  await check('an embedded viewer without a height scrolls its panel, never the page around it', async () => {
+    const tall = $('#tall');
+    const back = await until('the tall viewer', () => tall.querySelector('.pk-guide-page a[data-node="main"]'));
+    back.click();
+    await until('its main node', () => tall.querySelector('.pk-guide-page').textContent.includes('Plugin line one.'));
+    const body = $('.pk-page-body');
+    const line = [...tall.querySelectorAll('.pk-guide-line')].find((one) => one.textContent === 'Line sixty.');
+    const offset = line.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    return body.scrollTop > 0 && Math.abs(offset) < 40 && window.scrollY === 0 && document.scrollingElement.scrollTop === 0;
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

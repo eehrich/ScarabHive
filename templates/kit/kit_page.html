@@ -229,6 +229,12 @@ keeps its line breaks.</div>
 </section>
 
 <section class="kit-section">
+  <h2>Help: the guide viewer</h2>
+  <p class="pk-secondary" style="margin:0">&lt;pk-guide guide="…" node="…"&gt; from /static/kit/guide.js shows a node of an AmigaGuide guide, with its buttons, links and Retrace. A plugin panel shows its own guide this way; the Help panel is one with <code>address search</code>. Writing a guide: Help → Writing a guide.</p>
+  <pk-guide guide="scarabhive" node="authoring" style="height: 360px"></pk-guide>
+</section>
+
+<section class="kit-section">
   <h2>Icons</h2>
   <div class="kit-icons">
     {% for name in icons %}<div>{{ icon(name) }} {{ name }}</div>{% endfor %}
@@ -236,6 +242,7 @@ keeps its line breaks.</div>
 </section>
 {% endblock %}
 {% block scripts %}
+<script type="module" src="/static/kit/guide.js"></script>
 <script type="module">
   import { alert, confirm, prompt, toast, jsonView, yamlCode, render, setTheme } from '/static/kit/panel-kit.js';
 

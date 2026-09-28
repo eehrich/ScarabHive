@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Reusable, config-keyed markdown.Markdown instances. Building one is not free,
 # and the instance is stateful (accumulates reference/footnote definitions), so
-# we cache per (tables, code) combination and reset() before every conversion.
+# we cache per (tables, code, line_breaks) combination and reset() before every conversion.
 # A lock serialises the reset()+convert() pair in case a caller ever drives this
 # from a worker thread (the asyncio callers are already single-threaded).
-_converters: dict[tuple[bool, bool], object | None] = {}
+_converters: dict[tuple[bool, bool, bool], object | None] = {}
 _lock = threading.Lock()
 
 # Match a whole response wrapped in a ```markdown``` / ```md fence (LLMs sometimes
@@ -45,10 +45,10 @@ def extract_markdown_content(text: str) -> str:
     return m.group(1) if m else text
 
 
-def _get_converter(tables: bool, code: bool):
+def _get_converter(tables: bool, code: bool, line_breaks: bool = True):
     """Return a cached markdown.Markdown for this config, or None if the
     ``markdown`` library is not installed."""
-    key = (tables, code)
+    key = (tables, code, line_breaks)
     if key in _converters:
         return _converters[key]
     try:
@@ -64,8 +64,10 @@ def _get_converter(tables: bool, code: bool):
     if code:
         # fenced_code (NOT codehilite) → Prism-compatible ``language-`` classes.
         extensions.append("fenced_code")
-    # nl2br: single newlines become <br> so list items / lines don't collapse.
-    extensions.append("nl2br")
+    # nl2br: single newlines become <br> so list items / lines don't collapse -- right for a
+    # model's answer, wrong for a document hard-wrapped at 76 columns (the help viewer).
+    if line_breaks:
+        extensions.append("nl2br")
 
     converter = markdown.Markdown(
         extensions=extensions,
@@ -261,6 +263,39 @@ def _unwrap_raw_blocks(html: str) -> str:
     return _WRAPPED_BLOCK.sub(r"\1", html)
 
 
+# Indented by spaces: a tab is four columns, and an item indented that far under a paragraph continues it.
+_LIST_ITEM = re.compile(r" {0,3}([-*+]|\d+[.)])\s")
+#: What may interrupt a paragraph (CommonMark): a bullet, or a numbered list that starts at 1 --
+#: "a priority outside 1 to\n10. A refusal ..." is a sentence, not a list that loses its 10.
+_LIST_START = re.compile(r" {0,3}([-*+]|1[.)])\s")
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+
+
+def _lists_after_paragraphs(source: str) -> str:
+    """A document's list right under a paragraph line gets the blank line Python-Markdown needs.
+
+    GitHub shows ``Intro\\n- a\\n- b`` as a paragraph and a list; Python-Markdown folds the
+    items into the paragraph. Code fences are left as they are: one closes only with its own
+    character, at least as long (a ``~~~`` line inside a backtick fence is code).
+    """
+    out: list[str] = []
+    fence = ""
+    previous = ""
+    for line in re.split(r"\r\n|\r|\n", source):
+        mark = _FENCE.match(line)
+        if mark and not fence:
+            fence = mark.group(1)
+        elif mark and mark.group(1)[0] == fence[0] and len(mark.group(1)) >= len(fence) \
+                and not line[mark.end():].strip():
+            fence = ""
+        elif (not fence and _LIST_START.match(line) and previous.strip()
+              and not _LIST_ITEM.match(previous) and not previous[:1].isspace()):
+            out.append("")
+        out.append(line)
+        previous = line
+    return "\n".join(out)
+
+
 def _fix_list_formatting(html: str) -> str:
     """Rescue lists that LLMs wrote without the required blank line, so they
     render inline inside a single <p> (``Intro - a - b - c``)."""
@@ -301,25 +336,31 @@ def markdown_to_html(
     code: bool = True,
     sanitize: bool = True,
     allowed_tags: frozenset[str] | set[str] | None = None,
+    line_breaks: bool = True,
 ) -> str | None:
     """Convert Markdown ``text`` to Prism-ready HTML.
 
     Returns the HTML string, or ``None`` when conversion is not possible
     (empty/non-string input, or the ``markdown`` library is unavailable) so
     callers can fall back to escaped plain text. ``allowed_tags`` narrows or
-    widens :data:`DEFAULT_ALLOWED_TAGS` for the sanitiser.
+    widens :data:`DEFAULT_ALLOWED_TAGS` for the sanitiser. ``line_breaks=False`` reads text as a
+    document rather than a chat answer: a single newline is a space, as Markdown has it, and the
+    chat's list rescue stays off (a list under a paragraph line still shows, as on GitHub).
     """
     if not text or not isinstance(text, str):
         return None
-    converter = _get_converter(tables, code)
+    converter = _get_converter(tables, code, line_breaks)
     if converter is None:
         return None
 
     source = extract_markdown_content(text)
+    if not line_breaks:
+        source = _lists_after_paragraphs(source)
     with _lock:
         converter.reset()
         html = converter.convert(source)
-    html = _fix_list_formatting(html)
+    if line_breaks:  # the chat's rescue splits at every " - ": in a document that is a dash in an item
+        html = _fix_list_formatting(html)
     html = _unwrap_raw_blocks(html)
     html = _remove_table_inline_styles(html)
     if sanitize:

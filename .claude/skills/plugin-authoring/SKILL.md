@@ -175,6 +175,16 @@ write it anyway). Three sections:
 
 Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
 
+## User documentation: the Help panel
+
+The Help panel shows a plugin's docs next to the manual, found by convention:
+`<plugin folder>/<folder name>.guide` (AmigaGuide, extended by headings, lists, tables and
+code blocks in its own syntax -- not Markdown), else the plugin's `README.md` rendered as
+Markdown. A guide button or a README link to `docs/*.md` opens that file in the viewer. In the plugin's own panel: `<pk-guide guide="<folder>" node="config">` from
+`/static/kit/guide.js`. Format and rules: Help → "Writing a guide", long form
+`docs/help_amigaguide.md`. `tests/ui/test_help.py -k repository` checks every guide in
+the repo (dead links, unknown commands).
+
 ## Tests
 
 - Next to the plugin: `src/plugins/<name>/tests/test_plugin_<name>_*.py`.

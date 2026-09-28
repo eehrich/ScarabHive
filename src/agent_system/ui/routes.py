@@ -1,4 +1,4 @@
-"""Routes of the UI itself: the panel catalogue, the core panels, the kit page."""
+"""Routes of the UI itself: the panel catalogue, the core panels, the kit page, the help library."""
 from __future__ import annotations
 
 import logging
@@ -11,13 +11,15 @@ from agent_system.auth.dependencies import require_admin
 from agent_system.auth.middleware import AUDIT_CATEGORIES, AUDIT_STATUS_CLASSES, security_audit_log
 
 from .catalog import Panel, PanelSpecError, build_catalog, core_panels, plugin_panel, roles_allowed
+from .help import router as help_router
 from .resources import sprite_icons, ui_templates
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ui"])
+router.include_router(help_router)
 templates = ui_templates()
-CORE_PANELS = ("session", "system", "settings", "memory_profile", "performance")
+CORE_PANELS = ("session", "system", "settings", "help", "memory_profile", "performance")
 
 
 async def viewer_role(request: Request) -> str:
