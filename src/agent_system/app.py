@@ -334,27 +334,39 @@ def _build_entry_agent(entry_name: str, config, registry, session_service):
     return agent
 
 
+def _default_config_path() -> str:
+    """The config the API loads when none is passed: AGENT_CONFIG_PATH, else the
+    project's config/config.yaml -- the variable agent-cli and agent-run honour too."""
+    from .paths import PROJECT_ROOT
+
+    return os.environ.get("AGENT_CONFIG_PATH") or str(PROJECT_ROOT / "config" / "config.yaml")
+
+
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
-    from pathlib import Path
-
     # Initialize ConfigService and load configuration
-    if not config_path:
-        cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
-    else:
-        cfg_path = config_path
+    cfg_path = config_path or _default_config_path()
 
     # Setup early logging BEFORE config loading so YAML errors are captured
-    # This ensures config parsing errors appear in the log file
-    early_log_file = Path(__file__).parents[2] / "logs" / "api.log"
-    early_log_file.parent.mkdir(parents=True, exist_ok=True)
+    # This ensures config parsing errors appear in the log file: the one the
+    # shipped config names (logging.file_api), relative to the working
+    # directory as setup_role_logging resolves it -- not the source tree, which
+    # a server or test started elsewhere would otherwise write into.
+    # A working directory the server cannot write to (a service unit without
+    # WorkingDirectory) keeps the console only: a config that writes nothing
+    # relative to it (logging off; auth off or an absolute auth.database_path)
+    # would otherwise not start for want of a file it never asked for.
+    early_handlers: list[logging.Handler] = [logging.StreamHandler()]
+    early_log_file = Path("logs") / "api.log"
+    try:
+        early_log_file.parent.mkdir(parents=True, exist_ok=True)
+        early_handlers.insert(0, logging.FileHandler(str(early_log_file), encoding="utf-8"))
+    except OSError:
+        pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",  # Match Uvicorn format
-        handlers=[
-            logging.FileHandler(str(early_log_file), encoding="utf-8"),
-            logging.StreamHandler()
-        ],
+        handlers=early_handlers,
         force=True  # Override any existing config
     )
     early_logger = logging.getLogger(__name__)
@@ -1077,8 +1089,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         agent_config = {}
         try:
-            agent_config_path = Path(__file__).parents[2] / "config" / "config.yaml"
-            with open(agent_config_path, 'r', encoding='utf-8') as f:
+            with open(cfg_path, 'r', encoding='utf-8') as f:  # the config this app was built from
                 agent_config = yaml_io.safe_load(f) or {}
         except Exception as e:
             logger.debug(f"Failed to load config for health check: {e}")
@@ -3562,8 +3573,7 @@ def run() -> None:
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
     # Build the application (loads config internally)
-    cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
-    app_obj = build_app(cfg_path)
+    app_obj = build_app()
 
     # Get config from global ConfigService (already loaded in build_app)
     config = _config_service.get_config()
