@@ -332,12 +332,28 @@ class AgentTurn:
             self._settled.set()
 
     async def _keep(self, deliver: Callable[[], None]) -> None:
-        """A delivered turn stays: saved, then recorded. Put back when either fails."""
+        """A delivered turn stays: saved, then recorded. Put back when either fails.
+
+        Saved under the agent's session lock, as the put back is: an append saving meanwhile is waited for. Not
+        over a run of this process that took the conversation after this turn's run (the web chat): the tracker
+        holds that run's live state, a tool call without its result. This turn's run saved the turn before it let
+        go of the lock, and the run that has the conversation now runs on it -- kept as it is."""
+        tracker = self.agent._session_tracker
         try:
-            saved = await self.service.save_session(self.agent, self.user, self.session_id, self.agent.name,
-                                                    self.profile, was_new_session=not self._existed)
-            if not saved:
-                raise TurnError("the conversation could not be saved")
+            # As a writer: its run is over, and an append that meets this save waits a moment for it
+            if await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=5.0, writer=True):
+                try:
+                    saved = await self.service.save_session(self.agent, self.user, self.session_id,
+                                                            self.agent.name, self.profile,
+                                                            was_new_session=not self._existed)
+                finally:
+                    await tracker.release_session_lock(self.session_id, self.request_id)
+                if not saved:
+                    raise TurnError("the conversation could not be saved")
+            else:
+                # A run has it -- or a write did not end within the wait; either writes the turn with it
+                logger.info("openai_api: session %s is held by %s; the turn of %s is kept in it",
+                            self.session_id, tracker.check_session_locked(self.session_id)[1], self.request_id)
             deliver()
         except BaseException:
             await self._put_back()
@@ -359,7 +375,8 @@ class AgentTurn:
         run has -- also while this turn's run closes, after its lock and before what it left is taken -- and a
         message handed to the run is in what the run left. Compared without them, and put back after the rest."""
         tracker = self.agent._session_tracker
-        if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=5.0):
+        # As a writer, as _keep: an append that meets the put back waits for it, and lands after it
+        if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=5.0, writer=True):
             logger.info("openai_api: session %s is run by another request; the turn of %s stays in it",
                         self.session_id, self.request_id)
             return

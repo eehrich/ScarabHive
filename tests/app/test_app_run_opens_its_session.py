@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -187,3 +189,126 @@ async def test_a_run_refused_at_the_session_lock_saves_nothing(api, endpoint, mo
     assert response.status_code == 200, response.text
     assert "locked" in response.text, "fixture: the run was not refused"
     assert "s-busy" not in saves, f"{endpoint} saved the session after its run was refused"
+
+
+@pytest.mark.parametrize("endpoint", ["/run", "/run with files", "/events"])
+async def test_a_session_another_run_took_after_this_one_is_not_saved_over(api, endpoint, monkeypatch):
+    """The agent lets go of the session lock after its last save -- before its session-end hooks (an LLM call in
+    lessons_learned) and before "end". A run that takes the session there writes its live state into the tracker
+    (an assistant tool call without its result), and the save the endpoint makes after the first run wrote that
+    to disk: the next resume found a tool call nobody answered."""
+    from agent_system import app as app_mod
+    from agent_system.llm.models import ChatMessage
+
+    session = await api.manager.create_session(user_id="anonymous", session_id="s-taken", agent_name="chat_agent",
+                                               llm_profile="default")
+    session["messages"] = [{"role": "user", "content": "on disk"}]
+    await api.manager.save_session(session)
+    tracker = api.app.state.agent._session_tracker
+
+    async def run_then_another_takes_it(self, task, request_id=None, session_id=None, **kwargs):
+        # What Agent._finalize_request does: the last save under the lock, then the lock let go
+        assert await tracker.acquire_session_lock(session_id, request_id)
+        tracker.set_session_messages(session_id, [
+            ChatMessage(role="user", content="on disk"), ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content="done")])
+        assert await app_mod._session_service.save_session(self, "anonymous", session_id, self.name, "default",
+                                                           False)
+        await tracker.release_session_lock(session_id, request_id)
+        # ...and in the session-end hooks another run takes the session and is mid-step
+        assert await tracker.acquire_session_lock(session_id, "another_run")
+        tracker.set_session_messages(session_id, [
+            *tracker.get_session_messages(session_id), ChatMessage(role="user", content="another task"),
+            ChatMessage(role="assistant", content="a tool call still running")])
+        yield {"type": "final", "summary": "done"}
+        yield {"type": "end"}
+
+    monkeypatch.setattr(Agent, "run_events", run_then_another_takes_it)
+    try:
+        if endpoint == "/run with files":
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app), base_url="http://test") as client:
+                response = await client.post("/run", data={"task": "go", "session_id": "s-taken"},
+                                             files={"files": ("notes.md", b"the notes", "text/markdown")},
+                                             timeout=60.0)
+        else:
+            response = await _call(api.app, endpoint, "s-taken")
+        assert response.status_code == 200, response.text
+        assert tracker.check_session_locked("s-taken") == (True, "another_run"), "fixture: nobody took it"
+    finally:
+        await tracker.release_session_lock("s-taken", "another_run")
+
+    stored = await api.manager.load_session("anonymous", "s-taken", bypass_cache=True)
+    assert [m["content"] for m in stored["messages"]] == ["on disk", "go", "done"], \
+        f"{endpoint} saved the other run's live state"
+
+
+async def _leaving_client(app, method, path, leave, *, params=None, data=None, files=None):
+    """One request over raw ASGI whose client leaves (http.disconnect, as uvicorn tells an app) once ``leave``
+    is set. Returns when the app is done with it."""
+    request = httpx.Request(method, "http://test" + path, params=params, data=data, files=files)
+    body = request.read()
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
+             "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "",
+             "query_string": request.url.query, "client": ("test", 1), "server": ("test", 80),
+             "headers": [(key.lower().encode(), value.encode()) for key, value in request.headers.items()]}
+    sent = [False]
+
+    async def receive():
+        if not sent[0]:
+            sent[0] = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await leave.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=30.0)
+
+
+@pytest.mark.parametrize("endpoint", ["/run with files", "/events"])
+async def test_a_client_that_leaves_as_the_run_is_saved_still_has_it_saved_and_let_go(api, endpoint, monkeypatch):
+    """A client that leaves cancels the stream's whole scope. The save after the run was cancelled at its first
+    await, and what came after it in the same finally -- letting go of the session (presence), the request's
+    ownership, the uploaded files -- was skipped: nothing saved, and the session held for the life of the process."""
+    from agent_system import app as app_mod
+    from agent_system.config.models import SessionPresenceConfig
+    from agent_system.core.session_presence import presence_for
+    from agent_system.llm.models import ChatMessage
+
+    api.app.state.config.session_presence = SessionPresenceConfig(enabled=True)
+    presence = presence_for(api.app.state.config)
+    session = await api.manager.create_session(user_id="anonymous", session_id="s-left", agent_name="chat_agent",
+                                               llm_profile="default")
+    session["messages"] = [{"role": "user", "content": "on disk"}]
+    await api.manager.save_session(session)
+    tracker = api.app.state.agent._session_tracker
+
+    async def run(self, task, request_id=None, session_id=None, **kwargs):
+        tracker.set_session_messages(session_id, [ChatMessage(role="user", content="on disk"),
+                                                  ChatMessage(role="user", content="go"),
+                                                  ChatMessage(role="assistant", content="done")])
+        yield {"type": "final", "summary": "done"}
+        yield {"type": "end"}
+
+    monkeypatch.setattr(Agent, "run_events", run)
+    service, leave = app_mod._session_service, asyncio.Event()
+    save = service.save_session
+
+    async def the_client_leaves_now(*args, **kwargs):
+        if kwargs.get("after_run"):
+            leave.set()
+            await asyncio.sleep(0.2)  # the disconnect cancels the stream's scope meanwhile
+        return await save(*args, **kwargs)
+
+    monkeypatch.setattr(service, "save_session", the_client_leaves_now)
+    if endpoint == "/events":
+        await _leaving_client(api.app, "GET", "/events", leave, params={"task": "go", "session_id": "s-left"})
+    else:
+        await _leaving_client(api.app, "POST", "/run", leave, data={"task": "go", "session_id": "s-left"},
+                              files={"files": ("notes.md", b"the notes", "text/markdown")})
+    assert leave.is_set(), "fixture: the save after the run never came"
+
+    stored = await api.manager.load_session("anonymous", "s-left", bypass_cache=True)
+    assert [m["content"] for m in stored["messages"]] == ["on disk", "go", "done"], "the save was cancelled"
+    assert not presence.held_here("s-left", "anonymous"), "the session stayed held"

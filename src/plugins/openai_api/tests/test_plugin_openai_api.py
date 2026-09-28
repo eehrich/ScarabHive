@@ -1221,7 +1221,8 @@ async def test_a_message_appended_after_what_the_run_left_was_taken_stays_and_th
     session, service, tracker = agent.calls[0]["session"], agent._session_service, agent._session_tracker
     acquire, appended = tracker.acquire_session_lock, []
 
-    async def appended_before_the_put_back(session_id: str, request_id: str, timeout: float = 5.0) -> bool:
+    async def appended_before_the_put_back(session_id: str, request_id: str, timeout: float = 5.0,
+                                           writer: bool = False) -> bool:
         ended = agent.running == 0 and request_id == agent.calls[-1]["request_id"]
         if ended and not appended:  # the put back asks for the lock: the run is over, what it left taken
             appended.append(request_id)
@@ -1232,7 +1233,7 @@ async def test_a_message_appended_after_what_the_run_left_was_taken_stays_and_th
                                                   was_new_session=False)
             finally:
                 await tracker.release_session_lock(session_id, "write_1")
-        return await acquire(session_id, request_id, timeout=timeout)
+        return await acquire(session_id, request_id, timeout=timeout, writer=writer)
 
     tracker.acquire_session_lock = appended_before_the_put_back
     async with raw(app) as web:
@@ -1270,6 +1271,75 @@ async def test_the_put_back_waits_for_an_append_still_saving(tmp_path):
         await web.post("/responses", json={"model": "chat_agent", "input": "boom", "previous_response_id": first.id})
     await saving[0]
 
+    assert await stored_contents(service, session) == ["remember 42", "noted", "appended meanwhile"]
+
+
+async def test_a_kept_turn_does_not_save_over_a_run_that_took_the_conversation(tmp_path):
+    """The turn's run lets go of the agent's session lock after its last save, and the turn saves once more before
+    it records its response. A web chat that took the conversation in between has its live state in the tracker --
+    saved there, an assistant tool call without its result went to disk. The turn's run saved the turn already,
+    and the run that has the conversation now runs on it: kept as it is, and delivered."""
+    from agent_system.llm.models import ChatMessage
+
+    agent = ScriptedAgent("chat_agent", "noted")
+    app, plugin = build(tmp_path, agent)
+    first = await client(app).responses.create(model="chat_agent", input="remember 42")
+    session, service, tracker = agent.calls[0]["session"], agent._session_service, agent._session_tracker
+
+    async def a_web_chat_takes_it() -> None:
+        agent.let_go = None
+        assert await tracker.acquire_session_lock(session, "web_run")
+        tracker.set_session_messages(session, [*tracker.get_session_messages(session),
+                                               ChatMessage(role="user", content="web message"),
+                                               ChatMessage(role="assistant", content="a tool call still running")])
+
+    agent.let_go = a_web_chat_takes_it
+    try:
+        second = await client(app).responses.create(model="chat_agent", input="and 43",
+                                                    previous_response_id=first.id)
+    finally:
+        await tracker.release_session_lock(session, "web_run")
+
+    assert plugin.store.latest(session) == second.id, "the delivered turn was not recorded"
+    assert await stored_contents(service, session) == ["remember 42", "noted", "and 43", "noted"]
+
+
+async def test_a_message_appended_as_the_turn_is_put_back_waits_for_it_and_stays(tmp_path):
+    """The put back holds the agent's session lock while it restores and saves the conversation. An append that met
+    it was refused as if a run had the conversation (409); it waits for it now, and lands after it."""
+    agent = ScriptedAgent("chat_agent", boom_fails)
+    app, _ = build(tmp_path, agent)
+    first = await client(app).responses.create(model="chat_agent", input="remember 42")
+    session, service, tracker = agent.calls[0]["session"], agent._session_service, agent._session_tracker
+    save, saves, appending = service.save_session, [], []
+
+    async def the_append() -> bool:  # what app._append_and_persist does under _beside_the_runs
+        if not await tracker.acquire_session_lock(session, "write_1", timeout=5.0, writer=True):
+            return False
+        try:
+            if not tracker.has_session(session):
+                await service.load_and_restore_session(agent, "anonymous", session)
+            assert await tracker.append_to_session(session, "appended meanwhile")
+            return await save(agent, "anonymous", session, agent.name, "normal", was_new_session=False)
+        finally:
+            await tracker.release_session_lock(session, "write_1")
+
+    async def an_append_meets_the_put_back(*args: Any, **kwargs: Any) -> bool:
+        saves.append(args)
+        if len(saves) == 2:  # 1: the failed run's own save at its end, 2: the put back's -- the append comes in now
+            appending.append(asyncio.ensure_future(the_append()))
+            await asyncio.sleep(0.01)
+        return await save(*args, **kwargs)
+
+    service.save_session = an_append_meets_the_put_back
+    try:
+        async with raw(app) as web:
+            await web.post("/responses", json={"model": "chat_agent", "input": "boom",
+                                               "previous_response_id": first.id})
+    finally:
+        service.save_session = save
+
+    assert appending and await appending[0], "the append was refused by the put back"
     assert await stored_contents(service, session) == ["remember 42", "noted", "appended meanwhile"]
 
 
@@ -1345,37 +1415,43 @@ async def test_a_message_appended_before_the_turn_goes_with_nothing(tmp_path):
     assert agent.calls[-1]["history"][-1] == ("user", "appended before")
 
 
-async def test_a_message_appended_as_the_turn_settles_is_still_there_for_its_save(tmp_path):
-    """The append saves a few awaits after its message went in. A turn settling in between took the conversation
-    out of the agent's tracker (a settled one leaves it), and the append's save found nothing to write. The append
-    holds the agent's session lock until its save is done (app._beside_the_runs), and the turn leaves a
-    conversation somebody holds in the tracker."""
+async def test_a_message_appended_as_the_turn_is_kept_waits_for_it_and_is_saved(tmp_path):
+    """The append saved a few awaits after its message went in, and a turn settling in between took the
+    conversation out of the agent's tracker: the save found nothing to write. The turn keeps it under the agent's
+    session lock now, as a writer: the append waits for that, finds the conversation gone from the tracker, reads
+    it back (app._append_and_persist) and saves it with its message."""
     agent = ScriptedAgent("chat_agent", "noted")
     app, _ = build(tmp_path, agent)
     service, tracker = agent._session_service, agent._session_tracker
     first = await client(app).responses.create(model="chat_agent", input="remember 42")
     session = agent.calls[0]["session"]
-    save, saves = service.save_session, []
+    save, saves, appending = service.save_session, [], []
 
-    async def appended_after_the_turns_save(*args: Any, **kwargs: Any) -> bool:
-        saved = await save(*args, **kwargs)
-        saves.append(args)
-        if len(saves) == 2:  # 1: the run's own save at its end, 2: the turn's (kept) -- then the append goes in
-            assert await tracker.acquire_session_lock(session, "write_1")
+    async def the_append() -> bool:  # what app._append_and_persist does under _beside_the_runs
+        if not await tracker.acquire_session_lock(session, "write_1", timeout=5.0, writer=True):
+            return False
+        try:
+            if not tracker.has_session(session):
+                await service.load_and_restore_session(agent, "anonymous", session)
             assert await tracker.append_to_session(session, "appended meanwhile")
-        return saved
+            return await save(agent, "anonymous", session, agent.name, "normal", was_new_session=False)
+        finally:
+            await tracker.release_session_lock(session, "write_1")
 
-    service.save_session = appended_after_the_turns_save
+    async def an_append_meets_the_turns_save(*args: Any, **kwargs: Any) -> bool:
+        saves.append(args)
+        if len(saves) == 2:  # 1: the run's own save at its end, 2: the turn's (kept) -- the append comes in now
+            appending.append(asyncio.ensure_future(the_append()))
+            await asyncio.sleep(0.01)
+        return await save(*args, **kwargs)
+
+    service.save_session = an_append_meets_the_turns_save
     try:
         await client(app).responses.create(model="chat_agent", input="and 43", previous_response_id=first.id)
     finally:
         service.save_session = save
-    try:
-        assert await service.save_session(agent, "anonymous", session, agent.name, "normal",
-                                          was_new_session=False), "the append's save found no conversation"
-    finally:
-        await tracker.release_session_lock(session, "write_1")
 
+    assert appending and await appending[0], "the append was refused, or its save found no conversation"
     assert await stored_contents(service, session) == ["remember 42", "noted", "and 43", "noted",
                                                        "appended meanwhile"]
 

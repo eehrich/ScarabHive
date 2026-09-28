@@ -16,6 +16,7 @@ from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import anyio
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -1800,7 +1801,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # Keep original markdown on error
 
                 # Save session after execution (if session_id was provided or created) --
-                # not one the run was refused: another run of this process has it.
+                # not one the run was refused, nor one somebody holds after it
+                # (after_run): another run of this process, or an append saving it.
                 if session_id and _session_service and not refused:
                     effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
@@ -1810,7 +1812,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         session_id,
                         selected_agent.name,
                         effective_llm_profile,
-                        was_new_session
+                        was_new_session,
+                        after_run=True,
                     )
 
                 return result
@@ -1955,34 +1958,44 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield "event: error\n"
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                 finally:
-                    # Save session after completion -- not one the run was refused:
-                    # another run of this process has it.
-                    if _session_service and actual_session_id and not refused:
-                        # Use actual agent name and effective llm_profile (respecting overrides)
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                        await _session_service.save_session(
-                            selected_agent,
-                            user_id,
-                            actual_session_id,
-                            selected_agent.name,
-                            effective_llm_profile,
-                            was_new_session
-                        )
-
-                    _let_go(selected_agent, held, user_id)
-                    # Cleanup: release request + derived sub-request ids
-                    release_request_user_tree(request_id)
-
-                    # Cleanup temp files after streaming completes
-                    for temp_file in temp_files:
-                        try:
-                            temp_file.unlink()
-                        except Exception as e:
-                            logger.warning("Failed to delete temp file %s: %s", temp_file, e)
                     try:
-                        temp_dir.rmdir()
-                    except Exception as e:
-                        logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
+                        # Save session after completion -- not one the run was refused, nor
+                        # one somebody holds after it (after_run): another run of this
+                        # process, an append saving it, or this run itself, not done (a
+                        # stream left at a yield) -- its own end saves it. Shielded: a
+                        # client that leaves cancels the stream's whole scope, the run in
+                        # it and its last save too, and here every await was cancelled
+                        # again -- nothing saved, and the steps below skipped.
+                        if _session_service and actual_session_id and not refused:
+                            # Use actual agent name and effective llm_profile (respecting overrides)
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                            with anyio.CancelScope(shield=True):
+                                await _session_service.save_session(
+                                    selected_agent,
+                                    user_id,
+                                    actual_session_id,
+                                    selected_agent.name,
+                                    effective_llm_profile,
+                                    was_new_session,
+                                    after_run=True,
+                                )
+                    finally:
+                        # Whatever became of the save: skipped, the session stayed held
+                        # for the life of the process (presence refuses every later run).
+                        _let_go(selected_agent, held, user_id)
+                        # Cleanup: release request + derived sub-request ids
+                        release_request_user_tree(request_id)
+
+                        # Cleanup temp files after streaming completes
+                        for temp_file in temp_files:
+                            try:
+                                temp_file.unlink()
+                            except Exception as e:
+                                logger.warning("Failed to delete temp file %s: %s", temp_file, e)
+                        try:
+                            temp_dir.rmdir()
+                        except Exception as e:
+                            logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
             stream_owns_cleanup = True
             return _sse_response(event_stream(), media_type="text/event-stream")
@@ -2270,27 +2283,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # NOTE: We do NOT cancel the job here! The job continues running in background.
                 # The job will be cancelled only via explicit /cancel endpoint.
                 
-                # Persist session if job is completed -- not one its run was refused:
-                # another run of this process has it, and the tracker holds that run's
-                # live state (a tool call without its result, say).
-                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
-                    if actual_session_id and _session_service:
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                        await _session_service.save_session(
-                            selected_agent,
-                            user_id,
-                            actual_session_id,
-                            selected_agent.name,
-                            effective_llm_profile,
-                            was_new_session
-                        )
+                # Persist session if job is completed -- not one its run was refused,
+                # nor one somebody holds after it (after_run): another run of this
+                # process has it, and the tracker holds that run's live state (a tool
+                # call without its result, say), or an append that saves it itself.
+                try:
+                    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
+                        if actual_session_id and _session_service:
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                            # Shielded: a client that leaves cancels the stream's scope,
+                            # and the save was cancelled again at its first await.
+                            with anyio.CancelScope(shield=True):
+                                await _session_service.save_session(
+                                    selected_agent,
+                                    user_id,
+                                    actual_session_id,
+                                    selected_agent.name,
+                                    effective_llm_profile,
+                                    was_new_session,
+                                    after_run=True,
+                                )
+                finally:
+                    # Whatever became of the save: skipped, the session stayed held.
+                    _let_go(selected_agent, held, user_id)
 
-                _let_go(selected_agent, held, user_id)
-
-                # Cleanup: release ownership only if job is done (a running
-                # job's stream may reconnect and must keep its mapping)
-                if job.status != JobStatus.RUNNING:
-                    release_request_user_tree(request_id)
+                    # Cleanup: release ownership only if job is done (a running
+                    # job's stream may reconnect and must keep its mapping)
+                    if job.status != JobStatus.RUNNING:
+                        release_request_user_tree(request_id)
 
         return _sse_response(
             event_stream(),

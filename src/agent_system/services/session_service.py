@@ -308,11 +308,27 @@ class SessionService:
         return lock
 
     async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
-                           was_new_session: bool, title: Optional[str] = None) -> bool:
-        """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written."""
+                           was_new_session: bool, title: Optional[str] = None,
+                           after_run: bool = False) -> bool:
+        """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written.
+
+        ``after_run``: a save that follows a run the caller started (the API's save after /run and /events,
+        openai_api's kept turn, a sub-agent manager's after its sub-agent). The run saves at its end and then
+        lets go of the agent's session lock; whoever holds it now -- another run, whose live state the tracker
+        holds (an assistant tool call without its result), an append or /undo that saves itself, or the run
+        itself, not finished yet (a client that left mid-stream) -- is left the session, and nothing is written
+        (False). Asked under the save lock, right before the messages are read: a run that takes the session
+        later finds this save's state, not the other way round. Not for a save made under the lock by the one
+        who holds it -- a run's own, a put back, an append: it turns every holder away, the caller too."""
         if is_ephemeral_session(session_id):
             return False
         async with self.save_lock(session_id):
+            if after_run:
+                locked, owner = agent._session_tracker.check_session_locked(session_id)
+                if locked:
+                    logger.info("[SESSION] %s is held by request %s; the save after a run leaves it to that one",
+                                session_id, owner)
+                    return False
             return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
                                             was_new_session, title)
 
