@@ -887,6 +887,12 @@ plugins:
       type: session_archive
       enabled: true
 
+    # The agents as models behind the OpenAI Responses and Chat Completions API
+    # (/plugins/openai_api/v1; key: the user's API key). src/plugins/openai_api/README.md
+    openai_api:
+      type: openai_api
+      enabled: true
+
     agent_editor:
       type: agent_editor
       enabled: true
