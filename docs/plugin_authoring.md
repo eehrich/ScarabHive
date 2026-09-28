@@ -2638,6 +2638,13 @@ PLUGIN_FACTORY = MyPluginServer
 - **Rate limiting**: Implement rate limiting for external APIs
 - **Secrets**: Use environment variables, never hardcode credentials
 - **Sandboxing**: Consider process isolation for untrusted plugins
+- **Schlüssel im Pfad**: Trägt eine Route einen Schlüssel in ihrem Pfad (wer die URL hat, darf sie
+  benutzen — die Callback-URLs von `stategraph`), steht er direkt hinter `callback/`:
+  `/plugins/<instanz>/callback/<schlüssel>`. Nur dieses Segment maskieren die Logs (App-Log,
+  Access-Log, `security.log`, Security-Audit-Panel, Profiling), auch prozentkodiert und im Traceback
+  (`agent_system/utils/logging.py`, `loggable_path`). Ein Schlüssel an anderer Stelle oder in der
+  Query steht im Klartext darin.
+
 ## Troubleshooting
 
 ### Common Issues
