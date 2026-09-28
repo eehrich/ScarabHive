@@ -17,7 +17,24 @@ logger = logging.getLogger(__name__)
 _registered_shared_modules: Dict[str, Set[str]] = {}
 
 
-def _register_shared_modules(path: Path, pkg_name: str) -> None:
+def _held_elsewhere(taken: dict[str, str] | None, name: str, root: str) -> bool:
+    """Whether another root of the same package name claimed ``name`` earlier in
+    this discovery (see _ModuleNames); warned about when so."""
+    holder = taken.get(name, root) if taken is not None else root
+    if holder != root:
+        logger.warning(
+            "'%s' in %s is not loaded: %s, an earlier plugin directory of the same name, "
+            "has one, and both would be the same module", name, root, holder)
+        return True
+    return False
+
+
+def _hold(taken: dict[str, str] | None, name: str, root: str) -> None:
+    if taken is not None:
+        taken.setdefault(name, root)
+
+
+def _register_shared_modules(path: Path, pkg_name: str, taken: dict[str, str] | None = None) -> None:
     """Register shared modules (non-plugin directories with __init__.py) in the package.
     
     This allows relative imports like "from ..writer_core import X" to work
@@ -34,7 +51,8 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
     
     if pkg_name not in _registered_shared_modules:
         _registered_shared_modules[pkg_name] = set()
-    
+    root = str(path.resolve())
+
     for subdir in path.iterdir():
         if not subdir.is_dir():
             continue
@@ -52,6 +70,9 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
         init_file = subdir / "__init__.py"
         if not init_file.exists():
             continue
+        if _held_elsewhere(taken, subdir.name, root):
+            continue
+        _hold(taken, subdir.name, root)
         
         # This is a shared module (like writer_core)
         module_name = f"{pkg_name}.{subdir.name}"
@@ -94,6 +115,7 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
             sub_mod = types.ModuleType(module_name)
             sub_mod.__path__ = [str(subdir.resolve())]
             sub_mod.__file__ = str(init_file)
+            previous = sys.modules.get(module_name)
             sys.modules[module_name] = sub_mod
             
             # Execute the __init__.py to set up exports
@@ -107,12 +129,25 @@ def _register_shared_modules(path: Path, pkg_name: str) -> None:
             # Take back only OUR half-executed module: a failure in the
             # submodule loop above happens before it exists, and dropping a
             # module somebody else imported properly would force a re-import
-            # and hand out a second identity of every class in it.
+            # and hand out a second identity of every class in it. What it
+            # replaced comes back -- another directory's plugin package, whose
+            # modules would be left without their parent.
             if sub_mod is not None and sys.modules.get(module_name) is sub_mod:
-                sys.modules.pop(module_name, None)
+                _put_back(module_name, previous)
             # A shared module that does not load takes every plugin importing
             # it with it -- that is a warning, not a debug line.
             logger.warning(f"Failed to register shared module {module_name}: {e}", exc_info=True)
+
+
+def _put_back(module_name: str, previous: Any) -> None:
+    """After a plugin module failed under ``module_name``: what was there before
+    it -- another file's module, from an earlier discovery of another directory
+    -- or nothing. Dropped, that module was executed afresh by the next discovery
+    of its directory: a second identity of every class in it."""
+    if previous is None:
+        sys.modules.pop(module_name, None)
+    else:
+        sys.modules[module_name] = previous
 
 
 def _already_loaded(module_name: str, plugin_file: Path):
@@ -139,7 +174,7 @@ def _already_loaded(module_name: str, plugin_file: Path):
     return None
 
 
-def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
+def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[str, Callable[..., ToolServer]]:
     """Discover plugins in a directory.
 
     Rules:
@@ -147,6 +182,10 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
       Name = folder name.
     - Single file plugin: <dir>/<name>.py with PLUGIN_FACTORY or register(). Name = file stem.
     - If a PLUGIN_NAME constant is present it overrides the folder/file name (backwards compatibility).
+
+    ``taken``: module name -> the root that claimed it, over the roots of one
+    package name (see _ModuleNames). A name another root claimed is skipped
+    here; the names tried here are added, loaded or not.
     """
     out: Dict[str, Callable[..., ToolServer]] = {}
     if not (path and path.exists() and path.is_dir()):
@@ -156,6 +195,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
     # per-plugin loop re-scanned (and re-executed) every shared module for
     # every plugin directory.
     pkg_name = path.name  # e.g., "plugins" or "plugins_writer"
+    root = str(path.resolve())
     try:
         if pkg_name not in sys.modules:
             pkg_mod = types.ModuleType(pkg_name)
@@ -163,7 +203,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
             sys.modules[pkg_name] = pkg_mod
         # Register shared modules (like writer_core) that plugins depend on.
         # This allows relative imports like "from ..writer_core import X".
-        _register_shared_modules(path, pkg_name)
+        _register_shared_modules(path, pkg_name, taken)
     except Exception as e:
         logger.debug(f"Failed to prepare package structure for '{pkg_name}': {e}")
 
@@ -185,7 +225,12 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
             logger.debug(f"Skipping plugin {d.name}: entrypoint file {plugin_file} not found")
             continue
         
+        # Asked only of a folder with an entrypoint: a shared module was asked
+        # (and warned about) in _register_shared_modules already.
+        if _held_elsewhere(taken, d.name, root):
+            continue
         plugin_pkg = f"{pkg_name}.{d.name}"
+        _hold(taken, d.name, root)
         try:
             if plugin_pkg not in sys.modules:
                 sub_mod = types.ModuleType(plugin_pkg)
@@ -201,6 +246,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
         mod = _already_loaded(spec.name, plugin_file)
         if mod is None:
             mod = importlib.util.module_from_spec(spec)
+            previous = sys.modules.get(spec.name)
             sys.modules[spec.name] = mod
             try:
                 spec.loader.exec_module(mod)
@@ -211,7 +257,7 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
                 # the warning would never be logged again. BaseException on
                 # purpose -- a module-level sys.exit() raises SystemExit, and
                 # in a pytest process the run continues afterwards.
-                sys.modules.pop(spec.name, None)
+                _put_back(spec.name, previous)
                 if not isinstance(e, Exception):
                     raise
                 logger.warning(f"Failed to load plugin module {plugin_file}: {e}", exc_info=True)
@@ -252,6 +298,9 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
     for p in path.glob("*.py"):
         if p.name == "__init__.py":
             continue
+        if _held_elsewhere(taken, p.stem, root):
+            continue
+        _hold(taken, p.stem, root)
         # The directory this was found in, as the directory loop above names it:
         # under the fixed name "plugins" a second discovery root would either
         # take that package over or inherit its path, and every relative import
@@ -275,14 +324,15 @@ def discover_plugins(path: Path) -> Dict[str, Callable[..., ToolServer]]:
             # synthetic package, and overwriting that would break its relative
             # imports for the rest of the process. Without the entry the
             # module still runs -- it is only not reusable next time.
-            claims_name = not hasattr(sys.modules.get(spec.name), "__path__")
+            previous = sys.modules.get(spec.name)
+            claims_name = not hasattr(previous, "__path__")
             if claims_name:
                 sys.modules[spec.name] = mod
             try:
                 spec.loader.exec_module(mod)
             except BaseException as e:
                 if claims_name:
-                    sys.modules.pop(spec.name, None)  # see the dir-plugin loop above
+                    _put_back(spec.name, previous)  # see the dir-plugin loop above
                 if not isinstance(e, Exception):
                     raise
                 logger.warning(f"Failed to load single-file plugin module {p}: {e}", exc_info=True)
@@ -414,6 +464,36 @@ def default_plugin_dirs() -> list[Path]:
     return source_dirs
 
 
+class _ModuleNames:
+    """discover_plugins over several roots, one after the other, without two of
+    them loading the same module name.
+
+    A root's package name is its directory's name, so two roots both called
+    ``plugins`` with a plugin (folder or single file) or a shared module of the
+    same name would both be the module ``plugins.<name>``: the second replaced
+    the first in sys.modules (its relative imports running against the first
+    root's files), a plugin's type was dropped as provided twice anyway
+    (_add_plugins), and every later discovery executed the first root's plugin
+    afresh -- a new factory each time. The first root that has the name claims
+    it, whether its own module loads or not; the later one's is not loaded.
+    Freeing the name when the first root's module fails would hand it to the
+    later root in one discovery and back to the first in the next, which would
+    then run against -- and drop -- what the later root left in sys.modules. By
+    resolved root: the same directory listed twice loads nothing twice and
+    warns about nothing.
+
+    Only roots discovered together are kept apart. Two directories of the same
+    name discovered one after the other (tests do) still share the module
+    names -- a plugin package, its submodules -- as one package name must.
+    """
+
+    def __init__(self) -> None:
+        self._taken: dict[str, dict[str, str]] = {}
+
+    def discover(self, path: Path) -> dict[str, Callable[..., ToolServer]]:
+        return discover_plugins(path, taken=self._taken.setdefault(path.name, {}))
+
+
 def _add_plugins(plugins: Dict[str, Callable[..., ToolServer]],
                  found: Dict[str, Callable[..., ToolServer]], source: str) -> None:
     """Add *found* to *plugins*; a type already there keeps its first source.
@@ -447,6 +527,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
     # repository paths while ensuring discoverability in common dev
     # and editable-install setups.
     source_dirs = list(dirs) if dirs else default_plugin_dirs()
+    module_names = _ModuleNames()
     # Normalize each source dir to an absolute Path and discover plugins there.
     for raw in source_dirs:
         try:
@@ -464,7 +545,7 @@ def discover_all_plugins(dirs: Iterable[Path] | None = None, group: str = ENTRYP
             if not p.exists():
                 # skip non-existing dirs silently
                 continue
-            _add_plugins(plugins, discover_plugins(p), str(p))
+            _add_plugins(plugins, module_names.discover(p), str(p))
         except Exception as e:
             logger.warning(f"Error discovering plugins in {raw}: {e}", exc_info=True)
 

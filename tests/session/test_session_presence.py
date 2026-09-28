@@ -572,6 +572,7 @@ class TestTheAgentLoop:
 class TestTakingTheLock:
     """What a hold does while other processes take, drop and ask about the same file."""
 
+    @pytest.mark.skipif(os.name != "nt", reason="only Windows refuses opens of a file on its way out")
     def test_a_lock_file_being_deleted_does_not_refuse_the_hold(self, tmp_path, monkeypatch):
         """Windows answers a delete in progress with a refusal, not with "gone".
 
@@ -596,6 +597,27 @@ class TestTakingTheLock:
         assert presence.hold("s1", "u", "agent") is True, "the hold was refused, and the run would go on unheld"
         assert opened, "fixture: the refusal never happened"
         presence.release("s1", "u")
+
+    def test_a_refusal_that_does_not_pass_is_reported(self, tmp_path, monkeypatch):
+        """A lock file that cannot be opened at all: the run is told it could
+        not hold the session. POSIX deletes a name at once, so a refusal there
+        is the directory's and is reported at once -- waiting would only put
+        the report off; Windows first waits out a delete in progress
+        (_open_locked), and gives up after its attempts."""
+        attempts = []
+        real_open = os.open
+
+        def refuse(path, flags, *args, **kwargs):
+            if str(path).endswith(".lock"):
+                attempts.append(path)
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(sp.os, "open", refuse)
+        presence = sp.SessionPresence(tmp_path)
+
+        assert presence.hold("s1", "u", "agent") is False
+        assert len(attempts) == (20 if os.name == "nt" else 1), f"{len(attempts)} attempts"
 
     def test_a_holder_that_let_go_while_being_asked_about_is_not_reported_as_busy(
             self, tmp_path, monkeypatch):

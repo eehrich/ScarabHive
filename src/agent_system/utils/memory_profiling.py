@@ -211,6 +211,11 @@ class MemoryLeakDetector:
         self.min_growth_threshold = min_growth_threshold
         self._snapshots: list[MemorySnapshot] = []
         self._max_snapshots = 10
+        # The newest snapshot that recorded allocations, apart from the ring:
+        # only a snapshot asked for records them, and ten periodic ones after
+        # it (under an hour at the default interval) pushed it out of the ring
+        # -- the panel then said none were recorded.
+        self._allocations: Optional[MemorySnapshot] = None
         self._lock = threading.Lock()
         self._object_tracker = ObjectTracker()
 
@@ -241,6 +246,8 @@ class MemoryLeakDetector:
             self._snapshots.append(mem_snapshot)
             if len(self._snapshots) > self._max_snapshots:
                 self._snapshots = self._snapshots[-self._max_snapshots:]
+            if mem_snapshot.top_allocations:
+                self._allocations = mem_snapshot
 
         return mem_snapshot
 
@@ -253,6 +260,12 @@ class MemoryLeakDetector:
         """The stored snapshots, oldest first."""
         with self._lock:
             return list(self._snapshots)
+
+    def allocations_snapshot(self) -> Optional[MemorySnapshot]:
+        """The newest snapshot that recorded allocations, however many
+        periodic ones came after it; None if none did."""
+        with self._lock:
+            return self._allocations
 
     def compare_snapshots(
         self,
@@ -490,7 +503,7 @@ def memory_summary() -> dict[str, Any]:
             "top_objects": [{"type": t, "count": c} for t, c in _top(latest.object_counts, lambda item: item[1])],
         }
 
-    recorded = next((s for s in reversed(snapshots) if s.top_allocations), None)
+    recorded = detector.allocations_snapshot()
     allocations = None
     if recorded is not None:
         allocations = {"recorded_at": recorded.timestamp.isoformat(), "sites": recorded.top_allocations[:SUMMARY_ROWS]}

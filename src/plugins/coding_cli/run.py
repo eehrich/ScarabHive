@@ -21,6 +21,7 @@ import psutil
 import yaml
 
 from agent_system.core.session_presence import alive
+from agent_system.utils import yaml_io
 
 # Planning reads; editing also writes. --tools is always explicit: under
 # --restricted the list still held Artifact, SendMessage, PushNotification and
@@ -299,7 +300,7 @@ def secret_values(path: Path) -> set[str]:
                 found.add(match.group(1).strip().strip("'\""))
     elif path.suffix in (".yaml", ".yml"):
         try:
-            _secret_leaves(yaml.safe_load(text), found)
+            _secret_leaves(yaml_io.safe_load(text), found)
         except yaml.YAMLError:
             return set()
     return {v for v in found if len(v) >= MIN_SECRET_CHARS and "\n" not in v and "${" not in v}

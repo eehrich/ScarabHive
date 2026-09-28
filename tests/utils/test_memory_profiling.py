@@ -100,6 +100,20 @@ class TestMemoryLeakDetector:
         assert summary["allocations"] == {"recorded_at": asked.timestamp.isoformat(), "sites": sites}
         assert summary["snapshot"]["taken_at"] != asked.timestamp.isoformat()
 
+    def test_allocations_asked_for_outlast_a_full_ring_of_periodic_snapshots(self, heap, monkeypatch):
+        """The detector keeps ten snapshots; ten periodic ones after the one
+        asked for pushed it out, and the panel said none were recorded."""
+        sites = [{"file": "x.py:1", "size_kb": 1.0, "count": 1}]
+        monkeypatch.setattr(memory_profiling, "top_allocations", lambda: sites)
+        detector = memory_profiling.get_leak_detector()
+
+        asked = detector.take_snapshot(include_allocations=True)
+        for _ in range(12):
+            detector.take_snapshot()
+
+        assert asked not in detector.snapshots(), "fixture: the ring still holds the snapshot asked for"
+        assert memory_summary()["allocations"] == {"recorded_at": asked.timestamp.isoformat(), "sites": sites}
+
     def test_no_snapshot_with_allocations_means_none(self, heap):
         memory_profiling.get_leak_detector().take_snapshot(include_allocations=True)  # tracemalloc is off here
 

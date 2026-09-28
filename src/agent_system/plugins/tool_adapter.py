@@ -139,12 +139,13 @@ class PluginToolRegistry:
     def discover_plugins(self, plugin_dirs: List[str]) -> None:
         """Discover plugins from directories"""
         # Import here to avoid circular dependency
-        from .discovery import _add_plugins, discover_plugins
+        from .discovery import _add_plugins, _ModuleNames
 
+        module_names = _ModuleNames()
         for plugin_dir in plugin_dirs:
             path = Path(plugin_dir)
             if path.exists() and path.is_dir():
-                factories = discover_plugins(path)
+                factories = module_names.discover(path)
                 # The Runtime's rule: the first source of a type wins. With
                 # update() here, a server this path builds (one the Runtime
                 # did not) would get the other plugin of the same name.

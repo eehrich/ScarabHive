@@ -336,11 +336,25 @@ class TestErrorContract:
         # json.dumps raises RecursionError on it, which neither check caught:
         # it escaped run_script and the model got the recursion message
         # instead of its own error.
+        #
+        # 5000 levels no longer did that: Python 3.14 guards the C stack
+        # instead of counting against the recursion limit, and json.dumps
+        # serializes 100_000 levels (measured; 120_000 raise). 200_000 is
+        # built ten levels per iteration: well inside the sandbox's per-loop
+        # caps on iterations and on time (2 s, which a loop of 100_000 plain
+        # iterations came within 2x of under a tracer). The fixture is checked
+        # first -- on a Python that serializes this depth, the test says so
+        # instead of measuring nothing.
+        deep: list = []
+        for _ in range(200_000):
+            deep = [deep]
+        with pytest.raises(RecursionError):
+            json.dumps(deep)
         server = make_server()
         res = await run(server, agent, (
             "x = []\n"
-            "for i in range(5000):\n"
-            "    x = [x]\n" + last_line))
+            "for i in range(20000):\n"
+            "    x = [[[[[[[[[[x]]]]]]]]]]\n" + last_line))
         assert res["status"] == "error"
         assert named in res["error"]
         assert "not serializable" in res["variables"]["x"]
