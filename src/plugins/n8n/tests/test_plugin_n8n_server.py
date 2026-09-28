@@ -1082,11 +1082,14 @@ async def test_the_woken_run_learns_that_the_watch_gave_up(monkeypatch):
 
 @pytest.mark.parametrize("workflow_id,execution_id", [("w1", "../../escape"), ("../../escape", "7")])
 async def test_ids_from_the_model_never_become_a_path(workflow_id, execution_id, cache_root):
+    # cache_root.parent is the session's basetemp, where other tests keep an "escape" of their
+    # own: only what this call adds counts. "escape*": a mark's name goes on after the id ("escape-s1").
+    escapes_before = set(cache_root.parent.rglob("escape*"))
     server = make_server()
     ended(server)
     await call(server, "get_execution", workflow_id=workflow_id, execution_id=execution_id, _session_id="s1")
     assert server._watch_key(workflow_id, execution_id, "s1") is None
-    assert not list(cache_root.parent.rglob("escape"))
+    assert set(cache_root.parent.rglob("escape*")) == escapes_before
 
 
 async def test_a_cache_that_cannot_be_written_does_not_stop_a_read(monkeypatch, tmp_path):

@@ -10,3 +10,4 @@ author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server", "web"]
 requires = { agent_system = ">=0.7.0" }
+dependencies = ["anyio>=4.0"]  # the shielded close of a run's events (server.py); Starlette brings it, declared all the same
