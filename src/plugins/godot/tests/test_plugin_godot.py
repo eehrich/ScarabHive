@@ -597,6 +597,18 @@ async def test_setup_that_times_out_importing_is_not_a_success(server, project):
     assert "timed out" in line
 
 
+@pytest.mark.parametrize("field, value", [
+    ("name", 'Evil"\n[autoload]\nX="*res://x.gd'),
+    ("main_scene", 'main.tscn"\nrun/x="y'),
+    ("name", "back\\slash"),
+])
+async def test_setup_refuses_a_value_that_would_rewrite_project_godot(server, project, field, value):
+    """A quote or a line break closes the quoted string and adds lines of its own."""
+    result, line = await run_tool(server, "godot_setup", {"project": "fresh", field: value})
+    assert result["status"] == "error" and field in result["error"], result
+    assert not (project.parent / "fresh" / "project.godot").exists()
+
+
 async def test_setup_refuses_to_guess_the_engine_version(server, project):
     """A binary that cannot answer --version must not produce a project.godot
     with a made-up feature tag."""
