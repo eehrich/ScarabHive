@@ -193,7 +193,15 @@ Two more that are not limits but guards:
   woken coordinator continues from a process of its own, while the job it
   continues may still run in the API. `continue` asks the lock beside the
   sub-session (`core/session_presence.py`) as `list` does, and refuses — two
-  runs on one transcript each saved their own, the later over the other. A
+  runs on one transcript each saved their own, the later over the other. A run
+  of THIS process that the slots do not know — a chat on the sub-agent's
+  session in the web UI, a run still finishing — has the agent's session lock:
+  `continue` takes that lock first, under the request id its run takes it by,
+  and is refused with "Sub-agent '<id>' is running in another request of this
+  process right now. Wait for it before you continue it." — before it refreshes
+  the vars, reopens the instance or prepares the agent. The save after a
+  sub-agent's run leaves a session somebody holds by then
+  (`save_session(after_run=True)`). A
   refusal of a busy, missing or foreign instance is the caller's mistake and
   logged at INFO; a slot no running task holds is a leak and logged as an error.
 * **The manager writes a parent's sub-agent entries one at a time.** An entry

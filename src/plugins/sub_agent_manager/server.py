@@ -9,6 +9,8 @@ import logging
 import time
 import weakref
 from datetime import UTC, datetime
+
+import anyio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -605,6 +607,28 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 await status.error(f"Sub-agent error ({operation}): {str(e)}")
             return {"status": "error", "error": str(e)}
 
+    @staticmethod
+    async def _take_the_session(agent: Any, instance_id: str, request_id: str) -> None:
+        """The sub-agent's session lock, under the id its run takes it by (a re-entry there), before anything of
+        the session is touched. _prepare_agent sets the metadata and vars a run of it reads, and the refresh and
+        the reopen write its record: a run of this process that has the session -- a chat on the sub-agent's
+        session, a run still finishing -- had them replaced under it, and this run was then refused at the lock
+        itself. Raises CallerMistake while one has it (an append or /undo saving it is waited for)."""
+        if not await agent._session_tracker.acquire_session_lock(instance_id, request_id, timeout=5.0):
+            raise CallerMistake(
+                f"Sub-agent '{instance_id}' is running in another request of this process right now. "
+                "Wait for it before you continue it.")
+
+    @staticmethod
+    async def _let_go_of_the_session(agent: Any, instance_id: str, request_id: str) -> None:
+        """The lock _take_the_session took, if its run never started. A run that did registered its request
+        (Agent.run_events, before it takes the lock again) and holds the lock under the same id: its end lets go
+        of it -- let go of here, a run still closing lost it to the next one, and saved its turn under that."""
+        tracker = agent._session_tracker
+        if (tracker.check_session_locked(instance_id) == (True, request_id)
+                and tracker.get_session_for_request(request_id) is None):
+            await tracker.release_session_lock(instance_id, request_id)
+
     async def _prepare_agent(
         self,
         agent: Any,
@@ -748,10 +772,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
                     break  # Stop waiting for more events
         finally:
-            await track(None)
-            # Closed here, not left to the garbage collector: that closes it in another task, and
-            # this one would keep the run's request id and user (Agent.run_events restores them).
-            await events.aclose()
+            try:
+                await track(None)
+            finally:
+                # Closed here, not left to the garbage collector: that closes it in another task, and
+                # this one would keep the run's request id and user (Agent.run_events restores them).
+                # Shielded: a cancel scope hands its cancel out again at every await -- the close was
+                # skipped with track(None), and the run lay at a yield holding its session's lock until
+                # the collector came; or its last save and its session-end hooks were cut short.
+                with anyio.CancelScope(shield=True):
+                    await events.aclose()
         return result_text
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -968,7 +998,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     session_id=sub_session_id,
                     agent_name=agent_name,
                     llm_profile=llm_profile,
-                    was_new_session=True
+                    was_new_session=True,
+                    after_run=True,
                 )
                 logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
 
@@ -1105,10 +1136,19 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 run = self._blocking_runs[instance_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id}
 
+            # Generate hierarchical request ID for continue operation -- before anything else: the
+            # session's lock is taken under it, and the run takes it again under the same id
+            parent_request_id = params.get("_request_id")
+            if parent_request_id:
+                sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
+            else:
+                sub_request_id = f"sub_cont_{short_id()}"
+
             # True while the stored status knows nothing of this run: before the reopen it still tells
             # the last one's ending, and a reopen refused at a limit leaves it at that
             settled = True
             try:
+                await self._take_the_session(agent, instance_id, sub_request_id)
                 # Reopen BEFORE execution starts -- and only once this run is registered: a continue
                 # refused as "already running" must not touch the run it met.
                 await manager.reopen_sub_session(parent_session_id, instance_id)
@@ -1154,13 +1194,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     await status.progress(f"Continuing {agent_type} with new message...")
 
                 # Execute sub-agent with new message (continues existing session)
-                # Generate hierarchical request ID for continue operation
-                parent_request_id = params.get("_request_id")
-                if parent_request_id:
-                    sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
-                else:
-                    sub_request_id = f"sub_cont_{short_id()}"
-
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
                 run.update(agent=agent, request_id=sub_request_id)
@@ -1182,7 +1215,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     session_id=instance_id,
                     agent_name=agent_type,
                     llm_profile=llm_profile,
-                    was_new_session=False  # Updating existing session
+                    was_new_session=False,  # Updating existing session
+                    after_run=True,
                 )
                 logger.debug(f"Saved continued sub-agent session {instance_id} with messages")
 
@@ -1225,6 +1259,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     await self._store_blocking_abort(manager, parent_session_id, instance_id, error)
                 raise
             finally:
+                # The session's lock, if the run did not let go of it (it never started)
+                await self._let_go_of_the_session(agent, instance_id, sub_request_id)
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._release_slot(instance_id)
@@ -2278,7 +2314,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 session_id=instance_id,
                 agent_name=agent_name,
                 llm_profile=llm_profile,
-                was_new_session=True
+                was_new_session=True,
+                after_run=True,
             )
 
             # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
