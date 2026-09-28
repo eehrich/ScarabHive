@@ -72,3 +72,36 @@ def release_request_user_tree(request_id: str) -> None:
     prefix = request_id + "_"
     for rid in [k for k in request_user_map if k.startswith(prefix)]:
         request_user_map.pop(rid, None)
+
+
+#: Runs whose client shows a person what the run asks while it runs, and lets
+#: that person answer: the web chat says so when it starts a run (``attended``
+#: on POST /events and on /run with files). Nothing else is: the openai_api
+#: plugin, agent-run, agent-cli and the writer's dispatches read the stream as
+#: programs. A hook that would ask a person (tool_approval) asks only under
+#: such a run, see ``status_forwarding.attended_stream_of``. Insertion-ordered
+#: and capped like the user map; a start sets the entry either way, so an id
+#: a client reuses never inherits an old run's answer.
+_attended_runs: dict[str, None] = {}
+
+
+def set_run_attended(request_id: str, attended: bool) -> None:
+    """Record whether the client that starts the run ``request_id`` shows its
+    questions to a person."""
+    _attended_runs.pop(request_id, None)
+    if not attended:
+        return
+    if len(_attended_runs) >= _MAX_ENTRIES:
+        _attended_runs.pop(next(iter(_attended_runs)), None)
+    _attended_runs[request_id] = None
+
+
+def run_is_attended(request_id: str) -> bool:
+    """Whether the run ``request_id`` itself was started as attended (its
+    sub-runs are not looked up here -- they have ids of their own)."""
+    return bool(request_id) and request_id in _attended_runs
+
+
+def release_run_attended(request_id: str) -> None:
+    """Forget the mark of a run that ended (idempotent)."""
+    _attended_runs.pop(request_id, None)

@@ -60,6 +60,43 @@ def in_line_with_a_live_run(request_id: str) -> bool:
                for f in _live_forwarders if f.request_id)
 
 
+def attended_stream_of(request_id: str, grace: float = 0.0) -> Optional[str]:
+    """The id of the run stream a person watches that a status line of
+    ``request_id`` reaches now, or None when none does.
+
+    A line reaches the stream of every run streaming now whose id is ``request_id``
+    or a prefix of it at a ``_`` (DirectStatusHandler's rule): a sub-agent's lines
+    reach the stream of the run that started it. That stream is watched when the
+    client that started its run said so (``request_context.set_run_attended``). A
+    run whose stream has ended reaches nobody any more -- an async sub-agent that
+    outlives the run above it asks no one, whatever that run's client was -- and
+    neither does a run that goes on as a job nobody has read for ``grace``
+    seconds (the tab was closed; a reload reads it again within moments). A run
+    streamed inline, with no job, is read for as long as it runs.
+    """
+    if not request_id:
+        return None
+    from ....core.request_context import run_is_attended
+    from ....services.background_job_manager import get_background_job_manager
+    for forwarder in list(_live_forwarders):
+        run_id = forwarder.request_id
+        if run_id and (request_id == run_id or request_id.startswith(f"{run_id}_")) \
+                and run_is_attended(run_id):
+            unread = get_background_job_manager().unread_for(run_id)
+            if unread is None or unread == 0.0 or unread < grace:
+                return run_id
+    return None
+
+
+def run_is_live(request_id: str) -> bool:
+    """Whether the run ``request_id`` streams now, or a run started under it
+    does (an async sub-agent outlives the run that started it)."""
+    if not request_id:
+        return False
+    return any(f.request_id and (f.request_id == request_id or f.request_id.startswith(f"{request_id}_"))
+               for f in list(_live_forwarders))
+
+
 def _is_above(forwarder: "StatusEventForwarder", request_id: str) -> bool:
     """Whether `request_id` reads as a run started under the one `forwarder` streams."""
     return bool(forwarder.request_id) and request_id.startswith(f"{forwarder.request_id}_")

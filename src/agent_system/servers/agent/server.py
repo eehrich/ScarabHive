@@ -4062,9 +4062,13 @@ class Agent(ToolServer):
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
 
-        # Extract session context from injected params (populated by ToolExecutionManager)
+        # Extract session context from injected params (populated by ToolExecutionManager).
+        # The session is the caller's, injected as _session_id -- never a plain
+        # "session_id" argument: no agent tool schema offers one, and a model that
+        # passed it ran the agent in a session of its choosing (another sub-agent's,
+        # say), where that session's approvals held instead of its caller's.
         request_id = params.get("request_id") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        session_id = params.get("_session_id")
 
         try:
             # Execute the task using this agent

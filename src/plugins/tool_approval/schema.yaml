@@ -1,0 +1,94 @@
+# Hook definition for the tool_approval plugin.
+# Convention: hook name must match method name exactly.
+
+hooks:
+  - name: check_tool_call
+    type: pre_tool_call
+    # Off everywhere; an agent opts in through
+    # hooks.overrides: tool_approval.check_tool_call: {enabled: true, mode: ask, ...}
+    enabled: false
+    # How long the hook may take at most, the wait for a person included. Keep
+    # it above ask_timeout: the registry cuts the hook off here, and then
+    # on_error: block blocks the call with the framework's generic text.
+    timeout: 3600
+    # A policy hook that times out or crashes must not let the call run.
+    on_error: block
+    category: tool_approval
+    description: >
+      Decides each tool call of the model before it runs: deny rules block,
+      allow rules pass, and in ask mode everything else is put to the person
+      watching the run (allow once / for the session / deny). Runs nobody
+      watches get the `unattended` answer.
+    # At the end of the chain: a hook after this one could still change the
+    # arguments, and nobody would check them again. Argument-changing
+    # pre_tool_call hooks declare category tool_arguments.
+    order:
+      after: ["begin", "tool_arguments"]
+
+# Defaults -- overridable in plugins.yaml (config:) and per agent in
+# hooks.overrides."<instance>.check_tool_call". mode, ask_timeout and
+# unattended of the agent replace these; its allow and deny lists are added to
+# the ones here.
+config:
+  mode:
+    type: string
+    enum: ["ask", "auto", "off"]
+    default: "ask"
+    description: >
+      ask: deny rules block, allow rules pass, every other call is put to the
+      person watching the run. auto: deny rules block, every other call runs.
+      off on an agent: its own rules and questions are off; the instance's deny
+      rules and those of a run above it still block. off here (the instance):
+      the default for agents that set no mode -- for them nothing is checked.
+      YAML reads a bare `off` as false; both mean off.
+
+  allow:
+    type: array
+    default: []
+    description: >
+      Rules for calls that run without a question (mode ask). A rule is a tool
+      pattern as in tools.allowed ("server/tool", "server/*", "server",
+      fnmatch), or {tool: <pattern>, arguments: {<name>: <regex>}} -- every
+      argument regex must match (re.search).
+
+  deny:
+    type: array
+    default: []
+    description: >
+      Rules for calls that never run. Same shape as allow. Deny wins over allow
+      and over what a person allowed for the session. The instance's rules hold
+      for every agent that switches the hook on, one in off included (unless
+      the instance is off and the agent sets no mode); an agent's own rules
+      hold in ask and auto.
+
+  ask_timeout:
+    type: number
+    default: 300
+    description: >
+      Seconds a question waits for an answer; unanswered, the call is blocked.
+
+  unattended:
+    type: string
+    enum: ["block", "allow"]
+    default: "block"
+    description: >
+      What happens to a call that would be asked about while nobody can answer:
+      a run of the openai_api plugin, agent-run, agent-cli, a writer dispatch,
+      an async sub-agent after its caller's run ended. block: the call does not
+      run and the model is told to go on without it. allow: it runs.
+
+  gone_after_seconds:
+    type: number
+    default: 15
+    description: >
+      A run nobody has read this long (the tab was closed and not reopened) is
+      not asked any more: a waiting question stops, and the call gets the
+      `unattended` answer. Counted from the moment the last reader left, so a
+      reload -- which reads the run again within moments -- is allowed for.
+
+  reask_seconds:
+    type: number
+    default: 20
+    description: >
+      While a question waits, it is sent again this often, so a page that was
+      reloaded (and skipped what it had read) shows it again.

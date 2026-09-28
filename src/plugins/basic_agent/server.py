@@ -40,7 +40,9 @@ class BasicAgent(SchemaBasedAgent):
             return {"status": "error", "error": "Missing required parameter 'task'"}
 
         request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        # The caller's session only (injected): the schema offers no session_id,
+        # and one the model chose would run the agent in a session of its choosing.
+        session_id = params.get("_session_id")
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")
         use_advanced_model = params.get("use_advanced_model", False)

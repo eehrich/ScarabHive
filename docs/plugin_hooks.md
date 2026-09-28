@@ -160,7 +160,8 @@ async def on_llm_progress(self, context: HookContext) -> HookResult:
 
 **Trigger:** vor jedem Tool-Call des Modells, einzeln pro Call, und vor jedem
 Call eines `tool_script`-Skripts (siehe [Welche Calls zählen](#welche-calls-zählen))
-**Use Cases:** Freigaben (ask/auto/off, allow/deny — #091), Argumente prüfen
+**Use Cases:** Freigaben (ask/auto/off, allow/deny — #091, gebaut als Plugin
+[`tool_approval`](../src/plugins/tool_approval/README.md)), Argumente prüfen
 oder korrigieren, Protokoll
 **Can Modify:** `tool_call["arguments"]`; außerdem kann der Hook den Call blockieren
 
@@ -194,7 +195,9 @@ Der Call läuft nicht, und das Modell liest statt eines Ergebnisses:
   fragender Hook fragt deshalb nie nach einem Call, den ein anderer schon
   gesperrt hat.
 - Der Lauf geht weiter: Ein blockierter Call ist ein Fehlerergebnis, keine
-  Exception. Die UI bekommt ein `tool_error`-Event mit `"blocked": true`.
+  Exception. Die UI bekommt ein `tool_error`-Event mit `"blocked": true` und
+  zeigt es als eigene Zeile im Status des Schritts (ein gesperrter Call öffnet
+  keinen Status-Scope und sendet kein `tool_call`).
 - Unter `tool_script` wird aus der Sperre ein `ToolDispatchError`, der im
   Skript als `ToolCallError` ankommt und dort fangbar ist.
 
@@ -235,6 +238,23 @@ hooks:
     on_error: block       # Timeout oder Absturz sperren den Call
 ```
 
+**Eine Person fragen.** Gefragt wird nur, wo jemand antworten kann:
+`status_forwarding.attended_stream_of(context.request_id)` nennt den Stream
+eines laufenden Laufs, den eine Person verfolgt und den die Status-Zeilen des
+Calls erreichen (der Lauf selbst oder einer über ihm, etwa beim Sub-Agent).
+Als verfolgt gilt ein Lauf, dessen Client das beim Start sagt
+(`"attended": true` auf `POST /events`, Formularfeld `attended` auf `/run` mit
+Dateien; `request_context.set_run_attended`), solange er läuft und eine
+angemeldete Person ihn gestartet hat (oder Auth aus ist). Das tut nur der
+Web-Chat. Ist der Stream vorbei, etwa bei einem asynchronen Sub-Agent nach dem
+Ende seines Aufrufers, oder liest niemand mehr den Job des Laufs (Tab
+geschlossen), fragt niemand mehr. Ein Sub-Lauf fragt im Stream des Laufs über
+ihm; ein Call innerhalb eines `tool_script`-Skripts fragt nie. Alles andere (openai_api, agent-run, agent-cli,
+JSON-`/run`, die `/events`-Aufträge des Writers) ist unbeaufsichtigt, und der
+Hook entscheidet ohne Rückfrage. Die Frage selbst ist eine Status-Zeile unter
+eigener Kind-ID mit `meta.tool_approval`. Der Chat zeichnet dazu Knöpfe, und
+die letzte Zeile der Reihe (end/error) nimmt sie wieder weg.
+
 **Fallen für Policy- und Freigabe-Hooks:**
 
 - Die Sperre gehört in `HookResult.metadata`. Ein `block`, das nur in
@@ -243,6 +263,9 @@ hooks:
 - Ein Hook, der nach dem Freigabe-Hook läuft, kann die Argumente noch ändern,
   und niemand prüft sie danach. Der Freigabe-Hook gehört deshalb ans Ende der
   Kette (`order: {after: [...]}` auf die Kategorien, die Argumente ändern).
+  Ein `pre_tool_call`-Hook, der Argumente ändert, trägt dafür
+  `category: tool_arguments`; `tool_approval` steht mit
+  `after: ["begin", "tool_arguments"]` hinter allen diesen.
 - Den Kontext ändern, nicht neu bauen: Ein neu gebauter `HookContext` ohne
   `tool_call` oder `cancellation_token` lässt die Hooks nach ihm scheitern.
 - Ein leerer Sperrtext (`block: ""`) sperrt ebenfalls; nur `None` oder `False`
@@ -313,7 +336,7 @@ async def on_post_tool_call(self, context: HookContext) -> HookResult:
 |---|---|
 | Tool-Calls des Modells im Agent-Loop, auch parallele und externe MCP-Tools | ja, `source: "model"` |
 | Calls eines `tool_script`-Skripts (`Agent.dispatch_tool_call(..., hook_source="tool_script")`) | ja, `source: "tool_script"`, `id: None`, `step: 0`. Die Secrets aus `inject_params` sieht kein Hook: Sie kommen erst nach den Pre-Hooks dazu |
-| Sub-Agents | Der Spawn ist ein Call des Eltern-Agents und läuft durch dessen Hooks. Die Calls des Sub-Agents laufen durch seinen eigenen Loop, mit seiner Hook-Konfiguration |
+| Sub-Agents | Der Spawn ist ein Call des Eltern-Agents und läuft durch dessen Hooks. Die Calls des Sub-Agents laufen durch seinen eigenen Loop, mit seiner Hook-Konfiguration. Ein Hook, der die Regeln des Eltern-Laufs mitgeben will, findet ihn über die Request-ID (`<lauf>_003_sub_…` verlängert die ID des Aufrufers); `tool_approval` tut das und behandelt einen Sub-Agent ohne den Hook als eigenen Fall |
 | Slash-Commands, Web-Buttons, `tool_preload`, Stategraph-Aktivitäten, `Agent.call_tool` | nein, denn der Aufrufer ist eine Person oder das Framework, nicht das Modell |
 | Calls, die das Framework vorher abweist (kaputtes JSON, unbekanntes Tool) | nein, denn sie laufen nie |
 | gesperrte Calls | nur die Pre-Hooks bis zur Sperre, kein Post-Hook |
@@ -327,8 +350,12 @@ Call bzw. das Ergebnis (Deep Copy, wie `messages` bei `pre_llm_call`).
 **Grenzen:**
 
 - Unter `tool_script` begrenzt dessen `per_call_timeout` auch die Hooks eines
-  Calls. Ein Hook, der länger auf eine Person wartet, lässt den Skript-Call in
-  den Timeout laufen. Den `cancellation_token` bekommt er dort vom Skript.
+  Calls. Den `cancellation_token` bekommt ein Hook dort vom Skript. Ein Hook
+  sollte innerhalb eines Skripts nicht auf eine Person warten: Das Skript als
+  Ganzes war der Call des Modells und ist schon durch die Hooks gegangen.
+  `tool_approval` fragt darin deshalb nie, sondern sperrt nur, was Deny-Regeln
+  oder ein Spawn ohne Freigaben nicht erlauben. Ein Skript selbst gibt es nie
+  „für die Session“ frei: Jedes wird mit seinem Code gefragt.
 
 ### FORMAT_OUTPUT
 

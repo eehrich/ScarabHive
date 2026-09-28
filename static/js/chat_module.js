@@ -2095,6 +2095,7 @@
       registerNode(parentId, null, virtualParent, depthLevel - 1);
     }
     
+    let row = null;  // the row this line went to, for a question's buttons (syncApprovalActions)
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -2102,6 +2103,7 @@
         const time = existing.querySelector('.progress-time');
         if (msg) msg.textContent = ev.message || 'Starting...';
         if (time) time.textContent = formatTime(ev.timestamp);
+        row = existing;
       } else {
         const operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
         
@@ -2113,6 +2115,7 @@
         if (requestId) {
           registerNode(requestId, parentId, operationDiv, depthLevel);
         }
+        row = operationDiv;
       }
     } else if (ev.phase === 'progress') {
       let operationDiv = activeOperations.get(operationKey);
@@ -2134,6 +2137,7 @@
         if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       }
+      row = operationDiv;
     } else if (ev.phase === 'end') {
       let operationDiv = activeOperations.get(operationKey);
       // If END arrives before START was processed, create the operation now
@@ -2154,6 +2158,7 @@
       operationDiv.classList.add('completed');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up completed operations
+      row = operationDiv;
     } else if (ev.phase === 'error') {
       let operationDiv = activeOperations.get(operationKey);
       // If ERROR arrives before START was processed, create the operation now
@@ -2174,7 +2179,122 @@
       operationDiv.classList.add('error');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up errored operations
+      row = operationDiv;
     }
+    syncApprovalActions(row, ev);
+  }
+
+  /**
+   * The answer a question needs, on the row that asks it.
+   *
+   * A pre_tool_call hook that puts a call to the person watching the run (the
+   * tool_approval plugin) asks with a status line whose `meta.tool_approval` names the
+   * question, the call's arguments and where the answer goes. The buttons stand while
+   * the row asks; the row's last line (end or error: allowed, denied, timed out) takes
+   * them down, in every tab that shows the run. The hook asks again now and then, so a
+   * page reloaded mid-question gets its buttons back with the next line.
+   *
+   * The answer goes to the URL the line names -- a plugin's answer route on this server,
+   * nothing else -- with the page's own sign-in, as every other request of the chat.
+   */
+  function syncApprovalActions(row, ev) {
+    if (!row) return;
+    const open = row.querySelector(':scope > .approval-actions');
+    if (ev.phase === 'end' || ev.phase === 'error') {
+      if (open) open.remove();
+      return;
+    }
+    const ask = ev.meta && ev.meta.tool_approval;
+    // A plugin's answer route and nothing else: `/plugins/../api/…` would reach any route.
+    if (open || !ask || typeof ask.id !== 'string' || typeof ask.answer_url !== 'string'
+        || !/^\/plugins\/[A-Za-z0-9_-]+\/answer$/.test(ask.answer_url)) return;
+    const box = document.createElement('div');
+    box.className = 'approval-actions';
+    if (typeof ask.warning === 'string' && ask.warning) {
+      // what allowing gives up: a spawn whose calls no approval reaches
+      const warning = document.createElement('div');
+      warning.className = 'approval-warning';
+      warning.textContent = ask.warning;
+      box.appendChild(warning);
+    }
+    if (ask.arguments_cut) {
+      // every argument is there by name; only long values lost their middle
+      const warn = document.createElement('div');
+      warn.className = 'approval-cut';
+      warn.textContent = 'Long values are shortened in the middle -- check what the call writes before you allow it.';
+      box.appendChild(warn);
+    }
+    if (ask.arguments) {
+      const args = document.createElement('pre');
+      args.className = 'approval-arguments';
+      args.textContent = ask.arguments;  // what the model chose: data, never markup
+      box.appendChild(args);
+    }
+    const bar = document.createElement('div');
+    bar.className = 'approval-bar';
+    const reason = document.createElement('input');
+    reason.type = 'text';
+    reason.className = 'pk-input approval-reason';
+    reason.maxLength = 1000;
+    reason.placeholder = 'Why not (sent to the agent with Deny)';
+    const note = document.createElement('span');
+    note.className = 'approval-note';
+    // the answers the question offers: a script is allowed call by call, never for the session
+    const offered = Array.isArray(ask.decisions) ? ask.decisions : ['allow_once', 'allow_session', 'deny'];
+    const choices = [['allow_once', 'Allow once'], ['allow_session', 'Allow for this session'], ['deny', 'Deny']]
+      .filter(([decision]) => offered.includes(decision));
+    const buttons = choices.map(([decision, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `pk-btn pk-btn--sm${decision === 'deny' ? ' pk-btn--danger' : (decision === 'allow_once' ? ' pk-btn--primary' : '')} approval-${decision}`;
+      button.textContent = label;
+      button.addEventListener('click', async () => {
+        buttons.forEach((b) => { b.disabled = true; });
+        reason.disabled = true;
+        note.textContent = 'Sending…';
+        try {
+          await postJSON(ask.answer_url, { question_id: ask.id, decision, reason: reason.value || '' });
+          note.textContent = `Answered: ${label}`;
+        } catch (err) {
+          note.textContent = `Not taken: ${(err && err.message) || String(err)}`;
+          // 404: nothing waits for an answer any more; anything else may take a second try
+          if (!err || err.status !== 404) {
+            buttons.forEach((b) => { b.disabled = false; });
+            reason.disabled = false;
+          }
+        }
+      });
+      bar.appendChild(button);
+      return button;
+    });
+    bar.append(reason, note);
+    box.appendChild(bar);
+    row.appendChild(box);
+  }
+
+  /**
+   * A tool call that failed without a line of its own: a pre_tool_call hook blocked it,
+   * or the framework refused it (unknown tool, arguments that are no JSON). Such a call
+   * opens no status scope and sends no tool_call event, so without this line it was
+   * nowhere on the page while the run went on -- only a reload showed it, as a stored
+   * result. A call that ran and raised has its row already (its scope ended in an
+   * error, and the event names the row's request id): nothing is added to it.
+   */
+  function toolErrorLine(view, data) {
+    if (data.request_id && chatContainer
+        && chatContainer.querySelector(`.operation-progress[data-request-id="${CSS.escape(data.request_id)}"]`)) return;
+    const host = statusBodyFor(view);
+    if (!host) return;
+    const line = createTreeOperationDiv('', {
+      server: data.tool || 'tool', message: `${data.blocked ? 'blocked' : 'failed'}: ${data.error || ''}`,
+      timestamp: new Date().toISOString(),
+    }, 0, null);
+    const icon = line.querySelector('.progress-icon');
+    if (icon) icon.innerHTML = '<div class="error-mark">✕</div>';
+    line.classList.add('error');
+    // why a hook stopped the call is what the reader needs: shown whole, not cut to a row
+    if (data.blocked) line.classList.add('blocked');
+    host.appendChild(line);
   }
 
   function formatTime(ts) {
@@ -2323,6 +2443,9 @@
       const operationDiv = activeOperations.get(key);
       if (!operationDiv) return;
       activeOperations.delete(key);
+      // a question whose last line never came waits for nobody any more
+      const asking = operationDiv.querySelector(':scope > .approval-actions');
+      if (asking) asking.remove();
       const iconSpan = operationDiv.querySelector('.progress-icon');
       const line = operationDiv.querySelector('.progress-line');
       if (iconSpan) iconSpan.innerHTML = '<div class="open-mark">⋯</div>';
@@ -2818,6 +2941,9 @@
         break;
       case 'tool_result':
         toolDetail(view, data, 'result', data.result, true);
+        break;
+      case 'tool_error':
+        toolErrorLine(view, data);
         break;
       case 'final': {
         // The answer is here, so no call is in flight any more: what the run says while
@@ -3357,6 +3483,7 @@
       case 'reasoning_delta':
       case 'tool_call':
       case 'tool_result':
+      case 'tool_error':
         renderRunEvent(blk, data);
         break;
       case 'thinking_delta':
@@ -3748,6 +3875,8 @@
         if (selectedLLMProfile) {
           formData.append('llm_profile', selectedLLMProfile);
         }
+        // A person reads this run and can answer what it asks (syncApprovalActions).
+        formData.append('attended', 'true');
         
         // Add current session ID if exists (to continue existing session)
         if (currentSessionId) {
@@ -3833,6 +3962,8 @@
       }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
+      // A person reads this run and can answer what it asks (syncApprovalActions).
+      postBody.attended = true;
 
       let lost = false;  // the connection broke before the run's end
       // `stop` ENDS the connection, where letting go of a finished run only stops
