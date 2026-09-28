@@ -279,6 +279,49 @@ class LocalMachineSpec(Strict):
     states: dict[str, StateSpec]
 
 
+class MachineAgentSpec(Strict):
+    """``agent:`` -- the machine offered as an agent (docs/stategraph_design.md §10): no config entry, every process
+    that starts declares it (the stategraph_machine type's offer). The keys of a ``type: stategraph_machine`` entry."""
+
+    name: Optional[str] = Field(None, description="the agent's name (a server name); default <machine id>_agent")
+    description: str = Field("", description="what a caller reads; default the machine's title or description")
+    input: Optional[Literal["text", "json"]] = Field(
+        None, description="text: the message is the param task_param; json: a JSON object of the params; default "
+                          "text when the machine has exactly one param of type string or any, else json")
+    task_param: Optional[str] = Field(None, description="the param a text message fills; default that one param")
+    on_wait: Literal["ask", "block"] = Field(
+        "ask", description="ask: a wait state asks in the conversation (called as a tool it waits); block: the "
+                           "request waits until the run ends")
+    params: dict[str, Any] = Field(default_factory=dict, description="params every run of the agent gets")
+    promote: list[str] = Field(default_factory=list, description="output keys its final event carries at the top")
+    visibility: Literal["ui", "tool", "both", "private"] = Field(
+        "private", description="private (default): only callers that name it; tool: a SAM may start it; ui: the chat "
+                               "lists it; both")
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: Optional[str]) -> Optional[str]:
+        return check_name(value, "agent name") if value is not None else None
+
+
+def agent_entry(spec: "MachineSpec", instance: str) -> tuple[str, dict[str, Any]]:
+    """The agent a machine's ``agent:`` block offers: its name and the ``plugins.servers`` entry it stands for."""
+    block = spec.agent or MachineAgentSpec()
+    texts = [name for name, param in spec.params.items() if param.type in ("string", "any")]
+    one = texts[0] if len(spec.params) == 1 and texts else None
+    mode = block.input or ("text" if one else "json")
+    entry: dict[str, Any] = {
+        "type": "stategraph_machine", "enabled": True, "machine": spec.id, "stategraph": instance,
+        "description": block.description or spec.title or spec.description or f"Runs the state machine {spec.id}",
+        "input": mode, "on_wait": block.on_wait, "params": dict(block.params), "promote": list(block.promote),
+        "metadata": {"visibility": block.visibility},
+        "agent_config": {},  # an Agent needs one, a machine runs no LLM: the defaults (or the config's) will do
+        "from_machine_file": True}  # offered by the block: a config entry of the same name is another thing
+    if mode == "text":
+        entry["task_param"] = block.task_param or one or "task"
+    return block.name or f"{spec.id}_agent", entry
+
+
 class MachineSpec(Strict):
     """One machine file."""
 
@@ -293,6 +336,9 @@ class MachineSpec(Strict):
     machines: dict[str, LocalMachineSpec] = Field(
         default_factory=dict, description="machines inside this file: machine: <name> runs one in its own frame; "
                                           "they share the companion module and the imports")
+    agent: Optional[MachineAgentSpec] = Field(
+        None, description="offer this machine as an agent: SAM spawns, AgentCaller and /events address it by name "
+                          "-- declared by every process at its start, no config entry")
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     events: dict[str, EventSpec] = Field(default_factory=dict, description="named events this machine accepts")
     context: dict[str, Any] = Field(default_factory=dict)

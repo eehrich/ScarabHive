@@ -65,6 +65,12 @@ def reload_plugin_configs(fresh_config: Any) -> Dict[str, Any]:
         - ``errors``: [{"server": name, "error": str}]
         - ``not_in_config``: [name]  (live but absent from the fresh config)
     """
+    # The servers a plugin offered at the start (a stategraph machine's agent: block) are in no file: the fresh
+    # config keeps them, else they would read as gone -- and app.state.config would lose them.
+    from agent_system.runtime import Runtime
+    if Runtime.last_started is not None:
+        Runtime.last_started.carry_offered(fresh_config)
+
     # The process-wide registry that holds the LIVE plugin instances. Its
     # adapters expose the underlying plugin as ``.plugin_server``.
     from agent_system.plugins.tool_adapter import plugin_tool_registry

@@ -739,13 +739,31 @@ const CASES = {
     await boot('?machine=review');
     const shown = $('side-inspect').innerHTML;
     check(shown.includes('As an agent') && shown.includes('No agent runs this machine'), 'no agent section');
-    check(shown.includes('    review_agent:') && shown.includes('type: stategraph_machine') && shown.includes('machine: review')
-      && shown.includes('input: json') && !shown.includes('task_param') && shown.includes('on_wait: ask')
-      && shown.includes('visibility: tool'), `the entry: ${shown}`);
-    check(shown.includes('open><summary>Entry for a machine agent'), 'the entry is open where no agent runs it');
+    const block = (shown.match(/id="agentEntry">([^<]*)<\/pre>/) || [])[1] || '';
+    check(block.startsWith('agent:\n  name: review_agent') && block.includes('input: json') && !block.includes('task_param')
+      && block.includes('on_wait: ask') && block.includes('visibility: tool'), `the block: ${block || shown}`);
+    check(shown.includes('open><summary>agent: block'), 'the block is open where no agent runs it');
     await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'copy-agent-entry' }) });
-    check((globalThis.COPIED || []).some((text) => text.includes('machine: review') && text.includes('\n')),
+    check((globalThis.COPIED || []).some((text) => text.startsWith('agent:\n  name: review_agent')),
       `copied ${JSON.stringify(globalThis.COPIED)}`);
+  },
+
+  async a_machine_whose_block_is_not_declared_yet_says_a_restart_offers_it() {
+    fieldsAnswer = { ...FIELDS, offer: { name: 'fields_agent', declared: false } };
+    await boot('?machine=fields');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('offers it as') && shown.includes('fields_agent') && shown.includes('after a restart')
+      && !shown.includes('summary>agent: block'), `not yet declared: ${shown}`);
+    check(/id="mf-agent"/.test(shown), 'the settings have no agent field');
+  },
+
+  async a_machine_that_offers_itself_says_under_which_name() {
+    fieldsAnswer = { ...FIELDS, offer: { name: 'fields_agent', declared: true },
+      agents: [{ name: 'fields_agent', visibility: 'tool', input: 'text', on_wait: 'ask', problems: [] }] };
+    await boot('?machine=fields');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('offers it as') && shown.includes('fields_agent') && !shown.includes('after a restart')
+      && !shown.includes('summary>agent: block'), `declared: ${shown}`);
   },
 
   async a_machine_with_one_param_takes_the_message_as_it_and_lists_its_agents() {
@@ -756,15 +774,17 @@ const CASES = {
     check(shown.includes('input: text') && shown.includes('task_param: text'), `one param: ${shown}`);
     check(shown.includes('fields_agent') && shown.includes('task_param task is no param of fields')
       && shown.includes('A private agent is reached only by its name'), 'the agent, its problem and what private means');
-    check(!shown.includes('open><summary>Entry for a machine agent'), 'the entry is folded where an agent runs it');
+    check(!shown.includes('open><summary>agent: block') && shown.includes('summary>agent: block'),
+      'the block is folded where an agent runs it');
   },
 
   async a_machine_whose_one_param_is_no_text_takes_a_json_message() {
     fieldsAnswer = { ...FIELDS, graph: { ...FIELDS.graph, params: { n: { type: 'integer', required: true } } } };
     await boot('?machine=fields');
     const shown = $('side-inspect').innerHTML;
-    check(shown.includes('input: json') && !shown.includes('task_param'), `a number is no message: ${shown}`);
-    check(shown.includes('called as a tool it waits'), 'what ask does as a tool');
+    const block = (shown.match(/id="agentEntry">([^<]*)<\/pre>/) || [])[1] || '';
+    check(block.includes('input: json') && !block.includes('task_param'), `a number is no message: ${block || shown}`);
+    check(block.includes('called as a tool it waits'), 'what ask does as a tool');
   },
 
   async an_activitys_error_shows_its_traceback_input_failed_attempts_and_a_copyable_request() {

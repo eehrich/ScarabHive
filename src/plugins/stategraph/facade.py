@@ -441,6 +441,48 @@ class _Refused(Exception):
     """The request cannot run: its message is the error event's."""
 
 
+def offered_servers(system_config: Any) -> dict[str, dict[str, Any]]:
+    """The stategraph_machine type's offer (agent_system ``Runtime.declare``): per enabled stategraph instance, every
+    machine whose file has an ``agent:`` block, as the ``plugins.servers`` entry that block stands for. A file that
+    does not load offers nothing -- its validation says why (SG001, SG007); of two offers of one name the first
+    counts (the second one's validation says it is taken)."""
+    import re
+
+    from agent_system.config.settings import _resolve_server_inheritance, get_tool_server_config
+
+    from .model.loader import parse_yaml, to_plain, yaml_bounds
+    from .model.spec import MachineSpec, agent_entry
+    from .store import MachineStore, machine_dirs
+
+    # cheap: most machine files have no agent: block -- the key quoted or after a BOM too; a flow document is read
+    top_level_agent = re.compile(r"""^\ufeff?["']?agent["']?[ \t]*:""", re.M)
+
+    servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
+    offered: dict[str, dict[str, Any]] = {}
+    for instance in sorted(servers):
+        try:
+            if not servers[instance].enabled or _resolve_server_inheritance(instance, system_config)[0] != "stategraph":
+                continue
+            roots, _ = machine_dirs(get_tool_server_config(instance, system_config))
+        except Exception:  # an entry that does not resolve: the runtime reports it
+            continue
+        for machine in MachineStore(roots, ()).list():
+            try:  # read as the loader reads it (YAML 1.2, duplicate keys refused), bounded before anything expands
+                text = machine.path.read_text(encoding="utf-8")
+                if not top_level_agent.search(text) and not text.lstrip("\ufeff \t\r\n").startswith("{"):
+                    continue
+                doc = parse_yaml(text)
+                if not isinstance(doc, dict) or doc.get("agent") is None or doc.get("id") != machine.id \
+                        or yaml_bounds(doc):
+                    continue
+                spec = MachineSpec.model_validate(to_plain(doc))
+            except Exception:
+                continue
+            name, entry = agent_entry(spec, instance)
+            offered.setdefault(name, entry)
+    return offered
+
+
 def config_problems(server_config: Any) -> list[str]:
     """What in a machine agent's own keys keeps it from running: the answer of its every request, and what the
     State Graph panel and the start's log say about it."""

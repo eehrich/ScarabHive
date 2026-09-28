@@ -39,7 +39,7 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `group` | string | | Its folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of where it comes from ("My machines" for the writable root, else the plugin that ships it). |
 | `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
 | `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |
-| `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
+| `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
 | `params` | name → field | | The machine's parameters (run input, or a submachine's `params:`). |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§7). |
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
@@ -47,6 +47,7 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
 | `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only. |
 | `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
+| `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility}` | | Offers this machine as an agent without a config entry: every process declares it as it starts (the keys of a `type: stategraph_machine` entry, see its README; `{}` takes the defaults: `<id>_agent`, text for one string param else json, `ask`, `private` -- a SAM offers it only with `visibility: tool` or `both`). A problem of the block is SG111, a warning -- the machine itself runs; a changed block counts from the next start. |
 | `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
 | `initial` | state name | yes | The first state: a top-level state, a choice or a junction. |
 | `states` | name → state | yes | The top-level region (§3). |
@@ -781,7 +782,7 @@ literal text `ctx.draft` -- warning SG107.
 | item variable, `index` | the map variables (name set by `as`) | inside `map.each` |
 | `resources` | `resources.<name>`: what each resource's `open` (or `fork`) returned, read-only; `null` while it is not opened (its `open` failed, or has not run yet) | everywhere, in a machine that declares `resources` |
 | `ending` | `reason` (`transition`, `finished`, `failed`, `cancelled`), `state`, `error` | `finally` activities and resource `close` |
-| `fork_source` | the source run's value of this resource | a resource's `fork` |
+| `fork_source` | the source run's value of this resource (`ctx` is the source's at the fork point) | a resource's `fork` |
 
 `entry`, `exit`, activity templates, `map` and a final's `output` see only the
 "everywhere" names. Using a name where it is not bound (`out` in an entry, `error` in
@@ -1034,6 +1035,7 @@ any state inside waits.
 | SG108 | warning | A root machine with `limits.timeout` used as a submachine |
 | SG109 | warning | A state completes (it has `do`, or a final inside it) but has no completion transition: should it complete, the run fails with `no_transition` |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
+| SG111 | warning | `agent:`: the agent it offers cannot run (`task_param`, required params), or another server or a config entry of this machine holds its name -- the machine itself runs |
 
 Every problem names a path (`states.judge.transitions[1].guard`), the file and, when
 known, the line.
@@ -1096,6 +1098,15 @@ vars: {json_namespace: "{{ resources.store }}"}
   never opened (its `open` failed) reads as `null`: a `finally` can check it.
 - `fork` runs instead of `open` in a forked run's root frame; without it a fork opens
   afresh. `close` runs when the frame ends, in reverse order, like a `finally`.
+- A fork's root frame opens its resources at the fork point -- before anything of that step
+  runs, never past the source's journal -- not at its start: its `fork` (and `open`) sees `ctx`
+  as the source had it there -- copy exactly the documents it names, not the whole store. Before
+  it, while the prefix replays, `resources.<name>` reads the value the source had at each step
+  (a fork of a fork: its source's history). After it, every value of the runs before it in `ctx`
+  and `vars` is replaced by the fork's, strings containing it too: the live part works on the
+  fork's store. A fork at step 0 opens at its start. A fork point on a top-level final, or a fork
+  that ends before its fork point, opens nothing; a fork root that never began its live part runs
+  no `finally` (its source did) and closes only what it opened.
 - Replay compares hashes with each resource value replaced by a token, so a fork with its
   own namespace still replays its prefix. Make resource values distinctive ids: strings of
   6+ characters, whole objects and lists, and the 6+-character strings inside them are

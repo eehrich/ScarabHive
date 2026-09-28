@@ -1085,6 +1085,99 @@
       "title": "LocalMachineSpec",
       "type": "object"
     },
+    "MachineAgentSpec": {
+      "additionalProperties": false,
+      "description": "``agent:`` -- the machine offered as an agent (docs/stategraph_design.md \u00a710): no config entry, every process\nthat starts declares it (the stategraph_machine type's offer). The keys of a ``type: stategraph_machine`` entry.",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "what a caller reads; default the machine's title or description",
+          "title": "Description",
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "enum": [
+                "text",
+                "json"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "text: the message is the param task_param; json: a JSON object of the params; default text when the machine has exactly one param of type string or any, else json",
+          "title": "Input"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the agent's name (a server name); default <machine id>_agent",
+          "title": "Name"
+        },
+        "on_wait": {
+          "default": "ask",
+          "description": "ask: a wait state asks in the conversation (called as a tool it waits); block: the request waits until the run ends",
+          "enum": [
+            "ask",
+            "block"
+          ],
+          "title": "On Wait",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "description": "params every run of the agent gets",
+          "title": "Params",
+          "type": "object"
+        },
+        "promote": {
+          "description": "output keys its final event carries at the top",
+          "items": {
+            "type": "string"
+          },
+          "title": "Promote",
+          "type": "array"
+        },
+        "task_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the param a text message fills; default that one param",
+          "title": "Task Param"
+        },
+        "visibility": {
+          "default": "private",
+          "description": "private (default): only callers that name it; tool: a SAM may start it; ui: the chat lists it; both",
+          "enum": [
+            "ui",
+            "tool",
+            "both",
+            "private"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "title": "MachineAgentSpec",
+      "type": "object"
+    },
     "ParamSpec": {
       "additionalProperties": false,
       "description": "One machine parameter (run input or submachine parameter).",
@@ -1531,6 +1624,18 @@
   "additionalProperties": false,
   "description": "One machine file.",
   "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MachineAgentSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "offer this machine as an agent: SAM spawns, AgentCaller and /events address it by name -- declared by every process at its start, no config entry"
+    },
     "context": {
       "additionalProperties": true,
       "title": "Context",

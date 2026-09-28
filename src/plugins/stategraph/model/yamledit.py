@@ -46,7 +46,7 @@ TRANSITION_FIELDS = ("trigger", "target", "guard", "effect", "description")
 STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout", "after", "status", "output", "finally",
                 "do")
 MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "params", "events", "context", "vars",
-                  "imports", "machines", "resources", "finally")
+                  "imports", "machines", "resources", "finally", "agent")
 _NAME = re.compile(NAME_PATTERN)
 
 

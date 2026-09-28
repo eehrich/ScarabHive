@@ -14,6 +14,7 @@ import copy
 import datetime
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -155,6 +156,8 @@ class Frame:
         self.ending_only = ending_only    # replays into its end, never runs live (a branch a join had cancelled,
                                           # a frame a cancel reached while it replayed, §3.10)
         self.resources: dict[str, Any] = {}
+        self._chain_passed = 0  # a fork's root: the points of its resource chain it has passed
+        self._fork_opening = False  # ... and whether it began to open its own at its fork point
         # the finally activities of the states the last transition left: (state, error, journal key)
         self._pending_finally: list[tuple[Node, Optional[dict[str, Any]], str]] = []
         self._left: dict[str, int] = {}   # state -> times left within step ``_left_step`` (keys stay unique)
@@ -241,6 +244,8 @@ class Frame:
                 self._init_vars()
                 await self._enter_initial()
                 while True:
+                    if self.run.forking is self:  # a fork's root: its resources before anything of this step runs
+                        await self._at_fork_point()
                     # the states the last transition left -- also the initial one's, whose initial pseudostate
                     # can lead out of a composite -- before the target's do (§3.10)
                     await self._run_pending_finally()
@@ -286,9 +291,10 @@ class Frame:
         pairs: list[tuple[Any, str]] = []
         frame: Optional[Frame] = self
         while frame is not None:
-            values = dict(frame.resources)
-            sources = self.run.resource_sources if frame.parent is None else {}
-            for name, real in [*values.items(), *sources.items()]:  # a fork's replayed outputs hold the source's
+            values = [dict(frame.resources)]
+            if frame.parent is None:  # a fork's replayed outputs hold the source's -- and its chain's -- values
+                values += [self.run.resource_sources, *(entry["values"] for entry in self.run.resource_chain)]
+            for name, real in (item for each in values for item in each.items()):
                 pairs.extend(_token_pairs(real, f"resources.{name}"))
             frame = frame.parent
         pairs.sort(key=lambda pair: -len(json.dumps(pair[0], sort_keys=True, default=str)))  # longest first
@@ -298,7 +304,61 @@ class Frame:
         return f"{self.path}/{suffix}" if self.path else suffix
 
     async def _open_resources(self) -> None:
-        """Open this machine's resources in declaration order; a forked run's root frame forks them instead."""
+        """Open this machine's resources in declaration order. A forked run's root frame opens them at its fork
+        point instead (``_at_fork_point``): until then -- its replayed prefix -- they read as the source's history
+        had them."""
+        if self.parent is None and self.run.fork_point:  # a fork's root (at 0 there is no prefix: it opens now)
+            chain = self.run.resource_chain
+            self._chain_passed = sum(1 for entry in chain if entry["until"] <= 0)  # held before step 0: never
+            first = (chain[self._chain_passed]["values"] if self._chain_passed < len(chain)
+                     else self.run.resource_sources)
+            self.resources = {name: first.get(name) for name in self.machine.spec.resources}
+            self.run.forking = self  # until its fork point -- also without resources: no live part, no finally
+            return
+        await self._open_each()
+
+    async def _at_fork_point(self) -> None:
+        """A fork's root frame before its step's work (the finally of the states left included): where a run of the
+        chain it was forked from forked its own, its values change to that run's -- as they did there; at its own
+        fork point (§5.6) its resources open -- ``fork`` hooks with the ctx the source had there -- and the values
+        of every run before it, in ctx and vars, become the fork's: the live part names its own external state."""
+        chain = self.run.resource_chain
+        while self._chain_passed < len(chain) and self.step >= chain[self._chain_passed]["until"]:
+            self._chain_passed += 1
+            later = chain[self._chain_passed]["values"] if self._chain_passed < len(chain) else self.run.resource_sources
+            self.resources = {name: later.get(name) for name in self.machine.spec.resources}
+            self._swap_from([entry["values"] for entry in chain[:self._chain_passed]])
+        leaf = self.leaf
+        if (leaf is not None and leaf.is_final and leaf.parent is None and self.pending_error is None
+                and not self._pending_finally):
+            return  # a fork point on a top-level final: the fork ends at once and opens nothing (_finalize)
+        if self.step >= (self.run.fork_point or 0):
+            older = [self.run.resource_sources, *(entry["values"] for entry in chain)]
+            self.resources = {}
+            self._fork_opening = True
+            try:
+                await self._open_each()
+            except BaseException:  # a fork hook failed (or a terminate stopped it): ctx and vars name what did open
+                try:
+                    self._swap_from(older)
+                except MachineFailed:
+                    self.vars = {}
+                raise
+            self.run.forking = None  # its live part begins
+            self._swap_from(older)
+
+    def _swap_from(self, older: list[dict[str, Any]]) -> None:
+        """Every value of ``older`` resources in ctx becomes the current one (whole values, and 6+-character strings,
+        inside longer ones too -- in one pass), and vars are rendered anew."""
+        pairs = [pair for name, value in self.resources.items() for values in older if name in values
+                 for pair in _swap_pairs(values[name], value)]
+        if pairs:
+            swapped = copy.deepcopy(_swapped(self.ctx, pairs))  # a copy: no object shared with resources
+            self.ctx.clear()
+            self.ctx.update(swapped)
+        self._init_vars()
+
+    async def _open_each(self) -> None:
         sources = self.run.resource_sources if self.parent is None else {}
         for name, resource in self.machine.spec.resources.items():
             if resource.fork is not None and name in sources:
@@ -345,7 +405,8 @@ class Frame:
         key = f"{self.prefix}s{self.step}.fin.{node.name}"
         return key if count == 1 else f"{key}.{count}"
 
-    def _finalizers(self, reason: str, error: Optional[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    def _finalizers(self, reason: str, error: Optional[dict[str, Any]], *, only_close: bool = False
+                    ) -> list[tuple[Any, ...]]:
         """What a frame's end runs, in order: the pending finally activities, the finally of every state still
         active (innermost first), the machine's finally, the resources' close (reverse order).
 
@@ -360,7 +421,9 @@ class Frame:
         end = f"{self.prefix}end.{reason}"
         steps += [(node.spec.finally_, f"{end}.{node.name}", f"{self.state_path(node)}/finally", node.name, reason,
                    error) for node in reversed(self.config) if node.spec.finally_ is not None]
-        if self.machine.spec.finally_ is not None:
+        if only_close:  # a fork's root without a live part (_finalize)
+            steps = []
+        elif self.machine.spec.finally_ is not None:
             steps.append((self.machine.spec.finally_, f"{end}.finally", self._own_path(f"{self.machine.id}.finally"),
                           None, reason, error))
         for name in reversed(list(self.resources)):
@@ -391,6 +454,14 @@ class Frame:
         if not self.run.may_finalize():
             raise asyncio.CancelledError()
         self._finalized = True
+        # a fork's root that never began its live part (it ended before its fork point, or its fork hooks failed):
+        # its source ran this end's finally already -- against the state its ctx names, which is the source's. It
+        # closes only what it opened itself.
+        replayed_only = self.run.forking is self
+        if replayed_only:
+            self.run.forking = None
+            if not self._fork_opening:
+                self.resources = {}  # it held the source's values: nothing of its own to close
         computed, key = reason, f"{self.prefix}end"
         end = self.run.ends.get(key)
         if end is not None and end.get("reason") == "cancelled" and not end.get("terminated") and not self.ending_only:
@@ -415,7 +486,7 @@ class Frame:
         if reason == "cancelled":
             self._terminating = True
         arrived = False
-        for step in self._finalizers(reason, error):
+        for step in self._finalizers(reason, error, only_close=replayed_only):
             if not self.run.may_finalize():
                 raise asyncio.CancelledError()
             arrived = await self._run_finally(*step) or arrived
@@ -826,7 +897,49 @@ def _token_pairs(real: Any, name: str) -> list[tuple[Any, str]]:
     return pairs
 
 
-def _substitute(value: Any, pairs: list[tuple[Any, str]]) -> Any:
+def _swap_pairs(old: Any, new: Any, whole: bool = True) -> list[tuple[Any, Any]]:
+    """(old, new) pairs that turn a source's resource value into the fork's: the whole value, and inside an object or
+    a list each distinctive string (6+ characters) that has a counterpart in the new one -- not the objects inside
+    it: a small one (``[1]``, ``{"ro": false}``) would also replace unrelated data."""
+    if old == new:
+        return []
+    if isinstance(old, str):
+        return [(old, new)] if len(old) >= 6 and isinstance(new, str) else []
+    pairs: list[tuple[Any, Any]] = []
+    if isinstance(old, (dict, list)) and old:
+        if whole:
+            pairs.append((old, new))
+        if isinstance(new, type(old)):
+            keys = [key for key in old if key in new] if isinstance(old, dict) else range(min(len(old), len(new)))
+            for key in keys:
+                pairs.extend(_swap_pairs(old[key], new[key], whole=False))
+    return pairs
+
+
+def _swapped(value: Any, pairs: list[tuple[Any, Any]]) -> Any:
+    """``value`` with each old value of ``pairs`` replaced by its new one: equal objects and lists whole, strings
+    inside strings in ONE pass -- a new value that contains an old one (``ns_x`` -> ``ns_x_f``) is not replaced
+    again."""
+    whole = [(old, new) for old, new in pairs if not isinstance(old, str)]
+    strings = {old: new for old, new in pairs if isinstance(old, str)}
+    pattern = re.compile("|".join(re.escape(old) for old in sorted(strings, key=len, reverse=True))) if strings else None
+
+    def walk(item: Any) -> Any:
+        for old, new in whole:
+            if item == old:
+                return new
+        if isinstance(item, str):
+            return pattern.sub(lambda match: strings[match.group(0)], item) if pattern else item
+        if isinstance(item, dict):
+            return {key: walk(inner) for key, inner in item.items()}
+        if isinstance(item, list):
+            return [walk(inner) for inner in item]
+        return item
+
+    return walk(value)
+
+
+def _substitute(value: Any, pairs: list[tuple[Any, Any]]) -> Any:
     for real, token in pairs:
         if not isinstance(real, str) and value == real:
             return token

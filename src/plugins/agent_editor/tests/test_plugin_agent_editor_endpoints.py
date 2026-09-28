@@ -592,6 +592,19 @@ def test_new_removed_and_off(db, tree, tmp_path):
     assert (gone["own"], gone["editable"], gone["state"]) == (None, False, "removed")
 
 
+def test_an_agent_a_plugin_offered_is_no_removed_one(db, tree):
+    from dataclasses import replace
+
+    state = started_app(tree)
+    # a stategraph machine's agent: block: declared by the runtime, named in no file
+    state.runtime._decls["helper_agent"] = replace(state.runtime._decls["writer"], name="helper_agent",
+                                                  offered_by="stategraph_machine")
+
+    listed = rows(make_client(tree, state))
+
+    assert "writer" in listed and "helper_agent" not in listed, sorted(listed)
+
+
 def test_a_built_agent_is_compared_by_its_own_config(db, tree, reload_reaches):
     state = started_app(tree)
     running = built_agent(load_settings(str(tree)), "writer")

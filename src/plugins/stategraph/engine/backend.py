@@ -619,6 +619,16 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             if refused is None:
                 return None
             return refused if server(runner) is None else f"tool {refused} (the runner is the boundary)"
+        if what == "offer":  # an agent: block's name: free -- or this machine's own offer, declared at the start
+            held = servers.get(name)  # the offer is the machine's, whichever instance (sharing its folder) made it
+            same = final_type(name) == "stategraph_machine" and str(getattr(held, "machine", None) or "") == extra.get(
+                "machine")
+            if held is None or same and getattr(held, "from_machine_file", False):
+                return None
+            if same:
+                return (f"a config entry holds {name!r} for this machine: its settings run, not this block's -- "
+                        "remove the entry or name the agent")
+            return f"{name!r} is the name of another server ({final_type(name) or 'unknown type'}); name the agent"
         if what == "profile":
             llm = getattr(system_config, "llm_system", None)
             profiles = getattr(llm, "decision_profiles", None) or {}

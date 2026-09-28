@@ -742,36 +742,38 @@ function drawInspector() {
 }
 
 /** The machine agents that run this machine (a SAM, the chat, agent-cli --agent reach it through them), and the
- * entry that offers it as one. */
+ * agent: block that offers it as one -- no config entry: every process declares it as it starts. */
 function agentSection(m) {
   const agents = m.agents || [];
+  const offer = m.offer;
   const listed = agents.length ? html`<ul class="sg-plain-list">${agents.map((a) => html`<li class="sg-watch">
       <span class="pk-mono">${a.name}</span> ${badge(a.visibility, a.visibility === 'private' ? '' : 'info')}
       <span class="pk-muted">input ${a.input}, on a wait: ${a.on_wait}</span>
       ${a.problems.length ? html`<div class="pk-text--danger">${a.problems.join('; ')}</div>` : ''}</li>`)}</ul>
     ${agents.some((a) => a.visibility === 'private') ? html`<p class="pk-help">A private agent is reached only by its name
-      (agent-cli --agent, writer_jobs): a SAM does not offer it, the chat does not list it.</p>` : ''}`
-    : html`<p class="pk-help">No agent runs this machine. An entry like this one in a config file (config/agents/*.yaml)
-      offers it as one after a restart:</p>`;
-  const entry = agentEntry(m);
-  return html`${listed}<details class="pk-details" ${agents.length ? '' : 'open'}><summary>Entry for a machine agent</summary>
-    <pre class="sg-result-text" id="agentEntry">${entry}</pre>
+      (agent-cli --agent, writer_jobs): a SAM does not offer it, the chat does not list it.</p>` : ''}` : '';
+  if (offer) {
+    return html`${listed}<p class="pk-help">Its <span class="pk-mono">agent:</span> block offers it as
+      <span class="pk-mono">${offer.name}</span>${offer.declared ? '.' : ' after a restart: every process reads the agent: blocks as it starts.'}</p>`;
+  }
+  return html`${listed}<p class="pk-help">${agents.length ? 'An agent: block in its settings offers it under a name of its own'
+    : 'No agent runs this machine. An agent: block like this one in its settings offers it as one after a restart'}
+    -- no config entry.</p>
+    <details class="pk-details" ${agents.length ? '' : 'open'}><summary>agent: block</summary>
+    <pre class="sg-result-text" id="agentEntry">${agentEntry(m)}</pre>
     <button type="button" class="pk-btn pk-btn--sm" data-act="copy-agent-entry">${icon('copy', { size: 'sm' })} Copy</button></details>`;
 }
 
-/** A config entry that offers the machine as an agent: one text param is the message, else a JSON object. */
+/** The agent: block that offers the machine as an agent: one text param is the message, else a JSON object. */
 function agentEntry(m) {
   const g = m.graph;
   const params = Object.keys(g.params || {});
   const text = params.length === 1 && [undefined, 'string', 'any'].includes(g.params[params[0]].type);
-  return ['plugins:', '  servers:', `    ${m.id}_agent:`, '      type: stategraph_machine', '      enabled: true',
-    `      description: ${JSON.stringify(g.title || g.description || `Runs the state machine ${m.id}`)}`,
-    `      machine: ${m.id}`,
-    text ? `      input: text        # the message is the param ${params[0]}` : '      input: json        # the message is a JSON object of the params',
-    ...(text ? [`      task_param: ${params[0]}`] : []),
-    '      on_wait: ask       # a wait state asks in the conversation (called as a tool it waits); block: the request waits until the run ends',
-    '      metadata:',
-    '        visibility: tool # a SAM may start it; both: the chat lists it too; private: only by its name'].join('\n');
+  return ['agent:', `  name: ${m.id}_agent`,
+    text ? `  input: text        # the message is the param ${params[0]}` : '  input: json        # the message is a JSON object of the params',
+    ...(text ? [`  task_param: ${params[0]}`] : []),
+    '  on_wait: ask       # a wait state asks in the conversation (called as a tool it waits); block: the request waits until the run ends',
+    '  visibility: tool   # a SAM may start it; both: the chat lists it too; private (default): only by its name'].join('\n');
 }
 
 function machineOverview() {
@@ -829,7 +831,8 @@ const MACHINE_FIELD_SCHEMA = {
   imports: { type: 'object', description: 'alias: ./file.yaml or machine id' },
   machines: { type: 'object', description: 'machines inside this file -- name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
-  limits: { type: 'object', description: 'max_steps, timeout' },
+  agent: { type: 'object', description: 'offer this machine as an agent, no config entry -- {name, description, input, task_param, on_wait, params, promote, visibility (default private)}; every process declares it as it starts' },
+  limits: { type: 'object', description: 'max_steps, timeout, concurrency' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
 };
 const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last

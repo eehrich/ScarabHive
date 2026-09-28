@@ -25,7 +25,8 @@ from .engine.journal import RunStore
 from .engine.runner import RunManager
 from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
-from .store import MachineStore
+from .model.validate import agent_params_problems
+from .store import MachineStore, machine_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,7 @@ class StateGraphServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
         self.system_config = system_config
         # flat keys, defaults in code: the framework does not validate plugin config
-        own_machines = str(data_path("stategraph", "machines"))
-        self.machine_dirs = list(getattr(server_config, "machine_dirs", None)
-                                 or (own_machines, "src/plugins*/*/machines"))
-        self.writable_dirs = list(getattr(server_config, "writable_machine_dirs", None) or (own_machines,))
+        self.machine_dirs, self.writable_dirs = machine_dirs(server_config)
         self.runs_db = str(getattr(server_config, "runs_db", None) or data_path("stategraph", "runs.db"))
         self.runner_agent = str(getattr(server_config, "runner_agent", None) or "stategraph_runner")
         self.allowed_users = [str(u) for u in (getattr(server_config, "allowed_users", None) or [])]
@@ -540,19 +538,7 @@ class StateGraphServer(SchemaBasedToolServer):
         errors = [p for p in tree.problems if p.level == "error"]
         if errors:
             return [f"machine {machine_id} has {len(errors)} error(s), the first: {errors[0].code} {errors[0].message}"]
-        declared = tree.files[tree.root].spec.params
-        given = set(getattr(config, "params", None) or {})
-        problems = []
-        if str(getattr(config, "input", None) or "text") == "text":  # json: the message brings the params
-            task = str(getattr(config, "task_param", None) or "task")
-            if task not in declared:
-                problems.append(f"task_param {task!r} is no param of {machine_id} (it has: "
-                                f"{', '.join(declared) or 'none'})")
-            given.add(task)
-            missing = sorted(name for name, spec in declared.items() if spec.required and name not in given)
-            if missing:
-                problems.append(f"{machine_id} requires {', '.join(missing)}: neither in params nor the task_param")
-        return problems
+        return agent_params_problems(machine_id, tree.files[tree.root].spec.params, config)
 
     async def _report_facades(self) -> None:
         """In a worker thread: validating the machines (SG007 walks every configured server) takes a few hundred

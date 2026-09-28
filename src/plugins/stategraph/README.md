@@ -54,7 +54,8 @@ add `stategraph_author` to that SAM's `allowed_agents`.
 ([src/plugins/stategraph_machine](../stategraph_machine/README.md)) makes one machine
 addressable like any agent -- SAM spawns, AgentCaller, writer_jobs' `/events`. It runs the
 machine through this instance (the panel sees and controls those runs) and answers with the
-output as JSON. Example: `v6_story_machine`, the writer v6 story design as a machine
+output as JSON. An `agent:` block in the machine's file offers it without a config entry
+(declared as each process starts). Example: `v6_story_machine`, the writer v6 story design as a machine
 (`src/plugins_writer/writer_pipeline_v6/machines/`). A writer machine's tools are in
 `stategraph_runner`'s allowlist; the issues write key comes from `inject_params`.
 

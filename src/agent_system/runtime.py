@@ -92,6 +92,8 @@ class ServerDecl:
     server_config: ToolServerConfig
     factory: Optional[Callable[..., Any]] = None      # None: the direct "agent" type
     plugin_metadata: Optional[dict] = field(default=None, repr=False)
+    #: The plugin type that offered this server (``Runtime.declare``) -- None for one a config file names.
+    offered_by: Optional[str] = None
 
     @property
     def is_declared_agent(self) -> bool:
@@ -235,6 +237,61 @@ class Runtime:
                 name=name, type=merged.type, server_config=merged, factory=factory,
                 plugin_metadata=getattr(factory, "_plugin_metadata", None),
             )
+        self._declare_offered()
+
+    def _declare_offered(self) -> None:
+        """The servers plugin types offer beyond the config: a factory with ``offered_servers(config) -> {name:
+        entry}`` (stategraph_machine: the machines whose file has an ``agent:`` block). Asked in every process that
+        builds a runtime, before anything is built -- so start() builds them like the configured ones."""
+        for type_name, factory in sorted(self._plugins.items()):
+            offer = getattr(factory, "offered_servers", None)
+            if offer is None:
+                continue
+            try:
+                offered = dict(offer(self.config) or {})
+            except Exception as e:  # a broken offer costs its servers, not the start
+                logger.warning("Plugin '%s' could not offer its servers: %s", type_name, e, exc_info=True)
+                self.problems.append(f"plugin '{type_name}': offered_servers failed: {e}")
+                continue
+            for name, entry in offered.items():
+                try:
+                    self.declare(name, entry, offered_by=type_name)
+                except ValueError as e:
+                    logger.warning("Plugin '%s' offers server '%s': %s", type_name, name, e)
+                    self.problems.append(f"server '{name}' offered by '{type_name}': {e}")
+
+    def declare(self, name: str, entry: dict, *, offered_by: str) -> ServerDecl:
+        """Declare a server no config file names, from its config ``entry`` (the mapping a ``plugins.servers``
+        entry would hold). It enters ``config.plugins.servers`` too, so every lookup by name finds it as it finds a
+        configured one; start() builds it -- after start, ``materialize(name)`` does. A name the config (or an
+        earlier offer) holds is refused: ValueError."""
+        servers = self.config.plugins.servers
+        if name in servers or name in self._decls:
+            raise ValueError("the name is taken by a configured server")
+        try:
+            servers[name] = ToolServerConfig.model_validate(entry)
+            merged = get_tool_server_config(name, self.config)
+            factory = self._plugins.get(merged.type) if merged is not None else None
+            if factory is None:
+                raise ValueError(f"unknown type '{getattr(merged, 'type', None)}'")
+        except Exception as e:
+            servers.pop(name, None)
+            raise ValueError(f"not declared: {e}") from e
+        decl = self._decls[name] = ServerDecl(
+            name=name, type=merged.type, server_config=merged, factory=factory,
+            plugin_metadata=getattr(factory, "_plugin_metadata", None), offered_by=offered_by)
+        logger.info("Declared server '%s' (type %s), offered by plugin '%s'", name, merged.type, offered_by)
+        return decl
+
+    def carry_offered(self, config: AgentSystemConfig) -> None:
+        """A config read afresh (a reload) knows only its files: the servers plugins offered at the start go into it
+        as they were declared -- they run as that, until the next start offers anew."""
+        servers = config.plugins.servers if config.plugins else None
+        if servers is None:
+            return
+        for name, decl in self._decls.items():
+            if decl.offered_by is not None and name not in servers and name in self.config.plugins.servers:
+                servers[name] = self.config.plugins.servers[name]
 
     def declarations(self) -> dict[str, ServerDecl]:
         return dict(self._decls)

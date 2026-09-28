@@ -141,7 +141,7 @@ def writer_task(ctx, params):
 | `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
-| `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
+| `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
 | `params` | name → field | | The machine's parameters. For a top-level run they are the run input; for a submachine, the `params:` of the calling activity. Field keys: `type` (`string`, `integer`, `number`, `boolean`, `object`, `array`, `any`), `required`, `default`, `enum`, `description`. |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload; one that is not a valid JSON schema is SG001. |
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
@@ -149,6 +149,7 @@ def writer_task(ctx, params):
 | `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
 | `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. `concurrency` bounds the leaf activities (agent, tool, decide, call, emit, callback -- every activity that is not a composite) of the whole run that run at once -- also in parallel branches, map items and submachines; the others wait for their turn before they start (a crash meanwhile finds them not started). A call's own `sg.tool()` runs within the call's turn. Root machine only. |
 | `resources` | name → `{open, fork, close, description}` | | External state that belongs to each frame of this machine (§2.8). |
+| `agent` | `{name, description, input, task_param, on_wait, params, promote, visibility}` | | This machine offered as an agent without a config entry (§10, the agent facade): every process declares it as it starts. |
 | `finally` | activity | | Runs once when a frame of this machine ends, whatever the cause (§2.8). |
 | `initial` | state name | yes | Target of the top-level initial pseudostate: a top-level state or a choice/junction. |
 | `states` | name → state | yes | The top-level region. |
@@ -381,11 +382,29 @@ vars:
   `finally` can check it.
 - `fork`, when present, runs instead of `open` in the root frame of a forked run, with
   `fork_source` = the source run's value. Without it, a fork opens the resource afresh.
+- A forked run's root frame opens its resources at the **fork point** -- top-level step N, before
+  anything of that step runs (the `finally` of the states its transition left, its hooks, a
+  `pause`) -- not at its start: `fork` and `open` see `ctx` as the source had it at step N. N is
+  never past the source's journal: at most its last top-level step, or the one after it when that
+  step has its result (an activity's end, an event, a timer) -- also the fork point of a fork
+  without `at_step`: nothing runs live before it. Until then (the replayed prefix)
+  `resources.<name>` reads the values the source's own history had at each step -- a fork of a
+  fork replays the steps before its source's fork point with the values of the run before that
+  (the journal's `fork_resources` row: `sources`, `chain: [{values, until}]`, `at`). Then every
+  value of the runs before it in the root's `ctx` is swapped for the fork's (the pairs of the
+  tokens below: whole values, and 6+-character strings, also inside longer strings -- in one
+  pass), and `vars` are rendered anew. A resume replays the hooks at the same point. A fork at
+  step 0 replays nothing: it opens (forks) at its start, as a run opens. A fork point on a
+  top-level final opens nothing (the fork ends at once), and neither does a fork that ends before
+  its fork point. A fork's root that never began its live part -- it ended before its fork point,
+  or its fork hooks failed -- runs no `finally` (its source ran this end already, against the
+  state its ctx names) and closes only what it opened itself.
 - `close` runs when the frame ends (after the `finally` activities, in reverse order), reads
   `ending`, and follows the rules of `finally`.
 - A resume replays the recorded values; nothing is opened twice.
 - Hashes are taken with each resource value replaced by a token (§5.4) -- in a fork also the
-  source's values, which its replayed outputs still hold -- so a fork whose resources differ from
+  source's values and those of the runs the source was forked from, which its replayed outputs
+  still hold -- so a fork whose resources differ from
   its source's still replays its prefix. Replaced are strings of 6+ characters, whole objects and
   lists, and the 6+-character strings inside them; numbers are not (make ids strings, or let the
   fork hook keep the source's value).
@@ -666,6 +685,7 @@ from an AST scan (§2.6).
 | SG108 | warning | A root machine with `limits.timeout` used as a submachine (ignored there) |
 | SG109 | warning | A state completes (it has `do`, or a final inside it) but has no completion transition: should it complete, the run fails with `no_transition` |
 | SG110 | warning | `retry.errors` names an error type the engine does not raise, or `interrupted` (never retried) |
+| SG111 | warning | `agent:`: the agent it offers cannot run (a `task_param` that is no param, a required param nothing passes), or another server -- or a config entry of this machine, whose settings would run -- holds its name. The machine itself runs. |
 
 Every problem carries a path (`states.judge.transitions[1].guard`), the file, and the
 line when it is known.
@@ -735,7 +755,7 @@ frame := "" | frame "s" N "/" ("m" | "b." NAME | "i." INDEX) "/"
 | `event` | `pending:<id>`, then `<frame>s<N>:event` once consumed | name and data (the inbox) |
 | `edit` | `<frame>s<N>:<hook>:<n>` | a debugger `set`: path and the evaluated JSON value |
 | `timer` | `<frame>s<N>:timer` | a fired wait timeout |
-| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records (a transition and a discarded event with the `guards` the dispatch evaluated: `[{at, guard, result \| error}]`; `no_transition` and `guard_failed` errors carry the same list in `error.data.guards`), the `ctx_hash` after each dispatch, a wait's entry (`since`, and its `deadline` under a timeout), `finally_failed`; unkeyed by step: `cancel` (a journaled terminate), `resource_sources` (a fork's source values) and `request_seq` (the counter of the run's request ids, written before each id is used, so the ids `<run>_NNN` stay unique across resumes -- an agent run in flight at a crash left no outcome that names its id) |
+| `trace` | `<frame>s<N>:<what>:<state>` | enter/exit/transition/final records (a transition and a discarded event with the `guards` the dispatch evaluated: `[{at, guard, result \| error}]`; `no_transition` and `guard_failed` errors carry the same list in `error.data.guards`), the `ctx_hash` after each dispatch, a wait's entry (`since`, and its `deadline` under a timeout), `finally_failed`; unkeyed by step: `cancel` (a journaled terminate), `fork_resources` (a fork's source values, those of the runs before it and its fork point; `resource_sources`: the source values of a fork journaled before resources opened at the fork point -- it opens them at its start) and `request_seq` (the counter of the run's request ids, written before each id is used, so the ids `<run>_NNN` stay unique across resumes -- an agent run in flight at a crash left no outcome that names its id) |
 
 ### 5.3 Resume
 
@@ -795,7 +815,9 @@ flight at the crash.
 A fork starts a new run from **top-level step N** of an existing run.
 
 - **Journal.** It copies every journal row whose top-level step is below N; rows nested
-  under those steps come with them.
+  under those steps come with them. N is never past the source's journal: at most its last
+  top-level step, or the one after it when that step has its result -- without `at_step`, that
+  one (§2.8): nothing runs live before the fork point.
 - **Definition.** `definition: snapshot` (the default) reuses the source run's definition.
   `definition: current` loads the current files -- exactly the tree that was validated: the "fix
   the guard and fork" case. A divergence in the replayed prefix aborts the fork and names the key.
@@ -812,8 +834,9 @@ A fork starts a new run from **top-level step N** of an existing run.
   without `do` there. A fork point on a top-level final has no hook: that fork ends at once.
   `mocks` go over the source's for the live part; a replayed activity keeps its outcome.
 - **External state is not forked** unless a resource says how: its `fork` hook runs in the
-  fork's root frame with `fork_source` = the source's value (§2.8), e.g. to copy a store
-  namespace. It sees the source's external state as the source left it, not as it was at step N.
+  fork's root frame at the fork point with `fork_source` = the source's value and the source's
+  `ctx` at step N (§2.8), e.g. to copy the documents that ctx names. It sees the source's external
+  state as the source left it, not as it was at step N -- ctx says what was there at step N.
   Everything else -- database rows, agent conversations -- keeps what the source did after step N.
   - The fork gets its own session `sg_<fork id>`. A `continue` into an instance created
     before the fork point is therefore refused (`config`): the instance belongs to the source run.
@@ -1155,7 +1178,13 @@ covered by tests.
 1. **The agent facade** -- `type: stategraph_machine` (`src/plugins/stategraph_machine`, class
    `plugins.stategraph.facade.MachineAgent`). A server entry names one machine
    (`machine: v6_story`); SAM spawns, AgentCaller and writer_jobs' `/events` address it like any
-   agent. It runs the machine through the `stategraph` instance's RunManager (the panel sees and
+   agent. Or the machine's own file offers it: an `agent:` block (`{name, description, input,
+   task_param, on_wait, params, promote, visibility}`, all defaulted; `visibility` private) stands for
+   such an entry (marked `from_machine_file`), and every process declares it as it starts -- the
+   core's `Runtime.declare`, asked through the type's `offered_servers`, which reads the file as the
+   loader does; a config reload keeps it. A name the config holds stays the config's (SG111, a
+   warning: another server, or a config entry for the same machine -- its settings would run, not
+   the block's; the machine itself runs); a changed block takes effect at the next start. It runs the machine through the `stategraph` instance's RunManager (the panel sees and
    controls these runs) and answers with the output as a JSON object; `promote` copies output keys
    onto the final event.
    - Run key = `<agent>:<request id>`, bound to the user who started the run; run id =

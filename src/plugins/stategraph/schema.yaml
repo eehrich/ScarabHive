@@ -118,7 +118,7 @@ tools:
           action: {type: string, enum: ["pause", "continue", "step", "run_to", "terminate", "resume", "fork", "set_breakpoints", "set_watchpoints", "evaluate", "set"], description: "what to do"}
           state: {type: string, description: "run_to: the state to stop at"}
           machine: {type: string, description: "run_to: the machine that state belongs to (default: any frame)"}
-          at_step: {type: integer, minimum: 0, description: "fork: the top-level step to fork from"}
+          at_step: {type: integer, minimum: 0, description: "fork: the top-level step to fork from (at most where the source's journal ends; without it: there)"}
           definition: {type: string, enum: ["snapshot", "current"], default: "snapshot", description: "fork: the run's own definition, or the machine as it is now"}
           pause: {type: boolean, default: false, description: "fork: hold the fork at the fork point (its first live hook), to look at or set ctx before it goes on"}
           mocks: {type: object, description: "fork: mocks over the source run's ({state path: out}); what the fork replays keeps its outcome"}

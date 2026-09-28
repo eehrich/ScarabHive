@@ -1525,6 +1525,17 @@ An agent instance is a server entry (see the example under
 4. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
    are **top-level keys** of the SAM server entry, not under `config:`.
 
+**Servers a plugin offers without a config entry.** A plugin factory may carry
+`offered_servers(system_config) -> {name: entry}`, where `entry` is the mapping a
+`plugins.servers` entry would hold. Every process that builds a `Runtime` asks it once, after
+the configured servers and before anything is built, and declares each one with
+`Runtime.declare(name, entry, offered_by=<plugin type>)`: it enters `config.plugins.servers`
+(so lookups by name find it) and is built at start like a configured server; its
+`ServerDecl.offered_by` names the plugin. A name the config holds is refused and listed in
+`Runtime.problems`; an offer that raises costs its servers, not the start; a config reload keeps
+the offered entries (`Runtime.carry_offered`). Example: `stategraph_machine` offers every machine
+whose file has an `agent:` block.
+
 ### Plugin Types Summary
 
 | Plugin Type | Tool server | Web Endpoints | CLI | Use Cases |
@@ -2627,13 +2638,6 @@ PLUGIN_FACTORY = MyPluginServer
 - **Rate limiting**: Implement rate limiting for external APIs
 - **Secrets**: Use environment variables, never hardcode credentials
 - **Sandboxing**: Consider process isolation for untrusted plugins
-- **Schlüssel im Pfad**: Trägt eine Route einen Schlüssel in ihrem Pfad (wer die URL hat, darf sie
-  benutzen — die Callback-URLs von `stategraph`), steht er direkt hinter `callback/`:
-  `/plugins/<instanz>/callback/<schlüssel>`. Nur dieses Segment maskieren die Logs (App-Log,
-  Access-Log, `security.log`, Security-Audit-Panel, Profiling), auch prozentkodiert und im Traceback
-  (`agent_system/utils/logging.py`, `loggable_path`). Ein Schlüssel an anderer Stelle oder in der
-  Query steht im Klartext darin.
-
 ## Troubleshooting
 
 ### Common Issues

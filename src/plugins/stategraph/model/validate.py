@@ -23,7 +23,7 @@ from plugins.stategraph.kinds.base import ActivityKind, KindSpec
 from .code import (BINDINGS, SCOPE_NAMES, CodeError, analyse, braced, compile_expression, compile_statements,
                    scan_template, template_expressions)
 from .loader import LoadedFile, MachineTree, dotted, schema_problems
-from .spec import GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec
+from .spec import GUARD_ELSE, KNOWN_ERROR_TYPES, TRIGGER_DONE, TRIGGER_ERROR, MachineSpec, StateSpec, agent_entry
 
 #: ``kind`` is "agent", "tool", "profile" or "vars_from" (with the name);
 #: returns a problem text or None when the configuration can run it.
@@ -68,6 +68,35 @@ def validate_tree(tree: MachineTree, config_check: Optional[ConfigCheck] = None)
     return tree
 
 
+def agent_params_problems(machine_id: str, declared: dict[str, Any], entry: Any) -> list[str]:
+    """What in a machine agent's params keeps its runs from starting (``entry``: its config, an object or the mapping
+    of an agent: block): a text message fills task_param, which must be a param; the required ones need a value."""
+    read = entry.get if isinstance(entry, dict) else lambda key: getattr(entry, key, None)
+    given = set(read("params") or {})
+    problems = []
+    if str(read("input") or "text") == "text":  # json: the message brings the params
+        task = str(read("task_param") or "task")
+        if task not in declared:
+            problems.append(f"task_param {task!r} is no param of {machine_id} (it has: {', '.join(declared) or 'none'})")
+        given.add(task)
+        missing = sorted(name for name, param in declared.items() if param.required and name not in given)
+        if missing:
+            problems.append(f"{machine_id} requires {', '.join(missing)}: neither in params nor the task_param")
+    return problems
+
+
+def _check_agent(fc: _FileContext, spec: MachineSpec) -> None:
+    """agent: -- what keeps the agent it offers from running, and a name another server holds (SG111): a warning,
+    the machine itself runs all the same."""
+    name, entry = agent_entry(spec, "")
+    for problem in agent_params_problems(spec.id, spec.params, entry):
+        fc.problem("warning", "SG111", f"agent: {problem}", ["agent"])
+    if fc.config_check is not None:
+        problem = fc.config_check("offer", name, {"machine": spec.id})
+        if problem:
+            fc.problem("warning", "SG111", f"agent: {problem}", ["agent", "name"] if spec.agent.name else ["agent"])
+
+
 # ------------------------------------------------------------------ one file
 
 def _validate_file(fc: _FileContext) -> None:
@@ -104,6 +133,8 @@ def _validate_file(fc: _FileContext) -> None:
         problem = fc.config_check("vars_from", spec.vars_from, {})
         if problem:
             fc.problem("error", "SG007", f"vars_from: {problem}", ["vars_from"])
+    if isinstance(spec, MachineSpec) and spec.agent is not None:
+        _check_agent(fc, spec)
     _pseudostate_bindings(fc)
     if fc.is_submachine and spec.limits.timeout is not None:
         fc.problem("warning", "SG108", "limits.timeout of a submachine is ignored; the calling activity's timeout "

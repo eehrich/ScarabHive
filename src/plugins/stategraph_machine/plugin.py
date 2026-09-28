@@ -7,8 +7,10 @@ stategraph's internals stays inside one plugin; this folder is what ``type:`` na
 from __future__ import annotations
 
 from agent_system.plugins.factory_utils import make_agent_plugin_factory
-from plugins.stategraph.facade import MachineAgent
+from plugins.stategraph.facade import MachineAgent, offered_servers
 
 PLUGIN_FACTORY = make_agent_plugin_factory(MachineAgent)
+# a machine whose file has an agent: block is an agent without a config entry (Runtime.declare)
+PLUGIN_FACTORY.offered_servers = offered_servers  # type: ignore[attr-defined]
 
 __all__ = ["PLUGIN_FACTORY", "MachineAgent"]

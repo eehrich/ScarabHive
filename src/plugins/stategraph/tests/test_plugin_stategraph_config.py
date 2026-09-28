@@ -52,7 +52,7 @@ INSTANCE = "stategraph"
 AUTHOR_TOOLS = {"catalog", "list_machines", "get_machine", "validate_machine", "save_machine",
                 "run_machine", "get_run", "list_runs", "control_run", "send_event"}
 # Instance names that share the tools' prefix; the docs name them, they are not tools.
-NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design", "example_agent"}
+NOT_TOOLS = {"author", "runner", "json", "json_manage_json", "design", "example_agent", "machine"}
 _TOOL_REF = re.compile(r"\bstategraph_([a-z_]+)\b")
 _FENCE = re.compile(r"```(\w+)\n(.*?)```", re.S)
 

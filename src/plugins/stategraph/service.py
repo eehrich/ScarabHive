@@ -23,6 +23,7 @@ from .engine.machine import CompileError
 from .engine.runner import RunManager, failed_transiently
 from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
+from .model.spec import agent_entry
 from .model.validate import validate_tree
 from .store import FileInTheWay, MachineStore, VersionConflict, version_of
 
@@ -159,10 +160,19 @@ class StateGraphService:
         assert found is not None
         tree = self._validate(self.store.load(machine_id))
         files, versions = self._files_of(machine_id, tree)
+        agents = self.server.agents_of(machine_id)
+        spec = tree.root_file.spec
+        offer = None
+        if spec is not None and spec.agent is not None:  # declared: this process read the block as it started
+            name = agent_entry(spec, self.server.name)[0]
+            servers = getattr(getattr(self.server.system_config, "plugins", None), "servers", None) or {}
+            held = servers.get(name)  # by whichever instance: machine folders overlap
+            offer = {"name": name, "declared": bool(getattr(held, "from_machine_file", False))
+                     and str(getattr(held, "machine", None) or "") == machine_id}
         return {"id": machine_id, "file": str(found.path), "writable": found.writable,
                 "root_file": f"{machine_id}.yaml", "files": files, "versions": versions,
                 "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id),
-                "agents": self.server.agents_of(machine_id)}
+                "agents": agents, "offer": offer}
 
     def create_machine(self, machine_id: str, title: Optional[str] = None) -> dict[str, Any]:
         from .model.spec import check_name

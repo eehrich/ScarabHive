@@ -138,7 +138,8 @@ def _activity(raw: Any) -> tuple[Optional[str], str, Optional[str]]:
 
 
 #: Machine keys the inspector edits as YAML text.
-MACHINE_OBJECTS = ("limits", "params", "events", "context", "vars", "imports", "machines", "resources", "finally")
+MACHINE_OBJECTS = ("limits", "params", "events", "context", "vars", "imports", "machines", "resources", "finally",
+                   "agent")
 
 
 def _texts(values: dict[str, Any]) -> tuple[dict[str, str], list[str]]:

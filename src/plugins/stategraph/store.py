@@ -24,6 +24,16 @@ from .model.loader import MachineTree, load_tree
 from .model.spec import NAME_PATTERN
 
 _ID = re.compile(NAME_PATTERN)
+
+
+def machine_dirs(server_config: Any) -> tuple[list[str], list[str]]:
+    """A stategraph instance's machine roots and its writable ones: its config's, else its own data folder and the
+    machines the plugins ship (the server's, and the stategraph_machine type's offer)."""
+    from agent_system.paths import data_path
+
+    own = str(data_path("stategraph", "machines"))
+    return (list(getattr(server_config, "machine_dirs", None) or (own, "src/plugins*/*/machines")),
+            list(getattr(server_config, "writable_machine_dirs", None) or (own,)))
 LAYOUT_SUFFIX = ".layout.json"
 
 

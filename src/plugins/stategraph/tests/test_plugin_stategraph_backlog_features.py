@@ -1168,3 +1168,499 @@ async def test_a_callback_resumes_a_run_no_process_runs_and_sends_its_event(hive
 
     assert sent.status_code == 200, sent.text
     assert (await settle(server.run_manager, run_id))["output"] == "after the restart"
+
+
+# ------------------------------------------------------------------ W1: a fork's resources open at its fork point
+
+FORKED = {"m.yaml": """\
+stategraph: 1
+id: m
+context: {docs: [], ns: null}
+resources:
+  store:
+    open: {tool: ns_open}
+    fork: {tool: ns_copy, args: {source: "{{ fork_source }}", docs: "{{ ctx.docs }}"}}
+    close: {tool: ns_close, args: {ns: "{{ resources.store }}"}}
+vars: {json_namespace: "{{ resources.store }}"}
+initial: a
+states:
+  a:
+    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}
+    transitions:
+      - target: b
+        effect: |
+          ctx.docs = ctx.docs + [out]
+          ctx.ns = resources.store
+  b:
+    do: {tool: make, args: {ns: "{{ resources.store }}", name: two}}
+    transitions:
+      - target: c
+        effect: ctx.docs = ctx.docs + [out]
+  c:
+    do: {agent: w, task: "finish {{ ctx.ns }}"}
+    transitions: [{target: done}]
+  done: {type: final, output: "{{ ctx.docs }}"}
+"""}
+
+
+def store_world(namespace: str, forked: str = "ns_forked", **more) -> FakeBackend:
+    def make(call):
+        return f"{call['args']['ns']}/{call['args']['name']}"
+
+    return FakeBackend({"resources/store/open": namespace, "resources/store/fork": forked,
+                        "resources/store/close": "ok", "a": make, "b": make, "c": "C", **more})
+
+
+async def forked_source(manager) -> str:
+    source = await manager.start(runnable(FORKED), backend=store_world("ns_source"))
+    assert (await settle(manager, source))["status"] == "succeeded"
+    return source
+
+
+async def test_a_fork_hook_sees_the_ctx_of_its_fork_point_and_the_fork_names_its_own_store(harness):
+    manager = harness.manager()
+    source = await forked_source(manager)
+    forked = store_world("ns_other")
+
+    row = await settle(manager, await manager.fork(source, at_step=2, backend=forked))
+
+    calls = {call["path"]: call for call in forked.calls}
+    assert calls["resources/store/fork"]["args"] == {"source": "ns_source",
+                                                     "docs": ["ns_source/one", "ns_source/two"]}, forked.calls
+    assert [call["path"] for call in forked.calls] == ["resources/store/fork", "c", "resources/store/close"]
+    assert (calls["c"]["task"], calls["c"]["vars"]) == ("finish ns_forked", {"json_namespace": "ns_forked"})
+    assert calls["resources/store/close"]["args"] == {"ns": "ns_forked"}
+    assert (row["status"], row["output"]) == ("succeeded", ["ns_forked/one", "ns_forked/two"]), row
+
+
+async def test_a_resumed_fork_forks_its_resources_again_where_it_did_from_the_journal(harness):
+    manager = harness.manager()
+    source = await forked_source(manager)
+    first = store_world("ns_other", c=held(asyncio.Event()))
+    fork = await manager.fork(source, at_step=2, backend=first)
+    await until(lambda: first.count("c") == 1, what="c in flight")
+    await manager.shutdown()
+
+    second = store_world("ns_other", forked="ns_again")
+    row = await resume(harness, fork, second)
+
+    assert (row["status"], row["output"]) == ("succeeded", ["ns_forked/one", "ns_forked/two"]), row["error"]
+    assert second.count("resources/store/fork") == 0 and second.calls[0]["task"] == "finish ns_forked", second.calls
+
+
+TIDIED = {"m.yaml": FORKED["m.yaml"].replace("initial: a\n", 'finally: {tool: tidy, args: {what: "{{ ctx.ns }}"}}\ninitial: a\n')}
+
+
+@pytest.mark.parametrize("at_step", [3, None])  # 3: the final; None: where the finished source stands
+async def test_a_fork_that_ends_before_its_fork_point_touches_no_store(harness, at_step):
+    manager = harness.manager()
+    source = await manager.start(runnable(TIDIED), backend=store_world("ns_source", **{"m.finally": "ok"}))
+    assert (await settle(manager, source))["status"] == "succeeded"
+    forked = store_world("ns_other", **{"m.finally": "ok"})
+
+    row = await settle(manager, await manager.fork(source, at_step=at_step, backend=forked))
+
+    assert row["status"] == "succeeded", row["error"]
+    assert forked.calls == [], "it forked, closed, or ran its source's finally against the source's store"
+
+
+ZERO = {"m.yaml": """\
+stategraph: 1
+id: m
+context: {prod: null}
+resources:
+  store:
+    open: {tool: ns_open}
+    fork: {tool: ns_copy, args: {source: "{{ fork_source }}"}}
+initial: a
+states:
+  a:
+    entry: ctx.prod = resources.store.endswith("source")
+    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}
+    transitions: [{target: done}]
+  done: {type: final, output: "{{ ctx.prod }}"}
+"""}
+
+
+async def test_a_fork_at_step_0_opens_its_store_before_the_first_entry(harness):
+    manager = harness.manager()
+    source = await manager.start(runnable(ZERO), backend=store_world("ns_source"))
+    assert (await settle(manager, source))["output"] is True
+
+    row = await settle(manager, await manager.fork(source, at_step=0, backend=store_world("ns_other")))
+
+    assert (row["status"], row["output"]) == ("succeeded", False), (row["output"], row["error"])
+
+
+async def test_a_fork_of_an_older_fork_replays_its_first_step_with_that_fork_s_store(harness):
+    import json
+
+    manager = harness.manager()
+    source = await manager.start(runnable(ZERO), backend=store_world("ns_source"))
+    await settle(manager, source)
+    first = await manager.fork(source, at_step=0, backend=store_world("ns_other", forked="ns_first"))
+    assert (await settle(manager, first))["output"] is False
+    # as an engine before the fork point wrote it: the source's values only, the fork hooks ran at its start
+    harness.store._db().execute("UPDATE journal SET key = 'resource_sources', status = 'resource_sources', data = ? "
+                                "WHERE run_id = ? AND key = 'fork_resources'", (json.dumps({"store": "ns_source"}), first))
+
+    row = await settle(manager, await manager.fork(first, at_step=1, backend=store_world("ns_other", forked="x")))
+
+    assert (row["status"], row["output"]) == ("succeeded", False), row["error"]  # its entry saw ns_first, not ns_source
+
+
+async def test_a_fork_whose_fork_hook_fails_runs_no_finally_and_closes_what_it_opened(harness):
+    logged = {"m.yaml": TIDIED["m.yaml"].replace(
+        "resources:\n", "resources:\n  log:\n    open: {tool: log_open}\n    close: {tool: log_close}\n", 1).replace(
+        '    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}\n',
+        '    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}\n'
+        '    finally: {tool: tidy, args: {ns: "{{ resources.store }}"}}\n')}
+    world = {"resources/log/open": "log_1", "resources/log/close": "ok", "m.finally": "ok", "a/finally": "ok"}
+    manager = harness.manager()
+    source = await manager.start(runnable(logged), backend=store_world("ns_source", **world))
+    assert (await settle(manager, source))["status"] == "succeeded"
+    forked = store_world("ns_other", forked=ActivityError("tool_failed", "down"), **world)
+
+    row = await settle(manager, await manager.fork(source, at_step=1, backend=forked))
+
+    assert row["status"] == "failed", row
+    assert [call["path"] for call in forked.calls] == ["resources/log/open", "resources/store/fork",
+                                                       "resources/log/close"], forked.calls
+
+
+async def test_a_fork_where_the_source_stands_keeps_the_operator_s_edit_there(harness):
+    manager = harness.manager()
+    first = store_world("ns_source", c="C")
+    source = await manager.start(runnable(FORKED), backend=first, breakpoints=[{"state": "b", "at": "enter"}])
+    await paused_at(manager, source, "enter")
+    manager.assign(source, "ns", "'EDITED'")
+    forked = store_world("ns_other")
+    try:
+        row = await settle(manager, await manager.fork(source, backend=forked, breakpoints=[]))  # not held at b
+    finally:
+        manager.control(source, "continue")
+        await settle(manager, source)
+
+    assert [call["task"] for call in forked.calls if call["path"] == "c"] == ["finish EDITED"], forked.calls
+    assert row["status"] == "succeeded", row["error"]
+
+
+async def test_a_fork_of_a_fork_replays_outputs_of_every_run_before_it(harness):
+    manager = harness.manager()
+    source = await forked_source(manager)
+    first = await manager.fork(source, at_step=1, backend=store_world("ns_other", forked="ns_first"))
+    assert (await settle(manager, first))["output"] == ["ns_first/one", "ns_first/two"]  # the replayed one swapped
+    second = store_world("ns_other", forked="ns_second")
+
+    row = await settle(manager, await manager.fork(first, at_step=2, backend=second))
+
+    assert row["status"] == "succeeded", row["error"]
+    assert row["output"] == ["ns_second/one", "ns_second/two"], row["output"]
+    assert second.calls[0]["args"]["source"] == "ns_first" and second.count("a") + second.count("b") == 0
+
+
+async def test_a_fork_of_an_older_fork_takes_its_history_from_the_row_it_left(harness):
+    import json
+
+    manager = harness.manager()
+    source = await forked_source(manager)
+    first = await manager.fork(source, at_step=2, backend=store_world("ns_other", forked="ns_first"))
+    await settle(manager, first)
+    # as an engine before the fork point wrote it: the source's values only, the fork hooks ran at its start
+    harness.store._db().execute("UPDATE journal SET key = 'resource_sources', status = 'resource_sources', data = ? "
+                                "WHERE run_id = ? AND key = 'fork_resources'",
+                                (json.dumps({"store": "ns_source"}), first))
+
+    second = await manager.fork(first, at_step=2, backend=store_world("ns_other", forked="ns_second"))
+    await settle(manager, second)
+
+    [written] = [r for r in harness.store.rows(second, kinds=("trace",)) if r["status"] == "fork_resources"]
+    assert written["data"] == {"sources": {"store": "ns_first"}, "chain": [{"values": {"store": "ns_source"}, "until": 0}],
+                               "at": 2}, written["data"]
+
+
+FIXED = {"m.yaml": FORKED["m.yaml"].replace(
+    '    do: {agent: w, task: "finish {{ ctx.ns }}"}\n    transitions: [{target: done}]\n',
+    '    do: {agent: w, task: "finish {{ ctx.ns }}"}\n    transitions: [{target: done}, {trigger: error, target: recover}]\n'
+    '  recover:\n    do: {tool: note, args: {ns: "{{ resources.store }}"}}\n    transitions: [{target: done}]\n')}
+
+
+async def test_a_fork_of_the_whole_journal_forks_where_the_journal_ends(harness):
+    manager = harness.manager()
+    source = await manager.start(runnable(FORKED), backend=store_world("ns_source", c=ActivityError("agent_failed", "x")))
+    assert (await settle(manager, source))["status"] == "failed"
+    forked = store_world("ns_other", recover="noted")
+
+    row = await settle(manager, await manager.fork(source, tree=runnable(FIXED), backend=forked))  # the fixed one
+
+    [written] = [r for r in harness.store.rows(row["id"], kinds=("trace",)) if r["status"] == "fork_resources"]
+    assert written["data"]["at"] == 3, written["data"]  # c's end is journaled: what comes after it runs live
+    assert [call["path"] for call in forked.calls] == ["resources/store/fork", "recover", "resources/store/close"]
+    assert forked.calls[1]["args"] == {"ns": "ns_forked"} and row["status"] == "succeeded", (forked.calls, row["error"])
+
+
+async def test_a_fork_past_the_journal_forks_where_the_source_stands(harness):
+    manager = harness.manager()
+    gate = asyncio.Event()
+    first = store_world("ns_source", b=held(gate, "ns_source/two"))
+    source = await manager.start(runnable(FORKED), backend=first)
+    await until(lambda: first.count("b") == 1, what="b in flight")
+    forked = store_world("ns_other")
+
+    row = await settle(manager, await manager.fork(source, at_step=9, backend=forked))
+    gate.set()
+    await settle(manager, source)
+
+    [written] = [r for r in harness.store.rows(row["id"], kinds=("trace",)) if r["status"] == "fork_resources"]
+    assert written["data"]["at"] == 1, written["data"]
+    assert [call["path"] for call in forked.calls] == ["resources/store/fork", "b", "c", "resources/store/close"]
+    assert row["output"] == ["ns_forked/one", "ns_forked/two"], row["output"]
+
+
+async def test_the_finally_of_the_state_the_fork_point_leaves_runs_on_the_fork_s_store(harness):
+    tidied = {"m.yaml": FORKED["m.yaml"].replace(
+        '    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}\n',
+        '    do: {tool: make, args: {ns: "{{ resources.store }}", name: one}}\n'
+        '    finally: {tool: tidy, args: {ns: "{{ resources.store }}"}}\n')}
+    manager = harness.manager()
+    source = await manager.start(runnable(tidied), backend=store_world("ns_source", **{"a/finally": "ok"}))
+    await settle(manager, source)
+    forked = store_world("ns_other", **{"a/finally": "ok"})
+
+    await settle(manager, await manager.fork(source, at_step=1, backend=forked))
+
+    assert [call["args"] for call in forked.calls if call["path"] == "a/finally"] == [{"ns": "ns_forked"}], forked.calls
+
+
+async def test_a_fork_of_a_fork_swaps_each_old_value_once(harness):
+    def derived(call):
+        return call["args"]["source"] + "_f"
+
+    manager = harness.manager()
+    source = await forked_source(manager)
+    first = await manager.fork(source, at_step=1, backend=store_world("ns_other", forked=derived))
+    assert (await settle(manager, first))["output"] == ["ns_source_f/one", "ns_source_f/two"]
+
+    row = await settle(manager, await manager.fork(first, at_step=2, backend=store_world("ns_other", forked=derived)))
+
+    assert row["output"] == ["ns_source_f_f/one", "ns_source_f_f/two"], (row["output"], row["error"])
+
+
+async def test_a_fork_of_a_fork_that_never_opened_its_store_replays_on_the_source_s(harness):
+    manager = harness.manager()
+    source = await forked_source(manager)
+    broken = await manager.fork(source, at_step=1, backend=store_world("ns_other", forked=ActivityError("tool_failed", "down")))
+    assert (await settle(manager, broken))["status"] == "failed"
+
+    row = await settle(manager, await manager.fork(broken, at_step=1, backend=store_world("ns_other", forked="ns_second")))
+
+    assert (row["status"], row["output"]) == ("succeeded", ["ns_second/one", "ns_second/two"]), row["error"]
+
+
+async def test_a_fork_of_a_fork_replays_each_step_with_the_values_its_run_had(harness):
+    guarded = {"m.yaml": FORKED["m.yaml"].replace(
+        "      - target: c\n        effect: ctx.docs = ctx.docs + [out]\n",
+        "      - target: c\n        guard: ctx.docs[0].startswith(resources.store)\n        effect: ctx.docs = ctx.docs + [out]\n")}
+    assert guarded != FORKED
+    manager = harness.manager()
+    source = await manager.start(runnable(guarded), backend=store_world("ns_source"))
+    assert (await settle(manager, source))["status"] == "succeeded"
+    first = await manager.fork(source, at_step=2, backend=store_world("ns_other", forked="ns_first"))
+    assert (await settle(manager, first))["status"] == "succeeded"
+
+    row = await settle(manager, await manager.fork(first, at_step=3, backend=store_world("ns_other", forked="ns_second")))
+
+    assert (row["status"], row["output"]) == ("succeeded", ["ns_first/one", "ns_first/two"]), row["error"]
+
+
+async def test_a_fork_of_a_finished_machine_without_resources_runs_no_finally_of_its_source(harness):
+    plain = {"m.yaml": "stategraph: 1\nid: m\nfinally: {tool: tidy}\ninitial: a\nstates:\n"
+                       "  a:\n    do: {tool: work}\n    transitions: [{target: done}]\n  done: {type: final}\n"}
+    manager = harness.manager()
+    source = await manager.start(runnable(plain), backend=FakeBackend({"a": "A", "m.finally": "ok"}))
+    assert (await settle(manager, source))["status"] == "succeeded"
+    forked = FakeBackend({"a": "A", "m.finally": "ok"})
+
+    row = await settle(manager, await manager.fork(source, backend=forked))
+
+    assert row["status"] == "succeeded" and forked.calls == [], forked.calls
+
+
+async def test_a_fork_that_fails_again_where_its_source_did_runs_no_finally_of_it(harness):
+    manager = harness.manager()
+    source = await manager.start(runnable(TIDIED), backend=store_world("ns_source", c=ActivityError("agent_failed", "x"),
+                                                                        **{"m.finally": "ok"}))
+    assert (await settle(manager, source))["status"] == "failed"
+    forked = store_world("ns_other", **{"m.finally": "ok"})
+
+    row = await settle(manager, await manager.fork(source, backend=forked))  # it fails again, where the source did
+
+    assert row["status"] == "failed" and forked.calls == [], forked.calls
+
+
+def test_a_source_s_resource_object_is_swapped_for_the_fork_s_as_a_whole_and_inside():
+    from plugins.stategraph.engine.interpreter import _swap_pairs, _swapped
+
+    old = {"ns": "ns_source", "id": 7, "tags": ["group_source"], "ids": [1], "flags": {"ro": False}, "short": "abc"}
+    new = {"ns": "ns_forked", "id": 7, "tags": ["group_forked"], "ids": [2], "flags": {"ro": True}, "short": "xyz"}
+    ctx = {"store": dict(old), "path": "ns_source/doc", "tag": "group_source", "short": "abc", "n": 7,
+           "picked": [1], "mode": {"ro": False}}
+
+    assert _swapped(ctx, _swap_pairs(old, new)) == {
+        "store": new, "path": "ns_forked/doc", "tag": "group_forked", "short": "abc", "n": 7,
+        "picked": [1], "mode": {"ro": False}}  # a small object inside the value is no name of it
+    assert _swap_pairs("ns_same", "ns_same") == [] and _swap_pairs("abc", "xyz") == []
+
+
+# ------------------------------------------------------------------ N7: a machine's agent: block offers it as an agent
+
+OFFERED = """\
+stategraph: 1
+id: helper
+title: A helper
+params: {topic: {type: string, required: true}}
+agent: {on_wait: block, visibility: both}
+initial: done
+states:
+  done: {type: final, output: "{{ params.topic }}"}
+"""
+
+
+def offering_config(tmp_path, **machines):
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig
+
+    folder = tmp_path / "machines"
+    folder.mkdir(exist_ok=True)
+    for name, text in machines.items():
+        (folder / f"{name}.yaml").write_text(text, encoding="utf-8")
+    return AgentSystemConfig(plugins=PluginsConfig(servers={
+        "stategraph": ToolServerConfig(type="stategraph", enabled=True, machine_dirs=[str(folder)]),
+        "off": ToolServerConfig(type="stategraph", enabled=False, machine_dirs=[str(tmp_path / "other")])}))
+
+
+def test_a_machine_with_an_agent_block_is_offered_as_the_entry_it_stands_for(tmp_path):
+    from plugins.stategraph.facade import offered_servers
+
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "hidden.yaml").write_text(OFFERED.replace("id: helper", "id: hidden"), encoding="utf-8")
+    config = offering_config(tmp_path, helper=OFFERED, plain=OFFERED.replace("id: helper", "id: plain").replace(
+        "agent: {on_wait: block, visibility: both}\n", ""), wrong=OFFERED.replace("id: helper", "id: stray"),
+        broken=OFFERED.replace("id: helper", "id: broken") + "  bad: [\n")
+
+    offered = offered_servers(config)
+
+    assert offered == {"helper_agent": {
+        "type": "stategraph_machine", "enabled": True, "machine": "helper", "stategraph": "stategraph",
+        "description": "A helper", "input": "text", "task_param": "topic", "on_wait": "block", "params": {},
+        "promote": [], "metadata": {"visibility": "both"}, "agent_config": {}, "from_machine_file": True}}, offered
+
+
+def test_an_agent_block_is_read_as_the_loader_reads_the_file_and_is_private_unless_it_says_otherwise(tmp_path):
+    import json
+
+    from plugins.stategraph.facade import offered_servers
+
+    bare = OFFERED.replace("id: helper", "id: bare").replace("agent: {on_wait: block, visibility: both}", "agent: {}")
+    twice = bare.replace("id: bare", "id: twice").replace("title: A helper\n", "title: A helper\ntitle: again\n")
+    switch = bare.replace("id: bare", "id: switch").replace("initial: done\nstates:\n  done:",
+                                                            "initial: on\nstates:\n  on:\n    transitions: [{target: off}]\n  off:")
+    bomb = bare.replace("id: bare", "id: bomb").replace("initial: done", "context:\n  a0: &a0 [x, x]\n" + "".join(
+        f"  a{i}: &a{i} [*a{i - 1}, *a{i - 1}]\n" for i in range(1, 18)) + "initial: done")  # 2**18 values
+    quoted = bare.replace("id: bare", "id: quoted").replace("agent: {}", '"agent": {}')
+    marked = "\ufeff" + bare.replace("id: bare", "id: marked")
+    flow = json.dumps({"stategraph": 1, "id": "flow", "agent": {}, "initial": "done",
+                       "states": {"done": {"type": "final"}}})
+    config = offering_config(tmp_path, bare=bare, twice=twice, switch=switch, bomb=bomb, quoted=quoted, marked=marked,
+                             flow=flow)
+
+    offered = offered_servers(config)
+
+    assert sorted(offered) == ["bare_agent", "flow_agent", "marked_agent", "quoted_agent", "switch_agent"], \
+        sorted(offered)  # YAML 1.2: on and off are names
+    assert offered["bare_agent"]["metadata"] == {"visibility": "private"}
+
+
+def test_an_agent_block_s_params_and_its_name_are_validated():
+    from plugins.stategraph.engine.backend import make_config_check
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig
+
+    wrong = OFFERED.replace("agent: {on_wait: block, visibility: both}", "agent: {task_param: subject}")
+    named = OFFERED.replace("agent: {on_wait: block, visibility: both}", "agent: {name: helper_agent}")
+    system = AgentSystemConfig(plugins=PluginsConfig(servers={
+        "helper_agent": ToolServerConfig(type="basic_agent", enabled=True),
+        "own_agent": ToolServerConfig(type="stategraph_machine", enabled=True, machine="helper", stategraph="stategraph",
+                                      from_machine_file=True),
+        "pasted_agent": ToolServerConfig(type="stategraph_machine", enabled=True, machine="helper",
+                                         stategraph="stategraph")}))
+    check = make_config_check(system, runner="stategraph_runner", own_instance="stategraph")
+
+    params = validate({"helper.yaml": wrong}, root="helper.yaml")
+    taken = validate({"helper.yaml": named}, root="helper.yaml", config_check=check)
+    own = validate({"helper.yaml": named.replace("name: helper_agent", "name: own_agent")}, root="helper.yaml",
+                   config_check=check)
+
+    assert any("task_param 'subject' is no param of helper" in p.message for p in found(params, "SG111")), \
+        [p.message for p in params.problems]
+    assert any("'helper_agent' is the name of another server" in p.message and p.path == "agent.name"
+               for p in found(taken, "SG111")), [(p.path, p.message) for p in taken.problems]
+    assert not found(own, "SG111"), "its own offer, declared at the start, is taken by itself"
+    pasted = validate({"helper.yaml": named.replace("name: helper_agent", "name: pasted_agent")}, root="helper.yaml",
+                      config_check=check)
+    assert any("a config entry holds 'pasted_agent' for this machine" in p.message for p in found(pasted, "SG111")), \
+        [p.message for p in pasted.problems]
+    assert not [p for tree in (params, taken, pasted) for p in tree.problems if p.level == "error"], \
+        "a problem of the offer keeps the machine itself from running"
+    other = make_config_check(system, runner="stategraph_runner", own_instance="sg2")  # an instance sharing the folder
+    shared = validate({"helper.yaml": named.replace("name: helper_agent", "name: own_agent")}, root="helper.yaml",
+                      config_check=other)
+    assert not found(shared, "SG111"), [p.message for p in shared.problems]
+
+
+def test_a_config_entry_that_holds_the_block_s_name_is_not_its_offer(tmp_path):
+    from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig
+    from plugins.stategraph.server import StateGraphServer
+    from plugins.stategraph.tests.stategraph_testkit import tool_config
+
+    system = AgentSystemConfig(plugins=PluginsConfig(servers={"helper_agent": ToolServerConfig(
+        type="stategraph_machine", enabled=True, machine="helper", stategraph="stategraph")}))
+    server = StateGraphServer("stategraph", system, tool_config(tmp_path))
+    (tmp_path / "machines" / "helper.yaml").write_text(OFFERED, encoding="utf-8")
+
+    assert server.service.get_machine("helper")["offer"] == {"name": "helper_agent", "declared": False}
+
+
+async def test_a_runtime_offers_a_machine_as_an_agent_that_runs_it(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from agent_system.config.models import (AgentSystemConfig, LLMModelConfig, LLMProfile, LLMSystemConfig,
+                                            PluginsConfig, ToolServerConfig)
+    from agent_system.runtime import Runtime
+    from plugins.stategraph.facade import MachineAgent
+
+    folder = tmp_path / "machines"
+    folder.mkdir()
+    (folder / "helper.yaml").write_text(OFFERED, encoding="utf-8")
+    repo = Path(__file__).resolve().parents[4]
+    config = AgentSystemConfig(
+        llm_system=LLMSystemConfig(models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
+                                   profiles={"normal": LLMProfile(model_ref="m")}, default_profile="normal"),
+        plugins=PluginsConfig(plugin_dirs=[str(repo / "src" / "plugins")], servers={
+            "stategraph": ToolServerConfig(type="stategraph", enabled=True, machine_dirs=[str(folder)],
+                                           writable_machine_dirs=[str(folder)], runs_db=str(tmp_path / "runs.db"))}))
+
+    monkeypatch.setattr(Runtime, "last_started", Runtime.last_started)  # start() sets it: given back afterwards
+    runtime = Runtime(config).start()
+    server = runtime.registry.get("stategraph")
+    try:
+        agent = runtime.registry.get("helper_agent")
+        described = server.service.get_machine("helper")
+
+        assert isinstance(agent, MachineAgent) and (agent.machine_id, agent.on_wait) == ("helper", "block")
+        assert (agent._tool_public, agent._tool_visible) == (True, True), "visibility both"
+        assert runtime.describe("helper_agent").offered_by == "stategraph_machine"
+        assert described["offer"] == {"name": "helper_agent", "declared": True}, described["offer"]
+        assert [a["name"] for a in described["agents"] if not a["problems"]] == ["helper_agent"], described["agents"]
+        (folder / "later.yaml").write_text(OFFERED.replace("id: helper", "id: later"), encoding="utf-8")
+        assert server.service.get_machine("later")["offer"] == {"name": "later_agent", "declared": False}
+    finally:
+        await server.stop_plugin()

@@ -196,7 +196,8 @@ class AgentEditorWebEndpoints:
                 rows.append(row)
         runtime = getattr(state, "runtime", None)
         for name, decl in (runtime.declarations().items() if runtime is not None else ()):
-            if name not in snap.config.plugins.servers and is_agent(name, decl.type):
+            # a server a plugin offered (a stategraph machine's agent: block) is in no file: not a removed one
+            if name not in snap.config.plugins.servers and is_agent(name, decl.type) and decl.offered_by is None:
                 rows.append(self._removed_row(snap, name, decl))
         errors = snap.errors + [f"{name}: {error}" for name, error in snap.resolve_errors.items()]
         if tools_error:

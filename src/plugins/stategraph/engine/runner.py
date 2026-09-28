@@ -90,6 +90,53 @@ def _head(key: str) -> str:
     return key.rpartition(":")[0] if ":" in key else key
 
 
+def _fork_point_of(rows: list[dict[str, Any]], at_step: Optional[int]
+                   ) -> tuple[int, list[dict[str, Any]], dict[str, Any]]:
+    """Where a fork of the run with these journal rows runs live from, and its root resources' history there:
+    ``(at, chain, sources)``.
+
+    ``at``: ``at_step``, but never past the source's journal -- its last top-level step, or the one after it when
+    that step has its result (an activity's end, an event, a timer): a fork runs nothing live before its fork point.
+    ``sources``: the source's resource values at ``at``; ``chain``: the values before them, as the source's own
+    history had them (a chain of forks) -- ``[{values, until}]``, each held for the top-level steps before until.
+    """
+    own: dict[str, Any] = {}  # the source's root resources as it opened (or forked) them
+    forked: Optional[dict[str, Any]] = None  # the source is a fork: where its history begins
+    opened_at_start: Optional[dict[str, Any]] = None  # ... a fork of an older engine, its resources forked at start
+    last, ended = 0, set()
+    for row in rows:
+        kind, key, status, data = row["kind"], row["key"], row.get("status"), row.get("data") or {}
+        name = key[2:] if key.startswith("r.") else ""
+        if kind == "activity" and status == "done" and name and "." not in name and "/" not in name:
+            own[name] = data.get("out")
+        elif kind == "trace" and status == "fork_resources":
+            forked = data
+        elif kind == "trace" and status == "resource_sources":
+            opened_at_start = data
+        anchor = data.get("at", key) if kind == "edit" else key
+        steps = [] if anchor.startswith(_STEPLESS) else key_steps(_head(anchor) if kind != "activity" else anchor)
+        if steps and (kind != "trace" or status == "step"):
+            last = max(last, steps[0][1])
+            if (kind == "activity" and key == f"s{steps[0][1]}" and status in ("done", "error")
+                    or kind in ("event", "timer") and key in (f"s{steps[0][1]}:event", f"s{steps[0][1]}:timer")):
+                ended.add(steps[0][1])
+    live_from = last + 1 if last in ended else last
+    at = live_from if at_step is None else min(at_step, live_from)
+    if forked is not None:
+        history = [*(forked.get("chain") or []), {"values": dict(forked.get("sources") or {}), "until": forked["at"]}]
+        if own:  # it reached its fork point: its own values from there on
+            history.append({"values": {**history[-1]["values"], **own}, "until": None})
+        else:  # it never opened its own: the source's held on
+            history[-1] = {**history[-1], "until": None}
+    elif opened_at_start is not None:
+        history = [{"values": dict(opened_at_start), "until": 0}, {"values": {**opened_at_start, **own}, "until": None}]
+    else:
+        history = [{"values": own, "until": None}]
+    chain = [entry for entry in history if entry["until"] is not None and entry["until"] <= at]
+    sources = next(entry["values"] for entry in history if entry["until"] is None or entry["until"] > at)
+    return at, chain, sources
+
+
 def _utc(seconds_from_now: float = 0.0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)).isoformat(timespec="milliseconds")
 
@@ -133,6 +180,13 @@ class RunContext:
         self.divergence: Optional[str] = None  # the first replay divergence: no finally runs any more (§3.10)
         self.begun = False               # the run's task ran its first line (a cancel before that would lose the run)
         self.resource_sources: dict[str, Any] = {}  # a fork: the source run's resource values (§2.8)
+        # ... and before them, as the source's own history had them: [{values, until}] -- values held for the
+        # top-level steps before until (a chain of forks); the source's values follow the last of them
+        self.resource_chain: list[dict[str, Any]] = []
+        # a fork: the top-level step its root resources open (fork) at -- ctx is the source's there; None: at the
+        # frame's start (a run, or a fork journaled before resources opened at the fork point)
+        self.fork_point: Optional[int] = None
+        self.forking: Optional[Frame] = None  # the root frame while its resources wait for the fork point
         self.token_watch: Optional[asyncio.Future] = None  # terminates the run when its token is cancelled
         self.lost = False                # another process owns the run now (fenced write failed)
         self.on_lost: Optional[Callable[[str], None]] = None
@@ -219,8 +273,13 @@ class RunContext:
                     self.ends[key] = data
                 elif row["status"] == "joined":
                     self.joined[str(data.get("child", ""))] = int(row["seq"])
-                elif row["status"] == "resource_sources":
+                elif row["status"] == "resource_sources":  # a fork of an older engine: opened at its start
                     self.resource_sources = dict(data)
+                elif row["status"] == "fork_resources":
+                    self.resource_sources = dict(data.get("sources") or {})
+                    self.resource_chain = [{"values": dict(entry.get("values") or {}), "until": int(entry["until"])}
+                                           for entry in data.get("chain") or []]
+                    self.fork_point = int(data["at"])
                 elif row["status"] == "request_seq":
                     self._request_seq = int(data.get("n") or 0)
 
@@ -695,7 +754,7 @@ class RunManager:
                     user_id: Optional[str] = None, run_id: Optional[str] = None, run_key: Optional[str] = None,
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
                     copy_rows: Optional[list[dict[str, Any]]] = None,
-                    resource_sources: Optional[dict[str, Any]] = None,
+                    fork_resources: Optional[dict[str, Any]] = None,
                     nesting: Optional[dict[str, Any]] = None, strict_points: bool = True) -> str:
         """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
@@ -725,9 +784,9 @@ class RunManager:
                               journal_format=JOURNAL_FORMAT, nesting=nesting)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
-        if resource_sources:  # journaled, so a resume of the fork can still run the fork hooks
-            self.store.record(run_id, "trace", "resource_sources", fence=self.owner, status="resource_sources",
-                              data=resource_sources)
+        if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
+            self.store.record(run_id, "trace", "fork_resources", fence=self.owner, status="fork_resources",
+                              data=fork_resources)
         self._launch(run_id, machine, params, mocks, mock_only, debugger,
                      backend if backend is not None else (backend_factory(run_id) if backend_factory else None),
                      token_factory(run_id) if token_factory else None, origin=self._origin(parent_run) or run_id,
@@ -811,13 +870,15 @@ class RunManager:
         row = self.store.get_run(run_id)
         if row is None:
             raise KeyError(run_id)
+        rows = self.store.rows(run_id, kinds=("activity", "event", "edit", "timer", "trace"))
+        asked = at_step
+        at_step, chain, sources = _fork_point_of(rows, at_step)
+        # forked where the source stands (no step asked, or one past its journal): an operator's edit at that
+        # step's hook comes along -- a fork from a step asked for does that step anew
+        stands = asked is None or asked > at_step
         keep = []
-        sources: dict[str, Any] = {}  # the source's root resources, for the fork hooks (§2.8)
-        for journal_row in self.store.rows(run_id, kinds=("activity", "event", "edit", "timer", "trace")):
+        for journal_row in rows:
             kind, key = journal_row["kind"], journal_row["key"]
-            name = key[2:] if key.startswith("r.") else ""
-            if kind == "activity" and journal_row["status"] == "done" and name and "." not in name and "/" not in name:
-                sources[name] = (journal_row.get("data") or {}).get("out")
             # not a wait's deadline: it is absolute, the source's may have expired long ago -- the fork's wait at
             # the fork point starts afresh (a replayed wait reads its consumed event or fired timer, never it)
             if kind == "trace" and journal_row["status"] not in ("step", "vars_from"):
@@ -830,7 +891,7 @@ class RunManager:
             if anchor.startswith(_STEPLESS):  # the root's resources and its end: a fork opens (or forks) its own
                 continue                      # and ends its own way -- also below a root finally's submachine
             steps = key_steps(_head(anchor) if kind != "activity" else anchor)
-            if at_step is not None and steps and steps[0][1] >= at_step:
+            if steps and steps[0][1] >= at_step and not (stands and kind == "edit" and steps[0][1] == at_step):
                 continue
             if kind == "trace" and journal_row["status"] == "vars_from":
                 keep.append(journal_row)
@@ -847,7 +908,7 @@ class RunManager:
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
-            fork_step=at_step, copy_rows=keep, resource_sources=sources)
+            fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step})
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,

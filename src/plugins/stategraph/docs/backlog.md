@@ -123,7 +123,12 @@ dem deklarierten Typ und behält Backslashes; ungültiges `on_wait` zeigt auch d
   Geprüft: sie nimmt keine an (neue Agents beim Reload sind ausdrücklich nicht unterstützt; dafür bräuchte der
   Kern ein `Runtime.declare(name, ToolServerConfig)` samt Materialisierung -- Entscheidung des Nutzers, anderes
   Ressort). Gebaut ist der Ausweg: das Panel zeigt die Agents einer Maschine, ihre Probleme und einen Eintrag
-  zum Kopieren.
+  zum Kopieren. Nachtrag 28.09. (Nutzer: bauen): `agent:`-Block in der Maschinendatei; der Kern bekam
+  `Runtime.declare` und fragt `offered_servers` jeder Plugin-Factory in jedem Prozess vor dem Bau ab
+  (angekündigt im comm.txt); ein neuer Block zählt ab dem nächsten Start, das Panel sagt es. Standard
+  `visibility: private` (sonst böte jede SAM mit `allowed_agents: ['*']` eine frisch gespeicherte Maschine
+  ihrem LLM an); ein Config-Reload behält die angebotenen Agents. Probleme des Blocks sind Warnungen (SG111):
+  die Maschine selbst läuft weiter.
 - [x] **N8 Params in der Fassaden-Beschreibung**, `input: json` nimmt ein Objekt.
 
 ## Phase 4: Bedienung
@@ -174,6 +179,18 @@ Instanz und wird beim Stop freigegeben.
 - [x] **F8 Callback-URL pro Event** (einmalig, auf Lauf und Event begrenzt) — braucht eigenes
   Sicherheitsreview.
 - [x] **F9 Zeitpläne** (`schedules:` in der Plugin-Config, `run_key` pro Slot).
+
+## Nachträge
+
+- [x] **W1 Fork-Hook sieht den ctx am Fork-Punkt** (aus dem v6-Review der Writer-Session, Nutzer 28.09.: bauen):
+  die Ressourcen der Wurzel eines Forks öffnen am Fork-Punkt, nicht am Start; davor lesen sie den Wert der Quelle
+  (Hashes: ein Token), danach tauscht ctx jeden Wert der Quelle -- und der Läufe davor -- gegen den des Forks, vars
+  neu. Journalzeile `fork_resources` {sources, chain [{values, until}], at}: ein Fork eines Forks spielt jeden
+  Schritt mit den Werten, die sein Lauf dort hatte. Der Punkt liegt vor der Arbeit des Schritts (auch vor dem
+  finally des verlassenen States) und nie hinter dem Journal der Quelle; eine Fork-Wurzel ohne Live-Teil
+  (vor dem Punkt geendet, oder ihre Fork-Hooks scheiterten) führt kein finally aus -- die Quelle hat es schon --
+  und schließt nur, was sie selbst geöffnet hat; ein Fork bei Schritt 0 öffnet am Start. Nebenbei: ein Fork eines Forks divergierte am HEAD, wenn ctx einen Wert der
+  Ur-Quelle aus einem Output trug (gemessen).
 
 ## Für andere Ressorts
 

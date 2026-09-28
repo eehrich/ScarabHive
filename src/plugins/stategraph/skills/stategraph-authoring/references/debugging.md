@@ -222,7 +222,9 @@ replays the source run's journal below top-level step N and runs live from there
   the step before it. A divergence in the replayed part aborts the fork and names the
   key.
 - **External state is not forked.** Stores, database rows and agent conversations keep
-  what the source run did after step N. The fork gets its own session, so a
+  what the source run did after step N -- unless a resource's `fork` hook copies it: it runs
+  at the fork point with the source's `ctx` there, and from then on `ctx` names the fork's
+  resources (format.md, `resources`). The fork gets its own session, so a
   `continue` into an agent instance created before the fork point fails.
 - The fork is a new run of the user who forks. A wait state it reaches at the fork point
   starts its `timeout` afresh.

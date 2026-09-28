@@ -8,6 +8,32 @@ Design: `docs/stategraph_design.md` §10.
 
 ## Setup
 
+**In the machine's own file -- no config entry.** An `agent:` block offers the machine as an
+agent; every process that starts (the API, agent-cli) declares it (`Runtime.declare`, through
+this type's `offered_servers`), for each enabled stategraph instance whose machine folders hold
+the file:
+
+```yaml
+agent:                       # {} takes every default
+  name: helper_agent         # default <machine id>_agent
+  description: "..."         # default the machine's title or description
+  input: text                # default text for one string param, else json
+  task_param: topic          # default that one param
+  on_wait: ask               # default ask
+  params: {}                 # literal params, under the ones from the message
+  promote: []
+  visibility: tool           # default private: only callers that name it
+```
+
+The block is the entry below, with `type`, `machine` and `stategraph` filled in (and
+`from_machine_file: true`). A new or changed block takes effect when the process starts next (the
+panel says whether it is declared); a config reload keeps it. A name a config entry holds stays the
+config's -- validation warns (SG111), also for an entry of this machine pasted into a config file:
+its settings would run, not the block's; the machine itself runs -- and a file that does not parse
+offers nothing. Of stategraph instances sharing a machine folder, the first (by name) offers it.
+
+**Or as a config entry:**
+
 ```yaml
 plugins:
   servers:
