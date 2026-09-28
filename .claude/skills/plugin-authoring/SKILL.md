@@ -182,8 +182,15 @@ Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
 - Caches/storage on `tmp_path` (`PluginCache` writes to `data/cache` otherwise).
 - **Mutation-check every new test:** break the production line, the test must go
   red. Craft: skill `unit-testing`.
-- Test selectively, never the whole suite without reason. **Never run pytest on the
-  server** — the root conftest kills agent-api, workers and audio there.
+- Test selectively, never the whole suite without reason. **Don't run pytest on the
+  server:** a test that starts the app as a subprocess loads the host's real config
+  and starts its enabled plugins (`tests/app/test_app_shutdown.py`).
+  The root conftest no longer kills what it did not start — only processes carrying
+  its session's `AGENT_SYSTEM_TEST_SESSION` marker, plus those of sessions that died.
+  A child you start with an environment of its own (an allowlist) needs the marker
+  passed on, or its leftovers stay. **A test that starts a pytest of its own sets
+  `AGENT_SYSTEM_TEST_NO_REAP=1` for it** — use `run_nested_pytest` in
+  `tests/other/test_conftest_process_cleanup.py`; the conftest cannot detect a nested run.
 
 ## Don't forget
 

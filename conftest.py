@@ -1,21 +1,99 @@
 import os
+import math
+import shutil
 import socket
 import pytest
 import subprocess
 import sys
 import time
-import signal
 import atexit
-from typing import List
 from pathlib import Path
 import tempfile
+
+# Ownership marker for the process cleanup further down: "<pid>:<start>:<pid
+# namespace>" of this pytest process. A child a test starts with the inherited
+# environment carries it -- and nothing else on the machine does: not the
+# developer's API server, not another agent's scripts, not another pytest
+# session's helpers (they carry their own session's marker). A child started
+# with an environment of its own does NOT carry it and is never reaped: an
+# allowlisted environment (coding_cli's child_env, an MCP stdio server's
+# default environment) leaves it out unless the test passes it on.
+# The start time tells this session apart from a later process that got the
+# same pid; the namespace keeps a pid of another Linux pid namespace from being
+# looked up here. Set unconditionally and before anything can spawn: a pytest
+# started BY a test is a session of its own and must not claim its parent
+# session's helpers.
+_SESSION_MARKER = "AGENT_SYSTEM_TEST_SESSION"
+_SESSION_PID = os.getpid()
+
+
+def _pid_namespace() -> str:
+    """The Linux pid namespace this process lives in; empty elsewhere."""
+    try:
+        return str(os.stat("/proc/self/ns/pid").st_ino)
+    except OSError:
+        return ""
+
+
+def _session_token() -> str:
+    try:
+        import psutil
+        started = repr(psutil.Process(_SESSION_PID).create_time())
+    except Exception:
+        # No start time: another session cannot tell whether this one still
+        # runs, so it never takes this session's children for orphans.
+        started = "unknown"
+    return f"{_SESSION_PID}:{started}:{_PID_NAMESPACE}"
+
+
+_PID_NAMESPACE = _pid_namespace()
+_SESSION_TOKEN = _session_token()
+os.environ[_SESSION_MARKER] = _SESSION_TOKEN
+
+# Off switch for the process cleanup: with it set to 1 no sweep selects and
+# nothing is signalled, in this process and in everything it starts. A test
+# that starts a pytest of its own has to set it for that run: the inner
+# session's sweeps would send real signals outside whatever guards the outer
+# run (tests/other/test_conftest_process_cleanup.py, run_nested_pytest). This
+# conftest cannot tell such a run apart itself -- an xdist worker, too, carries
+# the marker of a live owner and must reap.
+_NO_REAP_SWITCH = "AGENT_SYSTEM_TEST_NO_REAP"
+_REAPING_OFF = os.environ.get(_NO_REAP_SWITCH) == "1"
+
+# A developer's exported AGENT_CONFIG_PATH would send build_app() and
+# load_settings() without a path to another config; the tests assume the
+# repo's. Gone for the whole session, children and session fixtures included;
+# a test that needs it sets it itself.
+os.environ.pop("AGENT_CONFIG_PATH", None)
+
+# Temporary directories this conftest creates, with the pid that created them.
+# Removed when that process exits -- after the leftover sweep, atexit runs in
+# reverse order -- and only by it: a fork leaving through sys.exit removes its
+# own, never the session's.
+_TEMP_DIRS: list[tuple[int, Path]] = []
+
+
+def _make_temp_dir(prefix: str) -> Path:
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    _TEMP_DIRS.append((os.getpid(), path))
+    return path
+
+
+def _remove_temp_dirs() -> None:
+    me = os.getpid()
+    for creator, path in _TEMP_DIRS:
+        if creator == me:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+atexit.register(_remove_temp_dirs)
 
 # Disable WAL mode for writer plugins in tests (avoids Windows file locking issues)
 os.environ["WRITER_DISABLE_WAL"] = "true"
 
 # Set test session storage path BEFORE any imports of agent_system
 # This ensures all tests use a temporary directory for sessions
-_TEST_SESSION_DIR = Path(tempfile.mkdtemp(prefix="agent_test_sessions_"))
+_TEST_SESSION_DIR = _make_temp_dir("agent_test_sessions_")
 os.environ["AGENT_SESSION_STORAGE_PATH"] = str(_TEST_SESSION_DIR)
 
 # Patch SessionManager to force test storage path
@@ -36,8 +114,7 @@ def _patch_session_manager():
                 return _original_init(self, storage_path=storage_path, *args, **kwargs)
 
             # Otherwise, create unique tmp directory for this instance
-            import tempfile
-            test_path = Path(tempfile.mkdtemp(prefix="agent_test_session_"))
+            test_path = _make_temp_dir("agent_test_session_")
             return _original_init(self, storage_path=str(test_path), *args, **kwargs)
 
         SessionManager.__init__ = _test_init
@@ -210,28 +287,36 @@ except Exception as _seam_error:
 
 def pytest_sessionfinish(session, exitstatus):
     """Hook that runs at the very end of pytest session."""
+    if session.config.pluginmanager.hasplugin("dsession"):
+        # pytest-xdist controller: its workers carry this session's marker and
+        # are still up here -- xdist shuts them down in its own, later
+        # sessionfinish. Each worker cleans up after its own tests; the atexit
+        # sweep runs once the workers are gone.
+        return
     print("\n[conftest] pytest_sessionfinish: Final cleanup check...")
     # Wait a bit longer for any processes to settle
     time.sleep(2.0)
-    final_pids = _find_project_python_pids()
-    if final_pids:
-        print(f"[conftest] Final cleanup: found remaining processes {final_pids}")
-        _kill_pids(final_pids)
-        # Double-check after cleanup
-        time.sleep(1.0)
-        remaining = _find_project_python_pids()
+    leftovers = _find_session_leftovers()
+    if leftovers:
+        print(f"[conftest] Final cleanup: found remaining processes {_pids(leftovers)}")
+        _kill_marked(leftovers)
+        remaining = _find_session_leftovers()
         if remaining:
-            print(f"[conftest] WARNING: Some processes still running after final cleanup: {remaining}")
+            print(f"[conftest] WARNING: Some processes still running after final cleanup: {_pids(remaining)}")
     else:
         print("[conftest] Final cleanup: no remaining processes found")
 
 
 def _final_emergency_cleanup():
     """Emergency cleanup function registered with atexit."""
-    emergency_pids = _find_project_python_pids()
-    if emergency_pids:
-        print(f"[conftest] Emergency cleanup: killing {emergency_pids}")
-        _kill_pids(emergency_pids)
+    if os.getpid() != _SESSION_PID:
+        # A forked child leaving through sys.exit runs the atexit handlers it
+        # inherited; it must not take the whole session's helpers with it.
+        return
+    leftovers = _find_session_leftovers()
+    if leftovers:
+        print(f"[conftest] Emergency cleanup: killing {_pids(leftovers)}")
+        _kill_marked(leftovers)
 
 
 # Register emergency cleanup that runs when Python exits
@@ -353,233 +438,245 @@ def _is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
-def _find_project_python_pids() -> List[int]:
-    """Return python process PIDs that look like test servers for this repo.
+def _own_resource_tracker_pid() -> int | None:
+    """The multiprocessing resource tracker this interpreter started, if any.
 
-    We filter by command-line content to avoid killing unrelated Python.
+    It carries the marker like any child, but it is no leftover: it lives as
+    long as this process and exits with it. Killed at the end of the session,
+    Python relaunched it at shutdown ("resource_tracker: process died
+    unexpectedly, relaunching. Some resources might leak.") and the atexit
+    sweep then killed the new one.
     """
-    # This conftest lives at the repository root, so its directory IS repo_root.
-    repo_root = os.path.abspath(os.path.dirname(__file__))
-    matches: List[int] = []
+    tracker = sys.modules.get("multiprocessing.resource_tracker")
+    return getattr(getattr(tracker, "_resource_tracker", None), "_pid", None)
 
+
+def _this_process():
+    import psutil
+    return psutil.Process(os.getpid())
+
+
+def _spared_pids() -> set:
+    """Never candidates, whatever they carry: this process, every process it
+    descends from, and its resource tracker. An ancestor can carry a marker: a
+    pytest a test started carries its session's, and once that session has
+    died, the orphan sweep of a pytest started under it would end its own
+    parent."""
+    me = _this_process()
+    return {me.pid, *(parent.pid for parent in me.parents()), _own_resource_tracker_pid()}
+
+
+def _runs_as_this_user(proc) -> bool:
+    """Real, effective and saved uid all this user's. A setuid program (login,
+    su, sudo) runs with this user's real uid and is never a test child; root
+    alone reads its environment, and a selection that once took unreadable
+    environments for marked killed two Terminal sessions' login processes.
+    Windows has no uids: the account."""
     if _is_windows():
-        # Use PowerShell Get-CimInstance as primary method (more reliable than wmic)
+        return proc.username() == _this_process().username()
+    ids = proc.uids()
+    me = os.getuid()
+    return ids.real == me and ids.effective == me and ids.saved == me
+
+
+# Two readings of one process's start time may differ by this much and still
+# name the same process: Linux derives start times from the boot time, which it
+# re-derives from the wall clock in whole seconds.
+_SAME_START_S = 2.0
+
+
+def _owner_gone(marker: str) -> bool:
+    """Whether the session a marker names has provably ended.
+
+    Gone: no process with its pid, a zombie, or a process that started at
+    another time (the pid was reused). Whatever this cannot decide counts as
+    alive, and that session's processes are spared: a marker that does not
+    parse, one from another pid namespace (a container-local pid names some
+    other process here, or none), an owner whose start time is unreadable.
+    Not covered: on Linux a wall-clock step of more than _SAME_START_S between
+    the owner's start and this check makes a live owner look gone.
+    """
+    import psutil
+    try:
+        pid_text, started_text, namespace = marker.split(":")
+        pid, started = int(pid_text), float(started_text)
+    except ValueError:
+        return False
+    if pid <= 0 or not math.isfinite(started) or namespace != _PID_NAMESPACE:
+        return False
+    try:
+        owner = psutil.Process(pid)
+        if owner.status() == psutil.STATUS_ZOMBIE:
+            return True
+        return abs(owner.create_time() - started) > _SAME_START_S
+    except psutil.NoSuchProcess:  # ZombieProcess included
+        return True
+    except psutil.Error:
+        return False
+
+
+def _marked_processes() -> list:
+    """(process, marker) of every process of this user carrying a session marker.
+
+    Reads the environment each process was started with, through psutil:
+    Linux /proc/<pid>/environ, macOS sysctl KERN_PROCARGS2 (which keeps argv
+    and the environment apart -- `ps -E` joins them, so a marker that merely
+    appears in a command line would count), Windows the process's PEB. A
+    process of another user or with a setuid identity is skipped, and so is
+    one whose environment cannot be read. If environments cannot be read at
+    all, nothing is returned: killing nothing is safe, guessing from command
+    lines is not.
+    """
+    if _REAPING_OFF:
+        print(f"[conftest] process cleanup is off ({_NO_REAP_SWITCH}=1): nothing selected")
+        return []
+    try:
+        import psutil
+    except ImportError:
+        print("[conftest] psutil is not installed: cannot read process environments, "
+              "no process cleanup")
+        return []
+
+    try:
+        spared = _spared_pids()
+    except psutil.Error:
+        print("[conftest] cannot read the processes this one descends from: no process cleanup")
+        return []
+    marked = []
+    for proc in psutil.process_iter():
+        if proc.pid in spared:
+            continue
         try:
-            repo_lower = repo_root.lower().replace('\\', '\\\\')
-            ps_script = f'''
-            Get-CimInstance Win32_Process | Where-Object {{ $_.Name -match "python(\\.exe|w\\.exe)?" }} |
-            ForEach-Object {{
-                $cmd = $_.CommandLine;
-                if ($cmd) {{
-                    $lc = $cmd.ToLower();
-                    if ($lc -like "*{repo_lower}*" -or $lc -like "*.venv\\\\*" -or $lc -like "*uvicorn*" -or $lc -like "*-m agent_system.app*" -or $lc -like "*agent_system*") {{
-                        Write-Output $_.ProcessId
-                    }}
-                }}
-            }}
-            '''
-            out = subprocess.check_output([
-                "powershell", "-NoProfile", "-Command", ps_script
-            ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-
-            for line in out.strip().splitlines():
-                if line.strip():
-                    try:
-                        matches.append(int(line.strip()))
-                    except ValueError:
-                        pass
-        except Exception:
-            # Fallback to simpler tasklist approach
-            try:
-                # Get all python processes and their command lines
-                out = subprocess.check_output([
-                    "powershell", "-NoProfile", "-Command",
-                    '''Get-Process python* -ErrorAction SilentlyContinue | ForEach-Object {
-                        try {
-                            $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine;
-                            if ($cmdline -and ($cmdline.ToLower() -like "*agent_system*" -or $cmdline.ToLower() -like "*interface_api*" -or $cmdline.ToLower() -like "*.venv\\*")) {
-                                Write-Output $_.Id
-                            }
-                        } catch { }
-                    }'''
-                ], stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-
-                for line in out.strip().splitlines():
-                    if line.strip():
-                        try:
-                            matches.append(int(line.strip()))
-                        except ValueError:
-                            pass
-            except Exception:
-                pass
-
-    else:
-        # POSIX: use ps
-        try:
-            out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
-        except Exception:
-            return matches
-
-        for line in out.splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    pid_str, args = line.strip().split(None, 1)
-                    pid = int(pid_str)
-                except Exception:
-                    continue
-                low = args.lower()
-                if "python" in low and (repo_root.lower() in low or "-m agent_system.app" in low or ".venv/" in low):
-                    matches.append(pid)
-
-        # Filter matches to avoid killing the current pytest process or its parent
-        filtered: List[int] = []
-        current_pid = os.getpid()
-        parent_pid = os.getppid()
-        for pid in dict.fromkeys(matches):  # preserve order, remove duplicates
-            if pid in (current_pid, parent_pid):
-                # Never consider the running test process or its immediate parent
+            if not _runs_as_this_user(proc):
                 continue
-            try:
-                # Try to inspect the command line for the pid to avoid false positives
-                cmd = None
-                try:
-                    with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8", errors="ignore") as f:
-                        raw = f.read().replace('\x00', ' ').strip()
-                        cmd = raw.lower()
-                except Exception:
-                    # Fallback to ps if /proc is not available
-                    try:
-                        out2 = subprocess.check_output(["ps", "-p", str(pid), "-o", "args="], text=True, stderr=subprocess.DEVNULL)
-                        cmd = out2.strip().lower()
-                    except Exception:
-                        cmd = None
-
-                if cmd:
-                    # Avoid killing pytest runner or py.test
-                    if "pytest" in cmd or "py.test" in cmd:
-                        continue
-                    # Avoid matching ephemeral interactive python like 'python -'
-                    if cmd.endswith(" -") or cmd.endswith(" -c"):
-                        continue
-
-            except Exception:
-                # If anything goes wrong inspecting this pid, conservatively include it
-                pass
-
-            filtered.append(pid)
-
-        return filtered
+            marker = proc.environ().get(_SESSION_MARKER)
+        except Exception:
+            # AccessDenied, NoSuchProcess, ZombieProcess, ...
+            continue
+        if marker:
+            marked.append((proc, marker))
+    return marked
 
 
+def _find_session_leftovers() -> list:
+    """Processes THIS session spawned -- directly or further down -- that still run."""
+    return [(proc, marker) for proc, marker in _marked_processes() if marker == _SESSION_TOKEN]
 
-def _kill_pids(pids: List[int]) -> None:
-    """Kill processes with retry logic and proper waiting."""
-    if not pids:
+
+def _find_orphans() -> list:
+    """Processes an earlier test session spawned and left behind when it died.
+
+    Their owning pytest is gone. A process whose owner still runs belongs to a
+    live session -- another agent's run, a pytest a test started -- and is left
+    alone; that session cleans up after itself.
+    """
+    return [(proc, marker) for proc, marker in _marked_processes()
+            if marker != _SESSION_TOKEN and _owner_gone(marker)]
+
+
+def _pids(targets: list) -> list:
+    return [proc.pid for proc, _marker in targets]
+
+
+# How long a terminated process gets to exit before it is killed.
+_TERM_GRACE_S = 3.0
+
+
+def _may_signal(proc, marker: str) -> bool:
+    """Checked again right before every signal, whatever the caller selected:
+    the marker is this session's or names one that has ended, the process is
+    none this one must spare, runs as this user and still carries exactly
+    that marker. Anything unreadable: no."""
+    try:
+        if marker != _SESSION_TOKEN and not _owner_gone(marker):
+            return False
+        if proc.pid in _spared_pids() or not _runs_as_this_user(proc):
+            return False
+        return proc.environ().get(_SESSION_MARKER) == marker
+    except Exception:
+        return False
+
+
+def _kill_marked(targets: list) -> None:
+    """End the (process, marker) pairs a sweep selected: terminate, wait, kill the rest.
+
+    Trusts no caller: _may_signal decides right before each signal. Only
+    psutil.Process objects are signalled, never a bare pid -- psutil compares
+    the start time it saw at selection and refuses a pid reused since. Nothing
+    is killed by process tree or command line: a descendant ends here only if
+    it carries the marker itself.
+    """
+    if not targets:
         return
+    if _REAPING_OFF:
+        print(f"[conftest] process cleanup is off ({_NO_REAP_SWITCH}=1): {_pids(targets)} not signalled")
+        return
+    import psutil
 
-    print(f"[conftest] Attempting to kill PIDs: {pids}")
-
-    if _is_windows():
-        for pid in pids:
-            try:
-                # Use taskkill with force and tree kill options
-                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
-                             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-    else:
-        # First try graceful SIGTERM
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except Exception:
-                pass
-
-        # Wait a bit for graceful shutdown
-        time.sleep(1.0)
-
-        # Force kill any remaining processes
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
-
-    # Wait for processes to actually terminate
-    time.sleep(1.5)
-
-    # Verify cleanup worked and retry if needed
-    remaining = []
-    for pid in pids:
+    print(f"[conftest] Attempting to kill PIDs: {_pids(targets)}")
+    terminated, refused = [], []
+    for proc, marker in targets:
+        if not _may_signal(proc, marker):
+            refused.append(proc.pid)
+            continue
         try:
-            if _is_windows():
-                # Check if process still exists on Windows
-                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
-                                      capture_output=True, text=True)
-                if result.stdout and str(pid) in result.stdout:
-                    remaining.append(pid)
-            else:
-                # Check if process still exists on Unix
-                os.kill(pid, 0)  # This will raise OSError if process doesn't exist
-                remaining.append(pid)
-        except (OSError, subprocess.CalledProcessError):
-            # Process doesn't exist anymore, good
+            proc.terminate()
+        except psutil.Error:
+            continue
+        terminated.append((proc, marker))
+    if refused:
+        print(f"[conftest] Not signalled, no longer verifiable as a leftover of a test run: {refused}")
+    if not terminated:
+        return
+    _gone, alive = psutil.wait_procs([proc for proc, _marker in terminated], timeout=_TERM_GRACE_S)
+    stubborn = [(proc, marker) for proc, marker in terminated if proc in alive]
+    for proc, marker in stubborn:
+        if not _may_signal(proc, marker):
+            continue
+        try:
+            proc.kill()
+        except psutil.Error:
             pass
-
-    if remaining:
-        print(f"[conftest] Retrying cleanup for remaining PIDs: {remaining}")
-        # One more aggressive attempt
-        if _is_windows():
-            for pid in remaining:
-                try:
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
-                                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
-        else:
-            for pid in remaining:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except Exception:
-                    pass
-        time.sleep(1.0)
+    psutil.wait_procs([proc for proc, _marker in stubborn], timeout=_TERM_GRACE_S)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_test_servers_terminated():
-    """Ensure any leftover test server python processes are terminated.
+    """Terminate processes that test runs spawned and left behind.
 
-    This runs before the test session and again after the session finishes.
-    It only targets processes whose command lines reference the repository,
-    the project's virtualenv, or the test server module name.
+    Ownership is the AGENT_SYSTEM_TEST_SESSION marker in the environment a
+    process was started with -- never a command line. Before the session: only
+    orphans of an earlier run that died (their owning pytest is gone). After
+    it: whatever THIS session spawned and is still running. A process without
+    the marker (the developer's API server, another agent's scripts), one of
+    another live session and one of another user or a setuid identity are
+    never touched.
     """
     # Pre-test cleanup (best-effort)
-    pre = _find_project_python_pids()
-    if pre:
-        print("[conftest] terminating pre-existing project python processes:", pre)
-        _kill_pids(pre)
-        # give OS a moment to settle
-        time.sleep(0.5)
+    orphans = _find_orphans()
+    if orphans:
+        print("[conftest] terminating orphans of an earlier test run:", _pids(orphans))
+        _kill_marked(orphans)
 
     yield
 
     # Post-test cleanup (more aggressive)
     print("[conftest] Starting post-test cleanup...")
     for attempt in range(3):  # Multiple cleanup attempts
-        post = _find_project_python_pids()
-        if not post:
+        leftovers = _find_session_leftovers()
+        if not leftovers:
             break
-        print(f"[conftest] Cleanup attempt {attempt + 1}: terminating leftover project python processes:", post)
-        _kill_pids(post)
+        print(f"[conftest] Cleanup attempt {attempt + 1}: terminating leftover processes of this test run:",
+              _pids(leftovers))
+        _kill_marked(leftovers)
         time.sleep(1.0)
 
     # Final check
-    final = _find_project_python_pids()
+    final = _find_session_leftovers()
     if final:
-        print(f"[conftest] WARNING: Some processes may still be running after cleanup: {final}")
+        print(f"[conftest] WARNING: Some processes may still be running after cleanup: {_pids(final)}")
     else:
-        print("[conftest] All project processes successfully terminated")
+        print("[conftest] All processes of this test run terminated")
 
 
 # Modern plugin test fixtures

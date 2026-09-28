@@ -28,9 +28,10 @@ plugins:
       # code the run may have written, with the operator's rights: it can read
       # any file, config/secrets.env included, and push with the stored git
       # credentials. The shell tool itself is refused git push/remote/config/
-      # worktree, a program an allowed command starts is not. On Linux, pytest
-      # in a worktree of this repo kills the API: its root conftest.py ends every
-      # python process of the venv (README, Known gaps).
+      # worktree, a program an allowed command starts is not. pytest in a
+      # worktree of this repo whose checkout predates the marker-based cleanup
+      # in its root conftest.py kills the API on Linux and macOS: that old
+      # conftest ends every python process of the venv (README, Known gaps).
       allowed_commands: []
       # No run starts while a subscription window is at or past this share.
       max_window_utilization: 0.8

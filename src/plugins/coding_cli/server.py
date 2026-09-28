@@ -43,8 +43,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Runs, their streams and the worktrees; None is data/coding_cli. Tests set a tmp dir.
+# Runs, their streams and the worktrees: DATA_ROOT (tests set a tmp dir), else
+# $CODING_CLI_DATA_ROOT, else data/coding_cli. Every started instance sweeps
+# its root -- adopts the runs whose owner is gone, rings their wakes -- so a
+# second process on the machine (an app a test starts) needs a root of its
+# own, or it takes over the operator's runs and uses up their wakes.
 DATA_ROOT: Optional[Path] = None
+DATA_ROOT_ENV = "CODING_CLI_DATA_ROOT"
 MAX_TASK_CHARS = 20_000
 CAP_RESULT = 12_000
 CAP_STDERR = 600
@@ -239,7 +244,14 @@ class CodingCliServer(SchemaBasedToolServer):
     # ── paths ──
 
     def _root(self) -> Path:
-        return DATA_ROOT if DATA_ROOT is not None else PROJECT_ROOT / "data" / "coding_cli"
+        if DATA_ROOT is not None:
+            return DATA_ROOT
+        configured = os.environ.get(DATA_ROOT_ENV, "").strip()
+        if configured:
+            # Relative like the workdirs: to the project, not to wherever the process runs.
+            path = Path(os.path.expanduser(configured))
+            return path if path.is_absolute() else PROJECT_ROOT / path
+        return PROJECT_ROOT / "data" / "coding_cli"
 
     def _file(self, run_id: str, suffix: str) -> Path:
         return self._root() / "runs" / f"{run_id}.{suffix}"
