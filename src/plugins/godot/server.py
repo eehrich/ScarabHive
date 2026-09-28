@@ -46,7 +46,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -392,7 +392,10 @@ class GodotServer(SchemaBasedToolServer):
         candidate = (Path(value) if Path(value).is_absolute()
                      else self._projects_root / value).resolve()
         root = self._projects_root.resolve()
-        if candidate != root and root not in candidate.parents:
+        # A drive or share (C:/..., \\server\share) is absolute wherever it is written: on
+        # POSIX it read as a folder named "C:" below the root, and the answer was "no project".
+        if (PureWindowsPath(value).drive and not Path(value).is_absolute()) or (
+                candidate != root and root not in candidate.parents):
             raise ValueError(f"'{value}' resolves outside the projects root ({root})")
         if must_exist and not (candidate / "project.godot").is_file():
             raise ValueError(f"no project.godot in {candidate}; run the setup tool "
@@ -410,9 +413,19 @@ class GodotServer(SchemaBasedToolServer):
 
     @staticmethod
     def _res_path(script: str) -> str:
-        """``res://`` for a project-relative path; absolute and res:// pass through."""
+        """``res://`` for a project-relative path; res:// and a file system path pass through.
+
+        A file system path is one with a drive or share (C:/..., //server/share/...), or one
+        rooted at "/" whose folder is there (a new scene is saved into one). Otherwise a leading
+        "/" is the project's root, as the schema has it (res:// or project-relative): on Windows
+        it never was absolute, and on POSIX "/levels/one.tscn" went to Godot as a path it did
+        not know.
+        """
         script = script.strip().replace("\\", "/")
-        if script.startswith("res://") or Path(script).is_absolute():
+        path = Path(script)
+        if (script.startswith("res://") or PureWindowsPath(script).drive
+                or (path.is_absolute() and (path.exists()
+                                            or (path.parent != Path(path.anchor) and path.parent.is_dir())))):
             return script
         # Only a leading "./" or "/" is noise; a dot that starts a NAME
         # (".tools.gd") is part of it.
