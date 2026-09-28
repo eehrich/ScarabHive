@@ -46,7 +46,7 @@ Base URL: `/plugins/<instance>/v1`.
 
 | Endpoint | What it does |
 |---|---|
-| `GET /models`, `GET /models/{id}` | The agents offered: the ones the web UI lists (`metadata.visibility` ui/both), narrowed by `agents` / `blocked_agents`. |
+| `GET /models`, `GET /models/{id}` | The agents offered: the ones the web UI lists (`metadata.visibility` ui/both), narrowed by `agents` / `blocked_agents` and by the role gate: an agent whose `metadata.min_role` the caller's role does not reach is not offered, and asked for by name (here, `/responses`, `/chat/completions`) it is a 404 `model_not_found`, as an unknown model. |
 | `POST /responses` | One agent turn. The conversation is a stored session of the user (it shows up in the web UI). `previous_response_id` continues it; `store: false` runs on a throwaway session. `stream: true` sends the Responses events (`response.created` … `response.output_text.delta` … `response.completed`, or `response.failed`). |
 | `POST /chat/completions` | One agent turn, stateless as at OpenAI: the earlier turns come with the call and no session is kept. `stream: true` sends `chat.completion.chunk`s and `[DONE]`; `stream_options.include_usage` adds the usage chunk. |
 
@@ -56,7 +56,12 @@ Errors come as OpenAI errors (`{"error": {message, type, param, code}}`), also
 for a malformed request, and a streamed request is refused with the same
 status as a JSON one, before its stream starts (409, 403, 404) —
 `response.failed` only ends a turn that failed after it started, and an
-`error` event with the code `conflict` one refused after it started. Not in that
+`error` event with the code `conflict` one refused after it started. A run the
+agent itself refuses before it starts (its role gate, a conversation held for
+another user) is a 404 `model_not_found` or a 403 `permission_error` (the code
+as well as the type) -- not a server error an SDK retries. In a Responses stream
+it is an `error` event with that code, in a Chat Completions stream an
+`{"error": {…}}` chunk with that code, then `[DONE]`. Not in that
 shape: a missing or wrong key, which the app's auth layer refuses before the
 request reaches the plugin (401, `{"detail": "Authentication required", …}`);
 the `openai` SDK raises its `AuthenticationError` for it all the same.
@@ -142,8 +147,21 @@ the `openai` SDK raises its `AuthenticationError` for it all the same.
   out (also after the agent finished), and a save or an id that could not be
   written (the client gets an error). A new conversation is deleted then; a
   continued one is only ever restored, never deleted — its messages and its
-  variables (what the turn's tools set). The sub-agents a failed turn started
-  stay, as they do in the web UI.
+  variables (what the turn's tools set). The sessions of the agents the turn
+  called as tools (each runs on one of its own, below the conversation) are put
+  back with it: one the turn made goes, one it wrote gets its record back as it
+  was when the turn opened -- where only the turn's runs wrote it. One that
+  another request ran on meanwhile (the person in the web UI, another agent on
+  the conversation), or that a message was appended to, stays as it is, as the
+  conversation keeps what was appended to it; so does one a run of this
+  process still has, and everything below it. A run is told apart in any
+  process -- every run names itself in the session, an `agent-cli` run too --
+  an append only in this one. Writes that name no run are put back with the
+  turn's own: an /undo, a rename or a variables write, and an append made in
+  another process (a second worker, `agent-cli`). A run of another process
+  still going on such a session when the turn is put back writes it again
+  afterwards. The sub-agents a failed turn started stay, as they do in the web
+  UI.
 - A client that disconnects stops the agent — a stream hears it at once, a JSON
   answer asks the connection every second, and once more before its turn is
   kept. The run's request is cancelled (its token) before the task, so an agent

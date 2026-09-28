@@ -44,6 +44,17 @@ on the fly from `_agent` in the tool params — and that is why a missing
 `_agent` is a hard error rather than a default: without the parent's agent name
 and profile the session metadata would be silently wrong.
 
+The parent is the session of the run that calls the manager. For an agent
+called as a tool by another agent that is its own session below the caller's
+(`Agent.tool_session_id`), not the caller's: the sub-agents it starts hang
+below that one. The caller does not see them in its injected sub-agent list,
+cannot `poll` them, and a `wake_when_done` of theirs wakes nobody (a sub-agent's
+session is never woken; the agent that started them takes their answers).
+Below a throwaway caller that session has no record (it is never saved), and
+the manager makes one as for any parent it does not find: a listed
+"Coordinator Session", as it makes one for a throwaway session that starts
+sub-agents itself. Only an openai_api stateless turn deletes it again.
+
 ## Context vars: inherited once, refreshed on continue
 
 A sub-agent inherits the coordinator's `context_vars` when its session is
@@ -183,7 +194,11 @@ spawn workers that cannot spawn anything themselves, `5` allows five levels
 below the caller. Each sub-session inherits the remaining budget, and every
 manager further down takes the smaller of that budget and its own knob — so a
 strict manager bounds its entire subtree, and it goes on working unchanged
-when its own agent is somebody else's sub-agent.
+when its own agent is somebody else's sub-agent. An agent called as a tool
+counts from its caller: its session carries the caller's budget, not one level
+less (it ran on the caller's session before it got one of its own). The budget
+is written with the session's first record; when that write fails -- or the
+caller's budget cannot be read -- the call does not run.
 
 Two more that are not limits but guards:
 

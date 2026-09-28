@@ -414,6 +414,17 @@ def _run_users_cli(users_args: List[str], config_path: Optional[str]) -> None:
 
 
 def main() -> None:
+    """The agent-cli entry point: a local process, run by whoever operates the
+    installation -- so the agent role gate takes its default user, cli_user,
+    for the local operator (auth/agent_access.local_operator_trusted). The
+    API process never does."""
+    from .auth.agent_access import local_operator_trusted
+
+    with local_operator_trusted():
+        _main()
+
+
+def _main() -> None:
     global logger
     # Run from the repository, whatever directory this was started in: config,
     # prompts, databases and logs are declared as repository-relative strings
@@ -1708,8 +1719,10 @@ def main() -> None:
                 logger.error(f"Failed to save session: {e}", exc_info=True)
                 print(f"Warning: Failed to save session: {e}", file=sys.stderr)
 
-        # Only save session if not cancelled
-        if not result.get("cancelled", False):
+        # Only save session if not cancelled -- nor refused before it ran (the agent's role gate, another
+        # user's session, another run's lock): it ran nothing, and a save only rewrote the record with this
+        # entry agent and profile, its updated_at moved.
+        if not result.get("cancelled", False) and not result.get("refused"):
             run_async(save_session_after_task())
 
     finally:
@@ -1722,6 +1735,10 @@ def main() -> None:
         # session whose run is still unwinding.
         if presence and not is_chat:
             presence.release(actual_session_id, session_user, stopped=bool(run_stopped))
+        # What the run registered under its request id goes with it, as the
+        # API lets go of its request tree when the request ends.
+        from .core.request_context import release_request_user_tree
+        release_request_user_tree(run_request_id)
         shut_down_runtime()
 
     # Human-readable final output

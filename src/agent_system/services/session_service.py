@@ -108,6 +108,16 @@ def is_ephemeral_session(session_id: Optional[str]) -> bool:
     return bool(session_id) and str(session_id).startswith(EPHEMERAL_SESSION_PREFIX)
 
 
+def _runs_below(tracker: Any, session_id: str) -> Optional[str]:
+    """The session *session_id* runs below, for the save that makes its record -- the run's own or a checkpoint --
+    or None. An agent called as a tool runs on a session of its own below its caller's (Agent.tool_session_id; its
+    metadata names the caller's), and such a record is filed below it, as a sub-agent manager's sub-session is:
+    hidden from the session list, never woken."""
+    metadata = tracker.get_session_metadata(session_id) if hasattr(tracker, "get_session_metadata") else None
+    parent = metadata.get("parent_session_id") if isinstance(metadata, dict) else None
+    return parent if isinstance(parent, str) and parent else None
+
+
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
@@ -416,7 +426,8 @@ class SessionService:
                         user_id=actual_user_id,
                         title=title,
                         agent_name=agent_name,
-                        llm_profile=llm_profile
+                        llm_profile=llm_profile,
+                        parent_session_id=_runs_below(agent._session_tracker, session_id),
                     )
                 except ValueError as create_err:
                     if "already exists" in str(create_err):
@@ -600,6 +611,7 @@ class SessionService:
                         title=title,
                         agent_name=agent_name,
                         llm_profile=llm_profile,
+                        parent_session_id=_runs_below(tracker, session_id),
                     )
                 except ValueError:
                     # Race: session was created in the meantime — fall back to load
@@ -640,9 +652,11 @@ class SessionService:
 
         Returns the loop THIS call started, or None -- the one its caller stops
         (``stop_checkpoint_loop(..., started=...)``). Stopped by the session id
-        alone, a run stopped whichever loop stood there: an agent called as a
-        tool on its caller's session ends by stopping the caller's loop, and the
-        caller then checkpointed nothing for the rest of its run.
+        alone, a run stopped whichever loop stood there: a run nested in another
+        on the same session (an agent called as a tool ran on its caller's
+        session until it got one of its own, Agent.tool_session_id) ended by
+        stopping the outer run's loop, which then checkpointed nothing for the
+        rest of its run.
         """
         if self.checkpoint_interval_seconds <= 0:
             return None

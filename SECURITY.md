@@ -47,7 +47,8 @@ make it use the tools it has been granted. Which tools an agent gets is configur
   keys beyond their intended validity.
 - **Privilege escalation**: a `user` or `guest` reaching admin-only endpoints
   or panels; one user reading, changing, stopping or taking over another
-  user's sessions or runs.
+  user's sessions or runs; a user running an agent, or using a tool it
+  serves, whose `metadata.min_role` their role does not reach.
 - **Escaping a boundary the code enforces**: an agent calling a tool its
   `tools.allowed` / `blocked` lists do not grant; a path outside the allowed
   directories of `file_ops` (or another plugin that checks paths); code in
@@ -89,13 +90,72 @@ group of users who trust each other. Reports about session separation are in
 scope; reports that only restate this limitation for a plugin's own data are
 not.
 
+### Per-agent role gate (`metadata.min_role`)
+
+With `auth.enabled`, an agent whose metadata sets `min_role` (`guest`, `user` or
+`admin`) runs only for accounts of at least that role -- on every path a run
+starts: `/run`, `/events`, `/chat/command`, sessions created for it, the
+OpenAI-compatible API (`openai_api`: not listed as a model, 404
+`model_not_found`), sub-agents (sub-agent manager), agents called as tools,
+stategraph activities, woken sessions, and each tool the agent itself serves. A
+run that cannot be tied to an
+account is judged as `anonymous`: refused unless anonymous access is enabled with
+a sufficient role (the sub-agent manager and an agent's own tools refuse it
+outright). Over HTTP, a refusal answers like an agent that does not exist, except
+for the default agent on `/run` and `/events` with no agent named and for
+`POST /api/sessions`, which answer 403.
+`metadata.visibility` only decides where an agent is listed; it is not an access
+control.
+
+The shipped configuration gates every agent with a shell (`terminal`,
+`coder_shell`), `coding_cli`, `ssh_control`, a tool that runs arbitrary code
+(`blender_execute`, `godot_script`) or file access to the whole checkout at
+`admin`: `amiga_coder`, `blender_agent`, `claude_code_agent`, `coder`,
+`coder_explorer`, `coder_reviewer`, `coder_tester`, `file_ops_test_agent`,
+`gamedev`, `gamedev_tester`, `godot_agent`, `skills_agent`,
+`skills_agent_multimodal`, `sysadmin_agent`. `state_graph_agent` and
+`state_graph_agent_ui` carry a terminal that a whitelist restricts to one
+analysis script (`state_graph_terminal`: one command per call, started in the
+directory the server runs from -- the checkout, as every relative path of the
+configuration assumes; a whitelisted terminal takes no `cwd` and no `env_vars`
+from the model and refuses control characters), and are gated at `user`, so the
+writer's book runs keep working for ordinary accounts.
+Gate every agent you add with such tools, and every agent with file access to
+the checkout or above, to `config/`, to `data/` itself (it holds the user store
+and every user's sessions; a folder of the agent's own below it, such as
+`data/workspace`, is fine) or with write access to `src/` (the code that runs).
+The gate is inherited through `type:`, and `min_role: null` does not lift an
+inherited one.
+
+Remaining limits:
+
+- Without `auth.enabled` there are no roles and no gate; the server logs the
+  gated agents it cannot enforce at start.
+- `agent-cli` and `agent-run` are local and trusted: their default user
+  `cli_user` passes every gate there (not in the API, and not while an account
+  of that name exists).
+- `n8n_agent` is not gated, and what it can do depends on the n8n instance
+  (Code and Execute Command nodes).
+- `POST /api/sessions` answers a gated agent with a 403 (it accepts names of
+  agents that do not exist).
+- A config reload moves the gate of running agents; the wake check and the
+  start-up warning read the start configuration until a restart.
+
 ## Hardening a deployment
 
 - Change `auth.secret_key` and `auth.default_admin_password` in
   `config/config.yaml` before the first start; the shipped values are for
   development. The config loader expands `${VAR}` placeholders from the
   environment and `config/secrets.env`, e.g. `secret_key: "${AUTH_SECRET_KEY}"`.
+  The server does not start with an empty or short (under 32 characters) key,
+  and logs an error for a published one, such as the shipped development key;
+  `auth.reject_default_secret_key: true` makes that a startup error as well.
 - Replace the wildcard in `auth.cors_origins` with the origins you serve.
+- `POST /auth/register` is reachable by anyone who reaches the server and
+  creates a `user` account. Turn it off (`auth.registration.enabled: false`) or
+  hold new accounts until an admin activates them
+  (`auth.registration.require_approval: true`, as the shipped configuration
+  does).
 - Keep the server on the loopback interface and put a reverse proxy with TLS
   in front of it. `docker-compose.yml` publishes the port on `127.0.0.1` only.
 - Grant `terminal`, `file_ops`, `ssh_control` and similar tools only to agents

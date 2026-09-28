@@ -281,6 +281,27 @@ class TestGenericCallDispatcher:
         assert 'greet' in error_msg  # available tool
     
     @pytest.mark.asyncio
+    async def test_a_private_method_is_no_tool(self, system_config, server_config):
+        """No schema names a private method, and reached by name it would skip what the public entry
+        checks before it calls the helper -- as SchemaBasedToolMixin.call refuses it too."""
+        helped = []
+
+        class HelperServer(SimpleToolServer):
+            async def greet(self, params):
+                return await self._helper(params)
+
+            async def _helper(self, params):
+                helped.append(params)
+                return "hi"
+
+        server = HelperServer('helper', system_config, server_config)
+
+        with pytest.raises(ValueError, match="not found"):
+            await server.call('_helper', {})
+        assert helped == [], "the private method ran"
+        assert await server.call('greet', {}) == "hi"
+
+    @pytest.mark.asyncio
     async def test_missing_method_error(self, system_config, server_config):
         """Test error when tool declared but method not implemented."""
         server = MissingMethodServer('missing', system_config, server_config)

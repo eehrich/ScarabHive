@@ -39,7 +39,7 @@ from agent_system.core.cancellation import get_cancellation_manager
 from agent_system.core.request_context import get_request_user, register_request_user
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
-from agent_system.servers.agent.server import Agent
+from agent_system.servers.agent.server import SESSION_LOCKED, Agent
 from agent_system.tools.status import current_request_id, status_bus, status_scope
 from agent_system.utils.id import short_id
 
@@ -96,6 +96,12 @@ class MachineAgent(Agent):
                          llm_profile_info_override: Optional[str] = None,
                          use_advanced_model: bool = False) -> AsyncIterator[dict[str, Any]]:
         request_id = request_id or short_id()
+        # The role gate Agent.run_events asks first -- this override does not call it.
+        refusal = self._refusal_event(request_id, session_id)
+        if refusal:
+            yield refusal
+            yield {"type": "end"}
+            return
         session_id = session_id or short_id()
         text = task if isinstance(task, str) else task.get_text_content()
         entry: dict[str, Any] = {"cancel": asyncio.Event(), "message_event": asyncio.Event(), "appended": []}
@@ -104,7 +110,7 @@ class MachineAgent(Agent):
         if not await self._session_tracker.acquire_session_lock(session_id, request_id, timeout=5.0):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
-            yield {"type": "error", "request_id": request_id,
+            yield {"type": "error", "request_id": request_id, "error_type": SESSION_LOCKED,
                    "message": f"session {session_id} is busy with another request; send again when it is done"}
             yield {"type": "end"}
             return
@@ -305,6 +311,18 @@ class MachineAgent(Agent):
         return server
 
     def _user_id(self, session_id: str, request_id: str) -> Optional[str]:
+        """The run's user: its registered request owner, else the session's stored user.
+
+        The owner first, as Agent._run_denial and the tool user ask: the framework
+        writes it. Where one is registered, the stored user is the same one when
+        the run starts (Agent._foreign_session refuses another); asked first, the
+        owner stays the run's user whatever the session's metadata says later:
+        the metadata is state of the session id, shared by every run of it, and
+        the registered owner is this run's.
+        """
+        owner = get_request_user(request_id, default=None)
+        if owner:
+            return owner
         metadata = self._session_tracker.get_session_metadata(session_id) or {}
         if metadata.get("user_id"):
             return str(metadata["user_id"])

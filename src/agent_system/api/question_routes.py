@@ -85,14 +85,18 @@ def question_router(prefix: str, broker: QuestionBroker, answer_url: str,
                       session_id: Optional[str] = Query(default=None),
                       request_id: Optional[str] = Query(default=None)) -> Dict[str, Any]:
         """The open questions the caller may answer; ``request_id`` also takes
-        the questions of the runs under it."""
+        the questions of the runs under it, ``session_id`` those asked in the
+        sessions of the agents it called as tools (their own, below it), at
+        every level below it (session_chain)."""
+        from ..servers.agent.components.session_tracking import session_chain
+
         user = await person(request)
         enabled = auth_enabled(request)
         questions = [
             {**q.to_public(), "answer_url": answer_url}
             for q in broker.pending()
             if may_answer(enabled, user, q)
-            and (session_id is None or q.session_id == session_id)
+            and (session_id is None or session_id in session_chain(q.session_id or ""))
             and (request_id is None or q.request_id == request_id or q.request_id.startswith(f"{request_id}_"))
         ]
         return {"count": len(questions), "questions": questions}

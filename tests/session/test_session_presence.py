@@ -1203,3 +1203,89 @@ class TestAStoppedRun:
 
         assert any(event.get("type") == "error" for event in events), f"fixture: the run did not fail: {events}"
         assert woken == ["s1"]
+
+
+class TestAWakeTheAgentsRoleGateRefuses:
+    """A wake runs the session's stored agent as the session's user (agent-cli). One its role gate
+    (metadata.min_role) refuses is not started: refused, its letting go rang again -- a refused agent-cli per
+    ring, up to max_wake_depth, for input nobody could read. The marker stays for a later ring."""
+
+    @pytest.fixture
+    def gated_world(self, tmp_path, monkeypatch, spawned):
+        from agent_system.auth import agent_access, database
+        from agent_system.auth.models import UserCreate, UserRole
+        from agent_system.config.models import AgentMetadata, AuthConfig, PluginsConfig
+
+        users = database.UserDatabase(tmp_path / "users.db")
+        monkeypatch.setattr(database, "_db", users)
+        monkeypatch.setattr(agent_access, "_local_operator_trusted", False)  # judged as agent-cli, not as this
+        for name, role in (("root", UserRole.ADMIN), ("bob", UserRole.USER)):
+            users.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse",
+                                         role=role))
+        root = tmp_path / "sessions"
+        monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(root))
+
+        def agent(min_role):
+            return ToolServerConfig(type="agent", enabled=True, agent_config=AgentConfig(llm_profile="normal"),
+                                    metadata=AgentMetadata(min_role=min_role))
+
+        config = AgentSystemConfig(
+            session_presence=SessionPresenceConfig(enabled=True),
+            auth=AuthConfig(enabled=True, database_path=str(tmp_path / "absent.db")),
+            plugins=PluginsConfig(servers={"gated_agent": agent("admin"), "open_agent": agent(None)}))
+        presence = sp.presence_for(config)
+
+        def stored(session_id, user_id, agent_name):
+            (root / user_id).mkdir(parents=True, exist_ok=True)
+            (root / user_id / f"{session_id}.json").write_text(json.dumps({"agent_name": agent_name}),
+                                                               encoding="utf-8")
+
+        return SimpleNamespace(presence=presence, stored=stored, spawned=spawned, config=config)
+
+    def test_a_users_session_on_a_gated_agent_is_not_woken_and_keeps_its_input(self, gated_world):
+        gated_world.stored("sb", "bob", "gated_agent")
+
+        state, note = gated_world.presence.notify("sb", "bob")
+
+        assert (state, gated_world.spawned) == ("queued", []), note
+        assert "gated_agent" in note, note
+        assert gated_world.presence.pending("sb", "bob"), "the input's marker went: a later ring finds nothing"
+        # and letting the session go (what a refused run did) rings nobody either
+        gated_world.presence.hold("sb", "bob", "gated_agent")
+        gated_world.presence.release("sb", "bob")
+        assert gated_world.spawned == []
+
+    @pytest.mark.parametrize("session_id, user_id, agent_name", [
+        ("sa", "root", "gated_agent"),      # the admin's session
+        ("so", "bob", "open_agent"),        # an agent without a gate
+        ("sc", "cli_user", "gated_agent"),  # the local operator: the woken agent-cli trusts it
+    ])
+    def test_a_wake_the_agent_would_accept_is_started(self, gated_world, session_id, user_id, agent_name):
+        gated_world.stored(session_id, user_id, agent_name)
+
+        assert gated_world.presence.notify(session_id, user_id)[0] == "woke_session"
+        assert gated_world.spawned == [(session_id, user_id, 1)]
+
+    @pytest.mark.parametrize("default_agent, woken", [("gated_agent", False), ("open_agent", True)])
+    def test_a_session_whose_agent_is_gone_is_judged_by_the_agent_the_wake_runs(
+            self, gated_world, monkeypatch, default_agent, woken):
+        """agent-cli runs the config's default agent where the stored one is no longer defined."""
+        monkeypatch.setattr(gated_world.config, "default_agent", default_agent)
+        gated_world.stored("sg", "bob", "renamed_long_ago")
+
+        state, note = gated_world.presence.notify("sg", "bob")
+
+        assert (state == "woke_session") is woken, (state, note)
+
+    @pytest.mark.parametrize("default_agent, woken", [("gated_agent", False), ("open_agent", True)])
+    def test_a_session_file_that_names_no_agent_is_judged_by_the_default_agent(
+            self, gated_world, monkeypatch, tmp_path, default_agent, woken):
+        """Unreadable (or gone with its lock left behind): agent-cli then runs the config's default agent."""
+        monkeypatch.setattr(gated_world.config, "default_agent", default_agent)
+        user_dir = tmp_path / "sessions" / "bob"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / "su.json").write_text("{ half written", encoding="utf-8")
+
+        state, note = gated_world.presence.notify("su", "bob")
+
+        assert (state == "woke_session") is woken, (state, note)

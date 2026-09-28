@@ -358,6 +358,27 @@ def _default_config_path() -> str:
     return os.environ.get("AGENT_CONFIG_PATH") or str(PROJECT_ROOT / "config" / "config.yaml")
 
 
+def _gated_agent_names(config) -> list[str]:
+    """The enabled servers whose MERGED config declares a role gate (metadata.min_role), sorted.
+
+    Merged, because the gate is inherited along the ``type:`` chain like the
+    rest of the metadata: an agent that sets nothing itself can still carry one.
+    """
+    from .config.settings import get_tool_server_config
+
+    names = []
+    for name, server in ((config.plugins.servers or {}).items() if config.plugins else ()):
+        if not server.enabled:
+            continue
+        try:
+            merged = get_tool_server_config(name, config)
+        except Exception:  # noqa: BLE001 - a start-up warning must not stop the start
+            continue
+        if merged is not None and merged.metadata is not None and merged.metadata.min_role is not None:
+            names.append(name)
+    return sorted(names)
+
+
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
     # Initialize ConfigService and load configuration
@@ -765,12 +786,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
 
-    def _refused_at_the_lock(event: dict) -> bool:
-        """Whether a run event says the run was refused at the agent's session lock (Agent.run_events): another
-        run of this process has the session, and nothing of this request may be saved to it."""
-        from .servers.agent.server import SESSION_LOCKED
+    def _refused_before_the_run(event: dict) -> bool:
+        """Whether a run event says the run was refused before it started (Agent.run_events): at the agent's
+        session lock (another run of this process has the session), by its role gate, or because the session is
+        another user's. Nothing of this request may be saved to it."""
+        from .servers.agent.server import refused_before_the_run
 
-        return event.get("type") == "error" and event.get("error_type") == SESSION_LOCKED
+        return refused_before_the_run(event)
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -909,6 +931,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
     apply_ssl_verify_to_environment(config)
 
+    # The JWT signing key, before any tool server starts -- a key the server
+    # refuses (auth.security.check_secret_key) stops it here, not after the
+    # whole bootstrap, which a service manager repeats on every restart --
+    # and after the role logging, so a published key's error reaches logs/api.log.
+    if config.auth and config.auth.enabled:
+        from .auth.security import set_jwt_config
+
+        set_jwt_config(
+            secret_key=config.auth.secret_key,
+            algorithm=config.auth.algorithm,
+            expire_minutes=config.auth.access_token_expire_minutes,
+            refresh_expire_days=config.auth.refresh_token_expire_days,
+            reject_default_key=config.auth.reject_default_secret_key,
+        )
+
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
     # Note: Batch queue manager is created lazily by LLMFactory when first needed
@@ -976,7 +1013,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # reload`): the service + path let the endpoint re-parse the on-disk config.
     app.state.config_service = _config_service
     app.state.config_path = cfg_path
+    # The auth this process enforces -- the enforcer and the middleware were built
+    # from it, and a reload (which replaces app.state.config) does not rebuild
+    # them. Routers outside this function judge the agent role gate by it.
+    app.state.auth_config = config.auth
     logger.info("Default agent, registry, and config stored in app.state for dependency injection")
+
+    # The agent role gate (metadata.min_role) compares account roles; with auth
+    # off there are none, and every gate stays open. Said once, at start.
+    if not config.auth.enabled:
+        gated_agents = _gated_agent_names(config)
+        if gated_agents:
+            logger.warning(
+                "auth is disabled: the role gate (metadata.min_role) of %d agent(s) is not "
+                "enforced, anyone who reaches the API may run them: %s",
+                len(gated_agents), ", ".join(gated_agents))
 
     # Store registry globally
     global _app_registry
@@ -1002,18 +1053,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Setup auth database and configuration
         from .auth.database import setup_database
-        from .auth.security import set_jwt_config
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
         from pathlib import Path as AuthPath
-
-        # Configure JWT settings
-        set_jwt_config(
-            secret_key=config.auth.secret_key,
-            algorithm=config.auth.algorithm,
-            expire_minutes=config.auth.access_token_expire_minutes,
-            refresh_expire_days=config.auth.refresh_token_expire_days
-        )
 
         # Setup database
         db_path = AuthPath(config.auth.database_path)
@@ -1221,12 +1263,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except SessionPermissionError as e:
             raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
 
-    def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
+    def _gate_refuses(target: Any, who: Any) -> bool:
+        """Whether *who* may not run *target* under its role gate (metadata.min_role).
+
+        *who* is what the endpoint resolved: an account, an AnonymousUser, or None.
+        Judged against the auth this process enforces -- the start config the
+        enforcer and the middleware were built from, not a reloaded one: a reload
+        that switched auth off would otherwise open every gated agent to callers
+        the middleware still makes sign in.
+
+        The reason is logged here and goes no further: every endpoint answers a
+        refusal exactly as it answers an agent that does not exist, so the answer
+        does not tell a caller which agents are there behind a gate.
+        """
+        from .auth.agent_access import agent_run_denial
+
+        reason = agent_run_denial(getattr(target, "min_role", None), who, config.auth)
+        if reason:
+            logger.info("Refused agent '%s' to %s: %s", getattr(target, "name", None) or "?",
+                        getattr(who, "username", None) or "an unidentified caller", reason)
+        return bool(reason)
+
+    def _agent_not_found(agent_name: str) -> HTTPException:
+        """POST /run's and /events' answer for an agent name nothing is registered under."""
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"agent_not_found:{agent_name}. "
+                "Check the plugin name (registered tool server name, not "
+                "the agent yaml filename) and that the plugin is loaded."
+            ),
+        )
+
+    def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None,
+                                  *, requester: Any):
         """Get agent instance with optional overrides.
 
         Args:
             agent_name: Name of agent to use (None = use default global agent)
             llm_profile: LLM profile to use (None = use agent's configured profile)
+            requester: the caller the endpoint resolved; an agent it may not run
+                (its role gate) is answered as an unknown agent (404), the default
+                agent -- which has a name only the server knows -- with a 403.
+                Keyword and required: a run started without asking is the hole.
 
         Returns:
             Tuple of (agent_instance, llm_override, llm_profile_info)
@@ -1260,20 +1339,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "Agent '%s' not found — returning 404 (no silent fallback)",
                     agent_name,
                 )
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"agent_not_found:{agent_name}. "
-                        "Check the plugin name (registered tool server name, not "
-                        "the agent yaml filename) and that the plugin is loaded."
-                    ),
-                )
+                raise _agent_not_found(agent_name)
             except HTTPException:
                 # The deliberate 400 ("'x' is not an agent") must keep its
                 # status — the generic handler below turned it into a 500.
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
+
+        # The role gate, for the named agent and the default one alike -- before
+        # an LLM client is built for a run that is not going to happen.
+        if _gate_refuses(selected_agent, requester):
+            if agent_name:
+                raise _agent_not_found(agent_name)
+            raise HTTPException(status_code=403, detail="Permission denied")
 
         # Create LLM override if profile specified. Resolved against the LIVE
         # config -- a profile added by a reload was "not found" here and fell
@@ -1306,18 +1385,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         return _live_config().model_dump()
 
-    @app.get("/agents")
-    def list_agents(response: Response):
-        """List registered agent-like servers that are publicly visible (UI dropdown).
+    def _public_agents() -> tuple[list[str], dict[str, str]]:
+        """The registered agents GET /agents lists, and the role gate of those that carry one.
 
-        Returns agents with _tool_public=True OR agents without _tool_public attribute (backward compat).
-        Agents with visibility='tool' or 'private' (_tool_public=False) are excluded.
+        Plain code on purpose: the endpoint runs it in the thread pool, as it ran the
+        whole endpoint while that was a plain ``def`` -- the walk and the details read
+        the config of every server, and on the event loop that stalls every stream.
         """
-        # Without this the browser may serve the list from its HTTP cache on a
-        # normal reload — newly registered agents then only appear after a
-        # force reload (observed: agent missing from the dropdown until Ctrl+F5).
-        response.headers["Cache-Control"] = "no-store"
         agents = []
+        #: name -> min_role of every listed agent that carries a gate
+        gated: dict[str, str] = {}
         try:
             for name in _app_registry.list():  # type: ignore[attr-defined]
                 try:
@@ -1332,6 +1409,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     if isinstance(view, ServerView):
                         if view.is_agent and view.tool_public:
                             agents.append(name)
+                            if view.min_role is not None:
+                                gated[name] = view.min_role
                         elif view.is_agent:
                             logger.debug(f"Skipping agent '{name}' in UI list (_tool_public=False)")
                         continue
@@ -1349,15 +1428,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 continue
                         # else: No _tool_public attribute → show in UI (backward compat)
                         agents.append(name)
+                        if srv.min_role is not None:
+                            gated[name] = srv.min_role
                 except Exception as e:
                     logger.debug(f"Failed to check agent {name}: {e}")
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
+        return agents, gated
+
+    @app.get("/agents")
+    async def list_agents(request: Request, response: Response):
+        """List registered agent-like servers that are publicly visible (UI dropdown).
+
+        Returns agents with _tool_public=True OR agents without _tool_public attribute (backward compat).
+        Agents with visibility='tool' or 'private' (_tool_public=False) are excluded.
+
+        Only agents the caller may run are listed (their role gate, metadata.min_role),
+        and ``default`` names the entry agent only if the caller may run it: an
+        entry the caller can pick is one /run refuses with a 403.
+        """
+        # Without this the browser may serve the list from its HTTP cache on a
+        # normal reload — newly registered agents then only appear after a
+        # force reload (observed: agent missing from the dropdown until Ctrl+F5).
+        response.headers["Cache-Control"] = "no-store"
+        from starlette.concurrency import run_in_threadpool
+
+        agents, gated = await run_in_threadpool(_public_agents)
         # The agent /run actually uses without agent_name is this object --
         # not config.default_agent, which a reload can move without moving
         # the entry agent with it.
-        return {"agents": sorted(agents), "details": _agent_details(sorted(agents)), "default": agent.name}
+        default: Optional[str] = agent.name
+        entry_gate = getattr(agent, "min_role", None)
+        if (gated or entry_gate is not None) and config.auth.enabled:
+            # Asked only when a gate is in play: an installation without gates
+            # answers exactly as before, without resolving anybody.
+            from .auth.agent_access import may_run_agent
+            caller = await _enforce_endpoint_security(request)
+            agents = [name for name in agents
+                      if may_run_agent(gated.get(name), caller, config.auth)]
+            if not may_run_agent(entry_gate, caller, config.auth):
+                default = None
+        details = await run_in_threadpool(_agent_details, sorted(agents))
+        return {"agents": sorted(agents), "details": details, "default": default}
 
     def _hostname(base_url: Optional[str]) -> Optional[str]:
         """The host a model's requests go to; a malformed URL ("http://[fe80::1") names none rather than ending the list."""
@@ -1417,9 +1530,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "default": default_profile or "normal"
         }
 
+    async def _gate_refuses_caller(request: Request, target: Any) -> bool:
+        """_gate_refuses for an endpoint that has not resolved its caller.
+
+        The caller is resolved only when a gate is in play, so an ungated agent
+        is answered exactly as before.
+        """
+        if getattr(target, "min_role", None) is None or not config.auth.enabled:
+            return False
+        return _gate_refuses(target, await _enforce_endpoint_security(request))
+
     @app.get("/agents/{agent_name}/allowed-tools")
-    async def get_agent_allowed_tools(agent_name: str):
-        """Return the effective allowed tools list for an agent after pattern filtering."""
+    async def get_agent_allowed_tools(request: Request, agent_name: str):
+        """Return the effective allowed tools list for an agent after pattern filtering.
+
+        An agent the caller may not run answers as one that does not exist: what
+        a gated agent can reach is part of what the gate keeps from them.
+        """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
         except Exception as e:
@@ -1428,6 +1555,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
+        if await _gate_refuses_caller(request, srv):
+            return {"error": "agent not found", "agent": agent_name}
         try:
             available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
             patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
@@ -1452,10 +1581,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         tools themselves and /tools said "only in the terminal".
 
         User role, like its neighbour, not admin like the debug twin: any
-        agent_name is allowed here because /run already is -- an authenticated
-        user can RUN any registered agent by name (_get_agent_with_overrides
-        checks that it is an agent, not who may see it), so reading the tool
-        names of one discloses nothing that running it would not.
+        agent_name the caller may RUN is allowed here, because /run allows it
+        too -- reading the tool names of such an agent discloses nothing that
+        running it would not. An agent behind a role gate the caller does not
+        pass (metadata.min_role) answers as one that does not exist, as in /run.
 
         No filter parameter on purpose: the terminal filters the list it
         already holds, and a server that returns only the matches also
@@ -1477,6 +1606,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             raise HTTPException(status_code=400,
                                 detail=f"'{agent_name}' is a tool server, not an agent")
+        if await _gate_refuses_caller(request, srv):
+            raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
 
         try:
             tools = await srv._list_usable_tools_with_details({})
@@ -1759,7 +1890,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                    llm_profile or "default", user_id)
 
         # Get agent with LLM override
-        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
 
         # A run without a session creates one, as with files and on /events. The text-only run goes through
         # collect_final_result, which takes a missing id for a stateless call: a throwaway session, never saved.
@@ -1806,7 +1937,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 def on_event(event: dict) -> Any:
                     _carry_title(selected_agent, event, session_title)
-                    if _refused_at_the_lock(event):
+                    if _refused_before_the_run(event):
                         refused.append(event)
                     return mirror.put(event)
 
@@ -1956,7 +2087,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
-                        refused = refused or _refused_at_the_lock(event)
+                        refused = refused or _refused_before_the_run(event)
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
@@ -2206,7 +2337,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # NORMAL PATH: For new requests, do full setup
         try:
-            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
             session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
         except HTTPException:
             # Registered above for the status stream; no run follows to release it.
@@ -2289,7 +2420,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             def take_the_session(ev: dict) -> None:
                 """The run's own stream holds a session the run creates, from its start event."""
                 nonlocal actual_session_id, held, refused
-                refused = refused or _refused_at_the_lock(ev)
+                refused = refused or _refused_before_the_run(ev)
                 if ev.get("type") == "start" and ev.get("session_id"):
                     actual_session_id = ev["session_id"]
                     if not held:
@@ -3268,6 +3399,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return None
         return candidate if isinstance(candidate, _Agent) else None
 
+    async def _chat_agent_the_caller_may_run(request: Request, agent_name: Optional[str]):
+        """_chat_agent, or None for an agent behind a role gate the caller does not pass.
+
+        Its plugin commands are derived from its tool allowlist -- what a gated
+        agent reaches, which the gate keeps from the caller as /agents/{name}/tools
+        does. The caller is resolved only when a gate is in play.
+        """
+        target = _chat_agent(request, agent_name)
+        if target is None or getattr(target, "min_role", None) is None or not config.auth.enabled:
+            return target
+        from .auth.agent_access import may_run_agent
+        caller = await _enforce_endpoint_security(request)
+        return target if may_run_agent(target.min_role, caller, config.auth) else None
+
     def _plugin_commands_for(agent) -> list:
         """What *agent* may run, empty for anything that cannot be asked."""
         if agent is None:
@@ -3307,7 +3452,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
             skills = []
 
-        plugin_commands = _plugin_commands_for(_chat_agent(request, agent))
+        plugin_commands = _plugin_commands_for(await _chat_agent_the_caller_may_run(request, agent))
         return {
             "commands": [
                 {"name": c.name, "aliases": list(c.aliases), "summary": c.summary,
@@ -3368,7 +3513,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # The agent decides which plugin commands exist at all, so an
         # unnamed one leaves "/compact" the unknown command it was before.
         plugin_commands = _plugin_commands_for(
-            _chat_agent(request, (body or {}).get("agent_name")))
+            await _chat_agent_the_caller_may_run(request, (body or {}).get("agent_name")))
 
         result = resolve_line(line, skill_names, plugin_commands)
         payload = {"kind": result.kind, "name": result.name, "payload": result.payload}
@@ -3550,6 +3695,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         agent = _chat_agent(request, body.get("agent_name"))
         if agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        # Its tools run with this agent's authorization, so its role gate holds
+        # here as it holds for /run -- answered as an agent that does not exist.
+        if _gate_refuses(agent, current_user):
             raise HTTPException(status_code=404, detail="no such agent")
         match = match_plugin_command(name.lstrip("/"), _plugin_commands_for(agent))
         if match is None:

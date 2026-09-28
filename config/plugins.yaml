@@ -813,9 +813,12 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
 
+    # The whole checkout -- config/secrets.env, data/users.db, the sessions of
+    # every user -- for any agent that is given it. No shipped agent is. Enable
+    # it only for trusted agents, ideally with narrower allowed_directories.
     workspace_file_ops:
       type: file_ops
-      enabled: true
+      enabled: false
       allowed_directories:
         - .
       max_file_size_mb: 200
@@ -1178,7 +1181,8 @@ plugins:
 
       # Security settings
       security:
-        # Whitelist: If set, only these patterns are allowed
+        # Whitelist: only these patterns, one command per call, no cwd/env_vars.
+        # This example is a convenience filter, not a boundary (patterns: terminal README).
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"
@@ -1195,7 +1199,7 @@ plugins:
           - "mkfs"
           - "chmod 777"
 
-        # Allow chained commands (&&, ||, ;)
+        # false: one command per shell line (no ;, &&, ||, |, &, line break, substitution); a whitelist implies it
         allow_command_chains: true
 
         # Extra regex patterns added to the built-in hand-brake list

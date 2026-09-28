@@ -359,6 +359,23 @@
           ],
           "title": "Visibility",
           "type": "string"
+        },
+        "min_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "guest",
+                "user",
+                "admin"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Role"
         }
       },
       "title": "AgentMetadata",
@@ -407,6 +424,14 @@
           "default": "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION",
           "title": "Secret Key",
           "type": "string"
+        },
+        "reject_default_secret_key": {
+          "default": false,
+          "title": "Reject Default Secret Key",
+          "type": "boolean"
+        },
+        "registration": {
+          "$ref": "#/$defs/RegistrationConfig"
         },
         "algorithm": {
           "default": "HS256",
@@ -2201,6 +2226,33 @@
       "title": "ReasoningLoopConfig",
       "type": "object",
       "additionalProperties": false
+    },
+    "RegistrationConfig": {
+      "additionalProperties": false,
+      "description": "Self-registration through POST /auth/register, which is reachable without login.\n\nThe defaults keep what the endpoint always did: open, the account active at once,\nrole user.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "require_approval": {
+          "default": false,
+          "title": "Require Approval",
+          "type": "boolean"
+        },
+        "default_role": {
+          "default": "user",
+          "enum": [
+            "guest",
+            "user"
+          ],
+          "title": "Default Role",
+          "type": "string"
+        }
+      },
+      "title": "RegistrationConfig",
+      "type": "object"
     },
     "RemoteMCPConfig": {
       "description": "Configuration for a remote MCP server",

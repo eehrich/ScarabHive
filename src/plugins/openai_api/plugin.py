@@ -83,8 +83,35 @@ def _streamed(stream: AsyncGenerator[str, None], turn: AgentTurn) -> StreamingRe
     return StreamingResponse(stream, media_type="text/event-stream", headers=_STREAM_HEADERS, background=background)
 
 
-def _failed(exc: BaseException) -> JSONResponse:
-    """The JSON error answer for what a route raised -- OpenAI-shaped whatever it was, so a client can read it."""
+def _model_not_found(model: Optional[str]) -> ApiError:
+    """An agent not offered to this caller: unknown, not allowed to them (its role gate), or gone."""
+    return ApiError(404, f"The model {model!r} does not exist or you do not have access to it", param="model",
+                    code="model_not_found")
+
+
+def _foreign_conversation() -> ApiError:
+    return ApiError(403, "the conversation belongs to another user", type_="permission_error",
+                    code="permission_error")
+
+
+def _refusal(exc: BaseException, model: Optional[str]) -> Optional[ApiError]:
+    """The OpenAI error for a run the agent refused before it started, or None: its role gate (the caller may not
+    run this model, which is then unknown to them, as _offered answers) or a conversation held for another user --
+    not a server error, which an SDK retries."""
+    from agent_system.servers.agent.server import AGENT_ROLE_GATE, FOREIGN_SESSION
+
+    kind = exc.error_type if isinstance(exc, TurnError) else None
+    if kind == AGENT_ROLE_GATE:
+        return _model_not_found(model)
+    if kind == FOREIGN_SESSION:
+        return _foreign_conversation()
+    return None
+
+
+def _failed(exc: BaseException, model: Optional[str] = None) -> JSONResponse:
+    """The JSON error answer for what a route raised -- OpenAI-shaped whatever it was, so a client can read it.
+    ``model``: the model of the turn, for a run the agent refused (_refusal)."""
+    exc = _refusal(exc, model) or exc
     if isinstance(exc, ApiError):
         return JSONResponse(exc.body(), status_code=exc.status)
     if isinstance(exc, ConversationBusy):  # found by the turn after its opening (AgentTurn.events)
@@ -162,7 +189,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
     async def get_model(self, request: Request, model: str) -> JSONResponse:
         def one() -> dict[str, Any]:
             if model not in self._agent_names(request):
-                raise ApiError(404, f"The model {model!r} does not exist", param="model", code="model_not_found")
+                raise _model_not_found(model)
             return model_list([model])["data"][0]
         return await self._answer(request, one)
 
@@ -237,7 +264,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                         raise _ClientGone()
                     return JSONResponse(await finish(turn_run, turn_run.answer()))
             except Exception as exc:
-                return _failed(exc)
+                return _failed(exc, model)
 
         # Opened before the stream starts: a refusal (busy, running elsewhere, gone) is a status, not a
         # response.failed after a 200 -- which a client takes for a server error to retry.
@@ -278,6 +305,11 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                         # its own code -- response.failed takes only OpenAI's codes, and "server_error" invites a retry.
                         yield event("error", code="conflict", message=str(exc), param=None)
                         return
+                    refused = _refusal(exc, model)
+                    if refused is not None:  # the agent refused the run before it started: as above
+                        yield event("error", code=refused.code or refused.type, message=refused.message,
+                                    param=refused.param)
+                        return
                     if not isinstance(exc, (ApiError, TurnError)):
                         logger.exception("openai_api: the streamed response failed")
                     message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
@@ -316,7 +348,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                     await turn_run.close()
                     return JSONResponse(chat_completion(completion_id, model, text, turn_run.usage))
             except Exception as exc:
-                return _failed(exc)
+                return _failed(exc, model)
 
         with_usage = bool((options or {}).get("include_usage"))
         try:  # opened before the stream starts: a refusal is a status (see create_response)
@@ -339,8 +371,12 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                     await turn_run.close()
                     if not isinstance(exc, (ApiError, TurnError, ConversationBusy)):
                         logger.exception("openai_api: the streamed chat completion failed")
-                    message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
-                    yield sse(ApiError(500, message, type_="server_error").body())
+                    refused = _refusal(exc, model)
+                    if refused is not None:  # the agent refused the run before it started: not a server error
+                        yield sse(refused.body())
+                    else:
+                        message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
+                        yield sse(ApiError(500, message, type_="server_error").body())
                 yield "data: [DONE]\n\n"
             finally:
                 await turn_run.close()
@@ -372,7 +408,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         except BaseException as exc:
             await turn.close()
             if isinstance(exc, SessionPermissionError):
-                raise ApiError(403, "the conversation belongs to another user", type_="permission_error") from None
+                raise _foreign_conversation() from None
             if isinstance(exc, ConversationGone):
                 raise _gone() from None
             if isinstance(exc, ConversationBusy):
@@ -422,6 +458,8 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                                        get_db())
         if user is None or not user.is_active:
             raise ApiError(401, "Incorrect API key provided", type_="invalid_request_error", code="invalid_api_key")
+        # The account, for the agents' role gate (_agent_names): every route asks this first.
+        request.state.openai_api_account = user
         return user.username
 
     def _registry(self, request: Request) -> Any:
@@ -432,11 +470,17 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
 
     def _agent_names(self, request: Request) -> list[str]:
         """The agents offered as models: the ones the web UI lists (``/agents``), narrowed by
-        ``agents``/``blocked_agents``."""
+        ``agents``/``blocked_agents`` and by the role gate: an agent the caller may not run
+        (``metadata.min_role``, auth/agent_access.py) is not offered, so asking for it is a
+        model_not_found, as for an unknown model. The caller is the account ``_user`` kept; none with
+        auth on is refused every gated agent."""
+        from agent_system.auth.agent_access import agent_min_role, agent_run_denial
         from agent_system.runtime import ServerView
         from agent_system.servers.agent.server import Agent
 
         registry = self._registry(request)
+        auth = getattr(getattr(request.app.state, "config", None), "auth", None)
+        caller = getattr(request.state, "openai_api_account", None)
         names = []
         for name in registry.list():
             view = registry.describe(name) if callable(getattr(registry, "describe", None)) else None
@@ -454,6 +498,8 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                 continue
             if any(fnmatch.fnmatchcase(name, p) for p in self.blocked_patterns):
                 continue
+            if agent_run_denial(agent_min_role(registry, name), caller, auth) is not None:
+                continue
             names.append(name)
         return sorted(names)
 
@@ -467,15 +513,13 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
     def _offered(self, request: Request, model: str) -> None:
         """404 for an agent not offered -- never was, or not any more (a continued conversation's too)."""
         if model not in self._agent_names(request):
-            raise ApiError(404, f"The model {model!r} does not exist or you do not have access to it",
-                           param="model", code="model_not_found")
+            raise _model_not_found(model)
 
     def _agent(self, request: Request, model: str) -> tuple[Any, Any]:
         try:
             agent = self._registry(request).get(model)
         except KeyError:
-            raise ApiError(404, f"The model {model!r} does not exist or you do not have access to it",
-                           param="model", code="model_not_found") from None
+            raise _model_not_found(model) from None
         service = getattr(agent, "_session_service", None)
         if service is None or getattr(service, "session_manager", None) is None:
             raise ApiError(503, "no session service: the app is still starting", type_="server_error")

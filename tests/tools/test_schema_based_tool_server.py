@@ -456,6 +456,31 @@ class TestIntegrationWithToolServer:
         assert result == {"message": "Hello, Alice!"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["test__helper", "_helper"])
+    async def test_a_private_method_is_no_tool(self, system_config, server_config, tool):
+        """No schema names a private method, and reached by name it would skip what the public entry
+        checks before it calls the helper ("test__helper" strips to "_helper")."""
+        helped = []
+
+        class TestServer(SchemaBasedToolServer):
+            def get_tools(self):
+                return [{"type": "function", "function": {"name": "test_greet", "description": "Greet"}}]
+
+            async def greet(self, params):
+                return await self._helper(params)
+
+            async def _helper(self, params):
+                helped.append(params)
+                return {"message": "hi"}
+
+        server = TestServer("test", system_config, server_config)
+
+        with pytest.raises(ValueError, match="not found"):
+            await server.call(tool, {})
+        assert helped == [], "the private method ran"
+        assert await server.call("test_greet", {}) == {"message": "hi"}
+
+    @pytest.mark.asyncio
     async def test_list_tools_integration(self, system_config, server_config):
         """Test list_tools() integration with get_tools()."""
         class TestServer(SchemaBasedToolServer):

@@ -223,6 +223,15 @@ class AgentService:
 - Tool discovery and execution
 - LLM interaction
 - Context management
+- As a tool of another agent (`Agent.call`, `<name>_execute_task`): a session of its
+  own per caller session (`Agent.tool_session`, `tool_session_id`, at most
+  `TOOL_SESSION_ID_MAX` long), stored under the call's user below the caller's
+  session like a sub-agent manager's sub-session, and dropped from every agent's
+  tracker with the caller's session (`SessionTracker.discard_session`). A call to an
+  agent that runs above it already -- itself, directly or through other agents called
+  as tools -- is refused (`RECURSIVE_CALL`, `Agent._runs_above`); across a SAM or
+  stategraph hop the sub-agent nesting budget bounds it (a stategraph agent activity
+  only where a SAM above set one)
 
 **Key Interfaces:**
 ```python

@@ -180,3 +180,4 @@ plugins:
         tags: ["coding", "harness", "review", "tests"]
         category: "development"
         visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell, Claude Code and write access to the whole checkout

@@ -697,9 +697,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         so they share this. What the callers do differ in is what happens around the run, not
         inside it.
 
-        `run` is the entry in `_blocking_runs`: with one, a cancel that arrived while the run was
-        still being prepared reaches the request as soon as it exists. A background job has none;
-        it is stopped by its task handle.
+        `run` is the entry in `_blocking_runs` of a blocking run: with it, a cancel that arrived
+        while the run was still being prepared reaches the request as soon as it exists. A
+        background job passes a dict of its own (it is stopped by its task handle); either way the
+        run's error event leaves its `error_type` and message there (a refusal before the run,
+        `_refusal_of`).
 
         The text is what the caller hands back to the model: the answer, or "Error: ..." /
         "Cancelled: ..." -- the two prefixes `_outcome_status` reads the outcome from.
@@ -764,6 +766,9 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     if event_type == "error":
                         result_text = f"Error: {event.get('message', 'Unknown error')}"
                         logger.warning(f"Sub-agent {instance_id} returned error: {result_text}")
+                        if run is not None:  # a refusal before the run says which (Agent.run_events)
+                            run["error_type"] = event.get("error_type")
+                            run["error"] = event.get("message")
                     else:
                         # The event the agent loop sends carries neither, and then the run was stopped
                         # from outside: the sentence says that rather than "Unknown".
@@ -866,13 +871,25 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "error_type": "phase_blocked"
                 }
 
-            if status:
-                await status.progress(f"Creating sub-agent: {agent_name}")
+            # One user for the whole spawn: the gate, the sub-session's metadata and
+            # its registered request, and where it is stored (_settle_caller).
+            caller = self._settle_caller(params)
 
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
             session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
+
+            # The agent's role gate, for the user the calling run belongs to --
+            # before a sub-session exists that could never run.
+            refusal = self._role_gate_refusal(registry, agent_name, caller)
+            if refusal:
+                if status:
+                    await status.error(refusal)
+                return {"status": "error", "error": refusal, "error_type": "agent_role_gate"}
+
+            if status:
+                await status.progress(f"Creating sub-agent: {agent_name}")
 
             # Inject creator_plugin into params so manager knows which instance created this sub-agent
             params["_creator_plugin"] = self.name
@@ -987,6 +1004,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     task=task, request_id=sub_request_id,
                     use_advanced_model=use_advanced_model, run=run,
                 )
+                refused = await self._answer_refused_run(run, manager, parent_session_id, sub_session_id, status,
+                                                         agent=agent, created=True, params=params)
+                if refused is not None:
+                    settled = True
+                    return refused
 
                 # Save session with messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
@@ -1087,6 +1109,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available")
+            caller = self._settle_caller(params)  # see _handle_create
 
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
@@ -1104,6 +1127,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 agent = None
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
+            # The role gate again: a reload may have put one on the agent since
+            # the instance was created -- refused before the instance is reopened.
+            refusal = self._role_gate_refusal(registry, agent_type, caller)
+            if refusal:
+                if status:
+                    await status.error(refusal)
+                return {"status": "error", "error": refusal, "error_type": "agent_role_gate"}
             use_advanced_model = self._continue_use_advanced(agent_type, use_advanced_model)
 
             # A run holds the lock beside the sub-session for as long as it lasts: one of another
@@ -1204,6 +1234,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     task=message, request_id=sub_request_id,
                     use_advanced_model=use_advanced_model, run=run,
                 )
+                refused = await self._answer_refused_run(run, manager, parent_session_id, instance_id, status)
+                if refused is not None:
+                    settled = True
+                    return refused
 
                 # Save session with updated messages after execution
                 user_id = manager._extract_user_id(parent_session_id, params)
@@ -1881,14 +1915,53 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             await status.error(message)
         return {**fields, "status": "limit_reached", "error": message}
 
+    @staticmethod
+    def _refusal_of(run: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """``{"error_type", "error"}`` when the agent refused the run before it started (Agent.run_events:
+        its own role gate after the SAM's passed, a session held for another user), else None. Nothing ran
+        then: no transcript to save, no message to count."""
+        from agent_system.servers.agent.server import REFUSED_BEFORE_THE_RUN
+
+        if run.get("error_type") not in REFUSED_BEFORE_THE_RUN:
+            return None
+        return {"error_type": run["error_type"], "error": run.get("error") or "the agent refused the run"}
+
+    async def _answer_refused_run(self, run: dict[str, Any], manager: SubAgentManager, parent_session_id: str,
+                                  instance_id: str, status: Any, *, agent: Any = None,
+                                  created: bool = False,
+                                  params: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        """The tool's answer for a blocking run the agent refused before it started, or None: the refusal as
+        one -- with its error_type, worded as the agent refused it (no "Error: " in front) -- not a completed
+        instance whose answer is an error.
+
+        An instance this call ``created`` goes again (its record and its file, and the agent's copy of it):
+        nothing of a run that never started remains. One that existed before stays, continuable; its stored
+        status says the run failed, and why."""
+        refused = self._refusal_of(run)
+        if refused is None:
+            return None
+        if created:
+            await manager.discard_sub_session(parent_session_id, instance_id, params)
+            tracker = getattr(agent, "_session_tracker", None)
+            if tracker is not None:
+                tracker.discard_session(instance_id)
+        else:
+            await self._store_blocking_abort(manager, parent_session_id, instance_id,
+                                             RuntimeError(refused["error"]), error_type=refused["error_type"])
+        if status:
+            await status.error(refused["error"][:140])
+        return {"status": "error", **refused, **({} if created else {"instance_id": instance_id})}
+
     async def _store_blocking_abort(
-        self, manager: SubAgentManager, parent_session_id: str, instance_id: str, error: BaseException
+        self, manager: SubAgentManager, parent_session_id: str, instance_id: str, error: BaseException,
+        error_type: Optional[str] = None,
     ) -> None:
         """A blocking run that ended by an exception stores how, as a background one does: failed,
         or cancelled when the tool call itself was. Left "active" it read as idle -- done, the
-        answer ready. Best effort: the run's own error is the one to report."""
+        answer ready. Best effort: the run's own error is the one to report. ``error_type``: a refusal
+        before the run says which, for a reader of the stored state too (poll, wait)."""
         ending = ({"status": "cancelled"} if isinstance(error, asyncio.CancelledError)
-                  else {"status": "failed", "error": str(error)})
+                  else {"status": "failed", "error": str(error), **({"error_type": error_type} if error_type else {})})
         try:
             await manager.update_sub_session_metadata(
                 parent_session_id=parent_session_id,
@@ -2299,24 +2372,27 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             # Register sub-request user mapping for admin dashboard
             _register_request_user(sub_request_id, user_id)
 
+            run: dict[str, Any] = {}  # what the run's error event said (_consume_run)
             result_text = await self._consume_run(
                 agent, manager,
                 parent_session_id=parent_session_id, instance_id=instance_id,
                 task=task, request_id=sub_request_id,
-                use_advanced_model=use_advanced_model,
+                use_advanced_model=use_advanced_model, run=run,
             )
+            refused = self._refusal_of(run)  # refused before it started: nothing to save, the job says why
 
             # Save session
-            llm_profile = agent.agent_config.default_llm_profile
-            await session_service.save_session(
-                agent=agent,
-                user_id=user_id,
-                session_id=instance_id,
-                agent_name=agent_name,
-                llm_profile=llm_profile,
-                was_new_session=True,
-                after_run=True,
-            )
+            if refused is None:
+                llm_profile = agent.agent_config.default_llm_profile
+                await session_service.save_session(
+                    agent=agent,
+                    user_id=user_id,
+                    session_id=instance_id,
+                    agent_name=agent_name,
+                    llm_profile=llm_profile,
+                    was_new_session=True,
+                    after_run=True,
+                )
 
             # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
             # complete -- it aborted and handed the transport's complaint
@@ -2336,8 +2412,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         # what a reader of the stored state gets -- a woken caller in its own
                         # process; it answered "Sub-agent failed" without it. Cut, for it goes into
                         # the parent's session file: the whole answer is in the transcript (`info`).
-                        **({} if job_status == "completed" else {"error": result_text[:2000]})},
-                outcome=outcome, result=result_text,
+                        **({} if job_status == "completed" else {"error": (refused or {}).get("error")
+                                                                  or result_text[:2000]}),
+                        # a refusal before the run says which there too: a later poll or wait reads it
+                        **({"error_type": refused["error_type"]} if refused else {})},
+                outcome=outcome, result=result_text, **(refused or {}),
             )
 
         except asyncio.CancelledError:
@@ -2530,12 +2609,15 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         await self._hand_over(manager, parent_session_id, instance_id)
                     if status:
                         await status.error(f"Poll: {instance_id} {job_status}")
+                    error_type = (sub_agent.get("error_type") if isinstance(sub_agent, dict)
+                                  else getattr(sub_agent, "error_type", None))
                     return {
                         "instance_id": instance_id,
                         "status": job_status,
                         "agent_type": sub_agent.get("agent_type") if isinstance(sub_agent, dict) else sub_agent.agent_type,
                         "error": (sub_agent.get("error") if isinstance(sub_agent, dict)
                                   else getattr(sub_agent, "error", None)) or f"Sub-agent {job_status}",
+                        **({"error_type": error_type} if error_type else {}),  # a refusal before the run
                         "message": "Use 'info' operation to see conversation history",
                     }
 
@@ -2886,6 +2968,57 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return {"status": "error", "error": str(e)}
 
     # ========== End Async Job Management ==========
+
+    @staticmethod
+    def _settle_caller(params: dict[str, Any]) -> Optional[str]:
+        """The user the calling run belongs to, as the framework names it -- and, when
+        known, made the one everything of this call uses.
+
+        The registered owner of the calling run's request id first (Agent._run_denial
+        asks it first too), else the injected ``_user_id``; None when neither is
+        there. NOT ``_extract_user_id``: without ``_user_id`` it walks every user's
+        session folder and takes the first that holds the parent's session file --
+        "anonymous" for a parent not saved yet -- and callers without ``_user_id``
+        exist (writer_issues' repair pipeline, AgentCaller with no user).
+
+        A known caller is written into ``params["_user_id"]``: ``_extract_user_id``
+        answers from there first, so the sub-session's metadata, the request the
+        sub-run is registered under (_prepare_agent), and where the sub-session and
+        a parent not saved yet are stored all name the user the role gate judged.
+        Left alone when nobody is known: an ungated agent runs as it always did.
+        """
+        from agent_system.core.request_context import get_request_user
+
+        request_id = params.get("_request_id")
+        injected = params.get("_user_id")
+        who = ((get_request_user(str(request_id), default=None) if request_id else None)
+               or (injected.strip() if isinstance(injected, str) and injected.strip() else None))
+        if who:
+            params["_user_id"] = who
+        return who
+
+    def _role_gate_refusal(self, registry: Any, agent_name: str, who: Optional[str]) -> Optional[str]:
+        """Why *who* -- the calling run's user (_settle_caller) -- may not run
+        *agent_name* under its role gate (metadata.min_role), or None.
+
+        Asked here so the model gets the refusal as this tool's error, before a
+        sub-session exists for a run that could never happen; the sub-run's own
+        backstop (Agent._run_denial) asks again. Not the same fallbacks: this one
+        knows only the owner and ``_user_id`` and refuses when neither names
+        anybody, where the backstop goes on to the session's stored user and
+        then "anonymous".
+        """
+        from agent_system.auth.agent_access import agent_min_role, agent_run_denial
+
+        min_role = agent_min_role(registry, agent_name)
+        if min_role is None:
+            return None
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        caller = f"'{who}'" if who else "an unidentified caller"
+        logger.info("Sub-agent '%s' refused to %s: %s", agent_name, caller, reason)
+        return f"Agent '{agent_name}' may not be run by {caller}: {reason}"
 
     def _is_agent_allowed(self, agent_name: str) -> bool:
         """Check if agent is allowed by this manager instance (ignoring phase filtering).

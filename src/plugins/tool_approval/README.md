@@ -98,6 +98,10 @@ POST /plugins/tool_approval/answer   {"question_id", "decision", "reason"}
 GET  /plugins/tool_approval/pending  [?session_id=…&request_id=…]
 ```
 
+`session_id` also finds the questions asked in the sessions of the agents that
+session called as tools, and of the agents those called in turn (each runs on
+one of its own, below its caller's).
+
 `decision` is `allow_once`, `allow_session` or `deny`. The row's last line
 (allowed / denied / no answer / cancelled) takes the buttons down, in every tab
 showing the run. While it waits the hook sends the question again every

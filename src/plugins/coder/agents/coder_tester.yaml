@@ -61,3 +61,4 @@ plugins:
         tags: ["coding", "tests", "mutation"]
         category: "development"
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell and read access to the whole checkout

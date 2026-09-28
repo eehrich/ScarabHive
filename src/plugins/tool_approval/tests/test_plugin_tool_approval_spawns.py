@@ -681,9 +681,11 @@ class TestGrants:
 
 class TestAgentCalledAsATool:
 
-    async def test_it_runs_in_its_callers_session_not_one_the_model_names(self, approval):
+    async def test_it_runs_below_its_callers_session_not_in_one_the_model_names(self, approval):
         """No agent tool offers a session_id; one in the arguments would have run
-        the agent in a session of the model's choosing, under that session's grants."""
+        the agent in a session of the model's choosing, under that session's grants.
+        It runs on a sub-session of its own below its caller's (tool_session_id)."""
+        from agent_system.servers.agent.server import tool_session_id
         from plugins.basic_agent.server import BasicAgent
         from agent_system.config.models import AgentConfig, ToolConfig
 
@@ -710,7 +712,31 @@ class TestAgentCalledAsATool:
         await caller.dispatch_tool_call("lister_execute_task", {"task": "t", "session_id": "other-session"},
                                         session_id="sess-caller", request_id="astool2_002")
 
-        assert sessions == ["sess-caller", "sess-caller"]
+        assert sessions == [tool_session_id("sess-caller", "helper"), tool_session_id("sess-caller", "lister")]
+
+
+    async def test_a_grant_for_the_callers_session_covers_the_agent_it_calls(self, approval, watched):
+        """It runs on a sub-session of its own below its caller's, and a person's "allow for this session" in
+        the caller's session holds for it too -- as when it ran on that session itself: asked once, not again
+        inside the agent it calls."""
+        plugin = await approval()
+        probe = _Probe()
+        caller = _agent(probe, {"mode": "ask"})
+        helper = _agent(probe, {"mode": "ask"}, name="helper", registry=caller.registry)
+        helper._tool_visible = True
+        caller.registry.register("helper", helper)
+        caller.agent_config.tools.allowed = ["probe/*", "helper"]
+        caller.llm = _Model([_call("p1", "probe_echo", text="caller")], [_call("p2", "helper", task="go")])
+        helper.llm = _Model([_call("c1", "probe_echo", text="helper")])
+        asked: List[Dict[str, Any]] = []
+        async for event in caller.run_events("go", request_id=watched("astool3"), session_id="sess-caller"):
+            question = _question_of(event)
+            if question is not None and question["id"] not in [q["id"] for q in asked]:
+                asked.append(question)
+                plugin.broker.answer(question["id"], "allow_session")
+
+        assert [q["tool"] for q in asked] == ["probe_echo", "helper"], asked
+        assert [r["text"] for r in probe.received] == ["caller", "helper"]
 
 
 class TestOffKeepsTheInstanceRules:

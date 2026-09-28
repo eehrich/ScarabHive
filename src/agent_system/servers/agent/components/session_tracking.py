@@ -37,8 +37,87 @@ logger = logging.getLogger(__name__)
 
 #: Every tracker of this process -- one per agent. A run's messages wait in the
 #: tracker of the agent that runs it, and a question asked in a sub-run (another
-#: agent) looks up whether the person wrote to a run above it (ask_user).
+#: agent) looks up whether the person wrote to a run above it (ask_user). A
+#: session discarded takes the sessions other agents run below it along
+#: (discard_session).
 _trackers: "weakref.WeakSet[SessionTracker]" = weakref.WeakSet()
+
+
+#: The sets watch_appended_sessions hands out, each collecting the ids of the sessions a message is appended to.
+_append_watches: list[set[str]] = []
+
+
+def watch_appended_sessions() -> set[str]:
+    """A set that collects the id of every session a message is appended to from now on, in any agent's tracker --
+    beside its runs (append_to_session) or handed to a run of it (append_user_message) -- until
+    unwatch_appended_sessions. For a request that puts back sessions it does not know yet: openai_api's turn, for
+    the sessions of the agents its run calls as tools (a message the person appended there is theirs). Kept only
+    while somebody watches."""
+    seen: set[str] = set()
+    _append_watches.append(seen)
+    return seen
+
+
+def unwatch_appended_sessions(seen: set[str]) -> None:
+    _append_watches[:] = [other for other in _append_watches if other is not seen]
+
+
+def session_chain(session_id: str) -> list[str]:
+    """*session_id* and every session above it, nearest first: an agent called as a tool runs on one of its
+    own below its caller's (Agent.tool_session_id; its metadata names the caller's as its parent), through
+    every level, whichever agent's tracker holds each. The last one is where the chain started; just
+    *session_id* for any other session (none for an empty id)."""
+    chain: list[str] = []
+    while session_id and session_id not in chain:
+        chain.append(session_id)
+        session_id = next((metadata["parent_session_id"] for tracker in list(_trackers)
+                           for metadata in (tracker._session_metadata.get(session_id),)
+                           if isinstance(metadata, dict) and metadata.get("parent_session_id")), None)
+    return chain
+
+
+def callers_session(session_id: str) -> str:
+    """The session a session run below another belongs to (the top of its session_chain), through every
+    level. Itself for any other session."""
+    chain = session_chain(session_id)
+    return chain[-1] if chain else session_id
+
+
+def _children(session_id: str, agent_name: Optional[str]) -> list[tuple["SessionTracker", str]]:
+    """The sessions run below *session_id* of *agent_name* -- the agents it called as tools: their metadata names
+    that session and that agent as their parent (Agent._open_tool_session) -- with the tracker of each. The agent
+    counts: another agent's run on the same session id has children of its own."""
+    return [(tracker, child) for tracker in list(_trackers)
+            for child, metadata in list(tracker._session_metadata.items())
+            if isinstance(metadata, dict) and metadata.get("parent_session_id") == session_id
+            and metadata.get("parent_agent") == agent_name]
+
+
+def held_below(session_id: str, agent_name: Optional[str]) -> list[tuple["SessionTracker", str]]:
+    """Every session run below *session_id* of *agent_name*, through every level, with the tracker that holds
+    it: what goes with it (discard_session), and what openai_api's turn deletes or puts back with it."""
+    below: list[tuple["SessionTracker", str]] = []
+    for tracker, child in _children(session_id, agent_name):
+        below.append((tracker, child))
+        below.extend(held_below(child, tracker.agent_name))
+    return below
+
+
+def sessions_below(session_id: str, agent_name: Optional[str]) -> list[str]:
+    """The ids of held_below."""
+    return [child for _, child in held_below(session_id, agent_name)]
+
+
+def a_run_has(session_id: str) -> bool:
+    """Whether a run of this process has *session_id* right now, in whichever agent's tracker (run_has)."""
+    return any(tracker.run_has(session_id) for tracker in list(_trackers))
+
+
+def _parent_held(metadata: dict) -> bool:
+    """Whether the session a child session runs below is still in its agent's tracker."""
+    parent, agent_name = metadata.get("parent_session_id"), metadata.get("parent_agent")
+    return any(tracker.agent_name == agent_name and parent in tracker._session_metadata
+               for tracker in list(_trackers))
 
 
 def message_waits_for(request_id: str) -> bool:
@@ -77,6 +156,15 @@ class SessionTracker:
         # The 'cancel' event is managed by AgentRequestManager
         # This dict is SHARED with AgentRequestManager for coordination
         self._active_requests: Dict[str, Dict[str, Any]] = active_requests if active_requests is not None else {}
+
+        # The agent this tracker belongs to (Agent.__init__): the sessions its runs call agents below name it
+        # as their parent_agent, and only its own discard of a session takes them along (discard_session).
+        self.agent_name: Optional[str] = None
+        # Sessions below a session that was discarded while their run had them: they go once it lets go of
+        # them (release_session_lock), unless their parent is back by then.
+        self._orphans: set[str] = set()
+        # Sessions discarded while a run had them (discard_session): they go once that run lets go.
+        self._discard_on_release: set[str] = set()
 
         # Persisted sessions: session_id -> List[ChatMessage]
         self._sessions: Dict[str, List[ChatMessage]] = {}
@@ -302,6 +390,22 @@ class SessionTracker:
                 lock.release()
                 logger.info("Request %s released lock for session %s", request_id, session_id)
         self._let_go_of_session_lock(session_id)
+        self._discard_once_let_go(session_id)
+
+    def _discard_once_let_go(self, session_id: str) -> None:
+        """What was discarded while a run had the session, once nobody holds it: the session itself
+        (discard_session), or one below a session discarded meanwhile -- unless its parent is back in its agent's
+        tracker."""
+        if session_id in self._session_lock_owners:
+            return
+        if session_id in self._discard_on_release:
+            self._discard_on_release.discard(session_id)
+            self._orphans.discard(session_id)
+            self.discard_session(session_id)
+        elif session_id in self._orphans:
+            self._orphans.discard(session_id)
+            if not _parent_held(self._session_metadata.get(session_id) or {}):
+                self.discard_session(session_id)
 
     def _let_go_of_session_lock(self, session_id: str) -> None:
         """One request fewer holding or waiting on the session's lock. The lock goes
@@ -340,6 +444,15 @@ class SessionTracker:
         written = self._session_lock_written.pop(session_id, None)
         if written is not None:
             written.set()
+
+    def run_has(self, session_id: str) -> bool:
+        """Whether a run has the session right now: its lock is owned by the request registered for the session
+        (register_request) -- not by a write no run makes (held_by_a_writer), nor by an opening or by a request
+        that holds the lock for a run not started yet. From the lock's taking to its release, also after the run
+        let go of its entry in the active requests (its finalize, before the last save)."""
+        owner = self._session_lock_owners.get(session_id)
+        return (owner is not None and session_id not in self._session_lock_writers
+                and self._request_to_session.get(owner) == session_id)
 
     def held_by_a_writer(self, session_id: str) -> bool:
         """Whether the session's lock is owned by a write no run makes (acquire_session_lock(writer=True)): no run
@@ -492,6 +605,8 @@ class SessionTracker:
         # Remove request tracking
         self._active_requests.pop(request_id, None)
         self._request_to_session.pop(request_id, None)
+        if session_id:
+            self._discard_once_let_go(session_id)
 
     def get_session_for_request(self, request_id: str) -> Optional[str]:
         """
@@ -597,6 +712,11 @@ class SessionTracker:
         Args:
             session_id: The session ID
         """
+        if self.run_has(session_id):
+            # A run has it: taken from under it, the run went on without its metadata, and its final save found
+            # nothing to save. It goes once that run lets go (release_session_lock).
+            self._discard_on_release.add(session_id)
+            return
         self._sessions.pop(session_id, None)
         self._session_metadata.pop(session_id, None)
         self._titles_to_write.pop(session_id, None)
@@ -605,6 +725,18 @@ class SessionTracker:
         self._started.discard(session_id)
         self._held.discard(session_id)
         self._openings.pop(session_id, None)
+        # The sessions this agent's runs on it called agents below as tools (Agent.tool_session_id) go with it,
+        # from whichever agent's tracker -- a throwaway caller leaves nothing in any agent's memory -- and
+        # theirs in turn with them. Not one whose run still has it (the caller's run was cancelled, its tool
+        # call runs on): taken from under it, its final save found no metadata. It goes once that run lets go.
+        # Nor one a write has (an append: it reads the session back after it appended, to save it) -- any
+        # holder of the lock, for a moment only.
+        self._orphans.discard(session_id)
+        for tracker, child in _children(session_id, self.agent_name):
+            if tracker.check_session_locked(child)[0]:
+                tracker._orphans.add(child)
+            else:
+                tracker.discard_session(child)
 
     def mark_opened(self, session_id: str) -> None:
         """A request opened the session for a run of its own (SessionService.open_for_run) -- also one that left
@@ -642,6 +774,9 @@ class SessionTracker:
     def _tell_watchers(self, session_id: str | None, message: ChatMessage) -> None:
         for seen in self._append_watchers.get(session_id or "", ()):
             seen.append(message)
+        if session_id:
+            for appended in _append_watches:
+                appended.add(session_id)
 
     def start_session(self, session_id: str) -> bool:
         """
@@ -779,6 +914,8 @@ class SessionTracker:
         self._started.discard(session_id)
         self._held.discard(session_id)
         self._openings.pop(session_id, None)
+        self._orphans.discard(session_id)  # gone already: nothing is left to drop once its run lets go
+        self._discard_on_release.discard(session_id)
         
         # Clear session locks to prevent memory leak
         if session_id in self._session_lock_owners:
@@ -813,6 +950,8 @@ class SessionTracker:
         self._started.clear()
         self._held.clear()
         self._openings.clear()
+        self._orphans.clear()
+        self._discard_on_release.clear()
         self._append_watchers.clear()
         self._session_locks.clear()
         self._session_lock_owners.clear()

@@ -212,13 +212,13 @@ optional; it stays for the wire OpenAI sends).
 - session_service: open_for_run: a full opening not marked
       -> test_a_conversation_a_web_chat_opened_as_the_turn_settled_stays_in_the_tracker
 - app: /run: saved after a refusal
-      -> test_app_run_opens_its_session.py::test_a_run_refused_at_the_session_lock_saves_nothing
+      -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - app: /run with files: saved after a refusal
-      -> test_app_run_opens_its_session.py::test_a_run_refused_at_the_session_lock_saves_nothing
+      -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - app: /events: saved after a refusal
-      -> test_app_run_opens_its_session.py::test_a_run_refused_at_the_session_lock_saves_nothing
-- app: app._refused_at_the_lock: never
-      -> test_app_run_opens_its_session.py::test_a_run_refused_at_the_session_lock_saves_nothing
+      -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
+- app: app._refused_before_the_run (was _refused_at_the_lock): never
+      -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
 - plugin: Responses stream: the conflict answered as response.failed
       -> test_a_stream_whose_conversation_was_read_back_under_it_ends_on_a_conflict
 - turns: events: what the run left not taken at its end
@@ -240,6 +240,72 @@ optional; it stays for the wire OpenAI sends).
       -> test_a_message_handed_to_the_run_of_a_failed_turn_stays
 - turns: _restore: a new conversation deleted with its appends
       -> test_a_new_conversation_whose_first_turn_fails_keeps_what_was_appended
+
+Round M1 (the agents' role gate and the refusals before a run), fenced, one at a time, each file restored
+and compared by hash. Every one turned the named tests red:
+- plugin: _agent_names: the role gate not asked
+      -> test_a_model_the_caller_may_not_run_is_not_offered
+- plugin: _user: the account not kept for the gate
+      -> test_a_model_the_caller_may_not_run_is_not_offered
+- plugin: _failed: a run the agent refused answered as a 500
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- plugin: Responses stream: the refusal answered as response.failed
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- plugin: Chat Completions stream: the refusal answered as a server error
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- plugin: _refusal: the 404 without the model's name
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- plugin: _foreign_conversation: the 403 without its code
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- turns: events: TurnError without the error_type
+      -> test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error
+- turns: _ran: a refused run taken as run (the put back saved)
+      -> test_a_refused_continued_turn_leaves_the_stored_conversation_untouched
+- server: _refusal_event: without its error_type
+      -> test_agent_role_gate.py::test_a_plain_users_run_is_refused_before_anything_of_it_exists
+- server: _refusal_event: the two error types swapped
+      -> test_agent_role_gate.py::test_a_plain_users_run_is_refused_before_anything_of_it_exists
+- facade: MachineAgent.run_events: the refusal without its error_type
+      -> test_plugin_stategraph_facade.py::test_a_run_in_a_session_held_for_another_user_starts_no_machine_run
+- app: app._refused_before_the_run: SESSION_LOCKED only
+      -> test_app_run_opens_its_session.py::test_a_run_refused_before_it_started_saves_nothing
+- SAM: continue: a refused run reported as a completed instance
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- SAM: _consume_run: the error_type not recorded
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- SAM: create: a refused run reported as a completed instance
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_create_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- SAM: the background job without the error_type (and without the run's record)
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_background_create_the_agent_refuses_ends_its_job_with_the_error_type
+- SAM: the refusal stored with the "Error: " prefix
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- agent_cli: the one-shot run saved after a refusal
+      -> test_cli_saves_nothing_after_a_refused_run.py::test_a_one_shot_run_refused_before_it_ran_leaves_the_session_file_alone
+- result_utils: collect_final_result: the refusal not marked
+      -> test_cli_saves_nothing_after_a_refused_run.py::test_a_one_shot_run_refused_before_it_ran_leaves_the_session_file_alone
+- chat: the turn saved after a refusal
+      -> test_cli_saves_nothing_after_a_refused_run.py::test_a_chat_turn_refused_before_it_ran_saves_nothing
+- agent_run: saved after a refusal
+      -> test_agent_run_session_defaults.py::test_a_run_refused_before_it_ran_is_not_saved
+- llm_openai: Realtime: the server's error type passed through unprefixed (error event, response.done)
+      -> test_llm_openai_realtime.py::test_a_server_error_type_never_passes_for_one_of_the_frameworks_own
+      -> test_llm_openai_realtime.py::test_a_failed_response_is_an_error_the_server_can_read
+- plugin: get_model: a 404 text of its own
+      -> test_a_gated_model_is_answered_exactly_as_an_unknown_one
+- server: Agent.call: the refusal without its error_type
+      -> test_agent_role_gate.py::test_an_agent_called_as_a_tool_is_refused_with_a_tool_error
+- facade: MachineAgent.run_events: the lock refusal without SESSION_LOCKED
+      -> test_plugin_stategraph_facade.py::test_a_run_refused_at_the_session_lock_says_so
+- SAM: the background job's stored ending without the error_type; the stored-state answer without it
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_background_create_the_agent_refuses_ends_its_job_with_the_error_type
+- SAM: _store_blocking_abort without the error_type
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- manager: reopen_sub_session keeps an earlier refusal's error_type
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_later_failure_does_not_report_an_earlier_refusal
+- SAM: a refused create keeps its instance; manager: discard_sub_session keeps the record / the file
+      -> test_plugin_sub_agent_manager_role_gate.py::test_a_create_the_agent_refuses_after_the_sams_gate_passed_is_an_error
+- chat: a refused turn cancelled by Ctrl-C saved; the refusal lost with the cancel's result
+      -> test_cli_saves_nothing_after_a_refused_run.py::test_a_ctrl_c_in_a_refused_chat_turn_saves_nothing
 """
 
 from __future__ import annotations
@@ -304,6 +370,7 @@ class ScriptedAgent:
         self.at_end = False  # the last run said "end"
         self.wrap_up: Optional[Callable[[], Any]] = None
         self.let_go: Optional[Callable[[], Any]] = None
+        self.refuses: Optional[str] = None  # an error_type: every run refused before it starts, as the backstop does
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None,
                          **_: Any):
@@ -311,6 +378,10 @@ class ScriptedAgent:
         from agent_system.llm.models import ChatMessage
 
         tracker = self._session_tracker
+        if self.refuses:  # Agent.run_events' backstop: before the lock, nothing of the run written
+            yield {"type": "error", "message": f"refused ({self.refuses})", "error_type": self.refuses}
+            yield {"type": "end"}
+            return
         if not await tracker.acquire_session_lock(session_id, request_id):
             from agent_system.servers.agent.server import SESSION_LOCKED
 
@@ -405,7 +476,8 @@ class Registry:
 
         is_agent = name in self.agents
         return ServerView(name=name, is_agent=is_agent, tool_public=is_agent and name not in self.hidden,
-                          tool_visible=False, built=name not in self.unbuilt)
+                          tool_visible=False, built=name not in self.unbuilt,
+                          min_role=getattr(self.agents.get(name), "min_role", None))
 
 
 def build(tmp_path, *agents: Any, hidden: tuple[str, ...] = (), unbuilt: tuple[str, ...] = (),
@@ -2150,6 +2222,122 @@ async def test_a_session_of_another_user_is_refused(tmp_path, monkeypatch):
 
     assert answer.status_code == 403 and answer.json()["error"]["type"] == "permission_error", answer.text
     assert agent.calls == [] and plugin._busy == set()
+
+
+async def test_a_model_the_caller_may_not_run_is_not_offered(tmp_path, monkeypatch):
+    """The agents' role gate (metadata.min_role): an agent the caller's role may not run is no model for them --
+    not listed, and asked for by name it is a model_not_found, as an unknown model; it does not run."""
+    from agent_system.auth import database, dependencies
+
+    chat_agent, coder = ScriptedAgent("chat_agent"), ScriptedAgent("coder")
+    coder.min_role = "admin"
+    app, _ = build(tmp_path, chat_agent, coder)
+    app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=True))
+    accounts = {"bob-key": SimpleNamespace(username="bob", role="user", is_active=True),
+                "root-key": SimpleNamespace(username="root", role="admin", is_active=True)}
+
+    async def optional_user(request: Any, credentials: Any, x_api_key: Any, db: Any) -> Any:
+        return accounts.get(credentials.credentials if credentials else x_api_key)
+
+    monkeypatch.setattr(dependencies, "get_optional_user", optional_user)
+    monkeypatch.setattr(database, "get_db", lambda: None)
+    async with raw(app, "bob-key") as bob, raw(app, "root-key") as root:
+        bobs = [model["id"] for model in (await bob.get("/models")).json()["data"]]
+        roots = [model["id"] for model in (await root.get("/models")).json()["data"]]
+        refused = [await bob.get("/models/coder"),
+                   await bob.post("/responses", json={"model": "coder", "input": "hi"}),
+                   await bob.post("/chat/completions",
+                                  json={"model": "coder", "messages": [{"role": "user", "content": "hi"}]})]
+        ran = await root.post("/responses", json={"model": "coder", "input": "hi"})
+
+    assert bobs == ["chat_agent"] and roots == ["chat_agent", "coder"], (bobs, roots)
+    for answer in refused:
+        assert answer.status_code == 404 and answer.json()["error"]["code"] == "model_not_found", answer.text
+    assert ran.status_code == 200, ran.text
+    assert [call["task"] for call in coder.calls] == ["hi"], "coder ran for bob, or not for root"
+
+
+async def test_a_gated_model_is_answered_exactly_as_an_unknown_one(tmp_path, monkeypatch):
+    """Whether a model does not exist or its role gate keeps the caller out, every route answers the same, and
+    the routes answer alike: nothing tells the two apart but the name the caller sent."""
+    from agent_system.auth import database, dependencies
+
+    coder = ScriptedAgent("coder")
+    coder.min_role = "admin"
+    app, _ = build(tmp_path, ScriptedAgent("chat_agent"), coder)
+    app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=True))
+    bob = SimpleNamespace(username="bob", role="user", is_active=True)
+
+    async def optional_user(request: Any, credentials: Any, x_api_key: Any, db: Any) -> Any:
+        return bob
+
+    monkeypatch.setattr(dependencies, "get_optional_user", optional_user)
+    monkeypatch.setattr(database, "get_db", lambda: None)
+
+    async def answers(model: str) -> list[list[Any]]:
+        async with raw(app, "bob-key") as web:
+            return [[r.status_code, r.json()] for r in (
+                await web.get(f"/models/{model}"),
+                await web.post("/responses", json={"model": model, "input": "hi"}),
+                await web.post("/chat/completions",
+                               json={"model": model, "messages": [{"role": "user", "content": "hi"}]}))]
+
+    gated, unknown = await answers("coder"), await answers("nope")
+
+    assert json.loads(json.dumps(unknown).replace("'nope'", "'coder'")) == gated, (unknown, gated)
+    assert [answer for answer in gated if answer != gated[0]] == [], f"the routes answer differently: {gated}"
+    assert gated[0][0] == 404, gated
+    assert coder.calls == []
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("path", ["/responses", "/chat/completions"])
+@pytest.mark.parametrize("error_type, status, code", [
+    ("agent_role_gate", 404, "model_not_found"),
+    ("foreign_session", 403, "permission_error"),
+])
+async def test_a_run_the_agent_refuses_is_an_openai_error_not_a_server_error(tmp_path, path, streamed, error_type,
+                                                                              status, code):
+    """The agent's backstop refuses a run before it starts (Agent.run_events: its role gate, another user's
+    session). Answered as the 500 of a failed run, an SDK retries it; the role gate is a model the caller may not
+    run -- unknown to them, as /models has it -- and another user's conversation is theirs."""
+    agent = ScriptedAgent("chat_agent")
+    agent.refuses = error_type
+    app, _ = build(tmp_path, agent)
+    body = ({"model": "chat_agent", "input": "hi"} if path == "/responses"
+            else {"model": "chat_agent", "messages": [{"role": "user", "content": "hi"}]})
+    async with raw(app) as web:
+        answer = await web.post(path, json={**body, "stream": streamed})
+
+    if not streamed:
+        error = answer.json()["error"]
+        assert answer.status_code == status, answer.text
+    else:
+        last = [json.loads(line[6:]) for line in answer.text.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"][-1]
+        error = last.get("error") or last
+    # One code wherever it goes out; the 404 words it as for any model not offered, with its name
+    assert error.get("code") == code, answer.text
+    if status == 404:
+        assert error["message"] == "The model 'chat_agent' does not exist or you do not have access to it", error
+    assert agent.calls == [], "the refused run ran"
+
+
+async def test_a_refused_continued_turn_leaves_the_stored_conversation_untouched(tmp_path):
+    """Refused before it started, the run wrote nothing; the put back saved the conversation anyway -- its
+    updated_at moved, its variables written as they were read (none became {})."""
+    agent = ScriptedAgent("chat_agent")
+    app, _ = build(tmp_path, agent)
+    first = await client(app).responses.create(model="chat_agent", input="remember 42")
+    [path] = [p for p in (tmp_path / "sessions").rglob(f"{agent.calls[0]['session']}.json")]
+    before = path.read_bytes()
+    agent.refuses = "agent_role_gate"
+    async with raw(app) as web:
+        refused = await web.post("/responses", json={"model": "chat_agent", "input": "again",
+                                                     "previous_response_id": first.id})
+
+    assert refused.status_code == 404, refused.text
+    assert path.read_bytes() == before, "the refused turn wrote the stored conversation"
 
 
 async def test_a_conversation_is_its_user_s(tmp_path, monkeypatch):

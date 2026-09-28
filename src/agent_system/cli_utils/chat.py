@@ -575,6 +575,11 @@ async def run_chat_turn(
                 message = str(ev.get("message") or "unknown error")
                 result["errors"].append(message)
                 renderer.error_line(f"ERROR: {message}")
+                from ..servers.agent.server import refused_before_the_run
+
+                if refused_before_the_run(ev):  # it ran nothing: the chat saves nothing after it
+                    # in the state too: a Ctrl-C that cancels the turn drops this result (_cancel_turn)
+                    result["refused"] = state["refused"] = ev["error_type"]
             elif t == "cancelled":
                 result["cancelled"] = True
             elif t == "end":
@@ -3264,6 +3269,7 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     # session stops it all the same.
     from ..utils.id import short_id
     state: dict[str, Any] = {"editor": editor, "request_id": short_id()}
+    named = state["request_id"]
     claimed = _claim_turn(ctx, state["request_id"])
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
@@ -3295,6 +3301,12 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         _stop_typing(loop, reader, poller, renderer, state)
         if claimed is not None:
             claimed.release(ctx.session_id, ctx.session_user)
+        # What the turn registered under its request id (a tool call, a
+        # preloaded tool, a sub-agent) goes with it, as the API lets go of its
+        # request tree when the request ends.
+        from ..core.request_context import release_request_user_tree
+        for request_id in {named, state.get("request_id")} - {None, ""}:
+            release_request_user_tree(request_id)
     for key in ("typed_queue", "typed_partial"):
         if state.get(key):
             result[key] = state[key]
@@ -3388,9 +3400,9 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     except Exception:
         logger.debug("Turn unwind failed", exc_info=True)
     renderer.close()
-    # The turn's own result is gone with it; its usage lives on in the state.
+    # The turn's own result is gone with it; its usage lives on in the state, and a refusal before the run.
     return {"summary": None, "cancelled": True, "errors": [],
-            "usage": state.get("usage") or {}}
+            "usage": state.get("usage") or {}, **({"refused": state["refused"]} if state.get("refused") else {})}
 
 
 def _render_answer(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
@@ -3867,8 +3879,10 @@ def run_chat_loop(
                     # names the session only when one happened -- said nothing
                     # at all. Reported from real use: "then I don't even know
                     # what the session id is". The turn is over here, nothing
-                    # of it is still running, so this is an ordinary save.
-                    _save_now(loop, ctx)
+                    # of it is still running, so this is an ordinary save --
+                    # not for a turn refused before it ran: nothing of it to save.
+                    if not result.get("refused"):
+                        _save_now(loop, ctx)
                     continue
 
                 pending.extend(queued)
@@ -3888,7 +3902,8 @@ def run_chat_loop(
                                                result.get("context_window"))
                                       if context_fill else None), "90"))
 
-                _save_now(loop, ctx)
+                if not result.get("refused"):  # refused before it ran: nothing of it to save
+                    _save_now(loop, ctx)
             except KeyboardInterrupt:
                 renderer.close()
                 print("\n(interrupted)", file=sys.stderr)

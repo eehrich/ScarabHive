@@ -153,17 +153,19 @@ async def test_a_session_a_run_of_this_agent_holds_is_not_read_back_under_it(api
     assert now is metadata, "the asker replaced the run's metadata"
 
 
+@pytest.mark.parametrize("error_type", ["session_locked", "agent_role_gate", "foreign_session"])
 @pytest.mark.parametrize("endpoint", ["/run", "/run with files", "/events"])
-async def test_a_run_refused_at_the_session_lock_saves_nothing(api, endpoint, monkeypatch):
+async def test_a_run_refused_before_it_started_saves_nothing(api, endpoint, error_type, monkeypatch):
     """Another run of this process has the session (its lock), so this request's run is refused (Agent.run_events,
     ``error_type`` SESSION_LOCKED). Saving the session after it -- /run always did, /events for a completed job --
-    wrote what the tracker holds, which is the other run's live state (a tool call without its result, say)."""
+    wrote what the tracker holds, which is the other run's live state (a tool call without its result, say). The
+    same for a run the agent's role gate refuses, or one in a session held for another user: refused before it
+    started, it has nothing to save."""
     from agent_system import app as app_mod
-    from agent_system.servers.agent.server import SESSION_LOCKED
 
     async def refused(self, task, request_id=None, session_id=None, **kwargs):
-        yield {"type": "error", "message": f"Session {session_id} is currently locked by another request",
-               "request_id": request_id, "error_type": SESSION_LOCKED}
+        yield {"type": "error", "message": f"Session {session_id} refused ({error_type})",
+               "request_id": request_id, "error_type": error_type}
         yield {"type": "end"}
 
     monkeypatch.setattr(Agent, "run_events", refused)
@@ -187,7 +189,7 @@ async def test_a_run_refused_at_the_session_lock_saves_nothing(api, endpoint, mo
         response = await _call(api.app, endpoint, "s-busy")
 
     assert response.status_code == 200, response.text
-    assert "locked" in response.text, "fixture: the run was not refused"
+    assert f"refused ({error_type})" in response.text, "fixture: the run was not refused"
     assert "s-busy" not in saves, f"{endpoint} saved the session after its run was refused"
 
 

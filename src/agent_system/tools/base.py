@@ -126,6 +126,12 @@ class ToolServer(ABC):
             If get_tools() returns a tool named "search_tweets",
             this will call self.search_tweets(params)
         """
+        # A private method is no tool: no schema names one, and reached by name it
+        # would skip whatever the public entry checks before it calls the helper
+        # (SchemaBasedToolMixin.call refuses the same).
+        if tool.startswith("_"):
+            raise ValueError(f"Tool '{tool}' not found in {self.name}. Available tools: {self._get_available_tool_names()}")
+
         # Check if the tool method exists
         if not hasattr(self, tool):
             raise ValueError(f"Tool '{tool}' not found in {self.name}. Available tools: {self._get_available_tool_names()}")

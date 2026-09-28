@@ -33,8 +33,9 @@ env:
   # tests/scripts (subprocesses, sleeps of several seconds), tests/integration,
   # tests/other, tests/plugins_writer, and the per-plugin suites under
   # src/plugins*/*/tests. Single files from those directories are in when
-  # they need neither: the tool dispatch and cancellation tests, and two that
-  # build the app on a minimal config or read a temporary session store.
+  # they need neither: the tool dispatch and cancellation tests, the systemd
+  # unit template check, and two that build the app on a minimal config or
+  # read a temporary session store.
   # ==========================================================================
   CI_TEST_PATHS: >-
     tests/config
@@ -55,6 +56,7 @@ env:
     tests/tools/test_tool_server.py
     tests/tools/test_schema_based_tool_server.py
     tests/other/test_cancellation_system.py
+    tests/scripts/test_systemd_unit_template.py
   # Known failures on a clean checkout, and tests that need the network.
   # Remove a line once its test is fixed.
   CI_TEST_SKIP: >-

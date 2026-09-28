@@ -91,6 +91,15 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
 - **USER**: Standard access to API features
 - **GUEST**: Limited read-only access
 
+### Which agents a role may run
+
+An agent's `metadata.min_role` (`guest`, `user` or `admin`) is the lowest role
+that may run it -- on every path a run starts (`/run`, `/events`,
+`/chat/command`, sessions created for it, sub-agents, agents called as tools,
+stategraph, woken sessions, the OpenAI-compatible API) and for every tool the
+agent serves. Without it an agent runs for every account. Details:
+`docs/agent_visibility.md`; which shipped agents carry a gate: SECURITY.md.
+
 ### Authentication Methods
 
 1. **JWT Tokens**
@@ -146,6 +155,12 @@ auth:
   default_admin_password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
   default_admin_email: "admin@example.com"
   
+  # Self-registration through POST /auth/register (reachable without login)
+  registration:
+    enabled: true            # false: the endpoint answers 403 and creates nobody
+    require_approval: false  # true: new accounts start inactive until an admin activates them
+    default_role: "user"     # "guest" or "user"; never "admin"
+
   # ============================================================
   # Anonymous Access Configuration (NEW in v0.5.1)
   # ============================================================
@@ -216,7 +231,15 @@ auth:
 ### Authentication Endpoints
 
 #### POST /auth/register
-Register a new user (requires admin privileges when auth is enabled).
+Register a new user. The endpoint is reachable without login (`* /auth/*` is
+public), so the caller chooses nothing about its own privileges: `role` and
+`is_active` are not accepted (422). `auth.registration` decides the rest:
+`enabled: false` answers 403 and creates nobody; `require_approval: true`
+creates the account inactive -- it cannot log in (403) until an admin activates
+it (user management panel, `POST /admin/users/{id}/activate`,
+`agent-cli users update NAME --activate`); `default_role` is `user` or `guest`.
+The setting is read on every request, so `agent-cli reload`
+(`POST /admin/reload-config`) applies it without a restart.
 
 **Request:**
 ```json
@@ -236,7 +259,7 @@ Register a new user (requires admin privileges when auth is enabled).
   "email": "john@example.com",
   "full_name": "John Doe",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000"
 }
 ```
@@ -286,7 +309,7 @@ Authorization: Bearer <token>
   "email": "john@example.com",
   "full_name": "John Doe",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000"
 }
 ```
@@ -317,7 +340,7 @@ Content-Type: application/json
   "email": "newemail@example.com",
   "full_name": "New Full Name",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000",
   "updated_at": "2025-10-11T10:30:00.000000"
 }
@@ -432,7 +455,7 @@ Create a new user (admin operation).
   "email": "new@example.com",
   "password": "SecurePass123!",
   "full_name": "New User",
-  "role": "USER",
+  "role": "user",
   "is_active": true
 }
 ```

@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The log viewer and the SSH machine panel are admin-only (rules in
+  `config/config.yaml`): the logs carry every user's prompts, and the SSH panel
+  runs commands on the configured hosts.
+- `workspace_file_ops` -- the whole checkout, `config/secrets.env` and
+  `data/users.db` included -- ships disabled; no shipped agent used it.
+- A terminal with a `security.whitelist` runs every command in its configured
+  working directory and environment: it neither offers nor accepts `cwd` and
+  `env_vars` (`error_type: ConfiguredOnly`), refuses control characters before
+  it matches, and keeps the shell line to one command whatever
+  `allow_command_chains` says. A whitelist checks the command string only, and
+  both let the model change what the allowed command does.
+- `allow_command_chains: false` now keeps the shell line to one command: a line
+  break, `;`, `&&`, `||`, `|`, `&`, a backtick, `$(`, `<(` or `>(` is refused
+  anywhere in the command, quoted or not. Before, only `&&`, `||` and `;` were
+  looked at, and most such chains still passed. The check is lexical; the
+  command stays exactly one only together with a whitelist that names the
+  program.
+- `state_graph_terminal` names its interpreter (`python`, `python3`, `py`, the
+  checkout's `.venv` interpreter by its relative path), separates words by
+  spaces only and starts in the directory the server runs from -- the checkout,
+  as every relative path of the configuration assumes; before, any program
+  whose name ended in `py` passed.
+- A tool server's generic dispatcher no longer calls private methods
+  (`<server>__<method>`); no schema names one.
+- The API does not start with an empty or short JWT signing key (an unset
+  `${AUTH_SECRET_KEY}` used to sign every token with an empty key), and logs an
+  error for a published one; `auth.reject_default_secret_key: true` refuses it.
+- The systemd unit template runs the server as its own user on
+  `127.0.0.1:8000`, with secrets in an environment file; it no longer runs as
+  root on a fixed network address.
+- `.gitignore` covers `.env` files, private keys, credential files and local
+  configuration.
+- Per-agent role gate: `metadata.min_role` (`guest`/`user`/`admin`) decides who
+  may run an agent -- over HTTP (`/run`, `/events`, `/chat/command`,
+  `POST /api/sessions`; `GET /agents`, the tool listings and `/chat/commands`
+  hide it; refusing an agent answers like an unknown one, except the default
+  agent on `/run`/`/events` without a name and `POST /api/sessions`, which answer
+  403), on the OpenAI-compatible API (`openai_api`: a model the caller may not
+  run is not listed and answers 404 `model_not_found`), for sub-agents
+  (`error_type: agent_role_gate`), agents called as tools, stategraph, woken
+  sessions and every tool the agent serves. The run's own refusal carries an
+  `error_type` too (`agent_role_gate`, `foreign_session`): nothing of a refused
+  run is saved, and the OpenAI API answers it as 404/403, not as a server
+  error. A run nobody can be named for is
+  judged as `anonymous`: refused unless anonymous access is enabled with a
+  sufficient role; the sub-agent manager and an agent's own tools refuse it
+  outright.
+- Shipped agents with a shell, `coding_cli`, `ssh_control`, checkout-wide file
+  access or a tool that runs arbitrary code (`blender_execute`, `godot_script`)
+  are gated at `admin`; `state_graph_agent`/`state_graph_agent_ui` at `user`.
+- An agent run as a tool no longer acts as another user through a session id it
+  holds for that user: tools run for the run's registered user, a run whose user
+  differs from the session's stored user is refused (an admin's too, and a
+  session held for `anonymous` too, as `POST /run` refuses another user's
+  session), and a `session_id` in a model's tool arguments no longer picks the
+  session.
+- `cli_user` counts as the local operator only inside `agent-cli`/`agent-run`,
+  and only while no account of that name exists.
+- A session whose agent its user may not run is not woken; it used to start up
+  to three refused `agent-cli` runs per message.
+- `auth.registration` decides what `POST /auth/register` -- reachable without
+  login -- may do: `enabled: false` refuses it (403), `require_approval: true`
+  creates the account inactive until an admin activates it, `default_role` is
+  `user` or `guest`. The defaults keep what the endpoint did: open, active at
+  once, role `user`.
+- The shipped `config/config.yaml` holds a self-registered account for an
+  admin's approval (`auth.registration.require_approval: true`).
+
 ### Added
 
 - `Dockerfile`, `.dockerignore` and `docker-compose.yml` to run the API server
@@ -31,6 +101,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent called as a tool (`Agent.call`, `<name>_execute_task`) no longer runs
+  on its caller's session: it saved its own transcript into the caller's session
+  file (creating a new one with its own agent name and a title from the
+  sub-task, or replacing a stored one's history until the caller's next save),
+  and kept every caller session in memory for the life of the process,
+  throwaway ones included. It now runs on a session of its own per caller session
+  and agent -- it still remembers its earlier calls there -- saved under the
+  call's user below the caller's session (hidden from the session list, like a
+  sub-agent's), refused to another user, and gone from memory with the caller's
+  session; a throwaway caller's is never saved (if the agent starts sub-agents,
+  the sub-agent manager files it as the listed "Coordinator Session" it makes
+  for any parent it does not find). A person's "allow for this session"
+  (tool_approval) in the caller's session still covers it, and
+  `/pending?session_id=<session>` lists the questions asked at every level
+  below. Sub-agents it starts hang below its session, not the caller's: the
+  caller no longer sees them in its injected sub-agent list or through `poll`,
+  and their wake goes to nobody. Its session carries the caller's sub-agent
+  nesting budget from its first write; a call whose session cannot be stored
+  with it does not run (`error_type: "tool_session_unavailable"`). One the
+  person deleted is forgotten: the next call starts it afresh (it was never
+  stored again until a restart). A second call while the first still runs on
+  the session is answered as an error (`session_locked`), not as a "success"
+  with the refusal inside. A call to an agent that runs above it already --
+  itself, directly or through other agents called as tools -- is refused with
+  `error_type: "recursive_call"` (on the caller's session it was refused at
+  that session's lock); across a SAM or stategraph hop the sub-agent nesting
+  budget bounds it (a stategraph agent activity only where a SAM above set
+  one, as before). The ids stay short enough for a file name at any depth. An
+  openai_api turn that is put back puts these sessions back with the
+  conversation where only its own runs wrote them: a run of another request
+  -- of this process or another, an agent-cli run too -- leaves one as it is
+  (every run names itself in the session), and so does an append made in this
+  process. Writes that name no run are not told apart and are put back with
+  the rest: an /undo, a rename or a variables write, and an append made in
+  another process. A run of another process still going on the session when
+  the turn is put back writes it again afterwards.
 - `agent-api` loads the config `AGENT_CONFIG_PATH` names, as `agent-cli` and
   `agent-run` do; `/health` reads the config the server was started with.
 - A tool method or cleanup callback that returns an awaitable without being a

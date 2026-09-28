@@ -786,11 +786,15 @@ class TestAsking:
 
 class TestWhoMayAnswer:
 
-    async def _ask(self, plugin, request_id: str, owner: str):
-        """A run of ``owner`` waiting on its question; returns (task, question)."""
+    async def _ask(self, plugin, request_id: str, owner: str, below: Optional[str] = None):
+        """A run of ``owner`` waiting on its question; returns (task, question). ``below``: its session is one
+        an agent called as a tool runs on, below that session (Agent.tool_session_id)."""
         probe = _Probe()
         agent = _agent(probe, {"ask_timeout": 20})
         agent.llm = _Model([_call("c1", "one")])
+        if below is not None:
+            agent._session_tracker.set_session_metadata("auth-s", {"user_id": owner, "agent_name": agent.name,
+                                                                   "parent_session_id": below})
         found: asyncio.Future = asyncio.get_running_loop().create_future()
 
         async def drive():
@@ -831,6 +835,24 @@ class TestWhoMayAnswer:
         probe, events = await asyncio.wait_for(task, 10)
         assert [r["text"] for r in probe.received] == ["one"]
         assert "allowed once by alice" in _approval_lines(events, "end")[0]["message"]
+
+    async def test_a_question_asked_below_a_session_is_listed_for_that_session(self, approval, watched, users):
+        """An agent called as a tool asks in a session of its own below its caller's: every session above it
+        finds the question as well -- the one it started in, and one between (session_chain)."""
+        from agent_system.servers.agent.components.session_tracking import SessionTracker
+
+        plugin = await approval()
+        middle = SessionTracker()  # the tracker of the agent between: its session is below the first one
+        middle.set_session_metadata("mid-s", {"user_id": "alice", "parent_session_id": "caller-s"})
+        task, question = await self._ask(plugin, watched("auth3", "alice"), "alice", below="mid-s")
+        async with _client(plugin, auth=True) as client:
+            for query, count in [("session_id=caller-s", 1), ("session_id=mid-s", 1), ("session_id=auth-s", 1),
+                                 ("session_id=other", 0)]:
+                narrowed = await client.get(f"/plugins/tool_approval/pending?{query}", headers=_signed_in("alice"))
+                assert narrowed.json()["count"] == count, query
+            await client.post("/plugins/tool_approval/answer", headers=_signed_in("alice"),
+                              json={"question_id": question["id"], "decision": "allow_once"})
+        await asyncio.wait_for(task, 10)
 
     async def test_an_admin_may_answer(self, approval, watched, users):
         plugin = await approval()

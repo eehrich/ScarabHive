@@ -951,6 +951,16 @@ class AgentMetadata(BaseModel):
     # - "both": Visible in UI AND available as tool
     # - "private": Neither UI nor tool (for testing/experimental agents)
 
+    # Role gate: the lowest account role that may RUN this agent -- from the UI,
+    # POST /run and /events, as a sub-agent (SAM), as another agent's tool, from a
+    # stategraph machine. None (the default) is no gate, exactly as before.
+    # Enforced only while auth is enabled (auth/agent_access.py): without
+    # accounts there is no role to compare. Inside agent-cli and agent-run
+    # (agent_access.local_operator_trusted) their default user "cli_user" passes
+    # every gate while no account holds that name; in the API process it is
+    # refused like any name without an account.
+    min_role: Optional[Literal["guest", "user", "admin"]] = None
+
 
 class ToolServerConfig(BaseModel):
     """tool server configuration (matches type comment in mcp.yaml for default_config)"""
@@ -1305,6 +1315,21 @@ class PluginSecurityConfig(BaseModel):
     ])
 
 
+class RegistrationConfig(BaseModel):
+    """Self-registration through POST /auth/register, which is reachable without login.
+
+    The defaults keep what the endpoint always did: open, the account active at once,
+    role user."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # New accounts start inactive until an admin activates them (the user management
+    # panel, POST /admin/users/{id}/activate, agent-cli users update NAME --activate).
+    require_approval: bool = False
+    # Never admin: whoever reaches the endpoint chooses nothing about their privileges.
+    default_role: Literal["guest", "user"] = "user"
+
+
 class AuthConfig(BaseModel):
     """Authentication and authorization configuration.
     
@@ -1319,6 +1344,10 @@ class AuthConfig(BaseModel):
     """
     enabled: bool = False  # Master switch for authentication system
     secret_key: str = "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"
+    # A published signing key (this default, the development key the repository ships) logs an
+    # error at startup; true refuses to start with it. Empty and short keys are always refused.
+    reject_default_secret_key: bool = False
+    registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30  # Refresh token valid for 30 days

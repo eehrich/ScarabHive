@@ -470,6 +470,9 @@ class SessionPresence:
     def __init__(self, root: str | Path, max_wake_depth: int = 3):
         self.root = Path(root)
         self.max_wake_depth = max_wake_depth
+        #: The process's config (presence_for sets it): what a wake is judged by
+        #: before it is started (_wake_refusal). None: nothing to judge by.
+        self.system_config: Any = None
         self._held: dict[Path, _Hold] = {}
         self._guard = threading.Lock()
 
@@ -571,6 +574,39 @@ class SessionPresence:
                 # replace the answer they are on their way out with, or mask
                 # the exception already in flight. hold() guards the same way.
                 logger.warning("Session presence: waking %s: %s", session_id, exc)
+
+    def _wake_refusal(self, user_id: str, stored: Optional[dict[str, Any]]) -> str:
+        """Why the woken run would be refused by its agent's role gate, or "".
+
+        Judged as the woken process will judge it (Agent._run_denial there):
+        agent-cli runs the agent it picks for the session -- the stored one,
+        or the config's default where the config no longer defines that one
+        (cli_utils.session_defaults, the same two calls) -- as the session's
+        user, and it trusts the local operator. The agent's gate is read from
+        this process's config; one changed on disk since is the woken process's
+        to apply, and its refusal then stops the chain there. A config that
+        does not resolve leaves the decision to that process as well.
+        """
+        config = self.system_config
+        if config is None:
+            return ""
+        from ..auth.agent_access import agent_run_denial
+        from ..cli_utils.session_defaults import choose_agent_name, usable_session_defaults
+        from ..config.settings import get_tool_server_config
+        # A session file that is missing or unreadable names no agent: agent-cli
+        # then runs the config's default one, and that one is judged.
+        usable, _ = usable_session_defaults((stored or {}).get("agent") or None, None, config)
+        agent_name = choose_agent_name(None, usable, getattr(config, "default_agent", None))
+        if not agent_name:
+            return ""
+        try:
+            merged = get_tool_server_config(agent_name, config)
+        except Exception as exc:  # noqa: BLE001 - the woken run decides, as before
+            logger.debug("Session presence: no gate for %s (%s)", agent_name, exc)
+            return ""
+        min_role = merged.metadata.min_role if merged is not None and merged.metadata is not None else None
+        reason = agent_run_denial(min_role, user_id, getattr(config, "auth", None), local_operator=True)
+        return f"its agent '{agent_name}' may not be run by '{user_id}': {reason}" if reason else ""
 
     @staticmethod
     def _touch_stopped(path: Path, session_id: str) -> None:
@@ -710,6 +746,15 @@ class SessionPresence:
                 if depth >= self.max_wake_depth:
                     waiting = False
                     return "queued", "wake chain limit reached; it reads the input on its next run"
+                refusal = self._wake_refusal(user_id, stored)
+                if refusal:
+                    # Not started: the run would be refused, and its letting go
+                    # would ring again -- one refused agent-cli per ring, up to
+                    # max_wake_depth, for input that never gets read. The marker
+                    # stays (waiting): once the user may run the agent, the next
+                    # ring wakes it.
+                    logger.warning("Session presence: not waking %s: %s", session_id, refusal)
+                    return "queued", refusal
                 # This process is the one holding the file now, and starting
                 # a run takes milliseconds: without the marker a run beginning
                 # in that window reads the locked file as a session that runs
@@ -756,6 +801,7 @@ def presence_for(system_config: Any) -> Optional[SessionPresence]:
             _stores[root] = SessionPresence(root)
         store = _stores[root]
     store.max_wake_depth = config.max_wake_depth
+    store.system_config = system_config
     return store
 
 

@@ -71,6 +71,10 @@ POST /plugins/ask_user/answer   {"question_id", "choices": [...], "text": "..."}
 GET  /plugins/ask_user/pending  [?session_id=…&request_id=…]
 ```
 
+`session_id` also finds the questions asked in the sessions of the agents that
+session called as tools, and of the agents those called in turn (each runs on
+one of its own, below its caller's).
+
 `choices` are option texts as the question lists them; `text` is free text
 (at most 4000 characters). At least one of the two. More than one choice only
 with `multi_select`. An answer that does not fit is refused with 422 and the

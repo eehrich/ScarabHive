@@ -44,6 +44,40 @@ def bubblewrap(monkeypatch):
     monkeypatch.setattr(ps, "_select_backend", lambda: ps._Bubblewrap("/usr/bin/bwrap"))
 
 
+
+#: How a process gets started: (module, function). Counted as calls in the parsed source, so a comment that
+#: names one does not count, and a spawn written in any of these forms does.
+SPAWN_CALLS = frozenset({
+    ("asyncio", "create_subprocess_exec"), ("asyncio", "create_subprocess_shell"),
+    ("subprocess", "Popen"), ("subprocess", "run"), ("subprocess", "call"),
+    ("subprocess", "check_output"), ("subprocess", "check_call"),
+    ("os", "system"), ("os", "popen"), ("pty", "spawn"),
+})
+#: Imported bare, these names say what they do; ``run``, ``call`` and ``system`` would not.
+BARE_SPAWN_NAMES = frozenset({"create_subprocess_exec", "create_subprocess_shell", "Popen", "check_output",
+                              "check_call"})
+
+
+def _calls(module, match):
+    """How many calls in *module*'s source have a callee *match* accepts."""
+    import ast
+    import inspect
+
+    return sum(1 for node in ast.walk(ast.parse(inspect.getsource(module)))
+               if isinstance(node, ast.Call) and match(node.func))
+
+
+def _is_spawn(func):
+    import ast
+
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return (func.value.id, func.attr) in SPAWN_CALLS
+    return isinstance(func, ast.Name) and func.id in BARE_SPAWN_NAMES
+
+
+def _spawn_sites(module):
+    return _calls(module, _is_spawn)
+
 class TestFullAccessChangesNothing:
     """The default must leave existing deployments exactly as they were."""
 
@@ -296,24 +330,22 @@ class TestTerminalPluginUsesIt:
         assert not target.exists(), "the command ran despite an unusable sandbox"
 
     def test_every_spawn_goes_through_confine(self):
-        """Anti-drift: a fourth spawn site added later must not skip the cage.
+        """Anti-drift: a third spawn site added later must not skip the cage.
 
-        Note on coverage honesty: two of the three sites are the one-shot
-        execution paths and were verified live. The third belongs to
-        ``PersistentTerminal``, which nothing currently instantiates —
-        ``default_terminal`` is only ever None. Its wiring is precautionary,
-        so that reviving the class does not revive an unconfined spawn.
+        The two sites are the one-shot execution paths (execute and
+        execute_background), both verified live. ``PersistentTerminal``, which
+        nothing ever instantiated, and its spawn site are gone.
         """
         import inspect
 
         from plugins.terminal import executor
 
         src = inspect.getsource(executor)
-        spawns = src.count("create_subprocess_exec(")
+        spawns = _spawn_sites(executor)
         # Both call forms count: direct `.sandbox.confine(...)` and the
         # off-loop `asyncio.to_thread(self.sandbox.confine, ...)` (the first
         # confine() probes the backend with a blocking subprocess.run).
         confines = src.count(".sandbox.confine(") + src.count(".sandbox.confine,")
-        assert spawns == 3, f"spawn sites changed ({spawns}) — re-check the wiring"
+        assert spawns == 2, f"spawn sites changed ({spawns}) — re-check the wiring"
         assert confines == spawns, \
             f"{spawns} spawn sites but {confines} confine() calls"

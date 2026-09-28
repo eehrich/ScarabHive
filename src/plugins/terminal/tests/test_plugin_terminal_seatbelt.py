@@ -48,7 +48,7 @@ class TestWorkspaceWrite:
         try:
             result = await run(server, f"echo in > inside.txt && echo out > '{area.out}/o.txt'")
         finally:
-            await server.executor.cleanup()
+            await server.cleanup()
 
         # Not a plugin error: the command ran and failed on its own.
         assert result["status"] == "success"
@@ -64,7 +64,7 @@ class TestWorkspaceWrite:
         try:
             result = await run(server, "cat > note.txt <<'EOF'\nfrom a heredoc\nEOF")
         finally:
-            await server.executor.cleanup()
+            await server.cleanup()
 
         assert result["exit_code"] == 0, result["stdout"]
         assert (area.ws / "note.txt").read_text() == "from a heredoc\n"
@@ -78,7 +78,7 @@ class TestWorkspaceWrite:
             assert started["status"] == "success", started
             await started["process"].communicate()
         finally:
-            await server.executor.cleanup()
+            await server.cleanup()
 
         assert (area.ws / "bg_in.txt").exists()
         assert not (area.out / "bg_out.txt").exists()
@@ -92,7 +92,7 @@ class TestReadOnly:
             refused = await run(server, "echo x > inside.txt")
             read = await run(server, f"cat '{area.out}/readable.txt'")
         finally:
-            await server.executor.cleanup()
+            await server.cleanup()
 
         assert refused["exit_code"] != 0
         assert not (area.ws / "inside.txt").exists()

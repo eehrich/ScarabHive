@@ -25,6 +25,9 @@ from agent_system.config.models import (
 from agent_system.services.session_manager import SessionManager
 from agent_system.services.session_service import SessionService
 
+#: The real one, before the fixture replaces it with a fake.
+REAL_RUN_AGENT_REQUEST = agent_run.run_agent_request
+
 STORED_AGENT = "stored_agent"
 STORED_PROFILE = "profile_stored"
 AGENT_DEFAULT_PROFILE = "profile_agent_default"
@@ -395,3 +398,20 @@ class TestARefusedRunExits1:
 
         assert failed.value.code == 1
         assert "cannot continue session 's1'" in capsys.readouterr().err
+
+
+def test_a_run_refused_before_it_ran_is_not_saved(run_env, monkeypatch):
+    """The agent refused the run before it started (Agent.run_events: its role gate, another user's session,
+    another run's lock). It ran nothing; saved, the session's record was rewritten with this run's agent and
+    profile and its updated_at moved."""
+    async def refused(self, task, request_id=None, session_id=None, **kwargs):
+        yield {"type": "error", "message": "refused", "request_id": request_id, "error_type": "agent_role_gate"}
+        yield {"type": "end"}
+
+    monkeypatch.setattr(agent_run, "run_agent_request", REAL_RUN_AGENT_REQUEST)
+    monkeypatch.setattr(_DummyAgent, "run_events", refused, raising=False)
+
+    _run(session_id="s1")
+
+    assert run_env.seen["saved"] == {}, f"a refused run was saved: {run_env.seen['saved']}"
+

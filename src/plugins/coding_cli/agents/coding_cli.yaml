@@ -69,3 +69,7 @@ plugins:
         tools:
           allowed:
             - "+coding_cli/*"
+
+      metadata:
+        # role gate (auth/agent_access.py): Claude Code on the operator's subscription, in this checkout
+        min_role: "admin"
