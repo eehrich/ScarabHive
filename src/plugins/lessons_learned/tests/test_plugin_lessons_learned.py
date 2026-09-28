@@ -1381,6 +1381,16 @@ async def test_a_merge_indexes_the_primary_by_its_own_text(server):
     assert dict(zip(stored["ids"][0], stored["documents"][0])) == {primary["lesson_id"]: "Pin the data dir. Relative."}
 
 
+async def until(predicate, timeout: float = 5.0) -> None:
+    """Wait for a step another task reaches, not for a fixed time: a slow run
+    would otherwise act before the step and fail on its own setup check."""
+    for _ in range(int(timeout / 0.01)):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the step was never reached")
+
+
 class TestTheIndexHeals:
     """A lesson stored while the model was missing has a row and no vector.
     Nothing wrote the vector again unless the text changed, so search and the
@@ -1471,7 +1481,7 @@ class TestTheIndexHeals:
     async def test_a_heal_under_way_does_not_swallow_a_loss(self, server):
         """A store whose add failed while a heal of the same agent was adding:
         the heal marked the agent afterwards, and the lesson stayed out."""
-        real_add, gate = server.vector_store.add, threading.Event()
+        real_add, gate, waiting = server.vector_store.add, threading.Event(), []
 
         def no_add(**kwargs):
             raise RuntimeError("index full")
@@ -1482,12 +1492,13 @@ class TestTheIndexHeals:
         def add(**kwargs):  # the heal's add of `earlier` waits; any other add fails
             if kwargs["ids"] != [earlier["lesson_id"]]:
                 raise RuntimeError("index full")
+            waiting.append(1)
             gate.wait(5)
             real_add(**kwargs)
 
         server.vector_store.add = add
         heal = asyncio.create_task(server._heal_index("a"))
-        await asyncio.sleep(0.2)  # the heal waits in its add
+        await until(lambda: waiting)  # the heal waits in its add
         stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.",
                                            status="active")
         gate.set()
@@ -1510,16 +1521,17 @@ class TestTheIndexHeals:
         stored = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
         pin = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
         monkeypatch.undo()
-        real_add, gate, written = server.vector_store.add, threading.Event(), []
+        real_add, gate, written, waiting = server.vector_store.add, threading.Event(), [], []
 
         def add(**kwargs):  # the heal's add waits until the lesson is gone
+            waiting.append(1)
             gate.wait(5)
             real_add(**kwargs)
             written.extend(kwargs["ids"])
 
         server.vector_store.add = add
         heal = asyncio.create_task(server._heal_index("a"))
-        await asyncio.sleep(0.2)
+        await until(lambda: waiting)
         server.vector_store.add = real_add  # the removal's own adds go through
         if removal == "delete":
             await server.delete_lesson(stored["lesson_id"])
@@ -1540,10 +1552,182 @@ class TestTheIndexHeals:
         assert stored["lesson_id"] not in left
         assert not dedup.is_duplicate
 
+    @staticmethod
+    def documents(server, agent: str) -> dict:
+        """What each vector of ``agent``'s collection was made of."""
+        collection = server._collection_name(agent)
+        ids = server.vector_store.list_ids(collection)
+        got = server.vector_store.query(collection=collection, query_text="lesson", n_results=max(len(ids), 1),
+                                        include=["documents"])
+        return dict(zip(got["ids"][0], got["documents"][0])) if ids else {}
+
+    async def test_an_update_that_was_not_re_indexed_heals_to_the_new_text(self, server):
+        """Search matched what the lesson used to say, for good: the id was
+        there, so nothing looked missing."""
+        await server.check_duplicate("a", "Anything", "At all")  # "a" reconciled: only a loss re-opens it
+        stored = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        real_add = server.vector_store.add
+
+        def no_add(**kwargs):
+            raise RuntimeError("index full")
+
+        server.vector_store.add = no_add
+        updated = await server.update_lesson(stored["lesson_id"], content="Pour it cold.")
+        server.vector_store.add = real_add
+        assert updated["warnings"], "the re-index did not fail -- this proves nothing"
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert self.documents(server, "a") == {stored["lesson_id"]: "Tea. Pour it cold."}
+
+    async def test_a_merge_that_was_not_re_indexed_heals_to_the_merged_text(self, server):
+        pin = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+        tea = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        await server.check_duplicate("a", "Anything", "At all")  # "a" reconciled: only a loss re-opens it
+        lessons = [await server.get_lesson(pin["lesson_id"]), await server.get_lesson(tea["lesson_id"])]
+        real_add = server.vector_store.add
+
+        def no_add(**kwargs):
+            raise RuntimeError("index full")
+
+        server.vector_store.add = no_add
+        merged = await server._execute_merge(agent="a", lessons=lessons, merge_decision={
+            "primary_id": pin["lesson_id"], "title": "Pin it", "content": "Always relative."})
+        server.vector_store.add = real_add
+        assert merged["warnings"], "the re-index did not fail -- this proves nothing"
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert self.documents(server, "a") == {pin["lesson_id"]: "Pin it. Always relative."}
+
+    async def test_a_heal_of_current_vectors_embeds_nothing(self, server):
+        """Every write names its text; without that the heal would take every
+        vector for an old one and embed them all again in each process."""
+        await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        stored = await server.store_lesson(agent_name="a", title="Pin", content="Relative.")
+        await server.update_lesson(stored["lesson_id"], content="Always relative.")
+        real_add, adds = server.vector_store.add, []
+        server.vector_store.add = lambda **kwargs: adds.append(kwargs["ids"]) or real_add(**kwargs)
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert adds == []
+
+    async def test_a_vector_from_before_the_text_hash_is_re_embedded_once(self, server):
+        """Entries written before text_hash carry no proof of their text; one of
+        them may well be old (an update that failed back then)."""
+        stored = await server.store_lesson(agent_name="a", title="Tea", content="Pour it cold.")
+        # delete first: an upsert merges metadata, and the text_hash just written would stay
+        server.vector_store.delete(collection=server._collection_name("a"), ids=[stored["lesson_id"]])
+        server.vector_store.add(collection=server._collection_name("a"), ids=[stored["lesson_id"]],
+                                documents=["Tea. Steep the leaves."],
+                                metadatas=[{"lesson_id": stored["lesson_id"], "agent_name": "a"}])
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert self.documents(server, "a") == {stored["lesson_id"]: "Tea. Pour it cold."}
+
+    async def test_a_text_edited_while_the_heal_writes_ends_as_the_new_text(self, server, monkeypatch):
+        """The heal writes the text it read; an edit landing meanwhile, with its
+        own write before the heal's, left the old text on the vector."""
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        monkeypatch.undo()
+        real_add, gate, calls = server.vector_store.add, threading.Event(), []
+
+        def add(**kwargs):  # the heal's first add waits until the edit is written
+            calls.append(kwargs["documents"])
+            if len(calls) == 1:
+                gate.wait(5)
+            real_add(**kwargs)
+
+        server.vector_store.add = add
+        heal = asyncio.create_task(server._heal_index("a"))
+        await until(lambda: calls)
+        await server.update_lesson(stored["lesson_id"], content="Pour it cold.")
+        gate.set()
+        await heal
+        server.vector_store.add = real_add
+        assert calls[0] == ["Tea. Steep the leaves."], "the heal did not write the old text -- this proves nothing"
+
+        assert self.documents(server, "a") == {stored["lesson_id"]: "Tea. Pour it cold."}
+
+    async def test_a_merge_does_not_write_back_a_text_read_before_an_edit(self, server):
+        """Consolidation reads the lessons before the LLM judges them; the merge
+        then wrote the primary's vector from that read, over an edit made in
+        between."""
+        pin = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+        tea = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        lessons = [await server.get_lesson(pin["lesson_id"]), await server.get_lesson(tea["lesson_id"])]
+        await server.update_lesson(pin["lesson_id"], content="Always relative.")  # while the LLM judges
+
+        await server._execute_merge(agent="a", lessons=lessons, merge_decision={"primary_id": pin["lesson_id"]})
+
+        assert self.documents(server, "a") == {pin["lesson_id"]: "Pin the data dir. Always relative."}
+
+    async def test_two_edits_inside_a_heal_do_not_leave_the_older_text(self, server, monkeypatch):
+        """The heal's correction after its check can be overtaken by a second
+        edit; it then must not mark the agent, so the next query puts it right."""
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        monkeypatch.undo()
+        real_add, gates, calls = server.vector_store.add, [threading.Event(), threading.Event()], []
+
+        def add(**kwargs):  # the heal's two writes wait; the edits' own writes pass
+            calls.append(kwargs["documents"])
+            if len(calls) in (1, 3):
+                gates[len(calls) // 3].wait(5)
+            real_add(**kwargs)
+
+        server.vector_store.add = add
+        heal = asyncio.create_task(server._heal_index("a"))
+        await until(lambda: len(calls) >= 1)
+        await server.update_lesson(stored["lesson_id"], content="Pour it cold.")  # call 2
+        gates[0].set()
+        await until(lambda: len(calls) >= 3)  # the heal's check saw the edit; its correction waits
+        await server.update_lesson(stored["lesson_id"], content="Serve it iced.")  # call 4
+        gates[1].set()
+        await heal
+        server.vector_store.add = real_add
+        assert calls[2] == ["Tea. Pour it cold."], "the heal's correction did not overtake -- this proves nothing"
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert self.documents(server, "a") == {stored["lesson_id"]: "Tea. Serve it iced."}
+
+    async def test_a_lesson_moved_back_while_its_stale_vector_goes_is_indexed_again(self, server):
+        """The heal deletes a stale vector it found earlier; a lesson moved back
+        into the collection meanwhile lost its fresh vector to that delete, and
+        the heal marked the agent done."""
+        stored = await server.store_lesson(agent_name="b", title="Tea", content="Steep the leaves.")
+        entry = {"document": "Tea. Steep the leaves.", "metadata": {"lesson_id": stored["lesson_id"], "agent_name": "a"}}
+        server.vector_store.add(collection=server._collection_name("a"), ids=[stored["lesson_id"]],
+                                documents=[entry["document"]], metadatas=[entry["metadata"]])  # a failed move left it
+        real_delete, gate, blocked = server.vector_store.delete, threading.Event(), []
+
+        def delete(**kwargs):  # the heal's stale delete in "a" waits until the lesson is back
+            if kwargs["collection"] == server._collection_name("a") and not blocked:
+                blocked.append(kwargs["ids"])
+                gate.wait(5)
+            real_delete(**kwargs)
+
+        server.vector_store.delete = delete
+        heal = asyncio.create_task(server._heal_index("a"))
+        await until(lambda: blocked)
+        await server.update_lesson(stored["lesson_id"], agent_name="a")  # its own add to "a" lands first
+        gate.set()
+        await heal
+        server.vector_store.delete = real_delete
+        assert blocked == [[stored["lesson_id"]]], "the heal deleted nothing stale -- this proves nothing"
+
+        await server.check_duplicate("a", "Anything", "At all")
+
+        assert stored["lesson_id"] in server.vector_store.list_ids(server._collection_name("a"))
+
     async def test_the_ids_are_read_once_per_agent(self, server):
         await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.", status="active")
-        real, calls = server.vector_store.list_ids, []
-        server.vector_store.list_ids = lambda collection: calls.append(collection) or real(collection)
+        real, calls = server.vector_store.list_entries, []
+        server.vector_store.list_entries = lambda collection: calls.append(collection) or real(collection)
 
         await server.search_lessons("data dir", agent_name="a")
         await server.check_duplicate("a", "Pin the data dir", "Relative.")

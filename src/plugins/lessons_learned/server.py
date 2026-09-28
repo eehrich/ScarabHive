@@ -8,6 +8,7 @@ persistent lessons that agents learn across sessions.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -95,6 +96,16 @@ def _tags(value: Any) -> List[str]:
 
 def _reason(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"[:300]
+
+
+def _vector_entry(lesson_id: str, agent_name: str, category: Any, title: Any, content: Any) -> Dict[str, Any]:
+    """Document and metadata of a lesson's vector. ``text_hash`` names the text
+    the vector was made of, so a heal can tell a stale vector from a current
+    one -- the id alone says only that there is one."""
+    text = f"{title}. {content}"
+    return {"document": text,
+            "metadata": {"lesson_id": lesson_id, "agent_name": agent_name, "category": category,
+                         "text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}}
 
 
 def _unchecked(result: Dict[str, Any], dedup: DeduplicationResult) -> Dict[str, Any]:
@@ -315,19 +326,24 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         Missing: a lesson stored while the embedding model was missing stayed
         out of search and the duplicate check for good -- nothing writes its
-        vector again unless its text changes. Stale: a vector whose delete
+        vector again unless its text changes. Orphaned: a vector whose delete
         failed outlived its row, and the duplicate check then answered with a
-        lesson that no longer exists, at every store of that text.
+        lesson that no longer exists, at every store of that text. Old text: a
+        re-index that failed left search matching what the lesson used to say
+        (the vector's ``text_hash`` against the row's text).
 
-        Once per agent and process: finding the gap needs only ids, embedding
-        runs only for what is missing. Raises what the store raises; every
-        caller is about to query the same store and reports it.
+        Once per agent and process: finding the gap needs only ids and
+        metadata, embedding runs only for what is missing or old. Raises what
+        the store raises; every caller is about to query the same store and
+        reports it.
         """
         if agent_name in self._indexed_agents:
             return
         losses = self._index_losses.get(agent_name, 0)
         collection = self._collection_name(agent_name)
-        indexed = await asyncio.to_thread(self.vector_store.list_ids, collection)
+        entries = await asyncio.to_thread(self.vector_store.list_entries, collection)
+        indexed = [entry["id"] for entry in entries]
+        written = {entry["id"]: entry["metadata"].get("text_hash") for entry in entries}
         # The rows AFTER the ids: a vector is written after its row commits and
         # deleted after its row is gone, so an id listed here whose row is
         # missing -- or belongs to an agent of another collection, left by a
@@ -345,35 +361,53 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         if stale:
             await asyncio.to_thread(self.vector_store.delete, collection=collection, ids=stale)
             logger.info(f"Removed {len(stale)} vector(s) without their lesson from '{collection}'")
-        present = set(indexed)
-        missing = [row for row in rows if row["lesson_id"] not in present]
-        if missing:
-            await asyncio.to_thread(
-                self.vector_store.add,
-                collection=collection,
-                ids=[row["lesson_id"] for row in missing],
-                documents=[f"{row['title']}. {row['content']}" for row in missing],
-                metadatas=[{"lesson_id": row["lesson_id"], "agent_name": agent_name, "category": row["category"]}
-                           for row in missing],
-            )
-            logger.info(f"Indexed {len(missing)} lesson(s) of '{agent_name}' that had no vector")
-            # A row read above may be gone by now -- deleted or moved, in this
-            # process or another -- and its vector just came back. Gone before
-            # this check: removed here. Gone after it: the deleter's own vector
+        async def write(batch: Dict[str, Dict[str, Any]]) -> None:
+            await asyncio.to_thread(self.vector_store.add, collection=collection, ids=list(batch),
+                                    documents=[entry["document"] for entry in batch.values()],
+                                    metadatas=[entry["metadata"] for entry in batch.values()])
+
+        # No vector, or one made of another text than the row holds: a
+        # re-index that failed, or an entry from before text_hash (re-embedded
+        # once).
+        wanted = {row["lesson_id"]: _vector_entry(row["lesson_id"], agent_name, row["category"],
+                                                  row["title"], row["content"]) for row in rows}
+        todo = {lesson_id: entry for lesson_id, entry in wanted.items()
+                if written.get(lesson_id) != entry["metadata"]["text_hash"]}
+        # Every write and delete here acts on what was read before it; one that
+        # did anything may have met a change landing meanwhile (a lesson moved
+        # back into this collection just before its stale vector was deleted).
+        settled = not stale
+        if todo:
+            await write(todo)
+            logger.info(f"Indexed {len(todo)} lesson(s) of '{agent_name}' that had no vector or an old one")
+            # A row read above may have changed by now -- deleted, moved or
+            # edited, in this process or another -- and what was just written
+            # is then an orphan or an old text. Changed before this check: put
+            # right here. Changed after it: the writer's own vector write or
             # delete follows its commit, so it follows this add too.
-            added = [row["lesson_id"] for row in missing]
             conn = self._get_connection()
             try:
-                now = {row[0]: row[1] for row in conn.execute(
-                    f"SELECT lesson_id, agent_name FROM lessons WHERE lesson_id IN ({','.join('?' * len(added))})",
-                    added)}
+                now = {row["lesson_id"]: row for row in conn.execute(
+                    "SELECT lesson_id, agent_name, category, title, content FROM lessons "
+                    f"WHERE lesson_id IN ({','.join('?' * len(todo))})", list(todo))}
             finally:
                 conn.close()
-            gone = [lesson_id for lesson_id in added
-                    if lesson_id not in now or self._collection_name(now[lesson_id]) != collection]
+            gone = [lesson_id for lesson_id in todo
+                    if lesson_id not in now or self._collection_name(now[lesson_id]["agent_name"]) != collection]
             if gone:
                 await asyncio.to_thread(self.vector_store.delete, collection=collection, ids=gone)
-        if self._index_losses.get(agent_name, 0) == losses:  # nothing failed meanwhile
+            current = {lesson_id: _vector_entry(lesson_id, row["agent_name"], row["category"], row["title"],
+                                                row["content"])
+                       for lesson_id, row in now.items() if lesson_id not in gone}
+            edited = {lesson_id: entry for lesson_id, entry in current.items()
+                      if entry["metadata"]["text_hash"] != todo[lesson_id]["metadata"]["text_hash"]}
+            if edited:
+                await write(edited)
+            # These two corrections happen after the check, so a second change
+            # to the same lesson can overtake them. Rare -- but then the next
+            # query reconciles by hash rather than trusting them.
+            settled = settled and not gone and not edited
+        if settled and self._index_losses.get(agent_name, 0) == losses:  # nothing failed meanwhile
             self._indexed_agents.add(agent_name)
 
     # ==========================================================================
@@ -452,13 +486,13 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         # Store in VectorStore for semantic search
         warnings: List[str] = []
         try:
-            vector_text = f"{title}. {content}"
+            entry = _vector_entry(lesson_id, agent_name, category, title, content)
             await asyncio.to_thread(
                 self.vector_store.add,
                 collection=self._collection_name(agent_name),
                 ids=[lesson_id],
-                documents=[vector_text],
-                metadatas=[{"lesson_id": lesson_id, "agent_name": agent_name, "category": category}],
+                documents=[entry["document"]],
+                metadatas=[entry["metadata"]],
             )
         except Exception as e:
             # The row stands, so "stored" is true -- but search and the
@@ -695,12 +729,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             lesson = await self.get_lesson(lesson_id)
             if lesson:
                 new_agent_name = lesson["agent_name"]
-                vector_text = f"{lesson['title']}. {lesson['content']}"
-                metadata = {
-                    "lesson_id": lesson_id,
-                    "agent_name": new_agent_name,
-                    "category": lesson["category"]
-                }
+                entry = _vector_entry(lesson_id, new_agent_name, lesson["category"], lesson["title"],
+                                      lesson["content"])
 
                 try:
                     # Add/update in the (new) collection first: deleting from
@@ -710,8 +740,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                         self.vector_store.add,
                         collection=self._collection_name(new_agent_name),
                         ids=[lesson_id],
-                        documents=[vector_text],
-                        metadatas=[metadata],
+                        documents=[entry["document"]],
+                        metadatas=[entry["metadata"]],
                     )
                     # Two names can share a collection (web-research, web_research):
                     # the delete would then remove the vector just written.
@@ -1515,8 +1545,14 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         if new_priority:
             update_fields["priority"] = _priority(new_priority)
 
+        # update_lesson re-indexes the primary when its text changes, from the
+        # row as it stands; with the text unchanged the vector is current
+        # already (the scan before healed it). The merge used to write its own
+        # vector afterwards, from the lessons read before the LLM call -- over
+        # an edit made meanwhile.
+        warnings: List[str] = []
         if update_fields:
-            await self.update_lesson(primary_id, **update_fields)
+            warnings = (await self.update_lesson(primary_id, **update_fields)).get("warnings", [])
 
         # Update evidence count and confidence on primary
         conn = self._get_connection()
@@ -1563,26 +1599,6 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             except Exception as e:
                 logger.debug(f"VectorStore delete after merge failed: {e}")
                 self._index_lost(agent)
-
-        # Re-index primary in VectorStore
-        warnings: List[str] = []
-        try:
-            # What the primary holds now: its own row where the merge left a
-            # field out -- lessons[0] may be a duplicate just deleted.
-            primary = next(lesson for lesson in lessons if lesson["lesson_id"] == primary_id)
-            vector_text = (f"{update_fields.get('title', primary['title'])}. "
-                           f"{update_fields.get('content', primary['content'])}")
-            await asyncio.to_thread(
-                self.vector_store.add,
-                collection=self._collection_name(agent),
-                ids=[primary_id],
-                documents=[vector_text],
-                metadatas=[{"lesson_id": primary_id, "agent_name": agent}],
-            )
-        except Exception as e:
-            logger.warning(f"VectorStore re-index after merge failed: {e}")
-            warnings.append(f"{primary_id} not re-indexed ({_reason(e)}): search and the "
-                            "duplicate check do not see its merged version.")
 
         merged: Dict[str, Any] = {
             "action": "merged",

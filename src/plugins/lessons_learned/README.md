@@ -578,11 +578,13 @@ indexes fail returns the hits it has plus `warnings` naming the others.
 
 Once the store works again, the first search, duplicate check or consolidation
 of an agent in a process reconciles that agent's collection with the rows
-(`_heal_index`): lessons with a row but no vector are indexed, and vectors whose
-row is gone (a delete that failed) or belongs to an agent of another collection
-(a move that failed halfway) are removed — judged per collection, since two
-agent names can share one. Any failed vector write or delete makes the next
-query of that agent reconcile again.
+(`_heal_index`): lessons with a row but no vector are indexed, a vector made of
+another text than the row holds (its `text_hash` metadata; a re-index that
+failed) is re-embedded, and vectors whose row is gone (a delete that failed) or
+belongs to an agent of another collection (a move that failed halfway) are
+removed — judged per collection, since two agent names can share one. Vectors
+written before `text_hash` existed are re-embedded once. Any failed vector
+write or delete makes the next query of that agent reconcile again.
 
 ### Confidence Dynamics
 
