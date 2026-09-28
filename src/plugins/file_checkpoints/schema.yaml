@@ -1,0 +1,103 @@
+# Hook definitions for the file_checkpoints plugin.
+# Convention: hook name must match method name exactly.
+#
+# Off for every agent; an agent switches BOTH on (full names: <instance>.<hook>):
+#   hooks.overrides:
+#     file_checkpoints.record_before_change: {enabled: true}
+#     file_checkpoints.record_after_change: {enabled: true}
+# One without the other records nothing (and says so in the log): what a call
+# left is how a rewind tells the agent's change from one made outside it.
+
+hooks:
+  - name: record_before_change
+    type: pre_tool_call
+    enabled: false
+    # Reads and copies the files a call is about to change; a recursive delete
+    # of a big tree is the slow case (bounded by max_entries_per_call and
+    # max_call_bytes). A hook that times out lets the call run unrecorded.
+    timeout: 60
+    category: file_checkpoints
+    description: >
+      Before a call that changes files (file_ops create/replace/delete/move/
+      rename, media_ops save): records how each of those files looks now, once
+      per turn and path. Calls that change files without naming them (a shell
+      command) are counted, so a rewind can say they ran.
+    # Last in the chain: after the hooks that change arguments and after
+    # tool_approval -- a call blocked there is not recorded, and the arguments
+    # recorded are the ones the call runs with.
+    order:
+      after: ["begin", "tool_arguments", "tool_approval"]
+
+  - name: record_after_change
+    type: post_tool_call
+    enabled: false
+    timeout: 60
+    category: file_checkpoints
+    description: >
+      After such a call: records what it left, so a rewind can tell a file the
+      agent changed from one changed outside it since.
+
+# Defaults -- overridable in plugins.yaml (config:). Per agent only the two
+# switches above: every agent of a session writes into the same record.
+config:
+  storage_path:
+    type: string
+    default: ""
+    description: >
+      Where the records live: <storage_path>/<user>/<session>/. Empty: a
+      directory file_checkpoints beside the session directory
+      (data/file_checkpoints, or next to AGENT_SESSION_STORAGE_PATH). Relative
+      paths count against the installation.
+
+  max_checkpoints:
+    type: integer
+    default: 50
+    description: >
+      Turns with recorded changes kept per session. The oldest one is
+      forgotten when a new turn goes beyond it -- the files stay as they are,
+      only rewinding that far back is no longer possible.
+
+  max_file_bytes:
+    type: integer
+    default: 10485760
+    description: >
+      A file larger than this is not copied: its change is recorded, and a
+      rewind names it instead of putting it back.
+
+  max_call_bytes:
+    type: integer
+    default: 268435456
+    description: >
+      At most this much content copied for one call (a recursive delete of a
+      big tree); the rest of its files are recorded without their content.
+
+  max_session_bytes:
+    type: integer
+    default: 536870912
+    description: >
+      At most this much copied content per session. Older turns are forgotten
+      first; the turn being recorded never is.
+
+  max_entries_per_call:
+    type: integer
+    default: 2000
+    description: >
+      A directory a call deletes or moves with more entries than this is
+      recorded as one directory whose contents were not kept.
+
+  retention_days:
+    type: number
+    default: 0
+    description: >
+      Records untouched for this many days are deleted (at start and once a
+      day while recording). 0: never -- deleting is the operator's decision.
+      The record of a deleted or archived session stays until then.
+
+  untracked_tools:
+    type: array
+    default: []
+    description: >
+      More "server_type/tool" patterns (fnmatch) for calls that change files
+      without naming them, beyond the built-in list (terminal/execute,
+      coding_cli/run_task, blender, godot, audio_ops, image_compose, comfyui,
+      sqlite_query, stategraph). A rewind lists how often they ran.

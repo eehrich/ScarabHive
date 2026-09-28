@@ -990,6 +990,9 @@ async def delete_session(
             create_backup=create_backup
         )
         cancelled = await get_background_job_manager().cancel_session(session_id)
+        # The person's decision takes the session's file checkpoints with it (file_rewind).
+        from agent_system.file_rewind import forget_session_files
+        await forget_session_files(user_id, session_id)
 
         return {"status": "deleted", "session_id": session_id, "cancelled_requests": cancelled}
 

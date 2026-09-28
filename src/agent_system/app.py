@@ -2888,29 +2888,25 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return None
         return record.get("agent_name") or None
 
-    async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
-                                              force: bool = False) -> Any:
-        """Take the last exchange out of a session, and save what is left.
-
-        The mirror of _append_and_persist, claim and save included -- and the
-        cut itself is chat_actions.split_off_last_exchange, the one the
-        terminal chat uses, so both surfaces end a turn in the same place.
+    @asynccontextmanager
+    async def _held_for_a_write(owner_agent: Any, sid: str, user_id: str, force: bool, why: str):
+        """A session held for a write no run makes -- /undo's cut, a rewind of
+        the files its turns changed. Yields the conversation as the agent holds
+        it; ``why`` finishes the refusal ("what it is writing would ...").
 
         A session that is RUNNING is refused before anything is touched.
         _claim_session alone does not do it: holds nest inside a process, so a
         run of THIS process lets the claim through -- and then writes its whole
-        message list back when it finishes, putting the dropped exchange
-        straight back while the browser shows it gone.
+        message list back when it finishes (putting a dropped exchange straight
+        back while the browser shows it gone), or writes files while they are
+        put back.
         """
-        from .chat_actions import split_off_last_exchange
-
         presence = presence_for(getattr(owner_agent, "system_config", None))
         state = presence.get(sid, user_id) if presence is not None else None
         if state and state["status"] != "idle" and not force:
             raise HTTPException(
                 status_code=409,
-                detail=f"Session {sid} is {state['status']} -- what it is writing "
-                       f"would put the exchange back. Try again once it is done.")
+                detail=f"Session {sid} is {state['status']} -- {why}. Try again once it is done.")
 
         refusal, held = await _claim_session(owner_agent, sid, user_id, force)
         if refusal:
@@ -2919,11 +2915,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             async with _beside_the_runs(owner_agent, sid) as running:
                 if running is not None:
                     # A run of this agent has it (session presence off, or it took the session since the check
-                    # above): it writes its whole message list back when it finishes.
+                    # above).
                     raise HTTPException(
                         status_code=409,
-                        detail=f"Session {sid} is running -- what it is writing would put the exchange back. "
-                               f"Try again once it is done.")
+                        detail=f"Session {sid} is running -- {why}. Try again once it is done.")
                 tracker = owner_agent._session_tracker
                 messages = list(tracker.get_session_messages(sid) or [])
                 if not messages and _session_service:
@@ -2934,35 +2929,90 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     # back" about a conversation that is plainly on screen.
                     await _session_service.load_and_restore_session(owner_agent, user_id, sid)
                     messages = list(tracker.get_session_messages(sid) or [])
-                kept, dropped = split_off_last_exchange(messages)
-                if dropped is None:
-                    return None
-                tracker.set_session_messages(sid, kept)
-                if _session_service:
-                    metadata = tracker.get_session_metadata(sid) or {}
-                    # The agent's own default only where the record has none, and
-                    # read defensively: Agent.agent_config may be None (the agent
-                    # guards it itself), and reaching through it eagerly turns a
-                    # /undo into a 500.
-                    saved = await _session_service.save_session(
-                        owner_agent,
-                        user_id,
-                        sid,
-                        metadata.get("agent_name") or owner_agent.name,
-                        metadata.get("llm_profile") or getattr(
-                            getattr(owner_agent, "agent_config", None),
-                            "default_llm_profile", None) or "default",
-                        was_new_session=False,
-                    )
-                    if not saved:
-                        # Answered with the exchange gone while the record still has it -- and the cut left in
-                        # memory for the next save to write after all.
-                        tracker.set_session_messages(sid, messages)
-                        raise HTTPException(
-                            status_code=500, detail=f"Session {sid} could not be saved; nothing was taken back.")
-                return dropped
+                yield messages
         finally:
             _let_go(owner_agent, held, user_id)
+
+    def _file_rewinder_or_503() -> Any:
+        from .file_rewind import file_rewinder
+
+        rewinder = file_rewinder()
+        if rewinder is None:
+            raise HTTPException(
+                status_code=503,
+                detail="File checkpoints are off: the file_checkpoints plugin is not loaded.")
+        return rewinder
+
+    def _rewind_refusal(report: dict) -> None:
+        """Raise what a rewind that changed nothing -- or not everything -- says."""
+        from .file_rewind import PARTIAL, REFUSED, UNKNOWN_CHECKPOINT
+
+        status = report.get("status")
+        if status == UNKNOWN_CHECKPOINT:
+            raise HTTPException(status_code=404, detail=report.get("text") or "No such checkpoint")
+        if status == REFUSED:
+            raise HTTPException(status_code=409, detail=report.get("text") or "Files not rewound")
+        if status == PARTIAL:
+            raise HTTPException(status_code=500, detail=report.get("text") or "Files partly rewound")
+
+    async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
+                                              force: bool = False, files: Optional[dict] = None
+                                              ) -> tuple[Any, Optional[dict]]:
+        """Take the last exchange out of a session, and save what is left.
+        Returns (the question dropped or None, the file rewind's report or None).
+
+        The mirror of _append_and_persist, claim and save included -- and the
+        cut itself is chat_actions.split_off_last_exchange, the one the
+        terminal chat uses, so both surfaces end a turn in the same place.
+
+        ``files`` (``{"overwrite": bool}``) puts back the files the exchange
+        changed FIRST, under the same hold: a rewind that is refused (files
+        changed outside the agent) or goes only partly through leaves the
+        exchange where it is, so the person can look and try again.
+        """
+        from .chat_actions import split_off_last_exchange
+
+        rewinder = _file_rewinder_or_503() if files is not None else None
+        async with _held_for_a_write(owner_agent, sid, user_id, force,
+                                     "what it is writing would put the exchange back") as messages:
+            tracker = owner_agent._session_tracker
+            kept, dropped = split_off_last_exchange(messages)
+            if dropped is None:
+                return None, None
+            report = None
+            if rewinder is not None:
+                report = await rewinder.rewind(
+                    user_id=user_id, session_id=sid, messages=messages, checkpoint=None,
+                    registry=getattr(owner_agent, "registry", None),
+                    overwrite=bool(files.get("overwrite")))
+                _rewind_refusal(report)
+            tracker.set_session_messages(sid, kept)
+            if _session_service:
+                metadata = tracker.get_session_metadata(sid) or {}
+                # The agent's own default only where the record has none, and
+                # read defensively: Agent.agent_config may be None (the agent
+                # guards it itself), and reaching through it eagerly turns a
+                # /undo into a 500.
+                saved = await _session_service.save_session(
+                    owner_agent,
+                    user_id,
+                    sid,
+                    metadata.get("agent_name") or owner_agent.name,
+                    metadata.get("llm_profile") or getattr(
+                        getattr(owner_agent, "agent_config", None),
+                        "default_llm_profile", None) or "default",
+                    was_new_session=False,
+                )
+                if not saved:
+                    # Answered with the exchange gone while the record still has it -- and the cut left in
+                    # memory for the next save to write after all.
+                    tracker.set_session_messages(sid, messages)
+                    put_back = (report or {}).get("restored") or (report or {}).get("removed")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Session {sid} could not be saved; the exchange was not taken back"
+                               + (" -- its files WERE put back." if put_back else "."))
+            return dropped, report
 
     @app.post("/sessions")
     async def create_session():
@@ -3513,6 +3563,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             user_id=getattr(current_user, "username", None))
         return {"name": match.qualified, "text": text}
 
+    async def _session_agent_for(request: Request, session_id: str, user_id: str,
+                                 agent_name: Optional[str], current_user: Any) -> Any:
+        """The agent whose tracker holds the session, the owner checked against it.
+
+        The agent the SESSION ran with, before the one the caller names:
+        every agent carries its own SessionTracker, so cutting the wrong one
+        leaves the exchange standing in the right one -- and its next save
+        writes it back. The caller's name is the fallback for a session that
+        has no record yet. A turn settling the session first, though: its
+        agent holds the copy that turn puts back (_settling_agent).
+
+        The owner is checked against the tracker the caller is about to write,
+        not the entry agent's: a session that is not persisted yet has no owner
+        on disk, and the default tracker does not know it either -- so that
+        check passes for anybody (the IDOR _verify_session_owner documents).
+        """
+        target_agent = _settling_agent(request, session_id)
+        if target_agent is None:
+            ran_with = await _session_agent_name(session_id, user_id)
+            target_agent = _chat_agent(request, ran_with or agent_name)
+        if target_agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        await _verify_session_owner(session_id, current_user,
+                                    getattr(target_agent, "_session_tracker", None))
+        return target_agent
+
     @app.post("/chat/undo")
     async def chat_undo(request: Request, force: bool = Query(default=False)):
         """Drop the last question and everything that answered it.
@@ -3526,6 +3602,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         it in the input). Whether it carried a file is said, not sent: the
         browser attaches from the viewer's disk, and a data URL handed back
         would be a second, silent upload.
+
+        ``"files": true`` (`/undo files`) also puts back the files the
+        exchange changed, before it is dropped; ``"overwrite": true`` puts
+        back files changed outside the agent since as well. A rewind that is
+        refused answers 409 with what stands in the way, and the exchange
+        stays.
         """
         from .chat_actions import message_text, message_role
 
@@ -3540,29 +3622,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not session_id or not isinstance(session_id, str):
             raise HTTPException(status_code=400, detail="'session_id' is required")
 
-        # The agent the SESSION ran with, before the one the caller names:
-        # every agent carries its own SessionTracker, so cutting the wrong
-        # one leaves the exchange standing in the right one -- and its next
-        # save writes it back. The caller's name is the fallback for a session
-        # that has no record yet.
-        # A turn settling the session first, though: its agent holds the copy that turn puts back (_settling_agent).
-        target_agent = _settling_agent(request, session_id)
-        if target_agent is None:
-            ran_with = await _session_agent_name(session_id, user_id)
-            target_agent = _chat_agent(request, ran_with or body.get("agent_name"))
-        if target_agent is None:
-            raise HTTPException(status_code=404, detail="no such agent")
-        # Against the tracker this endpoint is about to write, not the entry
-        # agent's: a session that is not persisted yet has no owner on disk,
-        # and the default tracker does not know it either -- so that check
-        # passes for anybody (the IDOR _verify_session_owner documents).
-        await _verify_session_owner(session_id, current_user,
-                                    getattr(target_agent, "_session_tracker", None))
+        target_agent = await _session_agent_for(request, session_id, user_id, body.get("agent_name"),
+                                                current_user)
 
-        dropped = await _drop_last_exchange_and_persist(
-            target_agent, session_id, user_id, force)
+        files = {"overwrite": body.get("overwrite") is True} if body.get("files") is True else None
+        dropped, report = await _drop_last_exchange_and_persist(
+            target_agent, session_id, user_id, force, files=files)
         if dropped is None:
-            return {"session_id": session_id, "dropped": None}
+            return {"session_id": session_id, "dropped": None, "files": None}
         content = getattr(dropped, "content", None)
         return {
             "session_id": session_id,
@@ -3571,7 +3638,61 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "text": message_text(dropped),
                 "had_attachments": isinstance(content, list) and len(content) > 1,
             },
+            "files": report,
         }
+
+    @app.get("/chat/checkpoints")
+    async def chat_checkpoints(request: Request, session_id: str = Query(...),
+                               agent_name: Optional[str] = Query(default=None)):
+        """The file checkpoints of a session -- bare `/rewind`.
+
+        One per turn that changed files through the agent's file tools (the
+        file_checkpoints plugin records them), oldest first and numbered: the
+        number is what `/rewind <n>` takes. Read off the conversation as the
+        record has it, which is what the browser shows.
+        """
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        rewinder = _file_rewinder_or_503()
+        await _session_agent_for(request, session_id, user_id, agent_name, current_user)
+        record = await _session_record(session_id, user_id)
+        listing = await rewinder.checkpoints(user_id=user_id, session_id=session_id,
+                                             messages=record.get("messages") or [])
+        return {"session_id": session_id, **listing}
+
+    @app.post("/chat/rewind")
+    async def chat_rewind(request: Request, force: bool = Query(default=False)):
+        """Put the files back as they were before a checkpoint -- `/rewind <n>`.
+
+        Files only: the conversation stays as it is (`/undo files` takes the
+        last exchange and its files together). Body ``{"session_id",
+        "checkpoint": <n from /chat/checkpoints>, "overwrite": false}``. Held
+        like /undo's cut: refused while the session runs, since a run could
+        write files while they are put back. 409 when files were changed
+        outside the agent since (``overwrite`` puts them back anyway), 404 for
+        a number that names no checkpoint.
+        """
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        body = await _parse_json_body(request)
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        session_id = body.get("session_id")
+        if not session_id or not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="'session_id' is required")
+        checkpoint = body.get("checkpoint")
+        if isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 1:
+            raise HTTPException(status_code=400, detail="'checkpoint' is required: a number /rewind lists")
+        rewinder = _file_rewinder_or_503()
+        target_agent = await _session_agent_for(request, session_id, user_id, body.get("agent_name"),
+                                                current_user)
+        async with _held_for_a_write(target_agent, session_id, user_id, force,
+                                     "it may write files while they are put back") as messages:
+            report = await rewinder.rewind(
+                user_id=user_id, session_id=session_id, messages=messages, checkpoint=checkpoint,
+                registry=getattr(target_agent, "registry", None), overwrite=body.get("overwrite") is True)
+        _rewind_refusal(report)
+        return {"session_id": session_id, **report}
 
     @app.get("/chat/context")
     async def chat_context(request: Request, session_id: str = Query(...),

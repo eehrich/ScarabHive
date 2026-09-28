@@ -607,15 +607,49 @@
    * cosmetic -- the messages on screen are what the viewer would otherwise
    * keep reading as still being there.
    */
+  /**
+   * The words after /undo, /retry and /rewind -- chat_commands.parse_undo, the
+   * terminal's reading: "files", "overwrite", "force", for /rewind a number;
+   * a leading "--" is allowed. Unknown words come back in `errors`.
+   */
+  function parseUndoWords(payload, rewind) {
+    const request = { files: false, overwrite: false, force: false, checkpoint: null, errors: [] };
+    const allowed = rewind ? ['overwrite', 'force'] : ['files', 'overwrite', 'force'];
+    (payload || '').trim().split(/\s+/).filter(Boolean).forEach(function (token) {
+      let word = token.toLowerCase();
+      // "--files" is a word with dashes; "-1" is not checkpoint 1.
+      if (/^-{1,2}[a-z]+$/.test(word)) word = word.replace(/^-+/, '');
+      if (rewind && /^[0-9]+$/.test(word) && request.checkpoint === null) {
+        request.checkpoint = parseInt(word, 10);
+      } else if (allowed.indexOf(word) !== -1) {
+        request[word] = true;
+      } else {
+        request.errors.push(token);
+      }
+    });
+    if (rewind && request.checkpoint === null && request.overwrite) {
+      request.errors.push('overwrite needs a checkpoint number');
+    }
+    if (!rewind && request.overwrite && !request.files) request.errors.push('overwrite goes with files');
+    return request;
+  }
+
   async function cmdUndo(container, payload, retry) {
+    const name = retry ? '/retry' : '/undo';
     if (!currentSessionId) {
       addNote(container, 'Nothing to take back -- this chat has no session yet.');
+      return;
+    }
+    const words = parseUndoWords(payload, false);
+    if (words.errors.length) {
+      addNote(container, name + ' takes files, overwrite (with files) and force: ' +
+        name + ' files puts back the files the exchange changed too.');
       return;
     }
     // "force" the way agent-cli's --force means it: for a lock a crashed
     // process left behind. The server refuses a session that is running, and
     // without this there would be no way past a leftover.
-    const forced = (payload || '').trim().toLowerCase() === 'force';
+    const forced = words.force;
     let answer;
     try {
       answer = await postJSON('/chat/undo' + (forced ? '?force=true' : ''), {
@@ -623,11 +657,19 @@
         // The session's own agent wins on the server; this is the fallback
         // for one that has no record yet.
         agent_name: currentAgentName() || null,
+        // The files the exchange changed are put back first; a rewind that is
+        // refused keeps the exchange, and the note says why.
+        files: words.files,
+        overwrite: words.overwrite,
       });
     } catch (e) {
+      if (e && e.status === 409 && words.files) {
+        addNote(container, e.message + '\n  The exchange stays.');
+        return;
+      }
       if (e && e.status === 409 && !forced) {
         addNote(container, e.message +
-          '\n  /undo force takes it anyway -- for a lock a crashed process left behind.');
+          '\n  ' + name + ' force takes it anyway -- for a lock a crashed process left behind.');
         return;
       }
       throw e;
@@ -638,7 +680,8 @@
     }
     await window.sessionManager.loadSession(currentSessionId);
     const asked = answer.dropped.text || '';
-    addNote(container, 'Dropped: ' + oneLine(asked, 70));
+    addNote(container, 'Dropped: ' + oneLine(asked, 70) +
+      (answer.files && answer.files.text ? '\n' + answer.files.text : ''));
     if (!retry) return;
     // The text goes back into the input rather than being sent: a file that
     // came with it lives on the viewer's disk, and only they can attach it
@@ -654,6 +697,51 @@
     addNote(container, answer.dropped.had_attachments
       ? 'Ask it again with Enter -- the file it carried has to be attached again.'
       : 'Ask it again with Enter.');
+  }
+
+  /**
+   * `/rewind [n] [overwrite]` -- the files only, the conversation stays.
+   *
+   * Bare lists the checkpoints the server numbers (one per turn that changed
+   * files); a number puts the files back as they were before it. The text is
+   * the server's, the same lines agent-cli prints.
+   */
+  async function cmdRewind(container, payload) {
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- nothing has been recorded.');
+      return;
+    }
+    const words = parseUndoWords(payload, true);
+    if (words.errors.length) {
+      addNote(container, 'Usage: /rewind lists the checkpoints, /rewind <n> puts the files back as ' +
+        'they were before checkpoint n, /rewind <n> overwrite also the files changed outside the agent ' +
+        '(force: past a lock a crashed process left).');
+      return;
+    }
+    const agent = currentAgentName();
+    if (words.checkpoint === null) {
+      const listing = await getJSON('/chat/checkpoints?session_id=' +
+        encodeURIComponent(currentSessionId) +
+        (agent ? '&agent_name=' + encodeURIComponent(agent) : ''));
+      addNote(container, listing.text || 'No file changes are recorded for this session.');
+      return;
+    }
+    let answer;
+    try {
+      answer = await postJSON('/chat/rewind' + (words.force ? '?force=true' : ''), {
+        session_id: currentSessionId,
+        agent_name: agent || null,
+        checkpoint: words.checkpoint,
+        overwrite: words.overwrite,
+      });
+    } catch (e) {
+      if (e && (e.status === 409 || e.status === 404)) {
+        addNote(container, e.message);
+        return;
+      }
+      throw e;
+    }
+    addNote(container, answer.text || 'Files rewound.');
   }
 
   /**
@@ -1098,6 +1186,7 @@
       last: function () { return cmdLast(container); },
       undo: function () { return cmdUndo(container, payload, false); },
       retry: function () { return cmdUndo(container, payload, true); },
+      rewind: function () { return cmdRewind(container, payload); },
       export: function () { return cmdExport(container, payload); },
     };
     const handler = handlers[name];
