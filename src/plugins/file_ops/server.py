@@ -162,6 +162,19 @@ class FileOpsServer(SchemaBasedToolServer):
         vars['read_only'] = self.read_only
         return vars
 
+    def file_access_roots(self) -> list[Path]:
+        """The directories this instance's tools may touch, resolved.
+
+        The question "which files does this agent work on" is asked by name:
+        a tool server that answers ``file_access_roots()`` is a file tool --
+        project_instructions reads the project's AGENTS.md from here. A name
+        of its own, because ``allowed_roots`` already means something else
+        elsewhere (a property of media_ops). The answer is the sandbox the
+        tools enforce, not a second reading of the config that could drift
+        from it.
+        """
+        return self.validator.allowed_dirs
+
     async def read_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Read text file contents with pagination."""
         status = params.get("_status")

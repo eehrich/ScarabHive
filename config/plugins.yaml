@@ -1048,6 +1048,20 @@ plugins:
         # make it at system role, else the llm is confused about injections
         role: "system"
 
+    # The project's AGENTS.md in front of the model, read once per session
+    # from the root the agent's file tools work in (Claude Code, Codex and
+    # Gemini CLI do the same). Registered here, OFF for every agent: an agent
+    # switches it on with
+    #   hooks.overrides["project_instructions.inject_project_instructions"].enabled: true
+    # The coder harness does. A new version of the file takes effect in a new
+    # session, or after `/vars unset project_instructions`.
+    project_instructions:
+      type: project_instructions
+      enabled: true
+      config:
+        filenames: ["AGENTS.md"]
+        max_bytes: 32768
+
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
     # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen

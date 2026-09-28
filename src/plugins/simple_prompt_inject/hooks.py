@@ -81,7 +81,14 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         else:
             self.prompt_template = str(config.get("prompt_text", ""))
 
-        self._jinja_env = Environment(loader=BaseLoader(), autoescape=False)
+        # keep_trailing_newline: a text without template syntax renders to
+        # itself. Jinja drops one trailing newline by default, and a text
+        # rendered only once the session holds a variable -- the fast path
+        # below skips Jinja while there is none -- changed at the call where
+        # the first variable appeared: `prompt_text: |` ends in a newline,
+        # and the head behind the system prompt moved for nothing.
+        self._jinja_env = Environment(loader=BaseLoader(), autoescape=False,
+                                      keep_trailing_newline=True)
 
     # ------------------------------------------------------------------
     # File loading
