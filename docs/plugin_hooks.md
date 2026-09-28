@@ -276,7 +276,7 @@ Call-Reihenfolge, sobald alle fertig sind.
 **Use Cases:** Ergebnisse kürzen, schwärzen oder ergänzen; Protokoll
 **Can Modify:** `tool_result["result"]`
 
-`context.tool_result = {"result": <Wert>, "is_error": <bool>}`:
+`context.tool_result = {"result": <Wert>, "is_error": <bool>, "started_at": <float|None>, "finished_at": <float|None>}`:
 
 - `result` ist das, was der Aufrufer liest. Im Agent-Loop ist das der Inhalt
   der Tool-Nachricht, dekodiert: das Ergebnis des Tools oder der Fehler, den
@@ -286,6 +286,10 @@ Call-Reihenfolge, sobald alle fertig sind.
   sehen, bevor das Skript es als `ToolCallError` bekommt.
 - `is_error` folgt der Konvention (`{"status": "error"}` oder ein bloßes
   `{"error": ...}`) und wird nicht zurückgelesen.
+- `started_at` / `finished_at` (`time.time()`) sagen, wann der Call selbst lief.
+  Die eigene Uhr des Hooks taugt dafür nicht: Bei parallelen Calls laufen die
+  Post-Hooks erst, wenn alle fertig sind, sie sähe also für jeden Call das Ende
+  des langsamsten. Beide werden nicht zurückgelesen.
 - `context.tool_call` ist der Call, wie er lief, also mit den Argumenten nach
   den Pre-Hooks.
 
@@ -411,6 +415,15 @@ happened -- a hook that counts what the request carried as done (debate_forum
 marks direct messages delivered there) may only do so when it did: persisting
 never raises, so a failed or cancelled save is silent otherwise.
 
+Wie der Lauf endete, steht ebenfalls in den Metadaten, denn ein Hook sieht
+keines seiner Events: `cancelled` (der Cancellation-Token des Laufs wurde
+abgebrochen; ein Absturz zählt nicht dazu, obwohl er danach den Token mit
+abbricht), `errors` (die Fehlermeldungen des Laufs, ein Absturz eingeschlossen,
+festgehalten, bevor sie ausgegeben werden, sodass ein Konsument, der beim
+Fehler aufhört, sie nicht verliert) und `completed` (ob der Lauf eine
+endgültige Antwort erreichte). Das Plugin `otel` beendet seinen Lauf-Span
+danach.
+
 ```python
 async def on_session_end(self, context: HookContext) -> HookResult:
     """Executed at session end.
@@ -475,7 +488,7 @@ class HookContext:
     tools_schema: Optional[List[Dict[str, Any]]] = None   # per-request tool schema
     llm_response: Optional[Dict[str, Any]] = None         # post_llm_call: {"assistant": {...}}
     tool_call: Optional[Dict[str, Any]] = None            # pre/post_tool_call: id, name, server, arguments, source
-    tool_result: Optional[Dict[str, Any]] = None          # post_tool_call: {"result": ..., "is_error": ...}
+    tool_result: Optional[Dict[str, Any]] = None          # post_tool_call: {"result", "is_error", "started_at", "finished_at"}
     output: Optional[str] = None                          # format_output
     output_format: str = "text"                           # 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)

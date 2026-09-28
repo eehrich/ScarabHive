@@ -56,8 +56,9 @@ class HookContext:
         llm_response: LLM response data (for post_llm_call hooks)
         tool_call: The call (pre/post_tool_call): {"id", "name", "server",
             "arguments", "source"}; hooks write back "arguments" only
-        tool_result: The result (post_tool_call): {"result", "is_error"};
-            hooks write back "result" only
+        tool_result: The result (post_tool_call): {"result", "is_error",
+            "started_at", "finished_at"} -- the last two when the call itself
+            ran (time.time()); hooks write back "result" only
         output: Final output to format (for format_output hooks)
         output_format: Target format for output ('html', 'ansi', 'text', 'markdown')
         metadata: Additional hook-specific metadata
@@ -276,8 +277,9 @@ class PluginHook(ABC):
         not reach it.
 
         Args:
-            context: Hook context with tool_result ({"result", "is_error"}),
-                     tool_call (as it ran), agent, session_id, step
+            context: Hook context with tool_result ({"result", "is_error",
+                     "started_at", "finished_at"}), tool_call (as it ran),
+                     agent, session_id, step
 
         Returns:
             HookResult with success status and modified context

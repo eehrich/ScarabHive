@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -64,6 +65,8 @@ class _Probe(ToolServer):
             raise RuntimeError("probe broke: secret-123")
         if params.get("text") == "fail":
             return {"status": "error", "error": "probe says no"}
+        if params.get("text") == "slow":
+            await asyncio.sleep(0.3)
         return {"status": "ok", "echo": params.get("text")}
 
 
@@ -246,7 +249,10 @@ class TestPreToolCall:
         assert pre.cancellation_token is not None, "a hook that waits could not stop on a cancel"
         [post] = seen.post_contexts
         assert post.tool_call == seen.pre_calls[0]
-        assert seen.post_results == [{"result": {"status": "ok", "echo": "one"}, "is_error": False}]
+        [result] = seen.post_results
+        assert {k: result[k] for k in ("result", "is_error")} == \
+            {"result": {"status": "ok", "echo": "one"}, "is_error": False}
+        assert set(result) == {"result", "is_error", "started_at", "finished_at"}
 
     async def test_a_hook_cannot_hand_the_tool_runtime_params(self, hooks):
         """Keys the framework sets anyway it overwrites; one it leaves unset
@@ -474,7 +480,8 @@ class TestReviewFindings:
         await _run([_call("call_1", "fail"), _call("call_2", "boom")])
 
         [failed, raised] = seen.post_results
-        assert failed == {"result": {"status": "error", "error": "probe says no"}, "is_error": True}
+        assert {k: failed[k] for k in ("result", "is_error")} == \
+            {"result": {"status": "error", "error": "probe says no"}, "is_error": True}
         assert raised["is_error"] is True and "probe broke" in json.dumps(raised["result"]), \
             "a call whose tool raised did not reach the post hooks"
 
@@ -678,3 +685,33 @@ class TestScriptedCallsAfterReview:
 
         with pytest.raises(RuntimeError, match="probe broke"):
             await agent.dispatch_tool_call("probe_echo", {"text": "boom"})
+
+
+class TestCallTiming:
+    """post_tool_call runs once every call of the step is done: a hook's own
+    clock says when the step ended. Each call's own start and end come with
+    the result (telemetry times its spans by them)."""
+
+    async def test_the_post_hook_is_told_when_each_call_ran(self, hooks):
+        seen = _Hook()
+        await hooks("tch.seen", seen, types=(HookType.POST_TOOL_CALL,))
+
+        await _run([_call("call_fast", "fast"), _call("call_slow", "slow")])
+
+        fast, slow = seen.post_results
+        assert slow["finished_at"] - slow["started_at"] >= 0.25, "fixture: the slow call was not slow"
+        assert fast["started_at"] <= fast["finished_at"]
+        assert fast["finished_at"] < slow["finished_at"] - 0.2, \
+            "the fast call is reported as ending with the slow one"
+
+    async def test_a_script_call_is_timed_too(self, hooks):
+        seen = _Hook()
+        await hooks("tch.seen", seen, types=(HookType.POST_TOOL_CALL,))
+        agent = _agent(_Probe())
+
+        before = time.time()
+        await agent.dispatch_tool_call("probe_echo", {"text": "slow"}, hook_source="tool_script")
+
+        [result] = seen.post_results
+        assert before <= result["started_at"] <= result["finished_at"] - 0.25
+

@@ -1007,6 +1007,20 @@ plugins:
       type: request_logger
       enabled: false
 
+    # OpenTelemetry traces for agent runs, LLM calls and tool calls
+    # (src/plugins/otel/README.md). Off by default. Endpoint and service name
+    # come from the standard OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME
+    # unless set here. Prompts, answers and tool arguments/results stay in the
+    # process unless capture_content is switched on.
+    otel:
+      type: otel
+      enabled: false
+      config:
+        exporter: otlp          # otlp | console | none
+        # endpoint: "http://localhost:4317"
+        capture_content: false
+        metrics: false
+
     message_validator:
       type: message_validator
       enabled: true

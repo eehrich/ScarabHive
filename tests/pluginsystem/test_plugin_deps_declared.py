@@ -38,6 +38,10 @@ IMPORT_TO_DIST = {
     # plugin importing e.g. google.cloud would slip past this mapping and
     # needs its own entry then.
     "google": "google-genai",
+    # Same shape: `opentelemetry` is the namespace of the api, sdk and every
+    # exporter dist. The otel plugin declares all it imports; the api stands
+    # for the namespace here.
+    "opentelemetry": "opentelemetry-api",
 }
 
 #: (plugin, import) pairs that are deliberately undeclared, each with a reason.

@@ -1,0 +1,103 @@
+# otel: OpenTelemetry traces from hooks. The plugin is off by default
+# (config/plugins.yaml); once its instance is enabled, the hooks below run for
+# every agent -- an agent opts out with
+#   agent_config.hooks.overrides: {otel.<hook>: {enabled: false}}
+# The hooks never change anything and never fail a run.
+hooks:
+  - name: record_llm_call
+    type: post_llm_response
+    enabled: true
+    timeout: 2.0
+    category: telemetry
+    description: "One 'chat' span per LLM request the client reports (retries included)"
+
+  - name: open_tool_call
+    type: pre_tool_call
+    enabled: true
+    timeout: 2.0
+    category: telemetry
+    description: "Remembers a tool call until its post hook comes (bounded, expires)"
+
+  - name: close_tool_call
+    type: post_tool_call
+    enabled: true
+    timeout: 2.0
+    category: telemetry
+    description: "One 'execute_tool' span per tool call that ran"
+
+  - name: close_run
+    type: session_end
+    enabled: true
+    timeout: 2.0
+    category: telemetry
+    description: "Ends the run's 'invoke_agent' span and resolves its calls that got no post hook"
+
+config:
+  exporter:
+    type: string
+    enum: ["otlp", "console", "none"]
+    default: "otlp"
+    description: "otlp: send to an OTLP collector; console: print spans to stdout (debugging); none: build spans, export nothing"
+  protocol:
+    type: string
+    enum: ["", "grpc", "http/protobuf"]
+    default: ""
+    description: "OTLP protocol. Empty: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL / OTEL_EXPORTER_OTLP_PROTOCOL, else grpc. http/protobuf needs opentelemetry-exporter-otlp-proto-http"
+  endpoint:
+    type: string
+    default: ""
+    description: "OTLP endpoint. Empty: the exporter reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT (default localhost:4317)"
+  headers:
+    type: object
+    default: {}
+    description: "Extra OTLP headers (e.g. authorization: \"${OTEL_TOKEN}\"). Empty: OTEL_EXPORTER_OTLP_HEADERS"
+  insecure:
+    type: boolean
+    default: null
+    description: "gRPC only: plaintext instead of TLS. Empty: decided by the endpoint's scheme and OTEL_EXPORTER_OTLP_TRACES_INSECURE"
+  service_name:
+    type: string
+    default: ""
+    description: "service.name of the resource. Empty: OTEL_SERVICE_NAME, else 'scarabhive'"
+  capture_content:
+    type: boolean
+    default: false
+    description: "Export the run's input and final answer, tool arguments and tool results (each capped at content_max_chars). Off: none of them leaves the process"
+  content_max_chars:
+    type: integer
+    default: 2000
+    minimum: 16
+    description: "Cap per content attribute, marker included"
+  capture_user_id:
+    type: boolean
+    default: false
+    description: "Put the run's user id on the spans (user.id)"
+  max_open_runs:
+    type: integer
+    default: 1000
+    minimum: 1
+    description: "Run spans held open at most; the oldest is ended (outcome 'evicted') beyond it"
+  max_pending_tool_calls:
+    type: integer
+    default: 4096
+    minimum: 1
+    description: "Tool calls waiting for their post hook, at most; the oldest is reported as 'unknown' beyond it"
+  idle_timeout_seconds:
+    type: number
+    default: 21600
+    minimum: 1
+    description: "A run with no event (of its own or of a run nested in it) for this long is ended ('expired'); a waiting tool call whose run is gone is reported as 'unknown' after it"
+  metrics:
+    type: boolean
+    default: false
+    description: "Also export the GenAI metrics gen_ai.client.token.usage and gen_ai.client.operation.duration"
+  metrics_export_interval_seconds:
+    type: number
+    default: 60
+    minimum: 1
+    description: "Metric export interval"
+  shutdown_timeout_seconds:
+    type: number
+    default: 5
+    minimum: 0.1
+    description: "How long stopping the plugin waits for the last export"
