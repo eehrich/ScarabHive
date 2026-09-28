@@ -813,9 +813,12 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
 
+    # The whole checkout -- config/secrets.env, data/users.db, the sessions of
+    # every user -- for any agent that is given it. No shipped agent is. Enable
+    # it only for trusted agents, ideally with narrower allowed_directories.
     workspace_file_ops:
       type: file_ops
-      enabled: true
+      enabled: false
       allowed_directories:
         - .
       max_file_size_mb: 200
