@@ -504,6 +504,7 @@ class TestCompose:
         assert any("layer 0 (text) extends beyond canvas" in w for w in meta["warnings"]), \
             f"expected canvas-overflow warning, got: {meta['warnings']}"
 
+    @pytest.mark.skipif(not HAS_SVGLIB, reason="svglib/reportlab not installed")
     def test_overlap_warning_text_on_svg(self, tmp_path, fonts_dir):
         """Title text dropped on top of an SVG decoration (same vertical band)
         must produce a hard-overlap warning — this is the most common
@@ -540,6 +541,7 @@ class TestCompose:
         assert any("stacked too close vertically" in w for w in meta["warnings"]), \
             f"expected stacked-too-close warning, got: {meta['warnings']}"
 
+    @pytest.mark.skipif(not HAS_SVGLIB, reason="svglib/reportlab not installed")
     def test_no_overlap_warning_for_well_separated_layers(self, tmp_path, fonts_dir):
         """Title and SVG in distinct vertical zones with > 30 px gap → no overlap warning."""
         svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='30' "
@@ -578,6 +580,7 @@ class TestCompose:
         assert overlap_warnings == [], \
             f"background+text should not warn, got: {overlap_warnings}"
 
+    @pytest.mark.skipif(not HAS_SVGLIB, reason="svglib/reportlab not installed")
     def test_overlap_check_can_be_disabled(self, tmp_path, fonts_dir):
         """Plugin config can switch the overlap check off entirely — overlapping
         text+svg then produces no overlap warning (still renders fine)."""

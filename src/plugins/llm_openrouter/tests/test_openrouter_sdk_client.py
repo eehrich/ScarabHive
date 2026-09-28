@@ -8,6 +8,7 @@ our fields, or a typed result model that swallows ``usage``.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import sys
@@ -24,6 +25,11 @@ from plugins.llm_openrouter.openrouter_sdk_client import (
     OpenRouterSDKClient,
     build_openrouter_sdk_client,
 )
+
+#: The classes below that send a request go through the openrouter SDK, a declared dependency of this plugin
+#: (plugin.toml) the client imports only when it sends. Without it installed they have nothing to test.
+needs_the_sdk = pytest.mark.skipif(importlib.util.find_spec("openrouter") is None,
+                                   reason="the openrouter SDK (llm_openrouter's declared dependency) is not installed")
 
 MESSAGES = [ChatMessage(role="user", content="hi")]
 #: The shape the agent server actually builds (nested "function").
@@ -115,6 +121,7 @@ async def _noop():
     return None
 
 
+@needs_the_sdk
 class TestTheRequestTravelsThroughTheSdk:
     @pytest.mark.asyncio
     async def test_it_reaches_the_responses_endpoint(self, route):
@@ -235,6 +242,7 @@ class TestTheRequestTravelsThroughTheSdk:
         assert "safety_settings" not in route.bodies[0]
 
 
+@needs_the_sdk
 class TestTheAnswerIsReadFromTheRawBody:
     @pytest.mark.asyncio
     async def test_usage_survives(self, route):
@@ -306,6 +314,7 @@ class TestTheAnswerIsReadFromTheRawBody:
         assert "OPAQUE-BLOB" in json.dumps(result["assistant"]["reasoning_details"])
 
 
+@needs_the_sdk
 class TestTheInheritedLoopStillOwnsTheRetries:
     @pytest.mark.asyncio
     async def test_a_429_on_flex_drops_the_tier_and_retries(self, route):
@@ -364,6 +373,7 @@ class TestItIsDistinguishableFromTheHttpxRoute:
         assert OpenRouterSDKClient._PROVIDER == "openrouter_sdk"
         assert OpenAIResponsesClient._PROVIDER == "openai_responses"
 
+    @needs_the_sdk
     @pytest.mark.asyncio
     async def test_the_hooks_see_the_sdk_route(self, route):
         seen: list[dict] = []

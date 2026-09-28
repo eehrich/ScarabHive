@@ -114,12 +114,30 @@ class TestTurns:
 
 
 class TestBudget:
-    def test_call_is_time_bounded_and_stays_armed(self, db):
+    def test_call_is_time_bounded_and_stays_armed(self, db, monkeypatch):
+        """The budget is read off the database module's clock: spent after the first slice, whatever
+        the machine's speed -- a fast one finished all 300 rows within a real 0.05 s, and the call
+        this test is about never stopped early."""
+        import plugins.message_debugger.database as database
+
+        class _OneSlice:
+            """time, but the monotonic clock jumps past any budget once the first slice began."""
+
+            def __init__(self):
+                self.readings = 0
+
+            def monotonic(self):
+                self.readings += 1
+                return 0.0 if self.readings <= 2 else 1000.0  # 1: the deadline, 2: the first check
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        monkeypatch.setattr(database, "time", _OneSlice())
         db._retention_batch = 5
         _insert_requests(db, 300)
-        t = time.time()
-        db.enforce_retention(budget=0.05)  # tiny budget -> at most one slice
-        assert time.time() - t < 2.0, "a retention call must never block long"
+        stats = db.enforce_retention(budget=0.05)
+        assert stats["stripped"] == db._retention_batch, f"not exactly one slice: {stats}"
         assert db._pruning is True, "not finished -> still armed, continues next call"
 
 

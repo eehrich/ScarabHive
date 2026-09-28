@@ -144,23 +144,22 @@ class TestTerminalServerBasic:
 
     @pytest.mark.asyncio
     async def test_command_with_cwd(self, mock_system_config, mock_server_config, mock_status, tmp_path):
-        """Test command execution with custom working directory."""
+        """The command runs in the directory it is given. Asked of the system temp directory, the
+        answer had to contain "temp", "tmp" or "appdata" -- macOS's is /var/folders/.../T."""
         server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
-            # A directory of its own, recognised by its name: Git Bash on Windows
-            # rewrites the path (/c/Users/...) but not the name. The system temp
-            # directory named no marker everywhere (macOS: /var/folders/.../T).
-            work_dir = tmp_path / "cwd-marker-4711"
-            work_dir.mkdir()
+            workdir = tmp_path / "cwd_is_this_one"
+            workdir.mkdir()
             result = await server.execute_command({
                 "command": "echo $PWD",  # Use echo $PWD instead of pwd to get actual path
-                "cwd": str(work_dir),
+                "cwd": str(workdir),
                 "_status": mock_status
             })
             
             assert result["status"] == "success"
-            assert "cwd-marker-4711" in result["stdout"], result["stdout"]
+            # Git Bash on Windows spells the path its own way (/c/Users/...); the name stays
+            assert result["stdout"].strip().endswith("cwd_is_this_one")
         
         finally:
             await server.cleanup()

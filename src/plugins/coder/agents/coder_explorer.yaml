@@ -45,6 +45,12 @@ plugins:
             project_instructions.inject_project_instructions:
               enabled: true
               root: "."
+            # Read-only, so nothing to record -- switched on so that the coder's
+            # checkpoint does not name its spawn as one that records nothing.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

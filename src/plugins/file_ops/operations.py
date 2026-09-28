@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -13,6 +15,55 @@ from . import textsearch
 
 
 logger = logging.getLogger(__name__)
+
+
+#: Bytes of the file's name a temp name keeps (".<name>.<12 hex>.tmp"): at most
+#: 218 bytes, under the 255 a file system allows for one name.
+_TEMP_NAME_KEEP = 200
+
+
+def _temp_beside(path: Path) -> Path:
+    """A name next to ``path`` that no file has yet.
+
+    The writes used ``<name>.tmp``: a file of that name the person kept beside
+    ``<name>`` was overwritten, then deleted with the temp -- and a checkpoint of
+    the write, which names only ``<name>``, could not bring it back.
+    """
+    # The name only shortened: a temp name longer than the file's own failed on
+    # names near the file system's limit (255 bytes) that the plain write took.
+    kept = os.fsencode(path.name)[:_TEMP_NAME_KEEP].decode("utf-8", "ignore")
+    return path.with_name(f".{kept}.{secrets.token_hex(6)}.tmp")
+
+
+async def _write_through_temp(path: Path, content: str, encoding: str, keep_mode: bool) -> None:
+    """Replace ``path`` whole in one rename, through a temp file of its own.
+
+    ``keep_mode``: the replacement is a new file, and without the old mode an
+    executable script comes back without its bit, a 0600 file world-readable --
+    for an edit as much as for an overwrite.
+    """
+    temp_path = _temp_beside(path)
+    # Claimed here, in this thread and with O_EXCL: a name that exists after all
+    # is an error -- never a file overwritten, and not deleted either -- and once
+    # it exists this call knows it is its own. Then opened by NAME with 'r+',
+    # which creates nothing: an open still under way in the thread pool when a
+    # cancel cleans up finds the name gone, instead of making the temp again.
+    # (Created there, a cancel during the open left the temp behind.)
+    os.close(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+    try:
+        async with aiofiles.open(temp_path, 'r+', encoding=encoding, newline='') as f:
+            await f.write(content)
+        if keep_mode:
+            try:
+                temp_path.chmod(path.stat().st_mode)
+            except OSError as exc:
+                logger.warning(f"Could not carry the mode of {path} over: {exc}")
+        temp_path.replace(path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:  # Windows: a handle the thread pool still holds
+            logger.warning(f"Could not remove the temp file {temp_path}: {exc}")
 
 
 class FileOperations:
@@ -169,38 +220,16 @@ class FileOperations:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 created_dirs.append(str(path.parent))
 
-            # Write to temporary file first
-            temp_path = path.with_suffix(path.suffix + ".tmp")
+            await _write_through_temp(path, content, encoding, keep_mode=existed)
+            bytes_written = path.stat().st_size
 
-            try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
-                    await f.write(content)
-
-                if existed:
-                    # The replacement is a new file: without this an executable
-                    # script comes back without its bit, a 0600 file world-readable.
-                    try:
-                        temp_path.chmod(path.stat().st_mode)
-                    except OSError as exc:
-                        logger.warning(f"Could not carry the mode of {path} over: {exc}")
-
-                # Atomic rename
-                temp_path.replace(path)
-
-                bytes_written = path.stat().st_size
-
-                return {
-                    "status": "success",
-                    "file_path": str(path),
-                    "bytes_written": bytes_written,
-                    "created_dirs": created_dirs,
-                    "replaced": existed
-                }
-
-            finally:
-                # Cleanup temp file if still exists
-                if temp_path.exists():
-                    temp_path.unlink()
+            return {
+                "status": "success",
+                "file_path": str(path),
+                "bytes_written": bytes_written,
+                "created_dirs": created_dirs,
+                "replaced": existed
+            }
 
         except Exception as e:
             logger.error(f"Error creating file {path}: {e}", exc_info=True)
@@ -407,19 +436,7 @@ class FileOperations:
             }
 
 
-            # Write updated content atomically
-            temp_path = path.with_suffix(path.suffix + ".tmp")
-
-            try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
-                    await f.write(new_content)
-
-                # Atomic rename
-                temp_path.replace(path)
-
-            finally:
-                if temp_path.exists():
-                    temp_path.unlink()
+            await _write_through_temp(path, new_content, encoding, keep_mode=True)
 
             return {
                 "status": "success",

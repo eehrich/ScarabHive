@@ -6,6 +6,7 @@ This module provides bash command execution -- every command in its own
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,11 @@ _CMD_DISPLAY_LIMIT = 70
 #: max_output_size_kb (60 KB) -- half of that each keeps the recorded one in the
 #: same order of magnitude instead of writing a whole build log to disk.
 _RECORDED_STREAM_CAP = 30_000
+
+
+def _yaml_quoted_fragment(text: str) -> str:
+    """``text`` as the inside of a double-quoted YAML (= JSON-escaped) string."""
+    return json.dumps(text)[1:-1]
 
 
 def _short_cmd(command: str, limit: int = _CMD_DISPLAY_LIMIT) -> str:
@@ -203,6 +209,13 @@ class TerminalServer(SchemaBasedToolServer):
             "default_timeout": self.default_timeout,
             # A whitelisted terminal offers no cwd and no env_vars (CommandExecutor.refusal).
             "whitelisted": self._whitelisted(),
+            # Rendered once with the schema, so the same text on every request:
+            # the prompt cache survives, and the model learns the cage (and a
+            # partial one as partial) before its first command, not per result.
+            # Escaped for the double-quoted YAML string it lands in -- a
+            # workspace path may hold a quote or a backslash.
+            "sandbox_note": _yaml_quoted_fragment(
+                " " + note if (note := self.sandbox.describe_for_model()) else ""),
         }
 
     def _whitelisted(self) -> bool:

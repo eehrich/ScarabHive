@@ -1079,6 +1079,22 @@ plugins:
         filenames: ["AGENTS.md"]
         max_bytes: 32768
 
+    # Checkpoints for FILES (/undo files, /rewind): how each file looked
+    # before the agent changed it through file_ops or media_ops, per turn.
+    # Registered here -- that is what the chat commands reach -- and OFF for
+    # every agent: an agent switches on BOTH hooks,
+    #   hooks.overrides["file_checkpoints.record_before_change"].enabled: true
+    #   hooks.overrides["file_checkpoints.record_after_change"].enabled: true
+    # The coder harness does. Shell commands are not recorded, only named.
+    # Records live in data/file_checkpoints/<user>/<session>/, bounded per
+    # session; nothing is deleted by age unless retention_days says so.
+    file_checkpoints:
+      type: file_checkpoints
+      enabled: true
+      config:
+        max_checkpoints: 50
+        retention_days: 0
+
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
     # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen

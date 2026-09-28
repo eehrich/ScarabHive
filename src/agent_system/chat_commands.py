@@ -108,8 +108,16 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     # the next save follow, the browser asks the server to shorten the record
     # and reloads it. /export writes a file there and downloads one here, so
     # its [path] is a terminal thing -- the browser says so and saves anyway.
-    ChatCommand("undo", ("/undo",), "drop the last exchange from this session"),
-    ChatCommand("retry", ("/retry",), "drop the last exchange and ask it again"),
+    ChatCommand("undo", ("/undo",),
+                "drop the last exchange; 'files' also puts back the files it changed",
+                usage="/undo [files]"),
+    ChatCommand("retry", ("/retry",), "drop the last exchange and ask it again ('files' as /undo)",
+                usage="/retry [files]"),
+    # Files only, the conversation stays -- the other half of what Claude Code
+    # keeps apart. Bare lists the checkpoints (file_checkpoints plugin).
+    ChatCommand("rewind", ("/rewind",),
+                "put files back as they were before a checkpoint; bare lists them",
+                usage="/rewind [n]"),
     ChatCommand("export", ("/export",), "write this conversation to a markdown file",
                 usage="/export [path]"),
     ChatCommand("attach", ("/attach",),
@@ -356,6 +364,57 @@ def needs_escape(text: str) -> bool:
     head = stripped.split()
     return bool(head and (_COMMAND_WORD.match(head[0])
                           or _QUALIFIED_WORD.match(head[0])))
+
+
+@dataclass(frozen=True)
+class UndoRequest:
+    """What an ``/undo``, ``/retry`` or ``/rewind`` line asks for, once read.
+
+    The words are the same on both surfaces: ``files`` (undo the exchange's
+    file changes too), ``overwrite`` (put back files changed outside the agent
+    as well), ``force`` (the browser's word for a session lock a crashed
+    process left) and, for /rewind, a checkpoint number. A leading ``--`` is
+    allowed on a word -- ``/undo --files`` is how other tools spell it -- never
+    on a number.
+    """
+
+    files: bool = False
+    overwrite: bool = False
+    force: bool = False
+    checkpoint: Optional[int] = None
+    errors: tuple[str, ...] = ()
+
+
+#: A word spelled with leading dashes (``--files``) -- letters only after them.
+_DASHED_WORD = re.compile(r"^-{1,2}[a-z]+$")
+#: A checkpoint number: ASCII digits only ("²".isdigit() is true, int("²") raises).
+_DIGITS = re.compile(r"^[0-9]+$")
+
+
+def parse_undo(payload: str, *, rewind: bool = False) -> UndoRequest:
+    """Read the words after /undo, /retry (``rewind=False``) or /rewind."""
+    words = {"files": False, "overwrite": False, "force": False}
+    checkpoint: Optional[int] = None
+    errors: list[str] = []
+    allowed = ("overwrite", "force") if rewind else ("files", "overwrite", "force")
+    for token in (payload or "").split():
+        word = token.lower()
+        # "--files" is a word with dashes; "-1" is NOT checkpoint 1. Stripped
+        # blindly, "/rewind -1" -- "the last one" elsewhere -- rewound everything.
+        if _DASHED_WORD.match(word):
+            word = word.lstrip("-")
+        if rewind and _DIGITS.match(word) and checkpoint is None:
+            checkpoint = int(word)
+        elif word in allowed:
+            words[word] = True
+        else:
+            errors.append(token)
+    if rewind and checkpoint is None and words["overwrite"]:
+        errors.append("overwrite needs a checkpoint number")
+    if not rewind and words["overwrite"] and not words["files"]:
+        errors.append("overwrite goes with files")
+    return UndoRequest(files=words["files"], overwrite=words["overwrite"], force=words["force"],
+                       checkpoint=checkpoint, errors=tuple(errors))
 
 
 # A template variable, as Jinja can actually address it. Hyphens are rejected
