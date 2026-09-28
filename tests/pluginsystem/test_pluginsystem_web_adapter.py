@@ -200,6 +200,40 @@ def test_plugin_route_security_takes_only_access_tokens_of_the_account_they_were
                        "deleted account's token": 401}
 
 
+class KeyTakingPlugin(MockWebPlugin):
+    def get_security_config(self) -> Dict[str, Any]:
+        return {"accept_api_keys": True}
+
+
+@pytest.mark.parametrize("header", ["bearer", "x-api-key"])
+def test_an_api_key_opens_only_plugins_that_accept_api_keys(tmp_path, monkeypatch, header):
+    """openai_api takes the user's API key (OpenAI clients send it as the Bearer value); every other plugin
+    route stays tokens-only, as it always was."""
+    from agent_system.auth import database
+    from agent_system.auth.models import UserCreate, UserRole
+    from agent_system.config.models import AuthConfig
+
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    alice = users.create_user(UserCreate(username="alice", email="alice@example.com", password="correct-horse",
+                                         role=UserRole.USER))
+    key = users.generate_user_api_key(alice.id)
+    auth = AuthConfig(enabled=True)
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("keyed", KeyTakingPlugin("keyed", has_static=False))
+    registry.register_web_plugin("plain", MockWebPlugin("plain", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+    sent = {"Authorization": f"Bearer {key}"} if header == "bearer" else {"X-API-Key": key}
+
+    assert web.get("/plugins/keyed/status", headers=sent).status_code == 200
+    assert web.get("/plugins/plain/status", headers=sent).status_code == 401
+    assert web.get("/plugins/keyed/status", headers={"Authorization": "Bearer not-a-key"}).status_code == 401
+
+
 class TestPluginWebIntegration:
     """Test integration with existing systems"""
     

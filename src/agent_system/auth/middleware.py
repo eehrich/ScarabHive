@@ -174,7 +174,9 @@ class EndpointSecurityMiddleware:
         Checks in priority order:
         1. Authorization: Bearer <token> header (JWT)
         2. access_token cookie (JWT)
-        3. X-API-Key header (API key, looked up in UserDatabase)
+        3. X-API-Key header (API key, looked up in UserDatabase) -- or an API key
+           sent as the Bearer value (``security.bearer_api_key``: OpenAI clients
+           send theirs that way), which then counts as that header
 
         Deliberately no ``?token=`` query parameter: a token in a URL ends up in
         access logs, browser history and Referer headers. EventSource, the one
@@ -191,22 +193,30 @@ class EndpointSecurityMiddleware:
         """
         from jose import jwt, JWTError
 
-        headers = dict(scope.get("headers", []))
+        # As the route dependencies read them (Starlette, HTTPBearer): the first of a repeated header, the scheme
+        # in any case. Read otherwise, `bearer <key>` or a second Authorization header next to a cookie made the
+        # two layers name different users.
+        headers: dict = {}
+        for name, value in scope.get("headers", []):
+            headers.setdefault(name, value)
         token = None
 
         # 1. Try Authorization header (highest priority)
         auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
+        scheme, _, credentials = auth_header.partition(" ")
+        if scheme.lower() == "bearer":
+            token = credentials.strip()
+        from agent_system.auth.security import bearer_api_key
+        bearer_key = bearer_api_key(token)
+        if bearer_key:
+            token = None  # an API key, not a JWT: step 4 decides, and no cookie stands in for it
 
-        # 2. Try cookie
-        if not token:
-            cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
-            for part in cookie_header.split(";"):
-                part = part.strip()
-                if part.startswith("access_token="):
-                    token = part[13:].strip()
-                    break
+        # 2. Try cookie -- parsed by the parser behind the dependencies' request.cookies, so of two access_token
+        # cookies both layers take the same one (the last): read the first, the middleware passed one user and
+        # the route ran as the other.
+        if not token and not bearer_key:
+            from starlette.requests import cookie_parser
+            token = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get("access_token") or None
 
         # Try to decode JWT if a token was found. Soft-fail to allow the
         # X-API-Key fallback below to still authenticate the request.
@@ -236,17 +246,21 @@ class EndpointSecurityMiddleware:
                 logger.debug(f"JWT token error: {e}")
 
         # 4. Try X-API-Key header (API key auth via UserDatabase).
-        # Count duplicate X-API-Key headers BEFORE collapsing to a dict —
-        # Python dict() keeps the LAST tuple, while Starlette's Headers.get
-        # (used by downstream FastAPI dependencies) returns the FIRST. Sending
-        # two values could otherwise authenticate one user at the middleware
-        # and a different user at the endpoint. Reject the ambiguous case.
+        # Duplicate X-API-Key headers are refused outright: two keys could name
+        # two users, and nothing says which one the request is. (The header
+        # map above keeps the first, as Starlette's Headers.get does for the
+        # downstream FastAPI dependencies.)
         raw_headers = scope.get("headers", [])
         api_key_header_count = sum(1 for h in raw_headers if h[0].lower() == b"x-api-key")
         if api_key_header_count > 1:
             logger.warning("Multiple X-API-Key headers received; rejecting request")
             return (None, None)
         api_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="ignore").strip()
+        if bearer_key:
+            if api_key and api_key != bearer_key:
+                logger.warning("Different API keys in Authorization and X-API-Key; rejecting request")
+                return (None, None)
+            api_key = bearer_key
         if api_key:
             return self._lookup_api_key(api_key)
 

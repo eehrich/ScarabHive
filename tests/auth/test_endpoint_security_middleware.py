@@ -1299,3 +1299,108 @@ class TestPathNormalization:
         # Query strings are handled separately in ASGI scope
         # This just tests the path component
         assert middleware._normalize_path("/api/search") == "/api/search"
+
+
+class TestBearerApiKey:
+    """An API key sent as ``Authorization: Bearer <key>`` -- how OpenAI clients send theirs.
+
+    The middleware and ``get_current_user`` must decide alike: one layer letting a
+    request in that the other judges as someone else is how a request runs as the
+    wrong user.
+    """
+
+    SECRET = "test-secret-key-12345"
+
+    @pytest.fixture
+    def middleware(self):
+        return EndpointSecurityMiddleware(AsyncMock(), AuthConfig(enabled=True, secret_key=self.SECRET,
+                                                                   algorithm="HS256"))
+
+    @pytest.fixture
+    def keys(self, accounts):
+        """Two accounts with an API key each: {name: key}."""
+        from agent_system.auth.security import set_jwt_config
+
+        set_jwt_config(self.SECRET, "HS256")  # get_current_user decodes with the module config
+        found = {}
+        for name in ("keyuser", "otheruser"):
+            found[name] = accounts.db.generate_user_api_key(accounts(name))
+        return found
+
+    @staticmethod
+    async def dependency_says(headers: list[tuple[bytes, bytes]]) -> str | None:
+        """What get_current_user decides for these headers (the username, or None for a 401)."""
+        from fastapi import HTTPException
+        from fastapi.security import HTTPBearer
+        from starlette.requests import Request
+
+        from agent_system.auth import database
+        from agent_system.auth.dependencies import get_current_user
+
+        request = Request({"type": "http", "method": "GET", "path": "/", "headers": headers, "query_string": b""})
+        try:
+            user = await get_current_user(request, await HTTPBearer(auto_error=False)(request),
+                                          request.headers.get("X-API-Key"), database._db)
+        except HTTPException:
+            return None
+        return user.username
+
+    def cases(self, keys, accounts) -> dict[str, tuple[list[tuple[bytes, bytes]], str | None]]:
+        cookie_jwt = account_token(accounts, "otheruser", secret=self.SECRET)
+        key_jwt = account_token(accounts, "keyuser", secret=self.SECRET)
+        key, other = keys["keyuser"].encode(), keys["otheruser"].encode()
+        return {
+            "bearer key": ([(b"authorization", b"Bearer " + key)], "keyuser"),
+            "bearer key wins over a cookie": ([(b"authorization", b"Bearer " + key),
+                                               (b"cookie", f"access_token={cookie_jwt}".encode())], "keyuser"),
+            "unknown bearer key, no cookie stands in": ([(b"authorization", b"Bearer nokeyhere"),
+                                                         (b"cookie", f"access_token={cookie_jwt}".encode())], None),
+            "same key twice": ([(b"authorization", b"Bearer " + key), (b"x-api-key", key)], "keyuser"),
+            "two different keys": ([(b"authorization", b"Bearer " + key), (b"x-api-key", other)], None),
+            "a JWT is still a JWT": ([(b"authorization", f"Bearer {cookie_jwt}".encode())], "otheruser"),
+            # read as the dependencies read them: the scheme in any case, the first of a repeated header
+            "lower-case scheme": ([(b"authorization", b"bearer " + key),
+                                   (b"cookie", f"access_token={cookie_jwt}".encode())], "keyuser"),
+            "padded value": ([(b"authorization", b"Bearer  " + key)], "keyuser"),
+            "a second Authorization header": ([(b"authorization", b"Bearer " + key),
+                                               (b"authorization", f"Bearer {cookie_jwt}".encode())], "keyuser"),
+            # Starlette's cookie parser (request.cookies) keeps the last of a repeated cookie
+            "two access_token cookies": ([(b"cookie", f"access_token={key_jwt}; access_token={cookie_jwt}".encode())],
+                                         "otheruser"),
+        }
+
+    @pytest.mark.parametrize("case", ["bearer key", "bearer key wins over a cookie",
+                                      "unknown bearer key, no cookie stands in", "same key twice",
+                                      "two different keys", "a JWT is still a JWT", "lower-case scheme",
+                                      "padded value", "a second Authorization header", "two access_token cookies"])
+    async def test_both_layers_decide_alike(self, middleware, keys, accounts, case):
+        headers, expected = self.cases(keys, accounts)[case]
+
+        username, _ = middleware._extract_user_info({"headers": headers, "query_string": b""})
+        assert username == expected, "middleware"
+        assert await self.dependency_says(headers) == expected, "get_current_user"
+
+    async def test_a_token_only_check_takes_no_key(self, keys, accounts):
+        """get_token_user (user_management, agent_editor check their admin with it): a key in the Bearer value
+        is no token, and no X-API-Key is read -- where get_current_user would take either."""
+        from fastapi import HTTPException
+        from fastapi.security import HTTPBearer
+        from starlette.requests import Request
+
+        from agent_system.auth import database
+        from agent_system.auth.dependencies import get_token_user
+
+        async def token_user(headers: list[tuple[bytes, bytes]]) -> str | None:
+            request = Request({"type": "http", "method": "GET", "path": "/", "headers": headers, "query_string": b""})
+            try:
+                return (await get_token_user(request, await HTTPBearer(auto_error=False)(request),
+                                             database._db)).username
+            except HTTPException:
+                return None
+
+        key = keys["keyuser"].encode()
+        jwt = account_token(accounts, "otheruser", secret=self.SECRET)
+        assert await token_user([(b"authorization", b"Bearer " + key)]) is None
+        assert await token_user([(b"x-api-key", key)]) is None
+        assert await token_user([(b"authorization", f"Bearer {jwt}".encode())]) == "otheruser"
+        assert await self.dependency_says([(b"authorization", b"Bearer " + key)]) == "keyuser", "the other side"

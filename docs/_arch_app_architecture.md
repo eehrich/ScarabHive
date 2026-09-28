@@ -729,7 +729,7 @@ async def chat(
 | Mode | Mechanism | Use Case |
 |------|-----------|----------|
 | **JWT** | Bearer token in header | Web UI, CLI |
-| **API Key** | X-API-Key header | Service-to-service |
+| **API Key** | `X-API-Key` header, or `Authorization: Bearer <key>` (no dots: never a JWT) | Service-to-service, OpenAI clients (`openai_api`) |
 | **None** | No auth (configurable) | Development, internal networks |
 
 ### 6.2 JWT Configuration
