@@ -63,7 +63,6 @@ env:
     --ignore=tests/utils/test_vector_store.py
     --deselect=tests/pluginsystem/test_plugin_deps_declared.py::test_plugin_modules_use_no_parent_relative_imports
     --deselect=tests/utils/test_yaml_io.py::test_no_production_code_calls_the_pure_python_loader
-    --deselect=tests/utils/test_memory_profiling.py::TestMemoryLeakDetector::test_only_a_snapshot_asked_for_records_allocations_and_they_outlast_the_periodic_ones
 
 jobs:
   lint:

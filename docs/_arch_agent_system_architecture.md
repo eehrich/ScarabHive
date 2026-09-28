@@ -458,7 +458,11 @@ User Request (HTTP/CLI)
          │      ▼
          │   Tool Execution Manager
          │      │
-         │      ├─► Execute Tool (Plugin/MCP)   (no tool hooks fire)
+         │      ├─► Hook: pre_tool_call    (per call, in call order, before any
+         │      │                           call starts; may change arguments or block)
+         │      ├─► Execute Tool (Plugin/MCP)
+         │      ├─► Hook: post_tool_call   (per call, in call order, once all are
+         │      │                           done; may change the result)
          │      ▼
          │   Tool Results
          │
