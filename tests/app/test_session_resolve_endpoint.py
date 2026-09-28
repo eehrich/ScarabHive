@@ -368,3 +368,20 @@ async def test_a_title_during_the_first_save_is_not_written_over(api, account, h
     assert (await patch).status_code == 200
 
     assert (await manager.load_session(user, "s1"))["title"] == "Blitter umbauen"
+
+
+async def test_an_id_that_is_a_path_is_refused_before_any_lookup(api, headers, tmp_path, monkeypatch):
+    """/chat/last_answer checks the id before the owner lookup, which builds a
+    path from it: '../x' answered 403 for a file that exists there and 400 for
+    one that does not -- whether a file exists, told to anyone signed in."""
+    from agent_system import app as app_mod
+    from agent_system.services.session_service import SessionService
+
+    app, manager = api
+    monkeypatch.setattr(app_mod, "_session_service", SessionService(manager))
+    await _titled(manager, "alice", "irgendwas", "s-alice")  # a user directory to walk
+    (tmp_path / "outside.json").write_text('{"user_id": "somebody"}', encoding="utf-8")
+
+    for session_id in ("../outside", "../missing"):
+        response = await _get(app, headers, "/chat/last_answer?session_id=" + session_id)
+        assert response.status_code == 400, (session_id, response.status_code, response.text)

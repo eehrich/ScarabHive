@@ -599,6 +599,228 @@
   }
 
   /**
+   * `/model [profile]` -- the LLM this chat's next message runs on.
+   *
+   * Through the profile selector, as /agent goes through the agent one: the
+   * button next to the input and the command must not disagree. The choice
+   * goes out with the next message, whose run writes it into the session.
+   */
+  function cmdModel(container, payload) {
+    const selector = window.selectorModule;
+    if (!selector || typeof selector.setLLMProfile !== 'function') {
+      addNote(container, 'The profile selector is not available in this window.');
+      return;
+    }
+    const state = selector.listState('profile');
+    if (state !== 'ready') {
+      addNote(container, state === 'failed'
+        ? 'The LLM profiles could not be read -- the selector has none.'
+        : 'The LLM profiles are still loading -- try again in a moment.');
+      return;
+    }
+    const wanted = (payload || '').trim();
+    const names = (selector.profiles() || []).map(function (p) { return p.name; });
+    const current = selector.getCurrentLLMProfile();
+
+    if (!wanted) {
+      // sorted by name, as the terminal lists them
+      const profiles = (selector.profiles() || []).slice().sort(function (a, b) {
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      });
+      addNote(container, 'LLM: ' + (current || '?') + '\n' + (profiles.length
+        ? profiles.map(function (p) {
+            return (' ' + (p.name === current ? '*' : ' ') + ' ' + p.name.padEnd(32) + ' ' +
+              oneLine(p.description || '', 60)).trimEnd();
+          }).join('\n') + '\n  /model <profile> switches; it applies to the next ' +
+            (chatModule.hasActiveRequest() ? 'run.' : 'message.')
+        : '  (no profiles configured)'));
+      return;
+    }
+    if (names.indexOf(wanted) === -1) {
+      const close = closestName(wanted, names);
+      addNote(container, 'Unknown LLM profile: ' + wanted +
+        (close ? '   Did you mean ' + close + '?' : '') + '\n  /model lists them.');
+      return;
+    }
+    selector.setLLMProfile(wanted);
+    // a message to a running run joins it, on the model it started with
+    addNote(container, 'LLM: ' + wanted + (chatModule.hasActiveRequest()
+      ? '   (from the next run on -- the running one keeps its model)'
+      : '   (from the next message on)'));
+  }
+
+  /**
+   * The name in *names* nearest to *word*, or null: the terminal's "Did you
+   * mean" (difflib.get_close_matches, n=1, cutoff 0.6), with its ratio -- a
+   * tie goes to the larger name, as there.
+   */
+  function closestName(word, names) {
+    let best = null;
+    let bestScore = 0.6;
+    names.forEach(function (name) {
+      // (name, word): get_close_matches holds the candidate as seq1, the word as seq2
+      const score = 2 * matchingChars(name, word) / (word.length + name.length);
+      if (score > bestScore || (score === bestScore && (best === null || name > best))) {
+        best = name;
+        bestScore = score;
+      }
+    });
+    return best;
+  }
+
+  /** difflib.SequenceMatcher's matches: the longest common block (earliest in a, then in b), then both sides of it. */
+  function matchingChars(a, b) {
+    let size = 0;
+    let atA = 0;
+    let atB = 0;
+    for (let i = 0; i < a.length; i++) {
+      for (let j = 0; j < b.length; j++) {
+        let k = 0;
+        while (i + k < a.length && j + k < b.length && a[i + k] === b[j + k]) k++;
+        if (k > size) { size = k; atA = i; atB = j; }
+      }
+    }
+    if (!size) return 0;
+    return size + matchingChars(a.slice(0, atA), b.slice(0, atB)) +
+      matchingChars(a.slice(atA + size), b.slice(atB + size));
+  }
+
+  /**
+   * `/copy` -- the last answer onto the clipboard.
+   *
+   * The text as the model wrote it, not what the page rendered from it: the
+   * server reads it from the record the way the terminal's /copy does
+   * (GET /chat/last_answer).
+   */
+  async function cmdCopy(container) {
+    // The record holds what a checkpoint wrote mid-run, and the answer shows
+    // before its save: the terminal takes no command during a turn at all.
+    // This tab's own run is known here; one elsewhere the server refuses (409) as far
+    // as it sees it -- with session presence any process, without only its own runs.
+    if (chatModule.hasActiveRequest()) {
+      addNote(container, 'The request is still answering -- /copy once it has finished.');
+      return;
+    }
+    let answer = null;
+    if (currentSessionId) {
+      try {
+        answer = await getJSON('/chat/last_answer?session_id=' + encodeURIComponent(currentSessionId));
+      } catch (e) {
+        if (e && e.status === 409) {
+          addNote(container, e.message);
+          return;
+        }
+        throw e;
+      }
+    }
+    const text = (answer && answer.text) || '';
+    if (!text) {
+      addNote(container, 'No answer to copy yet.');
+      return;
+    }
+    let refused = '';
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        refused = (e && e.message) || String(e);
+      }
+    } else {
+      refused = 'no clipboard for this page (only over https or on localhost)';
+    }
+    if (refused && !copyBySelection(text)) {
+      addNote(container, 'Could not copy: ' + refused.replace(/\.+$/, '') + '.');
+      return;
+    }
+    addNote(container, 'Copied the last answer (' + Array.from(text).length + ' chars, ' +
+      text.split('\n').length + ' line(s)).');
+  }
+
+  /**
+   * The copy command browsers kept for pages without the Clipboard API -- a
+   * page over plain http on another host, which is how the server's UI is
+   * often reached. It copies a selection, so it makes one; true if copied.
+   */
+  function copyBySelection(text) {
+    if (typeof document.execCommand !== 'function') return false;
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (e) {
+      copied = false;
+    }
+    area.remove();
+    if (taskInputEl) taskInputEl.focus();  // the selection took the focus from the input
+    return copied;
+  }
+
+  /**
+   * `/attach [<path> | clear]` -- files for the next message.
+   *
+   * Listing and clearing as in the terminal. A path names the disk the
+   * terminal runs on, which a page cannot read: the file picker opens
+   * instead, the one behind the paperclip.
+   */
+  function cmdAttach(container, payload) {
+    const upload = window.fileUploadModule;
+    if (!upload) {
+      addNote(container, 'Attaching files is not available in this window.');
+      return;
+    }
+    const wanted = (payload || '').trim();
+    if (!wanted) {
+      const files = upload.getFiles();
+      addNote(container, files.length
+        ? files.map(function (file) {
+            return '  ' + file.name + ' [' + upload.getFileType(file) + ']';
+          }).join('\n')
+        : 'No attachments queued. Usage: /attach <path> -- here it opens the file picker.');
+      return;
+    }
+    if (wanted.toLowerCase() === 'clear') {
+      upload.clear();
+      addNote(container, 'Attachments cleared.');
+      return;
+    }
+    const picker = document.getElementById('fileInput');
+    // Opened without a fresh keypress, the picker is dropped with no word
+    // (the command ran after an awaited request): then only the paperclip is left.
+    const activation = navigator.userActivation;
+    if (picker && !(activation && !activation.isActive)) {
+      picker.click();
+      addNote(container, 'A path on this machine is out of the page\'s reach -- ' +
+        'choose the file in the picker (or with the paperclip).');
+      return;
+    }
+    addNote(container, 'A path on this machine is out of the page\'s reach -- ' +
+      'attach the file with the paperclip.');
+  }
+
+  /**
+   * `/edit [text]` -- the terminal writes the next message in $EDITOR, since
+   * its prompt is one line. Here the input already is that editor: the text
+   * goes into it, unsent.
+   */
+  function cmdEdit(container, payload) {
+    if (!taskInputEl) return;
+    if (payload) {
+      taskInputEl.value = payload;
+      // what the textarea grows on, and what turns the action button into Send
+      taskInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    } else {
+      addNote(container, 'The input is the editor here -- Enter starts a new line, Ctrl+Enter sends.');
+    }
+    taskInputEl.focus();
+  }
+
+  /**
    * `/undo` and `/retry` -- the last question and everything that answered it.
    *
    * The server cuts, because the conversation the browser shows is the
@@ -616,10 +838,12 @@
     // process left behind. The server refuses a session that is running, and
     // without this there would be no way past a leftover.
     const forced = (payload || '').trim().toLowerCase() === 'force';
+    // The session cut is this one, whatever the chat opens while the request runs.
+    const cut = currentSessionId;
     let answer;
     try {
       answer = await postJSON('/chat/undo' + (forced ? '?force=true' : ''), {
-        session_id: currentSessionId,
+        session_id: cut,
         // The session's own agent wins on the server; this is the fallback
         // for one that has no record yet.
         agent_name: currentAgentName() || null,
@@ -627,7 +851,8 @@
     } catch (e) {
       if (e && e.status === 409 && !forced) {
         addNote(container, e.message +
-          '\n  /undo force takes it anyway -- for a lock a crashed process left behind.');
+          '\n  /undo force takes it anyway -- only for a lock a crashed process left behind: ' +
+          'a live run writes the exchange back.');
         return;
       }
       throw e;
@@ -636,8 +861,22 @@
       addNote(container, 'Nothing to take back in this session yet.');
       return;
     }
-    await window.sessionManager.loadSession(currentSessionId);
+    // The reload puts the record's LLM profile back into the selector; one
+    // chosen since (the button, /model) goes with the next message -- and
+    // "ask again on a stronger model" is what a /retry is for.
+    const selector = window.selectorModule;
+    const chosen = selector && selector.getCurrentLLMProfile();
     const asked = answer.dropped.text || '';
+    // null: another click overtook this reload -- a session opened, or one still
+    // loading -- and the chat is no longer this one's to fill.
+    const shown = currentSessionId === cut ? await window.sessionManager.loadSession(cut) : null;
+    if (shown === null || currentSessionId !== cut) {
+      // Its profile stands, and a question put back into its input would be asked there.
+      addNote(container, 'Dropped from ' + cut + ': ' + oneLine(asked, 70) +
+        (retry ? '\n  Not put back into the input -- the chat has moved on meanwhile.' : ''));
+      return;
+    }
+    if (chosen && selector.getCurrentLLMProfile() !== chosen) selector.setLLMProfile(chosen);
     addNote(container, 'Dropped: ' + oneLine(asked, 70));
     if (!retry) return;
     // The text goes back into the input rather than being sent: a file that
@@ -652,8 +891,8 @@
       taskInputEl.focus();
     }
     addNote(container, answer.dropped.had_attachments
-      ? 'Ask it again with Enter -- the file it carried has to be attached again.'
-      : 'Ask it again with Enter.');
+      ? 'Ask it again with Ctrl+Enter -- the file it carried has to be attached again.'
+      : 'Ask it again with Ctrl+Enter.');
   }
 
   /**
@@ -1053,10 +1292,11 @@
    * Run a built-in command in the browser.
    *
    * Only the surface-specific part lives here; which commands exist comes from
-   * the shared catalogue. A command this surface does not offer at all (there
-   * is no terminal to leave, so no /exit) never reaches this point -- what
-   * does reach it and has no handler says so out loud rather than doing
-   * nothing, because silence would read as a broken command.
+   * the shared catalogue. One this surface does not offer (there is no
+   * terminal to leave, so no /exit in its /help) can still be typed:
+   * /chat/resolve knows every built-in, whichever surface asks. /exit gets
+   * its own answer; anything else without a handler says so out loud rather
+   * than doing nothing, because silence would read as a broken command.
    */
   async function runChatCommand(name, payload) {
     const container = chatContainer;
@@ -1099,6 +1339,15 @@
       undo: function () { return cmdUndo(container, payload, false); },
       retry: function () { return cmdUndo(container, payload, true); },
       export: function () { return cmdExport(container, payload); },
+      model: function () { return cmdModel(container, payload); },
+      copy: function () { return cmdCopy(container); },
+      attach: function () { return cmdAttach(container, payload); },
+      edit: function () { return cmdEdit(container, payload); },
+      // not in the browser's catalogue, but typed anyway: a tab has no terminal to leave
+      exit: function () {
+        addNote(container, 'Nothing to end in the browser -- the session is saved as it stands. ' +
+          'Close the tab, or /new for a fresh session.');
+      },
     };
     const handler = handlers[name];
     if (!handler) {

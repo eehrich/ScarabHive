@@ -2679,6 +2679,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         return (await _session_record(sid, user_id)).get("agent_name") or None
 
+    async def _session_held(sid: str, user_id: str, system_config: Any) -> Optional[str]:
+        """What holds *sid* ("running", ...), or None while nothing does.
+
+        Session presence sees every process's holds -- a run, and an agent-cli
+        chat that has the session open, which it cannot tell apart. Switched
+        off, only this process's own runs are known (its background jobs).
+        """
+        presence = presence_for(system_config)
+        if presence is not None:
+            state = presence.get(sid, user_id)
+            return state["status"] if state and state["status"] != "idle" else None
+        running = await get_background_job_manager().active_sessions()
+        return "running" if sid in running else None
+
     async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
                                               force: bool = False) -> Any:
         """Take the last exchange out of a session, and save what is left.
@@ -2695,12 +2709,11 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         from .chat_actions import split_off_last_exchange
 
-        presence = presence_for(getattr(owner_agent, "system_config", None))
-        state = presence.get(sid, user_id) if presence is not None else None
-        if state and state["status"] != "idle" and not force:
+        held = await _session_held(sid, user_id, getattr(owner_agent, "system_config", None))
+        if held and not force:
             raise HTTPException(
                 status_code=409,
-                detail=f"Session {sid} is {state['status']} -- what it is writing "
+                detail=f"Session {sid} is {held} -- what it is writing "
                        f"would put the exchange back. Try again once it is done.")
 
         refusal, held = await _claim_session(owner_agent, sid, user_id, force)
@@ -3406,6 +3419,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "estimated": context_breakdown(messages, system_prompt=prompt, tools=tools),
         }
 
+    async def _chat_record(request: Request, session_id: str) -> dict:
+        """The stored session a chat command reads, for whoever may read it.
+
+        By the kind of failure, not by "anything went wrong": a corrupt
+        record read as "no such session" would send someone looking for a
+        session id that is right there in their list.
+        """
+        from .services.session_manager import SessionNotFoundError, SessionPermissionError
+
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        if not _session_service or not _session_service.session_manager:
+            raise HTTPException(status_code=503, detail="No session storage")
+        try:
+            # A name no session can have is the caller's mistake -- load_session
+            # raises the same ValueError for a corrupt FILE, which is not. And
+            # before the owner lookup, which builds a path from it unchecked.
+            _session_service.session_manager._validate_session_id(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Not a session id: '{session_id}'")
+        await _verify_session_owner(session_id, current_user)
+        try:
+            return await _session_service.session_manager.load_session(user_id, session_id)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
+        except SessionPermissionError:
+            raise HTTPException(status_code=403, detail=f"Not your session '{session_id}'")
+
     @app.get("/chat/transcript")
     async def chat_transcript(request: Request, session_id: str = Query(...)):
         """The conversation as markdown -- `/export`, for whoever asks.
@@ -3421,24 +3462,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         from .chat_actions import transcript_markdown
 
-        current_user = await _enforce_endpoint_security(request)
-        user_id = current_user.username if current_user else "anonymous"
-        await _verify_session_owner(session_id, current_user)
-        if not _session_service or not _session_service.session_manager:
-            raise HTTPException(status_code=503, detail="No session storage")
-
-        # By the kind of failure, not by "anything went wrong": a corrupt
-        # record read as "no such session" would send someone looking for a
-        # session id that is right there in their list.
-        from .services.session_manager import SessionNotFoundError, SessionPermissionError
-
-        try:
-            record = await _session_service.session_manager.load_session(user_id, session_id)
-        except SessionNotFoundError:
-            raise HTTPException(status_code=404, detail=f"No session '{session_id}'")
-        except SessionPermissionError:
-            raise HTTPException(status_code=403, detail=f"Not your session '{session_id}'")
-
+        record = await _chat_record(request, session_id)
         if not (record.get("messages") or []):
             # A file holding nothing but a heading, reported as written, is
             # what the terminal refuses too ("Nothing to export"). Reachable
@@ -3458,6 +3482,35 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             headers={"Content-Disposition":
                      f'attachment; filename="chat-{session_id}.md"'},
         )
+
+    @app.get("/chat/last_answer")
+    async def chat_last_answer(request: Request, session_id: str = Query(...)):
+        """`/copy`, for whoever asks: the text of the agent's last answer.
+
+        As the model wrote it -- the reading the terminal's /copy does too
+        (chat_actions.last_answer) -- and from the RECORD, like
+        /chat/transcript. The clipboard is the caller's to write; "" when the
+        session has no answer yet, 409 while something holds it.
+        """
+        from .chat_actions import last_answer
+
+        record = await _chat_record(request, session_id)
+        # A run writes checkpoints as it goes, and its answer shows before its
+        # save: while one works on the session the record's last answer may be
+        # an interim one. With session presence that is any process's run --
+        # which presence cannot tell from an agent-cli chat that merely has the
+        # session open, so the message names both; without it, only this
+        # server's own runs are seen.
+        config = _live_config()
+        held = await _session_held(session_id, record.get("user_id"), config)
+        if held:
+            holder = ("a run, or an agent-cli chat that has it open"
+                      if presence_for(config) is not None else "a run of this server")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session {session_id} is {held} -- {holder}, so the record "
+                       f"may hold an interim answer. /copy once it is free.")
+        return {"text": last_answer(record.get("messages") or [])}
 
     # ===========================
     # Hook Introspection Endpoints

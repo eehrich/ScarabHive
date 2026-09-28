@@ -50,17 +50,11 @@ class TestCatalogue:
         cli = {c.name for c in commands_for(CLI)}
         web = {c.name for c in commands_for(WEB)}
         assert web < cli
-        # attach takes paths on the server's own disk -- meaningless in a
-        # browser tab, which has the multipart upload instead. model switches
-        # the LLM of the running chat, which the browser does in its own
-        # selector. edit opens $EDITOR on the machine the CLI runs on, and a
-        # textarea already IS one. copy reaches the system clipboard, which a
-        # page cannot do for text it did not just render -- and there the
-        # answer is selectable anyway, while a scrolled terminal is not.
-        # Everything else IS offered in both places: a command the person
-        # finds in the terminal and not in the browser reads as broken, so a
-        # new one is built for both or it does not ship.
-        assert cli - web == {"exit", "attach", "model", "edit", "copy"}
+        # Only /exit: a browser tab has no terminal to leave. Everything else
+        # IS offered in both places -- a command the person finds in the
+        # terminal and not in the browser reads as broken, so a new one is
+        # built for both or it does not ship.
+        assert cli - web == {"exit"}
 
 
 class TestParsing:

@@ -410,3 +410,112 @@ class TestTranscript:
                                         timeout=30.0)
 
         assert response.status_code == 404
+
+
+class TestLastAnswer:
+    """`/copy` for the browser: the text of the last answer, read from the
+    record the way the terminal's /copy reads its session (chat_actions
+    .last_answer)."""
+
+    async def test_a_turn_ending_on_tool_calls_gives_the_answer_before_them(self, api):
+        await _stored(api, messages=_turn("frage", "die  antwort\nin zwei Zeilen") + [
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ergebnis"}])
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"text": "die  antwort\nin zwei Zeilen"}
+
+    async def test_a_session_a_run_works_on_is_refused(self, api):
+        """Its record holds what a checkpoint wrote mid-run -- copied, that
+        would be reported as the answer."""
+        await _stored(api, messages=_turn("frage", "halbe antwort"))
+        api.presence.hold("s1", USER, "chat_agent")   # as /run holds it
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.status_code == 409, response.text
+        assert "running" in response.text
+
+    async def test_no_answer_yet_is_empty(self, api):
+        await _stored(api, messages=[{"role": "user", "content": "frage"}])
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"text": ""}
+
+    async def test_a_session_that_is_not_there(self, api):
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "gibtsnicht"},
+                                        timeout=30.0)
+
+        assert response.status_code == 404
+
+
+class TestWhoHoldsASession:
+    """With session presence off, the process still knows its own runs: a
+    session one of them works on is not cut, nor copied from."""
+
+    @staticmethod
+    def _presence_off_and_running(api, monkeypatch):
+        from agent_system.services.background_job_manager import BackgroundJobManager
+
+        api.app.state.config.session_presence = SessionPresenceConfig(enabled=False)
+
+        async def active_sessions(self):
+            return {"s1": {"user_id": USER}}
+
+        monkeypatch.setattr(BackgroundJobManager, "active_sessions", active_sessions)
+
+    async def test_last_answer_refuses_a_session_this_process_runs(self, api, monkeypatch):
+        await _stored(api, messages=_turn("frage", "halbe antwort"))
+        self._presence_off_and_running(api, monkeypatch)
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "s1"}, timeout=30.0)
+
+        assert response.status_code == 409, response.text
+        # without presence no agent-cli chat can be seen, and the message does not claim one
+        assert "a run of this server" in response.text
+
+    async def test_undo_refuses_a_session_this_process_runs(self, api, monkeypatch):
+        await _stored(api, messages=_turn("frage", "antwort"))
+        self._presence_off_and_running(api, monkeypatch)
+
+        async with _client(api.app) as client:
+            response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                         timeout=30.0)
+
+        assert response.status_code == 409, response.text
+        assert len(await _messages_on_disk(api)) == 2, "it cut a running session"
+
+    async def test_another_users_session_is_not_read(self, api):
+        session = await api.manager.create_session(
+            user_id="bob", session_id="s-bob", agent_name="chat_agent", llm_profile="default")
+        session["messages"] = _turn("frage", "bobs antwort")
+        await api.manager.save_session(session)
+
+        async with _client(api.app) as client:
+            response = await client.get("/chat/last_answer",
+                                        params={"session_id": "s-bob"}, timeout=30.0)
+
+        assert response.status_code in (403, 404), response.text
+        assert "bobs antwort" not in response.text
+
+    async def test_a_name_no_session_can_have_is_the_callers_mistake(self, api):
+        async with _client(api.app) as client:
+            for path in ("/chat/last_answer", "/chat/transcript"):
+                response = await client.get(path, params={"session_id": "../x"}, timeout=30.0)
+                assert response.status_code == 400, (path, response.text)

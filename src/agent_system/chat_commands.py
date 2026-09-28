@@ -84,11 +84,12 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("vars", ("/vars",),
                 "session variables: list, KEY=VALUE sets, 'unset KEY', 'clear'",
                 usage="/vars [KEY=VALUE ...]"),
-    # Terminal-only: the browser has no LLM picker to keep in step with, and a
-    # command that silently disagrees with a selector is worse than no command.
+    # In the browser through the profile selector, as /agent goes through the
+    # agent one: a command that disagreed with the button next to it would be
+    # worse than no command.
     ChatCommand("model", ("/model", "/llm"),
                 "LLM of this session: bare lists, a name switches",
-                usage="/model [profile]", surfaces=(CLI,)),
+                usage="/model [profile]"),
     ChatCommand("tools", ("/tools",), "tools this agent really has (not what it claims)",
                 usage="/tools [filter]"),
     ChatCommand("skills", ("/skills",), "skills you can run, and what this agent loads"),
@@ -98,11 +99,10 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("history", ("/history", "/hist"), "show the last n exchanges (default 6)",
                 usage="/history [n]"),
     ChatCommand("last", ("/last",), "tool calls and results of the last turn, in full"),
-    # Terminal-only, and not because nobody wants it in the browser: there the
-    # answer is selectable text one keystroke away, while a terminal that has
-    # scrolled or a tmux pane over ssh offers no way to get it out at all.
-    ChatCommand("copy", ("/copy",), "copy the last answer to the clipboard",
-                surfaces=(CLI,)),
+    # The text as the model wrote it, on both surfaces (chat_actions
+    # .last_answer): what the terminal or the page made of it -- wrapped,
+    # rendered -- is not what a copy should give back.
+    ChatCommand("copy", ("/copy",), "copy the last answer to the clipboard"),
     # The cut is the same on both surfaces (chat_actions), what it is applied
     # to is not: the terminal shortens the agent's own message list and lets
     # the next save follow, the browser asks the server to shorten the record
@@ -112,15 +112,19 @@ BUILTIN_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand("retry", ("/retry",), "drop the last exchange and ask it again"),
     ChatCommand("export", ("/export",), "write this conversation to a markdown file",
                 usage="/export [path]"),
+    # A path means the disk the terminal runs on; the browser cannot read one
+    # and opens its file picker instead -- listing and clearing are the same.
     ChatCommand("attach", ("/attach",),
                 "attach a file to the NEXT message (repeat for more; "
-                "'/attach' lists, '/attach clear' empties)",
-                usage="/attach [<path> | clear]", surfaces=(CLI,)),
-    # Terminal-only for the same reason as /model: a textarea in the browser
-    # already IS the editor, and $EDITOR runs on the machine the CLI runs on.
+                "'/attach' lists, '/attach clear' empties; in the browser a "
+                "path opens the file picker)",
+                usage="/attach [<path> | clear]"),
+    # $EDITOR in the terminal, whose prompt is one line; in the browser the
+    # input already is that editor, and the argument goes into it unsent.
     ChatCommand("edit", ("/edit",),
-                "write the next message in $EDITOR (argument pre-fills it)",
-                usage="/edit [text]", surfaces=(CLI,)),
+                "write the next message in $EDITOR -- in the browser, in the input "
+                "(argument pre-fills it)",
+                usage="/edit [text]"),
     ChatCommand("help", ("/help", "/h", "/?"), "this help", usage="/help, /h"),
 )
 

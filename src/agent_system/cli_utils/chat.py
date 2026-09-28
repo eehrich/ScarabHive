@@ -633,6 +633,7 @@ async def run_chat_turn(
 from agent_system.chat_actions import (  # noqa: E402
     context_breakdown,
     live_context_window,
+    last_answer,
     measured_context,
     message_text,
     one_line,
@@ -2134,22 +2135,16 @@ def _copy_last_answer(ctx: "_ChatContext") -> None:
     wraps to the window and shortens tool lines, so copying from the scrollback
     gives back a hard-wrapped, truncated version of what the model said.
     """
-    for message in reversed(_session_messages(ctx)):
-        if getattr(message, "role", None) != "assistant":
-            continue
-        text = _message_text(message).strip()
-        if not text:
-            # A turn's last assistant message can be tool calls and nothing
-            # else; the answer is then the one before it.
-            continue
-        error = _copy_to_clipboard(text)
-        if error:
-            print(f"Could not copy: {error}")
-        else:
-            lines = text.count("\n") + 1
-            print(f"Copied the last answer ({len(text)} chars, {lines} line(s)).")
+    text = last_answer(_session_messages(ctx))
+    if not text:
+        print("No answer to copy yet.")
         return
-    print("No answer to copy yet.")
+    error = _copy_to_clipboard(text)
+    if error:
+        print(f"Could not copy: {error}")
+    else:
+        lines = text.count("\n") + 1
+        print(f"Copied the last answer ({len(text)} chars, {lines} line(s)).")
 
 
 def _usage_tracker(ctx: "_ChatContext") -> Any:

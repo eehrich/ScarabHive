@@ -150,6 +150,12 @@
     updatePreview();
   }
 
+  /** Empty the list, the files that could not be sent included (/attach clear). */
+  function clear() {
+    selectedFiles = [];
+    updatePreview();
+  }
+
   function getFiles() {
     return selectedFiles.filter(file => isValidFile(file).valid);
   }
@@ -252,6 +258,7 @@
   fileUploadModule.getFilesByType = getFilesByType;
   fileUploadModule.hasValidFiles = hasValidFiles;
   fileUploadModule.removeFiles = removeFiles;
+  fileUploadModule.clear = clear;
   fileUploadModule.addFiles = addFiles;
   fileUploadModule.isValidFile = isValidFile;
   fileUploadModule.getFileType = getFileType;

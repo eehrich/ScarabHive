@@ -191,6 +191,7 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/context`, `/ctx` | Was das Kontextfenster füllt. Zwei Blöcke, die nie vermischt werden: was der Anbieter beim **letzten Call gezählt** hat (aus `context_usage_tracker`, mit dem Fenster, gegen das er gezählt wurde — und dem Hinweis „stale", wenn seither kompaktiert wurde), und was das Gespräch **jetzt** enthält, geschätzt und nach Art aufgeschlüsselt: Tool-Ergebnisse, Antworten, deine Nachrichten, System-Prompt, Tool-Schemas. Größtes zuerst, denn das ist die Antwort auf „warum ist mein Fenster voll" — in einer langen Session sind es fast immer die Tool-Ergebnisse. Keine Kategorie wird als „Messung minus Schätzung" gerechnet: das sähe exakt aus und trüge den Fehler von beidem |
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
+| `/attach [<path> \| clear]` | Eine Datei an die **nächste** Nachricht hängen (für mehrere wiederholen); ohne Argument die Liste, `clear` leert sie. Der Rest der Zeile ist EIN Pfad — Windows-Pfade enthalten Leerzeichen. Die Art (Bild, Audio, Text) wird aus der Datei gelesen, wie bei `--attach`; eine Datei, die nicht mitgehen kann, wird gleich abgewiesen. Gesendet wird die Liste mit der nächsten Nachricht und dann geleert |
 | `/copy` | Die letzte Antwort in die Zwischenablage — den **Text**, wie das Modell ihn geschrieben hat, nicht das, was das Terminal daraus gemacht hat (die Live-Region bricht auf die Fensterbreite um und kürzt Tool-Zeilen). Unter Windows über `clip` in UTF-16LE, sonst `wl-copy`, `xclip`, `xsel` in dieser Reihenfolge; eines, das installiert ist und trotzdem scheitert, hält das nächste nicht auf |
 | `/undo` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben |
 | `/retry` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt |
@@ -221,10 +222,10 @@ reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
 parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
-`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/export` und `/context`
-answer from the API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`,
-`/chat/undo`, `/chat/transcript`, `/chat/context`) instead of from the local
-agent. `/vars`
+`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/export`, `/copy` und
+`/context` answer from the API (`/agents/<name>/tools`, `/api/sessions`,
+`/chat/vars`, `/chat/undo`, `/chat/transcript`, `/chat/last_answer`,
+`/chat/context`) instead of from the local agent. `/vars`
 sends the line as typed, so the grammar is read by the same parser the
 terminal uses; it needs a session, which in the browser exists from the first
 message on. It reads the persisted variables merged with the live ones — the
@@ -232,13 +233,34 @@ browser can open a session the running process has never loaded, and listing
 only the live half would report "none" for a session whose file is full, then
 overwrite it.
 
-Fünf sind terminal-eigen: `/exit` (kein Terminal zum Verlassen), `/attach`
-(der Browser hat seinen Upload-Knopf), `/model` (der Browser wählt das Profil
-in seinem eigenen Selektor), `/edit` (ein Textfeld IST schon ein Editor, und
-`$EDITOR` läuft auf der Maschine, auf der die CLI läuft) und `/copy` (dort ist
-die Antwort markierbarer Text, ein gescrolltes Terminal gibt sie gar nicht
-mehr her). Alles andere gibt es in **beiden** Oberflächen — ein Kommando, das
-der Nutzer im Terminal findet und im Browser nicht, liest sich wie ein Defekt.
+Nur `/exit` ist terminal-eigen: ein Browser-Tab hat kein Terminal zum
+Verlassen. Getippt sagt der Browser das, statt es abzuweisen. Alles andere gibt
+es in **beiden** Oberflächen — ein Kommando, das der Nutzer im Terminal findet
+und im Browser nicht, liest sich wie ein Defekt. Vier tun dort das
+Entsprechende:
+
+- `/model` geht durch den Profil-Selektor, wie `/agent` durch den
+  Agenten-Selektor, und gilt ab dem nächsten Lauf, der es in die Session
+  schreibt — eine Nachricht an einen laufenden Lauf bleibt auf dessen Modell.
+  Anders als im Terminal nicht sofort: wer vorher neu lädt, ist wieder auf dem
+  Profil der Session — wie beim Knopf daneben. `/undo` und `/retry` laden auch
+  neu, behalten die Wahl aber.
+- `/copy` holt den Text der letzten Antwort vom Server (`GET /chat/last_answer`,
+  dieselbe Lesung wie im Terminal: `chat_actions.last_answer`) und legt ihn in
+  die Zwischenablage. Die gibt der Browser einer Seite nur über https oder auf
+  localhost — über http auf einem anderen Rechner nimmt `/copy` den alten
+  Kopierbefehl des Browsers, und scheitert auch der, sagt es das. Während ein
+  Lauf dieses Tabs antwortet, lehnt es selbst ab; arbeitet ein anderer Lauf an
+  der Session, lehnt der Server ab (409): im Datensatz kann dann ein
+  Zwischenstand stehen. Mit Session-Presence (in `config.yaml` an) sieht er
+  dabei jeden Prozess, kann einen Lauf aber nicht von einem `agent-cli chat`
+  unterscheiden, der die Session bloß offen hat — die Meldung nennt beides.
+  Ohne Presence kennt er nur die Läufe dieses Servers.
+- `/attach` listet und leert wie im Terminal. Einen Pfad kann die Seite nicht
+  lesen — sie öffnet stattdessen die Dateiauswahl der Büroklammer; ist der
+  Tastendruck dafür schon zu lange her, verweist sie auf die Büroklammer.
+- `/edit [text]` legt den Text ins Eingabefeld, ohne zu senden: das Feld ist
+  dort schon der Editor, den das Terminal über `$EDITOR` erst holen muss.
 
 Wo beide dasselbe tun, tun sie es auch durch dieselbe Stelle: der Schnitt von
 `/undo` und `/retry` ist `chat_actions.split_off_last_exchange`, das Markdown

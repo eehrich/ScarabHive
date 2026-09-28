@@ -15,6 +15,7 @@ const path = require('path');
 const vm = require('vm');
 
 const MODULE = path.join(__dirname, '..', '..', 'static', 'js', 'chat_module.js');
+const UPLOAD = path.join(__dirname, '..', '..', 'static', 'js', 'file_upload_module.js');
 const PAGE = path.join(__dirname, '..', '..', 'templates', 'index.html');
 const PAGE_IDS = (fs.readFileSync(PAGE, 'utf8').match(/id="[^"]+"/g) || [])
   .map((hit) => hit.slice(4, -1));
@@ -30,7 +31,8 @@ function makeElement() {
     removeEventListener() {},
     querySelector() { return makeElement(); }, querySelectorAll() { return []; },
     getAttribute() { return null; }, setAttribute() {}, insertAdjacentHTML() {},
-    scrollIntoView() {}, focus() {}, remove() {}, closest() { return null; },
+    scrollIntoView() {}, focus() {}, closest() { return null; },
+    remove() { this.removed = true; }, select() { this.selected = true; },
     // A real element has these, and the code under test uses them: an input
     // says it changed, and the export link is clicked to start the download.
     dispatchEvent() {}, click() {},
@@ -70,6 +72,15 @@ function load(sessions, options) {
     querySelector() { return makeElement(); },
     querySelectorAll() { return []; },
     createElement() { return makeElement(); },
+    // the copy command pages without the Clipboard API fall back on: it copies
+    // what is selected in the page, and nothing when nothing is
+    execCommand(command) {
+      if (command !== 'copy' || !settings.execCopy) return false;
+      const selected = document.body.children.find((el) => el.selected && !el.removed);
+      if (!selected) return false;
+      copied.push(selected.value);
+      return true;
+    },
     addEventListener() {}, removeEventListener() {},
     body: makeElement(), documentElement: makeElement(),
   };
@@ -78,6 +89,9 @@ function load(sessions, options) {
   const acted = [];
   const updated = [];  // sessions a run's start named to the session list
   const headers = [];  // what the header was set to, id:title
+  const copied = [];  // what went onto the clipboard
+  // the profile selector's choice -- null while its list is not there
+  let profile = 'profile' in settings ? settings.profile : 'fast';
   // What the tab keeps: two loads share it when a test reloads the page.
   const kept = settings.storage || {};
   const store = { getItem(key) { return key in kept ? kept[key] : null; },
@@ -95,7 +109,17 @@ function load(sessions, options) {
     URL: { createObjectURL() { return 'blob:x'; }, revokeObjectURL() {} },
     EventSource: function () { this.close = function () {}; },
     Event: function (type) { this.type = type; },
-    navigator: { clipboard: {} },
+    // no clipboard at all: a page over plain http on another host
+    navigator: { clipboard: settings.clipboard === false ? undefined
+      // 'rejects': as Chrome does when the page lost the focus during the fetch
+      : { writeText: async (text) => {
+        if (settings.clipboard === 'rejects') throw new Error('Document is not focused.');
+        copied.push(text);
+      } },
+      // false: the keypress that sent the command is too long ago to open anything;
+      // 'missing': a browser without the API (Firefox before 131, Safari before 16.4)
+      userActivation: settings.activation === 'missing' ? undefined
+        : { isActive: settings.activation !== false } },
     console,
     fetch: async (url, init) => {
       // What the page asks on its own -- the viewer's preferences at load, whether
@@ -125,6 +149,8 @@ function load(sessions, options) {
           return { done: false, value: new TextEncoder().encode(text) };
         } }) } };
       }
+      // held back until the test lets it through: a request still on its way
+      if (answer && answer.until && !answer.sse) await answer.until;
       if (answer && answer.fails) {
         // The status matters: /undo tells a 409 (the session is running) from
         // anything else, and offers the way past it only for that one.
@@ -151,8 +177,10 @@ function load(sessions, options) {
         acted.push('load:' + id);
         // The real one announces the switch; the chat learns its session there.
         if (settings.loads) {
+          // another session opened meanwhile answers instead, when a test says so
+          const shown = settings.openedMeanwhile || { session_id: id, llm_profile: settings.storedProfile };
           window.dispatchEvent({ type: 'session:loaded',
-            detail: { session: { session_id: id, messages: [] } } });
+            detail: { session: { messages: [], ...shown } } });
         }
         // false: nothing there to load (a new session before its first save)
         return settings.loadReturns;
@@ -178,10 +206,15 @@ function load(sessions, options) {
       agents: () => settings.agents || ['coder', 'writer'],
       getCurrentAgent: () => settings.agent || 'coder',
       setAgent: (name) => { acted.push('setAgent:' + name); return settings.setAgentFails !== true; },
+      profiles: () => settings.profiles || [{ name: 'fast', description: 'Quick answers' }, { name: 'deep' }],
+      listState: (kind) => (kind === 'profile' ? settings.profileState || 'ready' : 'ready'),
+      getCurrentLLMProfile: () => profile,
+      setLLMProfile: (name) => { acted.push('setLLMProfile:' + name); profile = name; return true; },
     },
     slashCommands: { helpLines() { return []; }, catalogue: {}, attach() {}, close() {} },
     // A file waiting to go out with the next message, when a test asks for one.
-    fileUploadModule: settings.files ? {
+    // A list: the real module, holding the files a test attached (/attach lists and clears them).
+    fileUploadModule: Array.isArray(settings.files) ? realUpload(document, settings.files) : settings.files ? {
       hasValidFiles: () => true, getFiles: () => ['pic.png'], removeFiles() {},
       // an image: its preview is an object URL, which the stub has (a text file's needs FileReader)
       getFilesByType: () => ({ images: [{ name: 'pic.png' }], audio: [], text: [] }),
@@ -218,12 +251,20 @@ function load(sessions, options) {
     });
   }
   return { chatModule, container: document.getElementById('chat'), calls, bodies,
-           acted, updated, headers, input: document.getElementById('task'), window,
+           acted, updated, headers, copied, input: document.getElementById('task'), window,
            // What the page does with the Run button: submit the form with the input's text.
            send: async (text) => {
              document.getElementById('task').value = text;
              await document.getElementById('f').listeners.submit({ preventDefault() {} });
            } };
+}
+
+/** static/js/file_upload_module.js itself, with *files* attached -- its list, types and clear() are what /attach uses. */
+function realUpload(document, files) {
+  const scope = {};
+  vm.runInNewContext(fs.readFileSync(UPLOAD, 'utf8'), { window: scope, document, console });
+  scope.fileUploadModule.addFiles(files);
+  return scope.fileUploadModule;
 }
 
 function sessionsFixture(count) {
@@ -931,6 +972,282 @@ test('/agent refuses a name the selector does not know', async () => {
   assert.ok(notesOf(container).join('\n').includes('Unknown agent: writr'));
 });
 
+test('/model lists the profiles by name and marks the running one', async () => {
+  const { chatModule, container } = load([], { session: 'sid7' });
+  await chatModule.runCommand('model', '');
+  const lines = notesOf(container).pop().split('\n');
+  assert.strictEqual(lines[0], 'LLM: fast');
+  assert.ok(lines[1].startsWith('   deep'), lines.join('\n'));
+  assert.ok(lines[2].startsWith(' * fast') && lines[2].endsWith('Quick answers'), lines.join('\n'));
+});
+
+test('/model switches the selector, and the next message runs on it', async () => {
+  const { chatModule, container, acted, bodies, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await chatModule.runCommand('model', 'deep');
+  assert.deepStrictEqual(acted, ['setLLMProfile:deep']);
+  assert.strictEqual(notesOf(container).pop(), 'LLM: deep   (from the next message on)');
+  await send('hallo');
+  assert.strictEqual(bodies[bodies.length - 1].llm_profile, 'deep');
+});
+
+test('/model refuses a profile the selector does not know, and names the near one', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7' });
+  await chatModule.runCommand('model', 'deeep');
+  assert.deepStrictEqual(acted, [], 'it switched to a profile that does not exist');
+  assert.ok(notesOf(container).pop().startsWith('Unknown LLM profile: deeep   Did you mean deep?'));
+  await chatModule.runCommand('model', 'dump');  // half like deep: below the cutoff
+  assert.ok(notesOf(container).pop().startsWith('Unknown LLM profile: dump\n'), 'a guess for nothing alike');
+});
+
+test('/model names the longer profile a prefix belongs to, as difflib does', async () => {
+  const { chatModule, container } = load([], { session: 'sid7',
+    profiles: [{ name: 'claude-opus' }, { name: 'fast' }] });
+  await chatModule.runCommand('model', 'claude');
+  assert.ok(notesOf(container).pop().startsWith('Unknown LLM profile: claude   Did you mean claude-opus?'));
+});
+
+test('/model before a /retry: the question is asked again on the chosen one', async () => {
+  const { chatModule, bodies, send } = load([], { session: 'sid7', loads: true, storedProfile: 'fast',
+    answers: { '/chat/undo': { dropped: { text: 'frage' } },
+               '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }] } } });
+  await chatModule.runCommand('model', 'deep');
+  await chatModule.runCommand('retry', '');  // reloads the record, which says fast
+  await send('frage');
+  assert.strictEqual(bodies[bodies.length - 1].llm_profile, 'deep');
+});
+
+test('/model before a /undo does not follow into a session opened meanwhile', async () => {
+  const { chatModule, window } = load([], { session: 'sid7', loads: true,
+    openedMeanwhile: { session_id: 'sB', llm_profile: 'turbo' },
+    answers: { '/chat/undo': { dropped: { text: 'frage' } } } });
+  await chatModule.runCommand('model', 'deep');
+  await chatModule.runCommand('undo', '');  // the chat is in sB by the time the reload is done
+  assert.strictEqual(window.selectorModule.getCurrentLLMProfile(), 'turbo');
+});
+
+test('a /retry whose chat went to another session meanwhile asks nothing there', async () => {
+  const { chatModule, container, input } = load([], { session: 'sid7', loads: true,
+    openedMeanwhile: { session_id: 'sB' },
+    answers: { '/chat/undo': { dropped: { text: 'frage aus sid7' } } } });
+  await chatModule.runCommand('retry', '');
+  assert.strictEqual(input.value, '', 'the question of sid7 sits in the input of sB');
+  assert.ok(notesOf(container).pop().startsWith('Dropped from sid7: frage aus sid7'));
+});
+
+test('a /retry whose reload another click overtook puts nothing into the input', async () => {
+  const { chatModule, container, input } = load([], { session: 'sid7', loadReturns: null,
+    answers: { '/chat/undo': { dropped: { text: 'frage aus sid7' } } } });
+  await chatModule.runCommand('retry', '');  // loadSession answers null: a later click took over
+  assert.strictEqual(input.value, '');
+  assert.ok(notesOf(container).pop().includes('the chat has moved on meanwhile'));
+});
+
+test('a /retry cuts the session it was typed in, not one opened during the request', async () => {
+  const gate = held();
+  const { chatModule, input, acted, bodies, window } = load([], { session: 'sid7',
+    answers: { '/chat/undo': { dropped: { text: 'frage aus sid7' }, until: gate.until } } });
+  const retrying = chatModule.runCommand('retry', '');
+  await tick();
+  window.dispatchEvent({ type: 'session:loaded', detail: { session: { session_id: 'sB', messages: [] } } });
+  gate.open();
+  await retrying;
+  assert.strictEqual(bodies[0].session_id, 'sid7');
+  assert.deepStrictEqual(acted, [], 'it reloaded a session it did not cut');
+  assert.strictEqual(input.value, '', 'the question of sid7 sits in the input of sB');
+});
+
+test('/model while a request runs: the running one keeps its model', async () => {
+  const gate = held();
+  const { chatModule, container, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }], until: gate.until } } });
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('model', '');
+  assert.ok(notesOf(container).pop().endsWith('it applies to the next run.'));
+  await chatModule.runCommand('model', 'deep');
+  assert.ok(notesOf(container).pop().includes('the running one keeps its model'));
+  gate.open();
+  await sent;
+});
+
+test('/model says so when the profiles could not be read', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7', profileState: 'failed' });
+  await chatModule.runCommand('model', 'deep');
+  assert.deepStrictEqual(acted, []);
+  assert.ok(notesOf(container).pop().includes('could not be read'));
+});
+
+test('/model names what difflib would: blocks on both sides, a tie to the larger, 0.6 itself', async () => {
+  const { chatModule, container } = load([], { session: 'sid7',
+    profiles: [{ name: 'gpt-4o' }, { name: 'fasa' }, { name: 'fasb' }, { name: 'abcde' }] });
+  for (const [typed, meant] of [['gpt4o', 'gpt-4o'], ['fas', 'fasb'], ['abcxy', 'abcde']]) {
+    await chatModule.runCommand('model', typed);
+    assert.ok(notesOf(container).pop().startsWith('Unknown LLM profile: ' + typed + '   Did you mean ' + meant + '?'),
+      typed);
+  }
+});
+
+test('/undo before the profiles are there leaves the reload its profile', async () => {
+  const { chatModule, window } = load([], { session: 'sid7', loads: true, profile: null, storedProfile: 'deep',
+    answers: { '/chat/undo': { dropped: { text: 'frage' } } } });
+  await chatModule.runCommand('undo', '');
+  assert.strictEqual(window.selectorModule.getCurrentLLMProfile(), 'deep');
+});
+
+test('/model says so while the profiles are still loading', async () => {
+  const { chatModule, container, acted } = load([], { session: 'sid7', profileState: 'loading' });
+  await chatModule.runCommand('model', 'deep');
+  assert.deepStrictEqual(acted, []);
+  assert.ok(notesOf(container).pop().includes('still loading'));
+});
+
+test('/copy puts the last answer the server read onto the clipboard', async () => {
+  const { chatModule, container, calls, copied } = load([], { session: 'sid7', answers: {
+    '/chat/last_answer': { text: 'Erste Zeile \u{1F642}\nzweite' } } });
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(calls, ['/chat/last_answer?session_id=sid7']);
+  assert.deepStrictEqual(copied, ['Erste Zeile \u{1F642}\nzweite']);
+  // characters as the terminal counts them: the emoji is one, not two UTF-16 units
+  assert.strictEqual(notesOf(container).pop(), 'Copied the last answer (20 chars, 2 line(s)).');
+});
+
+test('/copy while a request runs copies nothing', async () => {
+  const gate = held();
+  const { chatModule, container, copied, send } = load([], { session: 'sid7', answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'sid7' }], until: gate.until },
+    '/chat/last_answer': { text: 'halbe Antwort' } } });
+  const sent = send('hallo');
+  await tick();
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(copied, []);
+  assert.ok(notesOf(container).pop().includes('still answering'));
+  gate.open();
+  await sent;
+});
+
+test('/copy says what the server says about a run working elsewhere', async () => {
+  const { chatModule, container, copied } = load([], { session: 'sid7', answers: {
+    '/chat/last_answer': { fails: 'Session sid7 is running -- its answer is not written yet.', status: 409 } } });
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(copied, []);
+  assert.strictEqual(notesOf(container).pop(), 'Session sid7 is running -- its answer is not written yet.');
+});
+
+test('/copy without an answer copies nothing', async () => {
+  const { chatModule, container, copied } = load([], { session: 'sid7', answers: {
+    '/chat/last_answer': { text: '' } } });
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(copied, []);
+  assert.strictEqual(notesOf(container).pop(), 'No answer to copy yet.');
+});
+
+test('/copy without the Clipboard API copies through a selection of its own', async () => {
+  const { chatModule, container, copied, window } = load([], { session: 'sid7', clipboard: false, execCopy: true,
+    answers: { '/chat/last_answer': { text: 'Antwort' } } });
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(copied, ['Antwort']);
+  assert.strictEqual(notesOf(container).pop(), 'Copied the last answer (7 chars, 1 line(s)).');
+  const left = window.document.body.children.filter((el) => el.value === 'Antwort' && !el.removed);
+  assert.deepStrictEqual(left, [], 'the selection it copied from stays in the page');
+});
+
+test('/copy through a selection gives the focus back to the input', async () => {
+  const { chatModule, input } = load([], { session: 'sid7', clipboard: false, execCopy: true,
+    answers: { '/chat/last_answer': { text: 'Antwort' } } });
+  let focused = 0;
+  input.focus = () => { focused++; };
+  await chatModule.runCommand('copy', '');
+  assert.strictEqual(focused, 1, 'the input lost its focus to the selection');
+});
+
+test('/copy the clipboard refused: the selection copies, and when it cannot either, the reason is said', async () => {
+  const answers = { '/chat/last_answer': { text: 'Antwort' } };
+  const first = load([], { session: 'sid7', clipboard: 'rejects', execCopy: true, answers });
+  await first.chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(first.copied, ['Antwort']);
+  const second = load([], { session: 'sid7', clipboard: 'rejects', answers });
+  await second.chatModule.runCommand('copy', '');
+  assert.strictEqual(notesOf(second.container).pop(), 'Could not copy: Document is not focused.');
+});
+
+test('/copy with no session asks the server nothing', async () => {
+  const { chatModule, container, calls } = load([]);
+  await chatModule.runCommand('copy', '');
+  assert.deepStrictEqual(calls, []);
+  assert.strictEqual(notesOf(container).pop(), 'No answer to copy yet.');
+});
+
+test('/copy says so when the page has no clipboard', async () => {
+  const { chatModule, container } = load([], { session: 'sid7', clipboard: false, answers: {
+    '/chat/last_answer': { text: 'Antwort' } } });
+  await chatModule.runCommand('copy', '');
+  // why, not the TypeError a missing clipboard throws
+  const note = notesOf(container).pop();
+  assert.ok(note.startsWith('Could not copy:') && note.includes('https'), note);
+});
+
+test('/attach lists the files for the next message, and clear empties them', async () => {
+  const { chatModule, container } = load([], { session: 'sid7',
+    files: [{ name: 'plan.png' }, { name: 'notes.md' }] });
+  await chatModule.runCommand('attach', '');
+  assert.strictEqual(notesOf(container).pop(), '  plan.png [image]\n  notes.md [text]');
+  await chatModule.runCommand('attach', 'CLEAR');  // any case, as in the terminal
+  assert.strictEqual(notesOf(container).pop(), 'Attachments cleared.');
+  await chatModule.runCommand('attach', '');
+  assert.ok(notesOf(container).pop().startsWith('No attachments queued.'));
+});
+
+test('/attach with a path opens the file picker', async () => {
+  const { chatModule, container, window } = load([], { session: 'sid7', files: [] });
+  let opened = 0;
+  window.document.getElementById('fileInput').click = () => { opened++; };
+  await chatModule.runCommand('attach', 'C:\\Users\\a b\\plan.png');
+  assert.strictEqual(opened, 1);
+  assert.ok(notesOf(container).pop().includes('choose the file in the picker'));
+});
+
+test('/attach with a path opens the picker where the browser cannot say whether it may', async () => {
+  const { chatModule, window } = load([], { session: 'sid7', files: [], activation: 'missing' });
+  let opened = 0;
+  window.document.getElementById('fileInput').click = () => { opened++; };
+  await chatModule.runCommand('attach', 'plan.png');
+  assert.strictEqual(opened, 1);
+});
+
+test('/attach with a path and no fresh keypress points at the paperclip', async () => {
+  const { chatModule, container, window } = load([], { session: 'sid7', files: [], activation: false });
+  let opened = 0;
+  window.document.getElementById('fileInput').click = () => { opened++; };
+  await chatModule.runCommand('attach', 'plan.png');
+  assert.strictEqual(opened, 0);
+  assert.ok(notesOf(container).pop().endsWith('attach the file with the paperclip.'));
+});
+
+test('/edit alone says the input is the editor', async () => {
+  const { chatModule, container, calls } = load([], { session: 'sid7' });
+  await chatModule.runCommand('edit', '');
+  assert.strictEqual(notesOf(container).pop(), 'The input is the editor here -- Enter starts a new line, Ctrl+Enter sends.');
+  assert.deepStrictEqual(calls, []);
+});
+
+test('/edit puts its text into the input, unsent', async () => {
+  const { chatModule, calls, input } = load([], { session: 'sid7' });
+  const events = [];
+  input.dispatchEvent = (event) => events.push(event.type);  // what the box grows on, and Send comes back on
+  await chatModule.runCommand('edit', 'Entwurf  mit Luft');
+  assert.strictEqual(input.value, 'Entwurf  mit Luft');
+  assert.ok(events.includes('input'), 'the input was not told');
+  assert.deepStrictEqual(calls, [], 'something was sent');
+});
+
+test('/exit typed in the browser says there is nothing to end', async () => {
+  const { chatModule, container, calls } = load([], { session: 'sid7' });
+  await chatModule.runCommand('exit', '');
+  assert.ok(notesOf(container).pop().startsWith('Nothing to end in the browser'));
+  assert.deepStrictEqual(calls, []);
+});
+
 test('/undo asks the server to cut and reloads what is left', async () => {
   const { chatModule, container, calls, bodies, acted } = load([], {
     session: 'sid7',
@@ -960,7 +1277,7 @@ test('/retry puts the question back in the input instead of sending it', async (
   });
   await chatModule.runCommand('retry', '');
   assert.strictEqual(input.value, 'schreib die routine');
-  assert.ok(notesOf(container).join('\n').includes('Ask it again with Enter'));
+  assert.ok(notesOf(container).join('\n').includes('Ask it again with Ctrl+Enter'));
 });
 
 test('/retry says when the file it carried cannot come along', async () => {

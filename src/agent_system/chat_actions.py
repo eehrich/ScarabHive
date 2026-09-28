@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "message_role", "message_text", "tool_calls_of", "tool_call_summary",
-    "one_line", "starts_a_turn", "split_off_last_exchange",
+    "one_line", "last_answer", "starts_a_turn", "split_off_last_exchange",
     "transcript_markdown", "context_breakdown", "measured_context",
 ]
 
@@ -102,6 +102,20 @@ def one_line(value: Any, limit: int = 60) -> str:
             else json.dumps(value, ensure_ascii=False, default=str))
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def last_answer(messages: Sequence[Any]) -> str:
+    """``/copy``: the text of the agent's last answer, "" when there is none.
+
+    A turn's last assistant message can be tool calls and nothing else; the
+    answer is then the one before it.
+    """
+    for message in reversed(messages):
+        if message_role(message) == "assistant":
+            text = message_text(message).strip()
+            if text:
+                return text
+    return ""
 
 
 def starts_a_turn(message: Any) -> bool:
