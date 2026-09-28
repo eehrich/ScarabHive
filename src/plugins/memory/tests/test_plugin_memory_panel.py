@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_system.auth.dependencies import get_optional_user
 from agent_system.plugins.web_adapter import PluginWebRegistry
 from agent_system.ui.resources import STATIC_DIR
 from tests.ui.browser import find_browser, run_app_test_page
@@ -102,6 +103,10 @@ def panel_app(storage: Path):
     asyncio.run(seed(server))
     (storage / "s-8.json").write_text("{", encoding="utf-8")  # a metadata file cut short
     app = FastAPI()
+    # One person's instance (auth off): the panel sees every session (agent_system/auth/session_access.py), and
+    # nobody signs in -- the user database, data/users.db by default, is not asked.
+    app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=False))
+    app.dependency_overrides[get_optional_user] = lambda: None
     asked: dict[str, int] = {}
 
     @app.middleware("http")
