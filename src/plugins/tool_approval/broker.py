@@ -1,18 +1,22 @@
-"""The questions waiting for a person, and what a person allowed for a session.
+"""The approvals waiting for a person, and what a person allowed per session.
 
-One broker per plugin instance, in the process that runs the agents: the hook
-opens a question and waits on it, the web endpoint answers it. Nothing is
-persisted -- a restart ends every run that waits, and forgets what was allowed
-for a session.
+A question is ``core.run_questions``'s, with the call it asks about; this
+module adds what only an approval has: the decisions, the reason for a deny,
+and the tools a person allowed for a session. One broker per plugin instance,
+in the process that runs the agents: the hook opens a question and waits on
+it, the web endpoint answers it. Nothing is persisted -- a restart ends every
+run that waits, and forgets what was allowed for a session.
 """
 from __future__ import annotations
 
-import asyncio
-import secrets
-import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Sequence, Set, Tuple
+
+from agent_system.core.run_questions import AnswerRejected, Question, QuestionBroker
+
+__all__ = ["ALLOW_ONCE", "ALLOW_SESSION", "DENY", "DECISIONS", "Answer", "AnswerRejected",
+           "ApprovalBroker", "ApprovalQuestion"]
 
 ALLOW_ONCE = "allow_once"
 ALLOW_SESSION = "allow_session"
@@ -39,20 +43,12 @@ class Answer:
 
 
 @dataclass
-class Question:
+class ApprovalQuestion(Question):
     """One call waiting for a person."""
 
-    id: str
-    owner: Optional[str]
-    session_id: str
-    request_id: str
-    agent_name: str
     tool: str
     server: str
     arguments_preview: str
-    asked_at: float
-    timeout: float
-    answer: "asyncio.Future[Answer]" = field(repr=False)
     #: The preview left out part of a long value (never a whole argument).
     arguments_cut: bool = False
     #: Said above the buttons: what allowing this call gives up (a spawn without approvals).
@@ -63,40 +59,21 @@ class Question:
     def to_public(self) -> Dict[str, Any]:
         """What the page shows about the question."""
         return {
-            "id": self.id,
-            "session_id": self.session_id,
-            "request_id": self.request_id,
-            "agent": self.agent_name,
+            **super().to_public(),
             "tool": self.tool,
             "server": self.server,
             "arguments": self.arguments_preview,
             "arguments_cut": self.arguments_cut,
             "warning": self.warning,
             "decisions": list(self.decisions),
-            "asked_at": self.asked_at,
-            "expires_at": self.asked_at + self.timeout,
         }
 
 
-def _resolve(future: "asyncio.Future[Answer]", answer: Answer) -> None:
-    if not future.done():
-        future.set_result(answer)
-
-
-class AnswerRejected(Exception):
-    """The answer cannot be taken; ``status`` is the HTTP status that says why."""
-
-    def __init__(self, status: int, detail: str):
-        super().__init__(detail)
-        self.status = status
-        self.detail = detail
-
-
-class ApprovalBroker:
-    """Open questions by id, and the tools a person allowed per session."""
+class ApprovalBroker(QuestionBroker):
+    """Open approvals by id, and the tools a person allowed per session."""
 
     def __init__(self) -> None:
-        self._questions: Dict[str, Question] = {}
+        super().__init__()
         self._grants: "OrderedDict[Session, Set[str]]" = OrderedDict()
 
     # --- questions ---------------------------------------------------------
@@ -104,31 +81,13 @@ class ApprovalBroker:
     def open(self, *, owner: Optional[str], session_id: str, request_id: str, agent_name: str,
              tool: str, server: str, arguments_preview: str, timeout: float,
              arguments_cut: bool = False, warning: Optional[str] = None,
-             decisions: Tuple[str, ...] = DECISIONS) -> Question:
+             decisions: Tuple[str, ...] = DECISIONS) -> ApprovalQuestion:
         """A new question whose answer the caller awaits on ``question.answer``."""
-        question = Question(
-            # hex: the id ends up in a status line's request id, where a `_` or a
-            # trailing `_nnn` would read as a level of the run tree
-            id=secrets.token_hex(8), owner=owner, session_id=session_id,
-            request_id=request_id, agent_name=agent_name, tool=tool, server=server,
-            arguments_preview=arguments_preview, asked_at=time.time(), timeout=timeout,
-            answer=asyncio.get_running_loop().create_future(), arguments_cut=arguments_cut,
-            warning=warning, decisions=tuple(decisions))
-        self._questions[question.id] = question
-        return question
-
-    def close(self, question: Question) -> None:
-        """The asker stopped waiting: the question can no longer be answered."""
-        self._questions.pop(question.id, None)
-        if not question.answer.done():
-            question.answer.cancel()
-
-    def get(self, question_id: str) -> Optional[Question]:
-        return self._questions.get(question_id)
-
-    def pending(self) -> List[Question]:
-        """Every open question, oldest first."""
-        return sorted(self._questions.values(), key=lambda q: q.asked_at)
+        return self.open_question(
+            ApprovalQuestion, owner=owner, session_id=session_id, request_id=request_id,
+            agent_name=agent_name, timeout=timeout, tool=tool, server=server,
+            arguments_preview=arguments_preview, arguments_cut=arguments_cut, warning=warning,
+            decisions=tuple(decisions))
 
     def answer(self, question_id: str, decision: str, reason: str = "",
                answered_by: Optional[str] = None) -> Question:
@@ -138,26 +97,11 @@ class ApprovalBroker:
             raise AnswerRejected(422, f"decision must be one of {', '.join(DECISIONS)}")
         if not isinstance(reason, str):
             raise AnswerRejected(422, "reason must be text")
-        question = self._questions.get(question_id)
-        if question is not None and decision not in question.decisions:
+        question = self.get(question_id)
+        if isinstance(question, ApprovalQuestion) and decision not in question.decisions:
             raise AnswerRejected(422, f"this question takes {', '.join(question.decisions)}")
-        # Taken out first: of two answers at once, one finds it and the other does not.
-        question = self._questions.pop(question_id, None)
-        if question is None or question.answer.done():
-            raise AnswerRejected(404, "No such question is waiting -- it was answered, timed out or its run ended.")
         answer = Answer(decision=decision, reason=reason.strip()[:MAX_REASON_CHARS], answered_by=answered_by)
-        loop = question.answer.get_loop()
-        try:
-            here = asyncio.get_running_loop()
-        except RuntimeError:
-            here = None
-        if here is loop:
-            question.answer.set_result(answer)
-        else:
-            # The app serves routes on the loop the runs run on; a server that
-            # does not must not touch the future from another thread.
-            loop.call_soon_threadsafe(_resolve, question.answer, answer)
-        return question
+        return self.resolve(question_id, answer)
 
     # --- what was allowed for a session ------------------------------------
 

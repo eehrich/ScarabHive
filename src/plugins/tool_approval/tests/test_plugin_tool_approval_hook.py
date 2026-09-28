@@ -595,6 +595,30 @@ class TestAsking:
         assert asked == ['text: "four"']
         assert "never" not in [r["text"] for r in probe.received], "the grant lifted a deny rule"
 
+    async def test_a_message_in_the_chat_approves_nothing(self, approval, watched):
+        """While an approval waits, the person types into the chat: a mid-run message
+        for the model, not an answer. ask_user ends its wait on such a message (the
+        shared put_to_person takes an ``interrupt``); an approval must not -- the call
+        neither runs nor settles until a button answers."""
+        plugin = await approval()
+        probe = _Probe()
+        model = _Model([_call("c1", "one")])
+        agent = _agent(probe, {"ask_timeout": 20})
+        agent.llm = model
+        root = watched("chatmsg1")
+
+        async def write_then_deny(question, event):
+            assert await agent.append_user_message(root, "sure, go ahead")
+            await asyncio.sleep(1.5)   # more than one look of the waiting question
+            assert [q.id for q in plugin.broker.pending()] == [question["id"]], "a chat message settled the approval"
+            assert probe.received == [], "a chat message let the call run"
+            plugin.broker.answer(question["id"], "deny")
+
+        await asyncio.wait_for(_run(agent, root, answer=write_then_deny), 15)
+
+        assert probe.received == []
+        assert "The user denied" in model.results()[0]["error"]
+
     async def test_a_waiting_question_is_sent_again(self, approval, watched):
         """A page that was reloaded skips the lines it read: the question comes back."""
         plugin = await approval()

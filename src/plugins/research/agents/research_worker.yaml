@@ -15,7 +15,9 @@ plugins:
       agent_config:
         max_steps: 25              # one part of a question, not the whole thing
         tools:
-          allowed: ["!research_sam/*"]
+          # No ask_user either: a branch answers the coordinator, and its
+          # questions are the coordinator's to ask.
+          allowed: ["!research_sam/*", "!ask_user/*"]
         template_vars:
           can_fork: false          # drops the branching section of the prompt
 

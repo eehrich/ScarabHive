@@ -1,0 +1,13 @@
+# ask_user plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "ask_user"
+version = "0.1.0"
+description = "The model asks the person watching the run a question (optionally with 2-4 options, multi-select) and waits for the answer; runs nobody watches get an error at once."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server", "web"]
+category = "interaction"
+tags = ["tools", "question", "human-in-the-loop", "clarify"]
+requires = { agent_system = ">=0.7.0" }
+dependencies = []

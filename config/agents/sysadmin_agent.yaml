@@ -94,6 +94,7 @@ plugins:
             - "+terminal/*"            
             - "+ssh_control/*"
             - "+okf/*"                    # durable infra knowledge base (runbooks, known issues, hosts)
+            - "+ask_user/*"               # ask the person in the chat before a choice that is theirs
 
         hooks:
           enabled: true

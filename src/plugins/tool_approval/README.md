@@ -82,7 +82,7 @@ The question is a **status line of the run**, under a row of its own
 (`<request_id>_approval_<id>`), with `meta.tool_approval`:
 `{id, tool, server, arguments, arguments_cut, request_id, session_id, agent,
 asked_at, expires_at, answer_url, decisions}`. The web chat draws the arguments,
-a field for the reason and three buttons on that row (`syncApprovalActions` in
+a field for the reason and three buttons on that row (`syncQuestionActions` in
 `static/js/chat_module.js`) and posts the answer. The reason reaches the model
 with *deny* only.
 

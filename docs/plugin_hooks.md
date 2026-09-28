@@ -253,7 +253,12 @@ ihm; ein Call innerhalb eines `tool_script`-Skripts fragt nie. Alles andere (ope
 JSON-`/run`, die `/events`-Aufträge des Writers) ist unbeaufsichtigt, und der
 Hook entscheidet ohne Rückfrage. Die Frage selbst ist eine Status-Zeile unter
 eigener Kind-ID mit `meta.tool_approval`. Der Chat zeichnet dazu Knöpfe, und
-die letzte Zeile der Reihe (end/error) nimmt sie wieder weg.
+die letzte Zeile der Reihe (end/error) nimmt sie wieder weg. Die Maschinerie
+dafür teilen sich `tool_approval` und das Tool `ask_user`: offene Fragen,
+Status-Zeile, Warten auf Antwort, Timeout, Abbruch und "niemand liest mehr" in
+`agent_system/core/run_questions.py` (`QuestionBroker`, `put_to_person`), die
+Antwort-Route samt "wer darf antworten" in `agent_system/api/question_routes.py`,
+die Antwort-Box im Chat in `syncQuestionActions` (`static/js/chat_module.js`).
 
 **Fallen für Policy- und Freigabe-Hooks:**
 

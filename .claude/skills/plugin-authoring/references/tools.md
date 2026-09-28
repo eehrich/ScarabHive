@@ -92,6 +92,17 @@ web_ui: {}      # optional, see skill panel-authoring
 - **Don't raise `CancellationError` from a tool** — like any exception it becomes
   `{"error": str(e)}`, not the cancelled shape. Return the cancelled dict.
 
+## Asking the person watching the run
+
+Don't build a second question box: `ask_user` is the tool for it, and a tool or
+hook that must ask a person itself uses the shared pieces -- a
+`core.run_questions.QuestionBroker` subclass for the questions,
+`put_to_person(broker, question, scope, meta_key=..., ...)` for the status row and
+the wait (answer, `TIMEOUT`, `CANCELLED`, `GONE`, or what your `interrupt=` check returns), `api.question_routes.question_router`
+for `/answer` + `/pending` with the owner-or-admin rule. Ask only where
+`is_read(request_id, grace)` is true; the chat draws a box only for the meta keys
+`syncQuestionActions` knows. Worked examples: `src/plugins/ask_user`, `src/plugins/tool_approval`.
+
 ## Multimodal
 
 ```python
