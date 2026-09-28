@@ -85,6 +85,12 @@ def test_the_access_log_masks_the_key_whichever_handler_writes_it(app_log, tmp_p
     (f"/plugins/stategraph/callback%3fToken%3D{KEY}", "/plugins/stategraph/callback%3fToken%3D***"),
     (f"/plugins/stategraph/callback%3Fx%3D1%26token%3D{KEY}%26y%3D2",
      "/plugins/stategraph/callback%3Fx%3D1%26token%3D***%26y%3D2"),
+    # every token parameter: the route reads the last one, a sender may add its own before or after the real one
+    (f"/plugins/stategraph/callback?token={KEY}&Token=x", "/plugins/stategraph/callback?token=***&Token=***"),
+    (f"/plugins/stategraph/callback?token=x&token={KEY}", "/plugins/stategraph/callback?token=***&token=***"),
+    (f"/plugins/stategraph/callback?next=/x&token={KEY}", "/plugins/stategraph/callback?next=/x&token=***"),
+    (f"/plugins/stategraph/callback?next=%2Fplugins%2Fb%2Fcallback%2F{KEY}&token=x",
+     "/plugins/stategraph/callback?next=%2Fplugins%2Fb%2Fcallback%2F***&token=***"),
 ])
 def test_the_key_in_the_query_of_a_callback_url_is_masked_too(app_log, tmp_path, path, shown):
     """stategraph puts the key in the query: network.remote_paths lists exact paths, a key in the path never fits."""
