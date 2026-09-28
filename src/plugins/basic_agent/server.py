@@ -40,7 +40,9 @@ class BasicAgent(SchemaBasedAgent):
             return {"status": "error", "error": "Missing required parameter 'task'"}
 
         request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        # The injected ``_session_id`` only (see Agent.call): a plain ``session_id``
+        # from the model's arguments could name another user's session of this agent.
+        session_id = params.get("_session_id")
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")
         use_advanced_model = params.get("use_advanced_model", False)
@@ -97,6 +99,13 @@ class BasicAgent(SchemaBasedAgent):
                     "status": "error",
                     "error": f"Failed to initialize LLM profile '{llm_profile_name}': {str(e)}"
                 }
+
+        # Dispatched with a _user_id but without a request that names a user (a
+        # plugin command): an id of its own for the injected _user_id, as
+        # Agent.call does -- else the run would be nobody's (see there).
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
 
         try:
             if status:
@@ -187,6 +196,10 @@ class BasicAgent(SchemaBasedAgent):
                 "error": str(e),
                 "request_id": request_id
             }
+        finally:
+            if own_request_id:
+                from agent_system.core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
 
     async def list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """List all available tools for this agent.

@@ -1511,6 +1511,26 @@ An agent instance is a server entry (see the example under
 - **`enabled: true`** — the default is `false`, and it is checked on the entry itself, not inherited.
 - **`metadata.visibility`** — `private` (default: neither tool nor UI), `tool`
   or `both` (callable as a tool by other agents), `ui` or `both` (listed in the UI).
+  Display only: it hides an agent, it does not stop anyone who knows its name.
+- **`metadata.min_role`** — `guest`, `user` or `admin`: the lowest account role that
+  may *run* the agent, on every path (HTTP, SAM, agent as a tool, stategraph, wakes,
+  each of its `<name>_*` tools); absent = no gate. Give `admin` to every agent that
+  carries a shell, a coding CLI, SSH, a tool that runs arbitrary code
+  (`blender_execute`, `godot_script`), or file access to the checkout or above, to
+  `config/`, to `data/` itself (the user store and every user's sessions live there;
+  a folder of its own below it, such as `data/workspace`, is fine) or write access to
+  `src/` (the code that runs). Details:
+  [agent_visibility.md](agent_visibility.md#wer-darf-einen-agent-ausführen-metadatamin_role).
+  - **No identity:** a run without a registered request owner or session user is
+    judged as `anonymous` -- refused unless anonymous access is enabled with a
+    sufficient role; the SAM and the agent's own tools refuse it outright. Unknown
+    or inactive accounts are refused. `cli_user` counts as the local operator only
+    inside `agent-cli`/`agent-run`, never in the API.
+  - **Inherited through `type:`:** `metadata` is deep-merged along the type chain, so an
+    agent based on a gated one is gated too. `min_role: null` does **not** lift an
+    inherited value -- set a lower role explicitly (`guest`/`user`).
+  - Without `auth.enabled` there are no roles; the server logs the gates it cannot
+    enforce at start.
 - **`agent_config.tools.allowed`** — the tools this agent may call; empty means none.
 - **`self_tool_descriptions`** — server level, not inside `agent_config`
   (`agent_config` rejects unknown keys at load).
@@ -1521,7 +1541,10 @@ An agent instance is a server entry (see the example under
    the instance name listed there (exact name or fnmatch glob).
 2. `visibility` other than `private`, or the agent is missing from that list.
 3. The caller allows the SAM instance: `tools.allowed: ["<sam instance>/*"]`.
-4. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
+4. The calling run's user passes the sub-agent's `metadata.min_role`, if it has one;
+   otherwise `create`/`continue` answer `error_type: "agent_role_gate"` before any
+   sub-session exists.
+5. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
    are **top-level keys** of the SAM server entry, not under `config:`.
 
 ### Plugin Types Summary

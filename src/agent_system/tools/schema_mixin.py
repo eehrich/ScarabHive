@@ -206,6 +206,16 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
                 f"Tool '{tool}' exists but is not callable in {self.name}"
             )
 
+        # An agent's role gate (metadata.min_role) covers every tool it serves,
+        # not only the runs Agent.call and run_events guard: `<agent>_list_available_tools`
+        # answers what GET /agents/{name}/tools refuses. The calling run's user is asked.
+        if getattr(self, "min_role", None) is not None:
+            from ..servers.agent.server import Agent
+            if isinstance(self, Agent):
+                denial = self._tool_call_denial(params)
+                if denial:
+                    return {"status": "error", "error": denial}
+
         # Call the tool method; an awaitable result is awaited (async methods, and
         # an object with an async __call__, which no coroutine-function check sees)
         result = method(params)

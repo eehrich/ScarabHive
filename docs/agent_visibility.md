@@ -13,9 +13,67 @@ The `metadata.visibility` field controls agent exposure:
 | `ui` | ✅ Yes | ❌ No | User-facing agents (chat interface only) |
 | `tool` | ❌ No | ✅ Yes | Backend services for other agents |
 | `both` | ✅ Yes | ✅ Yes | Dual-purpose agents |
-| `private` | ❌ No | ❌ No | Testing/experimental agents (default - secure by default) |
+| `private` | ❌ No | ❌ No | Testing/experimental agents (default) |
 
-**Default:** `private` (secure by default - agents must explicitly opt-in to visibility)
+**Default:** `private` — an agent has to opt in to being listed.
+
+> ⚠️ **Sichtbarkeit ist Anzeige, keine Zugriffskontrolle.** `visibility` bestimmt nur,
+> wo ein Agent *auftaucht* (UI-Liste, Tool-Liste anderer Agents). Wer seinen Namen kennt,
+> konnte ihn trotzdem starten: `POST /run` und `/events` mit `agent_name`, `/chat/command`,
+> ein SAM mit `allowed_agents: ["*"]`. Auch `private` schützt nichts. Wer einen Agent
+> **ausführen** darf, regelt `metadata.min_role` (siehe unten).
+
+## Wer darf einen Agent ausführen: `metadata.min_role`
+
+```yaml
+metadata:
+  visibility: both
+  min_role: admin        # guest | user | admin; weglassen = kein Gate
+```
+
+`min_role` ist die niedrigste Konto-Rolle, die den Agent **laufen lassen** darf. Gefragt
+wird bei jedem Weg, auf dem ein Lauf beginnt (`src/agent_system/auth/agent_access.py`):
+
+- **HTTP:** `POST /run`, neue `/events`-Läufe, `/chat/command`, `POST /api/sessions`
+  (eine Session, deren Agent der Besitzer nicht ausführen darf, wird nicht angelegt).
+  `GET /agents` listet den Agent nur, wem er erlaubt ist; `default` ist `null`, wenn der
+  Einstiegs-Agent es nicht ist. `/agents/{name}/tools` und `/allowed-tools` sowie
+  `/chat/commands` zeigen ihn nur dann. Eine Ablehnung antwortet genau wie ein Agent,
+  den es nicht gibt (404 bzw. dieselbe Antwort; `/chat/command` auch für den
+  Einstiegs-Agent, wenn kein Name mitkommt); der Grund steht nur im Server-Log.
+  Ausnahmen: `/run` und `/events` ohne `agent_name` für den Einstiegs-Agent (403
+  „Permission denied“) und `POST /api/sessions` (403 mit dem Grund -- dort werden auch
+  Namen angenommen, die es nicht gibt, eine Antwort „unbekannt“ gibt es also nicht).
+- **Ohne Endpoint:** der Lauf selbst (`Agent.run_events`, auch stategraph `MachineAgent`)
+  fragt vor allem anderen -- Sub-Agents über den SAM, Agents als Tool, stategraph,
+  geweckte agent-cli-Läufe. Jedes Tool eines gegateten Agents (`<name>_*`) ebenso.
+- **SAM:** `create` und `continue` lehnen vorher ab, als Tool-Fehler mit
+  `error_type: "agent_role_gate"`, bevor eine Sub-Session entsteht.
+- **Wecken:** eine Session, deren Agent ihr Besitzer nicht ausführen darf, wird nicht
+  geweckt; die wartende Eingabe bleibt liegen.
+
+Wer ist der Aufrufer? Der vom Framework registrierte Besitzer der Request-ID (API,
+Tool-Ausführung, SAM, stategraph), sonst der Benutzer der Session (agent-cli), sonst
+`anonymous`. **Ein Lauf ohne jede Identität zählt als `anonymous`: abgelehnt, außer
+anonymer Zugang ist aktiv und seine Rolle reicht.** Der SAM und die Tools eines
+gegateten Agents lehnen einen Aufrufer ohne Identität ohne diese Ausnahme ab.
+Abgelehnt werden ebenso ein unbekanntes oder inaktives Konto, eine unbekannte Rolle
+und ein nicht lesbarer User-Store. Die Rolle wird bei jedem Lauf
+frisch aus dem User-Store gelesen.
+
+`cli_user` (der Standard-Benutzer von `agent-cli`/`agent-run`) gilt **nur in diesen
+lokalen Prozessen** als lokaler Betreiber und passiert jedes Gate -- und auch dort nur,
+solange kein Konto dieses Namens existiert. Im API-Prozess ist `cli_user` ein Name ohne
+Konto und wird abgelehnt.
+
+Ohne `auth.enabled` gibt es keine Rollen: das Gate greift nicht, und der Server warnt beim
+Start, welche Agents ein Gate tragen, das er nicht durchsetzen kann.
+
+⚠️ **Vererbung:** `metadata` wird über die `type:`-Kette tief gemergt. Ein Agent, dessen
+`type:` auf einen gegateten Agent zeigt, erbt dessen `min_role`, auch wenn er selbst
+nichts setzt, und **`min_role: null` hebt einen geerbten Wert nicht auf** (null wird beim
+Mergen übergangen). Wer einen niedrigeren Wert will, setzt ihn ausdrücklich (`guest` oder
+`user`); gemessen mit `load_settings` + `get_tool_server_config`.
 
 ## Configuration
 
@@ -319,10 +377,10 @@ financial_analyst:
 
 ### Default Behavior
 
-If `metadata.visibility` is **not specified**, the default is `"ui"`:
-- Agent appears in UI dropdown
-- Agent is NOT available as tool
-- Backward compatible with existing configs
+If `metadata.visibility` is **not specified**, the default is `"private"` (see
+the order above: instance metadata, then the plugin manifest, else private):
+- Agent does NOT appear in the UI dropdown
+- Agent is NOT available as a tool
 
 ## Schema Validation
 

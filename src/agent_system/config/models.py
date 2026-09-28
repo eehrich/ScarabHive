@@ -951,6 +951,16 @@ class AgentMetadata(BaseModel):
     # - "both": Visible in UI AND available as tool
     # - "private": Neither UI nor tool (for testing/experimental agents)
 
+    # Role gate: the lowest account role that may RUN this agent -- from the UI,
+    # POST /run and /events, as a sub-agent (SAM), as another agent's tool, from a
+    # stategraph machine. None (the default) is no gate, exactly as before.
+    # Enforced only while auth is enabled (auth/agent_access.py): without
+    # accounts there is no role to compare. Inside agent-cli and agent-run
+    # (agent_access.local_operator_trusted) their default user "cli_user" passes
+    # every gate while no account holds that name; in the API process it is
+    # refused like any name without an account.
+    min_role: Optional[Literal["guest", "user", "admin"]] = None
+
 
 class ToolServerConfig(BaseModel):
     """tool server configuration (matches type comment in mcp.yaml for default_config)"""

@@ -13,7 +13,8 @@ plugins:
       enabled: true                      # default false
       description: "One line for humans and the SAM list."
       metadata:
-        visibility: tool                 # ui | tool | both | private (default)
+        visibility: tool                 # ui | tool | both | private (default); display only
+        min_role: admin                  # guest | user | admin; who may RUN it; absent = no gate
       agent_config:                      # extra="forbid": a typo fails the load
         llm_profile: [primary, fallback]
         llm_profile_advanced: []         # explicit, else inherited from default_config
@@ -37,6 +38,23 @@ plugins:
   `default_config` sets `config/prompts/system_prompt.md` for every agent.
 - Prompt language: English outside `src/plugins_writer/`.
 - Visibility: `tool`/`both` → callable as a tool by other agents; `ui`/`both` → in the UI.
+  It only hides; it does not stop a run by name.
+- `min_role` gates who may run the agent on every path -- HTTP (answered like an
+  unknown agent, except `/run`/`/events` for the default agent with no name and
+  `POST /api/sessions`: 403), SAM (`error_type: "agent_role_gate"`), agent as a tool, stategraph, wakes,
+  and each `<name>_*` tool (`src/agent_system/auth/agent_access.py`).
+  - No identity (no registered request owner, no session user): judged as
+    `anonymous` -- refused unless anonymous access is enabled with a sufficient
+    role; the SAM and the agent's tools refuse it outright. `cli_user` is the local
+    operator only in `agent-cli`/`agent-run`.
+  - **Inheritance trap:** `metadata` is deep-merged along `type:` -- an agent based on
+    a gated one inherits the gate, and `min_role: null` does NOT lift it. Set a lower
+    role explicitly (`guest`/`user`) and check with `load_settings` +
+    `get_tool_server_config`.
+  - Gate (admin) anything with a shell, a coding CLI, SSH, a tool that runs arbitrary
+    code (`blender_execute`, `godot_script`), or file access to the checkout or above,
+    to `config/`, to `data/` itself (user store, every user's sessions -- a folder of
+    its own like `data/workspace` is fine) or write access to `src/`.
 
 ### Prompt traps
 
@@ -112,6 +130,9 @@ There is no global registry. **All four** must hold:
 4. **`metadata.visibility` is not `private`** (the default) — a private agent is
    missing from the "Available" list, so the model never learns its name. Use `tool`
    (or `both`).
+5. **The calling run's user passes its `metadata.min_role`** (if set) — otherwise
+   `error_type: "agent_role_gate"`, before a sub-session exists. The caller is the
+   registered owner of `_request_id`, else `_user_id`; neither known → refused.
 
 SAM knobs are **top-level** keys on the SAM entry (not under `config:`):
 `allowed_agents`, `blocked_agents`, `allow_advanced_model` (default true; false drops

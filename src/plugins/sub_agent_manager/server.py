@@ -807,13 +807,25 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     "error_type": "phase_blocked"
                 }
 
-            if status:
-                await status.progress(f"Creating sub-agent: {agent_name}")
+            # One user for the whole spawn: the gate, the sub-session's metadata and
+            # its registered request, and where it is stored (_settle_caller).
+            caller = self._settle_caller(params)
 
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
             session_service = self._extract_session_service(params)
             manager = self._get_manager(session_service, registry)
+
+            # The agent's role gate, for the user the calling run belongs to --
+            # before a sub-session exists that could never run.
+            refusal = self._role_gate_refusal(registry, agent_name, caller)
+            if refusal:
+                if status:
+                    await status.error(refusal)
+                return {"status": "error", "error": refusal, "error_type": "agent_role_gate"}
+
+            if status:
+                await status.progress(f"Creating sub-agent: {agent_name}")
 
             # Inject creator_plugin into params so manager knows which instance created this sub-agent
             params["_creator_plugin"] = self.name
@@ -1027,6 +1039,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             parent_session_id = params.get("_session_id")
             if not parent_session_id:
                 raise ValueError("No session context available")
+            caller = self._settle_caller(params)  # see _handle_create
 
             # Get manager with injected dependencies
             registry = self._extract_registry(params)
@@ -1044,6 +1057,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 agent = None
             if not agent:
                 raise ValueError(f"Agent type '{agent_type}' not found")
+            # The role gate again: a reload may have put one on the agent since
+            # the instance was created -- refused before the instance is reopened.
+            refusal = self._role_gate_refusal(registry, agent_type, caller)
+            if refusal:
+                if status:
+                    await status.error(refusal)
+                return {"status": "error", "error": refusal, "error_type": "agent_role_gate"}
             use_advanced_model = self._continue_use_advanced(agent_type, use_advanced_model)
 
             # A run holds the lock beside the sub-session for as long as it lasts: one of another
@@ -2780,6 +2800,57 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
             return {"status": "error", "error": str(e)}
 
     # ========== End Async Job Management ==========
+
+    @staticmethod
+    def _settle_caller(params: dict[str, Any]) -> Optional[str]:
+        """The user the calling run belongs to, as the framework names it -- and, when
+        known, made the one everything of this call uses.
+
+        The registered owner of the calling run's request id first (Agent._run_denial
+        asks it first too), else the injected ``_user_id``; None when neither is
+        there. NOT ``_extract_user_id``: without ``_user_id`` it walks every user's
+        session folder and takes the first that holds the parent's session file --
+        "anonymous" for a parent not saved yet -- and callers without ``_user_id``
+        exist (writer_issues' repair pipeline, AgentCaller with no user).
+
+        A known caller is written into ``params["_user_id"]``: ``_extract_user_id``
+        answers from there first, so the sub-session's metadata, the request the
+        sub-run is registered under (_prepare_agent), and where the sub-session and
+        a parent not saved yet are stored all name the user the role gate judged.
+        Left alone when nobody is known: an ungated agent runs as it always did.
+        """
+        from agent_system.core.request_context import get_request_user
+
+        request_id = params.get("_request_id")
+        injected = params.get("_user_id")
+        who = ((get_request_user(str(request_id), default=None) if request_id else None)
+               or (injected.strip() if isinstance(injected, str) and injected.strip() else None))
+        if who:
+            params["_user_id"] = who
+        return who
+
+    def _role_gate_refusal(self, registry: Any, agent_name: str, who: Optional[str]) -> Optional[str]:
+        """Why *who* -- the calling run's user (_settle_caller) -- may not run
+        *agent_name* under its role gate (metadata.min_role), or None.
+
+        Asked here so the model gets the refusal as this tool's error, before a
+        sub-session exists for a run that could never happen; the sub-run's own
+        backstop (Agent._run_denial) asks again. Not the same fallbacks: this one
+        knows only the owner and ``_user_id`` and refuses when neither names
+        anybody, where the backstop goes on to the session's stored user and
+        then "anonymous".
+        """
+        from agent_system.auth.agent_access import agent_min_role, agent_run_denial
+
+        min_role = agent_min_role(registry, agent_name)
+        if min_role is None:
+            return None
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        caller = f"'{who}'" if who else "an unidentified caller"
+        logger.info("Sub-agent '%s' refused to %s: %s", agent_name, caller, reason)
+        return f"Agent '{agent_name}' may not be run by {caller}: {reason}"
 
     def _is_agent_allowed(self, agent_name: str) -> bool:
         """Check if agent is allowed by this manager instance (ignoring phase filtering).

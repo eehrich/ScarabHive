@@ -22,9 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root on a fixed network address.
 - `.gitignore` covers `.env` files, private keys, credential files and local
   configuration.
-- Known gap: any user may still run any agent, and several shipped agents have
-  `terminal`, `ssh_control` or repository-wide file access -- the same data the
-  panels now withhold (SECURITY.md).
+- Per-agent role gate: `metadata.min_role` (`guest`/`user`/`admin`) decides who
+  may run an agent -- over HTTP (`/run`, `/events`, `/chat/command`,
+  `POST /api/sessions`; `GET /agents`, the tool listings and `/chat/commands`
+  hide it; refusing an agent answers like an unknown one, except the default
+  agent on `/run`/`/events` without a name and `POST /api/sessions`, which answer
+  403), for sub-agents
+  (`error_type: agent_role_gate`), agents called as tools, stategraph, woken
+  sessions and every tool the agent serves. A run nobody can be named for is
+  judged as `anonymous`: refused unless anonymous access is enabled with a
+  sufficient role; the sub-agent manager and an agent's own tools refuse it
+  outright.
+- Known gap: the shipped configuration gates no agent -- its agents with a
+  shell, `coding_cli`, `ssh_control`, checkout-wide file access or a tool that
+  runs arbitrary code still run for every account (SECURITY.md).
+- An agent run as a tool no longer acts as another user through a session id it
+  holds for that user: tools run for the run's registered user, a run whose user
+  differs from the session's stored user is refused (an admin's too, and a
+  session held for `anonymous` too, as `POST /run` refuses another user's
+  session), and a `session_id` in a model's tool arguments no longer picks the
+  session.
+- `cli_user` counts as the local operator only inside `agent-cli`/`agent-run`,
+  and only while no account of that name exists.
+- A session whose agent its user may not run is not woken; it used to start up
+  to three refused `agent-cli` runs per message.
 
 ### Added
 

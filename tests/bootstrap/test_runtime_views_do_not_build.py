@@ -256,3 +256,88 @@ class TestToolVisibilityDoesNotBuild:
 
         assert service._is_tool_visible("hidden") is False
         assert service._is_tool_visible("plain") is True, "no flag at all means visible"
+
+
+class TestTheRoleGateIsPartOfTheView:
+    """``ServerView.min_role``: the agent role gate (auth/agent_access.py), asked
+    the way the other walkers ask -- the SAM and POST /api/sessions look a gate up
+    by name, and must neither build a lazy agent to read it nor miss the one a
+    direct ``type: agent`` carries (it gets no ``apply_to``)."""
+
+    @pytest.fixture
+    def gated(self) -> Runtime:
+        config = AgentSystemConfig(
+            llm_system=LLMSystemConfig(
+                models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
+                profiles={"normal": LLMProfile(model_ref="m")},
+                default_profile="normal",
+            ),
+            plugins=PluginsConfig(
+                plugin_dirs=[str(REPO / "src" / "plugins")],
+                servers={
+                    "probe_gated": ToolServerConfig(
+                        type="basic_agent", enabled=True, agent_config=AgentConfig(llm_profile="normal"),
+                        metadata=AgentMetadata(visibility="both", min_role="admin")),
+                    "probe_open": ToolServerConfig(
+                        type="basic_agent", enabled=True, agent_config=AgentConfig(llm_profile="normal"),
+                        metadata=AgentMetadata(visibility="both")),
+                    "probe_direct": ToolServerConfig(
+                        type="agent", enabled=True, agent_config=AgentConfig(llm_profile="normal"),
+                        metadata=AgentMetadata(min_role="user")),
+                    "probe_plain": ToolServerConfig(type="file_ops", enabled=True),
+                },
+            ),
+        )
+        runtime = Runtime(config)
+        assert runtime.describe("probe_gated").lazy, "fixture: the gated agent has to be a lazy declaration"
+        assert not runtime.describe("probe_direct").lazy, "fixture: the direct agent must not be lazy"
+        return runtime
+
+    def test_a_lazy_declaration_carries_its_gate_without_building(self, gated):
+        from agent_system.auth.agent_access import agent_min_role
+
+        assert gated.registry.describe("probe_gated").min_role == "admin"
+        assert agent_min_role(gated.registry, "probe_gated") == "admin"
+        assert agent_min_role(gated.registry, "probe_open") is None
+        assert gated.registry._servers == {}, "asking for a gate built something"
+
+    def test_a_built_agent_answers_from_its_instance(self, gated):
+        from agent_system.auth.agent_access import agent_min_role
+
+        lazy = gated.materialize("probe_gated")
+        gated.materialize("probe_direct")
+
+        assert gated.registry.describe("probe_gated").built
+        assert agent_min_role(gated.registry, "probe_gated") == "admin"
+        assert agent_min_role(gated.registry, "probe_direct") == "user", \
+            "the direct type: agent lost its gate -- it gets no apply_to"
+        # the instance wins: a reload moves the gate on the running agent
+        lazy.reload_config(ToolServerConfig(type="basic_agent", enabled=True, agent_config=lazy.agent_config,
+                                            metadata=AgentMetadata(min_role="user")))
+        assert agent_min_role(gated.registry, "probe_gated") == "user"
+
+    def test_a_non_agent_and_an_unknown_name_carry_no_gate(self, gated):
+        from agent_system.auth.agent_access import agent_min_role
+
+        gated.materialize("probe_plain")
+        assert gated.registry.describe("probe_plain").min_role is None
+        assert agent_min_role(gated.registry, "probe_plain") is None
+        assert agent_min_role(gated.registry, "probe_nonexistent") is None
+
+    def test_an_unbound_registry_asks_the_instance(self, gated):
+        """The fallback: a registry without a runtime, and one a test mocks."""
+        from unittest.mock import MagicMock
+
+        from agent_system.auth.agent_access import agent_min_role
+
+        registry = ToolServerRegistry()
+        registry.register("probe_direct", gated.materialize("probe_direct"))
+
+        class NotAnAgent:
+            min_role = "admin"
+
+        registry.register("probe_other", NotAnAgent())
+
+        assert agent_min_role(registry, "probe_direct") == "user"
+        assert agent_min_role(registry, "probe_other") is None, "only an Agent can be run, so only it is gated"
+        assert agent_min_role(MagicMock(), "anything") is None

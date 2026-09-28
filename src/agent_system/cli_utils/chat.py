@@ -3189,6 +3189,7 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     # session stops it all the same.
     from ..utils.id import short_id
     state: dict[str, Any] = {"editor": editor, "request_id": short_id()}
+    named = state["request_id"]
     claimed = _claim_turn(ctx, state["request_id"])
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
@@ -3220,6 +3221,12 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         _stop_typing(loop, reader, poller, renderer, state)
         if claimed is not None:
             claimed.release(ctx.session_id, ctx.session_user)
+        # What the turn registered under its request id (a tool call, a
+        # preloaded tool, a sub-agent) goes with it, as the API lets go of its
+        # request tree when the request ends.
+        from ..core.request_context import release_request_user_tree
+        for request_id in {named, state.get("request_id")} - {None, ""}:
+            release_request_user_tree(request_id)
     for key in ("typed_queue", "typed_partial"):
         if state.get(key):
             result[key] = state[key]

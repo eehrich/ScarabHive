@@ -47,7 +47,8 @@ make it use the tools it has been granted. Which tools an agent gets is configur
   keys beyond their intended validity.
 - **Privilege escalation**: a `user` or `guest` reaching admin-only endpoints
   or panels; one user reading, changing, stopping or taking over another
-  user's sessions or runs.
+  user's sessions or runs; a user running an agent, or using a tool it
+  serves, whose `metadata.min_role` their role does not reach.
 - **Escaping a boundary the code enforces**: an agent calling a tool its
   `tools.allowed` / `blocked` lists do not grant; a path outside the allowed
   directories of `file_ops` (or another plugin that checks paths); code in
@@ -89,17 +90,47 @@ group of users who trust each other. Reports about session separation are in
 scope; reports that only restate this limitation for a plugin's own data are
 not.
 
-### Known limitation: every user may run every agent
+### Per-agent role gate (`metadata.min_role`)
 
-There is no per-agent role check yet: any signed-in user can start any agent
-by name through `/run` or `/events` -- `metadata.visibility` only decides which
-agents the UI lists. An agent whose allowlist names a shell tool (`terminal`,
-`coder_shell`, `coding_cli`), `ssh_control`, or a file_ops instance with `.` in
-its allowed directories gives every user what that tool can do, including
-reading the logs and `config/secrets.env`. Several shipped agents have such
-tools (among them `sysadmin_agent`, the `coder` and `gamedev` harnesses,
-`godot_agent`, `amiga_coder`, `skills_agent`); on an instance whose users you
-would not give a shell, remove every such agent from the configuration.
+With `auth.enabled`, an agent whose metadata sets `min_role` (`guest`, `user` or
+`admin`) runs only for accounts of at least that role -- on every path a run
+starts: `/run`, `/events`, `/chat/command`, sessions created for it, sub-agents
+(sub-agent manager), agents called as tools, stategraph activities, woken
+sessions, and each tool the agent itself serves. A run that cannot be tied to an
+account is judged as `anonymous`: refused unless anonymous access is enabled with
+a sufficient role (the sub-agent manager and an agent's own tools refuse it
+outright). Over HTTP, a refusal answers like an agent that does not exist, except
+for the default agent on `/run` and `/events` with no agent named and for
+`POST /api/sessions`, which answer 403.
+`metadata.visibility` only decides where an agent is listed; it is not an access
+control.
+
+The shipped configuration sets no `min_role`: its agents with a shell
+(`terminal`, `coder_shell`), `coding_cli`, `ssh_control`, a tool that runs
+arbitrary code (`blender_execute`, `godot_script`) or file access to the whole
+checkout -- among them `sysadmin_agent`, the `coder` and `gamedev` harnesses,
+`godot_agent`, `amiga_coder`, `blender_agent` and `skills_agent` -- run for
+every account, and give it what those tools can do, including reading the
+logs and `config/secrets.env`. On an instance whose users you would not give
+a shell, gate every such agent at `admin` or remove it.
+Gate every agent you add with such tools, and every agent with file access to
+the checkout or above, to `config/`, to `data/` itself (it holds the user store
+and every user's sessions; a folder of the agent's own below it, such as
+`data/workspace`, is fine) or with write access to `src/` (the code that runs).
+The gate is inherited through `type:`, and `min_role: null` does not lift an
+inherited one.
+
+Remaining limits:
+
+- Without `auth.enabled` there are no roles and no gate; the server logs the
+  gated agents it cannot enforce at start.
+- `agent-cli` and `agent-run` are local and trusted: their default user
+  `cli_user` passes every gate there (not in the API, and not while an account
+  of that name exists).
+- `POST /api/sessions` answers a gated agent with a 403 (it accepts names of
+  agents that do not exist).
+- A config reload moves the gate of running agents; the wake check and the
+  start-up warning read the start configuration until a restart.
 
 ## Hardening a deployment
 

@@ -359,6 +359,23 @@
           ],
           "title": "Visibility",
           "type": "string"
+        },
+        "min_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "guest",
+                "user",
+                "admin"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Role"
         }
       },
       "title": "AgentMetadata",

@@ -195,6 +195,12 @@ class Agent(ToolServer):
     - list_usable_tools() = what I CAN USE (internal execution)
     """
 
+    #: The lowest account role that may run this agent (``metadata.min_role``,
+    #: auth/agent_access.py), None for no gate. Set per instance in __init__
+    #: and by reload_config; the class default answers for an instance built
+    #: without __init__.
+    min_role: Optional[str] = None
+
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig,
                  registry: ToolServerRegistry | None = None,
                  llm: LLMClient | None = None, llm_factory: Any = None,
@@ -240,6 +246,10 @@ class Agent(ToolServer):
         # Default both to False for config agents, can be overridden based on metadata
         self._tool_public = False
         self._tool_visible = False
+
+        # Role gate, from THIS instance's merged config: the direct `type: agent`
+        # gets no Runtime post-processing (apply_to), so the agent reads it itself.
+        self.min_role = self._declared_min_role(server_config)
 
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
@@ -457,12 +467,29 @@ class Agent(ToolServer):
 
         Returns the fields that actually changed ({} if none), so the caller
         can report exactly what took effect.
+
+        The role gate (``metadata.min_role``) is refreshed too, on THIS instance:
+        the entries that read it from the instance (every HTTP check, the SAM and
+        the backstop in run_events, through ``Runtime.view``) apply the new gate
+        from the next run on. Not reached by a reload, and keeping the value
+        they started with until a restart: an agent the reload does not walk to
+        (it walks the plugin registry, so a direct ``type: agent`` entry), a lazy
+        agent that is still unbuilt (its declaration answers, and it is built
+        from that later), the wake check and the start-up warning (both read the
+        process's config, not a reloaded one).
         """
+        changes: dict[str, dict] = {}
+        new_min_role = self._declared_min_role(server_config)
+        if new_min_role != self.min_role:
+            changes["min_role"] = {"old": self.min_role, "new": new_min_role}
+            self.min_role = new_min_role
+
         new_agent_cfg = getattr(server_config, "agent_config", None)
         if new_agent_cfg is None or self.agent_config is None:
-            return {}
+            if changes:
+                logger.info("[%s] config reload applied: %s", self.name, changes)
+            return changes
 
-        changes: dict[str, dict] = {}
         for field in self._RELOADABLE_AGENT_FIELDS:
             if not hasattr(new_agent_cfg, field):
                 continue
@@ -476,6 +503,145 @@ class Agent(ToolServer):
         if changes:
             logger.info("[%s] config reload applied: %s", self.name, changes)
         return changes
+
+    @staticmethod
+    def _declared_min_role(server_config: Any) -> Optional[str]:
+        """``metadata.min_role`` of a server config; None when it declares none."""
+        metadata = getattr(server_config, "metadata", None)
+        return metadata.min_role if metadata is not None else None
+
+    def _run_denial(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not start under the agent's role gate, or None.
+
+        The caller is the owner of the request id when one is registered, else
+        the user the SESSION names when it already has metadata, else "anonymous".
+
+        The request owner first: only framework code writes it -- the API for
+        its caller, tool execution and the SAM for the calling run's user, the
+        stategraph backend for the run's -- and a caller cannot pick the id it
+        runs under (tool execution strips a model's request ids). A session id,
+        in contrast, can reach a run from where the caller chose it, and this
+        agent's tracker keeps the metadata of every session it ran, other users'
+        sub-sessions included; asked first, it let a user's run pass as the
+        admin whose session it named. On every trusted path the two agree, and
+        where they do not, _foreign_session refuses the run as well -- the order
+        then only decides which reason it is refused with.
+
+        The session answers where no request is registered: agent-cli and
+        agent-run (SessionService.open_for_run), so a woken run answers to its
+        session's user, not to the local operator it runs as.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        who: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        tracker = getattr(self, "_session_tracker", None)
+        if who is None and session_id and tracker is not None:
+            stored = tracker.get_session_metadata(session_id)
+            if stored:
+                who = stored.get("user_id") or None
+        if who is None:
+            who = "anonymous"
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        logger.warning("[%s] run refused for %r (request %s, session %s): %s",
+                       self.name, who, request_id, session_id, reason)
+        return f"Agent '{self.name}' may not be run by '{who}': {reason}"
+
+    def _tool_call_denial(self, params: Dict[str, Any]) -> Optional[str]:
+        """Why the run calling one of this agent's tools may not use it under the role gate, or None.
+
+        For the tools a schema-based agent serves beside its runs
+        (SchemaBasedToolMixin.call). The caller is the one the framework names:
+        the registered owner of the call's request id, else the injected
+        ``_user_id`` -- never a session's stored user -- and without either the
+        call is unidentified and refused.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        request_id = params.get("_request_id") or params.get("request_id")
+        injected = params.get("_user_id")
+        who = ((get_request_user(str(request_id), default=None) if request_id else None)
+               or (injected.strip() if isinstance(injected, str) and injected.strip() else None))
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        caller = f"'{who}'" if who else "an unidentified caller"
+        logger.warning("[%s] tool call refused to %s: %s", self.name, caller, reason)
+        return f"Agent '{self.name}' may not be used by {caller}: {reason}"
+
+    def tool_user(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """The user this run's tool calls run for -- injected as ``_user_id``, and the
+        owner their request ids are registered under (tool_execution.py). THE one
+        answer for every way a run dispatches a tool: the LLM's calls, and calls
+        made for the run beside the model (tool_preload).
+
+        The run's registered owner first: only framework code registers it (the
+        API, tool execution, the SAM, the stategraph backend). The session's
+        stored user answers where nothing is registered (agent-cli). Where an
+        owner is registered the stored user is the same one at the start of the
+        run (_foreign_session refuses another); asked first, the owner stays the
+        tools' user when the session's metadata is rewritten while the run goes
+        on -- it is state of the session id, shared with every run of it, and a
+        second POST /run on the same id rewrites it (SessionService.open_for_run).
+        """
+        from ...core.request_context import get_request_user
+
+        user_id: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        if user_id is not None:
+            logger.debug(f"[TOOL_EXEC] user_id='{user_id}' from the owner of request {request_id}")
+            return user_id
+        tracker = getattr(self, "_session_tracker", None)
+        if not tracker:
+            logger.warning("[TOOL_EXEC] No _session_tracker available")
+            return None
+        session_meta = tracker.get_session_metadata(session_id) if session_id else None
+        if session_meta:
+            user_id = session_meta.get("user_id")
+            logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
+        else:
+            logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
+        return user_id
+
+    def _foreign_session(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not go on in *session_id*: this agent holds it for another user.
+
+        The metadata below is written only where none is, so a session this agent
+        already holds keeps its user -- and its conversation. An agent called as a
+        tool runs under its caller's session id; a second user's run that reaches
+        the same id would continue the first user's conversation, and its lock,
+        checkpoints and saves go to the first user's session (they read the stored
+        user, and a session already on disk is saved into the folder it is in).
+        Refused whenever the run's registered owner and the stored user differ --
+        an admin's run too, and "anonymous" as the stored user too: POST /run
+        refuses another user's session the same way, whether auth is on or off
+        (SessionManager.load_session). The API, the SAM and the stategraph
+        backend write the owner into the metadata right before the run; an agent
+        called as a tool writes it here from its request, which Agent.call
+        registers for the injected ``_user_id`` where the caller registered none
+        (a plugin command) -- without that, such a call stored
+        "anonymous" and the same user's next call was refused as another user.
+        So this refuses a session id that reached the run for somebody else.
+        """
+        if not request_id or not session_id:
+            return None
+        from ...core.request_context import get_request_user
+        owner = get_request_user(request_id, default=None)
+        tracker = getattr(self, "_session_tracker", None)
+        stored = (tracker.get_session_metadata(session_id) or {}) if tracker is not None else {}
+        holder = stored.get("user_id")
+        if not owner or not holder or holder == owner:
+            return None
+        logger.warning("[%s] run of %r refused: session %s is held for %r", self.name, owner, session_id, holder)
+        return f"Session {session_id} belongs to another user"
 
     def _create_loop_detector(self) -> ToolCallLoopDetector:
         """Create a fresh loop detector for a single request.
@@ -1422,6 +1588,18 @@ class Agent(ToolServer):
         # Generate request ID if not provided
         if request_id is None:
             request_id = short_id()
+
+        # Role gate (metadata.min_role) -- before anything of the run is written:
+        # the metadata below, the request registration, the session lock. The
+        # endpoints refuse earlier with a 403; this is the backstop for every
+        # path that reaches an agent without one (SAM, agent as a tool,
+        # stategraph, agent-cli woken for a session). Refused the way the lock
+        # refusal in _run_events is: an error, then the end.
+        denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
+        if denial:
+            yield {"type": "error", "message": denial, "request_id": request_id}
+            yield {"type": "end"}
+            return
 
         # Track if this is a newly generated session
         was_new_session = not session_id
@@ -3406,17 +3584,7 @@ class Agent(ToolServer):
                 tool_messages = []
                 tool_results = []
 
-                # Extract user_id from session metadata for multi-user tool isolation
-                user_id: Optional[str] = None
-                if self._session_tracker:
-                    session_meta = self._session_tracker.get_session_metadata(session_id)
-                    if session_meta:
-                        user_id = session_meta.get("user_id")
-                        logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
-                    else:
-                        logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
-                else:
-                    logger.warning("[TOOL_EXEC] No _session_tracker available")
+                user_id = self.tool_user(request_id, session_id)
 
                 # CRITICAL: Pass per-request status_forwarder as parameter to avoid race conditions
                 # when multiple requests share the same agent instance (e.g., parent + sub-agent)
@@ -3933,11 +4101,35 @@ class Agent(ToolServer):
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
 
-        # Extract session context from injected params (populated by ToolExecutionManager)
+        # Extract session context from injected params (populated by ToolExecutionManager).
+        # The session only from the injected ``_session_id``, never a plain
+        # ``session_id``: tool execution strips a model's ``_*`` and request-id
+        # keys, not that one, so the model could name ANY session this agent
+        # holds -- another user's sub-session included -- and the run would
+        # continue it, with its history and its user.
         request_id = params.get("request_id") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        session_id = params.get("_session_id")
+
+        # A call that brings a ``_user_id`` but no request naming a user --
+        # dispatched without a request id: a plugin command (run_plugin_command)
+        # -- runs under an id of its own registered for that user, as
+        # MachineAgent.call does. Unregistered, the run stored "anonymous" as
+        # the session's user and ran its tools as anonymous, and the same user's
+        # next call in the session was refused as somebody else's. A dispatch
+        # that brings a request id and a user registered the request itself
+        # (inject_runtime_params); one that brings no user injects none.
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
 
         try:
+            # The role gate and the session's user, asked here as well as in
+            # run_events: refused there, the run's error would come back inside a
+            # "success" answer -- the calling model should read a refusal as one.
+            denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
+            if denial:
+                return {"status": "error", "agent": self.name, "task": task, "error": denial}
+
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
             from .result_utils import collect_final_result, extract_summary
@@ -3965,6 +4157,32 @@ class Agent(ToolServer):
                 "task": task,
                 "error": str(e)
             }
+        finally:
+            if own_request_id:
+                # What this call registered goes with it, as the API lets go of
+                # its request tree when the request ends.
+                from ...core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
+
+    @staticmethod
+    def _request_for_injected_user(request_id: Optional[str], injected_user: Any) -> Optional[str]:
+        """A request id registered for *injected_user*, or None when none is needed.
+
+        None where the call's request id already names a user (the owner wins) or
+        no user is injected. Otherwise an id of its own: derived from the caller's
+        (so cancel and status stay under its prefix) or new, registered for the
+        user -- the framework's injected ``_user_id``, which a model cannot set
+        (tool execution strips ``_*`` keys from its arguments).
+        """
+        from ...core.request_context import get_request_user, register_request_user
+
+        if not isinstance(injected_user, str) or not injected_user.strip():
+            return None
+        if request_id and get_request_user(str(request_id), default=None) is not None:
+            return None
+        own = f"{request_id}_{short_id(6)}" if request_id else short_id()
+        register_request_user(own, injected_user.strip())
+        return own
 
     def get_schema(self) -> dict[str, Any]:
         """

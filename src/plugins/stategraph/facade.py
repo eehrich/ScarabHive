@@ -96,6 +96,12 @@ class MachineAgent(Agent):
                          llm_profile_info_override: Optional[str] = None,
                          use_advanced_model: bool = False) -> AsyncIterator[dict[str, Any]]:
         request_id = request_id or short_id()
+        # The role gate Agent.run_events asks first -- this override does not call it.
+        denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
+        if denial:
+            yield {"type": "error", "request_id": request_id, "message": denial}
+            yield {"type": "end"}
+            return
         session_id = session_id or short_id()
         text = task if isinstance(task, str) else task.get_text_content()
         entry: dict[str, Any] = {"cancel": asyncio.Event(), "message_event": asyncio.Event(), "appended": []}
@@ -305,6 +311,17 @@ class MachineAgent(Agent):
         return server
 
     def _user_id(self, session_id: str, request_id: str) -> Optional[str]:
+        """The run's user: its registered request owner, else the session's stored user.
+
+        The owner first, as Agent._run_denial and the tool user ask: the framework
+        writes it. Where one is registered, the stored user is the same one when
+        the run starts (Agent._foreign_session refuses another); asked first, the
+        owner stays the run's user when the session's metadata is rewritten
+        meanwhile (a second POST /run on the same session id does that).
+        """
+        owner = get_request_user(request_id, default=None)
+        if owner:
+            return owner
         metadata = self._session_tracker.get_session_metadata(session_id) or {}
         if metadata.get("user_id"):
             return str(metadata["user_id"])
