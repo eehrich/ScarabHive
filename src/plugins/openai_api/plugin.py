@@ -30,6 +30,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.background import BackgroundTasks
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
 from .protocol import (ApiError, chat_chunk, chat_completion, chat_usage, model_list, new_id, now, output_message,
@@ -103,7 +104,8 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         super().__init__(name, system_config, server_config)
         self.agent_patterns = [str(p) for p in (getattr(server_config, "agents", None) or [])]
         self.blocked_patterns = [str(p) for p in (getattr(server_config, "blocked_agents", None) or [])]
-        self.responses_db = str(getattr(server_config, "responses_db", None) or "data/openai_api/responses.db")
+        self.responses_db = str(resolve_data_path(
+            getattr(server_config, "responses_db", None) or data_path("openai_api", "responses.db")))
         self._store: Optional[ResponseStore] = None
         self._busy: set[str] = set()  # sessions with a turn in flight: a conversation takes one turn at a time
         self._turns: set[AgentTurn] = set()  # the turns not settled yet (stop_plugin waits for them)
