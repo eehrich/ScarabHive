@@ -766,3 +766,17 @@ class TestToolDef:
         assert tool.description == "A test tool"
         assert tool.input_schema["type"] == "object"
         assert "param" in tool.input_schema["properties"]
+
+
+class _AsyncCallableGreet:
+    """A tool that is an object with an async __call__. No coroutine-function
+    check recognises it, and a dispatcher that asked one handed back the
+    un-awaited coroutine as the tool's result."""
+
+    async def __call__(self, params):
+        return f"Hello, {params['name']}!"
+
+
+async def test_a_tool_whose_call_is_async_is_awaited(simple_server):
+    simple_server.greet = _AsyncCallableGreet()
+    assert await simple_server.call('greet', {'name': 'Ada'}) == "Hello, Ada!"
