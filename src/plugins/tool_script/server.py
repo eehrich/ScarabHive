@@ -290,13 +290,16 @@ class ToolScriptServer(SchemaBasedToolServer):
                     f"config.")
 
             self._ensure_plain_data(tool_params)
-            # Param-Injection (Secrets): NACH dem plain-data-Check der Script-
-            # Params, VOR der Schema-Validierung (Scripts dürfen injizierte
-            # Pflicht-Params weglassen). Config überschreibt Script-Werte.
+            # Param injection (secrets): after the plain-data check of the
+            # script's params, before schema validation (a script may leave out
+            # an injected required param). Config wins over script values. They
+            # travel apart from the script's params: dispatch merges them after
+            # the tool hooks, so no hook logs them or shows them to a person.
+            injected: Dict[str, Any] = {}
             for _pattern, _extra in self._inject_params.items():
                 if fnmatch.fnmatch(name_s, _pattern):
-                    tool_params.update(_extra)
-            self._validate_against_tool_schema(agent, name_s, tool_params)
+                    injected.update(_extra)
+            self._validate_against_tool_schema(agent, name_s, {**tool_params, **injected})
 
             child_rid = (f"{request_id}_ts{ctx.n_calls:02d}"
                          if request_id else None)
@@ -316,7 +319,12 @@ class ToolScriptServer(SchemaBasedToolServer):
             future = asyncio.run_coroutine_threadsafe(
                 agent.dispatch_tool_call(
                     name_s, dict(tool_params), session_id=session_id,
-                    user_id=user_id, request_id=child_rid),
+                    user_id=user_id, request_id=child_rid,
+                    # The model wrote the script: its calls pass the same
+                    # pre_tool_call / post_tool_call hooks as the model's own.
+                    hook_source="tool_script",
+                    cancellation_token=cancellation_token,
+                    injected_params=injected or None),
                 loop)
             try:
                 raw = future.result(timeout=self._per_call_timeout)
@@ -329,6 +337,12 @@ class ToolScriptServer(SchemaBasedToolServer):
             except Exception as e:
                 entry["ms"] = int((time.monotonic() - t0) * 1000)
                 entry["error"] = str(e)
+                if cancellation_token is not None and getattr(
+                        cancellation_token, "is_cancelled", False):
+                    # Cancelled while the call waited (a tool hook asking a
+                    # person): as uncatchable as a cancel between hops.
+                    raise _ScriptAbort("Request cancelled — script aborted while "
+                                       "a tool call waited.") from e
                 # ToolDispatchError and transport errors arrive here — the
                 # message is already agent-actionable.
                 raise ToolCallError(f"{name_s} -> {e}") from e

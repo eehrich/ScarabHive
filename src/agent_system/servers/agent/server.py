@@ -40,7 +40,7 @@ from ...tools.status import (
     current_request_id
 )
 from .components.tool_integration import ToolIntegrationManager
-from .components.tool_execution import ToolExecutionManager
+from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
 from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
@@ -379,18 +379,20 @@ class Agent(ToolServer):
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
         self._tool_integration_manager = ToolIntegrationManager(self.system_config, self.agent_config)
-        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
-        self._tool_execution_manager = ToolExecutionManager(
-            self.registry,
-            self
-        )
 
         # Context management now handled by hook plugins via HookIntegrationManager
 
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
-        
+
+        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
+        self._tool_execution_manager = ToolExecutionManager(
+            self.registry,
+            self,
+            hook_manager=self._hook_manager,
+        )
+
         # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
         if self.llm is not None:
             self._hook_manager.wire_llm_hooks(self.llm)
@@ -523,11 +525,7 @@ class Agent(ToolServer):
             data = json.loads(content)
         except (ValueError, TypeError):
             return False
-        if not isinstance(data, dict):
-            return False
-        if data.get("status") == "error":
-            return True
-        return "status" not in data and bool(data.get("error"))
+        return tool_result_is_error(data)
 
     def llm_for_session(self, session_id: Optional[str]) -> Optional[LLMClient]:
         """The client answering the session's running step, else the agent's own.
@@ -839,7 +837,10 @@ class Agent(ToolServer):
     async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
                                  session_id: Optional[str] = None,
                                  user_id: Optional[str] = None,
-                                 request_id: Optional[str] = None) -> Any:
+                                 request_id: Optional[str] = None,
+                                 hook_source: Optional[str] = None,
+                                 cancellation_token: Optional[Any] = None,
+                                 injected_params: Optional[Dict[str, Any]] = None) -> Any:
         """Execute one tool call programmatically with THIS agent's authorization.
 
         The in-process counterpart of the LLM tool path: same server resolution,
@@ -851,13 +852,33 @@ class Agent(ToolServer):
         Used by the tool_script plugin ("scripted tool chains"); any future
         in-process caller (hooks, schedulers) should go through here as well.
 
+        ``hook_source`` names a caller that acts for the model -- tool_script
+        runs a script the model wrote. Given, the pre_tool_call and
+        post_tool_call hooks fire as for the model's own calls, with
+        ``tool_call["source"] = hook_source``: a call the hooks would stop
+        must not get past them inside a script. None (the default) fires
+        none: the caller is the framework or a person (slash commands,
+        preloads, state machines), not the model. ``cancellation_token`` is
+        the caller's; the hooks get it, so one that waits stops on a cancel.
+        With a hook_source, a tool that raises is handed on the way the model's
+        own loop hands a failure on: as an error result
+        (``{"status": "error", ...}``), which passes the post_tool_call hooks
+        -- a redacting hook sees a failure's text too.
+
+        ``injected_params`` are values the caller's configuration adds
+        (tool_script's ``inject_params``: secrets the model never wrote). They
+        are merged after the pre_tool_call hooks, over what those left, and no
+        hook sees them -- a hook that logs a call or shows it to a person must
+        not expose them.
+
         Raises ToolDispatchError with an agent-actionable message for unknown
-        tools, unsupported tool types and authorization failures. Tool-level
-        errors are returned as the tool's normal result (callers interpret the
-        status convention themselves).
+        tools, unsupported tool types, authorization failures and calls a
+        pre_tool_call hook blocked. Tool-level errors are returned as the tool's
+        normal result (callers interpret the status convention themselves).
         """
+        from ...hooks.plugin_hook import HookType
         from .components.tool_execution import (
-            FRAMEWORK_REQUEST_ID_KEYS, ToolDispatchError, inject_runtime_params)
+            ToolDispatchError, drop_runtime_params, inject_runtime_params)
 
         # External tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
@@ -882,12 +903,33 @@ class Agent(ToolServer):
         # verbatim; a script could otherwise pass _session_id to impersonate
         # another agent and defeat json_store's owner-based write protection.
         # request_id/requestId likewise: status and cancellation route by them.
-        forged = [k for k in params if k.startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
+        params, forged = drop_runtime_params(params)
         if forged:
             logger.warning(
                 "Dropping caller-supplied runtime param(s) %s from programmatic "
                 "dispatch of %s", forged, tool_name)
-            params = {k: v for k, v in params.items() if k not in forged}
+
+        hooks = getattr(self, "_hook_manager", None) if hook_source else None
+        tool_call = {"id": None, "name": tool_name, "server": server_name,
+                     "arguments": params, "source": hook_source}
+        if hooks is not None and hooks.wants_hooks(HookType.PRE_TOOL_CALL):
+            params, block = await hooks.execute_pre_tool_hooks(
+                tool_call, step=0, request_id=request_id or "", session_id=session_id or "",
+                cancellation_token=cancellation_token)
+            # The loop's own calls check the run's token right before they
+            # start; a script call must too -- a hook that waited for a person
+            # returns (or fails) on the cancel, and the call must not run then.
+            if cancellation_token is not None and getattr(cancellation_token, "is_cancelled", False):
+                raise ToolDispatchError("Request cancelled — the call did not run.")
+            if block is not None:
+                raise ToolDispatchError(block)
+            tool_call = {**tool_call, "arguments": params}
+        if injected_params:
+            extra, dropped = drop_runtime_params(dict(injected_params))
+            if dropped:
+                logger.warning("Dropping runtime param(s) %s injected into programmatic "
+                               "dispatch of %s", dropped, tool_name)
+            params = {**params, **extra}
 
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,
@@ -897,12 +939,28 @@ class Agent(ToolServer):
 
         logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
                     tool_name, self.name)
-        if hasattr(server, 'call_with_status'):
-            result = await server.call_with_status(tool_name, params)
-        else:
-            result = await server.call(tool_name, params)
+        try:
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(tool_name, params)
+            else:
+                result = await server.call(tool_name, params)
+        except Exception as exc:
+            if hook_source is None:
+                raise
+            logger.exception("Tool %s failed via programmatic dispatch", tool_name)
+            result = {"status": "error", "error": f"Tool '{tool_name}' execution failed: {exc}",
+                      "type": type(exc).__name__}
         logger.info("Tool %s returned (programmatic dispatch): %s",
                     tool_name, str(result)[:500])
+        if hooks is not None and hooks.wants_hooks(HookType.POST_TOOL_CALL):
+            try:
+                result = await hooks.execute_post_tool_hooks(
+                    tool_call, result, step=0, request_id=request_id or "", session_id=session_id or "",
+                    cancellation_token=cancellation_token)
+            except Exception:
+                # The call ran; raising now would report a done job as failed.
+                logger.exception("post_tool_call hooks failed for %s; the result stays as "
+                                 "the tool returned it", tool_name)
 
         # A tool may stage a rewritten history via set_compacted_messages
         # (the summarizer's manual path does). During a run the request's own
@@ -3487,9 +3545,14 @@ class Agent(ToolServer):
                 # Stuck signal: a step whose tool calls ALL returned an error.
                 # Catches the near-loops the exact-match detector misses (same
                 # tool retried with slightly varied wrong args). N in a row →
-                # open an escalation window.
-                if tool_messages and all(
-                        self._tool_message_is_error(m) for m in tool_messages):
+                # open an escalation window. Only calls that ran count: a call a
+                # hook blocked (a policy, a person saying no) is no sign that a
+                # stronger model is needed -- a step of nothing but blocked calls
+                # neither grows the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                if tool_messages and not ran_messages:
+                    prev_step_all_errored = True
+                elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):
                     consecutive_tool_error_steps += 1
                     prev_step_all_errored = True  # keep the streak alive next step
                     if consecutive_tool_error_steps >= escalate_error_streak and not final_call:

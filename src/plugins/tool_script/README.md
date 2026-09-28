@@ -30,6 +30,13 @@ result = {"merged_keys": merge["merged_keys"]}
   resolution, same `tools.allowed` AND `tools.blocked` semantics as schema
   build (shared matcher + parity test). What the LLM cannot see, the script
   cannot call — in both directions.
+- **Tool hooks:** every call passes the agent's `pre_tool_call` /
+  `post_tool_call` hooks like the model's own calls (`source: "tool_script"`,
+  `docs/plugin_hooks.md`). A call a hook blocks raises `ToolCallError` with the
+  hook's text; `per_call_timeout` bounds the hooks of a call too. The
+  `inject_params` values are merged after the hooks — no hook sees a secret.
+  A tool that raises comes back as an error result (it passes the post hooks)
+  and raises `ToolCallError` like any error result.
 - Runtime params (`_session_id`, `_agent`, ...) are injected AFTER validating
   that script params are plain data — scripts cannot forge context.
 - Tool RESULTS are sanitized through a JSON round-trip — live objects can

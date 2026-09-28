@@ -280,10 +280,10 @@ class Agent(ToolServer):
 - `llm_progress` - During a streaming LLM call (no messages attached)
 - `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
-- `pre_tool_call` / `post_tool_call` - declared but **never fire**: nothing calls
-  `execute_pre_tool_hooks` / `execute_post_tool_hooks`
-  (`servers/agent/components/hook_integration.py`); registering one logs a warning
-  (`plugins/discovery.py`)
+- `pre_tool_call` / `post_tool_call` - around every tool call of the model
+  (`components/tool_execution.py`) and of a tool_script script
+  (`Agent.dispatch_tool_call(hook_source=...)`): pre may change the arguments or
+  block the call, post may change the result (`docs/plugin_hooks.md`)
 
 Each hook runs under its own timeout (`asyncio.wait_for` in `hooks/registry.py`); a
 timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
