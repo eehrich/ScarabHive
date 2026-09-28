@@ -1,28 +1,41 @@
-# AgentSystem systemd service template
-# 
-# Installation:
-# 1. Copy this file to /etc/systemd/system/agent-system.service
-# 2. Update WorkingDirectory, User, and paths as needed
-# 3. Enable service: systemctl enable agent-system.service
-# 4. Start service: systemctl start agent-system.service
+# ScarabHive API server -- systemd unit template
 #
-# Important: The OMP_NUM_THREADS and ORT_DISABLE_THREAD_AFFINITY environment
-# variables prevent onnxruntime pthread_setaffinity_np crashes in containerized
-# environments (Docker, LXC, VMs with CPU pinning restrictions)
+# Installation (details in README.md next to this file):
+# 1. A service user; clone the checkout and create its .venv as that user, so it owns
+#    them (the server writes data/, logs/ and, from the agent editor, config/agents/):
+#      sudo useradd --system --user-group --home-dir /opt/scarabhive --create-home --shell /usr/sbin/nologin scarabhive
+# 2. Secrets (AUTH_SECRET_KEY, provider keys) go into /etc/scarabhive/env, mode 600,
+#    owned by root -- systemd reads it before it switches to the service user. Not into
+#    the checkout. config/config.yaml ships a published signing key: set
+#    `secret_key: "${AUTH_SECRET_KEY}"` and `reject_default_secret_key: true` there.
+# 3. Copy this file to /etc/systemd/system/scarabhive.service, adjust the paths, then
+#      sudo systemctl daemon-reload && sudo systemctl enable --now scarabhive.service
+#
+# The server listens on 127.0.0.1:8000 only. Other machines reach it through a reverse
+# proxy with TLS in front of it (README.md); binding it to a network address directly
+# publishes the login, the API and the agents' tools without TLS.
+#
+# OMP_NUM_THREADS and ORT_DISABLE_THREAD_AFFINITY prevent onnxruntime
+# pthread_setaffinity_np crashes in containers and VMs with CPU pinning (Docker, LXC).
 
 [Unit]
-Description=Agent System MCP Server
-After=network.target
+Description=ScarabHive API server
+After=network-online.target
+Wants=network-online.target
+# A server that keeps failing at startup (a refused key, a broken config) stops being restarted.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/agentsystem
-Environment="PATH=/root/agentsystem/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="AGENT_LOG_LEVEL=debug"
+User=scarabhive
+Group=scarabhive
+WorkingDirectory=/opt/scarabhive/agentsystem
+EnvironmentFile=/etc/scarabhive/env
+Environment="PATH=/opt/scarabhive/agentsystem/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="AGENT_LOG_LEVEL=info"
 
 # Fix for onnxruntime pthread_setaffinity_np crashes (Signal 11 SEGV)
-# These variables prevent thread affinity issues in virtualized environments
 Environment="OMP_NUM_THREADS=1"
 Environment="ORT_DISABLE_THREAD_AFFINITY=1"
 
@@ -31,7 +44,16 @@ Environment="ORT_DISABLE_THREAD_AFFINITY=1"
 #Environment="AGENT_ENABLE_MEMORY_PROFILING=1"
 #Environment="AGENT_MEMORY_SNAPSHOT_INTERVAL=3600"
 
-ExecStart=/root/agentsystem/.venv/bin/python -m uvicorn agent_system.app:build_app --factory --host 192.0.2.114 --port 80 --log-level info --timeout-graceful-shutdown 5
+# One process: cancellation, mid-run messages and status streams live in it.
+# --timeout-graceful-shutdown: open event streams would otherwise hold a stop
+# until systemd kills the process.
+ExecStart=/opt/scarabhive/agentsystem/.venv/bin/python -m uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000 --log-level info --timeout-graceful-shutdown 5
+
+# No setuid escalation from the shells the agents' tools start (sudo and su fail);
+# a private /tmp; files the server creates are not readable by other local users.
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0027
 
 # Auto-restart on failure
 Restart=on-failure
