@@ -378,6 +378,13 @@ auth:
         min_role: "admin"
         description: "Agent editor requires admin role"
 
+      # The setup panel: which keys are missing, whether a known admin password
+      # still opens, whether the signing key is a known one.
+      - pattern: "/plugins/setup/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Setup panel requires admin role"
+
       # stategraph machines contain Python and run agents and tools: editing,
       # running and debugging them is operator work (docs/stategraph_design.md §8.3).
       - pattern: "/plugins/stategraph/*"

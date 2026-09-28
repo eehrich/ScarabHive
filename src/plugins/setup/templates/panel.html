@@ -1,0 +1,30 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Setup{% endblock %}
+{% block toolbar %}<pk-refresh interval="30"></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-stack">
+  <div id="problem" hidden></div>
+
+  <section class="pk-card" aria-labelledby="chatTitle">
+    <div class="pk-card-head">
+      <h2 id="chatTitle" class="pk-card-title pk-grow">Chat</h2>
+      <button type="button" class="pk-btn pk-btn--primary pk-btn--sm" id="probe">{{ icon('play', size='sm') }} Test the chat</button>
+    </div>
+    <div id="chat" aria-live="polite"><span class="pk-skeleton"></span></div>
+  </section>
+
+  <section class="pk-card" aria-labelledby="accessTitle">
+    <div class="pk-card-head"><h2 id="accessTitle" class="pk-card-title">Access</h2></div>
+    <div id="access"><span class="pk-skeleton"></span></div>
+  </section>
+
+  <section class="pk-card" aria-labelledby="keysTitle">
+    <div class="pk-card-head"><h2 id="keysTitle" class="pk-card-title">API keys</h2></div>
+    <p class="pk-help">Each key the configuration names. Enter a key in <code>config/secrets.env</code>
+      (template: <code>config/secrets.env.example</code>) and restart; entering it here comes next.</p>
+    <div id="keys"><span class="pk-skeleton"></span></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

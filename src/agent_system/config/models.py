@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, ValidationInfo, model_validator
 from typing import Literal, Optional, Dict, List, Any, Union
 
 
@@ -1466,3 +1466,11 @@ class AgentSystemConfig(BaseModel):
     plugins: Optional[PluginsConfig] = None  # From config/plugins.yaml -> plugins:
     external_servers: Optional[MCPServersConfig] = None  # From config/mcp_servers.yaml -> external_servers:
     hooks: GlobalHooksConfig = Field(default_factory=GlobalHooksConfig)  # From config/plugins.yaml -> hooks:
+
+    _source_path: Optional[str] = PrivateAttr(default=None)
+
+    @property
+    def source_path(self) -> Optional[str]:
+        """The master file load_settings() read this from; None for a config built in code.
+        What reads the config files again (the ${VAR} names in them) reads these, not the default."""
+        return self._source_path

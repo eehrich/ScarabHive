@@ -427,6 +427,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         # Log the data structure that failed validation for debugging
         logger.debug(f"Failed configuration data: {data}")
         raise
+    cfg._source_path = str(cfg_path)
     _report_dropped_llm_params(data, cfg)
     _report_unknown_llm_profiles(cfg)
     return cfg

@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Setup panel tests</title>
+  <style>body { margin: 0; } iframe { width: 900px; height: 720px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin router, its data set by the stub: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const text = (selector) => $(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+  const stub = (data) => fetch('/__stub/set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const recorded = async () => (await fetch('/__stub/patched')).json();
+  const calls = async () => (await fetch('/__stub/calls')).json();
+  // a reload that reached the server: its answer, from this machine, is a moment away
+  async function reloaded(which, before) {
+    await until(`the reload's ${which}`, async () => (await calls())[which] > before[which]);
+    await sleep(150);
+  }
+  const refresh = () => doc().dispatchEvent(new frame.contentWindow.CustomEvent('refresh', { detail: { auto: false } }));
+  const toasts = () => all('.pk-toast').map((one) => one.textContent.replace(/\s+/g, ' ').trim()).join(' | ');
+  const MARKUP = '<img src=x onerror=parent.__xss=1>';
+  const KEYS = [
+    { name: 'OPENROUTER_API_KEY', state: 'set', named_in: ['llm_system.models.openrouter-base'] },
+    { name: 'TAVILY_API_KEY', state: 'missing', named_in: ['plugins.servers.tavily_search'] },
+    { name: MARKUP, state: 'placeholder', named_in: ['first', 'second', 'third', 'fourth', 'fifth'] },
+  ];
+  const open = async () => { await go('/plugins/setup/'); await until('the panel drawn', () => $('#keys table, #keys .pk-empty')); };
+  const type = (selector, value) => { const input = $(selector); input.value = value; input.dispatchEvent(new frame.contentWindow.Event('input', { bubbles: true })); };
+
+  await check('the key table shows each key’s state, three sections and the count of the rest, and a key name is text', async () => {
+    await stub({ keys: KEYS });
+    await open();
+    const rows = Object.fromEntries(all('#keys tbody tr').map((row) => [row.cells[0].textContent.trim(), row.cells]));
+    const cut = rows[MARKUP][2].textContent.trim();
+    return rows.OPENROUTER_API_KEY[1].textContent.trim() === 'Set' && rows.TAVILY_API_KEY[1].textContent.trim() === 'Missing'
+      && rows[MARKUP][1].textContent.trim() === 'Placeholder' && cut === 'first, second, third +2'
+      && rows[MARKUP][2].title.includes('fifth') && window.__xss === undefined;
+  });
+
+  await check('a configuration that names no key says so', async () => {
+    await stub({ keys: [] });
+    await open();
+    const empty = text('#keys .pk-empty-title') === 'The configuration names no key';
+    await stub({ keys: KEYS });
+    return empty;
+  });
+
+  await check('a refresh, or a failed /auth/me, keeps a half-typed password; a wrong current one keeps the form; the right one changes it', async () => {
+    await stub({ me: 'admin', auth: { admin: 'admin', default_admin_password: true } });
+    await open();
+    await until('the form', () => $('#password'));
+    type('#password [name=current]', 'half-typed');
+    let before = await calls();
+    refresh();
+    await reloaded('me', before);
+    await stub({ me_fails: true });  // who is looking cannot be read for a moment: still the same admin
+    before = await calls();
+    refresh();
+    await reloaded('me', before);
+    await stub({ me_fails: false });
+    const kept = $('#password [name=current]')?.value === 'half-typed';
+    type('#password [name=current]', 'wrong-password');
+    type('#password [name=password]', 'a-long-own-password');
+    $('#password').requestSubmit();
+    await until('the refusal shown', () => toasts().includes('Current password is incorrect'));
+    const stayed = $('#password [name=password]')?.value === 'a-long-own-password' && !$('#password button').disabled;
+    type('#password [name=current]', 'admin123');
+    $('#password').requestSubmit();
+    await until('the warning gone', () => !$('#password') && text('#access').includes('no admin opens with a publicly known one'));
+    const sent = (await recorded()).at(-1);
+    return kept && stayed && sent.current_password === 'admin123' && sent.password === 'a-long-own-password'
+      && toasts().includes('Logins made before stay valid');
+  });
+
+  await check('another admin sees the warning without the form, and what cannot be told reads Unknown', async () => {
+    await stub({ me: 'other', auth: { default_admin_password: true, shared_signing_key: null } });
+    await open();
+    await until('the access drawn', () => text('#access').includes('Admin password'));
+    const hint = !$('#password') && text('#access').includes('log in as that user');
+    await stub({ auth: { default_admin_password: null } });
+    refresh();
+    await until('the unknown drawn', () => text('#access').includes('not checked'));
+    const unknown = all('#access .pk-badge').map((one) => one.textContent.trim());
+    return hint && unknown.filter((one) => one === 'Unknown').length === 2 && !unknown.includes('OK');
+  });
+
+  await check('the signing key line says a known key needs fixing, and a pending restart', async () => {
+    await stub({ auth: { shared_signing_key: true, signing_key_needs_restart: true } });
+    await open();
+    await until('the signing line', () => text('#access').includes('Signing key'));
+    const line = [...$('#access dl').children].find((one) => one.previousElementSibling?.textContent === 'Signing key');
+    const shared = line.textContent.includes('Fix') && line.textContent.includes('a known one') && line.textContent.includes('Restart');
+    await stub({ auth: { shared_signing_key: false, signing_key_needs_restart: false } });
+    refresh();
+    await until('the own key', () => text('#access').includes('this installation’s own'));
+    return shared && !text('#access').includes('Restart');
+  });
+
+  await check('a chat test locks its button and says it runs, then shows the answer or the provider’s error as text', async () => {
+    await stub({ probe: { ok: true, agent: 'chat_agent', profile: 'chat', model: 'some/model' }, probe_delay: 1.0 });
+    await open();
+    await stub({ state_delays: [1.0] });  // the reload after the test is slow: the button must not wait for it
+    $('#probe').click();
+    await until('the test running', () => text('#chat').includes('Testing'));
+    const locked = $('#probe').disabled && $('#chat').getAttribute('aria-busy') === 'true';
+    await until('the answer', () => text('#chat').includes('Answers'));
+    const answered = text('#chat').includes('some/model') && !$('#probe').disabled;
+    await stub({ probe: { ok: false, agent: 'chat_agent', profile: 'chat', error: `HTTP 401: ${MARKUP}` }, probe_delay: 0 });
+    $('#probe').click();
+    await until('the refusal', () => text('#chat').includes('No answer'));
+    return locked && answered && text('#chat').includes(`HTTP 401: ${MARKUP}`) && window.__xss === undefined;
+  });
+
+  await check('a refresh during a chat test keeps it running, and a failed test replaces the answer before it', async () => {
+    await stub({ probe: { ok: true, agent: 'chat_agent', profile: 'chat' }, probe_delay: 1.0, probe_fails: false });
+    await open();
+    $('#probe').click();
+    await until('the answer', () => text('#chat').includes('Answers'));
+    await stub({ probe_delay: 1.5, probe_fails: true });
+    $('#probe').click();
+    await until('the test running', () => text('#chat').includes('Testing'));
+    refresh();
+    await sleep(500);
+    const running = text('#chat').includes('Testing') && $('#chat').getAttribute('aria-busy') === 'true';
+    await stub({ state_fails: true });  // and the state cannot be read after it: the outcome shows all the same
+    await until('the failure', () => text('#chat').includes('No answer'));
+    const settled = !text('#chat').includes('Answers') && $('#chat').getAttribute('aria-busy') === 'false';
+    await stub({ probe_delay: 0, probe_fails: false, state_fails: false });
+    refresh();
+    await until('the state read again', () => $('#problem').hidden);
+    return running && settled;
+  });
+
+  await check('a state that cannot be read says so, a chat test still shows its outcome, and the next read clears it', async () => {
+    await stub({ state_fails: true, probe: { ok: true, agent: 'chat_agent', profile: 'chat' }, probe_delay: 0 });
+    await go('/plugins/setup/');
+    await until('the notice', () => !$('#problem').hidden && text('#problem').includes('could not be read'));
+    $('#probe').click();  // the probe reads the configuration the chat started with, not the state
+    await until('the outcome without a state', () => text('#chat').includes('Answers'));
+    await stub({ state_fails: false });
+    refresh();
+    await until('the notice gone', () => $('#problem').hidden && $('#keys table'));
+    return true;
+  });
+
+  await check('a load overtaken by a newer one is never drawn, nor clears the newer one’s notice', async () => {
+    const OLD = [{ name: 'OLD_KEY', state: 'set', named_in: ['old'] }];
+    const NEW = [{ name: 'NEW_KEY', state: 'set', named_in: ['new'] }];
+    await stub({ keys: OLD });
+    await open();
+    // overtaken while it waits for the state: the next read answers OLD, late
+    let before = await calls();
+    await stub({ state_delays: [1.0] });
+    refresh();
+    await until('the slow read asked', async () => (await calls()).state > before.state);
+    await stub({ keys: NEW });
+    refresh();
+    await until('the new state', () => text('#keys').includes('NEW_KEY'));
+    await sleep(1300);  // the late answer has come
+    const shown = text('#keys');
+    const neverDrawn = shown.includes('NEW_KEY') && !shown.includes('OLD_KEY');
+    // overtaken while it waits for /auth/me, its state read: the newer load's state cannot be read
+    before = await calls();
+    await stub({ me_delays: [1.0] });
+    refresh();
+    await until('the slow load at /auth/me', async () => (await calls()).me > before.me);
+    await stub({ state_fails: true });
+    refresh();
+    await until('the notice', () => !$('#problem').hidden);
+    await sleep(1300);  // the slow /auth/me has answered
+    const noticeKept = !$('#problem').hidden;
+    await stub({ state_fails: false, keys: KEYS });
+    refresh();
+    await until('the notice gone', () => $('#problem').hidden);
+    return neverDrawn && noticeKept;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>
