@@ -195,6 +195,16 @@ def master_data_dir(config_path: Optional[str] = None) -> Optional[str]:
     return expand_env(str(value)) if value is not None else None
 
 
+#: In the environment of a run a process that enforces authentication woke (core/session_presence.spawn_wake), and
+#: of every run that run wakes in turn. The run loads its config with auth on, whatever the disk says by now: it acts
+#: for a user of that API and judges them as the API does -- which enforces what it started with until a restart.
+#: Tighten only: whoever sets it makes a process stricter, never looser.
+AUTH_REQUIRED_ENV = "HIVE_AUTH_REQUIRED"
+#: Whether this process is such a run. Taken out of the environment on import: what the run starts otherwise -- a
+#: terminal command, a test run, an API of its own -- loads its config as the disk says; its wakes get it back.
+AUTH_REQUIRED_BY_WAKER = os.environ.pop(AUTH_REQUIRED_ENV, None) == "1"
+
+
 def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     """Load and return an `AgentSystemConfig` using environment variables and
     optional YAML config file. Environment variables take precedence for
@@ -428,6 +438,8 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         logger.debug(f"Failed configuration data: {data}")
         raise
     cfg._source_path = str(cfg_path)
+    if AUTH_REQUIRED_BY_WAKER:
+        cfg.auth.enabled = True  # a woken run judges its user as the API that woke it does
     _report_dropped_llm_params(data, cfg)
     _report_unknown_llm_profiles(cfg)
     return cfg

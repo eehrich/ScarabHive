@@ -25,6 +25,9 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or secrets.token_urlsafe(64)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080  # 7 days (7 * 24 * 60)
 REFRESH_TOKEN_EXPIRE_DAYS = 30
+#: This process enforces authentication: set_jwt_config, which the API calls at start when auth is on, sets it.
+#: A run it wakes is told so (core/session_presence.spawn_wake).
+AUTH_ENFORCED = False
 
 
 def get_password_hash(password: str) -> str:
@@ -157,8 +160,9 @@ def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: in
         expire_minutes: Token expiration time in minutes
         refresh_expire_days: Refresh token expiration time in days
     """
-    global SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
+    global SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS, AUTH_ENFORCED
     SECRET_KEY = secret_key
     ALGORITHM = algorithm
     ACCESS_TOKEN_EXPIRE_MINUTES = expire_minutes
     REFRESH_TOKEN_EXPIRE_DAYS = refresh_expire_days
+    AUTH_ENFORCED = True

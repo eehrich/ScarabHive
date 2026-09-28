@@ -54,6 +54,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 import psutil
 
 from ..config.models import SessionPresenceConfig
+from ..config import settings as config_settings
 from ..paths import data_path
 
 if os.name == "nt":
@@ -214,11 +215,18 @@ def spawn_wake(session_id: str, user_id: str, depth: int) -> tuple[int, float]:
     """
     detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
               if os.name == "nt" else {"start_new_session": True})
+    env = {**os.environ, WAKE_DEPTH_ENV: str(depth)}
+    from ..auth import security  # here only: the auth stack is no concern of a process that never wakes
+    if security.AUTH_ENFORCED or config_settings.AUTH_REQUIRED_BY_WAKER:
+        # The run reads the config from disk, where auth may be off by now while this API still enforces it
+        # (until a restart): it acts for a user of this API and judges them as the API does (config.settings).
+        # A run such an API woke passes it on to the runs it wakes.
+        env[config_settings.AUTH_REQUIRED_ENV] = "1"
     errors = _wake_log()
     try:
         process = subprocess.Popen(
             wake_command(session_id, user_id), cwd=REPO_ROOT,
-            env={**os.environ, WAKE_DEPTH_ENV: str(depth)},
+            env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
             **detach)
     finally:
