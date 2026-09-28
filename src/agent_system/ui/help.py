@@ -2,7 +2,7 @@
 
 Where the guides come from, all read with the same parser (``amigaguide``):
 
-* the manual, ``agent_system/ui/guides/*.guide`` -- the id is the file name
+* the manual, ``docs/guides/*.guide`` -- the id is the file name
   without ``.guide``; ``scarabhive`` is the one the panel opens with,
 * a plugin's own guide, ``<plugin folder>/<folder name>.guide`` -- the id is the
   folder name, which is also the plugin type (``sub_agent_manager/main``),
@@ -28,10 +28,12 @@ from fastapi.responses import FileResponse
 from agent_system.plugins.plugin_manifest import load_plugin_metadata
 
 from .amigaguide import Guide, Node, decode, escape, file_node, inside, layout, parse, plain_text, stamp
+from .resources import find_resource_dir
 
 logger = logging.getLogger(__name__)
 
-GUIDES_DIR = Path(__file__).parent / "guides"
+#: The manual lies with the documentation, found the way templates/ and static/ are.
+GUIDES_DIR = find_resource_dir("docs") / "guides"
 MANUAL = "scarabhive"
 PLUGIN_INDEX = "plugins"
 #: Where the Help button leads when a guide names no help node of its own.

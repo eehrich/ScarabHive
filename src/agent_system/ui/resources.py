@@ -14,7 +14,7 @@ THEME_COOKIE = "ui_theme"
 
 
 def find_resource_dir(name: str) -> Path:
-    """Find the templates or static directory in the supported install layouts."""
+    """Find a directory that lies outside the package (templates, static, docs) in the supported install layouts."""
     try:
         import agent_system
         resource_path = Path(agent_system.__file__).parent / name

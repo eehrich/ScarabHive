@@ -1947,7 +1947,7 @@ a button in a new tab.
 
 @{table}
 File | Shows up as
-@{tt}src/agent_system/ui/guides/<name>.guide@{utt} | part of the manual; its id is @{tt}<name>@{utt}
+@{tt}docs/guides/<name>.guide@{utt} | part of the manual; its id is @{tt}<name>@{utt}
 @{tt}<plugin folder>/<folder name>.guide@{utt} | the plugin's guide; its id is the folder name, which is the plugin type
 @{body}
 

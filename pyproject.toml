@@ -52,10 +52,10 @@ dependencies = { file = ["requirements/all.txt"] }
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Note: templates/ and static/ are outside src/ so they're included via MANIFEST.in
-# The app.py _find_resource_dir() function handles multiple install scenarios
+# Note: templates/, static/ and docs/guides/ (the Help manual) are outside src/ so they're included via MANIFEST.in
+# agent_system.ui.resources.find_resource_dir() handles multiple install scenarios
 [tool.setuptools.package-data]
-"*" = ["*.yaml", "*.json", "*.toml", "*.guide"]
+"*" = ["*.yaml", "*.json", "*.toml"]
 
 [project.optional-dependencies]
 dev = [

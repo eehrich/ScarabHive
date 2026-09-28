@@ -13,14 +13,14 @@ gerendert wird nur, was eine Markdown-Datei *ist*: README, `docs/*.md`, `@embed 
 |---|---|
 | Parser, Layout, Markdown-Umschreiben | `src/agent_system/ui/amigaguide.py` |
 | Bibliothek (welche Guides es gibt), Routen | `src/agent_system/ui/help.py` |
-| Das Handbuch | `src/agent_system/ui/guides/scarabhive.guide` (jede `*.guide` dort gehört dazu; Id = Dateiname) |
+| Das Handbuch | `docs/guides/scarabhive.guide` (jede `*.guide` dort gehört dazu; Id = Dateiname; gefunden wie `templates/` und `static/`) |
 | Der Viewer (Kit-Element `<pk-guide>`) | `static/kit/guide.js`, Stile am Ende von `static/kit/kit.css` |
 | Das Panel | `templates/panels/help.html` (nur `<pk-guide address search>`), Kern-Panel `help` in `ui/catalog.py` |
 | Tests | `tests/ui/test_help.py`, `tests/ui/test_help_panel_browser.py` (+ `help_panel_tests.html`, `help_embed_probe.html`) |
 
 ## Woher die Guides kommen
 
-1. Das Handbuch aus `ui/guides/`.
+1. Das Handbuch aus `docs/guides/`.
 2. Ein Plugin mit eigener Guide: `<plugin-ordner>/<ordnername>.guide`, Id = Ordnername
    (= Plugin-Typ). Link von außen: `sub_agent_manager/main`.
 3. Ein Plugin ohne Guide, aber mit `README.md`: die README, als Markdown gerendert.
@@ -133,8 +133,8 @@ Höhe) oder den nächsten scrollenden Kasten -- nie etwas außerhalb seines Doku
 
 ## Grenzen (bewusst)
 
-- `pyproject.toml` liefert `*.guide` als package-data mit; Bilder für das Handbuch
-  bräuchten einen eigenen Eintrag, sobald es welche gibt.
+- `MANIFEST.in` nimmt `docs/guides/*.guide` mit, wie `templates/` und `static/`; Bilder
+  für das Handbuch bräuchten einen eigenen Eintrag, sobald es welche gibt.
 - Plugin-Guides und READMEs sieht jeder angemeldete Nutzer, auch die eines Plugins,
   dessen Panel nur Admins öffnen -- Doku gilt als lesbar; wer das anders will, hängt
   die Guides an die Panel-Rollen des Plugins.
