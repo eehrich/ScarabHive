@@ -560,6 +560,8 @@ class HookIntegrationManager:
         request_id: str,
         session_id: str,
         cancellation_token: Optional[Any] = None,
+        started_at: Optional[float] = None,
+        finished_at: Optional[float] = None,
     ) -> Any:
         """
         Execute post-tool hooks for one call that ran.
@@ -576,12 +578,18 @@ class HookIntegrationManager:
             request_id: Request identifier
             session_id: Session identifier
             cancellation_token: The run's token
+            started_at: When the call itself started (``time.time()``), None
+                if the caller did not measure it
+            finished_at: When it ended, likewise. In the model's loop the post
+                hooks run once ALL calls of the step are done, so the hook's
+                own clock says when the step ended, not when this call did.
 
         Returns:
             The result the caller reads. The hooks see
-            ``context.tool_result = {"result": <value>, "is_error": <bool>}``;
+            ``context.tool_result = {"result": <value>, "is_error": <bool>,
+            "started_at": <float|None>, "finished_at": <float|None>}``;
             a hook changes the result by writing ``tool_result["result"]`` and
-            returning ``modified=True`` -- ``is_error`` is read-only.
+            returning ``modified=True`` -- the other keys are read-only.
         """
         if not self.is_enabled():
             return tool_result
@@ -594,7 +602,8 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             tool_call=tool_call,
-            tool_result={"result": tool_result, "is_error": tool_result_is_error(tool_result)},
+            tool_result={"result": tool_result, "is_error": tool_result_is_error(tool_result),
+                         "started_at": started_at, "finished_at": finished_at},
             step=step,
             cancellation_token=cancellation_token,
         )
@@ -707,11 +716,14 @@ class HookIntegrationManager:
         session_id: str,
         request_id: str,
         messages: Optional[List[ChatMessage]] = None,
-        persisted: bool = False
+        persisted: bool = False,
+        cancelled: bool = False,
+        errors: Optional[List[str]] = None,
+        completed: Optional[bool] = None,
     ) -> None:
         """
         Execute session-end hooks.
-        
+
         Args:
             session_id: Session identifier
             request_id: Request identifier
@@ -720,10 +732,14 @@ class HookIntegrationManager:
                 file. A hook that counts what the request carried as delivered
                 may only do so when it did -- what an unsaved run was told is
                 gone with it. False unless the caller knows better.
+            cancelled: Whether the run's cancellation token was cancelled
+            errors: The error messages the run reported, in order
+            completed: Whether the run reached a final answer; None when the
+                caller cannot tell
         """
         if not self.is_enabled():
             return
-        
+
         context = HookContext(
             hook_type=HookType.SESSION_END,
             request_id=request_id,
@@ -732,7 +748,8 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
-            metadata={"persisted": persisted},
+            metadata={"persisted": persisted, "cancelled": cancelled,
+                      "errors": list(errors or []), "completed": completed},
         )
         
         await self.registry.execute_hooks(

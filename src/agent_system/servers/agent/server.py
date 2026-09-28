@@ -10,6 +10,7 @@ import copy
 import errno
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
@@ -939,6 +940,7 @@ class Agent(ToolServer):
 
         logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
                     tool_name, self.name)
+        started_at = time.time()
         try:
             if hasattr(server, 'call_with_status'):
                 result = await server.call_with_status(tool_name, params)
@@ -950,13 +952,14 @@ class Agent(ToolServer):
             logger.exception("Tool %s failed via programmatic dispatch", tool_name)
             result = {"status": "error", "error": f"Tool '{tool_name}' execution failed: {exc}",
                       "type": type(exc).__name__}
+        finished_at = time.time()
         logger.info("Tool %s returned (programmatic dispatch): %s",
                     tool_name, str(result)[:500])
         if hooks is not None and hooks.wants_hooks(HookType.POST_TOOL_CALL):
             try:
                 result = await hooks.execute_post_tool_hooks(
                     tool_call, result, step=0, request_id=request_id or "", session_id=session_id or "",
-                    cancellation_token=cancellation_token)
+                    cancellation_token=cancellation_token, started_at=started_at, finished_at=finished_at)
             except Exception:
                 # The call ran; raising now would report a done job as failed.
                 logger.exception("post_tool_call hooks failed for %s; the result stays as "
@@ -1967,6 +1970,7 @@ class Agent(ToolServer):
         # session would stay owned by a run that is gone and refuse every later
         # request on it until restart.
         persisted = False
+        cancelled = False
         try:
             # Flush injected user messages that arrived too late to be processed
             # (e.g. during the very last LLM call) into the conversation so they
@@ -1989,8 +1993,14 @@ class Agent(ToolServer):
                 except Exception as e:  # noqa: BLE001 - as the flush above: nothing here may keep the lock
                     logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
-            # Clean up cancellation token
+            # Clean up cancellation token -- read first: the session end hooks
+            # are told whether the run was cancelled, and after this the token
+            # is gone. A crash recorded the state from before it cancelled the
+            # token itself.
             cancellation_manager = get_cancellation_manager()
+            run_token = cancellation_manager.get_token(request_id)
+            cancelled = (bool(results["cancelled"]) if "cancelled" in results
+                         else bool(run_token is not None and run_token.is_cancelled))
             cancellation_manager.unregister_request(request_id)
 
             # Clean up request tracking but preserve session data
@@ -2045,9 +2055,13 @@ class Agent(ToolServer):
         # cancelled would take the message with it and nothing would re-deliver
         # it. They read the conversation, none of them writes it, so running
         # them after the save changes nothing else.
+        # How the run ended goes with it: an observer (telemetry) cannot see
+        # the run's events, only the hooks.
         try:
             await self._hook_manager.execute_session_end_hooks(
-                session_id, request_id, messages=messages, persisted=persisted
+                session_id, request_id, messages=messages, persisted=persisted,
+                cancelled=cancelled, errors=list(results.get("errors") or []),
+                completed="summary" in results,
             )
         except Exception as e:
             logger.warning(f"Session end hooks failed: {e}", exc_info=True)
@@ -3938,6 +3952,7 @@ class Agent(ToolServer):
                     )
                 except RuntimeError as e:
                     # LLM not available - emit error and end stream
+                    results.setdefault("errors", []).append(str(e))
                     yield {"type": "error", "message": str(e), "request_id": request_id}
                     yield {"type": "end"}
                     return
@@ -3975,6 +3990,20 @@ class Agent(ToolServer):
                 )
 
                 async for event in loop_generator:
+                    # Track step from events that contain step info
+                    # This ensures we report accurate step count in completion message
+                    if "step" in event:
+                        step = event.get("step", step)
+
+                    # Capture summary and errors from events -- before the yield:
+                    # a consumer may stop reading at an error (sub_agent_manager
+                    # and stategraph do), and the finalize, its status line and
+                    # the session end hooks must still know of it.
+                    if event.get("type") == "final" and "summary" in event:
+                        results["summary"] = event["summary"]
+                    elif event.get("type") == "error":
+                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+
                     yield event
 
                     # Yield any pending status events after each main event
@@ -3986,19 +4015,19 @@ class Agent(ToolServer):
                     if context:
                         messages = context.messages
 
-                    # Track step from events that contain step info
-                    # This ensures we report accurate step count in completion message
-                    if "step" in event:
-                        step = event.get("step", step)
-                    
-                    # Capture summary and errors from events
-                    if event.get("type") == "final" and "summary" in event:
-                        results["summary"] = event["summary"]
-                    elif event.get("type") == "error":
-                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
+                # Into the results like every error event of the loop, and before
+                # the yield (a consumer may stop reading there): unrecorded, the
+                # finalize reported the crashed run "completed" and the session
+                # end hooks saw no error.
+                results.setdefault("errors", []).append(f"Agent execution failed: {e}")
+                # Whether the run had been cancelled, read before the
+                # cancel_request below: it cancels the run's own token too (its
+                # tools and background work stop on it), and the finalize would
+                # then report every crash a consumer reads past as a cancel.
+                crash_token = get_cancellation_manager().get_token(request_id)
+                results["cancelled"] = bool(crash_token is not None and crash_token.is_cancelled)
                 yield {"type": "error", "message": f"Agent execution failed: {e}"}
                 
                 # CRITICAL: Cancel all sub-requests when parent agent fails

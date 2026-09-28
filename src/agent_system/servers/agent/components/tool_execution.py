@@ -381,6 +381,11 @@ class ToolExecutionManager:
         hook_token = (get_cancellation_manager().get_token(request_id)
                       if request_id and (run_pre_hooks or run_post_hooks) else None)
         hooked_calls: Dict[int, Dict[str, Any]] = {}  # position -> the call as the hooks see it
+        # position -> when the call itself started / ended (time.time()). The
+        # post hooks run once every call of the step is done; their own clock
+        # says when the step ended, so each call's span is handed to them.
+        call_started: Dict[int, float] = {}
+        call_finished: Dict[int, float] = {}
         blocked: set[int] = set()  # valid call indices
         if run_pre_hooks or run_post_hooks:
             for i, (tc, tool_name, openai_tool_name, params) in enumerate(valid_tool_executions):
@@ -450,6 +455,7 @@ class ToolExecutionManager:
                     params_with_suffix = params
                     tool_specific_request_id = None
 
+                call_started[positions[i]] = time.time()
                 task = asyncio.create_task(
                     self._execute_single_tool(tc, tool_name, openai_tool_name, params_with_suffix, step, tool_specific_request_id, session_id, user_id,
                                               main_request_id=original_request_id),
@@ -457,6 +463,11 @@ class ToolExecutionManager:
                     # cannot leak into the run or a sibling call.
                     context=context_for_tool(llm_profile),
                 )
+                # Stamped by the loop when the task ends, not when this poll
+                # gets to it: the poll hands status events on in between, and
+                # a slow consumer of the stream would lengthen the call.
+                task.add_done_callback(
+                    lambda _task, pos=positions[i]: call_finished.setdefault(pos, time.time()))
                 tasks.append(task)
                 task_tool_info[task] = (tc, tool_name, openai_tool_name)
                 task_indices[task] = positions[i]  # Store original position for ordering
@@ -546,7 +557,9 @@ class ToolExecutionManager:
                 # result joins the history: nothing already sent changes.
                 async with aclosing(self._forwarding_status(
                         self._run_post_tool_hooks(hooked_calls[pos], msg, step, request_id,
-                                                  session_id, hook_token),
+                                                  session_id, hook_token,
+                                                  started_at=call_started.get(pos),
+                                                  finished_at=call_finished.get(pos)),
                         status_forwarder, [])) as forwarded:
                     async for item in forwarded:
                         yield item
@@ -754,7 +767,9 @@ class ToolExecutionManager:
                 f"every tool call failed ({type(exc).__name__}). Tell the user; do not retry it.")
 
     async def _run_post_tool_hooks(self, call: Dict[str, Any], message: ChatMessage, step: int,
-                                   request_id: str | None, session_id: str | None, token: Any) -> None:
+                                   request_id: str | None, session_id: str | None, token: Any,
+                                   started_at: Optional[float] = None,
+                                   finished_at: Optional[float] = None) -> None:
         """Hand the result the model is about to read to the post_tool_call
         hooks and put what they return in its place.
 
@@ -773,7 +788,7 @@ class ToolExecutionManager:
         try:
             new_value = await self._hook_manager.execute_post_tool_hooks(
                 call, value, step=step, request_id=request_id or "", session_id=session_id or "",
-                cancellation_token=token)
+                cancellation_token=token, started_at=started_at, finished_at=finished_at)
             if new_value == value:
                 return
             if isinstance(new_value, str) and not was_json:
