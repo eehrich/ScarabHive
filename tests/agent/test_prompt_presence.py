@@ -96,7 +96,7 @@ def _two_dirs_with_one_type(tmp_path, monkeypatch, module):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(), b.mkdir()
     found = {a: {"dup": first}, b: {"dup": second}}
-    monkeypatch.setattr(module, "discover_plugins", lambda path: found[Path(path)])
+    monkeypatch.setattr(module, "discover_plugins", lambda path, taken=None: found[Path(path)])
     return a, b, first
 
 

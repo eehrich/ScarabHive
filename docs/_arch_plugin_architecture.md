@@ -301,6 +301,7 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 
 **Responsibilities:**
 - Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins`, `src/plugins_writer`, `src/plugins_trading`) plus the `agent_system.tool_plugins` entry point group
+- A plugin dir's name is its package name (`plugins.<name>`). Two plugin dirs with the same name (`src/plugins`, `external/plugins`) share it: a plugin or shared module the first one has is not loaded from the second -- whether the first one's loads or not -- and the second logs a warning: both would be the same module
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
 - Register hooks declared in plugin schemas (`register_plugin_hooks`)
