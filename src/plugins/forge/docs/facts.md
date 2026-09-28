@@ -21,6 +21,9 @@ Gemessen am 28.09.2026 gegen GitLab CE 19.4.1 mit Runner 19.4.1 (Testinstanz
 | F-GL11 | Direkt nach einem Push kennt der Diff des Merge Requests die neuen Dateien noch nicht (`line_comment` auf eine neue Datei: „not among the files"); einen Moment später schon. | Fehlermeldung nennt das; Live-Test wartet. |
 | F-GL12 | Direkt nach einem Push zeigt `GET /repository/branches/<b>` den Branch schon, `POST /merge_requests` lehnt ihn aber noch ab: `400 source_branch: does not exist` (einmal von vier Läufen). | `gitlab.pr_create` wartet genau diese Ablehnung bis ~10 s ab. |
 | F-GL13 | Die CI eines Merge Requests ist GitLabs `head_pipeline` des MR. Die Pipeline-Liste des MR wäre zweimal falsch: eine Merged-Results-Pipeline trägt den Merge-Commit als `sha`, ein Fork-MR läuft im Fork-Projekt (Fix-Runden-Review, nicht live gemessen — die Testinstanz hat weder Premium noch Forks). | `gitlab.ci(pr=)` nimmt `head_pipeline` und dessen `project_id`. |
+| F-GL14 | Webhooks ins LAN verlangt die Admin-Einstellung *Allow requests to the local network from webhooks and integrations*. Der erste Webhook ~35 s nach dem Einschalten scheiterte mit `internal error` ohne Text; derselbe Event über `/hooks/<id>/events/<id>/resend` ging durch. Wahrscheinlich las Sidekiq die Einstellung noch aus dem Cache — nicht bewiesen: `internal error` meldet GitLab auch, wenn die Verbindung abgelehnt wird (gesehen, als die Test-API aus war). | README: nach dem Einschalten eine Minute warten; das Hook-Log zeigt, was ankam. |
+| F-GL15 | Ein Webhook von GitLab 19.4 trägt `X-Gitlab-Token` (das Geheimnis im Klartext, keine Signatur), `X-Gitlab-Event`, `X-Gitlab-Event-UUID`, `X-Gitlab-Webhook-UUID`, `Idempotency-Key`, `webhook-id`, `webhook-timestamp`. Das erneut gesendete Issue-Ereignis (Hook-Log Nr. 2) trug denselben `Idempotency-Key` wie das gescheiterte Original (Nr. 1), aber eine neue `X-Gitlab-Event-UUID`. Der `user` eines Pipeline-Hooks ist, wer gepusht hat. | Echtheit über `X-Gitlab-Token`; Doppelte über `Idempotency-Key`; Pipelines werden nicht nach dem Bot gefiltert. |
+| F-GL16 | `PUT /projects/:id/hooks/:id` ohne `token` löscht das Geheimnis des Hooks: danach kam jeder Webhook ohne `X-Gitlab-Token` an und bekam von forge 404. | Beim Ändern eines Hooks über die API das Token immer mitschicken. |
 | F-LOG1 | Job-Log (`/jobs/:id/trace`) in 19.x: jede Zeile `2026-09-27T23:41:19.623723Z 01O <text>`; `+` direkt nach der Stream-Marke setzt die Zeile davor fort; `section_start:<ts>:<name>\r\e[0K` ohne eigenen Text; ANSI-Farben. | server.clean_log; Fixture `tests/fixtures/gitlab19_trace.txt`. |
 | F-CI1 | Direkt nach dem Push gibt es für den Branch noch **keine** Pipeline; `ci_status` sah `none` und hörte auf zu warten (Live-Test rot). | `NONE_GRACE_S`: `none` wird mit `wait_s` bis 45 s abgewartet. |
 | F-CI2 | Ein Retry erzeugt einen neuen Job mit neuer id (9 statt 7). | `ci_retry` sagt das in `note`. |
@@ -81,3 +84,16 @@ GitHub-Testrepo, 28.09.2026. Änderungen per Dateiwerkzeug, ohne `coding_cli`.
 Zwei Läufe liefen versehentlich gleichzeitig auf demselben GitHub-Ticket und
 Klon. Ergebnis: ein Commit, ein PR (wie sich die beiden abgestimmt haben, ist
 nicht nachgesehen — ihr Log hat sich überschrieben).
+
+### Webhook-Läufe
+
+Isolierte API im LAN (Port 8765, Konfig-Kopie, Sessions in einem Scratch-Ordner),
+GitLab-Projekt-Hook darauf, Coder mit `or-deepseek-flash`, 28.09.2026:
+
+| Ereignis | Ergebnis |
+|---|---|
+| root weist dem Bot Issue #14 zu | Session für `admin` angelegt und geweckt; der Coder bearbeitete das Ticket bis MR !23 mit grüner CI und hörte auf: „a person merges work a webhook starts". |
+| root kommentiert !23 („zweite Zeile") | Dieselbe Session geweckt — die Bindung hatte der geweckte Prozess selbst beim `pr_create` geschrieben; Zeile ergänzt, gepusht, geantwortet, aufgelöst. |
+| root legt `FAIL` auf den Branch, Pipeline rot | Dieselbe Session geweckt; Log gelesen, `FAIL` entfernt, CI grün. |
+
+Drei Einträge im Eingang, drei Übergaben, alle als zugestellt markiert.

@@ -1066,6 +1066,9 @@ class NetworkConfig(BaseModel):
     ssl_verify: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
+    # Paths a client other than this machine may reach (auth/remote_paths.py);
+    # everything else answers it 404. None: no restriction.
+    remote_paths: Optional[List[str]] = None
     disable_cache: bool = True
     
     # HTTP connection pooling settings

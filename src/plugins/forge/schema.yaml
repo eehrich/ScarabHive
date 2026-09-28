@@ -1,6 +1,25 @@
 # Jinja2 variables: {{ name }}, {{ configured }}, {{ repos }}, {{ merge }}, {{ branch_prefix }}
 # Without a usable repository (host, provider, token) nothing here can work,
 # so nothing is offered. pr_merge exists only where a repository allows it.
+
+# The webhook's inbox (docs/konzept.md §7): cheap for every other session --
+# without a store file nothing is read, with one a single indexed lookup.
+hooks:
+  - name: deliver_webhook_events
+    type: pre_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Hand a session what the platform's webhook reported for the work it does"
+    category: "prompt_injection"
+    order:
+      before: ["message_validation"]
+  - name: mark_webhook_events_delivered
+    type: session_end
+    enabled: true
+    timeout: 5.0
+    description: "Webhook events count as delivered once the conversation that carried them is saved"
+    category: "cleanup"
+
 tools:
 {% if not configured %}  []
 {% else %}

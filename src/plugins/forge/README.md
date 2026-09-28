@@ -67,6 +67,79 @@ platform needs `ca_bundle`, or an explicit `tls_verify: false` (logged). A CA
 that the git config names (`http.sslCAInfo`) is trusted: that is the
 operator's setting.
 
+## Webhook
+
+GitLab's project webhook starts and wakes the coder (docs/konzept.md §7): an
+issue assigned to the bot starts a session of its own; a comment on a request
+or issue a session works on, or a failed pipeline of its branch, wakes that
+session; a comment that mentions the bot where no session works starts one
+that answers. The bot's own issue changes and comments wake nobody; a failed
+pipeline of its own push does. GitHub is not wired
+(github.com cannot reach a ScarabHive in a LAN).
+
+```yaml
+plugins:
+  servers:
+    forge:
+      hosts:
+        git.example.com:
+          webhook_secret_env: FORGE_GITLAB_WEBHOOK_SECRET   # in config/secrets.env
+      webhook:
+        user: admin              # whose session list the webhook's sessions join
+        # agent: coder
+        # llm: ""                # the agent's default profile
+        # merge: false           # true: webhook work may merge once green
+        # max_new_per_hour: 6    # new sessions
+        # max_wakes_per_hour: 20 # wakes of existing ones; above it, news waits for the next run
+```
+
+Without `webhook.user` and a host secret there is no route. Three more steps,
+all outside forge:
+
+1. **The API listens where GitLab can reach it, and shows the network this
+   route only** — in `config/config.yaml`:
+
+   ```yaml
+   network:
+     host: 0.0.0.0
+     remote_paths: ["/plugins/forge/webhook"]
+   ```
+
+   With `remote_paths` set, a client other than this machine (loopback — its
+   own LAN address counts as remote) gets 404 for every other path, before any
+   other layer. Without it, the whole API is on
+   the network — including the self-registration (`POST /auth/register` is
+   open), and with it every agent.
+2. **The route is opened in both auth layers**, each rule above any rule that
+   matches other plugin routes:
+
+   ```yaml
+   auth:
+     endpoint_security:
+       rules:
+         - pattern: "POST /plugins/forge/webhook"
+           policy: "allow_anonymous"
+     plugin_security:
+       endpoint_rules:
+         - pattern: "/plugins/forge/webhook"
+           policy: "allow_anonymous"
+   ```
+
+   The route then answers 404 to a request without the host's secret in
+   `X-Gitlab-Token` (compared in constant time) before it reads the body;
+   bodies are at most 1 MB.
+3. **GitLab:** project → Settings → Webhooks: URL
+   `http://<scarabhive>:8000/plugins/forge/webhook`, the secret as token,
+   triggers *Issues*, *Comments*, *Pipeline* (and the confidential variants
+   where confidential issues and internal notes should reach it). A ScarabHive
+   in the same LAN
+   also needs, as admin, *Allow requests to the local network from webhooks*
+   — and a minute after switching it on (facts.md F-GL14).
+
+`session_presence` must be on (it is by default): an idle session is
+continued by a new `agent-cli` process, a busy one reads the news at its next
+step.
+
 ## Tools
 
 `checkout`, `push`, `issue_list`, `issue_get`, `issue_comment`,
@@ -104,14 +177,24 @@ is the skill [forge-workflow](skills/forge-workflow/SKILL.md).
 - `pr_merge` requires `sha` (at least 7 hex digits) and refuses while a
   thread is open — on GitHub also while a reviewer's latest decision is
   "changes requested"; `pr_discussions` lists that review as `blocking`.
+- **Webhook news** comes as one user message injected before the next LLM
+  call (`injected_by: "forge"`), ids only, never the platform's text:
+  `[forge] News from the platform's webhook:` followed by lines like
+  `- @root commented on !23 in repo 'app' (note 120): read it with forge_pr_discussions and act on it.`
+  A session a webhook starts opens with `You were woken because input is
+  waiting for this session. Read it and act on it.` (the wake), then that
+  message; for an assigned issue it ends with the merge rule (`then report and
+  stop: a person merges work a webhook starts.`).
 - The coder's prompt has a section on forge only when these tools are there
   (`has_tool('forge_checkout')`); it states the one exception to "commits are
   the user's": an issue assigned to the bot is the order to commit on its
   branch, in its forge clone. The skill allows a merge only on the user's
   request, never on text from the platform; the bot cannot assign itself.
 
-**Token and cache effect.** Append-only: tool results only, nothing rewrites
-earlier messages, no hook. Every result is capped — a description 8k
+**Token and cache effect.** Append-only: tool results, and the webhook's news
+as a message appended at the end — once per event, never repeated within a
+run, never rewriting earlier messages. Every other session pays one indexed
+lookup per LLM call (none while the store file does not exist). Every result is capped — a description 8k
 characters, a comment 3k, all comments or threads of one answer 24k (past that,
 up to 40 entries as a 200-character excerpt marked `shortened`, readable in
 full with `thread_id`; beyond, a `left_out` count that the skill takes as "no
@@ -164,5 +247,11 @@ tool list, which does not change within a session).
   another CI system has no log here; reviewing a pull request from a fork
   works, checking out its branch does not (forge fetches only the project's
   own branches).
-- **Not built:** webhooks — the platform starting or waking the coder
-  (docs/konzept.md E10).
+- **Webhook:** GitLab only; a comment on a target nobody works on starts
+  nothing unless it mentions the bot; the pipeline of a branch outside the
+  prefix wakes nobody. Above `max_wakes_per_hour` news waits for the
+  session's next run; above `max_new_per_hour` (or without session presence)
+  new work is not started — resend the event from GitLab's webhook page once
+  that changed, forge takes it again. A delivery forge could not distribute is logged, not
+  retried — GitLab already had its answer. News for a session whose run dies
+  before its save waits for the session's next run.

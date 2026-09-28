@@ -3605,6 +3605,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Favicon not found")
 
+    # Last, so outermost: a remote client meets it before any other layer.
+    from .auth.remote_paths import install as install_remote_path_guard
+    install_remote_path_guard(app, config.network)
+
     return app
 
 

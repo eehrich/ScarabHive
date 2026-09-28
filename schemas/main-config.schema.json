@@ -2100,6 +2100,21 @@
           "title": "Port",
           "type": "integer"
         },
+        "remote_paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Paths"
+        },
         "disable_cache": {
           "default": true,
           "title": "Disable Cache",

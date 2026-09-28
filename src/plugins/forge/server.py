@@ -28,9 +28,12 @@ from agent_system.paths import PROJECT_ROOT, data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import gitops
+from .events import Store
 from .github import GitHub
 from .gitlab import GitLab
+from .hooks import ForgeHooks
 from .http import Api, ForgeError, ForgeNotFound
+from .webhook import Intake, WebhookConfig
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -179,7 +182,14 @@ class ForgeServer(SchemaBasedToolServer):
         self._apis: dict[str, Api] = {}
         self._backends: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self._load(getattr(server_config, "hosts", None) or {}, getattr(server_config, "repos", None) or {})
+        self._hosts = getattr(server_config, "hosts", None) or {}
+        self._load(self._hosts, getattr(server_config, "repos", None) or {})
+        # The webhook (docs/konzept.md §7): its inbox is read in every process a
+        # session runs in -- the hook -- and its route only in the API's.
+        self.webhook = WebhookConfig.read(getattr(server_config, "webhook", None))
+        self.events = Store(data_path("forge", "events.db"))
+        self.hooks_plugin = ForgeHooks(name, self.events)
+        self._intake = Intake(self)
 
     def _load(self, hosts: Any, repos: Any) -> None:
         """Repositories whose host, provider and token are all there. A broken
@@ -234,6 +244,35 @@ class ForgeServer(SchemaBasedToolServer):
         template_vars["merge"] = any(r.allow_merge for r in self.repos.values())
         template_vars["branch_prefix"] = self.branch_prefix
         return template_vars
+
+    def webhook_secrets(self) -> dict[str, str]:
+        """host -> the secret its GitLab webhooks carry; empty while the webhook is not configured."""
+        if self.webhook is None or not isinstance(self._hosts, dict):
+            return {}
+        secrets = {}
+        for host, spec in self._hosts.items():
+            env = str((spec or {}).get("webhook_secret_env") or "") if isinstance(spec, dict) else ""
+            if env and os.environ.get(env) and any(r.host == host and r.provider == "gitlab"
+                                                   for r in self.repos.values()):
+                secrets[str(host)] = os.environ[env]
+        return secrets
+
+    def get_web_router(self) -> Any:
+        """The webhook route, only where a webhook user and a host secret are configured."""
+        if not self.webhook_secrets():
+            return None
+        return self._intake.router()
+
+    def _bind(self, params: dict, repo: Repo, target: str, key: str) -> None:
+        """The calling session works on this target: the webhook's news for it goes there (W5)."""
+        session, user = params.get("_session_id"), params.get("_user_id")
+        if self.webhook is None or not isinstance(session, str) or not isinstance(user, str) or not session:
+            return
+        try:
+            self.events.bind(repo.name, target, key, user, session)
+        except Exception:  # noqa: BLE001 - the tool's work is done; only its wake-ups would miss
+            logger.exception("forge %s: binding %s %s %s to session %s failed", self.name, repo.name, target, key,
+                             session)
 
     async def stop_plugin(self) -> None:
         for api in self._apis.values():
@@ -336,6 +375,8 @@ class ForgeServer(SchemaBasedToolServer):
             info = await backend.project_info()
             env = self._git_env(repo, backend, info)
             answer = await self._locked(repo, self._checkout, repo, info, env, branch, base or info["default_branch"])
+            if answer["branch"].startswith(self.branch_prefix):         # its own branches, not one it reviews
+                self._bind(params, repo, "branch", answer["branch"])
             await status.end(f"{repo.name}: {'cloned, ' if answer['cloned'] else ''}on {_short(answer['branch'], 50)} "
                              + (f"at {answer['head']}" if answer["head"] else "without commits")
                              + (f", {answer['sync']}" if answer.get("sync") else ""))
@@ -486,6 +527,7 @@ class ForgeServer(SchemaBasedToolServer):
         async def work(repo: Repo, backend, status):
             number = self._need_number(params)
             done = await backend.issue_comment(number, self._need_text(params, "body"))
+            self._bind(params, repo, "issue", str(number))
             await status.end(f"{self._ref(repo, 'issue', number)}: comment {done.get('id')} posted")
             return {"status": "success", "comment_id": done.get("id")}
 
@@ -671,6 +713,7 @@ class ForgeServer(SchemaBasedToolServer):
             existing = await backend.prs(state="open", mine=False, source_branch=source, limit=1)
             if existing:
                 pr = existing[0]
+                self._bind_request(params, repo, pr["number"], source, closes)
                 await status.end(f"{self._ref(repo, 'pr', pr['number'])} exists already for {_short(source, 60)}")
                 return {"status": "success", "created": False, "pr": pr,
                         "note": "an open request for this branch exists; pr_update changes it"}
@@ -679,10 +722,18 @@ class ForgeServer(SchemaBasedToolServer):
             target = target or (await backend.project_info())["default_branch"]
             pr = await backend.pr_create(source=source, target=target, title=title, body=body,
                                          draft=params.get("draft") is True)
+            self._bind_request(params, repo, pr["number"], source, closes)
             await status.end(f"{self._ref(repo, 'pr', pr['number'])} created: {_short(source, 40)} -> {target}")
             return {"status": "success", "created": True, "pr": pr}
 
         return await self._run(params, work)
+
+    def _bind_request(self, params: dict, repo: Repo, number: Any, source: str, closes: Any) -> None:
+        self._bind(params, repo, "mr", str(number))
+        if source.startswith(self.branch_prefix):
+            self._bind(params, repo, "branch", source)
+        if _number(closes) is not None:
+            self._bind(params, repo, "issue", str(_number(closes)))
 
     async def pr_update(self, params: dict[str, Any]) -> dict[str, Any]:
         async def work(repo: Repo, backend, status):
@@ -712,6 +763,7 @@ class ForgeServer(SchemaBasedToolServer):
             if body is not None and (not isinstance(body, str) or len(body) > 60_000):
                 raise ForgeError("body: text up to 60000 characters")
             ref = self._ref(repo, "pr", number)
+            self._bind(params, repo, "mr", str(number))       # a conversation it takes part in
             if thread:
                 if file or line is not None:
                     raise ForgeError("a reply goes into its thread: give thread_id or file+line, not both")

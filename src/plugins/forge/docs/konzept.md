@@ -17,7 +17,7 @@ GitHub muss ebenfalls gehen, als optionaler zweiter Anschluss.
 | E7 | **Die Rechte regelt die Plattform.** | Bot-Konto mit Rolle *Developer*. Default-Branch geschützt: Push nur Maintainer (oder niemand), Merge Developer + Maintainer. Dieser Riegel hält auch, wenn forge einen Fehler hat. |
 | E8 | **Fremder Text ist Daten.** | Issue-, Kommentar- und Log-Text schreiben Menschen und Programme. forge gibt ihn als `{"untrusted": true, "content": …}` zurück — wie n8n und `coding_cli`. Ein Ticket bearbeitet der Coder nur, wenn es dem Bot-Konto zugewiesen ist oder der Nutzer es ihm nennt; zuweisen kann er sich nicht selbst (kein Tool dafür). Gemergt wird nur auf Wunsch des Nutzers, nie weil Text auf der Plattform es verlangt (Review 28.09., S3). |
 | E9 | **CI-Warten blockiert, kein Weckruf.** | `ci_status` mit `wait_s` (≤ 600 s) — derselbe Weg wie `coding_cli_get_run`. Direkt nach einem Push gibt es noch keine Pipeline (F-CI1); „keine" wird deshalb bis 45 s abgewartet, danach als „keine CI" genommen. Der Weckruf-Mechanismus aus n8n (Watch, Marken über Prozesse) wäre der nächste Schritt, falls Pipelines regelmäßig länger laufen. |
-| E10 | **Webhooks nicht gebaut.** | GitLab müsste ScarabHive erreichen können; ob und wie, weiß ich nicht. Erst wenn der Nutzer das will. |
+| E10 | **Webhooks: GitLab weckt den Coder** (Nutzer 28.09.: „Webhooks brauchen wir"). | Ein zugewiesenes Issue startet einen Coder-Lauf, ein Kommentar oder eine rote Pipeline weckt die Session, die daran arbeitet. Aufbau in §7. GitHub nicht: github.com erreicht eine ScarabHive im LAN nicht; dieselbe Verteilung nähme es auf. |
 
 ## 2. Aufbau
 
@@ -112,3 +112,26 @@ read. Ruleset oder Branch-Protection auf dem Default-Branch.
 Live-Testinstanz: GitLab CE 19.4.1 mit Runner auf dem Docker-Testhost
 (`tests/live/gitlab/`). Live-Tests laufen nur mit `FORGE_LIVE=1`. Befunde
 stehen in `facts.md`.
+
+## 7. Webhooks
+
+```
+GitLab ──POST /plugins/forge/webhook──▶ API ──▶ events.db ──notify──▶ Session
+          X-Gitlab-Token                 │        (Eingang)      (Weckruf: frei → neuer
+                                         │                         agent-cli-Prozess,
+                                         └─ neue Arbeit: Session    belegt → nächster Schritt)
+                                            für webhook.user anlegen
+Hook deliver_webhook_events (pre_llm_call) ──▶ übergibt den Eingang als eine Nachricht
+```
+
+| # | Entscheidung | Warum |
+|---|---|---|
+| W1 | **Route auf der Haupt-API, nicht eigener Port.** | Nur der API-Prozess hängt Web-Router ein; ein Listener im Plugin liefe in jedem `agent-cli`-Prozess mit. Wie Stategraphs Callback: der Pfad wird in beiden Auth-Schichten anonym freigegeben, die Route prüft selbst. Die API muss dafür im LAN lauschen (`network.host`) — und darf dem LAN dann nur diesen Pfad zeigen: `network.remote_paths` (Kern, `auth/remote_paths.py`) beantwortet jede andere Anfrage, die nicht von diesem Rechner kommt, mit 404, vor jeder anderen Schicht. Ohne diese Wache hätte jeder Rechner im LAN sich registrieren (`POST /auth/register` ist offen) und den Coder mit Shell starten können (Review des Webhooks). |
+| W2 | **Echtheit über `X-Gitlab-Token`**, konstant-zeitig gegen `webhook_secret_env` des Hosts. | GitLab signiert nicht, es schickt das Geheimnis mit. Ohne konfiguriertes Geheimnis nimmt die Route nichts an. Körper höchstens 1 MB, nur konfigurierte Projekte. |
+| W3 | **Antwort sofort, Arbeit danach.** | GitLab wartet 10 s und schaltet einen Hook nach Fehlern ab. Doppelte Zustellung erkennt der `Idempotency-Key` — ein erneutes Senden behält ihn, die `X-Gitlab-Event-UUID` erneuert es (F-GL15). Scheitert die Verteilung, wird der Schlüssel wieder vergessen, damit ein erneutes Senden durchkommt. |
+| W4 | **Eine Verteilung für alles: Eingang + Weckruf.** | Jedes Ereignis wird ein Eintrag im Eingang einer Session, dann `notify`. Freie Session → neuer Prozess setzt sie fort; belegte → Marke, der Hook übergibt beim nächsten Schritt. Neue Arbeit bekommt eine neue Session (Agent `coder`, Nutzer `webhook.user`) und läuft genauso an — kein zweiter Startweg. |
+| W5 | **Welche Session woran arbeitet, merkt sich forge.** | `checkout` (Branch unter dem Präfix), `pr_create` (MR, Branch, geschlossenes Issue), `pr_comment` (MR) und `issue_comment` binden ihr Ziel an die aufrufende Session (`_session_id`, `_user_id`); die Verteilung bindet das Issue einer neuen Session. Die jüngste Bindung gilt. Eine Bindung an eine gelöschte Session fällt beim nächsten Ereignis weg; neue Arbeit bekommt dann eine neue Session. Pro Ziel verteilt forge eins nach dem anderen: Zuweisung und Erwähnung zugleich starten eine Session, nicht zwei. |
+| W6 | **Ereignisse:** Issue dem Bot zugewiesen → neue Arbeit (oder die gebundene Session); Kommentar auf gebundenem MR/Issue → wecken; Kommentar, der den Bot erwähnt, ohne Bindung → neue Session, die antwortet (kein Auftrag zum Committen); Pipeline rot auf gebundenem Branch → wecken. Issue-Änderungen und Kommentare des Bots selbst werden verworfen (sonst weckt er sich mit jedem Kommentar) — eine Pipeline nicht: ihr `user` ist, wer gepusht hat, auf seinen Branches also der Bot. Eine Erwähnung auf einem gebundenen Ziel ist für dessen Session ein Kommentar wie jeder andere. | Das sind die Stellen, an denen sonst ein Mensch den Coder anstoßen müsste. |
+| W7 | **Die Nachricht nennt nur Kennungen**, keinen fremden Text: „Neuer Kommentar von @alice auf !14 (Notiz 345) — lies ihn mit forge_pr_discussions". | Der Eingang wird als vertrauenswürdige Nachricht übergeben; Titel und Kommentare kommen weiter über die Tools, als `untrusted`. |
+| W8 | **Gemergt wird aus einem Webhook-Lauf nur mit `webhook.merge: true`.** Standard: MR öffnen, CI grün, dann berichten — ein Mensch mergt. | Niemand hat in dieser Session um den Merge gebeten (E8). |
+| W9 | **Deckel:** höchstens `webhook.max_new_per_hour` neue Sessions (Standard 6) und `webhook.max_wakes_per_hour` Weckrufe (Standard 20). Über dem Weck-Deckel bleibt die Nachricht im Eingang und kommt mit dem nächsten Lauf; über dem Deckel für neue Sessions wird nichts gestartet, und forge vergisst den `Idempotency-Key` — ein erneutes Senden aus GitLab kommt später durch. | Tokens kosten Geld; ein Skript, das Issues zuweist, oder jeder Kommentator eines öffentlichen Projekts soll keine Rechnung erzeugen. Der Weckruf selbst verhindert nur gleichzeitige Läufe, keine nacheinander (Review des Webhooks). Ohne `session_presence` startet forge keine Session — nichts würde sie laufen lassen. |

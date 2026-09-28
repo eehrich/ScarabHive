@@ -1,10 +1,10 @@
 [plugin]
 name = "forge"
-version = "0.1.0"
+version = "0.2.0"
 description = "GitLab and GitHub for the coder: issues, merge/pull requests, CI, push and merge under ScarabHive's policy"
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
-type = ["tool-server"]
+type = ["tool-server", "hooks", "web"]
 category = "tools"
 requires = { agent_system = ">=0.6.0" }
 
