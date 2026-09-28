@@ -230,8 +230,9 @@ uses. This tool is for when it does not.
 ## Where the shell is honest about its limits
 
 `coder_shell` is **not** confined by the kernel. `terminal`'s `sandbox.mode`
-needs bubblewrap, and on Windows a confining mode makes every command fail
-with `SANDBOX_UNAVAILABLE` — so it is left at the default. The blacklist there
+needs a backend — bubblewrap on Linux, Seatbelt on macOS — and on Windows a
+confining mode makes every command fail with `SANDBOX_UNAVAILABLE` — so it is
+left at the default. The blacklist there
 (`rm -rf /`, `git push`, `git reset --hard`, …) is a speed bump against typos
 and nothing more: a pattern list cannot bound what `bash -c` can do.
 

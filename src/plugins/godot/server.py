@@ -638,6 +638,15 @@ class GodotServer(SchemaBasedToolServer):
 
     @staticmethod
     def _new_project_text(name: str, main_scene: str | None, version: str) -> str:
+        # Both land between double quotes. A quote or a line break in them
+        # would close the string and write lines of their own into the file
+        # (an [autoload] entry, say); refused rather than escaped, because the
+        # escape rules of Godot's parser were not measured here.
+        for label, value in (("name", name), ("main_scene", main_scene or "")):
+            if any(c in '"\\' or ord(c) < 32 for c in value):
+                raise ValueError(
+                    f"'{label}' must not contain a quote, a backslash or a line break: "
+                    f"it is written into project.godot as a quoted string ({value!r})")
         feature = ".".join(version.split(".")[:2])
         lines = ["config_version=5", "", "[application]", "",
                  f'config/name="{name}"']

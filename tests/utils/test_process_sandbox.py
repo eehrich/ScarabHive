@@ -9,7 +9,10 @@ tested on a host without a backend. The one thing these tests cannot show is
 that the kernel honours the argv; that was verified live against bubblewrap
 0.9.0 (writes outside the workspace refused through ``sh -c``, ``python3 -c``,
 ``$HOME`` and a bind-mounted drive; reads still allowed; read-only refusing
-writes inside the workspace).
+writes inside the workspace). ``--new-session``, ``--die-with-parent``,
+``--unshare-pid`` and the read-only binds over git metadata came later
+(2026-09-28) and are pinned here as argv only: no Linux host was at hand to
+run them live.
 """
 from __future__ import annotations
 
@@ -93,7 +96,26 @@ class TestBubblewrapArgv:
 
     def test_everything_is_read_only_first(self):
         argv = self._wrap("workspace-write").argv
-        assert argv[1:4] == ("--ro-bind", "/", "/")
+        binds = [i for i, a in enumerate(argv) if a in ("--bind", "--ro-bind")]
+        assert argv[binds[0]:binds[0] + 3] == ("--ro-bind", "/", "/")
+
+    def test_the_sandbox_is_taken_off_the_callers_terminal(self):
+        """Without its own session a confined process can push keystrokes into
+        the caller's terminal (TIOCSTI, CVE-2017-5226)."""
+        argv = self._wrap("read-only").argv
+        assert "--new-session" in argv[:argv.index("--")]
+
+    def test_the_whole_tree_ends_with_bwrap(self):
+        """A private pid namespace: when bwrap's pid 1 goes, the kernel ends
+        everything below it -- not only the command, its children as well."""
+        argv = self._wrap("read-only").argv
+        assert "--unshare-pid" in argv[:argv.index("--")]
+
+    def test_the_sandboxed_command_ends_with_bwrap(self):
+        """Out of the caller's session, a Ctrl+C no longer reaches the command
+        itself; it has to die with the bwrap the caller can signal."""
+        argv = self._wrap("read-only").argv
+        assert "--die-with-parent" in argv[:argv.index("--")]
 
     def test_workspace_write_binds_the_workspace_writable(self):
         argv = self._wrap("workspace-write").argv
@@ -133,6 +155,81 @@ class TestBubblewrapArgv:
 
     def test_enforcement_is_reported_as_full(self):
         assert self._wrap("workspace-write").enforcement == "full"
+
+
+class TestBubblewrapGitMetadata:
+    """Hooks and config run code for the next unconfined git. Argv only: the
+    kernel side was not run -- no Linux host (2026-09-28)."""
+
+    @staticmethod
+    def _repo(root: Path) -> Path:
+        git = root / ".git"
+        (git / "hooks").mkdir(parents=True)
+        (git / "config").write_text("[core]\n")
+        (git / "refs" / "heads").mkdir(parents=True)
+        (git / "refs" / "heads" / "config").write_text("0" * 40)  # a branch named config
+        sub = git / "modules" / "libs" / "sub"
+        (sub / "hooks").mkdir(parents=True)
+        (sub / "HEAD").write_text("ref: refs/heads/main\n")
+        (sub / "config").write_text("[core]\n")
+        (sub / "refs" / "heads").mkdir(parents=True)
+        (sub / "refs" / "heads" / "config").write_text("0" * 40)
+        (git / "worktrees" / "wt").mkdir(parents=True)
+        (git / "worktrees" / "wt" / "config.worktree").write_text("[core]\n")
+        return git
+
+    @staticmethod
+    def _pairs(argv, flag):
+        return {argv[i + 1] for i, a in enumerate(argv[:argv.index("--")])
+                if a == flag and argv[i + 1] == argv[i + 2]}
+
+    def test_hooks_and_configs_are_bound_read_only_after_the_workspace(self, tmp_path):
+        git = self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        expected = {str(p) for p in (git / "hooks", git / "config",
+                                     git / "modules/libs/sub/hooks", git / "modules/libs/sub/config",
+                                     git / "worktrees/wt/config.worktree")}
+        assert self._pairs(argv, "--ro-bind") >= expected
+        workspace_bind = argv.index("--bind")
+        for path in expected:
+            assert argv.index(path) > workspace_bind, f"{path} bound before the workspace"
+
+    def test_the_git_directory_becomes_a_mount_point(self, tmp_path):
+        """A mount point cannot be renamed or removed: no prepared directory
+        can take the place of .git."""
+        git = self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert str(git) in self._pairs(argv, "--bind")
+
+    def test_objects_and_refs_stay_writable(self, tmp_path):
+        """The walk stops at each git directory: a branch named config is a
+        ref, and commits must go on."""
+        git = self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        bound = self._pairs(argv, "--ro-bind")
+        assert str(git / "refs/heads/config") not in bound
+        assert str(git / "modules/libs/sub/refs/heads/config") not in bound
+
+    def test_a_gitfile_is_bound_read_only(self, tmp_path):
+        (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert str(tmp_path / ".git") in self._pairs(argv, "--ro-bind")
+
+    def test_no_repository_no_extra_binds(self, tmp_path):
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="workspace-write", workspace_root=tmp_path), CMD, None).argv
+        assert argv.count("--bind") == 1
+
+    def test_read_only_mode_needs_none(self, tmp_path):
+        self._repo(tmp_path)
+        argv = ps._Bubblewrap("/usr/bin/bwrap").wrap(
+            ProcessSandbox(mode="read-only", workspace_root=tmp_path), CMD, None).argv
+        assert "--bind" not in argv
+        assert argv.count("--ro-bind") == 2
 
 
 class TestConfigIsValidatedAtLoad:
