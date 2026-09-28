@@ -190,9 +190,37 @@ class TestAllowlistSanitizer:
         assert "<br>" not in html.split("<table>")[1].split("</table>")[0]
 
     def test_markup_the_parser_rejects_comes_back_as_text(self):
+        """"<![1 ..." made html.parser raise up to Python 3.13; from 3.14 it reads it as a comment,
+        like a browser, and the comment is dropped. Either way no tag in it comes out live -- and
+        where the parser rejects it, the whole message comes back as text."""
+        from html.parser import HTMLParser
+
         from agent_system.utils.markdown_render import _sanitize_html
 
-        html = _sanitize_html('<p>a</p><![1 <img src=x onerror=alert(1)>')
+        markup = '<p>a</p><![1 <img src=x onerror=alert(1)>'
+        html = _sanitize_html(markup)
 
-        assert "<img" not in html and "<p>" not in html
+        assert "<img" not in html
+        try:
+            parser = HTMLParser()
+            parser.feed(markup)
+            parser.close()  # as the sanitiser does: a version may reject it only there
+        except Exception:
+            assert "<p>" not in html and "&lt;img" in html
+        else:
+            assert html == "<p>a</p>"
+
+    def test_a_sanitiser_that_fails_shows_the_message_as_text(self, monkeypatch):
+        """Whatever makes the parse fail -- a parser that rejects the markup, a bug in a handler --
+        the message is shown as text, not half-sanitised."""
+        from agent_system.utils import markdown_render
+
+        def breaks(self, tag, attrs):
+            raise RuntimeError("a handler bug")
+
+        monkeypatch.setattr(markdown_render._AllowlistSanitizer, "handle_starttag", breaks)
+
+        html = markdown_render._sanitize_html('<p>a <img src=x onerror=alert(1)></p>')
+
+        assert "<" not in html.replace("&lt;", "")
         assert "&lt;img" in html
