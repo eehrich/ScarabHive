@@ -79,6 +79,7 @@ Name of the System is ScarabHive
 | `twitter_search/` | Twitter/X search |
 | `web_scraper/` | Web content extraction |
 | `research/` | Web research agent (config only: agent + skill) |
+| `forge/` | GitLab/GitHub for the coder: issues, merge/pull requests, CI, push, merge |
 | `weather/` | Weather information |
 | `debate_forum/` | Multi-agent debate coordination |
 | `comfyui/` | ComfyUI image generation |

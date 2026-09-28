@@ -1,0 +1,27 @@
+2026-09-27T23:41:17.928327Z 00O [0KRunning with gitlab-runner 19.4.1 (3c39fceb)[0;m
+2026-09-27T23:41:17.928337Z 00O [0K  on forge-test docker XiHPf3gBM, system ID: r_MHEQ1uE6flU6[0;m
+2026-09-27T23:41:17.928339Z 00O [0K  UUID: 01a0e53a-f456-7075-a67d-6804e963d8c8[0;m
+2026-09-27T23:41:17.928368Z 00O section_start:1790552477:prepare_executor[0K
+2026-09-27T23:41:17.928370Z 00O+[0K[36;1mPreparing the "docker" executor[0;m[0;m
+2026-09-27T23:41:17.935861Z 00O [0KUsing Docker executor with image alpine:3.20 ...[0;m
+2026-09-27T23:41:18.629966Z 00O [0KUsing effective pull policy of [if-not-present] for container alpine:3.20[0;m
+2026-09-27T23:41:18.630233Z 00O [0KUsing locally found image version due to "if-not-present" pull policy[0;m
+2026-09-27T23:41:18.630237Z 00O [0KUsing docker image sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731 for alpine:3.20 with digest alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc ...[0;m
+2026-09-27T23:41:18.630241Z 00O section_end:1790552478:prepare_executor[0K
+2026-09-27T23:41:18.630308Z 00O+section_start:1790552478:prepare_script[0K
+2026-09-27T23:41:18.630311Z 00O+[0K[36;1mPreparing environment[0;m[0;m
+2026-09-27T23:41:18.630616Z 00O [0KUsing effective pull policy of [if-not-present] for container sha256:efa512964a9870eb1b2a8f574386feb4747f150ecdf5f660d61806d0fdbc3c85[0;m
+2026-09-27T23:41:18.811533Z 01O Running on runner-xihpf3gbm-project-1-concurrent-0 via 5a437cfe97e7...
+2026-09-27T23:41:18.933113Z 00O section_end:1790552478:prepare_script[0K
+2026-09-27T23:41:18.933812Z 00O+section_start:1790552478:get_sources[0K
+2026-09-27T23:41:19.623557Z 01O log line 297
+2026-09-27T23:41:19.623558Z 01O log line 298
+2026-09-27T23:41:19.623559Z 01O log line 299
+2026-09-27T23:41:19.623560Z 01O log line 300
+2026-09-27T23:41:19.623573Z 01O [32;1m$ if [ -f FAIL ]; then echo "ERROR: FAIL marker present"; exit 1; fi[0;m
+2026-09-27T23:41:19.623723Z 01O ERROR: FAIL marker present
+2026-09-27T23:41:19.737188Z 00O section_end:1790552479:step_script[0K
+2026-09-27T23:41:19.737648Z 00O+section_start:1790552479:cleanup_file_variables[0K
+2026-09-27T23:41:19.737652Z 00O+[0K[36;1mCleaning up project directory and file based variables[0;m[0;m
+2026-09-27T23:41:20.017862Z 00O section_end:1790552480:cleanup_file_variables[0K
+2026-09-27T23:41:20.034555Z 00O [31;1mERROR: Job failed: exit code 1[0;m
