@@ -105,14 +105,19 @@ for the default agent on `/run` and `/events` with no agent named and for
 `metadata.visibility` only decides where an agent is listed; it is not an access
 control.
 
-The shipped configuration sets no `min_role`: its agents with a shell
-(`terminal`, `coder_shell`), `coding_cli`, `ssh_control`, a tool that runs
-arbitrary code (`blender_execute`, `godot_script`) or file access to the whole
-checkout -- among them `sysadmin_agent`, the `coder` and `gamedev` harnesses,
-`godot_agent`, `amiga_coder`, `blender_agent` and `skills_agent` -- run for
-every account, and give it what those tools can do, including reading the
-logs and `config/secrets.env`. On an instance whose users you would not give
-a shell, gate every such agent at `admin` or remove it.
+The shipped configuration gates every agent with a shell (`terminal`,
+`coder_shell`), `coding_cli`, `ssh_control`, a tool that runs arbitrary code
+(`blender_execute`, `godot_script`) or file access to the whole checkout at
+`admin`: `amiga_coder`, `blender_agent`, `claude_code_agent`, `coder`,
+`coder_explorer`, `coder_reviewer`, `coder_tester`, `file_ops_test_agent`,
+`gamedev`, `gamedev_tester`, `godot_agent`, `skills_agent`,
+`skills_agent_multimodal`, `sysadmin_agent`. `state_graph_agent` and
+`state_graph_agent_ui` carry a terminal that a whitelist restricts to one
+analysis script (`state_graph_terminal`: one command per call, started in the
+directory the server runs from -- the checkout, as every relative path of the
+configuration assumes; a whitelisted terminal takes no `cwd` and no `env_vars`
+from the model and refuses control characters), and are gated at `user`, so the
+writer's book runs keep working for ordinary accounts.
 Gate every agent you add with such tools, and every agent with file access to
 the checkout or above, to `config/`, to `data/` itself (it holds the user store
 and every user's sessions; a folder of the agent's own below it, such as
@@ -127,6 +132,8 @@ Remaining limits:
 - `agent-cli` and `agent-run` are local and trusted: their default user
   `cli_user` passes every gate there (not in the API, and not while an account
   of that name exists).
+- `n8n_agent` is not gated, and what it can do depends on the n8n instance
+  (Code and Execute Command nodes).
 - `POST /api/sessions` answers a gated agent with a 403 (it accepts names of
   agents that do not exist).
 - A config reload moves the gate of running agents; the wake check and the

@@ -31,3 +31,4 @@ plugins:
         tags: ["test", "file_ops", "development"]
         category: "development"
         visibility: "ui"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal)

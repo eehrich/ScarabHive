@@ -69,3 +69,4 @@ plugins:
         tags: ["coding", "review", "read-only", "adversarial"]
         category: "development"
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): reads the whole checkout, config/secrets.env and data/users.db included

@@ -52,9 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judged as `anonymous`: refused unless anonymous access is enabled with a
   sufficient role; the sub-agent manager and an agent's own tools refuse it
   outright.
-- Known gap: the shipped configuration gates no agent -- its agents with a
-  shell, `coding_cli`, `ssh_control`, checkout-wide file access or a tool that
-  runs arbitrary code still run for every account (SECURITY.md).
+- Shipped agents with a shell, `coding_cli`, `ssh_control`, checkout-wide file
+  access or a tool that runs arbitrary code (`blender_execute`, `godot_script`)
+  are gated at `admin`; `state_graph_agent`/`state_graph_agent_ui` at `user`.
 - An agent run as a tool no longer acts as another user through a session id it
   holds for that user: tools run for the run's registered user, a run whose user
   differs from the session's stored user is refused (an admin's too, and a
