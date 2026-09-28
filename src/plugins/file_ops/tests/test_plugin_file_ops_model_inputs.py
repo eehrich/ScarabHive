@@ -4,7 +4,6 @@ Three inputs the tools handled badly: numbers as text, paths in Git Bash form,
 and an answer that grew with the file instead of with the edit.
 """
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 

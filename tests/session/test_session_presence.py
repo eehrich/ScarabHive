@@ -928,7 +928,7 @@ class TestAStoppedRun:
         monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path))
         monkeypatch.setattr(sp, "WAKE_RETRY_SECONDS", 0)
         config = SimpleNamespace(session_presence=SessionPresenceConfig(enabled=True))
-        store = sp.presence_for(config)
+        sp.presence_for(config)
         _stored(tmp_path, "s1")
         sp.note_stop("r1_001_async_x")
         token = current_request_id.set("r1_001_async_x")
