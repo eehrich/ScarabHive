@@ -62,6 +62,11 @@ plugins:
             # transcript, and re-readable through its own tool.
             sequential_thinking.inject_active_sessions:
               enabled: false
+            # The project's AGENTS.md: the conventions a change is judged by.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
 
       metadata:
         author: "Enrico Ehrich"
