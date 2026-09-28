@@ -469,6 +469,7 @@ async def test_a_gated_machine_refuses_a_plain_users_run_before_it_starts(env, t
     try:
         refused = [event async for event in agent.run_events("Nachtzug", request_id="rq_bob", session_id="s_bob")]
         assert [event["type"] for event in refused] == ["error", "end"], refused
+        assert refused[0]["error_type"] == "agent_role_gate", refused
         assert env.runs() == [], "a refused request started a machine run"
         assert "rq_bob" not in agent._request_manager._active_requests, "the refused request stayed registered"
 
@@ -496,6 +497,22 @@ async def test_a_run_in_a_session_held_for_another_user_starts_no_machine_run(en
         release_request_user_tree("rq_owner")
 
     assert [event["type"] for event in events] == ["error", "end"], events
+    assert events[0]["error_type"] == "foreign_session", events
+    assert env.runs() == []
+
+
+async def test_a_run_refused_at_the_session_lock_says_so(env):
+    """Another request has the session's lock: refused before anything ran, with the error_type the callers
+    read (SESSION_LOCKED) -- they save nothing after such a refusal."""
+    agent = env.fresh_agent()
+    assert await agent._session_tracker.acquire_session_lock("s_busy", "rq_other"), "fixture: no lock"
+    try:
+        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_busy", session_id="s_busy")]
+    finally:
+        await agent._session_tracker.release_session_lock("s_busy", "rq_other")
+
+    assert [(event["type"], event.get("error_type")) for event in events] == [("error", "session_locked"),
+                                                                             ("end", None)], events
     assert env.runs() == []
 
 
@@ -517,8 +534,8 @@ async def test_a_registered_owners_run_in_a_session_held_for_anonymous_starts_no
 
 
 async def test_the_machine_run_stays_the_owners_when_the_sessions_metadata_is_rewritten(env):
-    """The session's metadata is state of the session id -- a second POST /run on the same id rewrites it
-    (SessionService.open_for_run) -- and the run asks for its user after its start event."""
+    """The session's metadata is state of the session id, shared by every run of it -- here rewritten after the
+    start event, when the run asks for its user. The registered owner is this run's."""
     from agent_system.core.request_context import register_request_user, release_request_user_tree
 
     agent = env.fresh_agent()

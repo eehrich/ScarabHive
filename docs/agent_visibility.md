@@ -44,9 +44,19 @@ wird bei jedem Weg, auf dem ein Lauf beginnt (`src/agent_system/auth/agent_acces
   Ausnahmen: `/run` und `/events` ohne `agent_name` für den Einstiegs-Agent (403
   „Permission denied“) und `POST /api/sessions` (403 mit dem Grund -- dort werden auch
   Namen angenommen, die es nicht gibt, eine Antwort „unbekannt“ gibt es also nicht).
+- **OpenAI-API (`openai_api`):** ein Agent, den der Aufrufer nicht ausführen darf, ist
+  kein Modell für ihn -- `GET /models` listet ihn nicht, und `/models/{id}`,
+  `/responses` und `/chat/completions` antworten 404 `model_not_found` wie für ein
+  unbekanntes Modell.
 - **Ohne Endpoint:** der Lauf selbst (`Agent.run_events`, auch stategraph `MachineAgent`)
   fragt vor allem anderen -- Sub-Agents über den SAM, Agents als Tool, stategraph,
-  geweckte agent-cli-Läufe. Jedes Tool eines gegateten Agents (`<name>_*`) ebenso.
+  geweckte agent-cli-Läufe. Jedes Tool eines gegateten Agents (`<name>_*`) ebenso. Seine
+  Ablehnung trägt `error_type` `agent_role_gate` (bzw. `foreign_session`, wenn die Session
+  einem anderen Nutzer gehört): nichts davon wird gespeichert, die OpenAI-API antwortet
+  404 bzw. 403, und SAM-`create` und -`continue` melden sie als Fehler statt als beendete
+  Instanz. Ein abgelehntes `create` hinterlässt keine Instanz; eine fortgesetzte bleibt, mit
+  `failed` und diesem `error_type`, und ein Hintergrund-Job endet ebenso -- auch im
+  gespeicherten Stand, den ein späteres `poll` oder `wait` liest.
 - **SAM:** `create` und `continue` lehnen vorher ab, als Tool-Fehler mit
   `error_type: "agent_role_gate"`, bevor eine Sub-Session entsteht.
 - **Wecken:** eine Session, deren Agent ihr Besitzer nicht ausführen darf, wird nicht

@@ -94,9 +94,11 @@ not.
 
 With `auth.enabled`, an agent whose metadata sets `min_role` (`guest`, `user` or
 `admin`) runs only for accounts of at least that role -- on every path a run
-starts: `/run`, `/events`, `/chat/command`, sessions created for it, sub-agents
-(sub-agent manager), agents called as tools, stategraph activities, woken
-sessions, and each tool the agent itself serves. A run that cannot be tied to an
+starts: `/run`, `/events`, `/chat/command`, sessions created for it, the
+OpenAI-compatible API (`openai_api`: not listed as a model, 404
+`model_not_found`), sub-agents (sub-agent manager), agents called as tools,
+stategraph activities, woken sessions, and each tool the agent itself serves. A
+run that cannot be tied to an
 account is judged as `anonymous`: refused unless anonymous access is enabled with
 a sufficient role (the sub-agent manager and an agent's own tools refuse it
 outright). Over HTTP, a refusal answers like an agent that does not exist, except

@@ -771,12 +771,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
 
-    def _refused_at_the_lock(event: dict) -> bool:
-        """Whether a run event says the run was refused at the agent's session lock (Agent.run_events): another
-        run of this process has the session, and nothing of this request may be saved to it."""
-        from .servers.agent.server import SESSION_LOCKED
+    def _refused_before_the_run(event: dict) -> bool:
+        """Whether a run event says the run was refused before it started (Agent.run_events): at the agent's
+        session lock (another run of this process has the session), by its role gate, or because the session is
+        another user's. Nothing of this request may be saved to it."""
+        from .servers.agent.server import refused_before_the_run
 
-        return event.get("type") == "error" and event.get("error_type") == SESSION_LOCKED
+        return refused_before_the_run(event)
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -1914,7 +1915,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 def on_event(event: dict) -> Any:
                     _carry_title(selected_agent, event, session_title)
-                    if _refused_at_the_lock(event):
+                    if _refused_before_the_run(event):
                         refused.append(event)
                     return mirror.put(event)
 
@@ -2062,7 +2063,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
-                        refused = refused or _refused_at_the_lock(event)
+                        refused = refused or _refused_before_the_run(event)
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
@@ -2384,7 +2385,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             def take_the_session(ev: dict) -> None:
                 """The run's own stream holds a session the run creates, from its start event."""
                 nonlocal actual_session_id, held, refused
-                refused = refused or _refused_at_the_lock(ev)
+                refused = refused or _refused_before_the_run(ev)
                 if ev.get("type") == "start" and ev.get("session_id"):
                     actual_session_id = ev["session_id"]
                     if not held:

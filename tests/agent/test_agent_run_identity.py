@@ -180,8 +180,8 @@ async def test_a_second_user_cannot_continue_an_agent_tools_session_of_the_first
 
 
 async def test_the_tools_keep_the_owner_when_the_sessions_metadata_is_rewritten_during_the_run(store, requests):
-    """The session's metadata is state of the session id: a second POST /run on the same id rewrites it
-    (SessionService.open_for_run) while this run goes on. Its tools stay the run's owner's."""
+    """The session's metadata is state of the session id, shared by every run of it -- here rewritten while
+    this run goes on. Its tools stay the run's owner's: the registered owner is this run's."""
     holder = {}
 
     def rewritten_by_another_request():

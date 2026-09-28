@@ -46,9 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/sessions`; `GET /agents`, the tool listings and `/chat/commands`
   hide it; refusing an agent answers like an unknown one, except the default
   agent on `/run`/`/events` without a name and `POST /api/sessions`, which answer
-  403), for sub-agents
+  403), on the OpenAI-compatible API (`openai_api`: a model the caller may not
+  run is not listed and answers 404 `model_not_found`), for sub-agents
   (`error_type: agent_role_gate`), agents called as tools, stategraph, woken
-  sessions and every tool the agent serves. A run nobody can be named for is
+  sessions and every tool the agent serves. The run's own refusal carries an
+  `error_type` too (`agent_role_gate`, `foreign_session`): nothing of a refused
+  run is saved, and the OpenAI API answers it as 404/403, not as a server
+  error. A run nobody can be named for is
   judged as `anonymous`: refused unless anonymous access is enabled with a
   sufficient role; the sub-agent manager and an agent's own tools refuse it
   outright.

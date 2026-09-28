@@ -256,7 +256,7 @@ async def test_a_failed_response_is_an_error_the_server_can_read(realtime):
 
     # agent_system/servers/agent/server.py reads error.message and error.type
     error = result["assistant"]["error"]
-    assert error["type"] == "server_error"
+    assert error["type"] == "upstream_error_server_error"
     assert "failed" in error["message"] and "overloaded" in error["message"]
     assert result["usage"]["prompt_tokens"] == 60, "a failed response is billed too"
 
@@ -266,7 +266,22 @@ async def test_an_error_event_is_an_error(realtime):
 
     result = await client.chat_tools([ChatMessage(role="user", content="hi")], [])
 
-    assert result["assistant"]["error"] == {"error": True, "type": "invalid_request_error", "message": "bad item"}
+    assert result["assistant"]["error"] == {"error": True, "type": "upstream_error_invalid_request_error",
+                                            "message": "bad item"}
+
+
+@pytest.mark.parametrize("kind", ["agent_role_gate", "foreign_session", "session_locked"])
+async def test_a_server_error_type_never_passes_for_one_of_the_frameworks_own(realtime, kind):
+    """The agent yields the LLM's error type as its run's error_type. Passed through as the server sent it, a
+    type that happens to be a refusal of the framework's (REFUSED_BEFORE_THE_RUN) made a run that did run
+    count as refused -- and its callers saved nothing of it."""
+    from agent_system.servers.agent.server import REFUSED_BEFORE_THE_RUN
+
+    client, _, _ = realtime([{"type": "error", "error": {"type": kind, "message": "odd"}}])
+
+    result = await client.chat_tools([ChatMessage(role="user", content="hi")], [])
+
+    assert result["assistant"]["error"]["type"] not in REFUSED_BEFORE_THE_RUN, result
 
 
 async def test_a_closed_socket_ends_the_call(realtime):

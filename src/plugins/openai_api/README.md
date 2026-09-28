@@ -46,7 +46,7 @@ Base URL: `/plugins/<instance>/v1`.
 
 | Endpoint | What it does |
 |---|---|
-| `GET /models`, `GET /models/{id}` | The agents offered: the ones the web UI lists (`metadata.visibility` ui/both), narrowed by `agents` / `blocked_agents`. |
+| `GET /models`, `GET /models/{id}` | The agents offered: the ones the web UI lists (`metadata.visibility` ui/both), narrowed by `agents` / `blocked_agents` and by the role gate: an agent whose `metadata.min_role` the caller's role does not reach is not offered, and asked for by name (here, `/responses`, `/chat/completions`) it is a 404 `model_not_found`, as an unknown model. |
 | `POST /responses` | One agent turn. The conversation is a stored session of the user (it shows up in the web UI). `previous_response_id` continues it; `store: false` runs on a throwaway session. `stream: true` sends the Responses events (`response.created` … `response.output_text.delta` … `response.completed`, or `response.failed`). |
 | `POST /chat/completions` | One agent turn, stateless as at OpenAI: the earlier turns come with the call and no session is kept. `stream: true` sends `chat.completion.chunk`s and `[DONE]`; `stream_options.include_usage` adds the usage chunk. |
 
@@ -56,7 +56,12 @@ Errors come as OpenAI errors (`{"error": {message, type, param, code}}`), also
 for a malformed request, and a streamed request is refused with the same
 status as a JSON one, before its stream starts (409, 403, 404) —
 `response.failed` only ends a turn that failed after it started, and an
-`error` event with the code `conflict` one refused after it started. Not in that
+`error` event with the code `conflict` one refused after it started. A run the
+agent itself refuses before it starts (its role gate, a conversation held for
+another user) is a 404 `model_not_found` or a 403 `permission_error` (the code
+as well as the type) -- not a server error an SDK retries. In a Responses stream
+it is an `error` event with that code, in a Chat Completions stream an
+`{"error": {…}}` chunk with that code, then `[DONE]`. Not in that
 shape: a missing or wrong key, which the app's auth layer refuses before the
 request reaches the plugin (401, `{"detail": "Authentication required", …}`);
 the `openai` SDK raises its `AuthenticationError` for it all the same.

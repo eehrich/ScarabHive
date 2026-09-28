@@ -1719,8 +1719,10 @@ def _main() -> None:
                 logger.error(f"Failed to save session: {e}", exc_info=True)
                 print(f"Warning: Failed to save session: {e}", file=sys.stderr)
 
-        # Only save session if not cancelled
-        if not result.get("cancelled", False):
+        # Only save session if not cancelled -- nor refused before it ran (the agent's role gate, another
+        # user's session, another run's lock): it ran nothing, and a save only rewrote the record with this
+        # entry agent and profile, its updated_at moved.
+        if not result.get("cancelled", False) and not result.get("refused"):
             run_async(save_session_after_task())
 
     finally:

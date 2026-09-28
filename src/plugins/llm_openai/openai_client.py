@@ -998,7 +998,10 @@ class OpenAIAsyncClient(LLMClient):
         from .realtime_session import RealtimeSession, realtime_url
 
         def failed(message: str, kind: str = "realtime_api_error") -> dict:
-            # The shape the agent server reads (message/type), as the httpx client sends it.
+            # The shape the agent server reads (message/type), as the httpx client sends it. A type the server
+            # sent is prefixed ``upstream_error_``, as the httpx and Responses clients do: the agent yields it as
+            # its run's error_type, and a type of the framework's own -- a refusal before the run
+            # (REFUSED_BEFORE_THE_RUN) -- would make a run that did run count as refused.
             return {"type": "final", "assistant": {"role": "assistant", "content": "",
                                                    "error": {"error": True, "type": kind, "message": message}}}
 
@@ -1090,7 +1093,8 @@ class OpenAIAsyncClient(LLMClient):
                         error = event.get("error") or {}
                         logger.error("Realtime API error: %s", error)
                         await notify_done(error=error.get("message", "Unknown error"))
-                        yield failed(error.get("message", "Unknown error"), error.get("type", "unknown"))
+                        yield failed(error.get("message", "Unknown error"),
+                                     f"upstream_error_{error.get('type', 'unknown')}")
                         return
                     elif kind == "response.done":
                         done = event.get("response") or {}
@@ -1098,7 +1102,7 @@ class OpenAIAsyncClient(LLMClient):
                         finish_reason, error = adapter.outcome(done)
                         if error:
                             await notify_done(usage=usage, finish_reason=done.get("status"), error=error["message"])
-                            final = failed(error["message"], error["type"])
+                            final = failed(error["message"], f"upstream_error_{error['type']}")
                         else:
                             assistant = adapter.to_assistant_message(done)
                             await notify_done(usage=usage, finish_reason=finish_reason or (

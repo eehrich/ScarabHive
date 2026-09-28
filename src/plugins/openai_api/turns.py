@@ -64,7 +64,12 @@ _DONE = object()
 
 
 class TurnError(Exception):
-    """The agent run failed or was cancelled; ``message`` says what the run said."""
+    """The agent run failed or was cancelled; ``message`` says what the run said, ``error_type`` what its error
+    event said (a refusal before the run: Agent.run_events, REFUSED_BEFORE_THE_RUN)."""
+
+    def __init__(self, message: str, error_type: Optional[str] = None):
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class ConversationBusy(Exception):
@@ -94,6 +99,7 @@ class AgentTurn:
         self._before: list[Any] = []
         self._vars_before: dict[str, Any] = {}  # the session's variables (template vars) before the turn
         self._work: Optional["asyncio.Future[Any]"] = None
+        self._refused = False  # the run was refused before it started: it wrote and set nothing
         self._ended = False  # the run said "end": it is over, only its generator still closes
         self._stopped = False
         self._closed = False
@@ -208,6 +214,7 @@ class AgentTurn:
         work = self._work = asyncio.ensure_future(pump())
         work.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, whoever waits
         failure: Optional[str] = None
+        failure_type: Optional[str] = None
         try:
             while True:
                 event = await queue.get()
@@ -219,7 +226,11 @@ class AgentTurn:
                     self.usage["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
                     self.usage["completion_tokens"] += int(usage.get("completion_tokens") or 0)
                 elif kind == "error":
+                    from agent_system.servers.agent.server import refused_before_the_run
+
                     failure = str(event.get("message") or "the agent run failed")
+                    failure_type = event.get("error_type")
+                    self._refused = self._refused or refused_before_the_run(event)
                 elif kind == "cancelled":
                     failure = f"cancelled: {event.get('reason') or event.get('message') or 'from outside'}"
                 elif kind == "end":
@@ -234,7 +245,7 @@ class AgentTurn:
             await self._stop(work)
             raise
         if failure is not None:
-            raise TurnError(failure)
+            raise TurnError(failure, failure_type)
         if not self.completed:
             raise TurnError("the agent run ended without an answer")
 
@@ -390,6 +401,12 @@ class AgentTurn:
         finally:
             await tracker.release_session_lock(self.session_id, self.request_id)
 
+    @property
+    def _ran(self) -> bool:
+        """Whether a run started: one refused before it started (the role gate, another user's session, another
+        run's lock) ran nothing."""
+        return self._work is not None and not self._refused
+
     def _is_appended(self, message: Any) -> bool:
         return any(message is appended for appended in self._appended or ())
 
@@ -403,12 +420,15 @@ class AgentTurn:
 
         tracker = self.agent._session_tracker
         if not self._existed and not appended:  # it leaves the tracker with every settled conversation (_forget)
-            if self._work is not None:  # a run may have written it
+            if self._ran:  # a run may have written it
                 await self._delete_record()
             return
         tracker.set_session_messages(self.session_id, [*self._before, *appended])
-        if self._work is None:
-            return  # no run: nothing written, no variable set (and nothing appended: the turn held the lock)
+        if not self._ran:
+            # No run -- or one refused before it started -- wrote nothing and set no variable (and nothing was
+            # appended: the turn held the lock). Saved anyway, the conversation came back with its updated_at
+            # moved and its variables written as they were read.
+            return
         try:
             if not await self.service.save_session(self.agent, self.user, self.session_id, self.agent.name,
                                                    self.profile, was_new_session=False):
@@ -447,8 +467,8 @@ class AgentTurn:
         """Nothing of a throwaway session stays. The sub-agents its run started in the background are stopped:
         nobody can continue the session to read what they answer."""
         self.agent._session_tracker.discard_session(self.session_id)
-        if self._work is None:
-            return  # no run: nothing started, nothing written
+        if not self._ran:
+            return  # no run (or one refused before it started): nothing started, nothing written
         try:
             from agent_system.core.cancellation import get_cancellation_manager
 

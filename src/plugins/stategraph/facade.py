@@ -39,7 +39,7 @@ from agent_system.core.cancellation import get_cancellation_manager
 from agent_system.core.request_context import get_request_user, register_request_user
 from agent_system.llm.models import ChatMessage
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
-from agent_system.servers.agent.server import Agent
+from agent_system.servers.agent.server import SESSION_LOCKED, Agent
 from agent_system.tools.status import current_request_id, status_bus, status_scope
 from agent_system.utils.id import short_id
 
@@ -97,9 +97,9 @@ class MachineAgent(Agent):
                          use_advanced_model: bool = False) -> AsyncIterator[dict[str, Any]]:
         request_id = request_id or short_id()
         # The role gate Agent.run_events asks first -- this override does not call it.
-        denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
-        if denial:
-            yield {"type": "error", "request_id": request_id, "message": denial}
+        refusal = self._refusal_event(request_id, session_id)
+        if refusal:
+            yield refusal
             yield {"type": "end"}
             return
         session_id = session_id or short_id()
@@ -110,7 +110,7 @@ class MachineAgent(Agent):
         if not await self._session_tracker.acquire_session_lock(session_id, request_id, timeout=5.0):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
-            yield {"type": "error", "request_id": request_id,
+            yield {"type": "error", "request_id": request_id, "error_type": SESSION_LOCKED,
                    "message": f"session {session_id} is busy with another request; send again when it is done"}
             yield {"type": "end"}
             return
@@ -316,8 +316,9 @@ class MachineAgent(Agent):
         The owner first, as Agent._run_denial and the tool user ask: the framework
         writes it. Where one is registered, the stored user is the same one when
         the run starts (Agent._foreign_session refuses another); asked first, the
-        owner stays the run's user when the session's metadata is rewritten
-        meanwhile (a second POST /run on the same session id does that).
+        owner stays the run's user whatever the session's metadata says later:
+        the metadata is state of the session id, shared by every run of it, and
+        the registered owner is this run's.
         """
         owner = get_request_user(request_id, default=None)
         if owner:

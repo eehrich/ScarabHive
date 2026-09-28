@@ -84,6 +84,7 @@ async def test_a_plain_users_run_is_refused_before_anything_of_it_exists(store, 
 
     assert [event["type"] for event in events] == ["error", "end"], events
     assert events[0]["request_id"] == rid
+    assert events[0]["error_type"] == "agent_role_gate", events
     assert seen == [], "the LLM was called for a refused run"
     assert agent._session_tracker.get_session_metadata("s-bob") is None, "a refused run wrote session metadata"
     assert rid not in agent._request_manager._active_requests, "a refused run stayed registered"
@@ -137,6 +138,19 @@ async def test_the_run_is_judged_as_its_request_owner_else_its_session_user(stor
     assert bool(seen) is runs
 
 
+async def test_a_run_in_another_users_session_says_so(store, requests):
+    """Refused because the session is held for another user, not by the gate (root passes it): the error says
+    which, so its callers do not save the session after it (app.py, openai_api, the SAM)."""
+    agent, seen = _agent()
+    agent._session_tracker.set_session_metadata("s-bob", {"user_id": "bob", "agent_name": agent.name})
+
+    events = await _events(agent, request_id=requests("rq-root", "root"), session_id="s-bob")
+
+    assert [(event["type"], event.get("error_type")) for event in events] == [("error", "foreign_session"),
+                                                                             ("end", None)], events
+    assert seen == []
+
+
 @pytest.mark.parametrize("anonymous, runs", [
     (AnonymousAccessConfig(enabled=False), False),
     (AnonymousAccessConfig(enabled=True, role="admin"), True),
@@ -188,9 +202,22 @@ async def test_an_agent_called_as_a_tool_is_refused_with_a_tool_error(store):
 
     answer = await _call_as_a_tool(agent, "bob")
 
-    assert answer["status"] == "error", answer
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
     assert "gated_agent" in answer["error"], answer
     assert seen == [], "the LLM was called for a refused tool call"
+
+
+async def test_an_agent_called_as_a_tool_in_another_users_session_says_so(store, requests):
+    """Agent.call asks what run_events asks, and answers with the same error_type: the calling model -- and
+    the SAM, the openai_api -- tell a refusal from a run that failed by it."""
+    agent, seen = _agent(min_role=None)
+    agent._session_tracker.set_session_metadata("s-bob", {"user_id": "bob", "agent_name": agent.name})
+    rid = requests("rq-root", "root")
+
+    answer = await agent.call(agent.name, {"task": "do it", "_request_id": rid, "_session_id": "s-bob"})
+
+    assert (answer["status"], answer.get("error_type")) == ("error", "foreign_session"), answer
+    assert seen == []
 
 
 async def test_an_admin_calls_the_agent_as_a_tool(store):

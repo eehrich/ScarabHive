@@ -1175,6 +1175,32 @@ class SessionManager:
             
             logger.debug("Updated metadata for session %s: keys=%s", session_id, list(metadata_updates.keys()))
 
+    async def drop_session_metadata_entry(self, user_id: str, session_id: str, key: str, entry: str) -> bool:
+        """Remove one entry of a dict in a session's metadata (``metadata[key][entry]``), atomically as
+        ``update_session_metadata`` merges -- which can add and change entries, not remove one. False when
+        there was nothing to remove. A save keeps the file's metadata (save_session), so it stays removed.
+
+        Raises:
+            SessionNotFoundError: If session doesn't exist
+            SessionPermissionError: If user doesn't own the session
+        """
+        session_lock = await self._get_session_lock(session_id)
+        async with session_lock:
+            path = self._get_session_path(user_id, session_id)
+            if not path.exists():
+                raise SessionNotFoundError(f"Session {session_id} not found")
+            session_data = await self._read_session_file_async(path)
+            if session_data["user_id"] != user_id:
+                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+            entries = (session_data.get("metadata") or {}).get(key)
+            if not isinstance(entries, dict) or entries.pop(entry, None) is None:
+                return False
+            session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            await self._write_session_file(path, session_data)
+            self._cache[session_id] = (session_data, time.time())
+            self._saw(session_id, self._cache[session_id][1])  # written here: seen
+            return True
+
     async def replace_session_context_vars(
         self,
         user_id: str,

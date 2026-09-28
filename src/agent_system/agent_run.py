@@ -358,8 +358,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             # can, and notes it for the run it held around.
             stopped = True
 
-        # Save session after successful request execution (skip if cancelled)
-        if not result.get("cancelled", False):
+        # Save session after successful request execution (skip if cancelled, or refused before it ran:
+        # the agent's role gate, another user's session, another run's lock -- it ran nothing, and a save
+        # only rewrote the record with this entry agent and profile, its updated_at moved)
+        if not result.get("cancelled", False) and not result.get("refused"):
             try:
                 # Use the actual agent name that was requested (from parameter or config.default_agent)
                 # instead of agent.agent_name which may not exist or be "default"

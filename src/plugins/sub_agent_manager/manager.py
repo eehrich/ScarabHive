@@ -668,8 +668,31 @@ class SubAgentManager:
                 current_activity=None,
                 activity_updated_at=None,
                 error=None,  # an earlier run's: a later failure that stores none would report it
+                error_type=None,  # likewise: a refusal's, reported with a later failure
                 ending_unread=None,  # continued, the caller has it: the bell of the job's process stops
             )
+
+    async def discard_sub_session(self, parent_session_id: str, sub_session_id: str,
+                                  params: Optional[dict] = None) -> None:
+        """A sub-session whose first run never started goes: its record in the parent and its own file. Best
+        effort -- what is left is an instance that failed, which is what it was stored as before.
+
+        ``params`` as create_sub_session got them: the user is resolved the same way the creation resolved
+        it, so the discard looks where the creation stored."""
+        user_id = self._extract_user_id(parent_session_id, params)
+        session_manager = self._session_service.session_manager
+        async with _parent_lock(parent_session_id):
+            try:
+                await session_manager.drop_session_metadata_entry(user_id, parent_session_id, "sub_agents",
+                                                                  sub_session_id)
+            except Exception as error:  # noqa: BLE001 - best effort, see above
+                logger.warning(f"Could not drop sub-session {sub_session_id} from {parent_session_id}: {error}")
+        try:
+            await session_manager.delete_session(user_id, sub_session_id, create_backup=False)
+        except SessionNotFoundError:
+            pass
+        except Exception as error:  # noqa: BLE001 - best effort, see above
+            logger.warning(f"Could not delete sub-session {sub_session_id}: {error}")
 
     async def update_sub_session_metadata(
         self,

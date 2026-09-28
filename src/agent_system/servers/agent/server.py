@@ -58,8 +58,22 @@ logger = logging.getLogger(__name__)
 
 #: ``error_type`` of the error a run ends with when another request of this process holds its session's lock.
 #: It ran nothing and has nothing to save -- its caller must not save the session either: what the tracker holds
-#: is the other run's live state (app.py /run and /events).
+#: is the other run's live state (see REFUSED_BEFORE_THE_RUN for who asks).
 SESSION_LOCKED = "session_locked"
+#: ``error_type`` of the error a run ends with when its caller may not run this agent (metadata.min_role).
+AGENT_ROLE_GATE = "agent_role_gate"
+#: ``error_type`` of the error a run ends with when its session is held for another user (_foreign_session).
+FOREIGN_SESSION = "foreign_session"
+#: The refusals a run ends with before it has started: it ran nothing and wrote nothing, and its caller must
+#: not save the session after it either. Asked by app.py (/run, /events and their jobs), the openai_api turn
+#: (its put back, its answer), agent-cli (the one-shot run, via collect_final_result's ``refused``), its chat,
+#: agent-run and the sub-agent manager (create, continue, the background job); Agent.call answers with it.
+REFUSED_BEFORE_THE_RUN = frozenset({SESSION_LOCKED, AGENT_ROLE_GATE, FOREIGN_SESSION})
+
+
+def refused_before_the_run(event: dict[str, Any]) -> bool:
+    """Whether a run event is such a refusal (REFUSED_BEFORE_THE_RUN): the run ran and wrote nothing."""
+    return event.get("type") == "error" and event.get("error_type") in REFUSED_BEFORE_THE_RUN
 
 # llm_progress hooks fire every this many characters of thinking. A hook sets
 # its own, coarser interval on top; this only bounds how often the loop pays
@@ -598,9 +612,9 @@ class Agent(ToolServer):
         stored user answers where nothing is registered (agent-cli). Where an
         owner is registered the stored user is the same one at the start of the
         run (_foreign_session refuses another); asked first, the owner stays the
-        tools' user when the session's metadata is rewritten while the run goes
-        on -- it is state of the session id, shared with every run of it, and a
-        second POST /run on the same id rewrites it (SessionService.open_for_run).
+        tools' user whatever the session's metadata says later in the run: the
+        metadata is state of the session id, shared by every run of it, and the
+        registered owner is this run's.
         """
         from ...core.request_context import get_request_user
 
@@ -619,6 +633,17 @@ class Agent(ToolServer):
         else:
             logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
         return user_id
+
+    def _refusal_event(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[dict[str, Any]]:
+        """The error a run refused before it starts ends with, or None: the role gate (AGENT_ROLE_GATE) or a
+        session held for another user (FOREIGN_SESSION), each with its ``error_type`` for the callers that
+        must tell a refusal from a run that failed (REFUSED_BEFORE_THE_RUN)."""
+        denial, error_type = self._run_denial(request_id, session_id), AGENT_ROLE_GATE
+        if not denial:
+            denial, error_type = self._foreign_session(request_id, session_id), FOREIGN_SESSION
+        if not denial:
+            return None
+        return {"type": "error", "message": denial, "request_id": request_id, "error_type": error_type}
 
     def _foreign_session(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
         """Why this run may not go on in *session_id*: this agent holds it for another user.
@@ -1662,9 +1687,9 @@ class Agent(ToolServer):
         # path that reaches an agent without one (SAM, agent as a tool,
         # stategraph, agent-cli woken for a session). Refused the way the lock
         # refusal in _run_events is: an error, then the end.
-        denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
-        if denial:
-            yield {"type": "error", "message": denial, "request_id": request_id}
+        refusal = self._refusal_event(request_id, session_id)
+        if refusal:
+            yield refusal
             yield {"type": "end"}
             return
 
@@ -4284,9 +4309,10 @@ class Agent(ToolServer):
             # The role gate and the session's user, asked here as well as in
             # run_events: refused there, the run's error would come back inside a
             # "success" answer -- the calling model should read a refusal as one.
-            denial = self._run_denial(request_id, session_id) or self._foreign_session(request_id, session_id)
-            if denial:
-                return {"status": "error", "agent": self.name, "task": task, "error": denial}
+            refusal = self._refusal_event(request_id, session_id)
+            if refusal:
+                return {"status": "error", "agent": self.name, "task": task, "error": refusal["message"],
+                        "error_type": refusal["error_type"]}
 
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])

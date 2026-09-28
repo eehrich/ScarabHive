@@ -91,6 +91,15 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
 - **USER**: Standard access to API features
 - **GUEST**: Limited read-only access
 
+### Which agents a role may run
+
+An agent's `metadata.min_role` (`guest`, `user` or `admin`) is the lowest role
+that may run it -- on every path a run starts (`/run`, `/events`,
+`/chat/command`, sessions created for it, sub-agents, agents called as tools,
+stategraph, woken sessions, the OpenAI-compatible API) and for every tool the
+agent serves. Without it an agent runs for every account. Details:
+`docs/agent_visibility.md`; which shipped agents carry a gate: SECURITY.md.
+
 ### Authentication Methods
 
 1. **JWT Tokens**
