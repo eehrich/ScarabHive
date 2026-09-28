@@ -101,6 +101,10 @@ class BackgroundJob:
     completed_at: Optional[float] = None
     # Track connected SSE clients (for cleanup decisions)
     sse_client_count: int = 0
+    # Since when no stream reads the job (time.monotonic()); None while one does.
+    # A reload drops the count to 0 for a moment -- a check that someone still
+    # watches (tool_approval) allows for that instead of taking it for a closed tab.
+    unread_since: Optional[float] = field(default_factory=time.monotonic)
     # Track actual session_id (may be set after start event)
     actual_session_id: Optional[str] = None
     # Last known status message for reconnecting clients
@@ -740,11 +744,23 @@ class BackgroundJobManager:
                 })
             return jobs
     
+    def unread_for(self, request_id: str) -> Optional[float]:
+        """Seconds no stream has read the job ``request_id`` (0.0 while one does);
+        None when there is no such job (a run streamed inline, as POST /run with
+        files is: it is read for as long as it runs)."""
+        job = self._jobs.get(request_id)
+        if job is None:
+            return None
+        if job.unread_since is None:   # cleared by every reader that comes
+            return 0.0
+        return time.monotonic() - job.unread_since
+
     async def increment_sse_client(self, request_id: str) -> None:
         """Track SSE client connection."""
         async with self._lock:
             if job := self._jobs.get(request_id):
                 job.sse_client_count += 1
+                job.unread_since = None
                 logger.debug(f"[SSE_CLIENT] {request_id} clients: {job.sse_client_count}")
     
     async def decrement_sse_client(self, request_id: str) -> None:
@@ -752,6 +768,8 @@ class BackgroundJobManager:
         async with self._lock:
             if job := self._jobs.get(request_id):
                 job.sse_client_count = max(0, job.sse_client_count - 1)
+                if job.sse_client_count == 0 and job.unread_since is None:
+                    job.unread_since = time.monotonic()
                 logger.debug(f"[SSE_CLIENT] {request_id} clients: {job.sse_client_count}")
     
     @property

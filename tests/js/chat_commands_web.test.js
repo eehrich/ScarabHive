@@ -829,6 +829,20 @@ test('a waiting title is dropped with a word when the chat goes elsewhere first'
   assert.ok(note.includes('This session has no title yet.'), 'it was kept: ' + note);
 });
 
+test('a run the chat starts says a person reads it, both ways out', async () => {
+  // tool_approval asks a person only where one can answer: the client that starts
+  // the run says so, and only this one does (a program reading /events does not).
+  const text = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await text.send('hallo');
+  assert.strictEqual(text.bodies[0].attended, true, JSON.stringify(text.bodies[0]));
+  const withFile = load([], { files: true, answers: {
+    '/run': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await withFile.send('lies das');
+  assert.strictEqual(withFile.calls[0], '/run');
+  assert.strictEqual(withFile.bodies[0].attended, 'true', JSON.stringify(withFile.bodies[0]));
+});
+
 test('a first message with a file takes the waiting title along too', async () => {
   // Sent as a form to /run, not as JSON to /events: the other of the two ways out.
   const { chatModule, bodies, calls, send } = load([], { files: true, answers: {

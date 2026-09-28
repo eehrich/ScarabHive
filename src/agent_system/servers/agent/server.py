@@ -4286,10 +4286,11 @@ class Agent(ToolServer):
 
         # Extract session context from injected params (populated by ToolExecutionManager).
         # The session only from the injected ``_session_id``, never a plain
-        # ``session_id``: tool execution strips a model's ``_*`` and request-id
-        # keys, not that one, so the model could name ANY session this agent
-        # holds -- another user's sub-session included -- and the run would
-        # continue it, with its history and its user.
+        # ``session_id``: no agent tool schema offers one, and tool execution strips
+        # a model's ``_*`` and request-id keys, not that one -- so the model could
+        # name ANY session this agent holds, another user's sub-session included,
+        # and the run would continue it with its history, its user and that
+        # session's approvals instead of its caller's.
         request_id = params.get("request_id") or params.get("_request_id")
         session_id = params.get("_session_id")
 

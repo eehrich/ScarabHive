@@ -41,7 +41,8 @@ class BasicAgent(SchemaBasedAgent):
 
         request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
         # The injected ``_session_id`` only (see Agent.call): a plain ``session_id``
-        # from the model's arguments could name another user's session of this agent.
+        # from the model's arguments could name another user's session of this agent,
+        # and that session's approvals would hold instead of its caller's.
         session_id = params.get("_session_id")
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")

@@ -1120,6 +1120,29 @@ plugins:
       config:
         llm_profile: "or-deepseek-flash"
 
+    # Approvals before tool calls (#091): allow/deny rules, and in ask mode a
+    # question to the person watching the run. The hook is off for every
+    # agent; an agent switches it on with
+    #   hooks.overrides:
+    #     tool_approval.check_tool_call:
+    #       enabled: true
+    #       mode: ask            # ask | auto | "off"
+    #       allow: ["file_ops/*_read_*"]
+    #       deny: [{tool: "terminal/*", arguments: {command: "\\brm\\b.*\\s-{1,2}[a-zA-Z-]*[rR]|--recursive|\\bfind\\b.*-delete"}}]
+    #   (a regex on a shell command stops the obvious, it is no boundary: to keep
+    #    an agent out of the shell, deny "terminal/*")
+    # The rules below hold for every agent that switches the hook on; its own
+    # are added to them. See src/plugins/tool_approval/README.md.
+    tool_approval:
+      type: tool_approval
+      enabled: true
+      config:
+        mode: ask
+        ask_timeout: 300
+        unattended: block
+        allow: []
+        deny: []
+
 
     terminal:
       type: terminal

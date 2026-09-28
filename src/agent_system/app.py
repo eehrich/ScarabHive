@@ -78,7 +78,22 @@ from .core.request_context import (  # noqa: E402
     register_request_user,
     request_user_map as _request_user_map,  # noqa: F401 - re-export for tests/importers
     release_request_user_tree,
+    release_run_attended,
+    set_run_attended,
 )
+
+
+def _asks_a_person(attended: bool, current_user: Any, auth_enabled: bool) -> bool:
+    """Whether a run may put questions to the person who started it: the client
+    says it shows them (``attended``), and that person can answer -- signed in,
+    or authentication is off. Nobody signed in with authentication on cannot (an
+    anonymous visitor, an endpoint that let the request through without a user):
+    the answer route takes a sign-in, so a question would only time out."""
+    if not attended:
+        return False
+    if not auth_enabled:
+        return True
+    return current_user is not None and getattr(current_user, "is_authenticated", True) is not False
 
 
 #: Longest line /chat/resolve will look at. A chat line is a chat line; the
@@ -1740,7 +1755,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Run agent with optional multimodal input (text + images).
 
         This handler accepts either:
-        - multipart/form-data with fields 'task' and repeated 'files' entries, or
+        - multipart/form-data with fields 'task' and repeated 'files' entries
+          (and 'attended': the client shows the run's questions to the person
+          who started it -- the answer streams back, as on /events), or
         - application/json with {"task": "..."}, or
         - query param ?task=... (fallback used by some clients)
 
@@ -1778,6 +1795,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Optional client-supplied request id — collected from body/form/
         # query below, validated + applied after parsing.
         client_request_id: Optional[str] = None
+        # The client shows the run's questions to the person who started it
+        # (form field ``attended``; the chat sends it with files). Only a run
+        # streamed back to that client can be: the text-only run is not.
+        attended = False
 
         # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "...", "request_id": "..."}
         if content_type.startswith('application/json'):
@@ -1828,6 +1849,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if 'request_id' in form:
                 client_request_id = form.get('request_id')
             force = force or str(form.get('force') or "").lower() in ("1", "true", "yes")
+            attended = str(form.get('attended') or "").lower() in ("1", "true", "yes")
             # Collect UploadFile instances - use getlist() for repeated fields
             if hasattr(form, 'getlist'):
                 files_list = form.getlist('files')
@@ -2060,6 +2082,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield f"data: {json.dumps({'type': 'error', 'message': refusal}, ensure_ascii=False)}\n\n"
                     return
 
+                # tool_approval may ask the person reading this stream (released below)
+                set_run_attended(request_id, _asks_a_person(attended, current_user, _live_config().auth.enabled))
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
@@ -2128,6 +2152,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         _let_go(selected_agent, held, user_id)
                         # Cleanup: release request + derived sub-request ids
                         release_request_user_tree(request_id)
+                        release_run_attended(request_id)
 
                         # Cleanup temp files after streaming completes
                         for temp_file in temp_files:
@@ -2194,10 +2219,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request_id: Optional[str] = None,
         force: bool = False,
         session_title: Optional[str] = None,
+        attended: bool = False,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
-        Streams agent SSE events for a task.
+        Streams agent SSE events for a task. ``attended``: the client shows the
+        run's questions to the person who started it, who can answer them (the
+        web chat); a new run records it, a reconnect keeps what its start said.
         """
         logger = logging.getLogger(__name__)
 
@@ -2342,14 +2370,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Create new background job (reconnects use the fast path above)
             async def agent_runner():
                 """Run the agent and yield events"""
-                async for ev in selected_agent.run_events(
-                    task, request_id, actual_session_id, 
-                    llm_override=llm_override, llm_profile_info_override=llm_profile_info
-                ):
-                    # Here, not where the stream is read: the run waits at this
-                    # event until it is passed on, so no save of it comes first.
-                    _carry_title(selected_agent, ev, session_title)
-                    yield ev
+                # Whether a person can be asked while it runs (tool_approval), for as
+                # long as it runs: set by the run itself, so a request refused under
+                # the same id (a duplicate) never touches a live run's mark.
+                set_run_attended(request_id, _asks_a_person(attended, current_user, _live_config().auth.enabled))
+                try:
+                    async for ev in selected_agent.run_events(
+                        task, request_id, actual_session_id, 
+                        llm_override=llm_override, llm_profile_info_override=llm_profile_info
+                    ):
+                        # Here, not where the stream is read: the run waits at this
+                        # event until it is passed on, so no save of it comes first.
+                        _carry_title(selected_agent, ev, session_title)
+                        yield ev
+                finally:
+                    release_run_attended(request_id)
             
             try:
                 job = await job_manager.create_job(
@@ -2472,6 +2507,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request_id: Optional[str] = Query(default=None),
         force: bool = Query(default=False),
         session_title: Optional[str] = Query(default=None),
+        attended: bool = Query(default=False),
     ):
         """Stream agent events for a task (GET).
 
@@ -2484,6 +2520,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
+        - attended: the client shows the run's questions to the person who
+          started it (tool_approval asks there); default false
 
         Note: For long task texts, prefer POST /events to avoid URL length limits.
         """
@@ -2498,6 +2536,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             request_id=request_id,
             force=force,
             session_title=session_title,
+            attended=attended,
         )
 
     @app.post("/events")
@@ -2513,6 +2552,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
+        - attended: true when the client shows the run's questions to the
+          person who started it (tool_approval asks there); default false
 
         This endpoint avoids URL length limits that affect GET /events
         when sending long task texts.
@@ -2530,6 +2571,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             request_id=body.get("request_id"),
             force=bool(body.get("force")),
             session_title=body.get("session_title"),
+            attended=body.get("attended") is True,
         )
 
     async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:
