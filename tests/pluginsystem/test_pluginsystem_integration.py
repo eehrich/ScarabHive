@@ -26,9 +26,38 @@ import yaml
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+def _forget_modules_from(workspace: Path, before: dict[str, object]) -> None:
+    """Take the modules discovery loaded from ``workspace`` out of sys.modules.
+
+    The copied plugins sit in a directory named ``plugins``, so discovery loads
+    them under the real package names (``plugins.log_viewer.plugin``) -- a new
+    module per file, by design -- and a copy took the real module's place for
+    the rest of the session. The next discovery of the real tree then loaded
+    that plugin a second time: log_viewer's discovery test found a factory that
+    was not the one it had imported. A module that was there before comes back.
+    """
+    roots = {str(workspace), str(workspace.resolve())}
+
+    def loaded_from_workspace(module: object) -> bool:
+        places = [getattr(module, "__file__", None) or "", *(getattr(module, "__path__", None) or [])]
+        return any(str(place) == root or str(place).startswith(root + os.sep)
+                   for place in places for root in roots)
+
+    # Two passes: reading a namespace package's __path__ looks its parent up in
+    # sys.modules, so no entry may go while others are still being asked.
+    loaded = [name for name, module in list(sys.modules.items())
+              if module is not None and loaded_from_workspace(module)]
+    for name in loaded:
+        if name in before:
+            sys.modules[name] = before[name]
+        else:
+            del sys.modules[name]
+
+
 @pytest.fixture
 def temp_workspace():
     """Create a temporary workspace for integration testing."""
+    modules_before = dict(sys.modules)
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
@@ -52,7 +81,10 @@ def temp_workspace():
         # Create test configuration files
         create_test_config(temp_path)
 
-        yield temp_path
+        try:
+            yield temp_path
+        finally:
+            _forget_modules_from(temp_path, modules_before)
 
 
 def create_test_config(workspace_path: Path):
