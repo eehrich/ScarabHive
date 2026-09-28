@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional, TYPE_CHECKING
 
+from agent_system.utils.logging import loggable_path
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -384,7 +386,7 @@ def add_profiling_middleware(app: "FastAPI") -> None:
                 return
             
             request_id = str(uuid.uuid4())[:8]
-            path = scope.get("path", "")
+            path = loggable_path(scope.get("path", ""))  # kept for the report and the slow-request log
             method = scope.get("method", "")
             
             profiler.start_request(request_id, path, method)

@@ -4,10 +4,76 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
+
+# A plugin route whose path carries a key -- whoever holds the URL may use it once (stategraph's callback URLs) --
+# puts it right after /callback/; no log keeps it, percent-encoded neither (a URL handed on in a query).
+_KEY_IN_PATH = re.compile(
+    r"(/plugins/[^/\s?#]+/callback/)[^/\s?#&\"']+"
+    r"|(%2Fplugins%2F(?:(?!%2F)[^/\s?#&])+%2Fcallback%2F)(?:(?!%2F)[^/\s?#&\"'])+",
+    re.IGNORECASE,
+)
+
+
+def loggable_path(text: str) -> str:
+    """``text`` with the key of every callback URL in it masked (``/plugins/<plugin>/callback/***``)."""
+    return _KEY_IN_PATH.sub(lambda found: (found.group(1) or found.group(2)) + "***", text)
+
+
+def _may_hold_a_key(value: Any) -> bool:
+    text = str(value).lower()
+    return "/callback/" in text or "%2fcallback%2f" in text
+
+
+def _masked(value: Any) -> Any:
+    # numbers stay numbers (%d); anything else that holds a key becomes its masked text
+    try:
+        if isinstance(value, (int, float)) or not _may_hold_a_key(value):
+            return value
+        return loggable_path(str(value))
+    except Exception:  # noqa: BLE001 -- no text to show: the formatter fails on it the same way and reports it
+        return value
+
+
+class KeyInPathFilter(logging.Filter):
+    """Masks callback keys in every record a handler writes: the access log, security.log, the app log.
+
+    Each argument on its own: a formatter that takes the arguments apart (uvicorn's access log, five of them) gets
+    them all. Message and arguments are merged only where the key stands in the message itself. A record without
+    a key keeps its arguments as they were -- the very objects.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if getattr(record, "_keys_masked", False):  # one record, several handlers: once is enough
+            return True
+        record._keys_masked = True
+        try:
+            args = record.args
+            if isinstance(args, Mapping):  # logging's single-mapping form (any Mapping, not only a dict)
+                masked = {name: _masked(value) for name, value in args.items()}
+                if any(masked[name] is not args[name] for name in masked):
+                    record.args = masked
+            elif isinstance(args, tuple) and args:
+                masked = tuple(_masked(value) for value in args)
+                if any(new is not old for new, old in zip(masked, args)):
+                    record.args = masked
+            if _may_hold_a_key(record.msg):
+                try:
+                    merged = record.getMessage() if record.args else str(record.msg)
+                    record.msg, record.args = loggable_path(merged), ()
+                except Exception:  # noqa: BLE001 -- a broken call: its message masked, the handler reports it
+                    record.msg = loggable_path(str(record.msg))
+            if record.exc_info and not record.exc_text:  # the traceback as the formatter would cache it
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            if record.exc_text and _may_hold_a_key(record.exc_text):
+                record.exc_text = loggable_path(record.exc_text)
+        except Exception:  # noqa: BLE001 -- a broken call is the handler's to report, not the filter's to raise
+            pass
+        return True
 
 
 class ColorizedFormatter(logging.Formatter):
@@ -136,7 +202,19 @@ def setup_logging(
 
     Avoid logging.basicConfig to ensure we override any prior handlers reliably.
     """
+    # On the server's own loggers: started as `uvicorn ... --factory`, uvicorn writes the access log (and a refused
+    # WebSocket's path) through handlers of its own, which the root's never see -- also with logging switched off.
+    for name in ("uvicorn.access", "uvicorn.error"):
+        server_logger = logging.getLogger(name)
+        if not any(isinstance(f, KeyInPathFilter) for f in server_logger.filters):
+            server_logger.addFilter(KeyInPathFilter())
     if not enabled:
+        # what an earlier basicConfig left writes on; without any, logging's last resort (WARNING+ to stderr)
+        if not any(isinstance(f, KeyInPathFilter) for f in logging.lastResort.filters):
+            logging.lastResort.addFilter(KeyInPathFilter())
+        for handler in logging.getLogger().handlers:
+            if not any(isinstance(f, KeyInPathFilter) for f in handler.filters):
+                handler.addFilter(KeyInPathFilter())
         return None
 
     # Initialize colorama on interactive TTYs so ANSI renders on Windows
@@ -212,6 +290,7 @@ def setup_logging(
     file_handler.setLevel(lvl)
     file_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(name)s %(message)s", preserve_colors=False)
     file_handler.setFormatter(file_formatter)
+    file_handler.addFilter(KeyInPathFilter())
     root.addHandler(file_handler)
 
     # Console handler (level adjusted by CLI depending on --verbose) - use colored formatter for TTY
@@ -225,6 +304,7 @@ def setup_logging(
         console_formatter = SafeUnicodeFormatter("%(asctime)s %(levelname)s %(message)s", preserve_colors=True)
     
     console_handler.setFormatter(console_formatter)
+    console_handler.addFilter(KeyInPathFilter())
     # Set encoding to handle Unicode characters properly
     if hasattr(console_handler.stream, 'reconfigure'):
         try:

@@ -290,6 +290,21 @@ def test_the_panels_own_answered_reads_stay_out_of_memory_but_not_out_of_the_fil
     assert security_log(tmp_path).count(f"GET {DATA} | user=root") == 4
 
 
+def test_the_key_of_a_callback_url_reaches_neither_the_log_nor_the_panel(users, tmp_path):
+    """Whoever holds a callback URL sends its run's event (stategraph): its key is masked wherever a path is kept."""
+    key = "k3y-only-its-holder-may-use-0123456789abcdef"
+    client = TestClient(make_app(auth_config()))
+    client.post(f"/plugins/stategraph/callback/{key}")  # no such route here: a 404, audited all the same
+    PluginEndpointSecurityEnforcer(auth_config()).audit_denied(
+        "stategraph", f"/plugins/stategraph/callback/{key}", "POST", None, "Authentication required")
+
+    log = security_log(tmp_path)
+
+    assert key not in log
+    assert log.count("/plugins/stategraph/callback/***") == 2, log
+    assert [e["path"] for e in kept(client, users, category="plugin")] == ["/plugins/stategraph/callback/***"]
+
+
 def test_every_audited_request_is_one_line_in_the_security_log(users, tmp_path):
     client = TestClient(make_app(auth_config()))
     PluginEndpointSecurityEnforcer(auth_config())  # the plugin route audit writes to the same file

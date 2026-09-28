@@ -21,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
+from agent_system.utils.logging import KeyInPathFilter, loggable_path
+
 if TYPE_CHECKING:
     from agent_system.config import AuthConfig
 
@@ -496,6 +498,7 @@ def security_audit_logger() -> logging.Logger:
                                       encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s",
                                                datefmt="%Y-%m-%d %H:%M:%S"))
+        handler.addFilter(KeyInPathFilter())
         security_logger.addHandler(handler)
         logger.info("Security audit logger initialized: logs/security.log")
     return security_logger
@@ -622,7 +625,7 @@ class SecurityAuditMiddleware:
         """Log endpoint access for auditing."""
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "path": path,
+            "path": loggable_path(path),  # the Security Audit panel shows it
             "method": method,
             "user_id": user_id,
             "client_ip": client_ip,
