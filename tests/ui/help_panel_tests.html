@@ -158,6 +158,18 @@
     return offered;
   });
 
+  await check('a failed load of the colours is tried again on the next page', async () => {
+    await open('/ui/panels/help?guide=scarabhive&node=md');  // the server refuses the first prism.js of the run
+    await until('the blocks page', () => $('.pk-guide-h1'));
+    await sleep(300);
+    const plain = !$('pre.pk-guide-codeblock .token');
+    $('a[data-node="second"]').click();
+    await until('the second node', () => $('.pk-guide-line.pk-guide-pre'));
+    button('retrace').click();
+    await until('the colours after all', () => $('pre.pk-guide-codeblock code.language-yaml .token'));
+    return plain;
+  });
+
   await check('the extended format is drawn; its buttons open a node and a Markdown file', async () => {
     await open('/ui/panels/help?guide=scarabhive&node=md');
     await until('the blocks page', () => $('.pk-guide-h1'));
@@ -166,16 +178,32 @@
       && $('pre.pk-guide-codeblock code.language-yaml')?.textContent === 'key: 1'
       && [...doc().querySelectorAll('.pk-guide-table th')].map((th) => th.textContent).join() === 'A,B'
       && [...doc().querySelectorAll('.pk-guide-table td')].map((td) => td.textContent).join() === '1,2';
+    // coloured by Prism; a block with a button in it keeps the button instead
+    const number = await until('the syntax colours', () => $('pre.pk-guide-codeblock code.language-yaml .token.number'));
+    await sleep(150);  // a Prism that colours on its own would do it one frame after loading, buttons and all
+    const kept = doc().querySelectorAll('pre.pk-guide-codeblock a[data-node="second"]').length === 1
+      && getComputedStyle(number).color !== getComputedStyle(number.parentElement).color;
     $('a[data-node="second"]').click();
     await until('the second node', () => $('.pk-guide-line.pk-guide-pre'));
     button('retrace').click();
     await until('the blocks page again', () => $('a[data-file]'));
     $('a[data-file]').click();
     await until('the design file', () => $('.pk-guide-md h1')?.textContent === 'Design');
-    const file = frame.contentWindow.location.search.includes('file=docs%2Fdesign.md') && doc().title.startsWith('design.md');
+    const mdNumber = await until('the colours of its code', () => $('.pk-guide-md pre code .token.number'));
+    const file = frame.contentWindow.location.search.includes('file=docs%2Fdesign.md') && doc().title.startsWith('design.md')
+      && getComputedStyle(mdNumber).color !== getComputedStyle(mdNumber.parentElement).color;
     button('retrace').click();
     await until('the blocks page once more', () => $('.pk-guide-h1')?.textContent === 'Heading');
-    return drawn && file;
+    return drawn && kept && file;
+  });
+
+  await check('code is coloured up to a budget per page, a coloured block is no Tab stop', async () => {
+    await open('/ui/panels/help?guide=scarabhive&node=big');
+    // two blocks of 58 500 characters and a small one: the second no longer fits, the small one still does
+    const small = await until('the small block coloured', () => $('code.language-yaml .token'));
+    const [first, second] = doc().querySelectorAll('code.language-json');
+    return first.querySelector('.token') !== null && second.querySelector('.token') === null
+      && !small.closest('pre').hasAttribute('tabindex');
   });
 
   await check('an embedded viewer leaves the page alone and follows its attributes', async () => {

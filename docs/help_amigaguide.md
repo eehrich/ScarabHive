@@ -49,7 +49,7 @@ Erweiterungen (was Markdown hat, in AmigaGuide-Syntax):
 | `@{quote}` | Zitat-Absatz |
 | `@{rule}` | Trennlinie |
 | `@{tt}`..`@{utt}`, `@{s}`..`@{us}` | Inline-Code, durchgestrichen (wie `b`/`ub`) |
-| `@{code sprache}` .. `@{body}` | Code-Block; `@{code}` ohne Sprache bleibt AmigaOS (Zeilen wie geschrieben) |
+| `@{code sprache}` .. `@{body}` | Code-Block, eingefärbt (siehe unten); `@{code}` ohne Sprache bleibt AmigaOS (Zeilen wie geschrieben) |
 | `@{table}` .. `@{body}` | Tabelle: eine Zeile pro Reihe, Zellen mit `\|`, erste Reihe = Kopf; `\|` ist ein Pipe; eine Trennzeile (`---`, drei Striche je Zelle) einmal, direkt unter dem Kopf; Umbruch, Block oder Ausrichtung in einer Zelle ist ein Fehler, kein Verlust |
 | `@{"label" link https://…}` | Web-Link (nur http/https/mailto), neuer Tab |
 | `@{"label" link docs/x.md}` | Doku-Datei als Seite (wie auf dem Amiga: ein Link darf eine Datei nennen) |
@@ -59,6 +59,19 @@ Erweiterungen (was Markdown hat, in AmigaGuide-Syntax):
 Was der Leser nicht einordnen kann, steht unter der Seite (`problems`), statt zu
 verschwinden: ein `@{` ohne schließendes `}` (als Text gezeigt; die Befehle danach
 wirken weiter), ein Block-Befehl in einem Code-Block, ein toter Link.
+
+Syntaxfarben: `<pk-guide>` lädt beim ersten Code-Block das Prism des Chats
+(`static/vendor/prism/prism.js`, `data-manual`: es färbt nur, was es bekommt) und färbt
+jeden Block, dessen Sprache es kennt (python, yaml, json, toml, bash, sql, js/ts, css,
+html/xml, diff, markdown, c/cpp, java) -- in Guides wie in gerendertem Markdown. Ein
+Block mit einem Button, Bild oder Textattribut darin (auch einem, das von vorher noch
+eingeschaltet ist, etwa ein offenes `@{b}`) bleibt ungefärbt: Prism schreibt das Markup
+neu, der Button wäre weg. Gefärbt werden höchstens 100 000 Zeichen je Seite; ein Block,
+der nicht mehr hineinpasst, bleibt ungefärbt (512 KB JSON kosteten 230 ms und 4,5 MB
+Markup bei jedem Öffnen). Schlägt das Laden von Prism fehl, fragt die
+nächste Seite neu. Das `tabindex`, das Prism an den Block hängt, nimmt der Viewer wieder
+weg: sonst wäre nur jeder gefärbte Block ein Tab-Halt. Farben: Kit-Tokens, dieselbe
+Palette wie im Chat.
 
 Markdown-Dateien rendert `markdown_to_html` (der sanitisierte Renderer des Chats) mit
 `line_breaks=False`: ein Zeilenumbruch ist ein Leerzeichen, die Listen-Rettung des
@@ -120,12 +133,10 @@ Höhe) oder den nächsten scrollenden Kasten -- nie etwas außerhalb seines Doku
 
 ## Grenzen (bewusst)
 
-- Kein Syntax-Highlighting in Code-Blöcken (die Klasse `language-*` ist gesetzt; Prism
-  liegt unter `static/vendor/prism/`, wenn es jemand will).
 - `pyproject.toml` liefert `*.guide` als package-data mit; Bilder für das Handbuch
   bräuchten einen eigenen Eintrag, sobald es welche gibt.
 - Plugin-Guides und READMEs sieht jeder angemeldete Nutzer, auch die eines Plugins,
   dessen Panel nur Admins öffnen -- Doku gilt als lesbar; wer das anders will, hängt
   die Guides an die Panel-Rollen des Plugins.
-- Kein CLI-Viewer und kein Agent-Tool zum Lesen der Hilfe -- beides ließe sich auf
-  `Library.page()`/`search()` setzen.
+- Kein CLI-Viewer und kein Agent-Tool zum Lesen der Hilfe (Nutzer 28.09.2026: ein
+  Agent-Tool braucht es nicht) -- beides ließe sich auf `Library.page()`/`search()` setzen.

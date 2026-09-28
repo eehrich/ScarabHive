@@ -22,6 +22,48 @@ const BUTTONS = [['contents', 'Contents', 'book-open'], ['index', 'Index', 'scro
   ['retrace', 'Retrace', 'history'], ['prev', 'Browse', 'chevron-left'], ['next', 'Browse', 'chevron-right']];
 let instances = 0;
 
+// Syntax colours: the Prism the chat uses, loaded on the first code block. Manual: it colours what it is given only.
+let prism = null;
+function loadPrism() {
+  prism ??= new Promise((resolve) => {
+    if (window.Prism?.highlightElement) { resolve(window.Prism); return; }
+    const script = Object.assign(document.createElement('script'), { src: '/static/vendor/prism/prism.js' });
+    script.dataset.manual = '';
+    script.onload = () => resolve(window.Prism);
+    script.onerror = () => {  // no colours this time: the code stays as written, the next page asks again
+      prism = null;
+      script.remove();
+      resolve(null);
+    };
+    document.head.append(script);
+  });
+  return prism;
+}
+
+// ponytail: characters coloured per page; a block that no longer fits stays plain -- 512 KB of JSON took 230 ms
+// and 4.5 MB of markup on every visit.
+const HIGHLIGHT_BUDGET = 100_000;
+
+/** Colours the code blocks of `root` whose language Prism knows. A block with a button or an attribute in it is
+ *  left alone: Prism rewrites the block's markup, and the button would be gone. */
+async function highlight(root) {
+  let budget = HIGHLIGHT_BUDGET;
+  const blocks = [...root.querySelectorAll('pre > code[class*="language-"]')].filter((code) => {
+    const size = code.textContent.length;
+    if (code.childElementCount || size > budget) return false;
+    budget -= size;
+    return true;
+  });
+  if (!blocks.length) return;
+  const Prism = await loadPrism();
+  for (const code of blocks) {
+    // Prism's own reading of the class: "```Python" in a README is python, an odd one is "none", nothing throws
+    if (!Prism?.languages[Prism.util.getLanguage(code)] || !code.isConnected) continue;
+    Prism.highlightElement(code);
+    code.parentElement.removeAttribute('tabindex');  // Prism makes every block a Tab stop; an uncoloured one is none
+  }
+}
+
 // What a page is: a node of a guide, or a documentation file next to it (a link in a README opens one).
 function place(to) {
   return to.file ? { guide: to.guide, file: to.file } : { guide: to.guide, node: to.node };
@@ -161,6 +203,7 @@ class GuideViewer extends HTMLElement {
       this.nav = node.nav;
       notice(this.stale, '');
       render(this.page, node.lines.map(line));
+      highlight(this.page);
       this.anchor();
       const mistakes = node.problems.length ? `Mistakes in this node of ${node.guide}:\n${node.problems.join('\n')}` : '';
       notice(this.problems, mistakes, { kind: 'warn' });

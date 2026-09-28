@@ -2127,9 +2127,15 @@ plugins:
     my_plugin: {type: my_plugin, enabled: true}
 @{body}
 
-A language after @{tt}\@{code@{utt} makes a code block. @{tt}\@{code}@{utt}
-alone keeps its AmigaOS meaning -- lines as written, no wrapping -- for
-button menus and aligned text.
+A language after @{tt}\@{code@{utt} makes a code block, coloured by its
+language (python, yaml, json, toml, bash, sql, javascript, typescript, css,
+html, xml, diff, markdown, c, cpp, java). A block with a button, an image
+or an attribute in it -- also one still switched on from before, such as an
+unclosed @{tt}\@{b}@{utt} -- keeps them and stays uncoloured. A page colours
+at most 100,000 characters of code; a block that no longer fits stays
+plain. @{tt}\@{code}@{utt} alone
+keeps its AmigaOS meaning -- lines as written, no wrapping -- for button
+menus and aligned text.
 
 @{h2}Tables
 

@@ -671,5 +671,14 @@ a.pk-guide-button:focus-visible { outline: 2px solid var(--focus-ring); outline-
 .pk-guide-table :is(th, td) { padding: var(--space-1) var(--space-2); border: 1px solid var(--border-default); text-align: left; vertical-align: top; white-space: normal; }
 .pk-guide-table th { background: var(--surface-1); }
 .pk-guide-tt { background: var(--surface-3); border-radius: var(--radius-sm); }
+/* Syntax colours of a code block (Prism tokens), the chat's palette (static/css/chat.css) */
+pk-guide .token:is(.comment, .prolog, .doctype, .cdata) { color: var(--text-muted); font-style: italic; }
+pk-guide .token:is(.punctuation, .operator) { color: var(--text-secondary); }
+pk-guide .token:is(.keyword, .atrule, .important, .selector) { color: var(--accent-text); }
+pk-guide .token:is(.string, .char, .attr-value, .inserted) { color: var(--ok); }
+pk-guide .token:is(.number, .boolean, .constant, .symbol) { color: var(--warn); }
+pk-guide .token:is(.function, .class-name, .builtin) { color: var(--info); }
+pk-guide .token:is(.property, .tag, .attr-name, .variable) { color: var(--text-primary); }
+pk-guide .token:is(.deleted, .regex) { color: var(--danger); }
 .pk-guide-s { text-decoration: line-through; }
 .pk-guide-u.pk-guide-s { text-decoration: underline line-through; }

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from agent_system.ui import help as help_module
@@ -50,14 +51,26 @@ Help text.
 @{code yaml}
 key: 1
 @{body}
+@{code yaml}
+next: @{" second " link second}
+@{body}
 @{table}
 A | B
 1 | 2
 @{body}
 @{" To second " link second} and @{" the design " link docs/design.md}
 @endnode
+@node big "Big code"
+@{code json}
+""" + '{"key": 12345, "value": "abcdefghij"},\n' * 1500 + """@{body}
+@{code json}
+""" + '{"key": 12345, "value": "abcdefghij"},\n' * 1500 + """@{body}
+@{code yaml}
+small: 1
+@{body}
+@endnode
 """
-DESIGN = "# Design\n\nThe design file.\n"
+DESIGN = "# Design\n\nThe design file.\n\n```Python\nprint(1)\n```\n"  # a README's fence may be capitalised
 
 #: Long enough to scroll, and wide: the manual's plugin button and "back" jump to source line 60.
 WIDE = " " + "w" * 300
@@ -69,9 +82,22 @@ PLUGIN = (f'@node main "Probe plugin"\nPlugin line one.{WIDE}\n@{{image pic.png 
 NOTES = "# Notes\n\nThe plugin's notes.\n"
 
 
+def refuse_prism_once(app: FastAPI) -> None:
+    """The first load of the syntax colours fails, as on a restart in between: the viewer must ask again."""
+    refused: list[bool] = []
+
+    @app.get("/static/vendor/prism/prism.js")
+    def prism_after_one_refusal():
+        if not refused:
+            refused.append(True)
+            return Response(status_code=503)
+        return FileResponse(STATIC_DIR / "vendor" / "prism" / "prism.js", media_type="text/javascript")
+
+
 def stub_app(plugin_dirs: Path) -> FastAPI:
     app = FastAPI()
     app.state.config = SimpleNamespace(plugins=SimpleNamespace(plugin_dirs=[str(plugin_dirs)]))
+    refuse_prism_once(app)
     app.include_router(router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.mount("/tests/ui", StaticFiles(directory=UI_TESTS), name="ui-tests")
@@ -111,7 +137,9 @@ EXPECTED = [
     'a search lists its hits, a hit opens, Retrace returns to the hits',
     'a node that does not exist says so and offers the manual',
     'a search as the first page still offers the manual',
+    'a failed load of the colours is tried again on the next page',
     'the extended format is drawn; its buttons open a node and a Markdown file',
+    'code is coloured up to a budget per page, a coloured block is no Tab stop',
     'an embedded viewer leaves the page alone and follows its attributes',
     'an embedded viewer without a height scrolls its panel, never the page around it',
 ]
