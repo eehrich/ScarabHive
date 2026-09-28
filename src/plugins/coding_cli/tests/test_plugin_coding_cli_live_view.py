@@ -9,8 +9,6 @@ that the box goes on after the call has answered with a run id.
 """
 import asyncio
 import json
-import sys
-from pathlib import Path
 
 import pytest
 

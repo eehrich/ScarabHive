@@ -9,7 +9,7 @@ For non-tool components (hooks, web UI), use SchemaBasedHookMixin or SchemaBased
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 from typing import Any, TYPE_CHECKING
 
@@ -206,8 +206,9 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
                 f"Tool '{tool}' exists but is not callable in {self.name}"
             )
 
-        # Call the tool method (support both sync and async)
-        if asyncio.iscoroutinefunction(method):
-            return await method(params)
-        else:
-            return method(params)
+        # Call the tool method; an awaitable result is awaited (async methods, and
+        # an object with an async __call__, which no coroutine-function check sees)
+        result = method(params)
+        if inspect.isawaitable(result):
+            result = await result
+        return result

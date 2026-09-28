@@ -10,6 +10,8 @@ from agent_system.config import AgentSystemConfig, ToolServerConfig
 from agent_system.paths import launch_dir
 from agent_system.tools.schema_based import SchemaBasedToolServer
 
+from .operations import FileOperations
+from .search import FileSearchEngine
 from .security import PathValidator, SecurityError
 
 
@@ -40,8 +42,6 @@ def _int_param(params: Dict[str, Any], key: str, default: Any) -> Any:
     if number is not None and number.is_integer():
         return int(number)
     raise ValueError(f"{key}: a whole number, got {value!r}")
-from .operations import FileOperations
-from .search import FileSearchEngine
 
 
 logger = logging.getLogger(__name__)

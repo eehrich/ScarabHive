@@ -540,3 +540,22 @@ class TestRealWorldScenarios:
         
         # Should not have call() in its own __dict__ (inherits from SchemaBasedToolMixin)
         assert 'call' not in SimpleServer.__dict__
+
+
+class _AsyncCallableGreet:
+    """A tool that is an object with an async __call__: no coroutine-function
+    check recognises it, so the dispatcher must await what the call returns."""
+
+    async def __call__(self, params):
+        return {"message": f"Hello, {params['name']}!"}
+
+
+async def test_a_schema_tool_whose_call_is_async_is_awaited(system_config, server_config):
+    class TestServer(SchemaBasedToolServer):
+        greet = _AsyncCallableGreet()
+
+        def get_tools(self):
+            return [{"type": "function", "function": {"name": "test_greet", "description": "Greet"}}]
+
+    server = TestServer("test", system_config, server_config)
+    assert await server.call("test_greet", {"name": "Ada"}) == {"message": "Hello, Ada!"}

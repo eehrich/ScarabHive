@@ -1,0 +1,62 @@
+# ScarabHive API server.
+#
+#   test -f config/secrets.env || cp config/secrets.env.example config/secrets.env
+#   # then fill in your keys in config/secrets.env
+#   docker compose up -d --build
+#   docker compose logs -f scarabhive
+#
+# The web UI is then at http://127.0.0.1:8000. The port is published on the
+# loopback interface only: put a reverse proxy with TLS in front of it before
+# you expose it, and change the defaults in config/config.yaml first
+# (auth.secret_key, auth.default_admin_password, auth.cors_origins).
+#
+# Admin commands run inside the container, e.g.
+#   docker compose exec scarabhive agent-cli users list
+
+services:
+  scarabhive:
+    build:
+      context: .
+      # args:
+      #   EXTRA_APT_PACKAGES: "ffmpeg git"   # tools your agents need
+      #   APP_UID: "1000"                    # match your host user (see below)
+      #   APP_GID: "1000"
+    image: scarabhive:local
+    init: true            # reaps the processes agent tools start (terminal, ...)
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true  # no setuid escalation from agent shells
+    ports:
+      # SCARABHIVE_BIND / SCARABHIVE_PORT can be set in the shell or in .env.
+      - "${SCARABHIVE_BIND:-127.0.0.1}:${SCARABHIVE_PORT:-8000}:8000"
+    volumes:
+      # Configuration from the checkout. The loader also reads
+      # config/secrets.env from here when it exists; without it the server
+      # starts and names the variables it is missing in the log. The file
+      # must be readable by the container user (uid 10001 by default): a
+      # mode-600 file of your own user is not -- build with APP_UID/APP_GID
+      # set to your ids, or pass the keys as environment variables below.
+      # Read-only on purpose: agents with terminal or file tools run inside
+      # this container. Remove ":ro" if the Agent Editor panel should save
+      # agent YAMLs; the container user then needs write access to ./config
+      # (build with APP_UID/APP_GID set to your user's ids).
+      - ./config:/app/config:ro
+      - scarabhive-data:/app/data             # sessions, users.db, plugin data
+      - scarabhive-logs:/app/logs
+      - scarabhive-cache:/home/scarab/.cache  # downloaded embedding models
+    # Secrets can also come from the environment; a real environment variable
+    # wins over config/secrets.env. Listed without a value, a variable is
+    # passed only when it is set in the shell or in .env:
+    # environment:
+    #   - AUTH_SECRET_KEY        # if config.yaml says secret_key: "${AUTH_SECRET_KEY}"
+    #   - OPENROUTER_API_KEY
+    #   - OPENAI_API_KEY
+    #   - ANTHROPIC_API_KEY
+    #   - GOOGLE_API_KEY
+    #   - AGENT_LOG_LEVEL
+    stop_grace_period: 30s
+
+volumes:
+  scarabhive-data:
+  scarabhive-logs:
+  scarabhive-cache:

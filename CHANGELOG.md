@@ -1,0 +1,53 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- `Dockerfile`, `.dockerignore` and `docker-compose.yml` to run the API server
+  in a container: non-root user, CPU-only PyTorch, `config/` mounted from the
+  checkout, `data/`, `logs/` and model caches in named volumes, port published
+  on `127.0.0.1` only.
+- GitHub Actions CI: ruff, mypy (non-blocking) and a network-free subset of the
+  test suite on Python 3.11, 3.12 and 3.14, plus an image build with a health check.
+- `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue forms and a pull
+  request template.
+
+### Changed
+
+- The ruff rule set is named in `pyproject.toml` (`E4`, `E7`, `E9`, `F`, ruff's
+  default before 0.16), so a newer ruff's wider default does not apply.
+- `asyncio.iscoroutinefunction` (deprecated in Python 3.14) is gone from the
+  code: tool dispatch and the cancellation cleanup call the method or callback
+  and await what it returns when that is awaitable, the context engineer's callback
+  check uses `inspect.iscoroutinefunction`. `pytest.ini` ignores the
+  deprecation (and google-genai's `_UnionGenericAlias` one) only where
+  fastapi, starlette, chromadb and google-genai raise it.
+
+### Fixed
+
+- `agent-api` loads the config `AGENT_CONFIG_PATH` names, as `agent-cli` and
+  `agent-run` do; `/health` reads the config the server was started with.
+- A tool method or cleanup callback that returns an awaitable without being a
+  coroutine function (an object with an async `__call__`, a lambda around an
+  async call) is awaited; the tool dispatch used to return the coroutine as the
+  tool's result, the cleanup dropped it.
+- `agent-run --list-sessions` lists the session store `AGENT_SESSION_STORAGE_PATH`
+  names, the one its runs use.
+- `config/secrets.env.example` has its placeholder keys commented out: a copied
+  template no longer sets `sk-or-v1-...` as a key, so a key left unset is
+  named in the startup warning instead of failing later with a 401.
+- The API's early log (written before the config is loaded) goes to
+  `logs/api.log` in the working directory -- the file the shipped config names
+  -- and no longer into the source tree.
+
+## [0.7.0]
+
+The version this changelog starts from and the first version published as
+open source. Its release date is set when the version is tagged. Changes
+before it are not summarised here; the git history has them.
