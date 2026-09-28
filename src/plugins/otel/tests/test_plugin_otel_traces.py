@@ -252,6 +252,36 @@ class TestSpanTree:
             "scarabhive.request_id": request_id}
         assert "URL-SECRET" not in _all_attribute_text(spans), "the request URL's query was exported"
 
+    async def test_an_agent_called_as_a_tool_is_in_its_callers_conversation(self, otel, exported):
+        """It runs on a session of its own below its caller's (Agent.tool_session_id). Named by that session
+        alone, its spans left the conversation they belong to: a backend grouping by conversation split one
+        into pieces. The session it ran on stays its own."""
+        from agent_system.servers.agent.server import tool_session_id
+
+        caller = _agent()
+        helper = Agent("helper", caller.system_config, ToolServerConfig(
+            type="agent", enabled=True, agent_config=AgentConfig(max_steps=3, llm_profile="normal")),
+            caller.registry)
+        helper.llm = _Model()
+        helper._tool_visible = True  # metadata.visibility: tool
+        caller.registry.register("helper", helper)
+        caller.agent_config.tools.allowed.append("helper")
+        plugin = await otel()
+
+        await _run(_Model([{"id": "call_h", "type": "function",
+                            "function": {"name": "helper", "arguments": json.dumps({"task": "look it up"})}}]),
+                   agent=caller, session_id="otel-caller")
+        spans = await _spans(plugin, exported)
+
+        runs = {span.attributes["gen_ai.agent.name"]: dict(span.attributes) for span in _named(spans, "invoke_agent")}
+        assert set(runs) == {"test_agent", "helper"}, f"fixture: the helper did not run: {sorted(runs)}"
+        assert (runs["helper"]["gen_ai.conversation.id"], runs["helper"]["session.id"]) == (
+            "otel-caller", tool_session_id("otel-caller", "helper"))
+        assert (runs["test_agent"]["gen_ai.conversation.id"], runs["test_agent"]["session.id"]) == (
+            "otel-caller", "otel-caller")
+        [call] = [dict(tool.attributes) for tool in _named(spans, "execute_tool")]
+        assert (call["gen_ai.conversation.id"], call["session.id"]) == ("otel-caller", "otel-caller"), call
+
     async def test_the_user_id_is_exported_when_configured(self, otel, exported):
         agent = _agent()
         # As the API and agent-cli record whose run it is, before the first step.

@@ -159,6 +159,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A file rewind takes back again what an agent called as a tool changed during
+  the turn: `file_checkpoints` finds the tool agent's own session below its
+  caller's through the running agents, not only through the stored record, and
+  a lookup made before that session was stored no longer keeps its miss.
+- `otel`: the spans of an agent called as a tool carry its caller's
+  conversation again as `gen_ai.conversation.id` (the top of the caller chain),
+  with its own session as `session.id`; a backend grouping by conversation had
+  split one conversation into pieces.
 - An agent called as a tool (`Agent.call`, `<name>_execute_task`) no longer runs
   on its caller's session: it saved its own transcript into the caller's session
   file (creating a new one with its own agent name and a title from the
