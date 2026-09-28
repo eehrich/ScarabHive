@@ -75,7 +75,7 @@ invoke_agent <agent>            one per run (request id)
 
 | Span | Kind | Attributes |
 |---|---|---|
-| `invoke_agent` | INTERNAL | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.conversation.id` + `session.id` (session id), `scarabhive.request_id`, `scarabhive.run.outcome` (`completed`, `error`, `cancelled`, `incomplete`, `expired`, `evicted`, `shutdown`), `scarabhive.run.persisted`, `user.id` if configured |
+| `invoke_agent` | INTERNAL | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.conversation.id` (the conversation: for an agent called as a tool, its caller's -- the top of the chain) + `session.id` (the session the run ran on), `scarabhive.request_id`, `scarabhive.run.outcome` (`completed`, `error`, `cancelled`, `incomplete`, `expired`, `evicted`, `shutdown`), `scarabhive.run.persisted`, `user.id` if configured |
 | `chat` | CLIENT | `gen_ai.operation.name=chat`, `gen_ai.provider.name` (as the client names itself, e.g. `openai_httpx`), `gen_ai.request.model`, `gen_ai.request.stream`, `gen_ai.usage.input_tokens` (cache reads included), `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `gen_ai.response.finish_reasons`, `server.address`/`server.port` (host only — a URL may carry a key), `error.type` (the HTTP status the error names, else `_OTHER`), `scarabhive.llm.retry` on an attempt the client retried |
 | `execute_tool` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `scarabhive.tool.server`, `scarabhive.tool.source` (`model` or `tool_script`), `scarabhive.tool.outcome` (`ok`, `error`, `cancelled`, `blocked`, `unknown`), `error.type` |
 

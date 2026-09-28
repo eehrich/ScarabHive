@@ -485,6 +485,32 @@ class TestReach:
         assert tree(rig.work) == {}, "the sub-agent's file outlived the turn that asked for it"
         assert not (rig.store / USER / "child-s").exists(), "the sub-agent kept a record of its own"
 
+    async def test_a_sub_session_filed_after_a_run_on_it_was_asked_about_belongs_to_its_parent(self, rig, tmp_path):
+        """A run on the session before its record was filed found no parent -- an
+        agent called as a tool opens its session a moment before it files it --
+        and that answer was kept for the life of the process: every later run on
+        the session recorded in a journal of its own, out of the calling turn."""
+        from agent_system.services.session_manager import SessionManager
+        from agent_system.services.session_service import SessionService
+
+        await rig.turn("delegate", [create(rig.work / "parent.txt", "P")])
+        parent_run = rig.request_ids[-1]
+        child = rig.agent("child")
+        sessions = SessionManager(storage_path=str(tmp_path / "sessions"))
+        child._session_service = SessionService(sessions)
+        await rig.turn("before its record", [create(rig.work / "early.txt", "E")], agent=child,
+                       session_id="child-late", request_id=f"{parent_run}_003_sub_x1")
+        record = await sessions.load_session(USER, "child-late")  # its first save made it; now it names its parent
+        record["parent_session"] = {"session_id": SESSION}
+        await sessions.save_session(record)
+
+        await rig.turn("after it", [create(rig.work / "late.txt", "L")], agent=child,
+                       session_id="child-late", request_id=f"{parent_run}_004_sub_x2")
+        report = await rig.rewind()
+
+        assert report["status"] == REWOUND, report["text"]
+        assert "late.txt" not in tree(rig.work), "the run after the filing recorded out of the calling turn"
+
     async def test_a_run_whose_id_only_looks_like_a_sub_run_records_in_its_own_session(self, rig, tmp_path):
         """A client may choose its request ids: "client-run_2" in another session,
         or a sub-run id in a session that is not a sub-session of the run's."""

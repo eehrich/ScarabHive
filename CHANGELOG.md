@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shipped agents with a shell, `coding_cli`, `ssh_control`, checkout-wide file
   access or a tool that runs arbitrary code (`blender_execute`, `godot_script`)
   are gated at `admin`; `state_graph_agent`/`state_graph_agent_ui` at `user`.
+  **Operator-visible:** after the next restart, accounts below `admin` no
+  longer see or run these 14 agents (`amiga_coder`, `blender_agent`,
+  `claude_code_agent`, `coder`, `coder_explorer`, `coder_reviewer`,
+  `coder_tester`, `file_ops_test_agent`, `gamedev`, `gamedev_tester`,
+  `godot_agent`, `skills_agent`, `skills_agent_multimodal`, `sysadmin_agent`).
 - An agent run as a tool no longer acts as another user through a session id it
   holds for that user: tools run for the run's registered user, a run whose user
   differs from the session's stored user is refused (an admin's too, and a
@@ -76,6 +81,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once, role `user`.
 - The shipped `config/config.yaml` holds a self-registered account for an
   admin's approval (`auth.registration.require_approval: true`).
+  **Operator-visible:** after the next restart, an account created through
+  `POST /auth/register` starts inactive and cannot log in until an admin
+  activates it; existing accounts are not touched.
+- bubblewrap (the Linux process sandbox) runs a command with `--new-session`
+  (a confined process can no longer push keystrokes into the terminal it was
+  started from), `--die-with-parent` and `--unshare-pid`; in `workspace-write`
+  the git hooks and config of the workspace's repository are read-only on both
+  backends, so the next unconfined `git` does not run what a confined process
+  put there.
+- `godot_setup` refuses a quote, backslash or control character in `name` and
+  `main_scene`, which are written into `project.godot` as quoted strings; a line
+  break used to add lines of its own.
 
 ### Added
 
@@ -87,6 +104,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test suite on Python 3.11, 3.12 and 3.14, plus an image build with a health check.
 - `CONTRIBUTING.md`, `SECURITY.md`, this changelog, issue forms and a pull
   request template.
+- `openai_api` plugin (enabled in the shipped `config/plugins.yaml`): every
+  agent the caller may run is a model under `/plugins/openai_api/v1` --
+  Responses API (`previous_response_id` continues the conversation,
+  `store: false` keeps none), stateless Chat Completions, `GET /v1/models`,
+  streaming for both.
+- An API key is also accepted as `Authorization: Bearer <key>`, as OpenAI
+  clients send it; on plugin routes only for plugins that declare
+  `accept_api_keys`.
+- `tool_approval` plugin: approvals before tool calls -- `ask` (the person
+  watching the run answers in the web chat), `auto` or `off`, with allow and
+  deny rules on tool patterns and arguments. Off for every agent until it
+  switches it on.
+- `ask_user` plugin: the agent asks the person watching the run a question
+  (2-4 options, multiple choice or free text) and waits for the answer; a run
+  nobody watches is told at once to decide itself. Granted to `coder` (and
+  `gamedev`, which merges the coder's tools), `sysadmin_agent` and
+  `research_agent`.
+- `file_checkpoints` plugin: what `file_ops` and `media_ops` change is
+  recorded per turn; `/undo files`, `/retry files` and `/rewind [n]` put the
+  files back in agent-cli and the browser. On for the coder harness.
+- `otel` plugin: OpenTelemetry traces for agent runs, LLM calls and tool calls
+  with the GenAI semantic conventions, optionally the GenAI client metrics.
+  Off by default.
+- `project_instructions` plugin: a project's `AGENTS.md` is read once per
+  session from the root the agent's file tools work in and put in front of the
+  model. On for the coder harness.
+- A Seatbelt backend for the process sandbox (`utils/process_sandbox.py`): on
+  macOS the terminal's `read-only` and `workspace-write` modes confine the
+  command with `sandbox-exec` (enforcement `partial`: the user's temp directory
+  stays shared). The default stays `danger-full-access`.
 
 ### Changed
 
@@ -98,9 +145,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check uses `inspect.iscoroutinefunction`. `pytest.ini` ignores the
   deprecation (and google-genai's `_UnionGenericAlias` one) only where
   fastapi, starlette, chromadb and google-genai raise it.
+- **Behaviour change for hook authors:** `pre_tool_call` and `post_tool_call`
+  hooks now fire. They were declared and documented but never called; a
+  plugin that registers one now runs around every tool call of the model and
+  of a `tool_script` script (slash commands, web buttons, `tool_preload`,
+  stategraph and `Agent.call_tool` stay unhooked). A pre hook may change the
+  arguments or block the call (`metadata={"block": ...}`: the model reads a
+  `ToolCallBlocked` error and the run goes on; `on_error: block` makes a failing
+  hook block too); a post hook may change the result before it joins the
+  history. See `docs/plugin_hooks.md`.
+- `POST /run` without a `session_id` creates a real session, as `/events` does;
+  it used to run on a throwaway one.
 
 ### Fixed
 
+- A file rewind takes back again what an agent called as a tool changed during
+  the turn: `file_checkpoints` finds the tool agent's own session below its
+  caller's through the running agents, not only through the stored record, and
+  a lookup made before that session was stored no longer keeps its miss.
+- `otel`: the spans of an agent called as a tool carry its caller's
+  conversation again as `gen_ai.conversation.id` (the top of the caller chain),
+  with its own session as `session.id`; a backend grouping by conversation had
+  split one conversation into pieces.
 - An agent called as a tool (`Agent.call`, `<name>_execute_task`) no longer runs
   on its caller's session: it saved its own transcript into the caller's session
   file (creating a new one with its own agent name and a title from the
@@ -151,6 +217,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The API's early log (written before the config is loaded) goes to
   `logs/api.log` in the working directory -- the file the shipped config names
   -- and no longer into the source tree.
+- Session saves no longer lose a run's last exchange or an appended message:
+  a run lets go of its session lock only once its last save is on disk; the
+  save after `/run`, `/events`, an `openai_api` turn or a sub-agent's run
+  leaves a session somebody else holds by then; an append and `/chat/undo`
+  hold the agent's session lock as a writer from reading the session to their
+  save, and what meets that lock waits instead of being refused; a sub-agent
+  manager `continue` takes its sub-agent's session lock before it touches the
+  session. A run refused at the lock says so (`error_type: "session_locked"`)
+  and nothing of it is saved. Throwaway sessions (`ephemeral-*`) are never
+  written.
+- Per-session locks, the request-to-session mappings of ended requests (the
+  last 1000 per agent are kept) and finished background sub-agent jobs (an
+  hour, a day when their result could not be stored) no longer stay in memory
+  for the life of the process.
+- Answers to tool calls the framework rejects (malformed arguments, unknown
+  tool) keep the order of the model's calls, as Gemini requires.
+- Two plugin directories with a plugin or shared module of the same name no
+  longer load as one module: the first directory that has the name claims it,
+  a later one's is skipped with a warning.
+- `file_ops` writes through a temp file of its own (`.<name>.<random>.tmp`,
+  created exclusively, removed on cancel) instead of `<name>.tmp`, which could
+  be a file of the user's that was overwritten and deleted; an edit keeps the
+  file's mode, as a create over an existing file already did.
+- `file_ops` semantic index: a document names its file relative to the indexed
+  directory, not by its absolute path, which made the ranking depend on where
+  the tree lies. The index state carries a document format now; an index from
+  before the update is rebuilt in full once, on the first background pass.
+- `coding_cli` reads the secret values of an excluded YAML file through
+  `yaml_io` (libyaml when present) instead of the pure-Python `yaml.safe_load`.
+- `blender` and `godot` refuse a Windows drive or share name (`C:/...`,
+  `\\server\share`) on POSIX as well; it used to be read as a relative name.
+  In `godot` a leading `/` is the project's root on every platform.
+- The Memory Profile panel keeps the allocations of the last snapshot asked
+  for; ten periodic snapshots later (under an hour at the default interval) it
+  said none were recorded.
 
 ## [0.7.0]
 

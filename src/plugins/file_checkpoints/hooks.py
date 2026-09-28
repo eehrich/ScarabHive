@@ -42,6 +42,7 @@ from agent_system.file_rewind import (
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.hooks.registry import get_hook_registry
 from agent_system.servers.agent.components.hook_integration import hook_runs_for
+from agent_system.servers.agent.components.session_tracking import session_chain
 from agent_system.services.session_service import is_ephemeral_session
 from agent_system.servers.agent.components.status_forwarding import run_is_live, run_streams
 
@@ -63,7 +64,7 @@ MAX_PENDING = 10000
 SWEEP_SECONDS = 60.0
 #: Sessions whose current turn / parent session is kept in memory.
 MAX_CACHED_SESSIONS = 256
-#: How far up the parent_session links a sub-session is followed.
+#: How far up the links to a parent session a sub-session is followed.
 MAX_SUB_DEPTH = 8
 #: What the framework appends to a run's id for a run it starts under it: a tool
 #: call (next_internal_tool_request_id), a script's call (tool_script), a sub-agent.
@@ -109,6 +110,13 @@ class Pending:
     change_id: int
     path: str
     created: bool
+
+
+def _held_parent(session_id: str) -> str:
+    """The session ``session_id`` runs below as this process holds it -- an agent
+    called as a tool runs on one of its own below its caller's -- or ""."""
+    chain = session_chain(session_id)
+    return chain[1] if len(chain) > 1 else ""
 
 
 class _CachedTurn:
@@ -261,6 +269,7 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         self._last_sweep = time.monotonic()
         self._pending: "OrderedDict[Tuple[Any, ...], List[List[Pending]]]" = OrderedDict()
         self._turn_cache: Dict[str, Tuple[int, Any, Optional["_CachedTurn"]]] = {}
+        # (user, session) -> the parent its stored record names; only found links (_stored_parent)
         self._parents: "OrderedDict[Tuple[str, str], str]" = OrderedDict()
         self._journal_runs: Dict[Tuple[str, str], Set[str]] = {}
         self._locks: Dict[str, List[Any]] = {}
@@ -385,25 +394,41 @@ class FileCheckpointsPlugin(SchemaBasedPluginHook):
         return None
 
     async def _descends_from(self, agent: Any, user_id: str, session_id: str, ancestor: str) -> bool:
-        """Whether ``session_id`` is a sub-session (at any depth) of ``ancestor``,
-        by the ``parent_session`` links the sub-agent manager writes."""
+        """Whether ``session_id`` is a sub-session (at any depth) of ``ancestor``.
+
+        Each step asks this process first: an agent called as a tool runs on a
+        session of its own below its caller's, and the agents' trackers name the
+        caller's as its parent (session_chain) -- before its record is filed, and
+        when it is never stored (below a throwaway caller). Asked of the stored
+        record alone, such a session was nobody's, and a helper's changes were
+        left out of the calling turn: a rewind did not take them back. Then the
+        ``parent_session`` link of the stored record -- the one the sub-agent
+        manager writes -- for what this process does not hold."""
         sessions = getattr(getattr(agent, "_session_service", None), "session_manager", None)
         current = session_id
         for _ in range(MAX_SUB_DEPTH):
-            key = (user_id, current)
-            if key in self._parents:
-                parent = self._parents[key]
-            else:
-                parent = await self._parent_of(sessions, user_id, current)
-                self._parents[key] = parent
-                while len(self._parents) > MAX_CACHED_SESSIONS:
-                    self._parents.pop(next(iter(self._parents)))
+            parent = _held_parent(current) or await self._stored_parent(sessions, user_id, current)
             if not parent:
                 return False
             if parent == ancestor:
                 return True
             current = parent
         return False
+
+    async def _stored_parent(self, sessions: Any, user_id: str, session_id: str) -> str:
+        """The parent the stored record names (_parent_of), kept once found. A miss
+        is not kept: a session its caller's tool call opened is filed a moment
+        later, and a miss kept from before stood for the life of the process."""
+        key = (user_id, session_id)
+        cached = self._parents.get(key)
+        if cached:
+            return cached
+        parent = await self._parent_of(sessions, user_id, session_id)
+        if parent:
+            self._parents[key] = parent
+            while len(self._parents) > MAX_CACHED_SESSIONS:
+                self._parents.pop(next(iter(self._parents)))
+        return parent
 
     @staticmethod
     async def _parent_of(sessions: Any, user_id: str, session_id: str) -> str:

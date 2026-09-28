@@ -323,8 +323,6 @@ from fastapi import FastAPI
 from plugins.openai_api.plugin import OpenAIApiPlugin
 from plugins.openai_api.protocol import INSTRUCTIONS_HEADER
 
-pytestmark = pytest.mark.filterwarnings("ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning")
-
 
 class ScriptedAgent:
     """A registry agent: streams ``answer`` word by word as the real loop does (thinking_delta per step with the

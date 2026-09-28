@@ -46,6 +46,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
+from agent_system.servers.agent.components.session_tracking import callers_session
 
 from .settings import TelemetrySettings
 
@@ -561,7 +562,11 @@ class OtelHooks(SchemaBasedPluginHook):
         if ctx.agent_name:
             identity[AGENT_NAME] = ctx.agent_name
         if ctx.session_id:
-            identity[CONVERSATION_ID] = ctx.session_id
+            # The conversation is the person's: an agent called as a tool runs on a session of its own below its
+            # caller's, and its spans belong to the conversation at the top of that chain (callers_session) --
+            # with its own session id as the session the run ran on. On the session alone, a backend grouping by
+            # conversation split one into pieces.
+            identity[CONVERSATION_ID] = callers_session(ctx.session_id)
             identity[SESSION_ID] = ctx.session_id
         if ctx.request_id:
             identity[REQUEST_ID] = ctx.request_id
