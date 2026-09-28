@@ -396,6 +396,20 @@ auth:
         min_role: "admin"
         description: "writer_admin plugin (DB inspector + queue debug) requires admin role"
 
+      # The logs carry every user's prompts, names, IPs and session ids (the
+      # API logs each task at INFO): one user must not read another's.
+      - pattern: "/plugins/log_viewer/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Log viewer requires admin role"
+
+      # ssh_control runs commands on the configured hosts with the server's
+      # keys, and adds hosts: operator work.
+      - pattern: "/plugins/ssh_control/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "SSH machine panel requires admin role"
+
       # Example: Allow anonymous access to specific plugin endpoint
       # - pattern: "GET /plugins/todo/panel"
       #   policy: "allow_anonymous"
