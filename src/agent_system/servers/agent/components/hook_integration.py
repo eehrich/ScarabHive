@@ -48,6 +48,28 @@ def _blocked_call_reason(block: Any, tool_name: Optional[str]) -> str:
             "execute. Do not send the same call again.")
 
 
+def _override_or_default(hooks_config: Any, hook_name: str, default_enabled: bool) -> Any:
+    """The agent's own ``overrides[hook_name].enabled`` when it sets one (it wins
+    over everything else), else the hook's registered default."""
+    overrides = getattr(hooks_config, "overrides", None) if hooks_config else None
+    if overrides and hook_name in overrides:
+        override = overrides[hook_name]
+        if 'enabled' in override:
+            return override.get('enabled', True)
+    return default_enabled
+
+
+def hook_runs_for(hooks_config: Any, hook_name: str, default_enabled: bool) -> bool:
+    """Whether the hook ``hook_name`` runs for an agent whose ``agent_config.hooks``
+    is ``hooks_config`` -- the rule HookIntegrationManager applies to its own
+    agent (``is_enabled`` and ``is_hook_enabled``), for an agent one only has
+    the config of: a hook deciding about a sub-agent it is about to start
+    (tool_approval). ``default_enabled`` is the registry's state of the hook."""
+    if hooks_config is not None and not getattr(hooks_config, "enabled", True):
+        return False
+    return bool(_override_or_default(hooks_config, hook_name, default_enabled))
+
+
 #: System messages that are compacted CONVERSATION, not prompt. The agent's own
 #: system prompt is rebuilt from config on every turn and must not be persisted;
 #: these carry conversation state and would be lost for good.
@@ -130,15 +152,7 @@ class HookIntegrationManager:
         Returns:
             True if hook should execute, False otherwise
         """
-        # Check for agent-specific override (highest priority)
-        if self._hooks_config and hook_name in self._hooks_config.overrides:
-            override = self._hooks_config.overrides[hook_name]
-            if 'enabled' in override:
-                # Agent has explicit override - use it regardless of global state
-                return override.get('enabled', True)
-        
-        # No override - use global enabled state from metadata
-        return default_enabled
+        return _override_or_default(self._hooks_config, hook_name, default_enabled)
 
     def user_of(self, session_id: str, request_id: str) -> Optional[str]:
         """Whose call this is: the user the session's run was opened for (the

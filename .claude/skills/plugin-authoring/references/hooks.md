@@ -25,7 +25,12 @@ calls run once all are done), plus the run's `cancellation_token`. The history k
 sent. A hook that raises, times out or fails is skipped — the call **runs**,
 unless its schema entry says `on_error: block` (pre_tool_call only): then the
 call is blocked. While a pre hook waits, the run's status events keep flowing
-(a question asked via StatusScope reaches the viewer). tool_script's
+(a question asked via StatusScope reaches the viewer). Ask only where someone can
+answer: `status_forwarding.attended_stream_of(request_id)` names the live stream of
+a run whose client said a person reads it (the web chat, `attended` on /events) --
+None for openai_api, the CLIs, the writer's dispatches. A hook that changes
+arguments declares `category: tool_arguments`; `tool_approval` orders itself
+after that category. The plugin `tool_approval` is the worked example. tool_script's
 `inject_params` secrets are merged after the hooks; a tool that raises under
 tool_script becomes an error result that passes the post hooks. Not hooked: slash
 commands, web buttons, tool_preload, stategraph, `Agent.call_tool`, calls the
