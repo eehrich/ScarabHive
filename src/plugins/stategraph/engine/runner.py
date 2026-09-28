@@ -138,6 +138,9 @@ class RunContext:
         self.on_lost: Optional[Callable[[str], None]] = None
         self.waiting: set[str] = set()   # prefixes of frames in a wait state
         self.busy = 0                    # leaf activities running live right now
+        self.callback_base = "/plugins/stategraph/callback"  # the manager's, set as it launches the run
+        limit = machine.spec.limits.concurrency  # the root machine's: it bounds the whole run
+        self.gate: Optional[asyncio.Semaphore] = asyncio.Semaphore(limit) if limit else None
         self.running_seconds = 0.0
         self._running_since: Optional[float] = time.monotonic()
         self._request_seq = 0
@@ -148,6 +151,9 @@ class RunContext:
         self.cancelled_below: set[str] = set()  # keys whose frames a cancel had reached: their endings are bounded
         self.interrupted: set[str] = set()   # keys of activities that raised interrupted (never retried, §5.5)
         self.started: dict[str, dict[str, Any]] = {}
+        # child key -> the seq of the row a join (first, count) wrote when it saw that child end: the order they
+        # ended in (an activity's row keeps the seq it started with). None: written by this process
+        self.joined: dict[str, Optional[int]] = {}
         self.consumed: dict[str, dict[str, Any]] = {}
         self.timers: set[str] = set()
         self.edits: dict[str, list[dict[str, Any]]] = {}
@@ -211,6 +217,8 @@ class RunContext:
                     self.timed_out = bool(data.get("timed_out"))
                 elif row["status"] == "end":
                     self.ends[key] = data
+                elif row["status"] == "joined":
+                    self.joined[str(data.get("child", ""))] = int(row["seq"])
                 elif row["status"] == "resource_sources":
                     self.resource_sources = dict(data)
                 elif row["status"] == "request_seq":
@@ -325,7 +333,11 @@ class RunContext:
 
     async def hook(self, point: str, frame: Frame, node: Any, event: Any = None) -> None:
         for edit in self.edits.get(f"{frame.prefix}s{frame.step}:{point}", ()):
-            apply_edit(frame.ctx, edit["path"], edit["value"])
+            if edit.get("repair"):  # an operator's repair of the activity's end (debugger.assign)
+                if event is not None and event.repairable:
+                    event.repair(edit["value"])
+            else:
+                apply_edit(frame.ctx, edit["path"], edit["value"])
         if self.is_replay_point(frame) or (event is not None and getattr(event, "replayed", False)):
             return
         if self.fork_step is not None and self._top_step(frame) < self.fork_step:
@@ -393,7 +405,7 @@ class RunContext:
             target = accepting[0] if accepting else None
         problem = self._check_payload(name, data, target)
         if problem:
-            return {"accepted": False, "reason": problem}
+            return {"accepted": False, "reason": problem, "data_refused": True}  # the sender's to correct
         pending = _Pending(f"pending:{uuid.uuid4().hex[:12]}", name, jsonable(data), target)
         if not self.lost and not self.store.record(self.id, "event", pending.key, fence=self.owner, status="pending",
                                                    data={"name": name, "data": pending.data, "frame": target}):
@@ -503,11 +515,13 @@ class RunContext:
             self.refresh_status()
 
     # ------------------------------------------------------------ debugger edits, trace, view
-    def record_edit(self, frame: Frame, hook: str, path: str, value: Any) -> None:
+    def record_edit(self, frame: Frame, hook: str, path: str, value: Any, *, repair: bool = False) -> None:
+        """``repair``: the activity's out, not a ctx path -- marked, so an older journal's ``out`` (then ctx.out)
+        keeps its meaning."""
         self._edit_seq += 1
         at = f"{frame.prefix}s{frame.step}:{hook}"
         self.write("edit", f"{at}:{self._edit_seq}", state=frame.leaf.name if frame.leaf else None,
-                          status="applied", data={"at": at, "path": path, "value": value})
+                   status="applied", data={"at": at, "path": path, "value": value, **({"repair": True} if repair else {})})
 
     def trace(self, frame: Frame, what: str, *, state: Optional[str] = None, data: Any = None) -> None:
         key = f"{frame.prefix}s{frame.step}:{what}:{state or ''}"
@@ -667,6 +681,8 @@ class RunManager:
         self.on_cancel = on_cancel
         self.on_finish = on_finish
         self.owner = owner_id()
+        #: where a callback URL points (the callback kind): the stategraph instance's route, under its public URL
+        self.callback_base = "/plugins/stategraph/callback"
         self.live: dict[str, LiveRun] = {}
         self._stopping = False
         self._heartbeat: Optional[asyncio.Task] = None
@@ -841,6 +857,7 @@ class RunManager:
                          mock_only=mock_only, debugger=debugger, token=token,
                          owner=self.owner, origin=origin)
         ctx.running_seconds = running_seconds  # limits.timeout counts running time across resumes
+        ctx.callback_base = self.callback_base
         ctx.fork_step = fork_step
         root = Frame(ctx, machine, params)
         ctx.root = root

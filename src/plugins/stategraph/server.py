@@ -23,6 +23,7 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
 from .engine.journal import RunStore
 from .engine.runner import RunManager
+from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
 from .store import MachineStore
 
@@ -42,6 +43,9 @@ NEXT = {
     "paused": "the debugger holds it: stategraph_control_run(run_id, action='continue' or 'step')",
     "interrupted": "its process stopped: stategraph_control_run(run_id, action='resume') goes on from its journal",
 }
+#: A wait that takes no event -- a timer state (after): it goes on by itself.
+NEXT_TIMER = ("it waits out a timer (after) and goes on by itself: stategraph_get_run(run_id, wait='finish') waits "
+              "for its end, a pause or a wait")
 
 
 class StateGraphServer(SchemaBasedToolServer):
@@ -59,13 +63,17 @@ class StateGraphServer(SchemaBasedToolServer):
         raw_inject = getattr(server_config, "inject_params", None) or {}
         self.inject_params = {str(k): dict(v) for k, v in raw_inject.items() if isinstance(v, dict)}
         self.default_max_wait = float(getattr(server_config, "default_max_wait", None) or 600)
+        self.schedules, self.schedule_problems = parse_schedules(getattr(server_config, "schedules", None))
         self.machines = MachineStore(self.machine_dirs, self.writable_dirs)
         self.run_store = RunStore(self.runs_db)
         self.run_manager = RunManager(self.run_store, on_cancel=self._cancel_requests,
                                       on_finish=self._release_token)
+        base = str(getattr(server_config, "public_url", None) or "").rstrip("/")  # e.g. https://hive.example.com
+        self.run_manager.callback_base = f"{base}/plugins/{name}/callback"
         self.service = StateGraphService(self)
         self._registry: Any = None
         self._sweeper: Optional[asyncio.Task] = None
+        self._scheduler: Optional[asyncio.Task] = None
         self._web: Any = None
 
     # ------------------------------------------------------------ plumbing
@@ -366,8 +374,10 @@ class StateGraphServer(SchemaBasedToolServer):
         deadline = loop.time() + max_wait
         while True:
             row = await self.run_manager.wait(run_id, timeout=1.0)
-            if row["status"] not in ("running",) or loop.time() >= deadline:
+            if (row["status"] != "running" and not _timed(row)) or loop.time() >= deadline:
                 return row
+            if _timed(row):  # run_manager.wait answers a wait at once: look again in a moment, not in a spin
+                await asyncio.sleep(max(0.0, min(1.0, deadline - loop.time())))
             if token is None or not getattr(token, "is_cancelled", False):
                 continue
             if not terminate:
@@ -388,7 +398,7 @@ class StateGraphServer(SchemaBasedToolServer):
                                             user_id=params.get("_user_id"), after=params.get("after"),
                                             kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
             row = read()  # the user's right to see it, and the filters, before any wait
-            if wait == "finish" and row["status"] == "running":  # a run of another process too: wait polls its row
+            if wait == "finish" and (row["status"] == "running" or _timed(row)):  # another process's too: polled
                 await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
                 row = read()
             view = row.get("view") or {}
@@ -451,6 +461,10 @@ class StateGraphServer(SchemaBasedToolServer):
         except Exception:
             logger.warning("stategraph: lease sweep failed", exc_info=True)
         self._sweeper = asyncio.ensure_future(self._sweep_loop())
+        for problem in self.schedule_problems:
+            logger.error("stategraph: %s -- left out", problem)
+        if self.schedules:
+            self._scheduler = asyncio.ensure_future(Scheduler(self, self.schedules).loop())
 
     async def _sweep_loop(self) -> None:
         await self._report_facades()  # after the start, off its path: a machine agent's mistake shows in the log
@@ -550,9 +564,15 @@ class StateGraphServer(SchemaBasedToolServer):
             logger.warning("stategraph: checking the machine agents failed", exc_info=True)
 
     async def stop_plugin(self) -> None:
-        if self._sweeper is not None:
-            self._sweeper.cancel()
+        for task in (self._sweeper, self._scheduler):
+            if task is not None:
+                task.cancel()
         await self.run_manager.shutdown()
+        if self._scheduler is not None:  # the next process (a restart, a reload) schedules at once
+            try:
+                self.run_store.release_scheduler(self.name, self.run_manager.owner)
+            except Exception:  # a locked database: the lease runs out by itself
+                logger.warning("stategraph: giving up the scheduler lease failed", exc_info=True)
         self.run_store.close()
 
 
@@ -697,9 +717,16 @@ def _summary(row: dict[str, Any], *, full_output: bool = False) -> dict[str, Any
     return {"run_status": row.get("status"), "state": row.get("final_state") or root.get("state"),
             "output": row.get("output") if full_output else _capped(row.get("output"), OUTPUT_CHARS),
             "error": _capped(row.get("error"), ROW_CHARS),
-            "paused": debug.get("paused"), **({"next": NEXT[row["status"]]} if row.get("status") in NEXT else {}),
+            "paused": debug.get("paused"),
+            **({"next": NEXT_TIMER if _timed(row) else NEXT[row["status"]]} if row.get("status") in NEXT else {}),
             "accepts": [{"frame": f.get("prefix", ""), "events": f.get("accepts")} for f in frames if f.get("accepts")],
             **({"mocks_unused": view["mocks_unused"]} if view.get("mocks_unused") else {})}
+
+
+def _timed(row: dict[str, Any]) -> bool:
+    """Whether a run waits without taking an event: in a timer state (after), it goes on by itself."""
+    frames = (row.get("view") or {}).get("frames") or []
+    return row.get("status") == "waiting" and not any(frame.get("accepts") for frame in frames)
 
 
 PLUGIN_FACTORY = StateGraphServer

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import datetime
 import functools
 import importlib
 import inspect
 import json
+import math
 import re
 from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
@@ -44,7 +46,11 @@ class AgentSpec(KindSpec):
     parse: Optional[str] = Field(
         None, description="a companion function name (or package.module:function), fn(text) -> out; raising "
                           "ValueError sends its message back to the same instance as feedback (parse_retries times)")
-    parse_retries: int = Field(1, ge=0, le=5, description="feedback rounds for schema/parse failures")
+    parse_retries: int = Field(1, ge=0, le=5, description="feedback rounds for schema/parse/check failures")
+    check: Optional[str] = Field(
+        None, description="a companion function name (or package.module:function), fn(out) or fn(sg, out), sync "
+                          "or async: raising ValueError sends its message back to the same instance as feedback "
+                          "(parse_retries rounds); its sg.tool() calls belong to the answer they check")
     vars: Union[dict[str, Any], str] = Field(
         default_factory=dict, description="agent template vars for this call, over the machine's: a map of "
                                           "templates, or one template that renders to an object of names")
@@ -52,10 +58,10 @@ class AgentSpec(KindSpec):
     continue_: Optional[str] = Field(
         None, alias="continue", description="instance id (template) of this agent to follow up instead of spawning")
 
-    @field_validator("parse")
+    @field_validator("parse", "check")
     @classmethod
-    def _parse(cls, value: Optional[str]) -> Optional[str]:
-        return None if value is None else check_callable_ref(value, "parse")
+    def _parse(cls, value: Optional[str], info: Any) -> Optional[str]:
+        return None if value is None else check_callable_ref(value, info.field_name)
 
 
 @register
@@ -93,31 +99,65 @@ class AgentKind(ActivityKind):
             text, instance = await act.backend.agent_create(act, agent=agent, task=task,
                                                             advanced=spec.advanced, vars=variables)
         act.meta["instance_id"] = instance
-        if spec.schema_ is None and spec.parse is None:
+        if spec.schema_ is None and spec.parse is None and spec.check is None:
             return text
         parser = resolve_callable(spec.parse, act, "parse") if spec.parse else None
+        checker = resolve_callable(spec.check, act, "check") if spec.check else None
         return await usable_answer(act, agent=agent, instance=instance, text=text, parser=parser,
                                    schema=spec.schema_, retries=spec.parse_retries, advanced=spec.advanced,
-                                   variables=variables)
+                                   variables=variables, checker=checker)
 
 
 async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[str], text: str, parser: Any,
                         schema: Optional[dict[str, Any]], retries: int, advanced: bool,
-                        variables: dict[str, Any]) -> Any:
-    """An agent's answer parsed (``parser``, else JSON) and checked against ``schema``; what fails goes back to the
-    same instance as feedback, ``retries`` times, then fails the activity."""
+                        variables: dict[str, Any], checker: Any = None) -> Any:
+    """An agent's answer parsed (``parser``, else JSON -- the text as it is when neither is asked for), checked
+    against ``schema``, then by ``checker``; what fails goes back to the same instance as feedback, ``retries``
+    times, then fails the activity."""
     for round_ in range(retries + 1):
-        value, problem = parse_answer(text, parser, schema)
+        value, problem = (text, None) if parser is None and schema is None else parse_answer(text, parser, schema)
+        if problem is None and checker is not None:
+            problem = await checked(act, checker, value)
         if problem is None:
             return value
         if round_ == retries or not instance:
-            raise ActivityError("parse_failed" if parser else "schema_invalid", f"{agent}: {problem}",
-                                data={"text": text[:4000], "instance_id": instance})
+            kind = "check_failed" if problem.startswith(_CHECK) else "parse_failed" if parser else "schema_invalid"
+            raise ActivityError(kind, f"{agent}: {problem}", data={"text": text[:4000], "instance_id": instance})
         act.meta["feedback_rounds"] = round_ + 1
         text = await act.backend.agent_continue(
             act, agent=agent, instance_id=instance, advanced=advanced, vars=variables,
             message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.")
     raise AssertionError("unreachable")
+
+
+#: How a check's refusal begins, in the feedback and the error.
+_CHECK = "the check did not take it: "
+
+
+async def checked(act: "ActivityRun", checker: Any, value: Any) -> Optional[str]:
+    """None when ``checker`` takes the answer, else why not (its ValueError). A first parameter ``sg`` gets the
+    read-only scope and ``sg.tool()``, whose calls are keyed by the answer they check: a resumed run whose agent
+    answers anew calls them anew instead of replaying another answer's (a divergence). A sync function runs in
+    the worker threads of ``call``."""
+    from plugins.stategraph.model.code import fingerprint
+
+    sg = act.sg_api(prefix=f"check.{fingerprint(jsonable(value))[:10]}.") \
+        if list(inspect.signature(checker).parameters)[:1] == ["sg"] else None
+    head = () if sg is None else (sg,)
+    try:
+        if inspect.iscoroutinefunction(checker):
+            await checker(*head, value)
+        else:
+            run = functools.partial(contextvars.copy_context().run, _in_thread, checker, *head, value)
+            result = await asyncio.get_running_loop().run_in_executor(_CALL_POOL, run)
+            if inspect.isawaitable(result):
+                await result
+    except ValueError as exc:
+        return _CHECK + (str(exc) or "no reason given")
+    finally:
+        if sg is not None:
+            sg._close()
+    return None
 
 
 def parse_answer(text: str, parser: Any, schema: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
@@ -438,6 +478,94 @@ def resolve_callable(ref: str, act: "ActivityRun", where: str) -> Any:
     return fn
 
 
+# ------------------------------------------------------------------------- emit
+
+class EmitSpec(KindSpec):
+    emit: Any = Field(description="what the run tells about itself (template): a status line for its caller, a "
+                                  "message in its session")
+
+
+@register
+class EmitKind(ActivityKind):
+    key = "emit"
+    spec_model = EmitSpec
+    template_fields = ("emit",)
+    title = "Emit"
+    icon = "message-square"
+    summary = ("Tell how far the run is: a status line its caller sees (a machine agent's caller, the chat) and a "
+               "message in the run's session; out = the text. Journaled: a replay does not tell it again")
+
+    def label(self, spec: EmitSpec) -> str:
+        return str(spec.emit)[:80]
+
+    async def run(self, spec: EmitSpec, act: "ActivityRun") -> Any:
+        from plugins.stategraph.engine.backend import tell
+
+        text = act.text(act.render(spec.emit, "emit"))
+        await tell(act, text)
+        return text
+
+
+# --------------------------------------------------------------------- callback
+
+#: How long a callback URL holds at most, and by default.
+CALLBACK_MAX = 30 * 24 * 3600.0
+CALLBACK_DEFAULT = "168h"
+
+
+class CallbackSpec(KindSpec):
+    callback: str = Field(description="the event its URL sends -- one this machine declares (a literal)")
+    frame: Optional[str] = Field(None, description="the frame the event goes to (template); default: the one that "
+                                                   "takes it")
+    expires: Any = Field(CALLBACK_DEFAULT, description="how long the URL holds (a duration, at most 720h)")
+
+    @field_validator("callback")
+    @classmethod
+    def _event(cls, value: str) -> str:
+        return check_name(value, "callback event")
+
+    @field_validator("expires")
+    @classmethod
+    def _expires(cls, value: Any) -> Any:
+        from plugins.stategraph.model.spec import parse_duration
+
+        seconds = parse_duration(value)
+        if seconds is None or not 0 < seconds <= CALLBACK_MAX:
+            raise ValueError(f"expires: a duration of at most {CALLBACK_MAX / 3600:g}h")
+        return value
+
+
+@register
+class CallbackKind(ActivityKind):
+    key = "callback"
+    spec_model = CallbackSpec
+    template_fields = ("frame",)
+    title = "Callback URL"
+    icon = "link"
+    summary = ("A URL that sends one event to this run, once, until it expires -- for a system outside (a mail, a "
+               "webhook) to answer a wait; out = {url, event, expires}. POST to it sends the event (a JSON body "
+               "{data} its data), GET shows what it would send")
+
+    def label(self, spec: CallbackSpec) -> str:
+        return f"URL for {spec.callback}"
+
+    async def run(self, spec: CallbackSpec, act: "ActivityRun") -> Any:
+        import hashlib
+        import secrets
+        import time
+
+        from plugins.stategraph.model.spec import parse_duration
+
+        frame = act.render(spec.frame, "frame") if spec.frame else None
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        expires = now + float(parse_duration(spec.expires) or 0)
+        act.run.store.add_callback(hashlib.sha256(token.encode()).hexdigest(), act.run_id, spec.callback,
+                                   str(frame) if frame else None, expires, now=now)
+        stamp = datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat(timespec="seconds")
+        return {"url": f"{act.run.callback_base}/{token}", "event": spec.callback, "expires": stamp}
+
+
 # ---------------------------------------------------------------------- machine
 
 class SubmachineSpec(KindSpec):
@@ -470,11 +598,32 @@ class MachineKind(ActivityKind):
 
 # --------------------------------------------------------------------- parallel
 
+class JoinCount(Strict):
+    count: int = Field(ge=1, description="how many branches must succeed")
+
+
 class ParallelSpec(KindSpec):
     parallel: dict[str, dict[str, Any]] = Field(description="branch name -> activity")
     fail: Literal["fast", "collect"] = Field(
         "fast", description="fast: the first failure cancels the rest and is the error; "
                             "collect: out[branch] = {status, out | error}")
+    join: Union[Literal["all", "first"], JoinCount] = Field(
+        "all", description="all: every branch; first: the first branch that succeeds ends it, the others are "
+                           "cancelled -- out = {that branch: out}; {count: n}: the first n that succeed. With first or "
+                           "count a failed branch only counts against them: too many raise join_failed")
+
+    @model_validator(mode="after")
+    def _join(self) -> "ParallelSpec":
+        if self.join != "all":
+            if "fail" in self.model_fields_set:
+                raise ValueError("fail belongs to join: all -- with first or count a failed branch only counts "
+                                 "against the branches still to succeed")
+            if self.needed() > len(self.parallel):
+                raise ValueError(f"join: count {self.needed()} is more than the {len(self.parallel)} branch(es)")
+        return self
+
+    def needed(self) -> int:
+        return len(self.parallel) if self.join == "all" else 1 if self.join == "first" else self.join.count
 
     @field_validator("parallel")
     @classmethod
@@ -500,8 +649,10 @@ class ParallelKind(ActivityKind):
 
     async def run(self, spec: ParallelSpec, act: "ActivityRun") -> Any:
         labels = list(spec.parallel)
-        results = await join(act, [(f"b.{label}", spec.parallel[label], None) for label in labels], spec.fail,
-                             concurrency=len(labels))
+        children = [(f"b.{label}", spec.parallel[label], None) for label in labels]
+        if spec.join != "all":
+            return await quorum(act, children, spec.needed())
+        results = await join(act, children, spec.fail, concurrency=len(labels))
         return dict(zip(labels, results))
 
 
@@ -515,6 +666,9 @@ class MapSpec(KindSpec):
     each: dict[str, Any] = Field(description="the activity run per item")
     concurrency: int = Field(1, ge=1, le=64, description="items at once; 1 = strictly in list order")
     fail: Literal["fast", "collect"] = Field("fast", description="as in parallel")
+    until: Optional[str] = Field(
+        None, description="Python expression over out (and the item, index): the first item in list order it holds "
+                          "for ends the map -- out = the results up to it; later items are cancelled or never start")
 
     @field_validator("as_")
     @classmethod
@@ -532,8 +686,9 @@ class MapKind(ActivityKind):
     spec_model = MapSpec
     title = "Map"
     icon = "list-todo"
-    summary = "Run one activity per item of a list; out = list of results in item order"
-    code_fields = ("map",)
+    summary = ("Run one activity per item of a list; out = list of results in item order (with until: up to the "
+               "first item it holds for)")
+    code_fields = ("map", "until")
     nested_one = ("each",)
 
     def label(self, spec: MapSpec) -> str:
@@ -548,18 +703,26 @@ class MapKind(ActivityKind):
     async def run(self, spec: MapSpec, act: "ActivityRun") -> Any:
         items = act.evaluate(spec.map, "map")
         items = list(act.plain(items)) if items is not None else []
+
+        def until(index: int, out: Any) -> bool:
+            return bool(act.evaluate(spec.until, "until", out=out, **{spec.as_: items[index], "index": index}))
+
         return await join(act, [(f"i.{i}", spec.each, {spec.as_: item, "index": i}) for i, item in enumerate(items)],
-                          spec.fail, concurrency=spec.concurrency)
+                          spec.fail, concurrency=spec.concurrency, until=until if spec.until else None)
 
 
 async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]],
-               fail: str, *, concurrency: int) -> list[Any]:
+               fail: str, *, concurrency: int, until: Optional[Any] = None) -> list[Any]:
     """Run children with a concurrency bound; results in child order.
 
     ``fail: fast`` -- a replayed failure ends the join before anything runs live
     (so replay reproduces the original outcome), and a live failure cancels the
     rest. ``fail: collect`` -- every child runs; a result is {status, out|error}.
     With ``concurrency`` 1 the children run strictly one after another in order.
+
+    ``until(index, out)`` (a map's until): the first child in order whose out it holds for ends the join -- the
+    results up to it; the children after it are cancelled at once (within the step that cut them: none of them ends
+    after the cut), or never start. By index, not by time: a replay cuts where the recorded run did.
 
     A cancel ends the children; one that is still replaying replays on into the
     end its journal gives it (docs/stategraph_design.md §3.10), and one the crashed
@@ -576,23 +739,46 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
     gate = asyncio.Semaphore(concurrency)
     results: list[Any] = [None] * len(children)
     begun: set[str] = set()
+    cut: dict[str, Optional[int]] = {"at": None}  # the first index until held for
+    past = lambda index: cut["at"] is not None and index > cut["at"]  # noqa: E731
+
+    def held(index: int, result: Any) -> None:
+        """until on a child's result: where it holds, the children after it are cut."""
+        succeeded = fail == "fast" or result["status"] == "succeeded"
+        if until is None or past(index) or not succeeded:
+            return
+        if until(index, result if fail == "fast" else result["out"]):
+            cut["at"] = index
+            for later, task in enumerate(tasks):  # only the begun: a task cancelled before its first step never
+                # reaches one()'s except and fails the gather -- the rest sees past() when it gets its turn
+                if later > index and not task.done() and children[later][0] in begun:
+                    task.cancel()
 
     async def one(index: int, label: str, raw: dict[str, Any], extra: Optional[dict[str, Any]]) -> None:
-        async with gate:
-            begun.add(label)
-            if fail == "fast":
-                try:
-                    results[index] = await act.child(label, raw, extra)
-                except ActivityError as exc:
-                    _name_child(exc, label)
-                    raise
-                return
-            try:
-                results[index] = {"status": "succeeded", "out": await act.child(label, raw, extra)}
-            except ActivityError as exc:
-                results[index] = {"status": "failed", "error": exc.as_dict()}
+        try:
+            async with gate:
+                if past(index):
+                    return  # never started: the cut is before it
+                begun.add(label)
+                if fail == "fast":
+                    try:
+                        results[index] = await act.child(label, raw, extra)
+                    except ActivityError as exc:
+                        _name_child(exc, label)
+                        raise
+                else:
+                    try:
+                        results[index] = {"status": "succeeded", "out": await act.child(label, raw, extra)}
+                    except ActivityError as exc:
+                        results[index] = {"status": "failed", "error": exc.as_dict()}
+                held(index, results[index])
+        except asyncio.CancelledError:
+            if past(index):
+                return  # cut by until: not the join's cancel
+            raise
 
-    tasks = [asyncio.ensure_future(one(i, *child)) for i, child in enumerate(children)]
+    tasks: list["asyncio.Future[None]"] = []
+    tasks.extend(asyncio.ensure_future(one(i, *child)) for i, child in enumerate(children))
     try:
         await asyncio.gather(*tasks)
     except BaseException as exc:
@@ -613,7 +799,102 @@ async def join(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Opt
                 if not keep or act.run.stopping or act.run.lost:
                     raise
         raise exc
+    if cut["at"] is not None:
+        await _end_branches(act, [child for child in children if child[0] not in begun])  # cut before they began
+        return results[:cut["at"] + 1]
     return results
+
+
+async def quorum(act: "ActivityRun", children: list[tuple[str, dict[str, Any], Optional[dict[str, Any]]]],
+                 needed: int) -> dict[str, Any]:
+    """``join: first | {count}``: every child at once, until ``needed`` succeeded -- {name: out} of those, in child
+    order -- or so many failed that ``needed`` cannot: join_failed with every failure. The rest is cancelled; its
+    finally and close activities run (§3.10).
+
+    Which children decided is the journal's: the join writes a row as it sees each child end (``joined``: an
+    activity's own row keeps the seq it started with), and a replay reads their order first and ends as the
+    recorded run did -- the children it did not decide by replay into their ends. Undecided, the recorded ones
+    replay and the rest runs live.
+    """
+    allowed = len(children) - needed  # failures it survives
+    won: list[str] = []
+    lost: dict[str, ActivityError] = {}
+
+    def order(index: int, label: str) -> tuple[float, int]:  # an end without its row (a kill between the two
+        seen = act.run.joined.get(act.child_key(label))       # writes) counts after the ones with theirs
+        return (math.inf if seen is None else seen, index)
+
+    ends = sorted((order(index, label), label) for index, (label, _, _) in enumerate(children)
+                  if act.child_key(label) in act.run.recorded)
+    for _, label in ends:
+        error = act.recorded_error(label)
+        if error is None:
+            won.append(label)
+        else:
+            lost[label] = error
+        if len(won) >= needed or len(lost) > allowed:
+            decided = set(won) | set(lost)
+            await _end_branches(act, [child for child in children if child[0] not in decided])
+            if len(won) < needed:
+                raise _join_failed(act, needed, lost)
+            outs = {label: await act.child(label, raw, extra) for label, raw, extra in children if label in won}
+            return {label[2:]: out for label, out in outs.items()}
+    won, lost = [], {}
+    outs: dict[str, Any] = {}
+    begun: set[str] = set()
+    fatal: list[BaseException] = []
+    over = asyncio.Event()
+    finished = {"n": 0}
+
+    def ended(label: str, failed: bool) -> None:
+        key = act.child_key(label)
+        if key not in act.run.joined:  # once: a replayed child keeps the place it ended at
+            act.run.joined[key] = None
+            act.run.write("trace", f"{key}:joined", state=act.state, status="joined", data={"child": key, "failed": failed})
+
+    async def one(label: str, raw: dict[str, Any], extra: Optional[dict[str, Any]]) -> None:
+        begun.add(label)
+        try:
+            outs[label] = await act.child(label, raw, extra)
+            ended(label, False)
+            won.append(label)
+            if len(won) >= needed:
+                over.set()
+        except ActivityError as exc:
+            ended(label, True)
+            lost[label] = exc
+            if len(lost) > allowed:
+                over.set()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # an abort (step_limit) or a divergence: it ends the run
+            fatal.append(exc)
+            over.set()
+        finally:
+            finished["n"] += 1
+            if finished["n"] == len(children):
+                over.set()
+
+    tasks = [asyncio.ensure_future(one(*child)) for child in children]
+    try:
+        await over.wait()
+    finally:  # decided, or cancelled from outside: the rest is cut, and a branch's finally runs to its end
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await _end_branches(act, [child for child in children if child[0] not in begun])
+    if fatal:
+        raise fatal[0]
+    if len(won) < needed:
+        raise _join_failed(act, needed, lost)
+    winners = set(won[:needed])  # the first to end: a later one that ended before the cut does not count
+    return {label[2:]: outs[label] for label, _, _ in children if label in winners}
+
+
+def _join_failed(act: "ActivityRun", needed: int, lost: dict[str, ActivityError]) -> ActivityError:
+    return ActivityError("join_failed", f"{act.path}: {len(lost)} branch(es) failed -- {needed} cannot succeed any more",
+                         data={label[2:]: error.as_dict() for label, error in lost.items()})
 
 
 def _name_child(error: ActivityError, label: str) -> None:

@@ -39,12 +39,13 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `group` | string | | Its folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of where it comes from ("My machines" for the writable root, else the plugin that ships it). |
 | `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
 | `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |
+| `machines` | name → machine | | Machines inside this file (keys of a machine without `stategraph`, `id`, `python`, `imports`, `group`, `machines`): `do: {machine: <name>}` runs one; they share the companion module and the imports, and run no other machine of the file. |
 | `params` | name → field | | The machine's parameters (run input, or a submachine's `params:`). |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§7). |
 | `context` | name → JSON | | The machine's variables (`ctx`) with their initial values. Plain JSON, not templates. |
 | `vars` | name → template, or one template | | Agent template vars for every agent this machine spawns (§11). |
 | `vars_from` | agent name | | Take that agent's configured `template_vars` as vars (§11). |
-| `limits` | `{max_steps, timeout}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10). |
+| `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) per frame; `timeout` of the whole run, root machine only (§10); `concurrency`: leaf activities (every kind but the composites) of the whole run at once (branches, items and submachines included; a call's `sg.tool()` within its turn), root machine only. |
 | `resources` | name → `{open, fork, close}` | | External state of each frame of this machine: a store namespace, a forum group (§14). |
 | `finally` | activity | | Runs once when a frame of this machine ends, however it ends (§14). |
 | `initial` | state name | yes | The first state: a top-level state, a choice or a junction. |
@@ -103,6 +104,7 @@ always a plain name.
 | `transitions` | state, choice, junction | Ordered list (§4) |
 | `max_visits` | state | The (n+1)-th entry within one activation of the parent region raises `loop_limit` in this state (§10) |
 | `timeout` | wait state | A duration; when it expires, `wait_timeout` is raised in the waiting state |
+| `after` | timer state | A duration: a state without `do` completes this long after entry (it needs a completion transition); an event it takes may come first. Not with `timeout` |
 | `status` | final of the root region | `succeeded` (default) or `failed` |
 | `output` | final | A template value (§6): the machine's result, or `out` of its composite |
 
@@ -339,7 +341,8 @@ instance session of its own; there is no list of spawnable agents to add it to.
 | `task` | The message (template). Required. |
 | `schema` | JSON schema: the answer is parsed as JSON and validated. One that is not a valid JSON schema is SG005. |
 | `parse` | A companion function name (or `package.module:function`), called as `fn(text)`; its return value is `out`. Raising `ValueError` sends the message back to the same instance as feedback. |
-| `parse_retries` | Feedback rounds for `schema`/`parse` failures (default 1, at most 5). |
+| `parse_retries` | Feedback rounds for `schema`/`parse`/`check` failures (default 1, at most 5). |
+| `check` | A companion function (or `module:func`), `fn(out)` or `fn(sg, out)`, sync or async, run on the usable answer: raising `ValueError` sends its message back to the same instance as feedback (`parse_retries` rounds), then raises `check_failed`. Without `schema`/`parse` it sees the answer text. Its `sg.tool()` calls are keyed by the answer they check: a resume whose agent answers anew calls them anew. |
 | `vars` | Template vars for this call (templates), over the machine's (§11). |
 | `advanced` | `true` uses the agent's advanced model profile. |
 | `continue` | Template: an instance id (of this run, and of the agent `agent` names) to follow up instead of starting a new instance. The instance keeps its conversation, also across a resume. One call per instance at a time: a second concurrent `continue` of it fails with `config`. |
@@ -589,6 +592,33 @@ def check_plan(chapters, min_words):
         effect: ctx.short = out["short"]
 ```
 
+### callback
+
+A URL that sends one event to this run, once, until it expires: for a system outside (a mail, a webhook)
+to answer a wait. `out` = `{url, event, expires}`; `POST` to the URL sends the event (a JSON body
+`{"data": ...}` is its data, at most 64 KB), `GET` shows what it would send. A used or expired URL, and
+one of a run that ended, answers 404; data that does not fit leaves it usable. The URL is a bearer key:
+whoever holds it sends the event once -- it lies in the out, so in the journal, ctx and wherever the
+machine passes it, and in the server's request logs. A system outside reaches it only once the operator
+opens `/plugins/<instance>/callback/*` in `auth.endpoint_security` and `auth.plugin_security` (it lies
+under the plugin's admin rule; README, Security).
+
+| Key | Meaning |
+|---|---|
+| `callback` | The event (a literal this machine declares) |
+| `frame` | The frame it goes to (template); default: the one that takes it |
+| `expires` | How long it holds (default `168h`, at most `720h`) |
+
+### emit
+
+Tells how far the run is: a status line its caller sees (a machine agent's caller, the chat; the first
+500 characters) and a message in the run's session. `out` is the text. Journaled: a replay does not tell
+it again; it runs in a mock-only run too.
+
+| Key | Meaning |
+|---|---|
+| `emit` | The text (template), e.g. `"chapter {{ ctx.n }} of {{ params.chapters }} drafted"` |
+
 ### machine
 
 Runs an imported machine as a submachine, in its own frame (§12).
@@ -626,6 +656,7 @@ Runs several activities at once and joins when all are done.
 |---|---|
 | `parallel` | `{branch: activity}` (≥ 1 branch; names like state names) |
 | `fail` | `fast` (default): the first failure cancels the other branches and is raised, with `error.branch`. `collect`: all branches run to the end; nothing is raised. |
+| `join` | `all` (default): every branch. `first`: the first branch that succeeds ends the parallel, the others are cancelled (their finally runs); `out` = `{that branch: out}`. `{count: n}`: the first n that succeed. A failed branch only counts against the ones still to succeed; once too many failed, `join_failed` is raised with `error.data` = `{branch: error}`. Not with `fail`. A resume takes the branches the recorded run took. |
 
 `out` is `{branch: out}`. With `fail: collect`, `out[branch]` is
 `{"status": "succeeded", "out": …}` or `{"status": "failed", "error": {…}}`.
@@ -658,6 +689,7 @@ Runs one activity per item of a list.
 | `as` | Name of the item variable (default `item`) |
 | `concurrency` | Items at once (default 1 = strictly one after another in list order; at most 64) |
 | `fail` | As in `parallel`; a fast failure carries `error.index` |
+| `until` | Python expression over `out` (and the item, `index`): the first item in list order it holds for ends the map; `out` = the results up to it, later items are cancelled or never start. By index, not by time: with `concurrency` > 1 an earlier item still finishes first. |
 
 `out` is a list in item order (`[]` for no items), whatever order the items finish
 in. Inside `each`, the item variable and `index` (0-based) are in scope.

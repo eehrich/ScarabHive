@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS callers (
     caller TEXT PRIMARY KEY,
     run_id TEXT NOT NULL
 );
+-- callback URLs (the callback kind): a token's hash, the run and event it sends, until when, and whether it was used
+CREATE TABLE IF NOT EXISTS callbacks (
+    hash TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    frame TEXT,
+    expires_at REAL NOT NULL,
+    used_at TEXT
+);
+-- schedules.py: per stategraph instance, the one process that starts the slots of its schedules
+CREATE TABLE IF NOT EXISTS scheduler_leases (
+    instance TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    lease_until TEXT NOT NULL
+);
 """
 
 _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting")
@@ -254,6 +269,61 @@ class RunStore:
                 " AND (lease_until IS NULL OR lease_until < ? OR owner = ?)",
                 (owner, until, utc_now(), run_id, now, owner))
             return cursor.rowcount == 1
+
+    def add_callback(self, digest: str, run_id: str, event: str, frame: Optional[str], expires_at: float, *,
+                     now: float) -> None:
+        """Keep a callback -- and drop the ones that expired: no URL of theirs holds any more."""
+        with self._lock:
+            db = self._db()
+            db.execute("DELETE FROM callbacks WHERE expires_at <= ?", (now,))
+            db.execute("INSERT INTO callbacks (hash, run_id, event, frame, expires_at) VALUES (?, ?, ?, ?, ?)",
+                       (digest, run_id, event, frame, expires_at))
+
+    def callback(self, digest: str, now: float) -> Optional[dict[str, Any]]:
+        """A callback that still holds (not used, not expired), or None."""
+        with self._lock:
+            row = self._db().execute("SELECT * FROM callbacks WHERE hash = ? AND used_at IS NULL AND expires_at > ?",
+                                     (digest, now)).fetchone()
+        return dict(row) if row else None
+
+    def callback_row(self, digest: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._db().execute("SELECT * FROM callbacks WHERE hash = ?", (digest,)).fetchone()
+        return dict(row) if row else None
+
+    def use_callback(self, digest: str, now: float) -> bool:
+        """Claim a callback for one use (one conditional update: two requests at once, one wins)."""
+        with self._lock:
+            cursor = self._db().execute("UPDATE callbacks SET used_at = ? WHERE hash = ? AND used_at IS NULL AND "
+                                        "expires_at > ?", (utc_now(), digest, now))
+            return cursor.rowcount == 1
+
+    def unuse_callback(self, digest: str) -> None:
+        """The event was not taken (its data did not fit): the URL holds again."""
+        with self._lock:
+            self._db().execute("UPDATE callbacks SET used_at = NULL WHERE hash = ?", (digest,))
+
+    def take_scheduler(self, instance: str, owner: str, until: str, *, now: str) -> bool:
+        """Hold the scheduler of ``instance`` for ``owner`` until ``until``, if nobody else holds a live lease on
+        it -- instances that share a runs.db schedule each their own."""
+        with self._lock:
+            db = self._db()
+            db.execute("INSERT OR IGNORE INTO scheduler_leases (instance, owner, lease_until) VALUES (?, ?, ?)",
+                       (instance, owner, until))
+            cursor = db.execute("UPDATE scheduler_leases SET owner = ?, lease_until = ? WHERE instance = ? AND "
+                                "(owner = ? OR lease_until < ?)", (owner, until, instance, owner, now))
+            return cursor.rowcount == 1
+
+    def release_scheduler(self, instance: str, owner: str) -> None:
+        """Give up the lease ``owner`` holds: a restarted process schedules at once, not after it ran out."""
+        with self._lock:
+            self._db().execute("UPDATE scheduler_leases SET lease_until = '' WHERE instance = ? AND owner = ?",
+                               (instance, owner))
+
+    def count_by_key(self, run_key: str) -> int:
+        """How many runs had this key: a schedule's slot tries at most so many (schedules.ATTEMPTS)."""
+        with self._lock:
+            return self._db().execute("SELECT COUNT(*) FROM runs WHERE run_key = ?", (run_key,)).fetchone()[0]
 
     def set_caller(self, caller: str, run_id: str) -> None:
         """Remember the run of a caller (``<agent>:<session id>``)."""

@@ -141,12 +141,13 @@ def writer_task(ctx, params):
 | `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
+| `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
 | `params` | name → field | | The machine's parameters. For a top-level run they are the run input; for a submachine, the `params:` of the calling activity. Field keys: `type` (`string`, `integer`, `number`, `boolean`, `object`, `array`, `any`), `required`, `default`, `enum`, `description`. |
 | `events` | name → `{description, data}` | | The named events this machine accepts (§3.4). A trigger that is neither `done`, `error` nor declared here is an error. `data` is an optional JSON schema for the payload; one that is not a valid JSON schema is SG001. |
 | `context` | name → JSON | | The machine's variables with their initial values. They are plain JSON, not templates. |
 | `vars` | name → template | | Agent template vars (§3.9) for every agent this machine spawns. Submachines inherit them. |
 | `vars_from` | agent name | | Import the `template_vars` of that agent's configuration under `vars`. This keeps shared prompt blocks (e.g. v6's Verbote/Klischees) in one place. |
-| `limits` | `{max_steps, timeout}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. |
+| `limits` | `{max_steps, timeout, concurrency}` | | `max_steps` (default 1000) bounds the dispatches of each frame of this machine. `timeout` bounds the running time of a whole run; it is honoured on the root machine only. `concurrency` bounds the leaf activities (agent, tool, decide, call, emit, callback -- every activity that is not a composite) of the whole run that run at once -- also in parallel branches, map items and submachines; the others wait for their turn before they start (a crash meanwhile finds them not started). A call's own `sg.tool()` runs within the call's turn. Root machine only. |
 | `resources` | name → `{open, fork, close, description}` | | External state that belongs to each frame of this machine (§2.8). |
 | `finally` | activity | | Runs once when a frame of this machine ends, whatever the cause (§2.8). |
 | `initial` | state name | yes | Target of the top-level initial pseudostate: a top-level state or a choice/junction. |
@@ -171,6 +172,7 @@ target is always a plain name.
 | `transitions` | state, choice, junction | Ordered list (§2.4). |
 | `max_visits` | state | The (n+1)-th entry within one activation of the parent region raises `loop_limit` in this state (§3.7). |
 | `timeout` | wait state | A duration. When it expires, `wait_timeout` is raised in the waiting state. |
+| `after` | timer state | A duration: a state without `do` and nested states that completes this long after it was entered (its completion transition goes on); an event it takes may come first. The expiry is journaled like a wait timeout, so a replay does not wait again; an internal transition keeps the deadline. Not with `timeout`. |
 | `status` | final of the root region | `succeeded` (default) or `failed`. |
 | `output` | final | A template value. The root final's output is the frame's output: the run output, or `out` for the caller of a submachine. A nested final's output is `out` for its composite's completion transitions. |
 
@@ -215,14 +217,16 @@ common keys.
 
 | Kind | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `vars` (template map, over the machine's vars); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
+| `agent: <name>` | `task` (template, required); `schema` (JSON schema: parse the answer as JSON and validate); `parse` (a companion function or `module:func`, `fn(text) -> out`; raising `ValueError` sends the message back to the same instance); `parse_retries` (feedback rounds, default 1); `check` (a companion function or `module:func`, `fn(out)` or `fn(sg, out)`, sync or async, run on the usable answer -- the text without `schema`/`parse`: raising `ValueError` sends its message back as feedback within the same rounds, then `check_failed`; its `sg.tool()` calls are keyed by a hash of the answer they check, so a resume whose agent answers anew does not replay another answer's calls); `vars` (template map, over the machine's vars); `advanced`; `continue` (template: an instance id of this run and of this agent, to follow up instead of starting a new instance) | the answer text, or the parsed value. `activity.instance_id` names the instance for a later `continue`. |
 | `tool: <flat tool name>` | `args` (template map); `error_if` (Python expression over `out`) | the tool's result. An error-shaped result (the core predicate `tools/base.py::_error_result_message`) or a true `error_if` raises `tool_failed` with `error.data` = the full result. |
 | `decide: noul\|choice\|score` | `question` (template); `criteria` (choice: `{option: meaning}` with ≥2 options; score: `[lowest, …, highest]` with ≥2; noul: optional `{true: …, false: …}`); `input` (template, the content to judge, not empty); `profile` (a decision profile of `llm_system.decision_profiles`; default: `llm_system.default_decision_profile`); or `by` (an agent decides instead of a decision model; not together with `profile`) with `advanced` and `parse_retries` (default 1) | `{value, confidence, probabilities}`. `value` is a probability (noul), an option (choice) or a scale point (score). `confidence` and `probabilities` may be `null`. |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`; `input`; `profile` or `by` | `{name: {value, confidence, probabilities}}`, from one call. |
 | `call: <companion function>` or `module:func` | `args` (template map) | The return value of `fn(**args)`, or `fn(sg, **args)` if its first parameter is named `sg`, which then receives the read-only scope, `sg.tool()` and `sg.Error`. Sync or async; a sync function runs in a worker thread (below). |
+| `callback: <event>` | `frame` (template); `expires` (a duration, default 168h, at most 720h) | `{url, event, expires}`: a URL that sends that event (one this machine declares) to this run, once, until it expires -- for a system outside (a mail, a webhook) to answer a wait. `POST` sends it (a JSON body `{"data": ...}` is its data; at most 64 KB); `GET` shows what it would send and sends nothing (mail scanners open links). Unknown, used and expired URLs, and those of a run that ended, all answer 404; a POST reads its body only for a URL that holds (counted as it comes, whatever its content-length says). Data that does not fit the event leaves the URL usable; a run no process runs is resumed first; a run another process holds cannot take it (409 -- which process, only the log says). The URL's base is the instance's `public_url`. The URL is a bearer key: runs.db keeps the token's SHA-256 only (table `callbacks`; expired rows go as a new URL is made), but the URL itself lies in the clear wherever the out goes (journal, ctx, output, the run's session) and in the request logs that record paths (the access log, security.log). **A system outside reaches the route `/plugins/<instance>/callback/*` only once the operator opens it in both layers**: `allow_anonymous` in `auth.endpoint_security.rules` and in `auth.plugin_security.endpoint_rules`, each listed before a rule that matches the plugin's other routes (README, Security). |
+| `emit: <template>` | -- | The text. The run tells how far it is: a status line under its request (a machine agent's caller and the chat see it; its first 500 characters) and a message in its session. Journaled like any activity: a replay does not tell it again. Not external: it runs in a mock-only run. |
 | `machine: <import alias>` | `params` (template map) | The output of the final the submachine ends in. A `failed` final raises `submachine_failed` with `error.data` = that output. |
-| `parallel: {branch: <activity>}` | `fail: fast\|collect` | `{branch: out}`. `fast`: the first failure cancels the other branches and is raised (with `error.branch`). `collect`: all branches run to the end, and `out[branch]` = `{status, out}` or `{status, error}`. Nothing is raised. |
-| `map: <Python expression>` | `each` (an activity); `as` (item variable, default `item`); `concurrency` (default 1 = strictly in list order); `fail` | A list in item order (`[]` for no items). `item`/`index` are in scope in `each`; a fast failure carries `error.index`. |
+| `parallel: {branch: <activity>}` | `fail: fast\|collect`; `join: all\|first\|{count: n}` | `{branch: out}`. With `join: first` or `{count}`: `{branch: out}` of the first branches that succeeded (in branch order); the rest is cancelled, a failed branch only counts against the quorum, and too many failures raise `join_failed` (`error.data` = `{branch: error}`). The join journals each branch's end as it sees it (`trace` rows `<child>:joined`, an activity's row keeps the seq it started with), so a resume takes the branches the recorded run took and replays the others into their ends. `fast`: the first failure cancels the other branches and is raised (with `error.branch`). `collect`: all branches run to the end, and `out[branch]` = `{status, out}` or `{status, error}`. Nothing is raised. |
+| `map: <Python expression>` | `each` (an activity); `as` (item variable, default `item`); `concurrency` (default 1 = strictly in list order); `fail`; `until` (expression over `out`, the item, `index`: the first item in list order it holds for ends the map, the results up to it; later items are cancelled or never start -- by index, so a replay cuts where the recorded run did) | A list in item order (`[]` for no items). `item`/`index` are in scope in `each`; a fast failure carries `error.index`. |
 
 A kind value (`agent`, `tool`) and `decide`'s `by` are a literal, or `{{ params.<name> }}` where
 that parameter has an `enum`. The validator then checks every enum value (§4); `by` gets the
@@ -902,7 +906,7 @@ across resumes. The terminal statuses are `succeeded`, `failed` and `cancelled`;
 | run_to | A temporary breakpoint on a state's `enter`. |
 | terminate | Cancel the run (§5.8). |
 | evaluate | A read-only Python expression against the paused scope. The answer is JSON data; a value that is not (a function, a module) comes as its `repr` -- as do watch values. |
-| set | `ctx.<path> = <expr>` while paused. The evaluated JSON value is journaled as an `edit`; several edits at one hook replay in `seq` order. |
+| set | `ctx.<path> = <expr>` while paused. The evaluated JSON value is journaled as an `edit`; several edits at one hook replay in `seq` order. `out = <expr>` at an activity's exit or error breakpoint repairs it: the activity completes with that out (a failed one too) and its completion transitions go on; replayed at that hook like any edit. A bare `out` is always this -- a context key of that name is `ctx.out`. |
 | fork | New run from a top-level step (§5.6); `pause` holds it at the fork point, `mocks` go over the source's. |
 
 - **Storage.** Breakpoints and watchpoints belong to the run and are stored with it, and so is
@@ -1051,11 +1055,26 @@ change anything but that state (a value under an anchor another state aliases, a
 file has already, a quote or indentation that runs past the state). Text of comments alone makes
 an empty state (`name: {}`), never a null the machine would not load.
 
+### 8.2a Schedules
+
+The instance's config `schedules: [{name, machine, every, offset?, late?, params?, user?}]` starts machines by the
+clock (`schedules.py`). Slots start at 00:00 UTC plus whole multiples of `every` (at least 1m) plus `offset`
+(`every: 24h, offset: 3h`: 03:00 UTC). A slot runs once: its run key is `schedule:<name>:<slot index>`, so a second
+look at it attaches to its run, resumes a run a stopped process left, starts it again after a transient failure
+(service.start_run) -- at most 3 runs a slot, 5 minutes after the last one ended: a failure that repeats must not
+cost a run per tick -- and otherwise -- ended -- does nothing.
+A slot first seen later than `late` after its start (default `every`, at most 1h; at least 1m, so two ticks see it)
+is left out: a process that was down does not catch up (a run the slot has goes on: resumed, or tried again). One process schedules an instance: the one holding its
+lease in `runs.db` (table `scheduler_leases`, a row per instance; taken and renewed every 30s, 90s long) -- the API
+while it runs; another takes over once it ran out, or at once after a stop gave it up.
+Runs are `user`'s, or nobody's. A wrong entry is logged at start and left out.
+
 ### 8.3 Security
 
 Machines contain Python and run agents and tools.
 
-- **Routes.** `/plugins/stategraph/*` is admin-only (`auth.plugin_security`).
+- **Routes.** `/plugins/stategraph/*` is admin-only (`auth.plugin_security`) -- the callback route too, until the
+  operator opens it (§2.5, `callback`).
 - **Tools.** Every tool that validates, saves, runs, controls or sends events checks
   `params['_user_id']` in its handler: the user must be an active admin, or listed in the
   instance's `allowed_users`. `catalog`, `list_machines`, `get_machine` and `get_run` are

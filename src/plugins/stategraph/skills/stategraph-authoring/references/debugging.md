@@ -161,7 +161,7 @@ Conditions and watch expressions are read-only Python over the scope at that hoo
 | `step` | run to the next hook |
 | `run_to` + `state` | a one-off breakpoint on that state's entry (`state` is required) |
 | `evaluate` + `expr` | a read-only expression against the paused scope: `ctx.draft[:200]`, `out`. The answer is JSON; a value that is not data (a function, a module) comes as its `repr`, as watch values do |
-| `set` + `path` + `expr` | while paused: `ctx.<path> = <expr>` (e.g. `path="round"`, `expr="0"`); journaled, so a resume applies it again |
+| `set` + `path` + `expr` | while paused: `ctx.<path> = <expr>` (e.g. `path="round"`, `expr="0"`); journaled, so a resume applies it again. `path="out"` at an exit or error breakpoint of a state with `do` repairs the activity: it completes with that out -- a failed one too -- and its completion transitions go on (a context key named out: `ctx.out`) |
 | `terminate` | cancel the run and its running agent calls; its `finally` activities run first. An interrupted run is resumed into its termination, so they run there too; if its definition no longer loads, it is marked cancelled without them, and its error says so |
 
 Arguments of the wrong type are refused before anything acts, and so are malformed

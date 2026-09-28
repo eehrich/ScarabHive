@@ -410,6 +410,7 @@ PANEL_CASES = [
     "a_machine_is_duplicated_under_a_new_id_with_its_own_module",
     "a_narrow_panel_folds_the_machine_list_once_a_machine_is_open_and_offers_the_palette_as_a_menu",
     "a_renamed_state_stays_shown_with_what_its_forms_hold",
+    "a_timer_state_says_so_and_offers_its_after",
     "a_shared_activity_is_locked_with_a_hint",
     "another_kind_without_its_key_is_refused",
     "a_text_over_lines_is_a_text_area",

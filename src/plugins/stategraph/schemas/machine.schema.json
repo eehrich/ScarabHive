@@ -14,6 +14,19 @@
           "title": "Agent",
           "type": "string"
         },
+        "check": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "a companion function name (or package.module:function), fn(out) or fn(sg, out), sync or async: raising ValueError sends its message back to the same instance as feedback (parse_retries rounds); its sg.tool() calls belong to the answer they check",
+          "title": "Check"
+        },
         "continue": {
           "anyOf": [
             {
@@ -60,7 +73,7 @@
         },
         "parse_retries": {
           "default": 1,
-          "description": "feedback rounds for schema/parse failures",
+          "description": "feedback rounds for schema/parse/check failures",
           "maximum": 5,
           "minimum": 0,
           "title": "Parse Retries",
@@ -204,6 +217,87 @@
       "title": "Python activity (call)",
       "type": "object"
     },
+    "Activity_callback": {
+      "additionalProperties": false,
+      "properties": {
+        "callback": {
+          "description": "the event its URL sends -- one this machine declares (a literal)",
+          "title": "Callback",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "expires": {
+          "default": "168h",
+          "description": "how long the URL holds (a duration, at most 720h)",
+          "title": "Expires"
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the frame the event goes to (template); default: the one that takes it",
+          "title": "Frame"
+        },
+        "idempotent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
+          "title": "Idempotent"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetrySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "deadline of one attempt",
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "callback"
+      ],
+      "title": "Callback URL activity (callback)",
+      "type": "object"
+    },
     "Activity_decide": {
       "additionalProperties": false,
       "properties": {
@@ -343,6 +437,68 @@
         "input"
       ],
       "title": "Decision activity (decide)",
+      "type": "object"
+    },
+    "Activity_emit": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "emit": {
+          "description": "what the run tells about itself (template): a status line for its caller, a message in its session",
+          "title": "Emit"
+        },
+        "idempotent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
+          "title": "Idempotent"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetrySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "deadline of one attempt",
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "emit"
+      ],
+      "title": "Emit activity (emit)",
       "type": "object"
     },
     "Activity_machine": {
@@ -499,6 +655,19 @@
           "default": null,
           "description": "deadline of one attempt",
           "title": "Timeout"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Python expression over out (and the item, index): the first item in list order it holds for ends the map -- out = the results up to it; later items are cancelled or never start",
+          "title": "Until"
         }
       },
       "required": [
@@ -538,6 +707,23 @@
           "default": null,
           "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
           "title": "Idempotent"
+        },
+        "join": {
+          "anyOf": [
+            {
+              "enum": [
+                "all",
+                "first"
+              ],
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/JoinCount"
+            }
+          ],
+          "default": "all",
+          "description": "all: every branch; first: the first branch that succeeds ends it, the others are cancelled -- out = {that branch: out}; {count: n}: the first n that succeed. With first or count a failed branch only counts against them: too many raise join_failed",
+          "title": "Join"
         },
         "parallel": {
           "additionalProperties": {
@@ -737,9 +923,39 @@
       "title": "EventSpec",
       "type": "object"
     },
+    "JoinCount": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "description": "how many branches must succeed",
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "title": "JoinCount",
+      "type": "object"
+    },
     "LimitsSpec": {
       "additionalProperties": false,
       "properties": {
+        "concurrency": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "leaf activities (agent, tool, decide, call) of the whole run at once; the others wait for their turn before they start",
+          "title": "Concurrency"
+        },
         "max_steps": {
           "default": 1000,
           "description": "macro steps per machine instance",
@@ -768,6 +984,105 @@
         }
       },
       "title": "LimitsSpec",
+      "type": "object"
+    },
+    "LocalMachineSpec": {
+      "additionalProperties": false,
+      "description": "A machine inside another machine's file (``machines: {name: ...}``): ``machine: <name>`` runs it in its own\nframe. It shares that file's companion module and imports, and runs no other machine of the file.",
+      "properties": {
+        "context": {
+          "additionalProperties": true,
+          "title": "Context",
+          "type": "object"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "events": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EventSpec"
+          },
+          "title": "Events",
+          "type": "object"
+        },
+        "finally": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finally"
+        },
+        "initial": {
+          "title": "Initial",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/LimitsSpec"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamSpec"
+          },
+          "title": "Params",
+          "type": "object"
+        },
+        "resources": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ResourceSpec"
+          },
+          "title": "Resources",
+          "type": "object"
+        },
+        "states": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StateSpec"
+          },
+          "title": "States",
+          "type": "object"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "vars": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Vars"
+        },
+        "vars_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vars From"
+        }
+      },
+      "required": [
+        "initial",
+        "states"
+      ],
+      "title": "LocalMachineSpec",
       "type": "object"
     },
     "ParamSpec": {
@@ -953,6 +1268,25 @@
       "additionalProperties": false,
       "description": "A state or pseudostate. Which keys apply depends on ``type`` (checked by the validator).",
       "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "timer state (no do, not composite): completes this long after it was entered -- its completion transition goes on; an event it takes may come first",
+          "title": "After"
+        },
         "description": {
           "default": "",
           "title": "Description",
@@ -968,7 +1302,13 @@
               "$ref": "#/$defs/Activity_call"
             },
             {
+              "$ref": "#/$defs/Activity_callback"
+            },
+            {
               "$ref": "#/$defs/Activity_decide"
+            },
+            {
+              "$ref": "#/$defs/Activity_emit"
             },
             {
               "$ref": "#/$defs/Activity_machine"
@@ -1247,6 +1587,14 @@
     },
     "limits": {
       "$ref": "#/$defs/LimitsSpec"
+    },
+    "machines": {
+      "additionalProperties": {
+        "$ref": "#/$defs/LocalMachineSpec"
+      },
+      "description": "machines inside this file: machine: <name> runs one in its own frame; they share the companion module and the imports",
+      "title": "Machines",
+      "type": "object"
     },
     "params": {
       "additionalProperties": {

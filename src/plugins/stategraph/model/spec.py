@@ -104,8 +104,8 @@ class ParamSpec(Strict):
 
 #: Every error type the engine raises (docs/stategraph_design.md §3.5); plugins' kinds may add their own.
 KNOWN_ERROR_TYPES = frozenset({
-    "agent_failed", "schema_invalid", "parse_failed", "tool_failed", "tool_denied", "decision_failed", "call_failed",
-    "submachine_failed", "activity_failed", "timeout", "interrupted", "template_failed", "params_invalid", "unmocked",
+    "agent_failed", "schema_invalid", "parse_failed", "check_failed", "tool_failed", "tool_denied", "decision_failed",
+    "call_failed", "submachine_failed", "join_failed", "activity_failed", "timeout", "interrupted", "template_failed", "params_invalid", "unmocked",
     "no_backend", "config", "loop_limit", "no_transition", "guard_failed", "action_failed", "wait_timeout",
     "not_serialisable"})
 
@@ -194,6 +194,9 @@ class StateSpec(Strict):
     transitions: list[TransitionSpec] = Field(default_factory=list)
     max_visits: Optional[int] = Field(None, ge=1)
     timeout: Optional[Duration] = Field(None, description="wait state only: raise wait_timeout after this long")
+    after: Optional[Duration] = Field(
+        None, description="timer state (no do, not composite): completes this long after it was entered -- its "
+                          "completion transition goes on; an event it takes may come first")
     initial: Optional[str] = Field(None, description="composite state: the nested initial state")
     states: Optional[dict[str, "StateSpec"]] = Field(None, description="composite state: nested states")
     status: Optional[Literal["succeeded", "failed"]] = Field(None, description="final state of the root region only")
@@ -202,7 +205,7 @@ class StateSpec(Strict):
         None, alias="finally", description="an activity that runs once on every exit of this state, whatever the "
                                            "cause (transition, unhandled error, cancel); reads ending")
 
-    @field_validator("timeout")
+    @field_validator("timeout", "after")
     @classmethod
     def _timeout(cls, value: Optional[Duration]) -> Optional[Duration]:
         parse_duration(value)
@@ -247,12 +250,33 @@ class ResourceSpec(Strict):
 class LimitsSpec(Strict):
     max_steps: int = Field(1000, ge=1, description="macro steps per machine instance")
     timeout: Optional[Duration] = Field(None, description="wall time of a whole run")
+    concurrency: Optional[int] = Field(
+        None, ge=1, description="leaf activities (agent, tool, decide, call) of the whole run at once; the others "
+                                "wait for their turn before they start")
 
     @field_validator("timeout")
     @classmethod
     def _timeout(cls, value: Optional[Duration]) -> Optional[Duration]:
         parse_duration(value)
         return value
+
+
+class LocalMachineSpec(Strict):
+    """A machine inside another machine's file (``machines: {name: ...}``): ``machine: <name>`` runs it in its own
+    frame. It shares that file's companion module and imports, and runs no other machine of the file."""
+
+    title: str = ""
+    description: str = ""
+    params: dict[str, ParamSpec] = Field(default_factory=dict)
+    events: dict[str, EventSpec] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    vars: Union[dict[str, Any], str] = Field(default_factory=dict)
+    vars_from: Optional[str] = None
+    limits: LimitsSpec = Field(default_factory=LimitsSpec)
+    resources: dict[str, "ResourceSpec"] = Field(default_factory=dict)
+    finally_: Optional[dict[str, Any]] = Field(None, alias="finally")
+    initial: str
+    states: dict[str, StateSpec]
 
 
 class MachineSpec(Strict):
@@ -266,6 +290,9 @@ class MachineSpec(Strict):
                                        "the folder of where it comes from")
     python: Optional[str] = Field(None, description="companion module, relative to this file")
     imports: dict[str, str] = Field(default_factory=dict, description="alias -> ./relative.yaml or machine id")
+    machines: dict[str, LocalMachineSpec] = Field(
+        default_factory=dict, description="machines inside this file: machine: <name> runs one in its own frame; "
+                                          "they share the companion module and the imports")
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     events: dict[str, EventSpec] = Field(default_factory=dict, description="named events this machine accepts")
     context: dict[str, Any] = Field(default_factory=dict)
@@ -298,6 +325,13 @@ class MachineSpec(Strict):
     def _imports(cls, value: dict[str, str]) -> dict[str, str]:
         for alias in value:
             check_name(alias, "import alias")
+        return value
+
+    @field_validator("machines")
+    @classmethod
+    def _machines(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for name in value:
+            check_name(name, "machine name")
         return value
 
     @field_validator("params", "context", "events")

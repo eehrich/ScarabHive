@@ -53,8 +53,9 @@ class _FileContext:
         return frozenset({"resources"}) if self.spec.resources else frozenset()
 
     def problem(self, level: str, code: str, message: str, path: list[Any]) -> None:
-        self.tree.add(level, code, message, file=self.loaded.path, path=dotted(path),  # type: ignore[arg-type]
-                      line=self.loaded.line_of(path))
+        # a machine inside another's file (machines:) is reported where it lies in that file
+        self.tree.add(level, code, message, file=self.loaded.local_of or self.loaded.path,  # type: ignore[arg-type]
+                      path=dotted(self.loaded.within + list(path)), line=self.loaded.line_of(path))
 
 
 def validate_tree(tree: MachineTree, config_check: Optional[ConfigCheck] = None) -> MachineTree:
@@ -107,6 +108,9 @@ def _validate_file(fc: _FileContext) -> None:
     if fc.is_submachine and spec.limits.timeout is not None:
         fc.problem("warning", "SG108", "limits.timeout of a submachine is ignored; the calling activity's timeout "
                                        "bounds it", ["limits", "timeout"])
+    if fc.is_submachine and spec.limits.concurrency is not None:
+        fc.problem("warning", "SG108", "limits.concurrency of a submachine is ignored; the run's root machine "
+                                       "bounds every activity of the run", ["limits", "concurrency"])
     for name, state in fc.states.items():
         _check_state(fc, name, state, fc.paths[name])
     _check_graph(fc)
@@ -204,7 +208,7 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
         fc.problem("error", "SG003", f"a {kind} state has no finally (only states that are entered and left do)",
                    path + ["finally"])
     if kind == "final":
-        for key in ("do", "entry", "exit", "states", "max_visits", "initial", "timeout"):
+        for key in ("do", "entry", "exit", "states", "max_visits", "initial", "timeout", "after"):
             if getattr(state, key):
                 fc.problem("error", "SG003", f"a final state has no {key}", path + [key])
         if state.transitions:
@@ -218,7 +222,7 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
     if state.status is not None or state.output is not None:
         fc.problem("error", "SG003", "status and output belong to final states", path)
     if kind in ("choice", "junction"):
-        for key in ("do", "entry", "exit", "states", "max_visits", "initial", "timeout"):
+        for key in ("do", "entry", "exit", "states", "max_visits", "initial", "timeout", "after"):
             if getattr(state, key):
                 fc.problem("error", "SG003", f"a {kind} pseudostate has no {key}", path + [key])
         if not state.transitions:
@@ -244,6 +248,16 @@ def _check_state(fc: _FileContext, name: str, state: StateSpec, path: list[Any])
     elif state.initial:
         fc.problem("error", "SG003", "initial belongs to composite states (with nested states)", path + ["initial"])
 
+    if state.after is not None and kind == "state":
+        if state.do is not None or state.states:
+            fc.problem("error", "SG003", "after makes a timer state: one without do and without nested states (an "
+                                         "activity has its own do.timeout)", path + ["after"])
+        elif not any(t.trigger == TRIGGER_DONE for t in state.transitions):
+            fc.problem("error", "SG003", f"{name!r} is a timer state (after) but has no completion transition (one "
+                                         "without a trigger): nothing would go on when its time is up", path + ["after"])
+        if state.timeout is not None:
+            fc.problem("error", "SG003", "a timer state completes after its time (after); timeout raises wait_timeout "
+                                         "in a wait state -- take one of them", path + ["timeout"])
     is_wait = state.is_wait
     if state.timeout is not None and not is_wait:
         fc.problem("error", "SG003", "timeout belongs to wait states (no do, no completion transition); an "
@@ -420,9 +434,10 @@ def _check_activity(fc: _FileContext, raw: Any, path: list[Any], extra: set[str]
             _check_template(fc, raw[key], path + [key], bound, extra)
     for key in kind.code_fields:
         if key in raw and raw[key] is not None:
-            field_bound = bound | {"out"} if key == "error_if" else bound
-            _check_code(fc, str(raw[key]), path + [key], mode="eval", bound=field_bound, extra=extra)
-    for key in ("parse", "call"):
+            field_bound = bound | {"out"} if key in ("error_if", "until") else bound
+            field_extra = extra | set(kind.child_scope_names(spec)) if key == "until" else extra  # item, index
+            _check_code(fc, str(raw[key]), path + [key], mode="eval", bound=field_bound, extra=field_extra)
+    for key in ("parse", "call", "check"):
         reference = raw.get(key) if key in raw else None
         if isinstance(reference, str) and ":" not in reference and not fc.loaded.namespace.has_function(reference):
             fc.problem("error", "SG004", f"{key}: the companion module defines no function {reference!r}",
@@ -481,6 +496,9 @@ def _check_submachine(fc: _FileContext, alias: str, params: dict[str, Any], path
 
 def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path: list[Any]) -> None:
     value = getattr(spec, kind.key, None)
+    if kind.key == "callback" and value not in fc.spec.events:
+        fc.problem("error", "SG006", f"callback: this machine declares no event {value!r} (events: "
+                                     f"{', '.join(fc.spec.events) or 'none'})", path + ["callback"])
     if kind.key in ("agent", "tool") and isinstance(value, str) and "{{" in value and not param_ref(value):
         fc.problem("error", "SG005", f"{kind.key}: a kind value is a literal or {{{{ params.<name> }}}} with an "
                                      "enum -- a computed name would bypass the configuration check", path + [kind.key])

@@ -38,6 +38,8 @@ Configuration of `stategraph` (defaults in code):
 | `allowed_users` | `[]` | users besides admins who may validate, save, run and control machines |
 | `inject_params` | `{}` | `{tool pattern: {param: value}}` added to tool activities after rendering (secrets) |
 | `default_max_wait` | `600` | seconds `run_machine` waits with `wait: finish` |
+| `public_url` | `""` | the app's URL as a system outside reaches it (`https://hive.example.com`): the base of the URLs of `callback` activities; empty: the URL is a path. The route `/plugins/<instance>/callback/*` is admin-only until the operator opens it (Security) |
+| `schedules` | `[]` | machines started by the clock: `[{name, machine, every, offset?, late?, params?, user?}]` -- slots at 00:00 UTC plus multiples of `every` (at least 1m) plus `offset`; a slot runs once (run key `schedule:<name>:<slot>`; again only after a transient failure, at most 3 runs, 5 minutes after the last ended), one first seen later than `late` after its start (default `every`, at most 1h, at least 1m) is left out; one process starts an instance's slots, whoever holds its lease in `runs.db` (given up at a stop); a slot's run that a stopped process left is resumed. A wrong entry is logged and left out (`schedules.py`) |
 
 **Letting machines use more.** An agent activity runs any configured, enabled agent
 directly -- the registered instance, on a session of its own -- so a new agent needs no
@@ -143,6 +145,27 @@ and they run agents and tools. Therefore:
 
 - **Routes** `/plugins/stategraph/*` require the admin role (`config/config.yaml`,
   `auth.plugin_security`).
+- **Callback URLs** (`callback` activity) are bearer keys: whoever holds one sends its one event
+  to its run once, until it expires (at most 30 days). runs.db keeps only the token's hash, but the
+  URL lies in the clear in the activity's out (journal, ctx, wherever the machine passes it) and
+  in the request logs that record paths (access log, security.log). Their route is admin-only
+  like the rest until the operator opens it -- in both layers, each rule before any rule that
+  matches the plugin's other routes:
+
+  ```yaml
+  auth:
+    endpoint_security:
+      rules:
+        - pattern: "/plugins/stategraph/callback/*"
+          policy: "allow_anonymous"
+    plugin_security:
+      endpoint_rules:
+        - pattern: "/plugins/stategraph/callback/*"   # above "/plugins/stategraph/*"
+          policy: "allow_anonymous"
+  ```
+
+  Opened, a caller without a token that holds gets 404 before any body is read; a body is at
+  most 64 KB.
 - **Tools** that validate, save, run, control or send events require an admin or a user
   in `allowed_users`. Validating and saving never execute a machine's companion module
   (its names come from a scan); only a run does.

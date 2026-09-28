@@ -680,7 +680,7 @@ function drawInspector() {
     <div class="sg-section">
       <div class="sg-inspect-head">
         ${state.icon ? icon(state.icon) : ''}<h3 class="sg-inspect-name">${state.name}</h3>
-        ${badge(state.composite ? 'composite' : state.wait ? 'wait state' : state.type)}
+        ${badge(state.composite ? 'composite' : state.after != null ? `timer ${state.after}` : state.wait ? 'wait state' : state.type)}
         ${state.kind ? badge(state.kind, 'accent') : ''}
         ${parentInitial === state.name ? badge('initial', 'info') : ''}
       </div>
@@ -809,6 +809,7 @@ const STATE_FIELD_SCHEMA = {
   description: { type: 'string' },
   max_visits: { type: 'integer', description: 'entries of this state per frame; one more raises loop_limit' },
   timeout: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'wait state: raise wait_timeout after this long (30s, 5m)' },
+  after: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'timer state: complete this long after entry (10m); an event it takes may come first' },
   entry: { type: 'string', 'x-code': true, description: 'Python statements, run on entry' },
   exit: { type: 'string', 'x-code': true, description: 'Python statements, run on exit' },
   status: { enum: ['succeeded', 'failed'], description: 'final state of the root region: how the run ends' },
@@ -826,6 +827,7 @@ const MACHINE_FIELD_SCHEMA = {
   context: { type: 'object', description: 'the run context and its start values' },
   vars: { type: 'object', description: 'agent template vars: a map of templates' },
   imports: { type: 'object', description: 'alias: ./file.yaml or machine id' },
+  machines: { type: 'object', description: 'machines inside this file -- name: {params, context, initial, states, ...}; machine: <name> runs one; they share the companion module and imports' },
   resources: { type: 'object', description: 'name: {open, fork, close} activities' },
   limits: { type: 'object', description: 'max_steps, timeout' },
   finally: { type: 'object', description: 'an activity that runs once when the machine ends' },
@@ -837,7 +839,8 @@ function stateFieldNames(state) {
   if (state.composite) return ['description', 'max_visits', 'entry', 'exit', 'finally'];
   if (state.type === 'final') return ['type', 'description', 'status', 'output'];
   if (state.type !== 'state') return ['type', 'description'];
-  return ['type', 'description', 'max_visits', ...(state.wait || state.timeout != null ? ['timeout'] : []), 'entry', 'exit', 'finally'];
+  return ['type', 'description', 'max_visits', ...(state.wait || state.timeout != null ? ['timeout'] : []),
+    ...(state.kind ? [] : ['after']), 'entry', 'exit', 'finally'];
 }
 
 const stateValue = (state, name) => (name === 'type' ? state.type : state[name] ?? undefined);
@@ -910,7 +913,8 @@ async function loadCatalog() {
 /** The machines a machine activity may name: this machine's import aliases, then every machine id. */
 function drawMachineChoices() {
   const aliases = Object.keys(S.machine?.graph?.imports || {});
-  render($('sgMachines'), [...aliases.map((alias) => html`<option value="${alias}">import of ${S.machine.graph.imports[alias]}</option>`),
+  render($('sgMachines'), [...(S.machine?.graph?.machines || []).map((name) => html`<option value="${name}">in this file</option>`),
+    ...aliases.map((alias) => html`<option value="${alias}">import of ${S.machine.graph.imports[alias]}</option>`),
     ...S.machines.map((m) => html`<option value="${m.id}">${m.title || ''}</option>`)]);
 }
 

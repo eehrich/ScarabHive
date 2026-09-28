@@ -214,7 +214,8 @@ class MachineAgent(Agent):
                 yield await refuse(f"{self.name}: run {run_id} is {state or 'gone'}; a continue does not start "
                                    "a new run")
                 return
-            if ask and state == "waiting":  # the message answers the question the run asked
+            # the message answers the question the run asked -- a timer that takes no event is waited out below
+            if ask and state == "waiting" and _waits(row):
                 since = _last_seq(server, run_id)
                 problem = self._reply(server, row, text, user_id)
                 if problem is not None:
@@ -235,7 +236,8 @@ class MachineAgent(Agent):
                 return
             if row["status"] in ENDED and ended_here:
                 break
-            if ask and row["status"] == "waiting" and _waits(row) != asked:
+            # a wait with events to answer -- a timer state (after) that takes none waits out its time
+            if ask and row["status"] == "waiting" and _waits(row) and _waits(row) != asked:
                 yield {"type": "_outcome", "event": {"request_id": request_id,
                                                      **await self._ask(server, row, text, session_id, status,
                                                                        since=since)}}

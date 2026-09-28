@@ -72,6 +72,7 @@ class FakeBackend:
         self.template_vars = dict(template_vars or {})
         self.calls: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
+        self.notes: list[str] = []
 
     def count(self, path: str) -> int:
         return sum(1 for call in self.calls if call["path"] == path)
@@ -108,6 +109,10 @@ class FakeBackend:
 
     async def decide(self, act: Any, *, questions: dict[str, Any], input: Any, profile: Optional[str]) -> Any:
         return await self._answer("decide", act, questions=questions, input=input, profile=profile)
+
+    async def note(self, text: str) -> None:
+        """An emit's message for the run's session."""
+        self.notes.append(text)
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         return dict(self.template_vars.get(agent, {}))

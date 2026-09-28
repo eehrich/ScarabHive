@@ -41,6 +41,7 @@ def graph_view(tree: MachineTree) -> dict[str, Any]:
     graph["title"] = _text(doc.get("title")) or ""
     graph["description"] = _text(doc.get("description")) or ""
     graph["initial"] = _text(doc.get("initial"))
+    graph["machines"] = [str(name) for name in _mapping(doc.get("machines"))]  # inside this file: machine: <name>
     graph["imports"] = {str(alias): str(ref) for alias, ref in _mapping(doc.get("imports")).items()
                         if isinstance(ref, str)}
     graph["params"] = {str(name): to_plain(field) if isinstance(field, dict) else {}
@@ -79,6 +80,7 @@ def _walk(doc: Any, states: dict[Any, Any], parent: Optional[str], prefix: list[
             "exit": _text(body.get("exit")),
             "max_visits": body.get("max_visits") if isinstance(body.get("max_visits"), int) else None,
             "timeout": to_plain(body.get("timeout")) if isinstance(body.get("timeout"), (int, float, str)) else None,
+            "after": to_plain(body.get("after")) if isinstance(body.get("after"), (int, float, str)) else None,
             "status": _text(body.get("status")),
             "description": _text(body.get("description")) or "",
             "do": to_plain(body["do"]) if isinstance(body.get("do"), dict) else None,
@@ -136,7 +138,7 @@ def _activity(raw: Any) -> tuple[Optional[str], str, Optional[str]]:
 
 
 #: Machine keys the inspector edits as YAML text.
-MACHINE_OBJECTS = ("limits", "params", "events", "context", "vars", "imports", "resources", "finally")
+MACHINE_OBJECTS = ("limits", "params", "events", "context", "vars", "imports", "machines", "resources", "finally")
 
 
 def _texts(values: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
@@ -162,9 +164,9 @@ def _texts(values: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
 def _quoted(text: str, doc: Any) -> Any:
     """The file read again with its quotes kept, for texts the editor sends back (``doc``: where that fails)."""
     try:
-        yaml = YAML(typ="rt")
-        yaml.preserve_quotes = True
-        return yaml.load(text)
+        round_trip = YAML(typ="rt")  # ruamel, not PyYAML: it keeps the quotes (yaml_io's loader drops them)
+        round_trip.preserve_quotes = True
+        return round_trip.load(text)
     except Exception:  # the loader read it: this does not fail in practice, and doc says the same without quotes
         return doc
 

@@ -726,6 +726,15 @@ const CASES = {
       'the overview was drawn over the renamed state');
   },
 
+  async a_timer_state_says_so_and_offers_its_after() {
+    fieldsAnswer = { ...FIELDS, graph: { ...FIELDS.graph,
+      states: FIELDS.graph.states.map((s) => (s.name === 'idle' ? { ...s, after: '10m' } : s)) } };
+    await boot('?machine=fields');
+    await choose('idle');
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('timer 10m') && /id="sf-after"[^>]*value="10m"|value="10m"[^>]*id="sf-after"/.test(shown), `the timer: ${shown}`);
+  },
+
   async a_machine_without_an_agent_offers_the_entry_that_makes_one() {
     await boot('?machine=review');
     const shown = $('side-inspect').innerHTML;

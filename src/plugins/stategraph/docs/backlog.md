@@ -154,17 +154,26 @@ vergisst Params und Undo-Schritte; ein Maschinenwechsel beginnt die Runs-Liste n
 
 ## Phase 5: Features
 
-- [ ] **F1 Join-Politik** `join: first | {count: n}` für `parallel`, `until:` für `map`.
-- [ ] **F2 Prüf-Funktion in der Agent-Aktivität** (`check:` mit `sg`, darf async sein, Feedback an dieselbe
+Stand: gebaut (Tests in test_plugin_stategraph_backlog_features.py). F1: die End-Reihenfolge einer Join-Politik
+schreibt der Join selbst ins Journal (`<kind>:joined`), weil eine Aktivitätszeile die seq ihres Starts behält.
+F8: die Route `/plugins/<instanz>/callback/*` liegt unter der Admin-Regel des Plugins -- öffentlich wird sie erst,
+wenn der Nutzer sie in BEIDEN Schichten öffnet, `auth.endpoint_security` und `auth.plugin_security` (seine
+Sicherheitsentscheidung; Beispiel in der README unter Security). Offen im Kern-Ressort: die Request-Logs (Access-Log,
+security.log) schreiben den Pfad samt Token mit -- Eintrag an agentsystem im comm.txt.
+F9: ein Slot läuft nach transientem Fehlschlag höchstens dreimal, fünf Minuten nach dem letzten Ende; die Lease gilt pro
+Instanz und wird beim Stop freigegeben.
+
+- [x] **F1 Join-Politik** `join: first | {count: n}` für `parallel`, `until:` für `map`.
+- [x] **F2 Prüf-Funktion in der Agent-Aktivität** (`check:` mit `sg`, darf async sein, Feedback an dieselbe
   Instanz).
-- [ ] **F3 Lokale Submaschinen** in derselben Datei (`machines:`), teilen das Companion-Modul.
-- [ ] **F4 Timer-State** `after: 10m` (Ablauf = Completion).
-- [ ] **F5 `limits.concurrency`** für Blatt-Aktivitäten eines Laufs.
-- [ ] **F6 `emit`**: Zwischenstand an Aufrufer und Lauf-Session.
-- [ ] **F7 Operator-Reparatur**: `set` auf `out` am exit-/error-Breakpoint.
-- [ ] **F8 Callback-URL pro Event** (einmalig, auf Lauf und Event begrenzt) — braucht eigenes
+- [x] **F3 Lokale Submaschinen** in derselben Datei (`machines:`), teilen das Companion-Modul.
+- [x] **F4 Timer-State** `after: 10m` (Ablauf = Completion).
+- [x] **F5 `limits.concurrency`** für Blatt-Aktivitäten eines Laufs.
+- [x] **F6 `emit`**: Zwischenstand an Aufrufer und Lauf-Session.
+- [x] **F7 Operator-Reparatur**: `set` auf `out` am exit-/error-Breakpoint.
+- [x] **F8 Callback-URL pro Event** (einmalig, auf Lauf und Event begrenzt) — braucht eigenes
   Sicherheitsreview.
-- [ ] **F9 Zeitpläne** (`schedules:` in der Plugin-Config, `run_key` pro Slot).
+- [x] **F9 Zeitpläne** (`schedules:` in der Plugin-Config, `run_key` pro Slot).
 
 ## Für andere Ressorts
 

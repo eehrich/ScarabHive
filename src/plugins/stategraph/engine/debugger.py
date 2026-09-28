@@ -357,9 +357,19 @@ class Debugger:
         return _data(frame.machine.namespace.evaluate(expr, frame.scope(event=self.paused_event), "evaluate"))
 
     def assign(self, run: "RunContext", path: str, expr: str) -> Any:
-        """``ctx.<path> = <expr>`` in the paused frame; journaled so replay applies it again."""
+        """``ctx.<path> = <expr>`` in the paused frame -- or ``out = <expr>`` at an activity's exit or error hook:
+        the activity then completes with that out (a failure too); journaled so replay applies it again."""
         frame = self._paused()
         value = jsonable(frame.machine.namespace.evaluate(expr, frame.scope(event=self.paused_event), "set"))
+        if path.strip() == "out":
+            hook = self.paused["hook"] if self.paused else None
+            event = self.paused_event
+            if hook not in ("exit", "error") or event is None or not event.repairable:
+                raise ValueError("out is an activity's result: set it at the exit or error breakpoint of a state with "
+                                 "do (ctx.out is the context's)")
+            run.record_edit(frame, hook, "out", value, repair=True)  # fenced
+            event.repair(value)
+            return value
         check_edit(frame.ctx, path)  # a bad path fails before anything is journaled
         run.record_edit(frame, self.paused["hook"] if self.paused else "enter", path, value)  # fenced
         apply_edit(frame.ctx, path, value)  # only once the journal took it: a lost run keeps its ctx

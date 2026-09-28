@@ -11,6 +11,7 @@ Errors: the service raises ``ServiceError(status, message)``, answered as that s
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,6 +23,8 @@ from agent_system.auth.models import UserRole
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
 
+#: The largest body a callback URL takes (its event's data).
+CALLBACK_BODY = 64 * 1024
 #: Arguments control_run takes besides the action (schema.yaml, tool control_run).
 CONTROL_ARGS = frozenset({"state", "machine", "at_step", "definition", "breakpoints", "watchpoints", "expr", "path",
                           "steps", "pause", "mocks"})
@@ -149,6 +152,42 @@ class StateGraphWebEndpoints:
     async def api_kinds(self, request: Request):
         await self._user(request)
         return await self._call("kinds")
+
+    # ------------------------------------------------------------------ callback URLs (no login: the token is the key)
+
+    async def callback_page(self, request: Request, token: str):
+        """What the URL would send, and a button that sends it: a GET must not -- mail scanners open links."""
+        from fastapi.responses import HTMLResponse
+        from html import escape
+
+        found = await self._call("callback", token)
+        event, machine = escape(str(found["event"])), escape(str(found["machine_id"]))
+        return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport"
+content="width=device-width, initial-scale=1"><title>Send {event}</title></head><body style="font-family: sans-serif;
+margin: 2rem; max-width: 32rem"><h1>Send {event}?</h1><p>This sends the event <b>{event}</b> to a run of the state
+machine <b>{machine}</b>. The link works once.</p><button id="send">Send {event}</button><p id="said"></p><script>
+document.getElementById('send').onclick = async (e) => {{ e.target.disabled = true;
+  const answer = await fetch(location.href, {{ method: 'POST', headers: {{ 'content-type': 'application/json' }}, body: '{{}}' }});
+  document.getElementById('said').textContent = answer.ok ? 'Sent.' : 'Not sent: ' + (await answer.json()).detail; }};
+</script></body></html>""", headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
+    async def callback_send(self, request: Request, token: str):
+        await self._call("callback", token)  # an unknown, used or expired URL reads no body
+        body = b""
+        async for chunk in request.stream():  # counted as it comes, not by its content-length: that can lie
+            body += chunk
+            if len(body) > CALLBACK_BODY:
+                raise HTTPException(status_code=413, detail=f"the body may be {CALLBACK_BODY} bytes at most")
+        data = None
+        if body.strip():
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="the body is JSON: {\"data\": ...}") from None
+            if not isinstance(parsed, dict) or set(parsed) - {"data"}:
+                raise HTTPException(status_code=422, detail="the body is a JSON object {\"data\": ...}")
+            data = parsed.get("data")
+        return await self._call("use_callback", token, data)
 
     async def api_catalog(self, request: Request):
         """What the inspector's fields offer: the agents a machine may run, the tools its runner may call, the

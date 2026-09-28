@@ -89,6 +89,8 @@ class LoadedFile:
     python_path: Optional[str] = None
     python_text: Optional[str] = None
     imports: dict[str, str] = field(default_factory=dict)   # alias -> path
+    local_of: Optional[str] = None       # a machine inside another's file (machines:): that file's path
+    within: list[Any] = field(default_factory=list)  # ... and where it lies in it (["machines", name])
 
     def line_of(self, path: Iterable[Any]) -> Optional[int]:
         return line_of(self.doc, path)
@@ -118,6 +120,8 @@ class MachineTree:
         texts: dict[str, str] = {}
         ids: dict[str, str] = {}
         for path, loaded in self.files.items():
+            if loaded.local_of is not None:
+                continue  # its file's text holds it: loading that file again makes it again
             texts[path] = loaded.text
             if loaded.python_path and loaded.python_text is not None:
                 texts[loaded.python_path] = loaded.python_text
@@ -180,9 +184,9 @@ def _slashed(path: str) -> str:
 # ------------------------------------------------------------------- internals
 
 def parse_yaml(text: str) -> Any:
-    yaml = YAML(typ="rt")
-    yaml.allow_duplicate_keys = False
-    return yaml.load(text)
+    round_trip = YAML(typ="rt")  # ruamel, not PyYAML: line numbers for problems, duplicate keys refused
+    round_trip.allow_duplicate_keys = False
+    return round_trip.load(text)
 
 
 #: Bounds of a machine document with its aliases expanded. Everything past parsing -- to_plain, the validator,
@@ -398,7 +402,35 @@ def _load(path: str, sources: Sources, tree: MachineTree, stack: list[str], exec
             continue
         loaded.imports[alias] = target
         _load(target, sources, tree, stack, execute)
+    _load_locals(loaded, data, tree)
     return loaded
+
+
+def _load_locals(loaded: LoadedFile, data: dict[str, Any], tree: MachineTree) -> None:
+    """The machines inside a file (``machines:``), each as a file of the tree of its own -- ``<path>#<name>``,
+    machine id ``<id>.<name>`` -- with the file's companion module and imports; the file imports them by name."""
+    spec, path = loaded.spec, loaded.path
+    assert spec is not None
+    imports = dict(loaded.imports)  # the file's own: a local machine runs no other local one
+    for name, body in (data.get("machines") or {}).items():
+        within = ["machines", name]
+        if name in spec.imports:
+            tree.add("error", "SG006", f"machines.{name}: an import has that name too; rename one of them", file=path,
+                     path=dotted(within), line=loaded.line_of(within))
+            continue
+        try:
+            local = MachineSpec.model_validate({**body, "stategraph": FORMAT_VERSION, "id": name})
+        except ValidationError as exc:
+            for loc, message in schema_problems(body, exc.errors(), _pydantic_message):
+                tree.add("error", "SG001", message, file=path, path=dotted(within + list(loc)),
+                         line=loaded.line_of(within + list(loc)))
+            continue
+        local_path = f"{path}#{name}"
+        tree.files[local_path] = LoadedFile(
+            path=local_path, text=loaded.text, doc=loaded.doc["machines"][name],
+            spec=local.model_copy(update={"id": f"{spec.id}.{name}"}), namespace=loaded.namespace, imports=imports,
+            local_of=path, within=within)
+        loaded.imports[name] = local_path
 
 
 def schema_problems(data: Any, errors: Iterable[dict[str, Any]],

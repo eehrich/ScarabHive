@@ -146,7 +146,7 @@ class ActivityRun:
         scope.update(bind)
         return scope
 
-    def sg_api(self) -> Any:
+    def sg_api(self, prefix: str = "") -> Any:
         """What a call's first parameter ``sg`` sees: the read-only scope, and ``sg.tool()`` (§2.5 call).
 
         Every ``await sg.tool(name, args)`` is a child tool activity of this call, keyed ``<key>/t.<n>`` in
@@ -167,7 +167,7 @@ class ActivityRun:
             if args is not None and not isinstance(args, dict):
                 raise TypeError(f"{self.path}: sg.tool({name!r}) args must be a dict, got {type(args).__name__}")
             raw = {"tool": name, "args": dict(args or {}), "idempotent": bool(idempotent)}
-            return await self.child(f"t.{next(counter)}", raw, shown=name, literal=True)
+            return await self.child(f"{prefix}t.{next(counter)}", raw, shown=name, literal=True)
 
         def close() -> None:
             nonlocal closed
@@ -330,7 +330,17 @@ class ActivityRun:
             failure = None  # this attempt's outcome, not the previous attempt's
             self.attempt = attempt
             self.meta["attempts"] = attempt
-            self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._failures()})
+            # limits.concurrency: a leaf waits for its turn before it counts as started -- one that waited when the
+            # run stopped was not in flight. sg.tool() of a call that holds a turn takes none: it would wait for it
+            gate = self.run.gate if leaf and not self.literal else None
+            if gate is not None:
+                await gate.acquire()
+            try:
+                self._journal("started", {**base, "attempt": attempt, "inputs": inputs, **self._failures()})
+            except BaseException:  # the row did not land (a locked database): the turn is given back all the same
+                if gate is not None:
+                    gate.release()
+                raise
             if leaf:
                 self.run.busy += 1
                 self.run.refresh_status()
@@ -362,6 +372,8 @@ class ActivityRun:
                 if leaf:
                     self.run.busy -= 1
                     self.run.refresh_status()
+                if gate is not None:
+                    gate.release()
             if self.run.divergence is not None:  # a replay below it diverged and something caught that (a call's
                 raise ReplayDivergence(self.run.divergence)  # except, a join's cleanup): it ends the run all the same
             if self.stopped and (failure is not None or not leaf):  # the run ended while it ran (a composite's

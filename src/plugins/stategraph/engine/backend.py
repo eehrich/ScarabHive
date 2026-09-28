@@ -91,6 +91,25 @@ class NoBackend:
         return {}
 
 
+#: How much of an emit's text a status line carries (the session gets all of it).
+STATUS_CHARS = 500
+
+
+async def tell(act: "ActivityRun", text: str) -> None:
+    """An emit's text: a status line under the run's request -- a machine agent's run carries its caller's request
+    id as prefix, so the caller's status stream shows it -- and, where the backend keeps the run's session, a
+    message there. Telling never fails the run."""
+    from agent_system.tools.status import publish_status
+
+    try:
+        await publish_status(act.machine_id, text[:STATUS_CHARS], request_id=act.run_id)
+    except Exception:
+        logger.debug("stategraph: the status line of run %s was not published", act.run_id, exc_info=True)
+    note = getattr(act.backend, "note", None)
+    if note is not None:
+        await note(text)
+
+
 def validate_answer(value: Any, schema: dict[str, Any]) -> Optional[str]:
     """None if ``value`` satisfies ``schema``, else a short reason."""
     try:
@@ -346,12 +365,12 @@ class ScarabHiveBackend:
         except Exception:
             logger.warning("stategraph: the session of run %s could not be created", self.session_id, exc_info=True)
 
+    async def note(self, text: str) -> None:
+        """What the run tells about itself (an emit activity), as a message in its session."""
+        await self._append(text, "emit")
+
     async def run_ended(self, *, status: str, final_state: Optional[str], output: Any, error: Any) -> None:
         """How the run ended, as the answer in its session: status, final state, output or error."""
-        service = self._run_sessions()
-        if service is None:
-            return
-        manager, user = service.session_manager, self.user_id or "anonymous"
         lines = [f"The run ended **{status}**" + (f" in `{final_state}`" if final_state else "") + "."]
         if error:
             lines.append(f"\n**{error.get('type', 'error')}**: {error.get('message', '')}" if isinstance(error, dict)
@@ -359,14 +378,22 @@ class ScarabHiveBackend:
         if output is not None:
             shown = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False, indent=2)
             lines.append(f"\nOutput:\n\n```json\n{shown}\n```" if not isinstance(output, str) else f"\n{shown}")
+        await self._append("\n".join(lines), "end")
+
+    async def _append(self, content: str, what: str) -> None:
+        """An assistant message in the run's session -- a view of the run: it never fails it."""
+        service = self._run_sessions()
+        if service is None:
+            return
+        manager, user = service.session_manager, self.user_id or "anonymous"
         try:
             lock = service.save_lock(self.session_id) if hasattr(service, "save_lock") else None
             async with lock if lock is not None else contextlib.nullcontext():
                 data = await manager.load_session(user, self.session_id)
-                data["messages"].append(_run_message("assistant", "\n".join(lines)))
+                data["messages"].append(_run_message("assistant", content))
                 await manager.save_session(data)
         except Exception:
-            logger.warning("stategraph: the end of run %s was not written to its session", self.session_id,
+            logger.warning("stategraph: the %s of run %s was not written to its session", what, self.session_id,
                            exc_info=True)
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,

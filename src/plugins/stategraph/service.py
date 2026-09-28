@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import logging
 import os
 import re
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
 from .engine.debugger import Breakpoint, UnknownState, Watchpoint, parse_points
-from .engine.journal import ACTIVE_STATUSES, RunStore
+from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore
 from .engine.machine import CompileError
 from .engine.runner import RunManager, failed_transiently
 from .kinds import describe_kinds
@@ -116,6 +117,8 @@ class StateGraphService:
         files: dict[str, str] = {}
         versions: dict[str, str] = {}
         for path, loaded in tree.files.items():
+            if loaded.local_of is not None:
+                continue  # a machine inside the file: its text is the file's
             texts = [(path, loaded.text)]
             if loaded.python_path and loaded.python_text is not None:
                 texts.append((loaded.python_path, loaded.python_text))
@@ -549,6 +552,48 @@ class StateGraphService:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}
 
+    def callback(self, token: str) -> dict[str, Any]:
+        """What a callback URL would send: {event, machine_id, expires}; 404 when it does not hold (never said why)."""
+        row = self.run_store.callback(_digest(token), time.time())
+        run = self.run_store.get_run(row["run_id"]) if row else None
+        if row is None or run is None or run["status"] in TERMINAL_STATUSES:  # an ended run takes no event any more
+            raise ServiceError(404, "no such callback")
+        return {"event": row["event"], "machine_id": run["machine_id"], "expires": row["expires_at"]}
+
+    async def use_callback(self, token: str, data: Any) -> dict[str, Any]:
+        """Send a callback URL's event -- once: the URL is used when the run took it (or keeps it in its inbox). A
+        run no process runs is resumed first; a run another process holds cannot take it here (409)."""
+        digest = _digest(token)
+        self.callback(token)  # an ended run's URL is gone, not used up by a call that cannot land
+        if not self.run_store.use_callback(digest, time.time()):
+            raise ServiceError(404, "no such callback")
+        row = self.run_store.callback_row(digest) or {}
+        try:
+            run = self.run_store.get_run(row.get("run_id", "")) or {}
+            if run.get("id") not in self.runs.live and run.get("status") in ("interrupted", "waiting", "running",
+                                                                              "paused"):
+                self.runs.sweep_expired()  # a dead owner's lease ran out: it is interrupted now
+                run = self.run_store.get_run(run["id"]) or run
+                if run.get("status") == "interrupted":
+                    await self._resume(run["id"])
+                    await self.runs.wait(run["id"], timeout=10.0)  # into its wait again
+            answer = self.runs.send_event(row["run_id"], row["event"], data, row.get("frame"))
+        except (KeyError, ValueError, ServiceError) as exc:
+            self.run_store.unuse_callback(digest)
+            # the caller holds a URL, not an account: which process holds the run is the log's, not theirs
+            logger.info("stategraph: callback for run %s not taken: %s", row.get("run_id"), getattr(exc, "message", exc))
+            raise ServiceError(409, "the run cannot take the event now; try again later") from None
+        except BaseException:  # anything else (a closed database, a cancelled request): the event did not land
+            self.run_store.unuse_callback(digest)
+            raise
+        if not answer.get("accepted"):
+            self.run_store.unuse_callback(digest)  # not taken: the URL holds for a corrected or later call
+            if answer.get("data_refused"):  # what was wrong with the caller's own data is theirs to hear
+                raise ServiceError(422, str(answer.get("reason")))
+            logger.info("stategraph: callback for run %s not taken: %s", row.get("run_id"), answer.get("reason"))
+            raise ServiceError(409, "the run cannot take the event now; try again later")
+        return {"sent": row["event"], "queued": bool(answer.get("queued"))}
+
     def send_event(self, run_id: str, name: str, data: Any = None, frame: Optional[str] = None, *,
                    user_id: Optional[str] = None) -> dict[str, Any]:
         self._run(run_id, user_id)
@@ -559,6 +604,13 @@ class StateGraphService:
         except ValueError as exc:
             raise ServiceError(409, str(exc)) from None
 
+
+
+def _digest(token: str) -> str:
+    """A callback token as runs.db keeps it: its hash only (the token is in the URL and the run's journal)."""
+    import hashlib
+
+    return hashlib.sha256(str(token).encode()).hexdigest()
 
 #: control_run's arguments besides the action, and their types (the tool's and the panel's parameters).
 #: The journal rows a run's answer carries (not the bookkeeping rows: request counts, leases).

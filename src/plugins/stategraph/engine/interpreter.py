@@ -57,6 +57,16 @@ class Event:
     source: Optional[Node] = None      # composite completion: the composite whose final was entered
     replayed: bool = False
 
+    @property
+    def repairable(self) -> bool:
+        """The end of an activity: an operator may give it another out (§6)."""
+        return self.activity is not None and self.name in (TRIGGER_DONE, TRIGGER_ERROR)
+
+    def repair(self, out: Any) -> None:
+        """An operator's out for this activity's end, set at its exit or error breakpoint: it completes with it --
+        a failure too -- and its completion transitions go on (§6)."""
+        self.name, self.out, self.error = TRIGGER_DONE, out, None
+
 
 @dataclass
 class FrameResult:
@@ -207,7 +217,12 @@ class Frame:
 
     def _waiting(self) -> bool:
         leaf = self.leaf
-        return leaf is not None and self.is_wait_state(leaf)
+        return leaf is not None and (self.is_wait_state(leaf) or self.is_timer(leaf))
+
+    @staticmethod
+    def is_timer(node: Node) -> bool:
+        """A timer state (``after``): it waits for its time -- or an event it takes -- then completes."""
+        return node.type == "state" and not node.composite and node.kind is None and node.spec.after is not None
 
     @staticmethod
     def is_wait_state(node: Node) -> bool:
@@ -543,6 +558,9 @@ class Frame:
                 return Event(TRIGGER_ERROR, error={**exc.as_dict(), "state": leaf.name}, activity=act.meta,
                              replayed=bool(act.meta.get("replayed")))
             return Event(TRIGGER_DONE, out=out, activity=act.meta, replayed=bool(act.meta.get("replayed")))
+        if self.is_timer(leaf):  # its time up is its completion (a journaled timer row: a replay does not wait)
+            name, data, replayed, timed_out = await self.run.wait_event(self, leaf, parse_duration(leaf.spec.after))
+            return Event(TRIGGER_DONE, replayed=replayed) if timed_out else Event(name, data=data, replayed=replayed)
         if self.is_wait_state(leaf):
             name, data, replayed, timed_out = await self.run.wait_event(
                 self, leaf, parse_duration(leaf.spec.timeout))

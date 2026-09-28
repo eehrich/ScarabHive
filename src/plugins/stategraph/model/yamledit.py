@@ -43,9 +43,10 @@ STATE_TYPES = ("state", "choice", "junction", "final")
 TRANSITION_FIELDS = ("trigger", "target", "guard", "effect", "description")
 #: What the inspector's forms set with update_state / update_machine; structure (states, transitions, initial) has
 #: its own operations, and a machine's id is its file name.
-STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout", "status", "output", "finally", "do")
+STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout", "after", "status", "output", "finally",
+                "do")
 MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "params", "events", "context", "vars",
-                  "imports", "resources", "finally")
+                  "imports", "machines", "resources", "finally")
 _NAME = re.compile(NAME_PATTERN)
 
 
