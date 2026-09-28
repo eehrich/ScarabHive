@@ -56,6 +56,8 @@ class FakeAgent:
 
     def __init__(self):
         self.dispatched = []          # (tool_name, params, request_id)
+        self.hook_sources = []        # (hook_source, cancellation_token) of each dispatch
+        self.hook_arguments = []      # the params the tool hooks would see
         self.handlers: Dict[str, Any] = {}
         self.schemas: Dict[str, Dict[str, Any]] = {}
         self._server = FakeToolServer("store", self.schemas)
@@ -71,8 +73,12 @@ class FakeAgent:
         return None, None
 
     async def dispatch_tool_call(self, tool_name, params, *, session_id=None,
-                                 user_id=None, request_id=None):
-        self.dispatched.append((tool_name, params, request_id))
+                                 user_id=None, request_id=None, hook_source=None,
+                                 cancellation_token=None, injected_params=None):
+        # What the tool receives: the injected params go over the script's.
+        self.dispatched.append((tool_name, {**params, **(injected_params or {})}, request_id))
+        self.hook_sources.append((hook_source, cancellation_token))
+        self.hook_arguments.append(params)
         handler = self.handlers.get(tool_name)
         if handler is None:
             raise ToolDispatchError(f"Unknown tool: '{tool_name}'.")
@@ -183,6 +189,20 @@ class TestRunScript:
                   'result = 1',
                   _request_id="rid1")
         assert [rid for _, _, rid in agent.dispatched] == ["rid1_ts01", "rid1_ts02"]
+
+    @pytest.mark.asyncio
+    async def test_script_calls_pass_the_tool_hooks(self, agent):
+        """The model wrote the script: a call the pre_tool_call hooks would
+        stop must not get past them inside one. They get the script's token,
+        so a hook that waits for a person stops when the run is cancelled."""
+        server = make_server()
+        token = MagicMock(is_cancelled=False)
+        await run(server, agent,
+                  'call_tool("forum_post", content="a")\n'
+                  'call_tool("forum_post", content="b")\n'
+                  'result = 1',
+                  _cancellation_token=token)
+        assert agent.hook_sources == [("tool_script", token), ("tool_script", token)]
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +491,29 @@ class TestSecurityAndCaps:
         assert "cancel" in res["error"].lower()
 
     @pytest.mark.asyncio
+    async def test_a_cancel_while_a_call_waited_cannot_be_caught(self, agent):
+        """A tool hook asked a person and the run was cancelled meanwhile:
+        the script stops, as it does on a cancel between hops."""
+        token = MagicMock(is_cancelled=False)
+
+        async def cancelled_while_waiting(params):
+            token.is_cancelled = True
+            raise ToolDispatchError("Request cancelled — the call did not run.")
+
+        agent.add_tool("slow_tool", cancelled_while_waiting,
+                       {"type": "object", "properties": {}})
+        server = make_server()
+        res = await run(server, agent,
+                        'try:\n'
+                        '    call_tool("slow_tool")\n'
+                        'except ToolCallError:\n'
+                        '    pass\n'
+                        'result = {"went_on": True}',
+                        _cancellation_token=token)
+        assert res["status"] == "error", res
+        assert "cancel" in res["error"].lower()
+
+    @pytest.mark.asyncio
     async def test_per_call_timeout(self, agent):
         async def hang(params):
             await asyncio.sleep(5)
@@ -560,6 +603,9 @@ class TestInjectParams:
                         'result = call_tool("writer_issues_op", operation="x")')
         assert res["status"] == "ok"
         assert agent.dispatched[0][1]["write_key"] == "SECRET_OK"
+        # A secret is merged after the tool hooks: none of them logs it or
+        # shows it to a person.
+        assert "write_key" not in agent.hook_arguments[0]
 
     @pytest.mark.asyncio
     async def test_config_overrides_garbled_script_value(self):

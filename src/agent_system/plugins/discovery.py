@@ -596,11 +596,14 @@ async def register_plugin_hooks(
                 )
                 continue
 
-            if hook_type in (HookType.PRE_TOOL_CALL, HookType.POST_TOOL_CALL):
+            # on_error: block -- a pre_tool_call hook that fails blocks the
+            # call instead of letting it run. Anything else would read as the
+            # default and silently let calls through a policy hook, so say so.
+            on_error = hook_metadata.get('on_error')
+            if on_error is not None and (on_error != "block" or hook_type != HookType.PRE_TOOL_CALL):
                 logger.warning(
-                    f"Plugin '{plugin_name}' hook '{hook_name}' has type '{hook_type.value}', "
-                    "which never fires: the tool loop does not call tool hooks. "
-                    "The hook is registered but will not run."
+                    f"Plugin '{plugin_name}' hook '{hook_name}' has on_error {on_error!r}: only "
+                    f"'block' on a pre_tool_call hook has an effect -- a failing hook lets the call run"
                 )
 
             # Get configuration from plugin metadata
@@ -693,7 +696,8 @@ async def register_plugin_hooks(
                 category=category,  # Pass category for grouping
                 # Additional metadata for tracking
                 plugin=plugin_name,
-                source="plugin_discovery"
+                source="plugin_discovery",
+                on_error=on_error,
             )
 
             registered_hooks.append(full_hook_name)  # Track full name

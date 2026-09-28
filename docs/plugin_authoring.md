@@ -2748,7 +2748,8 @@ In addition to tool plugins, AgentSystem supports **hooks-only plugins** that in
 5. **FORMAT_OUTPUT** - Display formatting only, never history
 6. **SESSION_END** - After saving; no effect
 7. **PRE_LLM_REQUEST** / 8. **POST_LLM_RESPONSE** - At LLM client level, read-only
-9. **PRE_TOOL_CALL** / 10. **POST_TOOL_CALL** - Defined, but nothing calls them: they never fire (registration logs a warning)
+9. **PRE_TOOL_CALL** - Before each tool call of the model (and of a tool_script script); may change the arguments or block the call
+10. **POST_TOOL_CALL** - After the call ran, before its result joins the history; may change the result
 
 Each hook gets a deep copy of the context. Changes count only with
 `modified=True`; `success=False` discards context and metadata.

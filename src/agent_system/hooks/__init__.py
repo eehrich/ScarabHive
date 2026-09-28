@@ -9,8 +9,11 @@ Provides extensible hooks allowing plugins to intercept agent lifecycle points:
 - format_output: Format final output (convert to markdown, HTML, etc.)
 - session_start: Initialize session (inject system prompts, setup state)
 - session_end: Cleanup session (persist state, generate summaries)
-- pre_tool_call / post_tool_call: declared but never fired (the tool loop
-  does not call tool hooks; registration logs a warning)
+- pre_tool_call: before each tool call of the model (and of a tool_script
+  script) runs -- change its arguments, or block it: the model reads why as
+  an error result and the run goes on
+- post_tool_call: after the call ran, before its result joins the history
+  (change the result)
 
 Key features:
 - Named ordering system with before/after dependencies
