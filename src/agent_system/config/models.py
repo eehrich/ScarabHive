@@ -1315,6 +1315,21 @@ class PluginSecurityConfig(BaseModel):
     ])
 
 
+class RegistrationConfig(BaseModel):
+    """Self-registration through POST /auth/register, which is reachable without login.
+
+    The defaults keep what the endpoint always did: open, the account active at once,
+    role user."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # New accounts start inactive until an admin activates them (the user management
+    # panel, POST /admin/users/{id}/activate, agent-cli users update NAME --activate).
+    require_approval: bool = False
+    # Never admin: whoever reaches the endpoint chooses nothing about their privileges.
+    default_role: Literal["guest", "user"] = "user"
+
+
 class AuthConfig(BaseModel):
     """Authentication and authorization configuration.
     
@@ -1332,6 +1347,7 @@ class AuthConfig(BaseModel):
     # A published signing key (this default, the development key the repository ships) logs an
     # error at startup; true refuses to start with it. Empty and short keys are always refused.
     reject_default_secret_key: bool = False
+    registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30  # Refresh token valid for 30 days

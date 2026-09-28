@@ -100,7 +100,7 @@ auth:
 | GET /health           | ✅ Open       | ✅ Open          | ✅ Open       |
 | GET /login            | ✅ Open       | ✅ Open          | ✅ Open       |
 | POST /auth/login      | ✅ Open       | ✅ Open          | ✅ Open       |
-| POST /auth/register   | ✅ Open       | 🔐 Admin only    | 🔐 Admin only |
+| POST /auth/register   | ✅ Open       | ⚙️ auth.registration | ⚙️ auth.registration |
 | GET /agents           | ✅ Open       | ⚙️ Configurable  | 🔐 User+      |
 | GET /config           | ✅ Open       | 🔐 User+         | 🔐 User+      |
 | POST /run             | ✅ Open       | 🔐 User+         | 🔐 User+      |

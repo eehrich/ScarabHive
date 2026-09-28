@@ -149,6 +149,10 @@ Remaining limits:
   and logs an error for a published one, such as the shipped development key;
   `auth.reject_default_secret_key: true` makes that a startup error as well.
 - Replace the wildcard in `auth.cors_origins` with the origins you serve.
+- `POST /auth/register` is reachable by anyone who reaches the server and
+  creates a `user` account. Turn it off (`auth.registration.enabled: false`) or
+  hold new accounts until an admin activates them
+  (`auth.registration.require_approval: true`).
 - Keep the server on the loopback interface and put a reverse proxy with TLS
   in front of it. `docker-compose.yml` publishes the port on `127.0.0.1` only.
 - Grant `terminal`, `file_ops`, `ssh_control` and similar tools only to agents

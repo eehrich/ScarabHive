@@ -48,7 +48,8 @@ class UserCreate(UserBase):
 class UserRegister(BaseModel):
     """Self-registration (POST /auth/register, reachable without login).
 
-    No role and no active flag: the server creates a plain active user.
+    No role and no active flag: the server decides both (auth.registration:
+    the default role, active at once or held for an admin's approval).
     Sending either is rejected, so nobody registers themselves as admin.
     """
     model_config = {"extra": "forbid"}

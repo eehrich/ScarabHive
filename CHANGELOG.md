@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and only while no account of that name exists.
 - A session whose agent its user may not run is not woken; it used to start up
   to three refused `agent-cli` runs per message.
+- `auth.registration` decides what `POST /auth/register` -- reachable without
+  login -- may do: `enabled: false` refuses it (403), `require_approval: true`
+  creates the account inactive until an admin activates it, `default_role` is
+  `user` or `guest`. The defaults keep what the endpoint did: open, active at
+  once, role `user`.
 
 ### Added
 
