@@ -799,6 +799,29 @@ async def _entries(service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parent", ["ephemeral-oai-1", "s-2"], ids=["throwaway", "stored"])
+async def test_a_throwaway_parent_that_is_gone_is_no_warning(tmp_path, caplog, parent):
+    """A stateless call's parent record is deleted once its turn is settled (openai_api), and a sub-agent of it
+    that still reports -- its activity, its ending -- finds none: expected there, a warning anywhere else."""
+    import logging
+
+    from plugins.sub_agent_manager import manager as sam_manager
+
+    service, manager = await _stored_manager(tmp_path)
+    await service.session_manager.create_session(user_id="ada", session_id=parent, title="Coordinator Session",
+                                                 agent_name="coordinator", llm_profile="normal")
+    instance = await manager.create_sub_session(parent, "worker", "task", params={"_user_id": "ada"})
+    await service.session_manager.delete_session("ada", parent, create_backup=False)
+
+    with caplog.at_level(logging.DEBUG, logger=sam_manager.logger.name):
+        await manager.update_sub_agent_activity(parent, instance, "Running tool: search")
+
+    missing = [r for r in caplog.records if "Could not load parent session" in r.getMessage()]
+    assert missing, "fixture: the update never looked for its parent"
+    assert [r.levelno for r in missing] == [logging.DEBUG if parent.startswith("ephemeral-") else logging.WARNING]
+
+
+@pytest.mark.asyncio
 async def test_a_fan_out_of_creates_keeps_the_limit(tmp_path):
     """The creates of one step all read the same count, and six of them passed a limit of three."""
     service, manager = await _stored_manager(tmp_path, max_sub_agents_per_session=3, max_sub_agents_per_type=3)

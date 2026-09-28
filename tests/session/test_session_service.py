@@ -574,6 +574,42 @@ async def test_saves_after_a_delete_do_not_bring_the_session_back(session_servic
 
 
 @pytest.mark.asyncio
+async def test_a_checkpoint_cancelled_mid_write_lands_before_the_save_after_it(session_service_env, monkeypatch):
+    """The agent stops its checkpoint loop before the final save so that the final save writes last. A
+    checkpoint cancelled while its thread wrote the file let go of the locks at once and kept writing: its older
+    snapshot landed over the save that followed. Now the write finishes before the cancel goes on."""
+    import threading
+    import time
+
+    svc, sm = session_service_env
+    await sm.create_session(user_id="user1", session_id="mid_write", title="Test", agent_name="test_agent",
+                            llm_profile="normal")
+    writing, write = threading.Event(), sm._atomic_write
+
+    def slow_for_the_checkpoint(path, data):
+        if len(data.get("messages") or []) == 1:  # the checkpoint's snapshot, the older one
+            writing.set()
+            time.sleep(0.3)
+        write(path, data)
+
+    monkeypatch.setattr(sm, "_atomic_write", slow_for_the_checkpoint)
+    checkpoint = asyncio.ensure_future(svc.checkpoint_session(
+        _make_checkpoint_agent([{"role": "user", "content": "older"}]), "user1", "mid_write"))
+    while not writing.is_set():
+        await asyncio.sleep(0.005)
+    checkpoint.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await checkpoint
+    final = [{"role": "user", "content": "older"}, {"role": "assistant", "content": "the final answer"}]
+    assert await svc.save_session(_make_mock_agent(final), "user1", "mid_write", "test_agent", "normal",
+                                  was_new_session=False)
+    await asyncio.sleep(0.4)  # a write still going has landed by now
+
+    stored = await sm.load_session("user1", "mid_write", bypass_cache=True)
+    assert [m["content"] for m in stored["messages"]] == ["older", "the final answer"]
+
+
+@pytest.mark.asyncio
 async def test_start_stop_checkpoint_loop_runs_periodically(session_service_env):
     """Background loop runs at the configured interval, stops cleanly on cancel."""
     svc, sm = session_service_env
@@ -629,3 +665,24 @@ async def test_disabled_when_interval_zero(session_service_env):
     agent = _make_checkpoint_agent([{"role": "user", "content": "x"}])
     svc.start_checkpoint_loop(agent, "user1", "off_001")
     assert "off_001" not in svc._checkpoint_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write", ["save", "checkpoint"])
+async def test_an_ephemeral_session_is_never_written(session_service_env, write):
+    """A stateless run promises to leave nothing behind (collect_final_result, openai_api): the agent saves
+    every session it runs -- at the end of each turn and by checkpoint -- so both writes skip it."""
+    from agent_system.services.session_service import EPHEMERAL_SESSION_PREFIX
+
+    svc, sm = session_service_env
+    msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    written = {}
+    for session_id in (f"{EPHEMERAL_SESSION_PREFIX}abc", "kept_one"):
+        if write == "save":
+            written[session_id] = await svc.save_session(_make_mock_agent(msgs), "user1", session_id, "a", "normal",
+                                                         was_new_session=True)
+        else:
+            written[session_id] = await svc.checkpoint_session(_make_checkpoint_agent(msgs), "user1", session_id)
+
+    assert written == {f"{EPHEMERAL_SESSION_PREFIX}abc": False, "kept_one": True}
+    assert [s["session_id"] for s in await sm.list_sessions("user1")] == ["kept_one"]
