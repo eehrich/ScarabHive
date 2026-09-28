@@ -890,6 +890,12 @@ plugins:
       type: session_archive
       enabled: true
 
+    # The agents as models behind the OpenAI Responses and Chat Completions API
+    # (/plugins/openai_api/v1; key: the user's API key). src/plugins/openai_api/README.md
+    openai_api:
+      type: openai_api
+      enabled: true
+
     agent_editor:
       type: agent_editor
       enabled: true
@@ -1004,6 +1010,20 @@ plugins:
       type: request_logger
       enabled: false
 
+    # OpenTelemetry traces for agent runs, LLM calls and tool calls
+    # (src/plugins/otel/README.md). Off by default. Endpoint and service name
+    # come from the standard OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME
+    # unless set here. Prompts, answers and tool arguments/results stay in the
+    # process unless capture_content is switched on.
+    otel:
+      type: otel
+      enabled: false
+      config:
+        exporter: otlp          # otlp | console | none
+        # endpoint: "http://localhost:4317"
+        capture_content: false
+        metrics: false
+
     message_validator:
       type: message_validator
       enabled: true
@@ -1044,6 +1064,20 @@ plugins:
         injection_position: "after_system" # or "before_last_user" or "end"
         # make it at system role, else the llm is confused about injections
         role: "system"
+
+    # The project's AGENTS.md in front of the model, read once per session
+    # from the root the agent's file tools work in (Claude Code, Codex and
+    # Gemini CLI do the same). Registered here, OFF for every agent: an agent
+    # switches it on with
+    #   hooks.overrides["project_instructions.inject_project_instructions"].enabled: true
+    # The coder harness does. A new version of the file takes effect in a new
+    # session, or after `/vars unset project_instructions`.
+    project_instructions:
+      type: project_instructions
+      enabled: true
+      config:
+        filenames: ["AGENTS.md"]
+        max_bytes: 32768
 
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten

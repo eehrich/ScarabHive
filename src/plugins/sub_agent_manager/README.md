@@ -85,10 +85,12 @@ Two things make that hold rather than nearly hold:
   would start a second woken run, a whole turn on the user's money.
 * **The promise is checked before the caller sleeps on it.** `create` asks what
   can be answered up front — `session_presence` off, no session behind the call,
-  a wake chain already at `max_wake_depth`, and the caller being a sub-agent's
-  own session, which is never woken (the run that spawned it takes its answer)
-  — and says so in its answer, with the reason. The core leaves the last one out
-  of `wake_blocked`, since it means reading the session file; a `create` has
+  a wake chain already at `max_wake_depth`, the caller being a sub-agent's
+  own session, which is never woken (the run that spawned it takes its answer),
+  and a throwaway session (`ephemeral-…`: a stateless API call, a headless run),
+  which nobody continues, so a woken run would answer nobody (its jobs ring
+  nobody either) — and says so in its answer, with the reason. The core leaves
+  the sub-agent case out of `wake_blocked`, since it means reading the session file; a `create` has
   just read and written that very session, so the manager asks it. Told it may
   sleep, a sub-agent that started a job ended its turn over it: its caller got
   "I am waiting" for an answer, and the job's result reached nobody. "Armed" is
@@ -191,7 +193,15 @@ Two more that are not limits but guards:
   woken coordinator continues from a process of its own, while the job it
   continues may still run in the API. `continue` asks the lock beside the
   sub-session (`core/session_presence.py`) as `list` does, and refuses — two
-  runs on one transcript each saved their own, the later over the other. A
+  runs on one transcript each saved their own, the later over the other. A run
+  of THIS process that the slots do not know — a chat on the sub-agent's
+  session in the web UI, a run still finishing — has the agent's session lock:
+  `continue` takes that lock first, under the request id its run takes it by,
+  and is refused with "Sub-agent '<id>' is running in another request of this
+  process right now. Wait for it before you continue it." — before it refreshes
+  the vars, reopens the instance or prepares the agent. The save after a
+  sub-agent's run leaves a session somebody holds by then
+  (`save_session(after_run=True)`). A
   refusal of a busy, missing or foreign instance is the caller's mistake and
   logged at INFO; a slot no running task holds is a leak and logged as an error.
 * **The manager writes a parent's sub-agent entries one at a time.** An entry
@@ -217,8 +227,11 @@ Two more that are not limits but guards:
   session's limit was checked first, archived the oldest of any type, and with
   the type still full a second one.
 * **A finished run answers with its own words, job or no job.** The background
-  job holds the result text only until somebody reads it, and after a restart
-  or an archiving there is none at all. `poll` then reads the last thing the
+  job holds the result text only until somebody reads it — or, if nobody
+  does, for an hour after the job ended (`FINISHED_JOB_RETENTION_SECONDS`),
+  a day if its ending could not be stored; never while its bell still rings —
+  and
+  after a restart or an archiving there is none at all. `poll` then reads the last thing the
   run said from its transcript, instead of a fixed sentence about a persisted
   session that a model reads as the answer. An archived instance is found too:
   making room at a limit happens behind the caller's back, and its poll used to

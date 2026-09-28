@@ -6,8 +6,11 @@ import asyncio
 import fnmatch
 import functools
 import logging
+import time
 import weakref
 from datetime import UTC, datetime
+
+import anyio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -15,6 +18,7 @@ from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
 from agent_system.services.session_manager import SessionNotFoundError
+from agent_system.services.session_service import is_ephemeral_session
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
 
@@ -69,6 +73,17 @@ HINT_IDS = 30
 #: (see `_handle_wait`), so the cadence of the cheap turn would be paid in disk here.
 WAIT_DB_POLL_MAX = 8.0
 
+#: How long this process keeps a background job's ending after the job ended, when nobody takes
+#: it: no poll, no wait, no woken caller, no continue or delete -- a caller that polls much later,
+#: or a throwaway turn that never comes back. Kept for good, each held its whole result for the
+#: life of the API process. A STORED ending goes after this: a poll then answers from the
+#: sub-session's stored state, as after a restart.
+FINISHED_JOB_RETENTION_SECONDS = 3600.0
+#: An ending that could not be stored is the only answer there is, so it stays much longer --
+#: but not for good: a parent deleted while its job ran is the usual reason a write fails, and
+#: then no caller can read the entry at all (poll and wait answer only the parent).
+UNSTORED_JOB_RETENTION_SECONDS = 86400.0
+
 
 def _outcome_status(result_text: str) -> str:
     """Verdict for a finished run: 'completed' unless the text says otherwise."""
@@ -121,6 +136,22 @@ def _without_status(params: dict) -> dict:
     (``StatusScope.ended``). The outer handler owns the line.
     """
     return {k: v for k, v in params.items() if k != "_status"}
+
+
+def _job_answer(job: dict[str, Any]) -> dict[str, Any]:
+    """A background job as a poll or a wait hands it out: without the task handle (not
+    serializable) and without our bookkeeping, every key of which starts with "_"."""
+    return {k: v for k, v in job.items() if k != "task_handle" and not k.startswith("_")}
+
+
+async def _ringing_over(job: dict[str, Any], bell: Callable[[], Awaitable[None]]) -> None:
+    """Ring the bell of a job's ending with the job marked as rung for, so the retention leaves
+    it alone meanwhile (`_drop_expired_endings`)."""
+    job["_ringing"] = True
+    try:
+        await bell()
+    finally:
+        job["_ringing"] = False
 
 
 def _register_request_user(request_id: str, user_id: str) -> None:
@@ -576,6 +607,28 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 await status.error(f"Sub-agent error ({operation}): {str(e)}")
             return {"status": "error", "error": str(e)}
 
+    @staticmethod
+    async def _take_the_session(agent: Any, instance_id: str, request_id: str) -> None:
+        """The sub-agent's session lock, under the id its run takes it by (a re-entry there), before anything of
+        the session is touched. _prepare_agent sets the metadata and vars a run of it reads, and the refresh and
+        the reopen write its record: a run of this process that has the session -- a chat on the sub-agent's
+        session, a run still finishing -- had them replaced under it, and this run was then refused at the lock
+        itself. Raises CallerMistake while one has it (an append or /undo saving it is waited for)."""
+        if not await agent._session_tracker.acquire_session_lock(instance_id, request_id, timeout=5.0):
+            raise CallerMistake(
+                f"Sub-agent '{instance_id}' is running in another request of this process right now. "
+                "Wait for it before you continue it.")
+
+    @staticmethod
+    async def _let_go_of_the_session(agent: Any, instance_id: str, request_id: str) -> None:
+        """The lock _take_the_session took, if its run never started. A run that did registered its request
+        (Agent.run_events, before it takes the lock again) and holds the lock under the same id: its end lets go
+        of it -- let go of here, a run still closing lost it to the next one, and saved its turn under that."""
+        tracker = agent._session_tracker
+        if (tracker.check_session_locked(instance_id) == (True, request_id)
+                and tracker.get_session_for_request(request_id) is None):
+            await tracker.release_session_lock(instance_id, request_id)
+
     async def _prepare_agent(
         self,
         agent: Any,
@@ -719,10 +772,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         logger.info(f"Sub-agent {instance_id} was cancelled: {result_text}")
                     break  # Stop waiting for more events
         finally:
-            await track(None)
-            # Closed here, not left to the garbage collector: that closes it in another task, and
-            # this one would keep the run's request id and user (Agent.run_events restores them).
-            await events.aclose()
+            try:
+                await track(None)
+            finally:
+                # Closed here, not left to the garbage collector: that closes it in another task, and
+                # this one would keep the run's request id and user (Agent.run_events restores them).
+                # Shielded: a cancel scope hands its cancel out again at every await -- the close was
+                # skipped with track(None), and the run lay at a yield holding its session's lock until
+                # the collector came; or its last save and its session-end hooks were cut short.
+                with anyio.CancelScope(shield=True):
+                    await events.aclose()
         return result_text
 
     async def _handle_create(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -951,7 +1010,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     session_id=sub_session_id,
                     agent_name=agent_name,
                     llm_profile=llm_profile,
-                    was_new_session=True
+                    was_new_session=True,
+                    after_run=True,
                 )
                 logger.debug(f"Saved sub-agent session {sub_session_id} with messages")
 
@@ -1096,10 +1156,19 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 run = self._blocking_runs[instance_id] = {
                     "agent": None, "request_id": None, "parent_session_id": parent_session_id}
 
+            # Generate hierarchical request ID for continue operation -- before anything else: the
+            # session's lock is taken under it, and the run takes it again under the same id
+            parent_request_id = params.get("_request_id")
+            if parent_request_id:
+                sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
+            else:
+                sub_request_id = f"sub_cont_{short_id()}"
+
             # True while the stored status knows nothing of this run: before the reopen it still tells
             # the last one's ending, and a reopen refused at a limit leaves it at that
             settled = True
             try:
+                await self._take_the_session(agent, instance_id, sub_request_id)
                 # Reopen BEFORE execution starts -- and only once this run is registered: a continue
                 # refused as "already running" must not touch the run it met.
                 await manager.reopen_sub_session(parent_session_id, instance_id)
@@ -1145,13 +1214,6 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     await status.progress(f"Continuing {agent_type} with new message...")
 
                 # Execute sub-agent with new message (continues existing session)
-                # Generate hierarchical request ID for continue operation
-                parent_request_id = params.get("_request_id")
-                if parent_request_id:
-                    sub_request_id = f"{parent_request_id}_sub_cont_{short_id(6)}"
-                else:
-                    sub_request_id = f"sub_cont_{short_id()}"
-
                 # Register sub-request user mapping for admin dashboard
                 _register_request_user(sub_request_id, user_id)
                 run.update(agent=agent, request_id=sub_request_id)
@@ -1173,7 +1235,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     session_id=instance_id,
                     agent_name=agent_type,
                     llm_profile=llm_profile,
-                    was_new_session=False  # Updating existing session
+                    was_new_session=False,  # Updating existing session
+                    after_run=True,
                 )
                 logger.debug(f"Saved continued sub-agent session {instance_id} with messages")
 
@@ -1216,6 +1279,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     await self._store_blocking_abort(manager, parent_session_id, instance_id, error)
                 raise
             finally:
+                # The session's lock, if the run did not let go of it (it never started)
+                await self._let_go_of_the_session(agent, instance_id, sub_request_id)
                 # ALWAYS release lock, even on error (CRITICAL for preventing deadlock)
                 async with self._running_lock:
                     self._release_slot(instance_id)
@@ -1904,10 +1969,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     ended_by_caller = bool(job.get("_ended_by_caller"))
                 if job is not None:
                     job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
-                               _awaiting_poll=True, **fields)
+                               _awaiting_poll=True, _ended_at=time.monotonic(), **fields)
                     if drop_task:
                         # a task ended by CancelledError keeps it, and with it every frame of the run
                         job["task_handle"] = None
+                self._drop_expired_endings()
 
             parent_session_id = params.get("_session_id")
             # Whoever reads this ending may run in another process -- a caller woken into a run of its
@@ -1934,6 +2000,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     ) is not False
             except Exception as persist_error:
                 logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
+
+            if job is not None and written:
+                # A poll can answer from the stored state now: the retention may let the entry go.
+                job["_stored"] = True
 
             if ended_by_caller and job is not None and written:
                 # Called off by the caller, awake: it knows how this ended and is not coming back
@@ -1969,10 +2039,35 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         #     each of those is a caller awake and handling the ending itself.
         # Ringing anyway is not free even once: the marker a ring leaves behind turns into a whole
         # woken run when the caller's turn ends.
-        if rings and parent_session_id:
-            return functools.partial(
-                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written)
+        if rings and parent_session_id and job is not None:  # `rings` says job is not None; mypy does not see it
+            return functools.partial(_ringing_over, job, functools.partial(
+                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written))
         return None
+
+    def _drop_expired_endings(self) -> None:
+        """Let go of the endings nobody took: a stored one after FINISHED_JOB_RETENTION_SECONDS,
+        one that could not be stored after UNSTORED_JOB_RETENTION_SECONDS. Called with
+        `_async_jobs_lock` held whenever a job ends -- the only thing that leaves an ending here,
+        so what is kept is bounded by the jobs of the retention.
+
+        Never one whose bell is still ringing: the ringing stops once the entry is gone
+        (`_ending_is_unread`), and the caller would sleep over its job.
+        """
+        now = time.monotonic()
+        expired = []
+        for instance_id, job in self._async_jobs.items():
+            if job.get("status") not in ("completed", "failed", "cancelled") or job.get("_ringing"):
+                continue
+            # An ending that did not come through `_finish_job` -- a cancel whose task never
+            # started -- has no time of its own: it ages from the first time it is seen here.
+            ended_at = job.setdefault("_ended_at", now)
+            keep = FINISHED_JOB_RETENTION_SECONDS if job.get("_stored") else UNSTORED_JOB_RETENTION_SECONDS
+            if now - ended_at > keep:
+                expired.append(instance_id)
+        for instance_id in expired:
+            del self._async_jobs[instance_id]
+        if expired:
+            logger.debug(f"Dropped {len(expired)} background job ending(s) nobody took: {expired}")
 
     async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
                                      manager: Optional[SubAgentManager]) -> str:
@@ -2020,7 +2115,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         The core leaves this out of `wake_blocked` because it would parse the session file on the
         caller's loop at every armed wake. A create has just read and written this very session,
         so here it is the session manager's cache, or one read off the loop.
+
+        And a throwaway session (a stateless call: openai_api, a headless run) is never woken
+        either (`_wake_parent`): nobody continues it, so a woken run would answer nobody.
         """
+        if is_ephemeral_session(session_id):
+            return ("this call runs on a throwaway session that nobody continues, so a woken run "
+                    "would answer nobody")
         session = await manager._session_service.session_manager.load_session(user_id, session_id)
         if session.get("parent_session"):
             return ("this is a sub-agent's own session, and those are never woken: ending your "
@@ -2119,7 +2220,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
         loop. A one-shot `agent-cli run` that ends its turn takes the job with it, and nothing is
         left to wake anybody. README says so.
+
+        A throwaway session is not woken: nobody continues it, and a woken run of its parent
+        record (agent-cli, on the `Coordinator Session` this manager wrote) would be an agent's
+        turn that answers nobody -- or, the record already deleted with its turn, a wake that
+        finds no session.
         """
+        if is_ephemeral_session(parent_session_id):
+            logger.debug("Not waking %s for sub-agent %s: a throwaway session, nobody continues it",
+                         parent_session_id, instance_id)
+            return
         try:
             # Everything from here on belongs to the wake, reading the config included: a job that
             # is over and recorded must not end in its caller's exception handler, which would
@@ -2224,7 +2334,8 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                 session_id=instance_id,
                 agent_name=agent_name,
                 llm_profile=llm_profile,
-                was_new_session=True
+                was_new_session=True,
+                after_run=True,
             )
 
             # A run whose ANSWER is "Error: ..."/"Cancelled: ..." did not
@@ -2312,10 +2423,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         self._async_jobs.pop(instance_id, None)
                         logger.debug(f"Removed completed job {instance_id} from memory after poll")
 
-                    # Remove task_handle from response (not serializable)
-                    job.pop("task_handle", None)
-                    job.pop("_awaiting_poll", None)
-                    job.pop("_ended_by_caller", None)
+                    job = _job_answer(job)
                     if status:
                         # A failed or cancelled job is not an END: that phase
                         # renders as a completed row.
@@ -2574,9 +2682,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         # create + wait_all + delete.
                         async with self._async_jobs_lock:
                             self._async_jobs.pop(instance_id, None)
-                        job.pop("task_handle", None)
-                        job.pop("_awaiting_poll", None)  # bookkeeping of ours, as in poll -- not an answer
-                        job.pop("_ended_by_caller", None)
+                        job = _job_answer(job)
 
                         if status_ctx:
                             if job_status == "completed":

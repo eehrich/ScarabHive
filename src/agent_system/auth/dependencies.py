@@ -14,7 +14,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from agent_system.auth.models import User, UserRole
 from agent_system.auth.database import get_db, UserDatabase
-from agent_system.auth.security import decode_access_token, verify_api_key, hash_api_key
+from agent_system.auth.security import bearer_api_key, decode_access_token, verify_api_key, hash_api_key
 
 
 # Security schemes
@@ -29,11 +29,15 @@ async def get_current_user(
 ) -> User:
     """
     Get the current authenticated user from JWT token (Bearer or Cookie) or API key.
+    A caller that takes tokens only uses get_token_user: here a key in the
+    Bearer value counts even when ``x_api_key`` is None.
     
     This dependency checks (in order):
     1. Bearer token in Authorization header
     2. JWT token in access_token cookie
-    3. API key in X-API-Key header
+    3. API key in X-API-Key header -- or an API key sent as the Bearer value
+       (``security.bearer_api_key``), which then counts as that header, exactly
+       as in EndpointSecurityMiddleware
     
     Args:
         request: FastAPI request object
@@ -47,6 +51,32 @@ async def get_current_user(
     Returns:
         Authenticated user
     """
+    return await _authenticate(request, credentials, x_api_key, db, bearer_keys=True)
+
+
+async def get_token_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials],
+    db: UserDatabase,
+) -> User:
+    """The user of the request's access token (Bearer or cookie) -- never an API key, in either header.
+
+    For the routes that check an admin themselves and may take a token only
+    (user_management, agent_editor): the token path awaits nothing between the
+    check and the route's write. Raises 401 as get_current_user does.
+    """
+    return await _authenticate(request, credentials, None, db, bearer_keys=False)
+
+
+async def _authenticate(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str],
+    db: UserDatabase,
+    *,
+    bearer_keys: bool,
+) -> User:
+    """get_current_user; ``bearer_keys=False`` takes a key in the Bearer value for the (invalid) token it is."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -55,12 +85,17 @@ async def get_current_user(
     
     token = None
     
-    # 1. Try Bearer token from Authorization header
+    # 1. Try Bearer token from Authorization header (stripped, as the middleware reads it)
     if credentials:
-        token = credentials.credentials
+        token = credentials.credentials.strip()
+    bearer_key = bearer_api_key(token) if bearer_keys else None
+    if bearer_key:
+        if x_api_key and x_api_key.strip() != bearer_key:
+            raise credentials_exception  # two different keys: whose request is it?
+        x_api_key, token = bearer_key, None
     
     # 2. Try JWT token from cookie
-    if not token:
+    if not token and not bearer_key:
         token = request.cookies.get("access_token")
     
     # Process JWT token if found

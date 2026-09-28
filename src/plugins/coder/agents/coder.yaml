@@ -147,6 +147,18 @@ plugins:
             # dies at the context limit instead of compacting.
             context_engineer.engineer_context:
               enabled: true
+            # The project's AGENTS.md -- the file every other coding agent
+            # reads. Unlike the three hooks switched off above it does not
+            # churn: it is read once per session and stands behind the system
+            # prompt unchanged until the session ends. `root: "."` is
+            # coder_fs's own "." -- the directory the command was started in
+            # -- so a harness started in another project reads THAT project's
+            # file; derived, the four coder_fs roots would be ambiguous there.
+            # The three sub-agents switch it on the same way and inherit this
+            # session's version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
 
       metadata:
         author: "Enrico Ehrich"

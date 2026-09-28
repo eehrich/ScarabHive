@@ -15,6 +15,13 @@ So the unit here is a symbol: a function, a class, a heading section, and for
 everything else a short window. Each document carries its path, because the
 path is part of what a question is about ("the sub agent manager's cancel"),
 and each knows its line, so a hit points at code instead of at a file.
+
+The path is the one relative to the indexed directory. An absolute path puts
+the same prefix -- home directory, checkout location, a temp dir -- in front of
+every document: it tells them apart by nothing, dilutes each of them, and made
+the ranking depend on where the tree lies (measured 28.09.2026: "end a login
+session" ranked a method first under a Windows or Linux temp path and its
+class first under the macOS one; relative, the method, on every machine).
 """
 
 from __future__ import annotations
@@ -44,6 +51,11 @@ MAX_SYMBOLS_PER_FILE = 2000
 #: data files produced 3.521 -- noise that costs embedding time and competes
 #: with real code for the top ten.
 MAX_WINDOWS_PER_FILE = 150
+
+#: What the documents look like. A store built from another format is rebuilt,
+#: not mixed with new documents (search.py, the index state).
+#: 2: the path in a document is relative to the indexed directory.
+DOCUMENT_FORMAT = 2
 
 PYTHON_SUFFIXES = {".py", ".pyi"}
 HEADING_SUFFIXES = {".md", ".markdown", ".rst"}

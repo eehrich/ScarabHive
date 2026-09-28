@@ -54,8 +54,11 @@ class HookContext:
         agent_name: Name of the agent (redundant but convenient)
         messages: Current conversation messages (may be None for some hooks)
         llm_response: LLM response data (for post_llm_call hooks)
-        tool_call: Tool call information (for tool-related hooks)
-        tool_result: Tool execution result (for post_tool_call hooks)
+        tool_call: The call (pre/post_tool_call): {"id", "name", "server",
+            "arguments", "source"}; hooks write back "arguments" only
+        tool_result: The result (post_tool_call): {"result", "is_error",
+            "started_at", "finished_at"} -- the last two when the call itself
+            ran (time.time()); hooks write back "result" only
         output: Final output to format (for format_output hooks)
         output_format: Target format for output ('html', 'ansi', 'text', 'markdown')
         metadata: Additional hook-specific metadata
@@ -239,17 +242,23 @@ class PluginHook(ABC):
     
     async def on_pre_tool_call(self, context: HookContext) -> HookResult:
         """
-        Called before tool execution.
-        
+        Called before a tool call of the model (or of a tool_script script) runs.
+
         Use cases:
-        - Modify tool parameters
-        - Apply security policies
-        - Validate tool inputs
+        - Approve or deny calls (policies, asking a person)
+        - Validate or correct tool arguments
         - Log tool calls
-        
+
+        To change the arguments, write ``context.tool_call["arguments"]`` (a
+        dict) and return ``modified=True``. To block the call, return
+        ``metadata={"block": "<what the model should do instead>"}``: the call
+        does not run, the model reads the text as an error result, and no
+        later hook runs for it.
+
         Args:
-            context: Hook context with tool_call, agent
-            
+            context: Hook context with tool_call, agent, session_id, step,
+                     cancellation_token (the run's)
+
         Returns:
             HookResult with success status and modified context
         """
@@ -257,17 +266,21 @@ class PluginHook(ABC):
     
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
         """
-        Called after tool execution.
-        
+        Called after a tool call ran, before its result joins the history.
+
         Use cases:
-        - Modify tool results
-        - Apply transformations
-        - Extract metadata
+        - Trim, redact or annotate tool results
         - Log results
-        
+
+        To change what the model reads, write ``context.tool_result["result"]``
+        and return ``modified=True``. Calls a pre_tool_call hook blocked do
+        not reach it.
+
         Args:
-            context: Hook context with tool_result, tool_call, agent
-            
+            context: Hook context with tool_result ({"result", "is_error",
+                     "started_at", "finished_at"}), tool_call (as it ran),
+                     agent, session_id, step
+
         Returns:
             HookResult with success status and modified context
         """

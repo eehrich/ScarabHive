@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request
 
 from agent_system.auth.database import get_db
-from agent_system.auth.dependencies import bearer_scheme, get_current_user
+from agent_system.auth.dependencies import bearer_scheme, get_token_user
 from agent_system.auth.models import UserCreate, UserRole, UserUpdate
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
@@ -57,7 +57,7 @@ class UserManagementWebEndpoints:
         if not self.plugin.auth_enabled:
             raise HTTPException(status_code=403, detail="User management needs authentication to be enabled")
         db = get_db()
-        user = await get_current_user(request, await bearer_scheme(request), None, db)
+        user = await get_token_user(request, await bearer_scheme(request), db)
         if not user.is_active or user.role != UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin privileges required")
         return user, db

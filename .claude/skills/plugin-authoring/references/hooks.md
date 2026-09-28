@@ -13,9 +13,24 @@ step loop in `servers/agent/server.py`.
 | `llm_progress` | while streaming, every 2000 chars of thinking | nothing |
 | `post_llm_call` | after the assistant message is appended | only `assistant.content`/`tool_calls`; metadata `continue`, `continue_message`, `continue_injected_by`, `content_format` |
 | `format_output` | display (HTML) | display only, never history |
-| `session_end` | after saving | nothing; `metadata["persisted"]` |
+| `session_end` | after saving | nothing; `metadata`: `persisted`, `cancelled`, `errors`, `completed` |
 | `pre_llm_request` / `post_llm_response` | at client level | read-only, errors swallowed |
-| `pre_tool_call` / `post_tool_call` | **never fire** — no callers; registration logs a warning | — |
+| `pre_tool_call` | before each tool call of the model — one by one, in call order, before any starts — and each call of a tool_script script (`dispatch_tool_call(hook_source=...)`) | `tool_call["arguments"]` (dict, `modified=True`); `metadata["block"] = "<what to do>"` blocks: the call does not run, the model reads `{"status":"error","error":...,"type":"ToolCallBlocked"}`, the run goes on, no later hook runs for the call |
+| `post_tool_call` | after each call pre let through (also failed/cancelled), before the result joins the history | `tool_result["result"]` (`modified=True`); the other keys are read-only |
+
+Tool hooks: `tool_call = {"id", "name", "server", "arguments", "source"}`
+(`source` "model" or "tool_script"), `tool_result = {"result", "is_error",
+"started_at", "finished_at"}` (the call's own run time: post hooks of parallel
+calls run once all are done), plus the run's `cancellation_token`. The history keeps the arguments the model
+sent. A hook that raises, times out or fails is skipped — the call **runs**,
+unless its schema entry says `on_error: block` (pre_tool_call only): then the
+call is blocked. While a pre hook waits, the run's status events keep flowing
+(a question asked via StatusScope reaches the viewer). tool_script's
+`inject_params` secrets are merged after the hooks; a tool that raises under
+tool_script becomes an error result that passes the post hooks. Not hooked: slash
+commands, web buttons, tool_preload, stategraph, `Agent.call_tool`, calls the
+framework rejected (bad JSON, unknown tool). No enabled hook of the type for the
+agent → no context is built (`HookIntegrationManager.wants_hooks`).
 
 The context is **a deep copy per hook** (`messages`, `llm_response`, `metadata`);
 `agent`, `llm`, `tools_schema`, the token are passed by reference.

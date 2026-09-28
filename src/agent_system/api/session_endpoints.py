@@ -653,18 +653,21 @@ async def get_session(
         # and gated on the session lock rather than on the live state being
         # present: that state outlives the run it belongs to.
         #
-        # The lock alone is too narrow a gate: the run releases it just BEFORE its
-        # final save and its session-end hooks, and its job runs on until those are
-        # done -- an LLM call, for lessons_learned. A load then read the turn off
-        # disk with no count of what the run had sent (during the save, the turn
-        # before it), and the chat, joining the job, replayed the whole run below
-        # it: the turn twice. So a run the tracker maps to this session counts as
+        # The lock alone is too narrow a gate: the run releases it after its final
+        # save but BEFORE its session-end hooks, and its job runs on until those are
+        # done -- an LLM call, for lessons_learned. A load in that window read the
+        # turn off disk with no count of what the run had sent, and the chat,
+        # joining the job, replayed the whole run below it: the turn twice. So a run the tracker maps to this session counts as
         # in flight while its job runs. Its live state is its conversation: the
         # session's next run sets its own only once it holds the lock.
         if session_agent is not None and hasattr(session_agent, "_session_tracker"):
             tracker = session_agent._session_tracker
             try:
                 is_running, owner_request_id = tracker.check_session_locked(session_id)
+                if is_running and getattr(tracker, "held_by_a_writer", lambda _: False)(session_id):
+                    # An append or /undo holds it for a moment: no run, and whatever live state the
+                    # session has left is a finished run's -- a turn put back since came back with it.
+                    is_running, owner_request_id = False, None
                 if not is_running:
                     running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
                     if (running.get("attachable")

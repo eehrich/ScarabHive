@@ -40,6 +40,14 @@ plugins:
             - "+coder_shell/*"
             - "+coder_fs_ro/*"
 
+        hooks:
+          overrides:
+            # The project's AGENTS.md: how this project runs its checks.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+
       metadata:
         author: "Enrico Ehrich"
         version: "1.0.0"

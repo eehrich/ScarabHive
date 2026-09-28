@@ -540,7 +540,7 @@ class TestTheAgentLoop:
         agent = _agent(tmp_path, monkeypatch, lambda: None,
                        session_service=_SessionService(events))
 
-        async def record(session_id, request_id, messages=None, persisted=False):
+        async def record(session_id, request_id, messages=None, persisted=False, **_outcome):
             events.append(("session_end", persisted))
 
         monkeypatch.setattr(agent._hook_manager, "execute_session_end_hooks", record)
@@ -559,7 +559,7 @@ class TestTheAgentLoop:
         events = []
         agent = _agent(tmp_path, monkeypatch, lambda: None, session_service=_Broken(events))
 
-        async def record(session_id, request_id, messages=None, persisted=False):
+        async def record(session_id, request_id, messages=None, persisted=False, **_outcome):
             events.append(persisted)
 
         monkeypatch.setattr(agent._hook_manager, "execute_session_end_hooks", record)

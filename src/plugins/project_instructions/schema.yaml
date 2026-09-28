@@ -1,0 +1,62 @@
+# Hook definitions for the project_instructions plugin.
+#
+# The note is off for every agent: an agent switches it on with
+#   hooks.overrides["project_instructions.inject_project_instructions"].enabled: true
+# (full name: <server instance>.<hook>). The keys under `config:` are the
+# instance defaults; the same keys in that override win for the one agent.
+hooks:
+  # Takes the note of the call before out of the list, FIRST: compaction and
+  # every hook that places messages then work on the list without it. On for
+  # every agent -- where there is no note it changes nothing -- so an agent
+  # switches on one hook, not two.
+  - name: withdraw_project_instructions
+    type: pre_llm_call
+    enabled: true
+    timeout: 5.0
+    category: project_instructions_withdrawal
+    description: "Takes this plugin's note out of the list before compaction and the other injections run"
+    order:
+      after: ["begin"]
+      before: ["context_engineering", "context_summarization", "prompt_injection",
+               "simple_prompt_inject.inject_prompt"]
+
+  - name: inject_project_instructions
+    type: pre_llm_call
+    enabled: false
+    timeout: 5.0
+    category: prompt_injection
+    description: "Puts the project's AGENTS.md, read once per session, right behind the system prompt"
+    order:
+      # Behind the compaction hooks: what they would have pruned was not in
+      # the list, and it is put back here before the call goes out.
+      after: ["project_instructions_withdrawal", "context_engineering", "context_summarization"]
+      before: ["message_validation"]
+
+config:
+  filenames:
+    type: array
+    default: ["AGENTS.md"]
+    description: >
+      File names looked for in the project root, in this order; the first one
+      that exists and is not empty is read, the others are not. Plain names
+      only.
+      ["AGENTS.md", "CLAUDE.md"] also takes a repository that only has a
+      CLAUDE.md.
+
+  max_bytes:
+    type: integer
+    default: 32768
+    description: >
+      At most this many bytes of the file reach the model; a longer file is
+      cut there, and the model is told so and how long the file is.
+
+  root:
+    type: string
+    default: ""
+    description: >
+      The project root, when the agent's file tools reach more than one
+      unrelated directory. "." is the directory the command was started in
+      (as in file_ops' allowed_directories), any other relative path counts
+      against the installation, an absolute path is taken as given. It must
+      lie inside a directory the agent's file tools reach; otherwise nothing
+      is read. Empty: the one root the file tools have.

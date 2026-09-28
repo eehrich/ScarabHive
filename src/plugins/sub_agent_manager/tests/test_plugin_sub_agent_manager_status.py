@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.servers.agent.components.session_tracking import SessionTracker
 from agent_system.tools.status import StatusPhase, get_status_bus
 from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
 from plugins.sub_agent_manager.server import SubAgentManagerServer
@@ -49,7 +50,7 @@ def _wire(server, events):
     agent.agent_config.llm_profile = "normal"
     agent.agent_config.default_llm_profile = "normal"
     agent._session_service = None
-    agent._session_tracker = Mock()
+    agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
     agent._session_tracker.set_session_metadata = Mock()
 
     async def run_events(*args, **kwargs):

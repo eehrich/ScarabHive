@@ -1,0 +1,9 @@
+# openai_api: no tools and no panel. The plugin is a protocol adapter: the
+# OpenAI Responses and Chat Completions API over the agents (plugin.py builds
+# the routes itself, because they stream Server-Sent Events).
+#
+# Config keys (flat, next to type; defaults in code):
+#   agents:          fnmatch patterns of the agents offered as models; default: the agents the web UI lists
+#   blocked_agents:  fnmatch patterns never offered
+#   responses_db:    where response ids are kept for previous_response_id (default data/openai_api/responses.db)
+tools: []

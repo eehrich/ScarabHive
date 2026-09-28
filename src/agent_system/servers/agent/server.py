@@ -5,10 +5,12 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import errno
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
@@ -39,7 +41,7 @@ from ...tools.status import (
     current_request_id
 )
 from .components.tool_integration import ToolIntegrationManager
-from .components.tool_execution import ToolExecutionManager
+from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
 from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
@@ -53,6 +55,11 @@ from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 
 logger = logging.getLogger(__name__)
+
+#: ``error_type`` of the error a run ends with when another request of this process holds its session's lock.
+#: It ran nothing and has nothing to save -- its caller must not save the session either: what the tracker holds
+#: is the other run's live state (app.py /run and /events).
+SESSION_LOCKED = "session_locked"
 
 # llm_progress hooks fire every this many characters of thinking. A hook sets
 # its own, coarser interval on top; this only bounds how often the loop pays
@@ -383,18 +390,20 @@ class Agent(ToolServer):
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
         self._tool_integration_manager = ToolIntegrationManager(self.system_config, self.agent_config)
-        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
-        self._tool_execution_manager = ToolExecutionManager(
-            self.registry,
-            self
-        )
 
         # Context management now handled by hook plugins via HookIntegrationManager
 
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
-        
+
+        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
+        self._tool_execution_manager = ToolExecutionManager(
+            self.registry,
+            self,
+            hook_manager=self._hook_manager,
+        )
+
         # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
         if self.llm is not None:
             self._hook_manager.wire_llm_hooks(self.llm)
@@ -683,11 +692,7 @@ class Agent(ToolServer):
             data = json.loads(content)
         except (ValueError, TypeError):
             return False
-        if not isinstance(data, dict):
-            return False
-        if data.get("status") == "error":
-            return True
-        return "status" not in data and bool(data.get("error"))
+        return tool_result_is_error(data)
 
     def llm_for_session(self, session_id: Optional[str]) -> Optional[LLMClient]:
         """The client answering the session's running step, else the agent's own.
@@ -999,7 +1004,10 @@ class Agent(ToolServer):
     async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
                                  session_id: Optional[str] = None,
                                  user_id: Optional[str] = None,
-                                 request_id: Optional[str] = None) -> Any:
+                                 request_id: Optional[str] = None,
+                                 hook_source: Optional[str] = None,
+                                 cancellation_token: Optional[Any] = None,
+                                 injected_params: Optional[Dict[str, Any]] = None) -> Any:
         """Execute one tool call programmatically with THIS agent's authorization.
 
         The in-process counterpart of the LLM tool path: same server resolution,
@@ -1011,13 +1019,33 @@ class Agent(ToolServer):
         Used by the tool_script plugin ("scripted tool chains"); any future
         in-process caller (hooks, schedulers) should go through here as well.
 
+        ``hook_source`` names a caller that acts for the model -- tool_script
+        runs a script the model wrote. Given, the pre_tool_call and
+        post_tool_call hooks fire as for the model's own calls, with
+        ``tool_call["source"] = hook_source``: a call the hooks would stop
+        must not get past them inside a script. None (the default) fires
+        none: the caller is the framework or a person (slash commands,
+        preloads, state machines), not the model. ``cancellation_token`` is
+        the caller's; the hooks get it, so one that waits stops on a cancel.
+        With a hook_source, a tool that raises is handed on the way the model's
+        own loop hands a failure on: as an error result
+        (``{"status": "error", ...}``), which passes the post_tool_call hooks
+        -- a redacting hook sees a failure's text too.
+
+        ``injected_params`` are values the caller's configuration adds
+        (tool_script's ``inject_params``: secrets the model never wrote). They
+        are merged after the pre_tool_call hooks, over what those left, and no
+        hook sees them -- a hook that logs a call or shows it to a person must
+        not expose them.
+
         Raises ToolDispatchError with an agent-actionable message for unknown
-        tools, unsupported tool types and authorization failures. Tool-level
-        errors are returned as the tool's normal result (callers interpret the
-        status convention themselves).
+        tools, unsupported tool types, authorization failures and calls a
+        pre_tool_call hook blocked. Tool-level errors are returned as the tool's
+        normal result (callers interpret the status convention themselves).
         """
+        from ...hooks.plugin_hook import HookType
         from .components.tool_execution import (
-            FRAMEWORK_REQUEST_ID_KEYS, ToolDispatchError, inject_runtime_params)
+            ToolDispatchError, drop_runtime_params, inject_runtime_params)
 
         # External tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
@@ -1042,12 +1070,33 @@ class Agent(ToolServer):
         # verbatim; a script could otherwise pass _session_id to impersonate
         # another agent and defeat json_store's owner-based write protection.
         # request_id/requestId likewise: status and cancellation route by them.
-        forged = [k for k in params if k.startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
+        params, forged = drop_runtime_params(params)
         if forged:
             logger.warning(
                 "Dropping caller-supplied runtime param(s) %s from programmatic "
                 "dispatch of %s", forged, tool_name)
-            params = {k: v for k, v in params.items() if k not in forged}
+
+        hooks = getattr(self, "_hook_manager", None) if hook_source else None
+        tool_call = {"id": None, "name": tool_name, "server": server_name,
+                     "arguments": params, "source": hook_source}
+        if hooks is not None and hooks.wants_hooks(HookType.PRE_TOOL_CALL):
+            params, block = await hooks.execute_pre_tool_hooks(
+                tool_call, step=0, request_id=request_id or "", session_id=session_id or "",
+                cancellation_token=cancellation_token)
+            # The loop's own calls check the run's token right before they
+            # start; a script call must too -- a hook that waited for a person
+            # returns (or fails) on the cancel, and the call must not run then.
+            if cancellation_token is not None and getattr(cancellation_token, "is_cancelled", False):
+                raise ToolDispatchError("Request cancelled — the call did not run.")
+            if block is not None:
+                raise ToolDispatchError(block)
+            tool_call = {**tool_call, "arguments": params}
+        if injected_params:
+            extra, dropped = drop_runtime_params(dict(injected_params))
+            if dropped:
+                logger.warning("Dropping runtime param(s) %s injected into programmatic "
+                               "dispatch of %s", dropped, tool_name)
+            params = {**params, **extra}
 
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,
@@ -1057,12 +1106,30 @@ class Agent(ToolServer):
 
         logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
                     tool_name, self.name)
-        if hasattr(server, 'call_with_status'):
-            result = await server.call_with_status(tool_name, params)
-        else:
-            result = await server.call(tool_name, params)
+        started_at = time.time()
+        try:
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(tool_name, params)
+            else:
+                result = await server.call(tool_name, params)
+        except Exception as exc:
+            if hook_source is None:
+                raise
+            logger.exception("Tool %s failed via programmatic dispatch", tool_name)
+            result = {"status": "error", "error": f"Tool '{tool_name}' execution failed: {exc}",
+                      "type": type(exc).__name__}
+        finished_at = time.time()
         logger.info("Tool %s returned (programmatic dispatch): %s",
                     tool_name, str(result)[:500])
+        if hooks is not None and hooks.wants_hooks(HookType.POST_TOOL_CALL):
+            try:
+                result = await hooks.execute_post_tool_hooks(
+                    tool_call, result, step=0, request_id=request_id or "", session_id=session_id or "",
+                    cancellation_token=cancellation_token, started_at=started_at, finished_at=finished_at)
+            except Exception:
+                # The call ran; raising now would report a done job as failed.
+                logger.exception("post_tool_call hooks failed for %s; the result stays as "
+                                 "the tool returned it", tool_name)
 
         # A tool may stage a rewritten history via set_compacted_messages
         # (the summarizer's manual path does). During a run the request's own
@@ -1701,21 +1768,6 @@ class Agent(ToolServer):
         if llm_override is not None and hasattr(llm_override, 'set_app_title'):
             llm_override.set_app_title(self.name)
 
-        # Start a background checkpoint loop so long-running tool calls don't
-        # leave the session unsaved on disk. The loop persists messages up to
-        # the last consistent tool_call/tool_result boundary, so the file is
-        # always reload-safe (orphan-free).
-        checkpoint_session_id: Optional[str] = None
-        checkpoint_user_id: Optional[str] = None
-        if self._session_service and session_id and self._session_tracker is not None:
-            try:
-                meta = self._session_tracker.get_session_metadata(session_id) or {}
-                checkpoint_user_id = meta.get("user_id", "anonymous")
-                self._session_service.start_checkpoint_loop(self, checkpoint_user_id, session_id)
-                checkpoint_session_id = session_id
-            except Exception as e:
-                logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
-
         # The run sets its request id and its user in the context it runs in -- the
         # caller's: this generator runs in whoever iterates it. Its cleanup resets
         # them once a conversation context was built; a setup that failed before, or
@@ -1766,11 +1818,6 @@ class Agent(ToolServer):
                 await status_forwarder.stop_forwarding()
             except Exception as e:
                 logger.debug(f"Failed to stop status_forwarder for {request_id}: {e}")
-            if checkpoint_session_id and self._session_service:
-                try:
-                    await self._session_service.stop_checkpoint_loop(checkpoint_session_id)
-                except Exception as e:
-                    logger.debug(f"Failed to stop checkpoint loop for {checkpoint_session_id}: {e}")
             current_request_id.set(request_before)
             current_run_user.set(user_before)
 
@@ -2015,6 +2062,25 @@ class Agent(ToolServer):
             self._set_live_messages(session_id, messages.copy())
         return messages
 
+    def _start_checkpoint_loop(self, session_id: str) -> Optional[asyncio.Task]:
+        """Start a background checkpoint loop so long-running tool calls don't
+        leave the session unsaved on disk. The loop persists messages up to
+        the last consistent tool_call/tool_result boundary, so the file is
+        always reload-safe (orphan-free).
+
+        The loop this run started, or None when one runs for the session already
+        (an agent called as a tool on its caller's session): _finalize_request
+        stops this one and no other."""
+        if not (self._session_service and session_id and self._session_tracker is not None):
+            return None
+        try:
+            meta = self._session_tracker.get_session_metadata(session_id) or {}
+            return self._session_service.start_checkpoint_loop(
+                self, meta.get("user_id", "anonymous"), session_id)
+        except Exception as e:
+            logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
+            return None
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -2024,7 +2090,8 @@ class Agent(ToolServer):
         context: Optional[ConversationContext],
         messages: Optional[List[ChatMessage]],
         results: Dict[str, Any],
-        step: int
+        step: int,
+        checkpoint_loop: Optional[asyncio.Task] = None,
     ) -> None:
         """Finalize request and clean up resources.
 
@@ -2050,32 +2117,13 @@ class Agent(ToolServer):
             messages: Final conversation messages
             results: Execution results dictionary
             step: Final step number
+            checkpoint_loop: The checkpoint loop this run started (_start_checkpoint_loop)
         """
         # First, before anything that awaits: a cancellation there would leave the
         # finished run's model registered for the session's next /compact.
         self._step_llms.pop(session_id, None)
 
-        # Flush injected user messages that arrived too late to be processed
-        # (e.g. during the very last LLM call) into the conversation so they
-        # persist with the final save instead of being dropped with the request
-        # entry. They are answered by the next run on this session.
-        if messages is not None:
-            try:
-                messages = await self._take_in_late_messages(request_id, session_id, messages)
-            except Exception as e:
-                logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
-
-        # Clean up cancellation token
-        cancellation_manager = get_cancellation_manager()
-        cancellation_manager.unregister_request(request_id)
-
-        # Clean up request tracking but preserve session data
-        self._request_manager.unregister_active_request(request_id)
-        logger.debug("Cleaned up request tracking for %s", request_id)
-
-        # Release session lock BEFORE persisting (allows other requests to proceed)
-        # Note: unregister_request also releases the lock, but we do it explicitly here
-        # for clarity and to ensure it happens before session persistence
+        # The session this run holds, looked up first.
         sid = self._session_tracker.get_session_for_request(request_id)
 
         # Stop the background checkpoint loop BEFORE the final save. The loop
@@ -2083,47 +2131,100 @@ class Agent(ToolServer):
         # save it can resume after we persist and write its older, trimmed
         # snapshot over the newer one (silent message loss). Cancelling and
         # awaiting the task here guarantees any in-flight checkpoint write has
-        # completed, so the final save below writes last and wins. Idempotent:
-        # the outer run_events finally also calls stop_checkpoint_loop.
-        if sid and self._session_service:
+        # completed, so the final save below writes last and wins.
+        # The loop this run started and no other: an agent called as a tool on
+        # its caller's session would otherwise stop the caller's. And first,
+        # before anything else awaits: stop_checkpoint_loop cancels it and takes
+        # it out of the registry before its own first await, so no cancel landing
+        # later leaves it running.
+        if checkpoint_loop is not None and self._session_service:
             try:
-                await self._session_service.stop_checkpoint_loop(sid)
+                await self._session_service.stop_checkpoint_loop(sid or session_id, started=checkpoint_loop)
             except Exception as e:
-                logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
+                logger.debug(f"Failed to stop checkpoint loop for {session_id} before final save: {e}")
 
-        if sid:
-            await self._session_tracker.release_session_lock(sid, request_id)
-            logger.debug("Released session lock for %s (request %s)", sid, request_id)
-
-        # Persist session messages and keep the request->session mapping for a while
+        # The session lock is let go of after the save below, not before it -- and
+        # in the finally, whatever cuts the steps up to it short: skipped, the
+        # session would stay owned by a run that is gone and refuse every later
+        # request on it until restart.
         persisted = False
-        if sid and messages:
-            try:
-                # Check if ANY tool modified the session messages during this request
-                # Tools can call session_tracker.set_compacted_messages() to replace the history
-                compacted_msgs = self._session_tracker.get_compacted_messages(sid)
+        cancelled = False
+        try:
+            # Flush injected user messages that arrived too late to be processed
+            # (e.g. during the very last LLM call) into the conversation so they
+            # persist with the final save instead of being dropped with the request
+            # entry. They are answered by the next run on this session.
+            if messages is not None:
+                try:
+                    messages = await self._take_in_late_messages(request_id, session_id, messages)
+                except Exception as e:
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+            elif sid:
+                # No conversation: the run failed on its way in, after its request was registered. A
+                # message handed to it meanwhile went with the request entry -- answered "appended",
+                # and gone. Into the session as the tracker holds it, and saved with it.
+                try:
+                    held = list(self._session_tracker.get_session_messages(sid))
+                    taken = await self._take_in_late_messages(request_id, session_id, list(held))
+                    if len(taken) > len(held):
+                        messages = taken
+                except Exception as e:  # noqa: BLE001 - as the flush above: nothing here may keep the lock
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
-                if compacted_msgs is not None:
-                    # A tool replaced the message history - use those messages for
-                    # persistence (already conversation-only, no filtering needed)
-                    logger.debug(
-                        f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
-                        f"(request had {len(messages)} messages)"
-                    )
-                    self._session_tracker.set_session_messages(sid, compacted_msgs)
-                    self._session_tracker.clear_compacted_messages(sid)
-                    # Save to disk even if no SSE client is connected
-                    # (e.g., browser disconnected during background job execution)
-                    persisted = await self._save_session_to_disk(sid)
-                else:
-                    # Normal case: persist the request's conversation messages
-                    persisted = await self._persist_conversation(
-                        sid, messages, to_disk=True, note="at end of request")
+            # Clean up cancellation token -- read first: the session end hooks
+            # are told whether the run was cancelled, and after this the token
+            # is gone. A crash recorded the state from before it cancelled the
+            # token itself.
+            cancellation_manager = get_cancellation_manager()
+            run_token = cancellation_manager.get_token(request_id)
+            cancelled = (bool(results["cancelled"]) if "cancelled" in results
+                         else bool(run_token is not None and run_token.is_cancelled))
+            cancellation_manager.unregister_request(request_id)
 
-                # Keep the request->session mapping (don't pop it immediately)
-                # This allows append requests that arrive shortly after completion to find the session
-            except Exception as e:
-                logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+            # Clean up request tracking but preserve session data
+            self._request_manager.unregister_active_request(request_id)
+            logger.debug("Cleaned up request tracking for %s", request_id)
+
+            # Persist session messages and keep the request->session mapping for a while.
+            # Under the session lock: let go of before this save, a request of this
+            # process could open the session in between -- read it from disk, where
+            # this run's last exchange was not yet -- and its run saved over it.
+            if sid and messages:
+                try:
+                    # Check if ANY tool modified the session messages during this request
+                    # Tools can call session_tracker.set_compacted_messages() to replace the history
+                    compacted_msgs = self._session_tracker.get_compacted_messages(sid)
+
+                    if compacted_msgs is not None:
+                        # A tool replaced the message history - use those messages for
+                        # persistence (already conversation-only, no filtering needed)
+                        logger.debug(
+                            f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
+                            f"(request had {len(messages)} messages)"
+                        )
+                        self._session_tracker.set_session_messages(sid, compacted_msgs)
+                        self._session_tracker.clear_compacted_messages(sid)
+                        # Save to disk even if no SSE client is connected
+                        # (e.g., browser disconnected during background job execution)
+                        persisted = await self._save_session_to_disk(sid)
+                    else:
+                        # Normal case: persist the request's conversation messages
+                        persisted = await self._persist_conversation(
+                            sid, messages, to_disk=True, note="at end of request")
+
+                    # Keep the request->session mapping (don't pop it immediately)
+                    # This allows append requests that arrive shortly after completion to find the session
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+        finally:
+            # The lock goes once the conversation is on disk: a free lock then means
+            # "saved", and the next request of this session reads it whole. In a
+            # finally: a save cut short (the run cancelled) must not leave the
+            # session locked for the life of the process. The session end hooks
+            # after it only read the conversation.
+            if sid:
+                await self._session_tracker.release_session_lock(sid, request_id)
+                logger.debug("Released session lock for %s (request %s)", sid, request_id)
 
         # Session end hooks AFTER the save, and told whether it happened. A hook
         # that counts what the request carried as delivered -- debate_forum does
@@ -2132,9 +2233,13 @@ class Agent(ToolServer):
         # cancelled would take the message with it and nothing would re-deliver
         # it. They read the conversation, none of them writes it, so running
         # them after the save changes nothing else.
+        # How the run ended goes with it: an observer (telemetry) cannot see
+        # the run's events, only the hooks.
         try:
             await self._hook_manager.execute_session_end_hooks(
-                session_id, request_id, messages=messages, persisted=persisted
+                session_id, request_id, messages=messages, persisted=persisted,
+                cancelled=cancelled, errors=list(results.get("errors") or []),
+                completed="summary" in results,
             )
         except Exception as e:
             logger.warning(f"Session end hooks failed: {e}", exc_info=True)
@@ -3622,9 +3727,14 @@ class Agent(ToolServer):
                 # Stuck signal: a step whose tool calls ALL returned an error.
                 # Catches the near-loops the exact-match detector misses (same
                 # tool retried with slightly varied wrong args). N in a row →
-                # open an escalation window.
-                if tool_messages and all(
-                        self._tool_message_is_error(m) for m in tool_messages):
+                # open an escalation window. Only calls that ran count: a call a
+                # hook blocked (a policy, a person saying no) is no sign that a
+                # stronger model is needed -- a step of nothing but blocked calls
+                # neither grows the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                if tool_messages and not ran_messages:
+                    prev_step_all_errored = True
+                elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):
                     consecutive_tool_error_steps += 1
                     prev_step_all_errored = True  # keep the streak alive next step
                     if consecutive_tool_error_steps >= escalate_error_streak and not final_call:
@@ -3920,6 +4030,7 @@ class Agent(ToolServer):
         step = 0
         context = None
         messages = None
+        checkpoint_loop: Optional[asyncio.Task] = None
         results: Dict[str, Any] = {"task": task, "calls": []}
 
         # Register this request BEFORE emitting start event so appends work immediately
@@ -3947,18 +4058,49 @@ class Agent(ToolServer):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
             
-            yield {"type": "error", "message": error_msg, "request_id": request_id}
+            yield {"type": "error", "message": error_msg, "request_id": request_id, "error_type": SESSION_LOCKED}
             yield {"type": "end"}
             return
 
         # Emit start event BEFORE opening status_scope contexts
         # This ensures frontend has currentRequestId set before any status events arrive
-        yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+        started = False
+        try:
+            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+            started = True
+        finally:
+            if not started:
+                # Closed at its first event (a client gone at once): nothing below runs, the
+                # finally that ends a run included, and the session stayed held for good by a
+                # run that never ran. Let go of it as a refused request does.
+                self._request_manager.unregister_active_request(request_id)
+                self._session_tracker.unregister_request(request_id)
 
-        # Now open status_scope contexts - their START events will arrive AFTER the start event
-        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
+        # Now open status_scope contexts - their START events will arrive AFTER the start event.
+        # Entered before the block they cover, and guarded like the start event: entering one
+        # publishes, and a cancel or an error there came before the try whose finally ends a run
+        # -- the request stayed registered and its session held for good.
+        scopes = contextlib.AsyncExitStack()
+        try:
+            status_coordinator = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id))
+            status_worker = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_worker", worker_request_id))
+        except BaseException as error:
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)  # lets go of the session's lock too
+            # A scope already open is told why it ends, as `async with` would tell it
+            await scopes.__aexit__(type(error), error, error.__traceback__)
+            raise
+        async with scopes:
             try:
+                # The checkpoint loop: started with the session held, first thing in the
+                # try whose finally (_finalize_request) stops it -- this one, the loop this
+                # run started. Started before the lock (in run_events, as it was), a
+                # request refused there registered a loop of its own between two runs,
+                # and the run after it went without one once that request cleaned up.
+                checkpoint_loop = self._start_checkpoint_loop(session_id)
+
                 # Session presence: held from here on, not from the first LLM
                 # call -- whoever lets go of the endpoint's hold meanwhile (a
                 # client that disconnects) would leave the session looking idle
@@ -3978,6 +4120,7 @@ class Agent(ToolServer):
                     )
                 except RuntimeError as e:
                     # LLM not available - emit error and end stream
+                    results.setdefault("errors", []).append(str(e))
                     yield {"type": "error", "message": str(e), "request_id": request_id}
                     yield {"type": "end"}
                     return
@@ -4015,6 +4158,20 @@ class Agent(ToolServer):
                 )
 
                 async for event in loop_generator:
+                    # Track step from events that contain step info
+                    # This ensures we report accurate step count in completion message
+                    if "step" in event:
+                        step = event.get("step", step)
+
+                    # Capture summary and errors from events -- before the yield:
+                    # a consumer may stop reading at an error (sub_agent_manager
+                    # and stategraph do), and the finalize, its status line and
+                    # the session end hooks must still know of it.
+                    if event.get("type") == "final" and "summary" in event:
+                        results["summary"] = event["summary"]
+                    elif event.get("type") == "error":
+                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+
                     yield event
 
                     # Yield any pending status events after each main event
@@ -4026,19 +4183,19 @@ class Agent(ToolServer):
                     if context:
                         messages = context.messages
 
-                    # Track step from events that contain step info
-                    # This ensures we report accurate step count in completion message
-                    if "step" in event:
-                        step = event.get("step", step)
-                    
-                    # Capture summary and errors from events
-                    if event.get("type") == "final" and "summary" in event:
-                        results["summary"] = event["summary"]
-                    elif event.get("type") == "error":
-                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
+                # Into the results like every error event of the loop, and before
+                # the yield (a consumer may stop reading there): unrecorded, the
+                # finalize reported the crashed run "completed" and the session
+                # end hooks saw no error.
+                results.setdefault("errors", []).append(f"Agent execution failed: {e}")
+                # Whether the run had been cancelled, read before the
+                # cancel_request below: it cancels the run's own token too (its
+                # tools and background work stop on it), and the finalize would
+                # then report every crash a consumer reads past as a cancel.
+                crash_token = get_cancellation_manager().get_token(request_id)
+                results["cancelled"] = bool(crash_token is not None and crash_token.is_cancelled)
                 yield {"type": "error", "message": f"Agent execution failed: {e}"}
                 
                 # CRITICAL: Cancel all sub-requests when parent agent fails
@@ -4060,7 +4217,8 @@ class Agent(ToolServer):
                         context=context,
                         messages=messages if messages else (context.messages if context else None),
                         results=results,
-                        step=step
+                        step=step,
+                        checkpoint_loop=checkpoint_loop,
                     )
                 finally:
                     # Session presence: after the save, so input still waiting

@@ -7,6 +7,7 @@ import logging
 import random
 import weakref
 from agent_system.services.session_manager import SessionNotFoundError
+from agent_system.services.session_service import is_ephemeral_session
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -711,9 +712,13 @@ class SubAgentManager:
         try:
             parent_data = await session_manager.load_session(user_id, parent_session_id)
         except Exception as e:
-            logger.warning(f"Could not load parent session {parent_session_id}: {e}")
+            # A throwaway session's parent record is deleted once its turn is settled (openai_api, stateless
+            # calls); a sub-agent of it that still reports -- its activity, its ending -- is expected to miss it.
+            expected = isinstance(e, SessionNotFoundError) and is_ephemeral_session(parent_session_id)
+            (logger.debug if expected else logger.warning)(
+                f"Could not load parent session {parent_session_id}: {e}")
             return False
-            
+
         if "metadata" not in parent_data or "sub_agents" not in parent_data.get("metadata", {}):
             logger.warning(f"Parent session {parent_session_id} has no sub_agents metadata")
             return False
