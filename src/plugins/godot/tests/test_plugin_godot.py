@@ -940,6 +940,21 @@ def test_clip_bounds_a_dict_with_no_list_to_halve():
     assert small == {"a": [1, 2, 3]} and note == ""
 
 
+def test_res_path_passes_a_file_system_path_through_only(tmp_path):
+    """A leading "/" is the project's root (the schema asks for res:// or project-relative); a path that
+    is there, or one with a drive or share, is the file system's -- on POSIX both are rooted at "/"."""
+    from plugins.godot.server import GodotServer
+    script = tmp_path / "tool.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    assert GodotServer._res_path(str(script)) == script.as_posix()
+    new_scene = tmp_path / "levels_dir_is_there" / "new_level.tscn"  # saved there next, not there yet
+    new_scene.parent.mkdir()
+    assert GodotServer._res_path(str(new_scene)) == new_scene.as_posix()
+    assert GodotServer._res_path("C:/game/tool.gd") == "C:/game/tool.gd"
+    assert GodotServer._res_path("/no_such_folder_here/tool.gd") == "res://no_such_folder_here/tool.gd"
+    assert GodotServer._res_path("/main.tscn") == "res://main.tscn"  # its folder would be "/"
+
+
 def test_res_path_keeps_a_leading_dot_in_a_name():
     from plugins.godot.server import GodotServer
     assert GodotServer._res_path("./.tools.gd") == "res://.tools.gd"

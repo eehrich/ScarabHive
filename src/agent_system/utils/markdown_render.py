@@ -241,7 +241,7 @@ def _sanitize_html(html: str, allowed_tags: frozenset[str] = DEFAULT_ALLOWED_TAG
     try:
         parser.feed(html)
         parser.close()
-    except Exception as exc:  # html.parser raises AssertionError on "<![1" (3.12)
+    except Exception as exc:  # html.parser raised AssertionError on "<![1" up to 3.13
         # Also catches a bug in the handlers above -- hence the exception type.
         logger.warning("HTML sanitiser failed (%s: %s); showing the message as text",
                        type(exc).__name__, exc)

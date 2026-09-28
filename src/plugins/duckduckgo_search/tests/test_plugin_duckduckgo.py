@@ -1,4 +1,5 @@
 """duckduckgo_search: the ddgs client is patched, nothing reaches the network."""
+import importlib.util
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -22,6 +23,11 @@ def server(mock_system_config, mock_server_config, tmp_path):
     return srv
 
 
+#: Patching ddgs.DDGS and raising its exceptions needs ddgs, the plugin's declared dependency (plugin.toml).
+needs_ddgs = pytest.mark.skipif(importlib.util.find_spec("ddgs") is None,
+                                reason="ddgs (duckduckgo_search's declared dependency) is not installed")
+
+
 def _ddgs(text):
     """Patch the ddgs client so ``DDGS().text(...)`` is ``text``."""
     return patch("ddgs.DDGS", **{"return_value.text": text})
@@ -33,6 +39,7 @@ def test_schema_has_one_prefixed_search_tool(server):
     assert {"query", "max_results"} <= set(tools[0]["function"]["parameters"]["properties"])
 
 
+@needs_ddgs
 async def test_empty_query_is_refused_without_a_request(server):
     with _ddgs(AsyncMock()) as client:
         result = await server.call("web_search", {"query": "   ", "_status": AsyncMock()})
@@ -45,6 +52,7 @@ async def test_unknown_tool_raises(server):
         await server.call("invalid_tool", {"query": "x", "_status": AsyncMock()})
 
 
+@needs_ddgs
 async def test_results_come_back_and_the_end_line_counts_them(server):
     status = AsyncMock()
     with _ddgs(lambda query, max_results: HITS):
@@ -54,6 +62,7 @@ async def test_results_come_back_and_the_end_line_counts_them(server):
     assert "2 results" in line and "test" in line
 
 
+@needs_ddgs
 async def test_a_second_identical_query_is_served_from_the_cache(server):
     calls = []
 
@@ -70,6 +79,7 @@ async def test_a_second_identical_query_is_served_from_the_cache(server):
     assert "(cached)" in status.end.call_args.args[0]
 
 
+@needs_ddgs
 async def test_an_empty_answer_is_not_cached(server):
     """A DuckDuckGo hiccup that returns nothing must not be remembered for
     fifteen minutes -- the next call has to ask again."""
@@ -81,6 +91,7 @@ async def test_an_empty_answer_is_not_cached(server):
     assert second["results"] == HITS
 
 
+@needs_ddgs
 async def test_a_rate_limit_is_retried_and_then_succeeds(server):
     from ddgs.exceptions import RatelimitException
     answers = iter([RatelimitException("429"), HITS])
@@ -97,6 +108,7 @@ async def test_a_rate_limit_is_retried_and_then_succeeds(server):
     assert sleep.await_count == 1
 
 
+@needs_ddgs
 async def test_a_persistent_rate_limit_ends_as_an_error_not_a_raise(server):
     from ddgs.exceptions import RatelimitException
 
@@ -111,6 +123,7 @@ async def test_a_persistent_rate_limit_ends_as_an_error_not_a_raise(server):
     status.error.assert_awaited_once()
 
 
+@needs_ddgs
 async def test_zero_hits_is_an_answer_not_an_error(server):
     """ddgs raises instead of returning an empty list. Its sentinel message
     means every engine answered and none had a hit -- a truthful zero, which
@@ -131,6 +144,7 @@ async def test_zero_hits_is_an_answer_not_an_error(server):
     status.error.assert_not_awaited()
 
 
+@needs_ddgs
 async def test_every_engine_failing_is_retried_not_reported_as_zero_hits(server):
     """The same exception type also carries the last engine's own error when
     all of them failed. That is a hiccup, so it gets the retries -- and if it
