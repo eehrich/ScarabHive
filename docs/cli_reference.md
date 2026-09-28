@@ -480,7 +480,12 @@ agent-cli reload [--url http://127.0.0.1:8000] [--api-key KEY] [--format table|j
 
 Ruft `POST /admin/reload-config` am laufenden Server auf (kein Neustart). URL
 und Schlüssel kommen sonst aus `AGENT_SERVER_URL` bzw. `AGENT_ADMIN_API_KEY` /
-`AGENT_API_KEY`; der Schlüssel muss einem Admin gehören.
+`AGENT_API_KEY`; der Schlüssel muss einem Admin gehören. Ein Passwortwechsel
+widerruft ihn — danach einen neuen erzeugen.
+
+Der `auth`-Abschnitt wirkt erst nach einem Neustart: der Server behält den, mit
+dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
+(`report.auth`: „changed on disk: takes effect on a restart").
 
 ---
 

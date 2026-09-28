@@ -81,7 +81,17 @@ async def reload_config_endpoint(
 
     from agent_system.services.config_reload import reload_plugin_configs
 
+    # Authentication is set up once, at start: the middleware, the signing key, the plugin route rules. A reloaded
+    # auth section would change only what the app says -- who viewer_role takes for an admin, which panels a role
+    # is shown -- while the one it started with is enforced: `auth.enabled: false` on disk made every signed-in
+    # user an admin viewer. It stays as running until a restart.
+    running_auth = request.app.state.config.auth
+    auth_changed = fresh.auth != running_auth
+    fresh.auth = running_auth
     report = reload_plugin_configs(fresh)
+    if auth_changed:
+        report["auth"] = "changed on disk: takes effect on a restart"
+        logger.warning("Config reload: the auth section changed on disk and takes effect on a restart only")
     request.app.state.config = fresh  # subsequent reads see the fresh config
     logger.info(
         "Admin '%s' reloaded config: %d server(s) refreshed",
