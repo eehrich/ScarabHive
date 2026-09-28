@@ -138,6 +138,14 @@ auth:
   default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@example.com"
 
+  # Self-registration (POST /auth/register, reachable without login): a new
+  # account starts inactive until an admin activates it (user management panel,
+  # agent-cli users update NAME --activate). enabled: false turns it off.
+  registration:
+    enabled: true
+    require_approval: true
+    default_role: "user"
+
   # ============================================================
   # Anonymous Access Configuration (NEW)
   # ============================================================

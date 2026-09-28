@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creates the account inactive until an admin activates it, `default_role` is
   `user` or `guest`. The defaults keep what the endpoint did: open, active at
   once, role `user`.
+- The shipped `config/config.yaml` holds a self-registered account for an
+  admin's approval (`auth.registration.require_approval: true`).
 
 ### Added
 

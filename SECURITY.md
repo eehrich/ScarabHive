@@ -152,7 +152,8 @@ Remaining limits:
 - `POST /auth/register` is reachable by anyone who reaches the server and
   creates a `user` account. Turn it off (`auth.registration.enabled: false`) or
   hold new accounts until an admin activates them
-  (`auth.registration.require_approval: true`).
+  (`auth.registration.require_approval: true`, as the shipped configuration
+  does).
 - Keep the server on the loopback interface and put a reverse proxy with TLS
   in front of it. `docker-compose.yml` publishes the port on `127.0.0.1` only.
 - Grant `terminal`, `file_ops`, `ssh_control` and similar tools only to agents

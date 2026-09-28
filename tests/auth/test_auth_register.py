@@ -153,3 +153,13 @@ def test_the_running_app_s_registration_setting_is_the_one_applied(temp_db):
 
     assert TestClient(app).post("/auth/register", json=NEW_USER).status_code == 403
     assert temp_db.get_user_by_username("newbie") is None
+
+
+def test_the_shipped_config_holds_a_self_registered_account_for_approval(monkeypatch):
+    from agent_system.config import settings
+
+    monkeypatch.setattr(settings, "_load_secrets_file", lambda path: None)  # keys stay out of this process
+    shipped = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+    registration = settings.load_settings(str(shipped)).auth.registration
+
+    assert registration.enabled and registration.require_approval and registration.default_role == "user"
