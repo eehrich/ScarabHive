@@ -34,6 +34,15 @@ function load(name, scope) {
   return new Function(...names, `${functionSource(name)}\nreturn ${name};`)(...names.map((n) => scope[n]));
 }
 
+/** syncQuestionActions, with the functions of the module it reaches for (they moved out
+ * of it when ask_user got a box of its own), handed the page's `document` and `postJSON`. */
+function loadSync(scope) {
+  const sendAnswer = load('sendAnswer', { postJSON: scope.postJSON });
+  const approvalBox = load('approvalBox', { document: scope.document, sendAnswer });
+  const askUserBox = load('askUserBox', { document: scope.document, sendAnswer });
+  return load('syncQuestionActions', { approvalBox, askUserBox });
+}
+
 class Element {
   constructor(tag) {
     this.tagName = tag.toUpperCase();
@@ -98,7 +107,7 @@ function asking(extra) {
 
 async function testTheQuestionGetsItsButtonsOnce() {
   const posted = [];
-  const sync = load('syncApprovalActions', { document, postJSON: async (url, body) => { posted.push([url, body]); return {}; } });
+  const sync = loadSync({ document, postJSON: async (url, body) => { posted.push([url, body]); return {}; } });
   const row = new Element('div');
 
   sync(row, asking());
@@ -119,7 +128,7 @@ async function testTheQuestionGetsItsButtonsOnce() {
 }
 
 async function testTheRowsLastLineTakesTheButtonsDown() {
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   for (const phase of ['end', 'error']) {
     const row = new Element('div');
     sync(row, asking());
@@ -130,7 +139,7 @@ async function testTheRowsLastLineTakesTheButtonsDown() {
 }
 
 async function testAShortenedPreviewSaysSo() {
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   const cut = new Element('div');
   sync(cut, asking({ arguments: 'content: "yy … 9000 characters … yy"\npath: "/x"', arguments_cut: true }));
   assert.ok(cut.querySelector('.approval-cut'), 'a shortened preview was shown as the whole call');
@@ -140,7 +149,7 @@ async function testAShortenedPreviewSaysSo() {
 }
 
 async function testOnlyTheOfferedAnswersGetButtons() {
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   const script = new Element('div');
   sync(script, asking({ decisions: ['allow_once', 'deny'] }));
   assert.deepStrictEqual(script.all('pk-btn').map((b) => b.textContent), ['Allow once', 'Deny'],
@@ -148,7 +157,7 @@ async function testOnlyTheOfferedAnswersGetButtons() {
 }
 
 async function testASpawnWithoutApprovalsIsAskedWithItsWarning() {
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   const row = new Element('div');
   sync(row, asking({ warning: "agent 'coder' runs WITHOUT tool approvals: the rules of this run do not apply to its calls." }));
   const warning = row.querySelector('.approval-warning');
@@ -161,7 +170,7 @@ async function testASpawnWithoutApprovalsIsAskedWithItsWarning() {
 
 async function testARowLeftOpenAtTheRunsEndLosesItsButtons() {
   // the question's last line never came (the run was torn down, its stream ended)
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   const row = new Element('div');
   const line = new Element('div');
   line.className = 'progress-line';
@@ -179,7 +188,7 @@ async function testARowLeftOpenAtTheRunsEndLosesItsButtons() {
 
 async function testARefusedAnswerSaysWhyAndOnlyA404IsFinal() {
   let status = 403;
-  const sync = load('syncApprovalActions', {
+  const sync = loadSync({
     document,
     postJSON: async () => { const e = new Error('Only the user whose run asks, or an admin, may answer.'); e.status = status; throw e; },
   });
@@ -198,7 +207,7 @@ async function testARefusedAnswerSaysWhyAndOnlyA404IsFinal() {
 }
 
 async function testOnlyAnAnswerPathOnThisServerIsTaken() {
-  const sync = load('syncApprovalActions', { document, postJSON: async () => ({}) });
+  const sync = loadSync({ document, postJSON: async () => ({}) });
   for (const url of ['https://elsewhere.example/steal', '//elsewhere.example/x', '/api/requests/r1/cancel',
                      '/plugins/../api/requests/r1/cancel', '/plugins/tool_approval/answer?x=1']) {
     const row = new Element('div');

@@ -1,0 +1,58 @@
+# Tool definition for the ask_user plugin. The tool is named like the instance
+# ("{{ name }}" routes to execute). The description is quoted verbatim in
+# README.md ("Model Experience") -- change both together.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}"
+      description: |
+        Ask the user -- the person watching this run -- one question, and wait for the answer.
+
+        Ask only when you cannot reasonably decide yourself: the request can be read in ways that lead to different results, the choice depends on the user's preference or on facts only they know, or a step is hard to undo. Do not ask to confirm what you were told to do, to report progress, or for anything your other tools can find out -- decide, and say what you assumed.
+
+        Write a question that stands on its own: the user may not have followed the run. Where there are clear alternatives, give 2 to 4 short options; the user picks one (several with multi_select: true) or writes their own answer. Without options they answer in their own words.
+
+        Returns {"status": "success", "choices": [...], "text": "..."}: choices are the options picked, exactly as you wrote them; text is what the user typed (may be empty). Returns status "error" when nobody can answer -- the run is not watched (an API call, a job), no answer came in time, or the user left. Then do not ask again: decide yourself, go on, and say in your reply what you assumed.
+      parameters:
+        type: object
+        properties:
+          question:
+            type: string
+            description: "The question, self-contained, at most 2000 characters. One question per call."
+          options:
+            type: array
+            items:
+              type: string
+            minItems: 2
+            maxItems: 4
+            description: "2 to 4 short, distinct answers to pick from, at most 200 characters each. Leave out for an open question."
+          multi_select:
+            type: boolean
+            description: "true: the user may pick several of the options. Only together with options. Default false."
+        required: ["question"]
+        additionalProperties: false
+
+# Instance settings (plugins.yaml, under the server's `config:`). Documentation
+# only -- the defaults live in server.py.
+config:
+  ask_timeout:
+    type: number
+    default: 300
+    description: >
+      Seconds a question waits for an answer. Unanswered, the call returns an
+      error that tells the model to decide itself. The only limit on the wait:
+      a tool call has no timeout of the framework's.
+  reask_seconds:
+    type: number
+    default: 20
+    description: >
+      While a question waits, it is sent again this often, so a page that was
+      reloaded (and skipped what it had read) shows it again.
+  gone_after_seconds:
+    type: number
+    default: 15
+    description: >
+      A run nobody has read this long (the tab was closed and not reopened) is
+      not asked any more; a waiting question stops. Counted from the moment
+      the last reader left, so a reload is allowed for.

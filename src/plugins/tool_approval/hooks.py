@@ -32,19 +32,20 @@ typo in a deny rule must not open what the rule was written to close.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
+from agent_system.core.run_questions import CANCELLED, GONE, put_to_person
+from agent_system.core.run_questions import status_line as _line
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
 from agent_system.hooks.registry import get_hook_registry
 from agent_system.servers.agent.components.status_forwarding import attended_stream_of
 from agent_system.tools.status import StatusScope, get_status_bus
 
-from .broker import ALLOW_ONCE, ALLOW_SESSION, DECISIONS, DENY, Answer, ApprovalBroker, Question
+from .broker import ALLOW_ONCE, ALLOW_SESSION, DECISIONS, DENY, Answer, ApprovalBroker, ApprovalQuestion
 from .policy import Policy, PolicyStore
 from .preview import arguments_preview
 from .rules import Rule, RuleError, first_match, parse_rules
@@ -55,19 +56,9 @@ logger = logging.getLogger(__name__)
 MODES = ("ask", "auto", "off")
 UNATTENDED = ("block", "allow")
 
-#: A status row is cut at this width (tests/plugins/test_status_end_lines.py).
-STATUS_WIDTH = 140
-#: How often a token without ``wait_for_cancellation`` is looked at, in seconds.
-CANCEL_POLL_SECONDS = 0.25
-#: How often a waiting question looks whether anybody still reads the run, in seconds.
-READER_POLL_SECONDS = 1.0
 #: Seconds the wait keeps short of the hook's own timeout: the hook ends the
 #: question with its own words before the registry cuts it off with generic ones.
 TIMEOUT_HEADROOM = 5.0
-
-_TIMEOUT = "timeout"
-_CANCELLED = "cancelled"
-_GONE = "gone"
 
 
 @dataclass(frozen=True)
@@ -106,12 +97,6 @@ def _seconds(raw: Any, key: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise RuleError(f"{key} must be above 0 seconds, got {raw!r}")
     return value
-
-
-def _line(text: str) -> str:
-    """One status row: a single line within STATUS_WIDTH."""
-    flat = " ".join(str(text).split())
-    return flat if len(flat) <= STATUS_WIDTH else flat[:STATUS_WIDTH - 1] + "…"
 
 
 def _pass(context: HookContext) -> HookResult:
@@ -308,68 +293,25 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
         # A row of its own under the run: a line of the run's own id would
         # overwrite the run's row, and the buttons would go with the next line.
         status_id = f"{context.request_id}_approval_{question.id}"
-        meta = {"tool_approval": {**question.to_public(), "answer_url": self.answer_url}}
         asking = _line(f"Approve {name}? {'WITHOUT approvals: ' if warning else ''}{shown}")
         scope = StatusScope(get_status_bus(), self.instance_name, request_id=status_id, start_msg=asking)
         try:
             async with scope:
-                await scope.progress(asking, meta)
-                try:
-                    outcome = await self._wait(question, context.cancellation_token, settings, wait,
-                                               lambda: scope.progress(asking, meta),
-                                               lambda: attended_stream_of(
-                                                   context.request_id, settings.gone_after_seconds) is not None)
-                except asyncio.CancelledError:
-                    # The registry's timeout or the run's teardown: the call does not
-                    # run (on_error: block) and the row must not keep its buttons.
-                    self.broker.close(question)
-                    await scope.error(_line(f"{name}: not run, the check was cut off while asking"))
-                    raise
-                # Closed before anything awaits: an answer that came in now would be
-                # taken ("ok") for a call already decided otherwise.
-                self.broker.close(question)
+                # Cut off from outside (the registry's timeout, the run's teardown), the
+                # call does not run (on_error: block) and the row ends with this line.
+                outcome = await put_to_person(
+                    self.broker, question, scope, meta_key="tool_approval", answer_url=self.answer_url,
+                    line=asking, token=context.cancellation_token, reask_seconds=settings.reask_seconds,
+                    gone_after_seconds=settings.gone_after_seconds,
+                    cut_off=f"{name}: not run, the check was cut off while asking")
                 return await self._settle(scope, outcome, context, unattended, wait, name, tool_key,
                                           policy, question)
         finally:
             self.broker.close(question)
 
-    async def _wait(self, question: Question, token: Any, settings: Settings, wait: float,
-                    reask, read) -> Any:
-        """The person's Answer, or _TIMEOUT, _CANCELLED, or _GONE once ``read()``
-        says nobody reads the run any more (no reader for ``gone_after_seconds``,
-        counted by the run's job from the moment the last one left, or the
-        stream is over). Asks again every ``reask_seconds`` while it waits."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + wait
-        cancelled = None
-        if token is not None and hasattr(token, "wait_for_cancellation"):
-            cancelled = asyncio.ensure_future(token.wait_for_cancellation())
-        next_reask = loop.time() + settings.reask_seconds
-        try:
-            while True:
-                if question.answer.done():
-                    return question.answer.result()
-                if token is not None and getattr(token, "is_cancelled", False):
-                    return _CANCELLED
-                now = loop.time()
-                if now >= deadline:
-                    return _TIMEOUT
-                if not read():
-                    return _GONE
-                if now >= next_reask:
-                    await reask()
-                    next_reask = now + settings.reask_seconds
-                wake = min(deadline, next_reask, now + READER_POLL_SECONDS) - now
-                if cancelled is None and token is not None:
-                    wake = min(wake, CANCEL_POLL_SECONDS)
-                waiters = {question.answer} | ({cancelled} if cancelled is not None else set())
-                await asyncio.wait(waiters, timeout=max(wake, 0), return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            if cancelled is not None and not cancelled.done():
-                cancelled.cancel()
-
     async def _settle(self, scope: StatusScope, outcome: Any, context: HookContext, unattended: str,
-                      wait: float, name: str, tool_key: str, policy: Policy, question: Question) -> HookResult:
+                      wait: float, name: str, tool_key: str, policy: Policy,
+                      question: ApprovalQuestion) -> HookResult:
         """The status row's last line and what the hook returns, per outcome."""
         if isinstance(outcome, Answer):
             who = outcome.answered_by or "the user"
@@ -395,11 +337,11 @@ class ToolApprovalPlugin(SchemaBasedPluginHook):
                 return _block(f"The user denied the call to '{name}'; it did not run.{because} "
                               "Do not send it again, and do not try to get the same effect with another "
                               "call. Take their answer into account, or ask the user how to proceed.")
-        if outcome == _CANCELLED:
+        if outcome == CANCELLED:
             await scope.error(_line(f"{name}: not run, the run was cancelled while asking"))
             return _block(f"The call to '{name}' did not run: the run was cancelled while its "
                           "approval was asked.")
-        if outcome == _GONE:
+        if outcome == GONE:
             if unattended == "allow":
                 await scope.end(_line(f"{name}: nobody reads the run any more, allowed (unattended: allow)"))
             else:

@@ -2095,7 +2095,7 @@
       registerNode(parentId, null, virtualParent, depthLevel - 1);
     }
     
-    let row = null;  // the row this line went to, for a question's buttons (syncApprovalActions)
+    let row = null;  // the row this line went to, for a question's buttons (syncQuestionActions)
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -2181,35 +2181,59 @@
       // Keep tree structure intact for folding - don't clean up errored operations
       row = operationDiv;
     }
-    syncApprovalActions(row, ev);
+    syncQuestionActions(row, ev);
   }
 
   /**
    * The answer a question needs, on the row that asks it.
    *
-   * A pre_tool_call hook that puts a call to the person watching the run (the
-   * tool_approval plugin) asks with a status line whose `meta.tool_approval` names the
-   * question, the call's arguments and where the answer goes. The buttons stand while
-   * the row asks; the row's last line (end or error: allowed, denied, timed out) takes
-   * them down, in every tab that shows the run. The hook asks again now and then, so a
-   * page reloaded mid-question gets its buttons back with the next line.
+   * A run asks the person watching it with a status line whose meta names the question
+   * and where the answer goes: `meta.tool_approval` (a pre_tool_call hook asks whether a
+   * call may run) or `meta.ask_user` (the model asks something). The box stands while the
+   * row asks; the row's last line (end or error: answered, denied, timed out) takes it
+   * down, in every tab that shows the run. The asker sends the question again now and
+   * then, so a page reloaded mid-question gets its box back with the next line.
    *
    * The answer goes to the URL the line names -- a plugin's answer route on this server,
    * nothing else -- with the page's own sign-in, as every other request of the chat.
    */
-  function syncApprovalActions(row, ev) {
+  function syncQuestionActions(row, ev) {
     if (!row) return;
-    const open = row.querySelector(':scope > .approval-actions');
+    const open = row.querySelector(':scope > .question-actions');
     if (ev.phase === 'end' || ev.phase === 'error') {
       if (open) open.remove();
       return;
     }
-    const ask = ev.meta && ev.meta.tool_approval;
-    // A plugin's answer route and nothing else: `/plugins/../api/…` would reach any route.
-    if (open || !ask || typeof ask.id !== 'string' || typeof ask.answer_url !== 'string'
-        || !/^\/plugins\/[A-Za-z0-9_-]+\/answer$/.test(ask.answer_url)) return;
+    if (open || !ev.meta) return;
+    for (const [key, build] of [['tool_approval', approvalBox], ['ask_user', askUserBox]]) {
+      const ask = ev.meta[key];
+      // A plugin's answer route and nothing else: `/plugins/../api/…` would reach any route.
+      if (!ask || typeof ask.id !== 'string' || typeof ask.answer_url !== 'string'
+          || !/^\/plugins\/[A-Za-z0-9_-]+\/answer$/.test(ask.answer_url)) continue;
+      row.appendChild(build(ask));
+      return;
+    }
+  }
+
+  /**
+   * Post the answer to a question. The controls stay off once it was taken, or once
+   * nothing waits for it any more (404); any other refusal leaves them for a second try.
+   */
+  function sendAnswer(ask, body, controls, note, label) {
+    controls.forEach((c) => { c.disabled = true; });
+    note.textContent = 'Sending…';
+    return Promise.resolve()
+      .then(() => postJSON(ask.answer_url, Object.assign({ question_id: ask.id }, body)))
+      .then(() => { note.textContent = `Answered: ${label}`; }, (err) => {
+        note.textContent = `Not taken: ${(err && err.message) || String(err)}`;
+        if (!err || err.status !== 404) controls.forEach((c) => { c.disabled = false; });
+      });
+  }
+
+  /** tool_approval's box: the call's arguments, a reason for Deny, the decisions offered. */
+  function approvalBox(ask) {
     const box = document.createElement('div');
-    box.className = 'approval-actions';
+    box.className = 'question-actions approval-actions';
     if (typeof ask.warning === 'string' && ask.warning) {
       // what allowing gives up: a spawn whose calls no approval reaches
       const warning = document.createElement('div');
@@ -2248,28 +2272,93 @@
       button.type = 'button';
       button.className = `pk-btn pk-btn--sm${decision === 'deny' ? ' pk-btn--danger' : (decision === 'allow_once' ? ' pk-btn--primary' : '')} approval-${decision}`;
       button.textContent = label;
-      button.addEventListener('click', async () => {
-        buttons.forEach((b) => { b.disabled = true; });
-        reason.disabled = true;
-        note.textContent = 'Sending…';
-        try {
-          await postJSON(ask.answer_url, { question_id: ask.id, decision, reason: reason.value || '' });
-          note.textContent = `Answered: ${label}`;
-        } catch (err) {
-          note.textContent = `Not taken: ${(err && err.message) || String(err)}`;
-          // 404: nothing waits for an answer any more; anything else may take a second try
-          if (!err || err.status !== 404) {
-            buttons.forEach((b) => { b.disabled = false; });
-            reason.disabled = false;
-          }
-        }
-      });
+      button.addEventListener('click', () => sendAnswer(
+        ask, { decision, reason: reason.value || '' }, [...buttons, reason], note, label));
       bar.appendChild(button);
       return button;
     });
     bar.append(reason, note);
     box.appendChild(bar);
-    row.appendChild(box);
+    return box;
+  }
+
+  /**
+   * ask_user's box: the model's question, its options -- a click sends one, boxes to tick
+   * where several may be picked -- and a field for an answer in one's own words, which
+   * goes along with a picked option too.
+   */
+  function askUserBox(ask) {
+    const box = document.createElement('div');
+    box.className = 'question-actions ask-user-actions';
+    const question = document.createElement('div');
+    question.className = 'ask-user-question';
+    question.textContent = typeof ask.question === 'string' ? ask.question : '';  // the model's text: data, never markup
+    box.appendChild(question);
+    const options = Array.isArray(ask.options) ? ask.options.filter((o) => typeof o === 'string') : [];
+    const multi = ask.multi_select === true && options.length > 0;
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.className = 'pk-input ask-user-text';
+    text.maxLength = 4000;
+    text.placeholder = options.length ? 'Or answer in your own words' : 'Your answer';
+    const note = document.createElement('span');
+    note.className = 'approval-note';
+    const controls = [text];
+    const ticks = [];
+    const send = (choices, label) => sendAnswer(ask, { choices, text: text.value.trim() }, controls, note, label);
+    if (options.length) {
+      const list = document.createElement('div');
+      list.className = 'ask-user-options';
+      options.forEach((option) => {
+        if (multi) {
+          const label = document.createElement('label');
+          label.className = 'ask-user-option';
+          const tick = document.createElement('input');
+          tick.type = 'checkbox';
+          tick.value = option;
+          const caption = document.createElement('span');
+          caption.textContent = option;
+          label.append(tick, caption);
+          ticks.push(tick);
+          controls.push(tick);
+          list.appendChild(label);
+        } else {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'pk-btn pk-btn--sm ask-user-option';
+          button.textContent = option;
+          button.addEventListener('click', () => send([option], option));
+          controls.push(button);
+          list.appendChild(button);
+        }
+      });
+      box.appendChild(list);
+    }
+    const bar = document.createElement('div');
+    bar.className = 'approval-bar';
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'pk-btn pk-btn--sm pk-btn--primary ask-user-send';
+    submit.textContent = 'Send';
+    submit.addEventListener('click', () => {
+      const picked = ticks.filter((t) => t.checked).map((t) => t.value);
+      const typed = text.value.trim();
+      if (!picked.length && !typed) {
+        note.textContent = multi ? 'Tick an option or write an answer.' : 'Write an answer first.';
+        return undefined;
+      }
+      return send(picked, picked.concat(typed ? [typed] : []).join(', '));
+    });
+    // Enter sends what is typed (and ticked), as the Send button does
+    text.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      if (!submit.disabled) submit.click();
+    });
+    controls.push(submit);
+    bar.append(text, submit, note);
+    box.appendChild(bar);
+    return box;
   }
 
   /**
@@ -2444,7 +2533,7 @@
       if (!operationDiv) return;
       activeOperations.delete(key);
       // a question whose last line never came waits for nobody any more
-      const asking = operationDiv.querySelector(':scope > .approval-actions');
+      const asking = operationDiv.querySelector(':scope > .question-actions');
       if (asking) asking.remove();
       const iconSpan = operationDiv.querySelector('.progress-icon');
       const line = operationDiv.querySelector('.progress-line');
@@ -3875,7 +3964,7 @@
         if (selectedLLMProfile) {
           formData.append('llm_profile', selectedLLMProfile);
         }
-        // A person reads this run and can answer what it asks (syncApprovalActions).
+        // A person reads this run and can answer what it asks (syncQuestionActions).
         formData.append('attended', 'true');
         
         // Add current session ID if exists (to continue existing session)
@@ -3962,7 +4051,7 @@
       }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
-      // A person reads this run and can answer what it asks (syncApprovalActions).
+      // A person reads this run and can answer what it asks (syncQuestionActions).
       postBody.attended = true;
 
       let lost = false;  // the connection broke before the run's end

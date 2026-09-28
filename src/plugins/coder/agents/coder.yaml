@@ -80,6 +80,9 @@ plugins:
             # the instance offers no tools, and the prompt's section on it is
             # rendered only when has_tool() finds them.
             - "+coding_cli/*"
+            # Ask the person in the chat when a choice is theirs to make
+            # (plugin ask_user); a run nobody watches gets "decide yourself".
+            - "+ask_user/*"
 
           # semantic_search is ON since 18.09.2026 and no longer blocked here:
           # the index stores one document per symbol, so a hit is a function

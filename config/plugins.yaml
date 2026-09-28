@@ -1140,8 +1140,23 @@ plugins:
         mode: ask
         ask_timeout: 300
         unattended: block
-        allow: []
+        # ask_user only puts a question to the same person: approving it first
+        # would ask twice, and a run nobody watches would get this hook's block
+        # instead of ask_user's own "decide yourself".
+        allow: ["ask_user/*"]
         deny: []
+
+    # The model asks the person watching the run (F12): a question with 2-4
+    # options or free text, answered in the web chat. A run nobody watches
+    # gets an error at once ("decide yourself"). Agents get it through their
+    # allowlist ("ask_user/*"). See src/plugins/ask_user/README.md.
+    ask_user:
+      type: ask_user
+      enabled: true
+      config:
+        ask_timeout: 300          # seconds a question waits; the only limit on the wait
+        reask_seconds: 20
+        gone_after_seconds: 15
 
 
     terminal:
