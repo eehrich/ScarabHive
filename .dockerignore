@@ -1,0 +1,75 @@
+# Build context for the Dockerfile. Patterns are relative to the repository
+# root; a pattern without **/ matches only at the top level.
+
+# --- Secrets: never in an image -------------------------------------------
+# The config loader reads config/secrets.env at runtime (docker-compose.yml
+# mounts config/ from the checkout); the template stays in.
+config/secrets.env
+**/secrets.env
+!config/secrets.env.example
+**/.env
+.envrc
+.envrc.*
+# Private agent configs
+config/agents_priv/
+
+# --- Runtime state: volumes, not image layers -----------------------------
+data/
+logs/
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite3
+tmp/
+.tmp/
+.backups/
+.journal
+external/
+src/plugins_writer/**/batch_logs/
+
+# --- VCS, environments, caches, build output ------------------------------
+.git
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+.cache/
+.*_cache/
+.coverage
+.coverage.*
+htmlcov/
+**/node_modules/
+dist/
+build/
+**/*.egg-info/
+MagicMock/
+
+# --- Archives, backups, editor leftovers ----------------------------------
+**/*.7z
+**/*.zip
+**/*.tar.gz
+**/*.rar
+**/*.iso
+**/*.bak
+**/*.old
+**/*.swp
+**/*.swo
+**/*_bak*
+**/.DS_Store
+
+# --- Not needed at runtime --------------------------------------------------
+.github/
+.vscode/
+.prompts/
+.idea/
+# Developer-assistant settings. .claude/skills stays: config.yaml lists it as
+# a skill root (skills.skill_dirs), and a missing fixed root logs a warning.
+.claude/*
+!.claude/skills
+tests/
+conftest.py
+pytest.ini
+Dockerfile
+.dockerignore
+docker-compose.yml

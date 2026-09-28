@@ -35,6 +35,7 @@
 .tmp/
 .journal
 .coverage
+htmlcov/
 .cache/
 .venv/
 .*_cache/
