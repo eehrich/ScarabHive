@@ -58,12 +58,11 @@ python -m pytest tests/session -q -k "archive"
 
 Things to know before you run them:
 
-- **pytest stops Python processes.** On Linux and macOS the root
-  `conftest.py` terminates Python processes whose command line contains the
-  checkout path, `.venv/` or `-m agent_system.app`, when the session starts
-  and when it ends. That includes an `agent-api` you
-  started from the same checkout, and Python processes of *other* projects
-  that run from a `.venv/`. Stop anything you care about first.
+- **pytest cleans up only after itself.** The root `conftest.py` ends only
+  processes that carry its own session's marker (children its tests started),
+  and orphans of test sessions that provably ended -- never an `agent-api` you
+  started or another project's processes. A test that starts a pytest of its
+  own sets `AGENT_SYSTEM_TEST_NO_REAP=1` for that run.
 - **Warnings are errors** (`pytest.ini`). The Python 3.14 deprecations that
   fastapi, starlette, chromadb and google-genai raise are ignored there, limited to
   those modules; the same deprecated call in this code base still fails

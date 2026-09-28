@@ -66,9 +66,8 @@ agent-cli --help
 ```
 
 To run tests, read [CONTRIBUTING.md](CONTRIBUTING.md#tests) first: run the tests for what you
-changed (the full suite takes 20+ minutes), and note that on Linux and macOS pytest stops Python processes whose
-command line contains the checkout path, `.venv/` or `-m agent_system.app` -- an `agent-api`
-you started, and Python processes of other projects running from a `.venv/`.
+changed (the full suite takes 20+ minutes). pytest ends only the processes its own session
+started, and orphans of test sessions that provably ended.
 
 ### Development Install
 
@@ -605,10 +604,8 @@ logging:
 
 ### Testing
 
-Run the tests for what you changed -- the full suite takes 20+ minutes, and on Linux and macOS pytest stops Python processes whose
-command line contains the checkout path, `.venv/` or `-m agent_system.app` -- an `agent-api`
-you started, and Python processes of other projects running from a `.venv/`
-(details in [CONTRIBUTING.md](CONTRIBUTING.md#tests)):
+Run the tests for what you changed -- the full suite takes 20+ minutes; details, including
+which processes pytest ends, in [CONTRIBUTING.md](CONTRIBUTING.md#tests):
 
 ```bash
 # The tests need the [test] extra: pip install -e '.[test]'

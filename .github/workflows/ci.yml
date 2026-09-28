@@ -124,9 +124,8 @@ jobs:
 
       # pytest.ini turns warnings into errors; the Python 3.14 deprecations
       # inside fastapi, starlette, chromadb and google-genai are ignored there by module.
-      # Note: the root conftest.py kills python processes whose command line
-      # contains the checkout path or ".venv/" -- fine on an ephemeral
-      # GitHub-hosted runner, not on a shared self-hosted one.
+      # The root conftest.py ends only processes carrying its own session's
+      # marker, and orphans of sessions that provably ended.
       - name: Pytest (CI subset)
         run: |
           python -m pytest $CI_TEST_PATHS $CI_TEST_SKIP

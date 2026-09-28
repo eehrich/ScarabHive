@@ -1,70 +1,202 @@
+"""A tool call travels through the real `agent-cli run`: schema out, call back, result shown.
+
+Drives the real main() in-process: argument parsing, config loading, plugin
+discovery and bootstrap, the Agent's step loop, tool dispatch into the real
+weather plugin and the CLI's transcript. Replaced are only the three edges a
+test must not cross:
+
+* the LLM -- at the registry's ``build_client`` seam, by a scripted model that
+  calls the weather tool once and then answers;
+* the weather plugin's HTTP sources -- by a canned forecast;
+* the configuration -- a temp config dir named by AGENT_CONFIG_PATH, so
+  neither the repository's config/*.yaml nor config/secrets.env is read.
+
+This used to start `python -m agent_system.agent_cli` as a subprocess with
+nothing faked. main() moves into the repository before it loads the config
+(paths.enter_project), so the config copied into tmp_path was never read:
+the child ran the developer's real config with the keys from secrets.env --
+a paid LLM call, logs/cli.log appended, every enabled plugin bootstrapped on
+its store under data/ (message_debugger's request log, coding_cli's sweep of
+data/coding_cli/runs among them). And it asserted only exit code 0, because
+a real model does not reliably call the tool.
+"""
+from __future__ import annotations
+
+import json
+import socket
 import sys
 from pathlib import Path
-import shutil
+
+import pytest
+import yaml
+
+import agent_system.agent_cli as agent_cli
+from agent_system.llm import registry as llm_registry
+
+REPO = Path(__file__).resolve().parents[2]
+
+TASK = "wie wird das wetter morgen in München"
+AGENT = "weather_test_agent"
+TOOL = "weather_forecast"
+# Only the canned forecast carries these: seen in a tool message or on
+# stdout, they prove the plugin really ran and its result travelled on.
+SKY = "FAKE-SKY-4711"
+ANSWER = "Morgen in München: FAKE-ANSWER-0815"
 
 
-def run_cli(prompt: str):
-    """Run the CLI in-process to avoid subprocess fragility in tests.
+class ScriptedLLM:
+    """A model that calls the weather tool once, then answers.
 
-    We set sys.argv and call the CLI main function, capturing stdout/stderr.
+    Built by the real factory through the registry seam, so the agent gets it
+    the way it gets a real client. Every client built in the run shares one
+    ``log``: the test reads what the model was shown -- copied when shown,
+    the run goes on working on its message list.
     """
-    # Run the CLI in a subprocess to isolate resources (background tasks,
-    # event loops, sockets) so pytest's strict ResourceWarning-as-error policy
-    # doesn't observe leaked handles from the CLI process. Use cwd=None so
-    # the caller's monkeypatch can change working directory as needed.
-    import subprocess as _subproc
-    args = [sys.executable, "-m", "agent_system.agent_cli", "--no-status", "--color", "never", prompt]
-    try:
-        proc = _subproc.run(args, cwd=None, capture_output=True, text=True, timeout=30)
-        rc = proc.returncode
-        out = proc.stdout
-        err = proc.stderr
-    except _subproc.TimeoutExpired as te:
-        rc = 124
-        out = te.stdout or ""
-        err = te.stderr or f"TimeoutExpired: {te}"
 
-    return rc, out, err
+    def __init__(self, log: list, model: str | None = None, provider: str | None = None):
+        self.log = log
+        self.model = model
+        self.provider = provider
+
+    def supports_streaming(self) -> bool:
+        return False
+
+    def set_app_title(self, title: str) -> None:
+        pass
+
+    async def chat(self, messages, cancellation_token=None):
+        # A plain completion (a session title, a summary) -- not the step loop.
+        return "title"
+
+    async def chat_tools(self, messages, tools, cancellation_token=None, status_scope=None):
+        offered = [t["function"]["name"] for t in tools or []]
+        self.log.append({"messages": [(m.role, str(m.content)) for m in messages], "tools": offered})
+        if len(self.log) == 1:
+            if TOOL not in offered:
+                # Answer instead of calling: the assertions below say what was missing.
+                return {"assistant": {"role": "assistant", "content": f"no {TOOL} among {offered}"}}
+            return {"assistant": {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_weather_1", "type": "function",
+                "function": {"name": TOOL,
+                             "arguments": json.dumps({"location": "München", "days": 2})}}]}}
+        return {"assistant": {"role": "assistant", "content": ANSWER}}
+
+    async def chat_tools_streaming(self, messages, tools, cancellation_token=None, status_scope=None):
+        raise AssertionError("supports_streaming() is False: the streaming path must not be taken")
+        yield  # an async generator, as the real one is
 
 
-def test_cli_invokes_weather_tool(monkeypatch, tmp_path):
-    """Regression: when allowed_tools includes wildcard '*', CLI conversation should surface tool call text.
+def _write_config(config_dir: Path) -> Path:
+    """One agent that may use every tool ("*"), the weather plugin, a fake model."""
+    config_dir.mkdir()
+    config = {
+        "name": "cli-tool-invocation-test",
+        "default_agent": AGENT,
+        # Off: setup_logging would swap the root logger's handlers of the
+        # whole pytest process for a file handler.
+        "logging": {"enabled": False},
+        "llm_system": {
+            "models": {"fake-model": {"provider": "openai", "model": "fake-model",
+                                      "api_key": "fake-key"}},
+            "profiles": {"normal": {"model_ref": "fake-model"}},
+            "default_profile": "normal",
+        },
+        "plugins": {
+            "plugin_dirs": [str(REPO / "src" / "plugins")],
+            "servers": {
+                "weather": {"type": "weather", "enabled": True},
+                AGENT: {
+                    "type": "basic_agent",
+                    "enabled": True,
+                    "agent_config": {
+                        "llm_profile": "normal",
+                        "max_steps": 4,
+                        "system_prompt": "You answer weather questions with your tools.",
+                        "tools": {"allowed": ["*"]},
+                    },
+                },
+            },
+        },
+    }
+    path = config_dir / "config.yaml"
+    path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    return path
 
-    This test runs the CLI with a German weather query (matching manual scenario) and asserts that
-    the output contains an indicator of a weather tool call (e.g., 'weather.get_forecast').
 
-    It intentionally does not mock network/tool execution; we only need to observe the conversation
-    transcript (stdout) for the tool call marker to ensure schema exposure + LLM tool_call path.
-    """
-    # Copy minimal required config files into temp workspace so CLI loads them.
-    # repo_root is now tests/cli, need to go up two levels to project root
-    repo_root = Path(__file__).resolve().parents[2]
-    tmp_config = tmp_path / "config"
-    tmp_config.mkdir()
-
-    # Copy baseline configs (using new split config structure)
-    for name in ["config.yaml", "llm.yaml", "plugins.yaml", "mcp_servers.yaml"]:
-        src = repo_root / "config" / name
-        dst = tmp_config / name
-        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-
-    # Include agent-specific configuration (meta_agent, etc.)
-    src_agents = repo_root / "config" / "agents"
-    if src_agents.exists():
-        shutil.copytree(src_agents, tmp_config / "agents")
-
-    # Ensure CWD is temp workspace
+@pytest.fixture
+def cli_run(tmp_path, monkeypatch):
+    """main() on a temp config, a scripted model and a canned forecast."""
+    # The variable, not --config: code below main() that loads the settings
+    # itself (the capabilities registry, get_server_config) reads it too --
+    # and would otherwise read the repository's config and its secrets.env.
+    monkeypatch.setenv("AGENT_CONFIG_PATH", str(_write_config(tmp_path / "config")))
+    monkeypatch.setenv("AGENT_SESSION_STORAGE_PATH", str(tmp_path / "sessions"))
+    # main() chdirs into the repository; monkeypatch puts the cwd back afterwards.
     monkeypatch.chdir(tmp_path)
 
-    # Run a weather query (German phrasing used in manual test scenario)
-    code, out, err = run_cli("wie wird das wetter morgen in München")
+    llm_log: list = []
+    monkeypatch.setattr(llm_registry, "build_client",
+                        lambda cfg, ssl_verify=None, **_: ScriptedLLM(
+                            llm_log, model=getattr(cfg, "model", None),
+                            provider=getattr(cfg, "provider", None)))
 
-    # Basic assertions
-    assert code == 0, err
-    # The model may occasionally answer directly without a tool call (nondeterministic).
-    # For determinism in CI we only require the CLI to exit successfully and
-    # produce some output; asserting a specific tool call is brittle and was
-    # previously the cause of flaky skips.
-    assert code == 0
-    assert out is not None
+    from plugins.weather import sources
+    fetched: list = []
 
+    async def forecast(location, days, units, ssl_verify, *rest):
+        fetched.append({"location": location, "days": days})
+        return {"location": location,
+                "current": {"temperature": 17.5, "weather_desc": SKY},
+                "forecast": [{"date": "2026-09-29", "min_temp": 9, "max_temp": 18}]}
+
+    for name in ("fetch_wttr", "fetch_weather_gov", "fetch_met_no", "fetch_marine_weather_gov"):
+        monkeypatch.setattr(sources, name, forecast)
+
+    # No network connection in this run, loopback included. Recorded as well
+    # as refused: a plugin that catches the error would hide it.
+    outbound: list = []
+    real_connect = socket.socket.connect
+
+    def guarded_connect(sock, address):
+        if sock.family != getattr(socket, "AF_UNIX", None):
+            outbound.append(address)
+            raise OSError(f"test: outbound connection to {address!r} refused")
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+
+    monkeypatch.setattr(sys, "argv", ["agent-cli", "--no-status", "--color", "never",
+                                      "--show-tools", TASK])
+    yield {"llm": llm_log, "fetched": fetched, "outbound": outbound}
+    agent_cli.close_cli_loop()
+
+
+def test_cli_run_calls_the_tool_the_model_asks_for_and_shows_it(cli_run, capsys):
+    agent_cli.main()
+    out = capsys.readouterr().out
+
+    llm, fetched = cli_run["llm"], cli_run["fetched"]
+    assert llm, "the model was never asked"
+
+    # Schema exposure: with tools.allowed ["*"] the plugin's tool reaches the model.
+    assert TOOL in llm[0]["tools"], llm[0]["tools"]
+    assert any(TASK in content for _role, content in llm[0]["messages"]), \
+        "the task typed on the command line never reached the model"
+    assert len(llm) == 2, f"expected a tool step and an answer step, the model was asked {len(llm)}x"
+
+    # Dispatch: the arguments the model gave reached the plugin ...
+    assert fetched == [{"location": "München", "days": 2}]
+    # ... and the plugin's result went back to the model as the tool's answer.
+    tool_messages = [content for role, content in llm[1]["messages"] if role == "tool"]
+    assert len(tool_messages) == 1 and SKY in tool_messages[0], tool_messages
+
+    # The transcript: the call with its arguments, its result, the answer.
+    call_header = f"TOOL CALL -> server=weather action={TOOL}"
+    result_header = f"TOOL RESULT <- server=weather action={TOOL}"
+    assert call_header in out and result_header in out, out
+    call_at, result_at = out.index(call_header), out.index(result_header)
+    assert '"location": "München"' in out[call_at:result_at], out
+    assert SKY in out[result_at:], out
+    assert ANSWER in out[result_at:], out
+
+    assert cli_run["outbound"] == [], f"the run tried to reach the network: {cli_run['outbound']}"
