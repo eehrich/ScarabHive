@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The log viewer and the SSH machine panel are admin-only (rules in
+  `config/config.yaml`): the logs carry every user's prompts, and the SSH panel
+  runs commands on the configured hosts.
+- `workspace_file_ops` -- the whole checkout, `config/secrets.env` and
+  `data/users.db` included -- ships disabled; no shipped agent used it.
+- The API does not start with an empty or short JWT signing key (an unset
+  `${AUTH_SECRET_KEY}` used to sign every token with an empty key), and logs an
+  error for a published one; `auth.reject_default_secret_key: true` refuses it.
+- The systemd unit template runs the server as its own user on
+  `127.0.0.1:8000`, with secrets in an environment file; it no longer runs as
+  root on a fixed network address.
+- `.gitignore` covers `.env` files, private keys, credential files and local
+  configuration.
+- Known gap: any user may still run any agent, and several shipped agents have
+  `terminal`, `ssh_control` or repository-wide file access -- the same data the
+  panels now withhold (SECURITY.md).
+
 ### Added
 
 - `Dockerfile`, `.dockerignore` and `docker-compose.yml` to run the API server

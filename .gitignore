@@ -9,6 +9,38 @@
 # Fundstellen in drei YAMLs — beim Rotieren wie beim spaeteren Consolidate.
 # Vor einer Veroeffentlichung: Keys rotieren, History bereinigen, DANN hier
 # `secrets.env` eintragen (die .example bleibt in jedem Fall getrackt).
+# Sicherheitsnetz fuer Zugangsdaten, die nie ins Repo gehoeren -- bewusst
+# konkrete Namen: ein Muster wie `credentials.*` versteckte auch ein Modul
+# credentials.py still. Die .example-Vorlagen bleiben getrackt.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+credentials.json
+client_secret*.json
+service-account*.json
+# Lokale, private Konfiguration (Release-Plan #021, #030)
+config.local.yaml
+*.local.yaml
+config/agents_priv/
+# Weitere Backup- und SQLite-Reste neben *.bak/*.old/*.db
+*.orig
+*.backup
+*.bak.*
+*~
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 *.db
 *.7z
 *.zip

@@ -89,12 +89,27 @@ group of users who trust each other. Reports about session separation are in
 scope; reports that only restate this limitation for a plugin's own data are
 not.
 
+### Known limitation: every user may run every agent
+
+There is no per-agent role check yet: any signed-in user can start any agent
+by name through `/run` or `/events` -- `metadata.visibility` only decides which
+agents the UI lists. An agent whose allowlist names a shell tool (`terminal`,
+`coder_shell`, `coding_cli`), `ssh_control`, or a file_ops instance with `.` in
+its allowed directories gives every user what that tool can do, including
+reading the logs and `config/secrets.env`. Several shipped agents have such
+tools (among them `sysadmin_agent`, the `coder` and `gamedev` harnesses,
+`godot_agent`, `amiga_coder`, `skills_agent`); on an instance whose users you
+would not give a shell, remove every such agent from the configuration.
+
 ## Hardening a deployment
 
 - Change `auth.secret_key` and `auth.default_admin_password` in
   `config/config.yaml` before the first start; the shipped values are for
   development. The config loader expands `${VAR}` placeholders from the
   environment and `config/secrets.env`, e.g. `secret_key: "${AUTH_SECRET_KEY}"`.
+  The server does not start with an empty or short (under 32 characters) key,
+  and logs an error for a published one, such as the shipped development key;
+  `auth.reject_default_secret_key: true` makes that a startup error as well.
 - Replace the wildcard in `auth.cors_origins` with the origins you serve.
 - Keep the server on the loopback interface and put a reverse proxy with TLS
   in front of it. `docker-compose.yml` publishes the port on `127.0.0.1` only.
