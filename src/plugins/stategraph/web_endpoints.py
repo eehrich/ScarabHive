@@ -154,6 +154,8 @@ class StateGraphWebEndpoints:
         return await self._call("kinds")
 
     # ------------------------------------------------------------------ callback URLs (no login: the token is the key)
+    # The token comes in the query (/callback?token=...: one path, which network.remote_paths can list) or, for a URL
+    # made before, in the path; FastAPI reads it from whichever the route leaves it in.
 
     async def callback_page(self, request: Request, token: str):
         """What the URL would send, and a button that sends it: a GET must not -- mail scanners open links."""

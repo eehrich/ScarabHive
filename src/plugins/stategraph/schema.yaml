@@ -184,8 +184,10 @@ web_ui:
     - {path: "/api/validate", method: POST, handler: api_validate, response_type: json}
     - {path: "/api/kinds", method: GET, handler: api_kinds, response_type: json}
     - {path: "/api/catalog", method: GET, handler: api_catalog, response_type: json}
-    - {path: "/callback/{token}", method: GET, handler: callback_page, response_type: html, description: "What a callback URL would send (no login: the token is the key)"}
-    - {path: "/callback/{token}", method: POST, handler: callback_send, response_type: json, description: "Send a callback URL's event, once"}
+    - {path: "/callback", method: GET, handler: callback_page, response_type: html, description: "What a callback URL (?token=...) would send (no login: the token is the key)"}
+    - {path: "/callback", method: POST, handler: callback_send, response_type: json, description: "Send a callback URL's event (?token=...), once"}
+    - {path: "/callback/{token}", method: GET, handler: callback_page, response_type: html, description: "The same for a URL made before the token moved into the query"}
+    - {path: "/callback/{token}", method: POST, handler: callback_send, response_type: json, description: "The same for a URL made before the token moved into the query"}
     - {path: "/api/runs", method: GET, handler: api_list_runs, response_type: json}
     - {path: "/api/runs", method: POST, handler: api_start_run, response_type: json}
     - {path: "/api/runs/{run_id}", method: GET, handler: api_get_run, response_type: json}

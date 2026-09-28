@@ -10,23 +10,29 @@ from typing import Any, Optional
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 
-# A plugin route whose path carries a key -- whoever holds the URL may use it once (stategraph's callback URLs) --
-# puts it right after /callback/; no log keeps it, percent-encoded neither (a URL handed on in a query).
+# A plugin route whose URL carries a key -- whoever holds the URL may use it once (stategraph's callback URLs) --
+# puts it right after /callback/ or in the token parameter of /callback?...; no log keeps it, percent-encoded
+# neither (a URL handed on in a query; a path whose ? & = came encoded). The parameters before the token hold no
+# / and no ?: each match ends at the next one, so a line full of callback URLs costs linear time, not quadratic.
 _KEY_IN_PATH = re.compile(
-    r"(/plugins/[^/\s?#]+/callback/)[^/\s?#&\"']+"
-    r"|(%2Fplugins%2F(?:(?!%2F)[^/\s?#&])+%2Fcallback%2F)(?:(?!%2F)[^/\s?#&\"'])+",
+    r"(/plugins/[^/\s?#]+/callback(?:/|/?(?:\?|%3F)(?:(?:(?!%26)[^/\s?#&\"'])*(?:&|%26))*token(?:=|%3D)))"
+    r"(?:(?!%26)[^/\s?#&\"'])+"
+    r"|(%2Fplugins%2F(?:(?!%2F)[^/\s?#&])+%2Fcallback(?:%2F|%3F(?:(?:(?!%26|%2F|%3F)[^/\s?#&\"'])*%26)*token%3D))"
+    r"(?:(?!%2F|%26)[^/\s?#&\"'])+",
     re.IGNORECASE,
 )
 
 
 def loggable_path(text: str) -> str:
-    """``text`` with the key of every callback URL in it masked (``/plugins/<plugin>/callback/***``)."""
+    """``text`` with the key of every callback URL in it masked (``/plugins/<plugin>/callback/***``,
+    ``/plugins/<plugin>/callback?token=***``)."""
     return _KEY_IN_PATH.sub(lambda found: (found.group(1) or found.group(2)) + "***", text)
 
 
 def _may_hold_a_key(value: Any) -> bool:
     text = str(value).lower()
-    return "/callback/" in text or "%2fcallback%2f" in text
+    return any(mark in text for mark in ("/callback/", "/callback?", "/callback%3f", "%2fcallback%2f",
+                                         "%2fcallback%3f"))
 
 
 def _masked(value: Any) -> Any:

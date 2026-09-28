@@ -161,10 +161,13 @@ vergisst Params und Undo-Schritte; ein Maschinenwechsel beginnt die Runs-Liste n
 
 Stand: gebaut (Tests in test_plugin_stategraph_backlog_features.py). F1: die End-Reihenfolge einer Join-Politik
 schreibt der Join selbst ins Journal (`<kind>:joined`), weil eine Aktivitätszeile die seq ihres Starts behält.
-F8: die Route `/plugins/<instanz>/callback/*` liegt unter der Admin-Regel des Plugins -- öffentlich wird sie erst,
+F8: die Route `/plugins/<instanz>/callback*` liegt unter der Admin-Regel des Plugins -- öffentlich wird sie erst,
 wenn der Nutzer sie in BEIDEN Schichten öffnet, `auth.endpoint_security` und `auth.plugin_security` (seine
-Sicherheitsentscheidung; Beispiel in der README unter Security). Offen im Kern-Ressort: die Request-Logs (Access-Log,
-security.log) schreiben den Pfad samt Token mit -- Eintrag an agentsystem im comm.txt.
+Sicherheitsentscheidung; Beispiel in der README unter Security). Der Token steht in der Query
+(`/callback?token=...`), weil `network.remote_paths` nur exakte Pfade durchlässt -- ein Token im Pfad wäre von
+einem anderen Rechner aus nie erreichbar; URLs mit dem Token im Pfad (vor dem Umzug ausgegeben) gelten weiter.
+Die Logs maskieren den Token in beiden Formen (Kern, `loggable_path`: 7378256f5 fuer den Pfad, die Query-Form mit
+diesem Umzug, angekuendigt im comm.txt).
 F9: ein Slot läuft nach transientem Fehlschlag höchstens dreimal, fünf Minuten nach dem letzten Ende; die Lease gilt pro
 Instanz und wird beim Stop freigegeben.
 

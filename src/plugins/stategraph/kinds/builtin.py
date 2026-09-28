@@ -563,7 +563,8 @@ class CallbackKind(ActivityKind):
         act.run.store.add_callback(hashlib.sha256(token.encode()).hexdigest(), act.run_id, spec.callback,
                                    str(frame) if frame else None, expires, now=now)
         stamp = datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat(timespec="seconds")
-        return {"url": f"{act.run.callback_base}/{token}", "event": spec.callback, "expires": stamp}
+        # the token in the query: the path stays one that network.remote_paths (exact paths) can list
+        return {"url": f"{act.run.callback_base}?token={token}", "event": spec.callback, "expires": stamp}
 
 
 # ---------------------------------------------------------------------- machine

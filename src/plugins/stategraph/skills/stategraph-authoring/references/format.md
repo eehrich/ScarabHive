@@ -600,9 +600,10 @@ to answer a wait. `out` = `{url, event, expires}`; `POST` to the URL sends the e
 `{"data": ...}` is its data, at most 64 KB), `GET` shows what it would send. A used or expired URL, and
 one of a run that ended, answers 404; data that does not fit leaves it usable. The URL is a bearer key:
 whoever holds it sends the event once -- it lies in the out, so in the journal, ctx and wherever the
-machine passes it, and in the server's request logs. A system outside reaches it only once the operator
-opens `/plugins/<instance>/callback/*` in `auth.endpoint_security` and `auth.plugin_security` (it lies
-under the plugin's admin rule; README, Security).
+machine passes it (the server's logs mask its token). A system outside reaches it only once the operator
+opens `/plugins/<instance>/callback*` in `auth.endpoint_security` and `auth.plugin_security` (it lies
+under the plugin's admin rule) and, with `network.remote_paths` set, lists `/plugins/<instance>/callback`
+there (README, Security).
 
 | Key | Meaning |
 |---|---|

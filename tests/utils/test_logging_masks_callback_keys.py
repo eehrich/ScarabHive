@@ -77,6 +77,45 @@ def test_the_access_log_masks_the_key_whichever_handler_writes_it(app_log, tmp_p
     assert KEY not in text
 
 
+@pytest.mark.parametrize("path,shown", [
+    (f"/plugins/stategraph/callback?token={KEY}", "/plugins/stategraph/callback?token=***"),
+    (f"/plugins/stategraph/callback?x=1&token={KEY}&y=2", "/plugins/stategraph/callback?x=1&token=***&y=2"),
+    (f"/plugins/stategraph/callback/?token={KEY}", "/plugins/stategraph/callback/?token=***"),  # redirected, logged
+    # a path whose ? and = came encoded: uvicorn writes it so, re-quoted
+    (f"/plugins/stategraph/callback%3fToken%3D{KEY}", "/plugins/stategraph/callback%3fToken%3D***"),
+    (f"/plugins/stategraph/callback%3Fx%3D1%26token%3D{KEY}%26y%3D2",
+     "/plugins/stategraph/callback%3Fx%3D1%26token%3D***%26y%3D2"),
+])
+def test_the_key_in_the_query_of_a_callback_url_is_masked_too(app_log, tmp_path, path, shown):
+    """stategraph puts the key in the query: network.remote_paths lists exact paths, a key in the path never fits."""
+    logging.getLogger("agent_system").info("sent the event to https://hive.example%s", path)
+    access = _access_line(tmp_path, path)
+    logging.getLogger("httpx").info("HTTP Request: GET %s", "https://hook.example/relay?to=%2Fplugins%2Fstategraph"
+                                                          f"%2Fcallback%3Fx%3D1%26token%3D{KEY}%26y%3D2&z=3")
+
+    text = _written(app_log)
+
+    assert f'"POST {shown} HTTP/1.1" 404' in access, access
+    assert f"sent the event to https://hive.example{shown}" in text, text
+    assert "%2Fcallback%3Fx%3D1%26token%3D***%26y%3D2&z=3" in text, text
+    assert KEY not in text + access
+
+
+@pytest.mark.parametrize("repeated", ["/plugins/a/callback?x&", "%2Fplugins%2Fa%2Fcallback%3Fx%26",
+                                      "/plugins/a/callback%3Fx%26"])
+def test_a_line_full_of_callback_urls_costs_linear_time(repeated):
+    """Anyone may send such a path, and the access log masks it on the event loop: quadratic, this took seconds."""
+    import time
+
+    from agent_system.utils.logging import loggable_path
+
+    line = "GET /x?" + repeated * (200_000 // len(repeated))
+    start = time.perf_counter()
+    loggable_path(line)
+
+    assert time.perf_counter() - start < 1.0
+
+
 def test_a_traceback_and_a_url_passed_on_encoded_keep_no_key(app_log):
     try:
         raise RuntimeError(f"the machine could not reach {URL}")

@@ -2640,10 +2640,13 @@ PLUGIN_FACTORY = MyPluginServer
 - **Sandboxing**: Consider process isolation for untrusted plugins
 - **Schlüssel im Pfad**: Trägt eine Route einen Schlüssel in ihrem Pfad (wer die URL hat, darf sie
   benutzen — die Callback-URLs von `stategraph`), steht er direkt hinter `callback/`:
-  `/plugins/<instanz>/callback/<schlüssel>`. Nur dieses Segment maskieren die Logs (App-Log,
-  Access-Log, `security.log`, Security-Audit-Panel, Profiling), auch prozentkodiert und im Traceback
-  (`agent_system/utils/logging.py`, `loggable_path`). Ein Schlüssel an anderer Stelle oder in der
-  Query steht im Klartext darin.
+  `/plugins/<instanz>/callback/<schlüssel>`, oder im Parameter `token` derselben Route:
+  `/plugins/<instanz>/callback?token=<schlüssel>` — die Query-Form braucht, wer von einem anderen
+  Rechner erreichbar sein soll (`network.remote_paths` lässt nur exakte Pfade durch). Nur diese
+  beiden Stellen maskieren die Logs (App-Log, Access-Log, `security.log`, Security-Audit-Panel,
+  Profiling; die letzten drei führen die Query gar nicht), auch prozentkodiert und im Traceback
+  (`agent_system/utils/logging.py`, `loggable_path`). Ein Schlüssel an anderer Stelle steht im
+  Klartext darin.
 
 ## Troubleshooting
 

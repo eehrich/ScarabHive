@@ -963,7 +963,7 @@ async def waiting_url(server) -> tuple[str, str]:
 async def test_a_callback_url_sends_its_event_once_and_keeps_only_its_hash(hive):
     server, client = hive
     run_id, url = await waiting_url(server)
-    assert url.startswith("https://hive.test/plugins/stategraph/callback/"), url
+    assert url.startswith("https://hive.test/plugins/stategraph/callback?token="), url
     path = url.removeprefix("https://hive.test")
 
     page = await client.get(path)
@@ -974,9 +974,46 @@ async def test_a_callback_url_sends_its_event_once_and_keeps_only_its_hash(hive)
     assert (sent.status_code, sent.json()) == (200, {"sent": "approve", "queued": False}), sent.text
     assert (await settle(server.run_manager, run_id))["output"] == "mail"
     assert again.status_code == 404 and (await client.get(path)).status_code == 404
-    token = path.rsplit("/", 1)[1]
+    token = path.partition("?token=")[2]
     rows = server.run_store._db().execute("SELECT * FROM callbacks").fetchall()
     assert len(rows) == 1 and token not in str(dict(rows[0])), "the token is kept in clear"
+
+
+async def test_a_url_made_with_the_token_in_its_path_still_sends(hive):
+    server, client = hive
+    run_id, url = await waiting_url(server)
+    before = f"/plugins/stategraph/callback/{url.partition('?token=')[2]}"  # the form a URL had before
+
+    page = await client.get(before)
+    sent = await client.post(before, json={"data": {"by": "an old mail"}})
+
+    assert (page.status_code, sent.status_code) == (200, 200), (page.text, sent.text)
+    assert (await settle(server.run_manager, run_id))["output"] == "an old mail"
+
+
+async def test_a_system_outside_reaches_the_url_through_remote_paths(hive):
+    """network.remote_paths lists exact paths: a token in the path could never be listed."""
+    import httpx
+    from fastapi import FastAPI
+    from types import SimpleNamespace
+
+    from agent_system.auth.remote_paths import install
+    from agent_system.config.models import NetworkConfig
+    from plugins.stategraph.web_endpoints import StateGraphWebEndpoints
+
+    server, _ = hive
+    run_id, url = await waiting_url(server)
+    app = FastAPI()
+    app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=False))
+    app.include_router(StateGraphWebEndpoints(server).get_web_router())
+    install(app, NetworkConfig(remote_paths=["/plugins/stategraph/callback"]))
+    outside = httpx.ASGITransport(app=app, client=("203.0.113.5", 40000))
+    async with httpx.AsyncClient(transport=outside, base_url="https://hive.test") as remote:
+        page = await remote.get(url)
+        sent = await remote.post(url, json={"data": {"by": "outside"}})
+
+    assert (page.status_code, sent.status_code) == (200, 200), (page.text, sent.text)
+    assert (await settle(server.run_manager, run_id))["output"] == "outside"
 
 
 async def test_data_that_does_not_fit_leaves_the_url_to_use_again(hive):
@@ -1038,7 +1075,7 @@ async def test_the_url_of_an_ended_run_is_gone(hive):
     assert server.run_store.get_run(run_id)["status"] == "cancelled"
     assert ((await client.get(path)).status_code, (await client.post(path, json={})).status_code) == (404, 404)
     with pytest.raises(ServiceError) as refused:  # the service says so itself, not only the route before it
-        await server.service.use_callback(path.rsplit("/", 1)[1], {"by": "x"})
+        await server.service.use_callback(path.partition("?token=")[2], {"by": "x"})
     assert refused.value.status == 404, refused.value
 
 
