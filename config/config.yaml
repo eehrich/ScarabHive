@@ -93,6 +93,10 @@ auth:
   enabled: true  # Disabled for development - set to true for production
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
+  # The key above is published (it is in the repository): anyone can sign an
+  # admin token with it. The server logs an error at startup; true refuses to
+  # start instead. An empty or short key (under 32 characters) always does.
+  reject_default_secret_key: false
   access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
   refresh_token_expire_days: 3650    # 10 years (not used when access token is this long)
 

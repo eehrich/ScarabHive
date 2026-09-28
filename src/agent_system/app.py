@@ -878,6 +878,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
     apply_ssl_verify_to_environment(config)
 
+    # The JWT signing key, before any tool server starts -- a key the server
+    # refuses (auth.security.check_secret_key) stops it here, not after the
+    # whole bootstrap, which a service manager repeats on every restart --
+    # and after the role logging, so a published key's error reaches logs/api.log.
+    if config.auth and config.auth.enabled:
+        from .auth.security import set_jwt_config
+
+        set_jwt_config(
+            secret_key=config.auth.secret_key,
+            algorithm=config.auth.algorithm,
+            expire_minutes=config.auth.access_token_expire_minutes,
+            refresh_expire_days=config.auth.refresh_token_expire_days,
+            reject_default_key=config.auth.reject_default_secret_key,
+        )
+
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
     # Note: Batch queue manager is created lazily by LLMFactory when first needed
@@ -971,18 +986,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Setup auth database and configuration
         from .auth.database import setup_database
-        from .auth.security import set_jwt_config
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
         from pathlib import Path as AuthPath
-
-        # Configure JWT settings
-        set_jwt_config(
-            secret_key=config.auth.secret_key,
-            algorithm=config.auth.algorithm,
-            expire_minutes=config.auth.access_token_expire_minutes,
-            refresh_expire_days=config.auth.refresh_token_expire_days
-        )
 
         # Setup database
         db_path = AuthPath(config.auth.database_path)

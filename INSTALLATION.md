@@ -384,6 +384,11 @@ openssl rand -hex 32
 export AUTH_SECRET_KEY="your-generated-secret"
 ```
 
+The server checks the key at startup: an empty one (for example an unset
+`AUTH_SECRET_KEY`) or one shorter than 32 characters stops it; a published
+key -- the shipped development key, the built-in default -- is logged as an
+error. Set `auth.reject_default_secret_key: true` to refuse starting with one.
+
 ### 3. Create Admin User
 
 On first startup with auth enabled (and no users in the database), a default admin user is created:

@@ -408,6 +408,11 @@
           "title": "Secret Key",
           "type": "string"
         },
+        "reject_default_secret_key": {
+          "default": false,
+          "title": "Reject Default Secret Key",
+          "type": "boolean"
+        },
         "algorithm": {
           "default": "HS256",
           "title": "Algorithm",
