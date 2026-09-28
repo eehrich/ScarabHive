@@ -576,6 +576,14 @@ in the semantic index, so search will not find it — `list` does), and `search`
 returns an error rather than zero results. A search where only some agents'
 indexes fail returns the hits it has plus `warnings` naming the others.
 
+Once the store works again, the first search, duplicate check or consolidation
+of an agent in a process reconciles that agent's collection with the rows
+(`_heal_index`): lessons with a row but no vector are indexed, and vectors whose
+row is gone (a delete that failed) or belongs to an agent of another collection
+(a move that failed halfway) are removed — judged per collection, since two
+agent names can share one. Any failed vector write or delete makes the next
+query of that agent reconcile again.
+
 ### Confidence Dynamics
 
 Confidence is **not static** — it updates based on:

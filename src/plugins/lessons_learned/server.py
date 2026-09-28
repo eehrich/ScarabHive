@@ -227,6 +227,12 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         self.vector_store_path = self.db_path.parent / "vectors"
         self.vector_store_path.mkdir(parents=True, exist_ok=True)
         self.vector_store = VectorStore(persist_path=str(self.vector_store_path))
+        #: Agents whose rows and vectors were reconciled in this process
+        #: (_heal_index); a failed vector write or delete forgets the agent again.
+        self._indexed_agents: set[str] = set()
+        #: Failed vector writes and deletes per agent (_index_lost): a heal that
+        #: began before one must not mark the agent reconciled.
+        self._index_losses: Dict[str, int] = {}
 
         # Plugin config - read from server_config attributes (set from plugins.yaml)
         self.max_lessons_per_agent = int(getattr(server_config, "max_lessons_per_agent", 200))
@@ -298,6 +304,77 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
     def _collection_name(self, agent_name: str) -> str:
         """VectorStore collection name for an agent."""
         return f"lessons_{agent_name.replace('-', '_')}"
+
+    def _index_lost(self, agent_name: str) -> None:
+        """A vector write or delete for ``agent_name`` failed: reconcile it again."""
+        self._index_losses[agent_name] = self._index_losses.get(agent_name, 0) + 1
+        self._indexed_agents.discard(agent_name)
+
+    async def _heal_index(self, agent_name: str) -> None:
+        """Bring the collection of ``agent_name`` in line with the rows.
+
+        Missing: a lesson stored while the embedding model was missing stayed
+        out of search and the duplicate check for good -- nothing writes its
+        vector again unless its text changes. Stale: a vector whose delete
+        failed outlived its row, and the duplicate check then answered with a
+        lesson that no longer exists, at every store of that text.
+
+        Once per agent and process: finding the gap needs only ids, embedding
+        runs only for what is missing. Raises what the store raises; every
+        caller is about to query the same store and reports it.
+        """
+        if agent_name in self._indexed_agents:
+            return
+        losses = self._index_losses.get(agent_name, 0)
+        collection = self._collection_name(agent_name)
+        indexed = await asyncio.to_thread(self.vector_store.list_ids, collection)
+        # The rows AFTER the ids: a vector is written after its row commits and
+        # deleted after its row is gone, so an id listed here whose row is
+        # missing -- or belongs to an agent of another collection, left by a
+        # move -- is garbage. Judged per collection, not per agent: two names
+        # can share one (web-research, web_research).
+        conn = self._get_connection()
+        try:
+            owners = {row[0]: row[1] for row in conn.execute("SELECT lesson_id, agent_name FROM lessons")}
+            rows = conn.execute("SELECT lesson_id, title, content, category FROM lessons WHERE agent_name = ?",
+                                (agent_name,)).fetchall()
+        finally:
+            conn.close()
+        stale = [lesson_id for lesson_id in indexed
+                 if lesson_id not in owners or self._collection_name(owners[lesson_id]) != collection]
+        if stale:
+            await asyncio.to_thread(self.vector_store.delete, collection=collection, ids=stale)
+            logger.info(f"Removed {len(stale)} vector(s) without their lesson from '{collection}'")
+        present = set(indexed)
+        missing = [row for row in rows if row["lesson_id"] not in present]
+        if missing:
+            await asyncio.to_thread(
+                self.vector_store.add,
+                collection=collection,
+                ids=[row["lesson_id"] for row in missing],
+                documents=[f"{row['title']}. {row['content']}" for row in missing],
+                metadatas=[{"lesson_id": row["lesson_id"], "agent_name": agent_name, "category": row["category"]}
+                           for row in missing],
+            )
+            logger.info(f"Indexed {len(missing)} lesson(s) of '{agent_name}' that had no vector")
+            # A row read above may be gone by now -- deleted or moved, in this
+            # process or another -- and its vector just came back. Gone before
+            # this check: removed here. Gone after it: the deleter's own vector
+            # delete follows its commit, so it follows this add too.
+            added = [row["lesson_id"] for row in missing]
+            conn = self._get_connection()
+            try:
+                now = {row[0]: row[1] for row in conn.execute(
+                    f"SELECT lesson_id, agent_name FROM lessons WHERE lesson_id IN ({','.join('?' * len(added))})",
+                    added)}
+            finally:
+                conn.close()
+            gone = [lesson_id for lesson_id in added
+                    if lesson_id not in now or self._collection_name(now[lesson_id]) != collection]
+            if gone:
+                await asyncio.to_thread(self.vector_store.delete, collection=collection, ids=gone)
+        if self._index_losses.get(agent_name, 0) == losses:  # nothing failed meanwhile
+            self._indexed_agents.add(agent_name)
 
     # ==========================================================================
     # CRUD Operations
@@ -387,8 +464,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             # The row stands, so "stored" is true -- but search and the
             # duplicate check read only the vectors and will never see it.
             logger.warning(f"VectorStore add failed: {e}")
+            self._index_lost(agent_name)  # the next query heals it
             warnings.append(f"Not in the semantic index ({_reason(e)}): search and the "
-                            "duplicate check will not find this lesson; list shows it.")
+                            "duplicate check miss this lesson until the store works again; list shows it.")
 
         logger.info(f"Stored lesson {lesson_id} for agent '{agent_name}': {title}")
         result: Dict[str, Any] = {
@@ -426,6 +504,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         failed: List[str] = []
         for agent in agents_to_search:
             try:
+                await self._heal_index(agent)
                 results = await asyncio.to_thread(
                     self.vector_store.query,
                     collection=self._collection_name(agent),
@@ -646,8 +725,12 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                             )
                         except Exception as e:
                             logger.debug(f"VectorStore delete from old collection failed: {e}")
+                            self._index_lost(old_agent_name)
                 except Exception as e:
                     logger.warning(f"VectorStore re-index failed: {e}")
+                    self._index_lost(new_agent_name)
+                    if agent_name_changed:  # its vector stays there until a heal of the old agent
+                        self._index_lost(old_agent_name)
                     warnings.append(f"Not re-indexed ({_reason(e)}): search and the duplicate "
                                     "check do not see this version of the lesson.")
 
@@ -678,6 +761,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             )
         except Exception as e:
             logger.debug(f"VectorStore delete failed (non-critical): {e}")
+            self._index_lost(agent_name)
 
         return {"status": "deleted", "lesson_id": lesson_id}
 
@@ -773,6 +857,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     )
                 except Exception as e:
                     logger.debug(f"VectorStore cleanup for agent '{agent}' failed (non-critical): {e}")
+                    self._index_lost(agent)
 
             return {
                 "dry_run": False,
@@ -1164,6 +1249,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         if len(lessons) < 2:
             return []
+        await self._heal_index(agent_name)
 
         # Build adjacency: for each lesson, find similar ones
         adjacency: Dict[str, set] = {lesson["lesson_id"]: set() for lesson in lessons}
@@ -1476,6 +1562,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 )
             except Exception as e:
                 logger.debug(f"VectorStore delete after merge failed: {e}")
+                self._index_lost(agent)
 
         # Re-index primary in VectorStore
         warnings: List[str] = []
@@ -1514,6 +1601,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
     ) -> DeduplicationResult:
         """Check if a similar lesson already exists using VectorStore."""
         try:
+            await self._heal_index(agent_name)
             candidate_text = f"{title}. {content}"
             results = await asyncio.to_thread(
                 self.vector_store.query,

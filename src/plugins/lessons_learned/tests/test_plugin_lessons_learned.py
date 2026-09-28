@@ -15,7 +15,9 @@ Tests cover:
 Target: >70% code coverage for critical modules
 """
 
+import asyncio
 import json
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1315,18 +1317,27 @@ async def test_a_search_names_the_agents_it_could_not_search(server):
 
 async def test_a_lesson_moved_to_another_agent_keeps_its_vector_when_the_add_fails(server):
     """The old vector was deleted before the add to the new agent's collection,
-    so a failed add left the lesson in no index at all."""
+    so a failed add left the lesson in no index at all. Kept until the store
+    works again -- then it belongs to the new agent, and only there, even
+    where "a" had been reconciled before."""
+    await server.check_duplicate("a", "Anything", "At all")  # "a" reconciled: only a loss re-opens it
     stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative in tests.")
+    real_add = server.vector_store.add
 
     def no_add(**kwargs):
         raise RuntimeError("index full")
 
     server.vector_store.add = no_add
     result = await server.update_lesson(stored["lesson_id"], agent_name="b")
-    found = await server.search_lessons("data dir", agent_name="a", status=None)
+    kept = server.vector_store.list_ids(server._collection_name("a"))
+    server.vector_store.add = real_add
+    under_a = await server.search_lessons("data dir", agent_name="a", status=None)
+    under_b = await server.search_lessons("data dir", agent_name="b", status=None)
 
     assert "index full" in " ".join(result["warnings"])
-    assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+    assert kept == [stored["lesson_id"]]
+    assert under_a["results"] == []
+    assert [hit["lesson_id"] for hit in under_b["results"]] == [stored["lesson_id"]]
 
 
 async def test_a_move_between_names_of_one_collection_keeps_the_vector(server):
@@ -1368,6 +1379,189 @@ async def test_a_merge_indexes_the_primary_by_its_own_text(server):
                                        n_results=5, include=["documents"])
 
     assert dict(zip(stored["ids"][0], stored["documents"][0])) == {primary["lesson_id"]: "Pin the data dir. Relative."}
+
+
+class TestTheIndexHeals:
+    """A lesson stored while the model was missing has a row and no vector.
+    Nothing wrote the vector again unless the text changed, so search and the
+    duplicate check missed it for good."""
+
+    @staticmethod
+    def break_model(monkeypatch):
+        from agent_system.utils import vector_store
+
+        def missing():
+            raise RuntimeError("no embedding model")
+
+        monkeypatch.setattr(vector_store, "get_embedding_model", missing)
+
+    async def test_a_lesson_stored_without_the_model_is_found_once_it_is_back(self, server, monkeypatch):
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.",
+                                           status="active")
+        assert stored["warnings"], "the store did not fail -- this proves nothing"
+        monkeypatch.undo()
+
+        found = await server.search_lessons("data dir", agent_name="a")
+
+        assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+
+    async def test_a_failed_store_after_a_heal_is_healed_too(self, server, monkeypatch):
+        """Once per process, but a failed add forgets the agent again."""
+        await server.check_duplicate("a", "Anything", "At all")  # heals "a" while it has nothing
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.",
+                                           status="active")
+        monkeypatch.undo()
+
+        found = await server.search_lessons("data dir", agent_name="a")
+
+        assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+
+    async def test_the_duplicate_check_sees_it_once_the_model_is_back(self, server, monkeypatch):
+        """Otherwise the same lesson, stored again, became a second copy."""
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+        monkeypatch.undo()
+
+        dedup = await server.check_duplicate("a", "Pin the data dir", "Relative.")
+
+        assert dedup.is_duplicate and dedup.existing_lesson_id == stored["lesson_id"]
+
+    async def test_a_consolidation_compares_them_once_the_model_is_back(self, server, monkeypatch):
+        self.break_model(monkeypatch)
+        await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative in tests.")
+        await server.store_lesson(agent_name="a", title="Pin the data dir!", content="Relative in tests.")
+        monkeypatch.undo()
+        server._llm_evaluate_cluster = AsyncMock(return_value=None)
+
+        result = await server.consolidate_lessons(agent_name="a", dry_run=True)
+
+        assert result["clusters_found"] == 1
+
+    @pytest.mark.parametrize("removal", ["delete", "cleanup", "merge", "move"])
+    async def test_a_vector_a_failed_delete_left_behind_is_pruned(self, server, removal):
+        """The duplicate check answered with a lesson that no longer existed (or
+        belonged to another agent), and every store of that text failed on it."""
+        await server.check_duplicate("a", "Anything", "At all")  # "a" reconciled: only a loss re-opens it
+        tea = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        pin = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+        real_delete = server.vector_store.delete
+
+        def no_delete(**kwargs):
+            raise RuntimeError("store locked")
+
+        server.vector_store.delete = no_delete
+        if removal == "delete":
+            await server.delete_lesson(tea["lesson_id"])
+        elif removal == "cleanup":
+            await server.cleanup_lessons(agent_name="a", lesson_ids=[tea["lesson_id"]], dry_run=False)
+        elif removal == "merge":
+            lessons = [await server.get_lesson(pin["lesson_id"]), await server.get_lesson(tea["lesson_id"])]
+            await server._execute_merge(agent="a", lessons=lessons, merge_decision={"primary_id": pin["lesson_id"]})
+        else:
+            await server.update_lesson(tea["lesson_id"], agent_name="b")
+        assert tea["lesson_id"] in server.vector_store.list_ids(server._collection_name("a")), "nothing left behind"
+        server.vector_store.delete = real_delete
+
+        dedup = await server.check_duplicate("a", "Tea", "Steep the leaves.")
+
+        assert not dedup.is_duplicate
+
+    async def test_a_heal_under_way_does_not_swallow_a_loss(self, server):
+        """A store whose add failed while a heal of the same agent was adding:
+        the heal marked the agent afterwards, and the lesson stayed out."""
+        real_add, gate = server.vector_store.add, threading.Event()
+
+        def no_add(**kwargs):
+            raise RuntimeError("index full")
+
+        server.vector_store.add = no_add
+        earlier = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+
+        def add(**kwargs):  # the heal's add of `earlier` waits; any other add fails
+            if kwargs["ids"] != [earlier["lesson_id"]]:
+                raise RuntimeError("index full")
+            gate.wait(5)
+            real_add(**kwargs)
+
+        server.vector_store.add = add
+        heal = asyncio.create_task(server._heal_index("a"))
+        await asyncio.sleep(0.2)  # the heal waits in its add
+        stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.",
+                                           status="active")
+        gate.set()
+        await heal
+        server.vector_store.add = real_add
+
+        found = await server.search_lessons("data dir", agent_name="a")
+
+        assert not heal.exception() and stored["warnings"], "the setup did not happen -- this proves nothing"
+        assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
+
+    @pytest.mark.parametrize("removal", ["delete", "cleanup", "merge", "move"])
+    async def test_a_heal_under_way_does_not_mark_a_row_that_went(self, server, monkeypatch, removal):
+        """The heal adds vectors for the rows it read. A lesson deleted (or moved
+        to another agent) while it was adding got its vector back as an orphan,
+        and the heal marked the agent done: every store of that text then
+        failed on the orphan. The same happens with a delete in another process,
+        which no in-memory bookkeeping sees -- so the heal checks what it added."""
+        self.break_model(monkeypatch)
+        stored = await server.store_lesson(agent_name="a", title="Tea", content="Steep the leaves.")
+        pin = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.")
+        monkeypatch.undo()
+        real_add, gate, written = server.vector_store.add, threading.Event(), []
+
+        def add(**kwargs):  # the heal's add waits until the lesson is gone
+            gate.wait(5)
+            real_add(**kwargs)
+            written.extend(kwargs["ids"])
+
+        server.vector_store.add = add
+        heal = asyncio.create_task(server._heal_index("a"))
+        await asyncio.sleep(0.2)
+        server.vector_store.add = real_add  # the removal's own adds go through
+        if removal == "delete":
+            await server.delete_lesson(stored["lesson_id"])
+        elif removal == "cleanup":
+            await server.cleanup_lessons(agent_name="a", lesson_ids=[stored["lesson_id"]], dry_run=False)
+        elif removal == "merge":
+            lessons = [await server.get_lesson(pin["lesson_id"]), await server.get_lesson(stored["lesson_id"])]
+            await server._execute_merge(agent="a", lessons=lessons, merge_decision={"primary_id": pin["lesson_id"]})
+        else:
+            await server.update_lesson(stored["lesson_id"], agent_name="b")
+        gate.set()
+        await heal
+        assert stored["lesson_id"] in written, "the heal did not write the lesson back -- this proves nothing"
+
+        left = server.vector_store.list_ids(server._collection_name("a"))
+        dedup = await server.check_duplicate("a", "Tea", "Steep the leaves.")
+
+        assert stored["lesson_id"] not in left
+        assert not dedup.is_duplicate
+
+    async def test_the_ids_are_read_once_per_agent(self, server):
+        await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.", status="active")
+        real, calls = server.vector_store.list_ids, []
+        server.vector_store.list_ids = lambda collection: calls.append(collection) or real(collection)
+
+        await server.search_lessons("data dir", agent_name="a")
+        await server.check_duplicate("a", "Pin the data dir", "Relative.")
+
+        assert calls == [server._collection_name("a")]
+
+    async def test_a_failed_move_after_a_heal_is_healed_too(self, server, monkeypatch):
+        stored = await server.store_lesson(agent_name="a", title="Pin the data dir", content="Relative.",
+                                           status="active")
+        await server.check_duplicate("b", "Anything", "At all")  # heals "b" while it has nothing
+        self.break_model(monkeypatch)
+        moved = await server.update_lesson(stored["lesson_id"], agent_name="b")
+        assert moved["warnings"], "the move did not fail -- this proves nothing"
+        monkeypatch.undo()
+
+        found = await server.search_lessons("data dir", agent_name="b")
+
+        assert [hit["lesson_id"] for hit in found["results"]] == [stored["lesson_id"]]
 
 
 async def test_the_search_status_line_counts_what_was_found(server):
