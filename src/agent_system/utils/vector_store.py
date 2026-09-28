@@ -32,7 +32,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from filelock import FileLock
+from filelock import FileLock, SoftFileLock, Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -210,42 +210,165 @@ _embedding_models: dict = {}
 #: The model chromadb ships as an ONNX export -- the one model that runs without torch.
 _ONNX_MODEL_NAMES = {"all-MiniLM-L6-v2", "sentence-transformers/all-MiniLM-L6-v2"}
 
+#: Each model loaded once in this process: eight first uses at once built eight copies. One lock
+#: per model (both names of all-MiniLM-L6-v2 share one) -- a SentenceTransformer loading for
+#: seconds holds up no other model.
+_LOADING: dict[str, threading.Lock] = {}
+
+#: The longest one process waits for another to ready the model: an unpack takes seconds, a
+#: download a minute. Past it the model is readied without the lock.
+_MODEL_LOCK_TIMEOUT = 600.0
+
+
+@contextlib.contextmanager
+def _cache_lock(model_dir: Path):
+    """A lock file beside the model's cache folder, held while one process -- or thread -- readies the model.
+
+    Threads as well: each takes the lock through a handle of its own, and the
+    operating system serializes them as it does processes.
+
+    A cache the process may not write -- a unit under ProtectHome=read-only, as
+    the writer worker's -- gets none: nothing can be downloaded or unpacked there
+    either, the model is provisioned or it is not.
+    """
+    lock_path = model_dir.parent / f"{model_dir.name}.lock"
+    lock = FileLock(str(lock_path))
+    held = False
+    try:
+        model_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Asked first: filelock takes "access denied" on Windows for a lock another process
+        # holds, and waits out the whole timeout (measured 28.09.2026). Not for a soft lock (no fcntl):
+        # there the file's existence is the lock, and this open would take it for good.
+        if FileLock is not SoftFileLock:
+            with open(lock_path, "a", encoding="utf-8"):
+                pass
+        lock.acquire(timeout=_MODEL_LOCK_TIMEOUT)
+        held = True
+    except Timeout:  # an OSError too: caught first
+        logger.warning("Waited %.0f s for %s; readying the embedding model without it",
+                       _MODEL_LOCK_TIMEOUT, lock_path)
+    except (OSError, NotImplementedError) as error:  # read-only; a file system without flock
+        logger.debug("no lock for the embedding model cache %s: %s", model_dir, error)
+    # Outside the except: an error of the readying is not "during handling of" the lock's.
+    try:
+        yield
+    finally:
+        if held:
+            lock.release()
+
 
 class _OnnxMiniLM:
     """all-MiniLM-L6-v2 through chromadb's ONNX export, with the `encode` of a SentenceTransformer.
 
-    The vectors are sentence-transformers' own: measured 27.09.2026 over 2000
-    code chunks, cosine 1.000000 for every one, 14.2 against 13.3 ms a chunk.
-    What it saves is torch, which the core needed for this model alone. The
-    vectors always come back at unit length, `normalize_embeddings` or not --
-    every store and comparison here ranks by cosine, where the length is moot.
+    The vectors are sentence-transformers' own (cosine 1.000000 over code, German
+    prose over 256 tokens, short queries and non-Latin scripts), and what it saves
+    is torch, which the core needed for this model alone. It runs the export
+    itself instead of through chromadb's call, which pads every text to 256
+    tokens: here a batch is sorted by length and padded to its longest text, as
+    sentence-transformers does. Measured 28.09.2026 on 2000 file_ops documents:
+    7.7 ms a text against 7.3 for sentence-transformers (chromadb's call: 13.9);
+    a single query 1.4 against 6.4 ms. The vectors always come back at unit
+    length, `normalize_embeddings` or not -- every store and comparison here
+    ranks by cosine, where the length is moot.
     """
+
+    #: sentence-transformers' max_seq_length for this model; chromadb truncates there too.
+    MAX_TOKENS = 256
+
+    #: Texts per ONNX run, whatever the caller asks: chromadb's call ran 32; at 128 onnxruntime's
+    #: arena grew the process by 0.9-1.4 GB for good and ran slower (measured 28.09.2026).
+    MAX_BATCH = 32
 
     def __init__(self) -> None:
         from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
         self._function = ONNXMiniLM_L6_V2(preferred_providers=get_available_onnx_providers())
+        self._tokenizer = self._ready()
+        # Configured once, read by every thread after: a tokenizer changed while in use raises.
+        self._tokenizer.enable_truncation(max_length=self.MAX_TOKENS)
+        self._tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")  # to the batch's longest
+
+    def _ready(self) -> Any:
+        """Download, unpack and open the model, one process at a time; its tokenizer.
+
+        chromadb does it on first use without a lock and checks only that the
+        files exist: measured 28.09.2026, eight first uses at once failed seven
+        times opening a model.onnx another one was still unpacking, and a file
+        cut short by an interrupted unpack failed on every later call. A model
+        that does not open is unpacked again from the archive, which is verified
+        by its hash -- only where the archive is there: without it the folder is
+        all there is.
+        """
+        import shutil
+        function = self._function
+        model_dir = Path(function.DOWNLOAD_PATH)
+        folder = model_dir / function.EXTRACTED_FOLDER_NAME
+        with _cache_lock(model_dir):
+            try:
+                function(["ready"])
+            except Exception as error:
+                if not (model_dir / function.ARCHIVE_FILENAME).is_file():
+                    raise self._not_ready(model_dir, error) from error
+                logger.warning("ONNX embedding model did not open (%s); unpacking it again", error)
+                shutil.rmtree(folder, ignore_errors=True)
+                try:
+                    function(["ready"])
+                except Exception as again:
+                    raise self._not_ready(model_dir, again) from again
+            # Under the lock: a process unpacking again cannot take the file away mid-read.
+            return function.Tokenizer.from_file(str(folder / "tokenizer.json"))
+
+    def _not_ready(self, model_dir: Path, error: Exception) -> RuntimeError:
+        # chromadb's own error names neither the model nor where it goes (a bare ConnectError offline)
+        return RuntimeError(
+            f"The embedding model all-MiniLM-L6-v2 could not be readied in {model_dir}: {error}. "
+            f"It is downloaded once from {self._function.MODEL_DOWNLOAD_URL}; without network, or where "
+            f"that folder is read-only, ready it once as this user where it may write.")
 
     def encode(self, texts, batch_size: int = 32, normalize_embeddings: bool = False,
                convert_to_numpy: bool = True, show_progress_bar: bool = False):
         import numpy as np
-        single = isinstance(texts, str)
-        vectors = np.asarray(self._function([texts] if single else list(texts)), dtype=np.float32)
+        # anything but a list of texts is one text: bytes or None must not be taken apart first
+        single = not isinstance(texts, (list, tuple, np.ndarray))
+        texts = [texts] if single else list(texts)
+        for text in texts:  # else the sort below fails on len(None)
+            if not isinstance(text, str):
+                raise TypeError(f"A text to embed must be a str, got {type(text).__name__}")
+        vectors = np.empty((len(texts), EMBEDDING_DIM), dtype=np.float32)
+        order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
+        step = min(max(1, batch_size), self.MAX_BATCH)
+        for start in range(0, len(order), step):
+            batch = order[start:start + step]
+            encoded = self._tokenizer.encode_batch([texts[index] for index in batch])
+            ids = np.array([one.ids for one in encoded], dtype=np.int64)
+            mask = np.array([one.attention_mask for one in encoded], dtype=np.int64)
+            hidden = self._function.model.run(
+                None, {"input_ids": ids, "attention_mask": mask, "token_type_ids": np.zeros_like(ids)})[0]
+            weights = mask[..., None].astype(np.float32)
+            pooled = (hidden * weights).sum(axis=1) / np.clip(weights.sum(axis=1), 1e-9, None)
+            vectors[batch] = pooled / np.clip(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12, None)
         return vectors[0] if single else vectors
 
 
 def _load_embedding_model(model_name: str):
-    """The embedding model *model_name*, cached per name for the lifetime of the process.
+    """The embedding model *model_name*, loaded once for the lifetime of the process.
 
     all-MiniLM-L6-v2 runs on chromadb's ONNX export when chromadb is there.
     Any other model is a SentenceTransformer: sentence-transformers (and with
     it torch) is then the dependency of the plugin that names the model.
     """
-    if model_name not in _embedding_models:
+    # One model under both of its names: one copy and one lock, not two unpacking the same folder.
+    key = "all-MiniLM-L6-v2" if model_name in _ONNX_MODEL_NAMES else model_name
+    model = _embedding_models.get(key)
+    if model is not None:
+        return model
+    with _LOADING.setdefault(key, threading.Lock()):
+        if key in _embedding_models:  # loaded while this caller waited
+            return _embedding_models[key]
         import importlib.util
-        if model_name in _ONNX_MODEL_NAMES and importlib.util.find_spec("chromadb") is not None:
-            _embedding_models[model_name] = _OnnxMiniLM()
+        if key in _ONNX_MODEL_NAMES and importlib.util.find_spec("chromadb") is not None:
+            _embedding_models[key] = _OnnxMiniLM()
             logger.info(f"Embedding model loaded ({model_name}, ONNX)")
-            return _embedding_models[model_name]
+            return _embedding_models[key]
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as error:
@@ -254,15 +377,15 @@ def _load_embedding_model(model_name: str):
                           "only all-MiniLM-L6-v2 runs without it")
             raise ImportError(f"Embedding model {model_name!r} needs {needs}") from error
         try:
-            _embedding_models[model_name] = SentenceTransformer(
+            _embedding_models[key] = SentenceTransformer(
                 model_name, device="cpu", local_files_only=True,
             )
         except OSError:
-            _embedding_models[model_name] = SentenceTransformer(
+            _embedding_models[key] = SentenceTransformer(
                 model_name, device="cpu",
             )
         logger.info(f"SentenceTransformer loaded ({model_name})")
-    return _embedding_models[model_name]
+        return _embedding_models[key]
 
 
 def get_embedding_model():
@@ -272,6 +395,8 @@ def get_embedding_model():
 
 def compute_embedding(text: str) -> List[float]:
     """Return 384-dim embedding for *text*."""
+    if not isinstance(text, str):  # a list here came back as one vector per item
+        raise TypeError(f"A text to embed must be a str, got {type(text).__name__}")
     model = get_embedding_model()
     return model.encode(text, convert_to_numpy=True).tolist()
 
@@ -858,7 +983,11 @@ class VectorStore:
     ) -> None:
         """Add documents to ChromaDB collection."""
         coll = self._get_chromadb_collection(collection)
-        
+        if documents and not embeddings:
+            # The model of the collection's own function, through the lock that readies it and without
+            # chromadb's padding to 256 tokens: the vectors are the same (_OnnxMiniLM).
+            embeddings = compute_embeddings(documents)
+
         kwargs: Dict[str, Any] = {"ids": ids}
         if documents:
             kwargs["documents"] = documents
@@ -886,8 +1015,8 @@ class VectorStore:
         actual_n_results = min(n_results, max(1, count)) if count > 0 else n_results
         
         kwargs: Dict[str, Any] = {"n_results": actual_n_results}
-        if query_text:
-            kwargs["query_texts"] = [query_text]
+        if query_text and not query_embedding:
+            query_embedding = compute_embedding(query_text)  # as _chromadb_add embeds the documents
         if query_embedding:
             kwargs["query_embeddings"] = [query_embedding]
         if where:

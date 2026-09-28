@@ -519,23 +519,38 @@ class TestTheDefaultModelNeedsNoTorch:
         monkeypatch.setattr(vector_store, "_embedding_models", {})
         return vector_store
 
-    def test_the_default_model_embeds_without_sentence_transformers(self, fresh_models, monkeypatch):
-        import sys
-        for name in ("sentence_transformers", "transformers", "torch"):
-            monkeypatch.setitem(sys.modules, name, None)  # their import raises now
+    @pytest.mark.timeout(600)  # on a clean machine the child downloads the model first
+    def test_the_default_model_embeds_without_sentence_transformers(self):
+        """In a process of its own, the three blocked before the module is imported: a module-level import
+        of any of them would otherwise have happened long before a monkeypatch in this one."""
+        script = "\n".join([
+            "import sys",
+            "for name in ('sentence_transformers', 'transformers', 'torch'):",
+            "    sys.modules[name] = None",
+            "import agent_system.utils.vector_store as vector_store",
+            "vectors = vector_store.compute_embeddings(['how is the config loaded', 'a second text'])",
+            "single = vector_store.compute_embedding('one text')",
+            "print(vector_store.__file__)",
+            "print([len(vector) for vector in vectors], len(single), type(single[0]).__name__)",
+        ])
+        run = _child(script, timeout=540)
 
-        vectors = fresh_models.compute_embeddings(["how is the config loaded", "a second text"])
-        single = fresh_models.compute_embedding("one text")
-
-        assert [len(vector) for vector in vectors] == [384, 384]
-        assert len(single) == 384 and isinstance(single[0], float), single[:3]
+        assert run.returncode == 0, run.stderr[-2000:]
+        imported, result = run.stdout.strip().splitlines()[-2:]
+        assert Path(imported) == _UNDER_TEST, (imported, _UNDER_TEST)
+        assert result == "[384, 384] 384 float", run.stdout
 
     def test_its_vectors_are_the_ones_sentence_transformers_computes(self, fresh_models):
         import numpy as np
         sentence_transformers = pytest.importorskip("sentence_transformers")
-        texts = ["def load_settings(config_path=None)", "Die Heldin verlässt das Dorf im Morgengrauen."]
+        # the longer first: a batch is sorted by length, and the vectors must come back in the callers' order;
+        # the last is over 256 tokens, where both truncate
+        texts = ["Die Heldin verlässt das Dorf im Morgengrauen.", "def load_settings(config_path=None)",
+                 " ".join(f"word{index}" for index in range(400))]
 
+        assert isinstance(fresh_models.get_embedding_model(), fresh_models._OnnxMiniLM)
         onnx = np.array(fresh_models.compute_embeddings(texts))
+        single = np.array(fresh_models.compute_embedding(texts[1]))
         try:
             model = sentence_transformers.SentenceTransformer("all-MiniLM-L6-v2", device="cpu", local_files_only=True)
         except OSError:  # not cached here: fetched once
@@ -543,6 +558,7 @@ class TestTheDefaultModelNeedsNoTorch:
         reference = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
 
         np.testing.assert_allclose(onnx, reference, atol=1e-5)  # direction and unit length
+        np.testing.assert_allclose(single, reference[1], atol=1e-5)  # the one-text path too
 
     def test_another_model_without_sentence_transformers_names_what_is_missing(self, fresh_models, monkeypatch):
         import sys
@@ -553,6 +569,75 @@ class TestTheDefaultModelNeedsNoTorch:
 
         assert "paraphrase-multilingual-MiniLM-L12-v2" in str(raised.value)
         assert "sentence-transformers" in str(raised.value)
+
+    def test_a_model_loading_holds_up_no_other(self, fresh_models, monkeypatch):
+        """premise_dedupe's SentenceTransformer loads for seconds; the chat's MiniLM does not wait for it."""
+        import sys
+        import threading
+        from types import SimpleNamespace
+        entered, release = threading.Event(), threading.Event()
+
+        class Slow:
+            def __init__(self, name, **kwargs):
+                entered.set()
+                release.wait(30)
+        monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=Slow))
+        monkeypatch.setattr(fresh_models, "_OnnxMiniLM", lambda: "the ONNX model")
+        other = threading.Thread(target=fresh_models._load_embedding_model, args=("paraphrase-multilingual-MiniLM-L12-v2",))
+        other.start()
+        try:
+            assert entered.wait(10), "fixture: the other model never started loading"
+            loaded = []
+            first = threading.Thread(target=lambda: loaded.append(fresh_models.get_embedding_model()))
+            first.start()
+            first.join(5)
+            assert loaded == ["the ONNX model"], "the default model waited for another one"
+        finally:
+            release.set()
+            other.join(10)
+            first.join(10)
+
+    def test_both_names_first_used_at_once_build_one_model(self, fresh_models, monkeypatch):
+        """The two names used to take two locks: without the file lock both unpacked the same folder at once. The
+        second name arrives while the first is still building -- one lock, one model, the same one for both."""
+        import threading
+        entered, release = threading.Event(), threading.Event()
+        built, got = [], []
+
+        def build():
+            built.append(1)
+            entered.set()
+            release.wait(10)
+            return object()
+        monkeypatch.setattr(fresh_models, "_OnnxMiniLM", build)
+        first = threading.Thread(target=lambda: got.append(
+            fresh_models._load_embedding_model("sentence-transformers/all-MiniLM-L6-v2")))
+        second = threading.Thread(target=lambda: got.append(fresh_models.get_embedding_model()))
+        first.start()
+        try:
+            assert entered.wait(10), "fixture: the first name never started building"
+            second.start()
+            second.join(0.5)  # time to build a second copy, if its lock were another
+        finally:
+            release.set()
+            first.join(10)
+            if second.ident:
+                second.join(10)
+
+        assert len(built) == 1 and len(got) == 2 and got[0] is got[1], (built, got)
+
+    @pytest.mark.parametrize("texts, named", [(["a text", None], "NoneType"), (b"one text", "bytes"), (None, "NoneType")])
+    def test_a_text_that_is_no_str_is_named(self, fresh_models, texts, named):
+        """Named before anything is sorted -- and one value is one text: bytes are not taken apart into ints."""
+        model = fresh_models._OnnxMiniLM.__new__(fresh_models._OnnxMiniLM)  # the check comes before the model
+
+        with pytest.raises(TypeError, match=f"must be a str, got {named}"):
+            model.encode(texts)
+
+    def test_one_embedding_is_of_one_text(self, fresh_models):
+        """A list came back as one vector per item, where the caller stores one."""
+        with pytest.raises(TypeError, match="must be a str, got list"):
+            fresh_models.compute_embedding(["a", "b"])
 
     def test_the_fallback_store_without_a_model_refuses_instead_of_hashing(self, fresh_models, monkeypatch):
         """sqlite-vec is the backend without chromadb: with no sentence-transformers either, it stored hash
@@ -573,3 +658,298 @@ class TestTheDefaultModelNeedsNoTorch:
             store.close()
             gc.collect()
             tmpdir_obj.cleanup()
+
+
+#: The source tree these tests are about -- a worktree's, not the one an editable install points at.
+_UNDER_TEST = Path(__import__("agent_system.utils.vector_store", fromlist=["x"]).__file__).resolve()
+_CACHED_ARCHIVE = Path.home() / ".cache" / "chroma" / "onnx_models" / "all-MiniLM-L6-v2" / "onnx.tar.gz"
+
+
+def _child(script, *args, timeout, popen=False):
+    """A Python process that imports the tree under test: PYTHONPATH names its src/ first, since an
+    editable install would hand every child the main checkout instead."""
+    import os
+    import subprocess
+    import sys
+    source = str(_UNDER_TEST.parents[2])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [source, os.environ.get("PYTHONPATH")]))}
+    command = [sys.executable, "-c", script, *map(str, args)]
+    if popen:
+        return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    return subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _link_or_copy(source: Path, target: Path) -> None:
+    """A hard link where the volume allows it: the archive is 83 MB and read only."""
+    import os
+    import shutil
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy(source, target)
+
+
+@pytest.fixture(scope="session")
+def _unpacked_model(tmp_path_factory):
+    """chromadb's model unpacked once per run, from the cached archive -- no network."""
+    import tarfile
+    if not _CACHED_ARCHIVE.is_file():
+        pytest.skip("chromadb's model archive is not cached here")
+    root = tmp_path_factory.mktemp("onnx_model")
+    with tarfile.open(_CACHED_ARCHIVE, "r:gz") as tar:
+        tar.extractall(root, filter="data")
+    return root / "onnx"
+
+
+class TestTheOnnxModelIsReadiedOnce:
+    """chromadb downloads and unpacks its model on first use without a lock and checks only that the files
+    exist: eight first uses at once failed seven times, and a model.onnx cut short failed for good."""
+
+    @pytest.fixture
+    def model_dir(self, tmp_path, monkeypatch):
+        """A model folder of this test's own holding only the archive: the first use unpacks it."""
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        from agent_system.utils import vector_store
+        if not _CACHED_ARCHIVE.is_file():
+            pytest.skip("chromadb's model archive is not cached here")
+        folder = tmp_path / "all-MiniLM-L6-v2"
+        folder.mkdir()
+        _link_or_copy(_CACHED_ARCHIVE, folder / "onnx.tar.gz")  # verified by its hash: nothing is downloaded
+        monkeypatch.setattr(ONNXMiniLM_L6_V2, "DOWNLOAD_PATH", folder)
+        monkeypatch.setattr(vector_store, "_embedding_models", {})
+        return folder
+
+    @pytest.fixture
+    def ready_dir(self, model_dir, _unpacked_model):
+        """The same, already unpacked -- linked from the run's one unpack. A test that changes a file replaces
+        it rather than writing into it, or it would change the run's copy for every other test."""
+        (model_dir / "onnx").mkdir()
+        for file in _unpacked_model.iterdir():
+            _link_or_copy(file, model_dir / "onnx" / file.name)
+        return model_dir
+
+    @staticmethod
+    def offline(monkeypatch):
+        import httpx
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+
+        def refuse(self, url, fname, chunk_size=1024):
+            raise httpx.ConnectError("[WinError 10061] connection refused")
+        monkeypatch.setattr(ONNXMiniLM_L6_V2, "_download", refuse)
+
+    def test_a_model_cut_short_is_unpacked_again_from_the_archive(self, ready_dir, monkeypatch):
+        from agent_system.utils.vector_store import _OnnxMiniLM
+        self.offline(monkeypatch)  # from the archive, not a download
+        model = ready_dir / "onnx" / "model.onnx"
+        short = model.read_bytes()[:1000]
+        model.unlink()  # the link goes, the run's copy stays whole
+        model.write_bytes(short)  # an unpack that was interrupted
+
+        vector = _OnnxMiniLM().encode("a text")
+
+        assert len(vector) == 384 and model.stat().st_size > 1_000_000
+
+    def test_eight_first_uses_at_once_all_succeed(self, model_dir):
+        from concurrent.futures import ThreadPoolExecutor
+        from agent_system.utils.vector_store import _OnnxMiniLM
+        assert not (model_dir / "onnx").exists(), "fixture: the model must not be unpacked yet"
+
+        with ThreadPoolExecutor(8) as pool:
+            outcomes = list(pool.map(lambda _: _try(lambda: len(_OnnxMiniLM().encode("a text"))), range(8)))
+
+        assert outcomes == [384] * 8, outcomes
+
+    @pytest.mark.timeout(300)
+    def test_processes_started_one_after_another_all_succeed(self, model_dir):
+        """The file lock covers other processes. Started staggered, while the first still unpacks: measured
+        28.09.2026, 1 of 8 without the lock, 8 of 8 with it."""
+        import time
+        assert not (model_dir / "onnx").exists(), "fixture: the model must not be unpacked yet"
+        script = "\n".join([
+            "import sys",
+            "from pathlib import Path",
+            "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2",
+            "ONNXMiniLM_L6_V2.DOWNLOAD_PATH = Path(sys.argv[1])",
+            "import agent_system.utils.vector_store as vector_store",
+            "print(vector_store.__file__)",
+            "print(len(vector_store._OnnxMiniLM().encode('a text')))",
+        ])
+        runs = []
+        for _ in range(8):
+            runs.append(_child(script, model_dir, timeout=None, popen=True))
+            time.sleep(0.25)
+        outcomes = []
+        for run in runs:
+            out, err = run.communicate(timeout=240)
+            lines = out.strip().splitlines()
+            if run.returncode == 0 and Path(lines[-2]) == _UNDER_TEST:
+                outcomes.append(lines[-1])
+            else:
+                outcomes.append(f"failed: {lines[-2:] if lines else ''} {err.strip()[-160:]}")
+
+        assert outcomes == ["384"] * 8, outcomes
+
+    def test_a_lock_file_it_cannot_open_is_not_waited_for(self, ready_dir, monkeypatch):
+        """On Windows filelock takes "access denied" for a lock another process holds, and waits out its timeout
+        (measured 28.09.2026 on a folder without write access). The stand-in waits as it does; a folder where the
+        lock file belongs is a file this process cannot open. The readying must not sit out the wait."""
+        import time
+        from agent_system.utils import vector_store
+
+        class WaitsLikeFilelockOnAccessDenied:
+            def __init__(self, path):
+                pass
+
+            def acquire(self, timeout):
+                time.sleep(timeout)
+                raise TimeoutError("could not acquire the lock")
+
+            def release(self):
+                pass
+        monkeypatch.setattr(vector_store, "FileLock", WaitsLikeFilelockOnAccessDenied)
+        monkeypatch.setattr(vector_store, "_MODEL_LOCK_TIMEOUT", 8.0)
+        (ready_dir.parent / f"{ready_dir.name}.lock").mkdir()
+
+        started = time.monotonic()
+        vector = vector_store._OnnxMiniLM().encode("a text")
+
+        assert len(vector) == 384 and time.monotonic() - started < 6, time.monotonic() - started
+
+    @pytest.mark.parametrize("failure, level", [("timed out", "WARNING"), ("no flock", "DEBUG"), ("read-only", "DEBUG")])
+    def test_without_the_lock_the_readying_still_runs_and_says_why(self, tmp_path, monkeypatch, caplog, failure, level):
+        """Ten minutes waited is the race the lock is there for: said above DEBUG. A file system without flock
+        raises NotImplementedError, no OSError. And an error of the readying is its own, not the lock's."""
+        import filelock
+        from agent_system.utils import vector_store
+        error = {"timed out": filelock.Timeout(str(tmp_path / "model.lock")),
+                 "no flock": NotImplementedError("flock: function not implemented"),
+                 "read-only": OSError(30, "Read-only file system")}[failure]
+
+        class Refuses:
+            def __init__(self, path):
+                pass
+
+            def acquire(self, timeout):
+                raise error
+
+            def release(self):
+                raise AssertionError("released a lock it never held")
+        monkeypatch.setattr(vector_store, "FileLock", Refuses)
+        caplog.set_level("DEBUG", logger=vector_store.logger.name)
+
+        with pytest.raises(ValueError) as raised:
+            with vector_store._cache_lock(tmp_path / "model"):
+                raise ValueError("the model did not open")
+
+        assert raised.value.__context__ is None, raised.value.__context__
+        said = [record.levelname for record in caplog.records if record.name == vector_store.logger.name]
+        assert said == [level], said
+
+    def test_a_soft_lock_is_taken_not_waited_for(self, tmp_path, monkeypatch, caplog):
+        """Without fcntl filelock falls back to a soft lock, whose file's existence is the lock: opened in advance,
+        as Windows needs, it was never to be had, and every first use waited the whole timeout."""
+        import filelock
+        from agent_system.utils import vector_store
+        monkeypatch.setattr(vector_store, "FileLock", filelock.SoftFileLock)
+        monkeypatch.setattr(vector_store, "_MODEL_LOCK_TIMEOUT", 2.0)
+        lock_file = tmp_path / "model.lock"
+
+        with vector_store._cache_lock(tmp_path / "model"):
+            held = lock_file.exists()
+
+        assert held and not lock_file.exists(), "the soft lock was not taken, or not given back"
+        assert not [record for record in caplog.records if record.levelname == "WARNING"], caplog.text
+
+    def test_without_the_archive_a_model_that_does_not_open_is_not_deleted(self, ready_dir, monkeypatch):
+        """Unpacking again needs the archive; without it the folder is all there is, whatever failed."""
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        from agent_system.utils import vector_store
+        (ready_dir / "onnx.tar.gz").unlink()  # provisioned as a folder only
+
+        def failing(self, input):
+            raise RuntimeError("the execution provider failed")
+        monkeypatch.setattr(ONNXMiniLM_L6_V2, "__call__", failing)
+
+        with pytest.raises(RuntimeError, match="could not be readied"):
+            vector_store._OnnxMiniLM()
+
+        assert (ready_dir / "onnx" / "model.onnx").is_file()
+
+    def test_one_onnx_run_takes_at_most_32_texts_padded_to_the_longest(self, ready_dir):
+        """At 128 texts at once onnxruntime's arena grew the process by 0.9-1.4 GB for good, and it ran slower;
+        padded to 256 tokens like chromadb's call, a short text cost 7.5 times as long."""
+        import numpy as np
+        from agent_system.utils import vector_store
+        model = vector_store._OnnxMiniLM()
+        session = model._function.model
+        widths, rows = [], []
+
+        class Recording:
+            def run(self, names, feed):
+                rows.append(len(feed["input_ids"]))
+                widths.append(feed["input_ids"].shape[1])
+                return session.run(names, feed)
+        long = " ".join(f"word{index}" for index in range(150))
+        # short and long interleaved: sorted by length, the short ones share batches of their own
+        texts = [f"text number {index}" if index % 2 else f"{long} {index}" for index in range(100)]
+        alone = np.array([model.encode(text) for text in texts[:5]])
+        model._function.__dict__["model"] = Recording()  # chromadb's cached_property, shadowed
+
+        vectors = model.encode(texts, batch_size=128)
+
+        assert max(rows) <= 32 and sum(rows) == 100, rows
+        assert min(widths) < 16, widths  # "text number 99" is a handful of tokens, not 256
+        np.testing.assert_allclose(vectors[:5], alone, atol=1e-5)
+        assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-4)  # no row left unwritten
+
+    def test_first_uses_at_once_load_one_model(self, ready_dir):
+        from concurrent.futures import ThreadPoolExecutor
+        from agent_system.utils import vector_store
+
+        with ThreadPoolExecutor(8) as pool:
+            models = list(pool.map(lambda _: vector_store.get_embedding_model(), range(8)))
+
+        assert len({id(model) for model in models}) == 1
+
+    def test_a_chroma_store_embeds_through_the_same_model(self, ready_dir, monkeypatch, tmp_path):
+        """Documents and queries without vectors went through the collection's own function: unlocked on first
+        use, padded to 256 tokens. They go through compute_embeddings now -- the same vectors."""
+        import numpy as np
+        from agent_system.utils import vector_store
+        if vector_store.get_vector_backend() != "chromadb":
+            pytest.skip("the chromadb backend is not installed")
+        calls = []
+        real_many, real_one = vector_store.compute_embeddings, vector_store.compute_embedding
+        monkeypatch.setattr(vector_store, "compute_embeddings", lambda texts, **kw: calls.append(len(texts)) or real_many(texts, **kw))
+        monkeypatch.setattr(vector_store, "compute_embedding", lambda text: calls.append(1) or real_one(text))
+        store = VectorStore(persist_path=tmp_path / "store")
+        try:
+            store.add("docs", ids=["a", "b"], documents=["the config loader", "a German scene in the village"])
+            stored = store._get_chromadb_collection("docs").get(ids=["a"], include=["embeddings"])["embeddings"][0]
+            hits = store.query("docs", query_text="how the config is loaded", n_results=1)
+        finally:
+            store.close()
+
+        assert calls == [2, 1], calls
+        np.testing.assert_allclose(stored, real_one("the config loader"), atol=1e-5)
+        assert hits["ids"][0][0] == "a", hits
+
+    def test_offline_the_error_names_the_model_where_it_goes_and_whence(self, tmp_path, monkeypatch):
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        from agent_system.utils import vector_store
+        folder = tmp_path / "all-MiniLM-L6-v2"
+        monkeypatch.setattr(ONNXMiniLM_L6_V2, "DOWNLOAD_PATH", folder)
+        self.offline(monkeypatch)
+
+        with pytest.raises(RuntimeError) as raised:
+            vector_store._OnnxMiniLM()
+
+        message = str(raised.value)
+        assert "all-MiniLM-L6-v2" in message and str(folder) in message and ONNXMiniLM_L6_V2.MODEL_DOWNLOAD_URL in message
+
+
+def _try(call):
+    try:
+        return call()
+    except Exception as error:  # the outcome of each thread, failures included
+        return f"{type(error).__name__}: {error}"[:120]
