@@ -159,6 +159,17 @@ plugins:
             project_instructions.inject_project_instructions:
               enabled: true
               root: "."
+            # Checkpoints for files: /undo files and /rewind put back what
+            # coder_fs wrote. Both switches -- the second records what a call
+            # left, which is how a file changed by hand since is told apart.
+            # coder_shell's changes are not recorded, only named. The three
+            # sub-agents switch them on too: the tester's shell calls are named
+            # in the coder's turn, and a spawn of an agent without them would
+            # be named as one whose changes are not recorded.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

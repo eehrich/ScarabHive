@@ -47,6 +47,13 @@ plugins:
             project_instructions.inject_project_instructions:
               enabled: true
               root: "."
+            # Its shell calls are named in the checkpoint of the coder's turn
+            # that started it (file_checkpoints) -- what they changed is not
+            # recorded, but a rewind says they ran.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

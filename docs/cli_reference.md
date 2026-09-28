@@ -192,8 +192,9 @@ Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
 | `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
 | `/last` | The last turn's tool calls and results in full, formatted |
 | `/copy` | Die letzte Antwort in die Zwischenablage — den **Text**, wie das Modell ihn geschrieben hat, nicht das, was das Terminal daraus gemacht hat (die Live-Region bricht auf die Fensterbreite um und kürzt Tool-Zeilen). Unter Windows über `clip` in UTF-16LE, sonst `wl-copy`, `xclip`, `xsel` in dieser Reihenfolge; eines, das installiert ist und trotzdem scheitert, hält das nächste nicht auf |
-| `/undo` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben |
-| `/retry` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt |
+| `/undo [files]` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben. Die **Dateien**, die der Turn geändert hat, bleiben dabei, wie sie sind; `/undo files` legt sie **vorher** zurück (Plugin `file_checkpoints`, siehe unten) und nimmt den Turn erst danach heraus. Wurde eine davon seither außerhalb des Agenten geändert, wird nichts angefasst und der Turn bleibt stehen — `/undo files overwrite` legt sie trotzdem zurück |
+| `/retry [files]` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt. `files` wie bei `/undo` |
+| `/rewind [n]` | Nur die Dateien, das Gespräch bleibt: ohne Argument die **Checkpoints** dieser Session (einer pro Turn, der über die Datei-Tools etwas geändert hat, mit den Dateien; die Nummer ist die feste Folgenummer des Eintrags, sie verschiebt sich nicht, wenn alte Checkpoints wegfallen, und hat deshalb Lücken), `/rewind <n>` legt jede Datei, die der Agent seit Checkpoint n geändert hat, so zurück, wie sie davor war — Angelegtes wird gelöscht, Gelöschtes und Verschobenes kommt wieder. Ein Turn, den `/undo` ohne `files` herausgenommen hat, steht als „dropped turn" zwischen seinen Nachbarn und wird mit einem Checkpoint davor zurückgenommen. `/rewind <n> overwrite` auch für Dateien, die seither außerhalb des Agenten geändert wurden. Shell-Befehle werden **nicht** aufgezeichnet, nur mit Anzahl genannt |
 | `/export [path]` | Das Gespräch als Markdown schreiben: Fragen, Antworten, die Tool-Aufrufe und ihre Ergebnisse gekürzt (`/last` zeigt sie ganz). Ohne Pfad `chat-<session>.md` im aktuellen Verzeichnis; eine vorhandene Datei wird nie überschrieben |
 | `/edit [text]` | Die nächste Nachricht in `$VISUAL`/`$EDITOR` schreiben (ohne beides: `notepad` bzw. `vi`), das Argument steht schon drin. Für das, wofür eine Prompt-Zeile die falsche Form hat — eine Spezifikation, ein eingefügter Diff mit einem Absatz drumherum. Eine leere Datei schickt nichts, und ein Editor, der mit einem Fehler endet, auch nicht: wer abbricht, will den Turn nicht bezahlen |
 | `/help`, `/h`, `/?` | List the commands |
@@ -221,9 +222,9 @@ reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
 
 **In the browser** the same commands run, from the same catalogue and the same
 parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
-`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/export` und `/context`
+`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/rewind`, `/export` und `/context`
 answer from the API (`/agents/<name>/tools`, `/api/sessions`, `/chat/vars`,
-`/chat/undo`, `/chat/transcript`, `/chat/context`) instead of from the local
+`/chat/undo`, `/chat/checkpoints`, `/chat/rewind`, `/chat/transcript`, `/chat/context`) instead of from the local
 agent. `/vars`
 sends the line as typed, so the grammar is read by the same parser the
 terminal uses; it needs a session, which in the browser exists from the first
@@ -249,6 +250,18 @@ Server den **Datensatz** kürzen (`POST /chat/undo`) und lädt ihn neu — er ze
 ja den Datensatz. Eine Session, in der gerade ein Lauf arbeitet, wird dabei
 abgelehnt (409), nicht unter ihm weggeschnitten — im Browser `/undo force`,
 für den Fall, dass das Schloss die Leiche eines abgestürzten Prozesses ist.
+
+**Dateien zurücklegen** (`/undo files`, `/rewind`) kann nur, wer sie vorher
+aufgezeichnet hat: das Plugin `file_checkpoints` merkt sich pro Turn, wie jede
+Datei aussah, bevor der Agent sie über `file_ops` oder `media_ops` geändert hat
+— für Agenten, die seine beiden Hooks einschalten (der Coder-Harness tut es).
+Die Wörter liest `chat_commands.parse_undo` für beide Oberflächen, die Zeilen
+schreibt das Plugin für beide. Der Browser geht über `POST /chat/undo` mit
+`"files": true`, `GET /chat/checkpoints` und `POST /chat/rewind`; eine Ablehnung
+(Dateien außerhalb des Agenten geändert) ist ein 409 mit der Liste, und
+`/undo files` lässt den Turn dann stehen. Ohne das Plugin sagen beide
+Oberflächen, dass Datei-Checkpoints aus sind. Einzelheiten:
+`src/plugins/file_checkpoints/README.md`.
 
 `/title` und `/agent` gehen im Browser durch die Widgets, die es schon hat —
 die Session-Liste und den Agenten-Selektor —, damit das Kommando und der

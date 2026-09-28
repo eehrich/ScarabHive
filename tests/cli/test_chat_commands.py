@@ -20,6 +20,7 @@ from agent_system.chat_commands import (
     group_tools_by_server,
     needs_escape,
     parse_chat_command,
+    parse_undo,
     resolve,
     suggest_command,
 )
@@ -405,6 +406,43 @@ class TestTheEscapeIsTheInverseOfTheUnescape:
         # head like "/3d", and the extra slash would go through.
         assert needs_escape(stored) is False
         assert parse_chat_command(stored) == (None, stored)
+
+
+class TestUndoWords:
+    """/undo, /retry and /rewind read their words here -- the web chat mirrors
+    it (parseUndoWords in chat_module.js)."""
+
+    @pytest.mark.parametrize("payload,files,overwrite,force", [
+        ("", False, False, False),
+        ("files", True, False, False),
+        ("--files overwrite", True, True, False),
+        ("FILES --overwrite", True, True, False),
+        ("force", False, False, True),
+    ])
+    def test_undo_words(self, payload, files, overwrite, force):
+        request = parse_undo(payload)
+        assert (request.files, request.overwrite, request.force, request.errors) == (files, overwrite, force, ())
+
+    @pytest.mark.parametrize("payload", ["fils", "overwrite", "files 2"])
+    def test_what_undo_does_not_take(self, payload):
+        assert parse_undo(payload).errors
+
+    def test_rewind_takes_a_number_and_overwrite(self):
+        assert parse_undo("3 overwrite", rewind=True).checkpoint == 3
+        assert parse_undo("3 overwrite", rewind=True).overwrite is True
+        assert parse_undo("", rewind=True).checkpoint is None
+
+    @pytest.mark.parametrize("payload", ["overwrite", "files", "2 3", "last",
+                                         # "-1" is "the last one" elsewhere; read as 1 it rewound everything
+                                         "-1", "--2",
+                                         # digits str.isdigit() takes and int() does not
+                                         "\u00b2", "\u0663"])
+    def test_what_rewind_does_not_take(self, payload):
+        assert parse_undo(payload, rewind=True).errors
+
+    def test_force_is_the_browsers_word_on_rewind_too(self):
+        request = parse_undo("2 force", rewind=True)
+        assert (request.checkpoint, request.force, request.errors) == (2, True, ())
 
 
 class TestToolGrouping:

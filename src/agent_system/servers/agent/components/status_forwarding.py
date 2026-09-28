@@ -97,6 +97,13 @@ def run_is_live(request_id: str) -> bool:
                for f in list(_live_forwarders))
 
 
+def run_streams(request_id: str) -> bool:
+    """Whether the run ``request_id`` ITSELF streams now -- unlike run_is_live,
+    not counting runs whose ids merely extend it: a client may name its next
+    run "job_002" after "job", and that one streaming says nothing about "job"."""
+    return bool(request_id) and any(f.request_id == request_id for f in list(_live_forwarders))
+
+
 def _is_above(forwarder: "StatusEventForwarder", request_id: str) -> bool:
     """Whether `request_id` reads as a run started under the one `forwarder` streams."""
     return bool(forwarder.request_id) and request_id.startswith(f"{forwarder.request_id}_")
