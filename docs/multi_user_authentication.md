@@ -112,7 +112,7 @@ Edit `config/config.yaml`:
 ```yaml
 auth:
   enabled: true  # Set to true to enable multi-user authentication
-  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"
+  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"  # empty or missing: the API refuses to start
   algorithm: "HS256"
   access_token_expire_minutes: 30
   database_path: "data/users.db"

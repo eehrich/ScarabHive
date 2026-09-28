@@ -6,6 +6,7 @@ Provides password hashing, JWT token management, and API key handling.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import os
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,8 @@ import bcrypt
 from jose import JWTError, jwt
 
 from agent_system.auth.models import PASSWORD_MAX_BYTES, TokenData, UserRole
+
+logger = logging.getLogger(__name__)
 
 
 # JWT settings (will be overridden by config)
@@ -161,6 +164,13 @@ def set_jwt_config(secret_key: str, algorithm: str = "HS256", expire_minutes: in
         refresh_expire_days: Refresh token expiration time in days
     """
     global SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS, AUTH_ENFORCED
+    from agent_system.config.models import AuthConfig
+    # jose signs with an empty key as with any other, and the model's default stands in the repository: with either,
+    # everyone could sign a login. An unset ${VAR} ends up empty, an auth section without the line at the default.
+    if not (secret_key or "").strip() or secret_key == AuthConfig.model_fields["secret_key"].default:
+        problem = "auth.secret_key is empty (an unset ${VAR}?) or not set at all: refusing to sign logins with it"
+        logger.critical("Refusing to start: %s", problem)  # the API log too, not only the console of the start
+        raise ValueError(problem)
     SECRET_KEY = secret_key
     ALGORITHM = algorithm
     ACCESS_TOKEN_EXPIRE_MINUTES = expire_minutes
