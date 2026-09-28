@@ -159,6 +159,9 @@ auth:
     default_policy: "require_auth"  # Default: require authentication
     audit_enabled: true             # Log all endpoint access to security.log
     rules:
+      - pattern: "POST /plugins/forge/webhook"
+        policy: "allow_anonymous"
+        description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
       # Public API endpoints - no auth required
       - pattern: "GET /agents"
         policy: "allow_anonymous"
@@ -361,6 +364,9 @@ auth:
     
     # Endpoint pattern rules (highest priority, processed in order)
     endpoint_rules:
+      - pattern: "/plugins/forge/webhook"
+        policy: "allow_anonymous"
+        description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
       # Block all plugin admin endpoints for non-admins
       - pattern: "/plugins/*/admin/*"
         policy: "require_auth"
