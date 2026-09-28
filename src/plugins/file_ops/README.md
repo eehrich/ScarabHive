@@ -437,6 +437,9 @@ a median of 59 tokens, so what the index holds is what the model read.
 - The first search never waits for the index. While the background build is
   running the answer is `error_type: IndexNotReady` and names `grep_search` —
   an empty result would read as a verdict about the code
+- A build that fails (no embedding model, say) is retried every minute; until
+  one succeeds, `IndexNotReady` names the last failure's cause instead of
+  promising the index "in a minute"
 
 **Performance** (measured on this repository, the coder instance's four roots):
 - 3.295 indexable files → 51.730 documents, 288 MB of store

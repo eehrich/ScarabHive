@@ -208,6 +208,33 @@ async def test_an_index_that_is_still_building_says_so(tmp_path, tree):
     await server.search_engine.stop()
 
 
+async def test_a_build_that_keeps_failing_names_its_cause(tmp_path, tree, monkeypatch):
+    """Without an embedding model every pass of the background indexer fails.
+    The answer used to stay "being built, try again in a minute" for good --
+    a promise nothing kept, and the cause stood only in the log."""
+    from plugins.file_ops import search
+
+    def no_model(texts):
+        raise RuntimeError("embedding model not available")
+
+    monkeypatch.setattr(search, "compute_embeddings", no_model)
+    server = build_server(tmp_path, tree, index_on_startup=True)
+    engine = server.search_engine
+
+    first = await server.semantic_search({"query": "end a login session"})
+    for _ in range(200):
+        if engine._index_error:
+            break
+        await asyncio.sleep(0.05)
+    result = await server.semantic_search({"query": "end a login session"})
+
+    assert first["error_type"] == "IndexNotReady"
+    assert engine._index_error, "the background pass never failed -- this proves nothing"
+    assert result["status"] == "error" and result["error_type"] == "IndexNotReady"
+    assert "embedding model not available" in result["error"]
+    await engine.stop()
+
+
 async def test_a_store_with_documents_is_not_the_same_as_a_finished_index(
     tmp_path, tree
 ):

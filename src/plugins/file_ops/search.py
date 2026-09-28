@@ -89,6 +89,11 @@ class FileSearchEngine:
         #: tree is covered. NOT `bool(file_mtimes)` either -- a tree with
         #: nothing indexable would then read as "still building" forever.
         self._index_built = False
+        #: Why the background indexer's last pass failed. Read only while no
+        #: index is built: a build that failed every time (no embedding model,
+        #: say) answered "being built, try again in a minute" forever, and the
+        #: reason stood only in the log.
+        self._index_error: Optional[str] = None
         #: The freshness pass a search kicks off, so shutdown can cancel it
         self._fresh_task: Optional[asyncio.Task] = None
         # Per instance, because two file_ops instances are two different trees:
@@ -193,6 +198,7 @@ class FileSearchEngine:
 
             except Exception as e:
                 logger.error(f"Indexing error: {e}", exc_info=True)
+                self._index_error = f"{type(e).__name__}: {e}"[:300]
                 await asyncio.sleep(60)  # Retry after 1 minute
 
     async def rebuild_index(self, status_callback=None, incremental=True):
@@ -885,7 +891,13 @@ class FileSearchEngine:
                 ready = bool(await asyncio.to_thread(
                     self._vector_store.count, self._collection_name))
             if not ready:
-                if builds and self.config.get("index_on_startup", True):
+                if builds and self._index_error:
+                    # "Try again in a minute" is a promise only a build that
+                    # is still on its way keeps.
+                    detail = (f"Building the semantic index failed: {self._index_error}. "
+                              "It is retried every minute, but it will not finish "
+                              "while that cause stays. Use grep_search.")
+                elif builds and self.config.get("index_on_startup", True):
                     detail = ("The semantic index is being built in the background. "
                               "Use grep_search now and try again in a minute.")
                 elif builds:
