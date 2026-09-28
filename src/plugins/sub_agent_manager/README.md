@@ -85,10 +85,12 @@ Two things make that hold rather than nearly hold:
   would start a second woken run, a whole turn on the user's money.
 * **The promise is checked before the caller sleeps on it.** `create` asks what
   can be answered up front — `session_presence` off, no session behind the call,
-  a wake chain already at `max_wake_depth`, and the caller being a sub-agent's
-  own session, which is never woken (the run that spawned it takes its answer)
-  — and says so in its answer, with the reason. The core leaves the last one out
-  of `wake_blocked`, since it means reading the session file; a `create` has
+  a wake chain already at `max_wake_depth`, the caller being a sub-agent's
+  own session, which is never woken (the run that spawned it takes its answer),
+  and a throwaway session (`ephemeral-…`: a stateless API call, a headless run),
+  which nobody continues, so a woken run would answer nobody (its jobs ring
+  nobody either) — and says so in its answer, with the reason. The core leaves
+  the sub-agent case out of `wake_blocked`, since it means reading the session file; a `create` has
   just read and written that very session, so the manager asks it. Told it may
   sleep, a sub-agent that started a job ended its turn over it: its caller got
   "I am waiting" for an answer, and the job's result reached nobody. "Armed" is

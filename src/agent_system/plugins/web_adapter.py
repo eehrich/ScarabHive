@@ -332,14 +332,24 @@ class PluginWebRegistry:
             
             # Bearer header or access_token cookie, resolved by the core auth
             # dependency (access tokens only, bound to the account's id).
-            # No API key here: this layer never accepted one.
+            # An API key only for a plugin that declares ``accept_api_keys`` in
+            # its security config (openai_api: OpenAI clients send the key as the
+            # Bearer value); every other plugin route stays tokens-only.
             user = None
             user_id = None
             try:
                 from agent_system.auth.database import get_db
                 from agent_system.auth.dependencies import bearer_scheme, get_optional_user
+                from agent_system.auth.security import bearer_api_key
 
-                found = await get_optional_user(request, await bearer_scheme(request), None, get_db())
+                credentials = await bearer_scheme(request)
+                takes_keys = bool((self.security_configs.get(plugin_name) or {}).get("accept_api_keys"))
+                if not takes_keys and credentials is not None and bearer_api_key(credentials.credentials):
+                    found = None
+                else:
+                    found = await get_optional_user(request, credentials,
+                                                    request.headers.get("X-API-Key") if takes_keys else None,
+                                                    get_db())
                 if found and found.is_active:
                     user = found
                     user_id = user.username

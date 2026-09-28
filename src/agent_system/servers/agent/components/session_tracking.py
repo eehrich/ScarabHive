@@ -105,6 +105,9 @@ class SessionTracker:
         self._started: set[str] = set()
         # Sessions that held messages in this process: only such a one is empty on purpose
         self._held: set[str] = set()
+        # When a request last opened a session for a run of its own (mark_opened): a serial number
+        self._openings: Dict[str, int] = {}
+        self._opening_serial = 0
 
         # Lock for concurrent access (appends/drains/lock bookkeeping)
         self._lock = asyncio.Lock()
@@ -507,6 +510,20 @@ class SessionTracker:
         self._compacted_messages.pop(session_id, None)
         self._started.discard(session_id)
         self._held.discard(session_id)
+        self._openings.pop(session_id, None)
+
+    def mark_opened(self, session_id: str) -> None:
+        """A request opened the session for a run of its own (SessionService.open_for_run) -- also one that left
+        the tracker as it was, because a run of this agent had it: that request runs on what the tracker holds
+        once its run gets the session lock, so nobody may drop the session from here meanwhile (last_opened)."""
+        self._opening_serial += 1
+        self._openings[session_id] = self._opening_serial
+
+    def last_opened(self, session_id: str) -> Optional[int]:
+        """The serial number of the session's last opening (mark_opened), None when it was not opened since it
+        came into the tracker. Another number than the one a request saw after its own opening: somebody opened
+        it since."""
+        return self._openings.get(session_id)
 
     def start_session(self, session_id: str) -> bool:
         """
@@ -643,6 +660,7 @@ class SessionTracker:
         self._session_template_vars.pop(session_id, None)
         self._started.discard(session_id)
         self._held.discard(session_id)
+        self._openings.pop(session_id, None)
         
         # Clear session locks to prevent memory leak
         if session_id in self._session_lock_owners:
@@ -675,6 +693,7 @@ class SessionTracker:
         self._session_template_vars.clear()
         self._started.clear()
         self._held.clear()
+        self._openings.clear()
         self._session_locks.clear()
         self._session_lock_owners.clear()
         self._session_lock_users.clear()

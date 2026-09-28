@@ -87,3 +87,65 @@ async def test_another_users_session_is_refused(setup):
     with pytest.raises(SessionPermissionError):
         await service.open_for_run(agent, "mallory", "s-hers", "turbo")
     assert agent._session_tracker.get_session_messages("s-hers") == []
+
+
+async def _run_has(agent, session_id, request_id="run_1") -> dict:
+    """A run of this agent has the session: its lock, and its state in the tracker. Returns the run's metadata."""
+    tracker = agent._session_tracker
+    tracker.set_session_messages(session_id, [ChatMessage(role="user", content="earlier"),
+                                              ChatMessage(role="user", content="the run's unsaved turn")])
+    tracker.set_session_template_vars(session_id, {"workflow_phase": "writing"})
+    metadata = {"user_id": "alice", "agent_name": "probe", "llm_profile": "the run's"}
+    tracker.set_session_metadata(session_id, metadata)
+    assert await tracker.acquire_session_lock(session_id, request_id), "fixture: the lock was not taken"
+    return metadata
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["stored", "not saved yet"])
+async def test_a_session_a_run_of_this_agent_holds_is_left_to_that_run(setup, stored):
+    """A second opener while a run of this agent has the session (a second web tab, a web chat beside an API
+    turn): its own run is refused at the session lock -- but opening it read the session back from disk under the
+    running one, which lost its turn so far, and set new metadata naming the opener as the run's user."""
+    agent, manager, service = setup
+    if stored:
+        await _stored(manager, "alice", "s-run", [{"role": "user", "content": "earlier"}],
+                      {"workflow_phase": "drafting"})
+    metadata = await _run_has(agent, "s-run")
+    tracker = agent._session_tracker
+
+    existed = await service.open_for_run(agent, "alice", "s-run", "turbo", in_use=True)
+
+    assert existed is True, "a session a run has is new to the opener -- /events then set new metadata per event"
+    assert [m.content for m in tracker.get_session_messages("s-run")] == ["earlier", "the run's unsaved turn"]
+    assert tracker.get_session_template_vars("s-run") == {"workflow_phase": "writing"}
+    assert tracker.get_session_metadata("s-run") is metadata, "the opener replaced the run's metadata"
+
+
+async def test_another_user_is_refused_a_session_a_run_of_this_agent_holds(setup):
+    agent, manager, service = setup
+    await _stored(manager, "alice", "s-run", [{"role": "user", "content": "earlier"}], {})
+    metadata = await _run_has(agent, "s-run")
+
+    with pytest.raises(SessionPermissionError):
+        await service.open_for_run(agent, "mallory", "s-run", "turbo", in_use=True)
+    assert agent._session_tracker.get_session_metadata("s-run") is metadata
+
+
+@pytest.mark.parametrize("in_use, locked", [(True, False), (False, True)],
+                         ids=["in use elsewhere", "locked by the opener"])
+async def test_a_session_no_run_of_this_agent_holds_for_another_is_read_as_usual(setup, in_use, locked):
+    """In use without this agent's lock -- a run on another agent, or a job whose run has let go of the lock,
+    which it does after its last save -- this agent's tracker holds no run's state the disk has not. And the lock without in_use is the opener's own (an API turn takes
+    it before it opens the session). Both read the session from disk as usual."""
+    agent, manager, service = setup
+    await _stored(manager, "alice", "s-run", [{"role": "user", "content": "on disk"}], {"workflow_phase": "drafting"})
+    tracker = agent._session_tracker
+    tracker.set_session_messages("s-run", [ChatMessage(role="user", content="stale copy")])
+    if locked:
+        assert await tracker.acquire_session_lock("s-run", "the_opener"), "fixture: the lock was not taken"
+
+    existed = await service.open_for_run(agent, "alice", "s-run", "turbo", in_use=in_use)
+
+    assert existed is True
+    assert [m.content for m in tracker.get_session_messages("s-run")] == ["on disk"]
+    assert tracker.get_session_metadata("s-run")["llm_profile"] == "turbo"

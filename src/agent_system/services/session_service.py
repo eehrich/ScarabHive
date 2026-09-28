@@ -93,6 +93,20 @@ def _add_estimated_tokens(messages_dicts: List[Dict[str, Any]]) -> None:
             msg_dict["estimated_tokens"] = _estimate_message_tokens(msg_dict)
 
 
+#: A session under this prefix lives for one call, and SessionService never
+#: writes it: a stateless run (``collect_final_result`` without a session id,
+#: the stateless calls of the openai_api plugin) promises to leave nothing
+#: behind, and the agent saves every session it runs at the end of each turn and
+#: by checkpoint. What does reach the disk: the parent record the sub-agent
+#: manager creates through SessionManager when such a run starts sub-agents
+#: (``Coordinator Session``), with their sessions below it.
+EPHEMERAL_SESSION_PREFIX = "ephemeral-"
+
+
+def is_ephemeral_session(session_id: Optional[str]) -> bool:
+    return bool(session_id) and str(session_id).startswith(EPHEMERAL_SESSION_PREFIX)
+
+
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
@@ -215,12 +229,32 @@ class SessionService:
         unsaved state and stays as it is. Either way the metadata names this
         run: user, agent, *llm_profile*.
 
+        In use by a run of THIS agent -- its session lock held -- nothing of the
+        session is touched: read back from disk, that run's turn so far was
+        gone from under it (and a web tab's second message reset the first
+        one's run), and new metadata named the opener as the run's user. The
+        opener's run gets the session once that run lets go of the lock, and
+        runs on what the tracker holds then; asked here is only whose the
+        session is (on disk). It exists: that run has it, saved or not. In use
+        elsewhere -- a run on another agent, or a job whose run has let go of
+        the lock, which it does after its last save -- this agent's tracker
+        holds no run's state, and the session is read as usual.
+
+        Either way the opening is marked in the tracker (mark_opened): whoever
+        would drop the session from it sees that a request is about to run on it.
+
         One step for /run, /events, agent-cli and agent-run. Written out per
         entry point, a new session got the agent's template_vars in three of
         five. Raises SessionPermissionError for another user's session.
         """
-        exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
         tracker = agent._session_tracker
+        if in_use and tracker.check_session_locked(session_id)[0]:
+            owner = await self.session_manager._find_session_owner_async(session_id)
+            if owner is not None and owner != user_id:
+                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+            tracker.mark_opened(session_id)
+            return True
+        exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
         if not exists and not in_use:
             # A title the first run was given and never wrote (it saved nothing):
             # this run's save writes it -- agent-cli keeps its /title until one
@@ -235,6 +269,7 @@ class SessionService:
                 tracker.set_session_template_vars(session_id, dict(own_vars))
         tracker.set_session_metadata(session_id, {
             "user_id": user_id, "agent_name": agent.name, "llm_profile": llm_profile})
+        tracker.mark_opened(session_id)
         return exists
 
     def save_lock(self, session_id: str) -> asyncio.Lock:
@@ -253,7 +288,9 @@ class SessionService:
 
     async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
                            was_new_session: bool, title: Optional[str] = None) -> bool:
-        """_save_session, one write of the session at a time (save_lock)."""
+        """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written."""
+        if is_ephemeral_session(session_id):
+            return False
         async with self.save_lock(session_id):
             return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
                                             was_new_session, title)
@@ -462,7 +499,10 @@ class SessionService:
     # ------------------------------------------------------------------
 
     async def checkpoint_session(self, agent, user_id: str, session_id: str) -> bool:
-        """_checkpoint_session, in turn with the session's other writes (save_lock)."""
+        """_checkpoint_session, in turn with the session's other writes (save_lock). An ephemeral session is not
+        written."""
+        if is_ephemeral_session(session_id):
+            return False
         async with self.save_lock(session_id):
             return await self._checkpoint_session(agent, user_id, session_id)
 

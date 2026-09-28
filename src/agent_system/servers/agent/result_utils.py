@@ -61,7 +61,8 @@ async def collect_final_result(
         request_id: Optional request ID for correlation
         session_id: Optional session ID for conversation history. Omit it for a
             STATELESS call -- an ephemeral id is generated so the run starts
-            with an empty history and leaves nothing behind.
+            with an empty history and leaves nothing behind (sub-agents it
+            starts excepted, see EPHEMERAL_SESSION_PREFIX).
         llm_override: Optional LLM client to use instead of agent's default
         llm_profile_info_override: Optional profile info string for status display
         on_event: Called with every event as it passes, before it is collected --
@@ -82,7 +83,9 @@ async def collect_final_result(
     # shared history", so give each such call its own throwaway session.
     ephemeral_session = session_id is None
     if ephemeral_session:
-        session_id = f"ephemeral-{uuid.uuid4()}"
+        from agent_system.services.session_service import EPHEMERAL_SESSION_PREFIX
+
+        session_id = f"{EPHEMERAL_SESSION_PREFIX}{uuid.uuid4()}"
 
     # Extract task text for result logging
     if isinstance(task, ChatMessage):
