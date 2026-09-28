@@ -16,6 +16,8 @@ includes:
   - agents*/*.yaml
   # plugin agent configs
   - ../src/plugins*/*/agents/*.yaml
+  # This machine only, last so it wins; never in the repository (.gitignore)
+  - local.yaml
 
 # Context information automatically added to prompts
 context:
@@ -53,6 +55,9 @@ session_archive: # type SessionArchiveConfig
 # Network settings
 network:
   ssl_verify: true
+  # A machine that opens the API to the LAN for a webhook (host: 0.0.0.0,
+  # remote_paths) does it in config/local.yaml: behind nginx, remote_paths
+  # would shut the LAN's users out of the UI.
   host: 127.0.0.1
   port: 8000
   disable_cache: true

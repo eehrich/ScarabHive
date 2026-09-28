@@ -136,23 +136,25 @@ def test_every_config_part_the_editor_maps_validates():
 
 
 def test_a_part_file_may_not_carry_a_section_the_loader_drops():
-    """settings.py lifts llm_system, plugins, external_servers and hooks out
-    of an included file and drops the rest silently. `network:` is valid in
-    config/config.yaml and dead in a part -- which is why a part gets its own
-    schema instead of the main one.
+    """settings.py merges every section of an included file but the master's
+    own (MASTER_ONLY_SECTIONS), which it drops with a warning. `paths:` is
+    valid in config/config.yaml and dead in a part -- which is why a part
+    gets its own schema instead of the main one.
     """
     data = yaml.safe_load(
         (REPO_ROOT / "config/agents/agents.yaml").read_text(encoding="utf-8"))
     validator = Draft202012Validator(_schema_from_file("config-part.schema.json"))
 
-    dropped = dict(data, network={"host": "127.0.0.1"})
-    assert list(validator.iter_errors(dropped)), (
-        "a network: section in an included part validated cleanly — the "
-        "editor would confirm a section nothing reads")
+    for section in ({"paths": {"data_dir": "x"}}, {"auth": {"enabled": False}}):
+        assert list(validator.iter_errors(dict(data, **section))), (
+            f"{section} in an included part validated cleanly — the editor "
+            "would confirm a section nothing reads")
 
-    # hooks: IS merged from a part now (it used to be read from
-    # config/plugins.yaml by path), so the editor must accept it
-    merged = dict(data, hooks={"enabled": True})
+    # merged from a part: hooks (it used to be read from config/plugins.yaml
+    # by path), network and logging (a machine's config/local.yaml); a null
+    # section sets nothing
+    merged = dict(data, hooks={"enabled": True}, network={"host": "0.0.0.0"}, logging={"backup_count": 20},
+                  status=None, llm_system=None)
     assert list(validator.iter_errors(merged)) == []
 
 

@@ -232,21 +232,17 @@ def build_plugins_schema() -> dict:
     }
 
 
-#: Sections settings.py lifts out of an included file. Everything else in a
-#: part is dropped without a word.
-_MERGED_PART_SECTIONS = ("llm_system", "plugins", "external_servers", "hooks")
-
-
 def build_config_part_schema() -> dict:
     """Schema for an included config file (config/config.yaml -> ``includes:``).
 
     That is where the agents live: config/agents/*.yaml and the 85 files under
-    src/plugins*/*/agents/. A part carries any of the merged sections, none of
-    them required — an agent file has ``plugins:``, mcp_servers.yaml has
-    ``external_servers:``, llm_openrouter.yaml has ``llm_system:``, and
-    ``hooks:`` is merged from a part like from config/plugins.yaml.
+    src/plugins*/*/agents/. A part carries any section but the master's own
+    (settings.MASTER_ONLY_SECTIONS), none of them required — an agent file has
+    ``plugins:``, mcp_servers.yaml has ``external_servers:``, a machine's
+    local.yaml ``network:``.
     """
     from agent_system.config.models import AgentSystemConfig
+    from agent_system.config.settings import MASTER_ONLY_SECTIONS
 
     schema = AgentSystemConfig.model_json_schema()
     _forbid_unknown_keys(schema)
@@ -256,14 +252,16 @@ def build_config_part_schema() -> dict:
     _allow_empty_hook_keys(defs["GlobalHooksConfig"], defs)
     schema["properties"]["hooks"] = _null_or(schema["properties"]["hooks"])
 
-    properties = {name: schema["properties"][name] for name in _MERGED_PART_SECTIONS}
+    # A null section (every line commented out) sets nothing in the loader.
+    properties = {name: value if name == "hooks" else _null_or(value)
+                  for name, value in schema["properties"].items() if name not in MASTER_ONLY_SECTIONS}
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Config Part Schema",
         "description": (
             "JSON Schema for a config file pulled in by config/config.yaml's "
-            "includes: (agent configs, mcp_servers.yaml). Only llm_system, "
-            "plugins, external_servers and hooks are merged out of it. " + _GENERATED_NOTE
+            "includes: (agent configs, mcp_servers.yaml, local.yaml). Any "
+            "section but paths, auth and includes, which only config.yaml sets. " + _GENERATED_NOTE
         ),
         "type": "object",
         "additionalProperties": False,

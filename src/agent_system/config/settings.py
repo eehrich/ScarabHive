@@ -283,6 +283,12 @@ def _expand_includes(master: dict, cfg_path: Path) -> list[str]:
     return expanded
 
 
+#: What an include cannot set: a process reads its data directory from the
+#: master alone (master_data_dir), the setup panel the signing key a restart
+#: applies (plugins/setup/status.py), and an include's includes are not followed.
+MASTER_ONLY_SECTIONS = ("paths", "auth", "includes", "files")
+
+
 def config_files(config_path: Optional[str] = None) -> list[Path]:
     """The files `load_settings` reads, in its order: the master config, then every include that exists."""
     cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
@@ -297,9 +303,9 @@ def config_files(config_path: Optional[str] = None) -> list[Path]:
 def master_data_dir(config_path: Optional[str] = None) -> Optional[str]:
     """``paths.data_dir`` of the master config, for a process that never loads settings.
 
-    Only the master can set it: the loader takes top-level sections from that
-    file alone. Credentials are loaded and ``${VAR}`` expanded first, so the
-    value is what load_settings would see.
+    Only the master can set it: the loader takes this section from that file
+    alone. Credentials are loaded and ``${VAR}`` expanded first, so the value
+    is what load_settings would see.
     """
     cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
     if not cfg_path.exists():
@@ -375,6 +381,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             if inc_path.exists():
                 try:
                     part = yaml_io.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    if isinstance(part, dict):
+                        # A section with every line commented out sets nothing: a
+                        # null `plugins:` failed the whole file in deep_merge.
+                        part = {key: value for key, value in part.items() if value is not None}
                     logger.debug(f"Loaded included config: {inc_path.name}")
                     
                     # Resolve relative paths (./prompts/...) relative to include file dir
@@ -431,7 +441,21 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             # name. deep_merge on it raised inside the per-file
                             # except and logged the whole file as skipped.
                             data["hooks"] = section
-                    
+
+                    # Every other section too, over what came before: an include
+                    # can then hold what one machine sets for itself (network,
+                    # logging -- config/local.yaml, the last include).
+                    for key, value in part.items():
+                        if key in ("llm_system", "plugins", "external_servers", "hooks"):
+                            continue  # merged above
+                        if key in MASTER_ONLY_SECTIONS:
+                            logger.warning("%s: '%s' is read from %s only -- ignored here", inc_path.name, key,
+                                           cfg_path.name)
+                            continue
+                        current = data.get(key)
+                        data[key] = (deep_merge(current, value) if isinstance(current, dict) and isinstance(value, dict)
+                                     else value)
+
                 except yaml.YAMLError as e:
                     # Log YAML syntax errors and continue (allows other configs to load)
                     logger.error(f"YAML syntax error in included config '{inc_path}': {e}")

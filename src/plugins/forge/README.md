@@ -97,7 +97,9 @@ Without `webhook.user` and a host secret there is no route. Three more steps,
 all outside forge:
 
 1. **The API listens where GitLab can reach it, and shows the network this
-   route only** — in `config/config.yaml`:
+   route only** — in `config/local.yaml`, the machine's own config (never in
+   the repository, merged last): a server whose users reach the UI through a
+   proxy must not get `remote_paths` by a pull.
 
    ```yaml
    network:

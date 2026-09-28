@@ -9,6 +9,9 @@
 # Fundstellen in drei YAMLs — beim Rotieren wie beim spaeteren Consolidate.
 # Vor einer Veroeffentlichung: Keys rotieren, History bereinigen, DANN hier
 # `secrets.env` eintragen (die .example bleibt in jedem Fall getrackt).
+# Was nur auf EINER Maschine gilt (Netz, Log-Aufbewahrung):
+# letztes Include in config/config.yaml, gewinnt also ueber alles.
+config/local.yaml
 *.db
 *.7z
 *.zip

@@ -500,6 +500,8 @@ dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
 
 API-Schlüssel der LLM-Anbieter stehen in `config/secrets.env` neben der Config.
 
+Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung), steht in `config/local.yaml` daneben: nie im Repo, das letzte Include der `config.yaml` — es gewinnt über alle anderen Dateien. Nur `paths` liest der Loader allein aus der `config.yaml`.
+
 ---
 
 ## Exit-Codes

@@ -1,42 +1,191 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config Part Schema",
-  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml). Only llm_system, plugins, external_servers and hooks are merged out of it. GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
+  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml, local.yaml). Any section but paths, auth and includes, which only config.yaml sets. GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "llm_system": {
+    "name": {
       "anyOf": [
         {
-          "$ref": "#/$defs/LLMSystemConfig"
+          "default": "AgentSystem",
+          "title": "Name",
+          "type": "string"
         },
         {
           "type": "null"
         }
-      ],
-      "default": null
+      ]
+    },
+    "version": {
+      "anyOf": [
+        {
+          "default": "0.0.0",
+          "title": "Version",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "anyOf": [
+        {
+          "default": "Scarab Flexible AI Agent System",
+          "title": "Description",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "context": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VisionConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_presence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionPresenceConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_archive": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionArchiveConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "network": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetworkConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "default_agent": {
+      "anyOf": [
+        {
+          "default": "basic_agent",
+          "title": "Default Agent",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "logging": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoggingConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skills": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SkillsSystemConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "llm_system": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LLMSystemConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "plugins": {
       "anyOf": [
         {
-          "$ref": "#/$defs/PluginsConfig"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         {
           "type": "null"
         }
-      ],
-      "default": null
+      ]
     },
     "external_servers": {
       "anyOf": [
         {
-          "$ref": "#/$defs/MCPServersConfig"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MCPServersConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         {
           "type": "null"
         }
-      ],
-      "default": null
+      ]
     },
     "hooks": {
       "anyOf": [
