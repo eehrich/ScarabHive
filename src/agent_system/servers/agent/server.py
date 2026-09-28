@@ -1918,6 +1918,17 @@ class Agent(ToolServer):
                     messages = await self._take_in_late_messages(request_id, session_id, messages)
                 except Exception as e:
                     logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+            elif sid:
+                # No conversation: the run failed on its way in, after its request was registered. A
+                # message handed to it meanwhile went with the request entry -- answered "appended",
+                # and gone. Into the session as the tracker holds it, and saved with it.
+                try:
+                    held = list(self._session_tracker.get_session_messages(sid))
+                    taken = await self._take_in_late_messages(request_id, session_id, list(held))
+                    if len(taken) > len(held):
+                        messages = taken
+                except Exception as e:  # noqa: BLE001 - as the flush above: nothing here may keep the lock
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
 
             # Clean up cancellation token
             cancellation_manager = get_cancellation_manager()

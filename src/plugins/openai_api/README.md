@@ -123,7 +123,13 @@ the `openai` SDK raises its `AuthenticationError` for it all the same.
   A put back only restores what the API turn's run left: a request that has
   run on the conversation since (a stream whose client stopped reading gives
   it time) keeps its turn, and the API turn stays in the conversation with it,
-  even when it failed or never reached its client. (An opener that reads the
+  even when it failed or never reached its client. What the user appended to
+  the conversation meanwhile (`POST /sessions/{id}/append`, beside the run or
+  handed to it) stays either way: a put back restores the conversation as it
+  was before the turn, with those messages after it. An append still saving
+  holds the agent's session lock for that moment; the turn's opening and its
+  put back wait up to 5 s for it (past that: 409, or the turn left in, as
+  beside a run). (An opener that reads the
   conversation back between an API turn's opening and its run would leave the
   turn without the earlier input it came with: the turn is refused then and
   does not run — 409, or in a stream an `error` event with the code

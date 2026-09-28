@@ -635,6 +635,10 @@ async def get_session(
             tracker = session_agent._session_tracker
             try:
                 is_running, owner_request_id = tracker.check_session_locked(session_id)
+                if is_running and getattr(tracker, "held_by_a_writer", lambda _: False)(session_id):
+                    # An append or /undo holds it for a moment: no run, and whatever live state the
+                    # session has left is a finished run's -- a turn put back since came back with it.
+                    is_running, owner_request_id = False, None
                 if not is_running:
                     running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
                     if (running.get("attachable")

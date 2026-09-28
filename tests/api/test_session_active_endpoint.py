@@ -730,6 +730,24 @@ async def test_a_session_nobody_runs_is_served_from_disk(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_session_an_append_holds_is_served_from_disk(tmp_path):
+    """An append holds the session lock for a moment (acquire_session_lock(writer=True)) -- no run. Read as one,
+    the view served the live state a finished run left: a turn put back since came back on screen."""
+    manager, session_id = await _saved_session(tmp_path)
+    agent = await _agent_running(session_id, "r-1", [
+        ChatMessage(role="user", content="left over from a run that ended"),
+    ])
+    tracker = agent._session_tracker
+    await tracker.release_session_lock(session_id, "r-1")
+    assert await tracker.acquire_session_lock(session_id, "write_1", writer=True)
+
+    answer = await session_endpoints.get_session(
+        session_id, current_user=_User("ada"), session_manager=manager,
+        default_agent=None, tool_registry=_Registry(an_agent=agent))
+    assert [m["content"] for m in answer["messages"]] == ["the turn before", "answered that one"]
+
+
+@pytest.mark.asyncio
 async def test_the_live_answer_says_how_far_the_runs_stream_has_come(tmp_path, monkeypatch):
     """The number the client hands back as ``seen`` when it joins the stream.
 

@@ -8,6 +8,7 @@ It provides a clean interface for session restoration and persistence.
 import asyncio
 import logging
 import weakref
+from uuid import uuid4
 from typing import List, Dict, Any, Optional
 
 from agent_system.services.session_manager import SessionDeletedError, SessionPermissionError, SessionNotFoundError
@@ -218,7 +219,7 @@ class SessionService:
             return False, 0
 
     async def open_for_run(self, agent, user_id: str, session_id: str, llm_profile: str,
-                           in_use: bool = False) -> bool:
+                           in_use: bool = False, holding: str | None = None) -> bool:
         """Ready *session_id* on *agent* for a run; returns whether it existed.
 
         A stored session is restored (conversation, its context_vars). A new
@@ -246,14 +247,34 @@ class SessionService:
         One step for /run, /events, agent-cli and agent-run. Written out per
         entry point, a new session got the agent's template_vars in three of
         five. Raises SessionPermissionError for another user's session.
+
+        The read and what it puts into the tracker happen under the agent's
+        session lock, taken as a writer (acquire_session_lock(writer=True)): an
+        append or /undo that saves meanwhile is waited for, and one that comes
+        after waits for this -- read between them, the file lacked the
+        appended message and the restore put the tracker back over it, for the
+        run's save to write. A run of this agent that has the lock refuses it:
+        the session is that run's, whatever the caller's *in_use* said.
+        *holding*: the request id under which the caller holds the lock itself
+        (openai_api's AgentTurn takes it before it opens).
         """
         tracker = agent._session_tracker
-        if in_use and tracker.check_session_locked(session_id)[0]:
-            owner = await self.session_manager._find_session_owner_async(session_id)
-            if owner is not None and owner != user_id:
-                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
-            tracker.mark_opened(session_id)
-            return True
+        opener = None
+        if holding is None or tracker.check_session_locked(session_id) != (True, holding):
+            opener = f"open_{uuid4().hex[:12]}"
+            if not await tracker.acquire_session_lock(session_id, opener, timeout=5.0, writer=True):
+                owner = await self.session_manager._find_session_owner_async(session_id)
+                if owner is not None and owner != user_id:
+                    raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+                tracker.mark_opened(session_id)
+                return True
+        try:
+            return await self._open(agent, tracker, user_id, session_id, llm_profile, in_use)
+        finally:
+            if opener is not None:
+                await tracker.release_session_lock(session_id, opener)
+
+    async def _open(self, agent, tracker, user_id: str, session_id: str, llm_profile: str, in_use: bool) -> bool:
         exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
         if not exists and not in_use:
             # A title the first run was given and never wrote (it saved nothing):

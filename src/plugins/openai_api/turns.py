@@ -25,7 +25,9 @@ last response must not build on a turn it never got. A new conversation is
 deleted then; a continued one is only ever restored -- under the agent's session
 lock, and only over what this turn's run left: a request of this process that
 has run on the conversation since (the web chat, a /run) keeps its turn, and this
-one stays with it. Settled, a stored conversation leaves the agent's tracker --
+one stays with it. What the user appended meanwhile -- beside the run (the append
+endpoint) or into it -- stays either way: it is the user's, not the turn's.
+Settled, a stored conversation leaves the agent's tracker --
 not one another request has opened since, which runs on what the tracker holds --
 and the next turn reads it from disk.
 
@@ -100,6 +102,7 @@ class AgentTurn:
         self._opening: Optional[int] = None  # the session's opening mark (SessionTracker.mark_opened) after ours
         self._as_opened: list[Any] = []  # the conversation as this turn opened it (with the client's earlier turns)
         self._after: list[Any] = []  # the conversation as this turn's run left it
+        self._appended: list[Any] | None = None  # what the user appended since the opening (watch_appends)
         self._settled_callbacks: list[Callable[[], None]] = []
         self._settled = asyncio.Event()
         self._settling: Optional["asyncio.Future[Any]"] = None
@@ -123,13 +126,14 @@ class AgentTurn:
             # The agent's session lock, from here -- not only from when the run takes it (by the same request id,
             # so the run's taking it is a re-entry, and its finalize lets go): a run of this process (the web chat)
             # that started in between made this turn's run fail at the lock, a 500 for a 409.
-            if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=1.0):
+            if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=5.0):
                 # A run of this process has it -- known here with session presence off too. Opened under it, the
                 # session would be read back into the tracker from under that run.
                 raise ConversationBusy("the conversation is running right now")
             self._locked = True
             self._hold()  # before the session is read: what another process wrote until now is read with it
-        existed = await self.service.open_for_run(self.agent, self.user, self.session_id, self.profile)
+        existed = await self.service.open_for_run(self.agent, self.user, self.session_id, self.profile,
+                                                  holding=self.request_id if self._locked else None)
         self._opening = tracker.last_opened(self.session_id)  # another mark later: opened by another since
         if self.continues and not existed:
             # open_for_run started it afresh in the tracker; nothing runs on it, so nothing of it stays
@@ -146,6 +150,8 @@ class AgentTurn:
         if history:
             tracker.set_session_messages(self.session_id, [*self._before, *history])
         self._as_opened = self._after = list(tracker.get_session_messages(self.session_id))
+        if self.persist:
+            self._appended = tracker.watch_appends(self.session_id)
 
     def _hold(self) -> None:
         """Hold the stored conversation for the turn (session presence), as /run and /events hold theirs."""
@@ -316,6 +322,8 @@ class AgentTurn:
             finally:
                 self._forget()
         finally:
+            if self._appended is not None:
+                self.agent._session_tracker.unwatch_appends(self.session_id, self._appended)
             await self._unlock()
             self._let_go()  # after the put back: no other process writes the conversation before it
             release_request_user_tree(self.request_id)
@@ -345,32 +353,45 @@ class AgentTurn:
         -- the web chat, a /run: running, it holds the lock; done, it has written its turn after this one. Put back
         then, its messages and variables were replaced from under it, or its finished turn went with this one; the
         turn stays instead, as part of that conversation. One that opened the conversation and has not run yet runs
-        on what the put back leaves."""
+        on what the put back leaves.
+
+        What the user appended meanwhile stays in the conversation put back: the append endpoint writes a session no
+        run has -- also while this turn's run closes, after its lock and before what it left is taken -- and a
+        message handed to the run is in what the run left. Compared without them, and put back after the rest."""
         tracker = self.agent._session_tracker
-        if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=1.0):
+        if not await tracker.acquire_session_lock(self.session_id, self.request_id, timeout=5.0):
             logger.info("openai_api: session %s is run by another request; the turn of %s stays in it",
                         self.session_id, self.request_id)
             return
         try:
-            if tracker.get_session_messages(self.session_id) != self._after:
+            messages = tracker.get_session_messages(self.session_id)
+            if self._others(messages) != self._others(self._after):
                 logger.info("openai_api: session %s was written by another request since; the turn of %s stays in "
                             "it", self.session_id, self.request_id)
                 return
-            await self._restore()
+            await self._restore([message for message in messages if self._is_appended(message)])
         finally:
             await tracker.release_session_lock(self.session_id, self.request_id)
 
-    async def _restore(self) -> None:
+    def _is_appended(self, message: Any) -> bool:
+        return any(message is appended for appended in self._appended or ())
+
+    def _others(self, messages: list[Any]) -> list[Any]:
+        """The messages that are not the user's appended ones."""
+        return [message for message in messages if not self._is_appended(message)]
+
+    async def _restore(self, appended: list[Any]) -> None:
+        """The conversation as it was before the turn, with ``appended`` (the user's, since) after it."""
         from agent_system.chat_commands import store_vars
 
         tracker = self.agent._session_tracker
-        if not self._existed:  # it leaves the tracker with every settled conversation (_forget)
+        if not self._existed and not appended:  # it leaves the tracker with every settled conversation (_forget)
             if self._work is not None:  # a run may have written it
                 await self._delete_record()
             return
-        tracker.set_session_messages(self.session_id, self._before)
+        tracker.set_session_messages(self.session_id, [*self._before, *appended])
         if self._work is None:
-            return  # no run: nothing written, no variable set
+            return  # no run: nothing written, no variable set (and nothing appended: the turn held the lock)
         try:
             if not await self.service.save_session(self.agent, self.user, self.session_id, self.agent.name,
                                                    self.profile, was_new_session=False):

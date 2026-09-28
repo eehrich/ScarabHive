@@ -937,6 +937,24 @@ class SessionManager:
             return None
         return self._written_since(user_id, session_id, cached[1])
 
+    async def peek_session(self, user_id: str, session_id: str) -> dict[str, Any]:
+        """The session as it lies on disk, read without taking it as seen.
+
+        load_session stamps the cache, and changed_on_disk then counts what the
+        file holds as this manager's own: a caller that only asks the record
+        something (which agent it ran with) before it claims the session made
+        the claim miss what another process wrote meanwhile -- the copy in
+        memory stayed stale and was written back over it.
+
+        Raises:
+            SessionNotFoundError: If session doesn't exist
+            SessionPermissionError: If user doesn't own the session
+        """
+        session_data = await self._read_session_file_async(self._session_file(user_id, session_id))
+        if session_data["user_id"] != user_id:
+            raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+        return session_data
+
     async def load_session(self, user_id: str, session_id: str, bypass_cache: bool = False) -> Dict[str, Any]:
         """Load a session.
         
