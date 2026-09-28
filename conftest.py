@@ -8,6 +8,8 @@ import signal
 import atexit
 from typing import List
 from pathlib import Path
+import shutil
+import gc
 import tempfile
 
 # Disable WAL mode for writer plugins in tests (avoids Windows file locking issues)
@@ -35,6 +37,45 @@ def _pin_relative_data_dir():
 
 
 _pin_relative_data_dir()
+
+# The stores that capture what agents do go to a directory of this run. An agent a test builds from
+# config/config.yaml loads the real plugins on its first run, their capture hooks among them: its turns and its
+# token usage landed in the viewer's own stores (574 debugger turns still there when found on 26.09.2026, 519
+# usage snapshots back to 09.08 -- retention had dropped older ones). A run of such a test writes rows into these
+# two and nothing else under data/ (measured in an empty data directory). The rest stays where it is: tests read
+# it on purpose (the accounts in users.db). Patched before anything imports data_path by name, the plugins among
+# them; a path a plugin's entry sets itself would bypass this -- the guard test builds both from the real config
+# and would say so. A test that starts an agent in a process of its own is out of this reach.
+_TEST_CAPTURE_DIR = Path(tempfile.mkdtemp(prefix="agent_test_captures_"))
+
+
+def _remove_capture_dir():
+    # A connection only a reference cycle still holds keeps its file open, and Windows deletes no open file: without
+    # the collection a run left debugger.db behind (measured). A run the timeout ends (os._exit) leaves it all the same.
+    gc.collect()
+    shutil.rmtree(_TEST_CAPTURE_DIR, ignore_errors=True)
+
+
+atexit.register(_remove_capture_dir)  # registered first: runs after the stores close theirs
+_CAPTURE_STORES = frozenset({
+    "message_debugger",  # turns and raw requests: message_debugger/debugger.db
+    "context_usage_tracker.json",  # the tracker keeps its database beside the stem: context_usage_tracker/usage.db
+})
+
+
+def _patch_capture_data_dirs():
+    import agent_system.paths as paths
+    real = paths.data_path
+
+    def data_path(*parts: str) -> Path:
+        if parts and parts[0] in _CAPTURE_STORES:
+            return _TEST_CAPTURE_DIR.joinpath(*parts)
+        return real(*parts)
+
+    paths.data_path = data_path
+
+
+_patch_capture_data_dirs()
 
 # Patch SessionManager to force test storage path
 # This must happen before agent_system is imported
