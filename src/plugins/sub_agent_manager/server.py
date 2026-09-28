@@ -6,6 +6,7 @@ import asyncio
 import fnmatch
 import functools
 import logging
+import time
 import weakref
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
@@ -69,6 +70,17 @@ HINT_IDS = 30
 #: (see `_handle_wait`), so the cadence of the cheap turn would be paid in disk here.
 WAIT_DB_POLL_MAX = 8.0
 
+#: How long this process keeps a background job's ending after the job ended, when nobody takes
+#: it: no poll, no wait, no woken caller, no continue or delete -- a caller that polls much later,
+#: or a throwaway turn that never comes back. Kept for good, each held its whole result for the
+#: life of the API process. A STORED ending goes after this: a poll then answers from the
+#: sub-session's stored state, as after a restart.
+FINISHED_JOB_RETENTION_SECONDS = 3600.0
+#: An ending that could not be stored is the only answer there is, so it stays much longer --
+#: but not for good: a parent deleted while its job ran is the usual reason a write fails, and
+#: then no caller can read the entry at all (poll and wait answer only the parent).
+UNSTORED_JOB_RETENTION_SECONDS = 86400.0
+
 
 def _outcome_status(result_text: str) -> str:
     """Verdict for a finished run: 'completed' unless the text says otherwise."""
@@ -121,6 +133,22 @@ def _without_status(params: dict) -> dict:
     (``StatusScope.ended``). The outer handler owns the line.
     """
     return {k: v for k, v in params.items() if k != "_status"}
+
+
+def _job_answer(job: dict[str, Any]) -> dict[str, Any]:
+    """A background job as a poll or a wait hands it out: without the task handle (not
+    serializable) and without our bookkeeping, every key of which starts with "_"."""
+    return {k: v for k, v in job.items() if k != "task_handle" and not k.startswith("_")}
+
+
+async def _ringing_over(job: dict[str, Any], bell: Callable[[], Awaitable[None]]) -> None:
+    """Ring the bell of a job's ending with the job marked as rung for, so the retention leaves
+    it alone meanwhile (`_drop_expired_endings`)."""
+    job["_ringing"] = True
+    try:
+        await bell()
+    finally:
+        job["_ringing"] = False
 
 
 def _register_request_user(request_id: str, user_id: str) -> None:
@@ -1884,10 +1912,11 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     ended_by_caller = bool(job.get("_ended_by_caller"))
                 if job is not None:
                     job.update(status=job_status, completed_at=datetime.now(UTC).isoformat(),
-                               _awaiting_poll=True, **fields)
+                               _awaiting_poll=True, _ended_at=time.monotonic(), **fields)
                     if drop_task:
                         # a task ended by CancelledError keeps it, and with it every frame of the run
                         job["task_handle"] = None
+                self._drop_expired_endings()
 
             parent_session_id = params.get("_session_id")
             # Whoever reads this ending may run in another process -- a caller woken into a run of its
@@ -1914,6 +1943,10 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                     ) is not False
             except Exception as persist_error:
                 logger.warning(f"Failed to persist {job_status} status for {instance_id}: {persist_error}")
+
+            if job is not None and written:
+                # A poll can answer from the stored state now: the retention may let the entry go.
+                job["_stored"] = True
 
             if ended_by_caller and job is not None and written:
                 # Called off by the caller, awake: it knows how this ended and is not coming back
@@ -1949,10 +1982,35 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         #     each of those is a caller awake and handling the ending itself.
         # Ringing anyway is not free even once: the marker a ring leaves behind turns into a whole
         # woken run when the caller's turn ends.
-        if rings and parent_session_id:
-            return functools.partial(
-                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written)
+        if rings and parent_session_id and job is not None:  # `rings` says job is not None; mypy does not see it
+            return functools.partial(_ringing_over, job, functools.partial(
+                self._wake_parent, instance_id, parent_session_id, manager, params, stored=written))
         return None
+
+    def _drop_expired_endings(self) -> None:
+        """Let go of the endings nobody took: a stored one after FINISHED_JOB_RETENTION_SECONDS,
+        one that could not be stored after UNSTORED_JOB_RETENTION_SECONDS. Called with
+        `_async_jobs_lock` held whenever a job ends -- the only thing that leaves an ending here,
+        so what is kept is bounded by the jobs of the retention.
+
+        Never one whose bell is still ringing: the ringing stops once the entry is gone
+        (`_ending_is_unread`), and the caller would sleep over its job.
+        """
+        now = time.monotonic()
+        expired = []
+        for instance_id, job in self._async_jobs.items():
+            if job.get("status") not in ("completed", "failed", "cancelled") or job.get("_ringing"):
+                continue
+            # An ending that did not come through `_finish_job` -- a cancel whose task never
+            # started -- has no time of its own: it ages from the first time it is seen here.
+            ended_at = job.setdefault("_ended_at", now)
+            keep = FINISHED_JOB_RETENTION_SECONDS if job.get("_stored") else UNSTORED_JOB_RETENTION_SECONDS
+            if now - ended_at > keep:
+                expired.append(instance_id)
+        for instance_id in expired:
+            del self._async_jobs[instance_id]
+        if expired:
+            logger.debug(f"Dropped {len(expired)} background job ending(s) nobody took: {expired}")
 
     async def _async_started_message(self, params: dict[str, Any], parent_session_id: str,
                                      manager: Optional[SubAgentManager]) -> str:
@@ -2292,10 +2350,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         self._async_jobs.pop(instance_id, None)
                         logger.debug(f"Removed completed job {instance_id} from memory after poll")
 
-                    # Remove task_handle from response (not serializable)
-                    job.pop("task_handle", None)
-                    job.pop("_awaiting_poll", None)
-                    job.pop("_ended_by_caller", None)
+                    job = _job_answer(job)
                     if status:
                         # A failed or cancelled job is not an END: that phase
                         # renders as a completed row.
@@ -2554,9 +2609,7 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
                         # create + wait_all + delete.
                         async with self._async_jobs_lock:
                             self._async_jobs.pop(instance_id, None)
-                        job.pop("task_handle", None)
-                        job.pop("_awaiting_poll", None)  # bookkeeping of ours, as in poll -- not an answer
-                        job.pop("_ended_by_caller", None)
+                        job = _job_answer(job)
 
                         if status_ctx:
                             if job_status == "completed":

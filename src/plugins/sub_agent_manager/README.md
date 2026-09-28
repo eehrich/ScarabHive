@@ -217,8 +217,11 @@ Two more that are not limits but guards:
   session's limit was checked first, archived the oldest of any type, and with
   the type still full a second one.
 * **A finished run answers with its own words, job or no job.** The background
-  job holds the result text only until somebody reads it, and after a restart
-  or an archiving there is none at all. `poll` then reads the last thing the
+  job holds the result text only until somebody reads it — or, if nobody
+  does, for an hour after the job ended (`FINISHED_JOB_RETENTION_SECONDS`),
+  a day if its ending could not be stored; never while its bell still rings —
+  and
+  after a restart or an archiving there is none at all. `poll` then reads the last thing the
   run said from its transcript, instead of a fixed sentence about a persisted
   session that a model reads as the answer. An archived instance is found too:
   making room at a limit happens behind the caller's back, and its poll used to
