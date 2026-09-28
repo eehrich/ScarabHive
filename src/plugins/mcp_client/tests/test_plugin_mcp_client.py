@@ -10,24 +10,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import types
 from pathlib import Path
 
+import psutil
 import pytest
 
 from plugins.mcp_client.connection import MCPConnectionError, ServerConnection
 from plugins.mcp_client.manager import ExternalServerPool
 
 PROBE = str(Path(__file__).parent / "probe_server.py")
+# The root conftest ends what a test session leaves running by this variable.
+TEST_SESSION_MARKER = "AGENT_SYSTEM_TEST_SESSION"
 
 
 def make_config(**overrides):
-    """A RemoteMCPConfig-shaped object (the code reads attributes, not keys)."""
+    """A RemoteMCPConfig-shaped object (the code reads attributes, not keys).
+
+    A stdio server starts with the SDK's default environment, an allowlist;
+    without the test session's marker passed on, the root conftest would never
+    reap one a test leaves behind."""
     config = types.SimpleNamespace(
         url=None, transport="stdio", enabled=True, auth=None,
         initialization_options=None, tools=None, description=None,
-        command=sys.executable, args=[PROBE], env=None,
+        command=sys.executable, args=[PROBE],
+        env={TEST_SESSION_MARKER: os.environ[TEST_SESSION_MARKER]},
     )
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -142,6 +151,19 @@ class TestHandshake:
         # by the SDK instead of the hard-coded 2024-11-05 of the old client.
         assert connection.protocol_version
         assert connection.protocol_version >= "2025-03-26"
+
+    @pytest.mark.asyncio
+    async def test_the_stdio_server_a_test_starts_carries_the_test_session_marker(self, connection):
+        def command_line(process):
+            try:
+                return process.cmdline()
+            except psutil.Error:  # ended meanwhile, a zombie
+                return []
+
+        servers = [child for child in psutil.Process().children(recursive=True) if PROBE in command_line(child)]
+        assert servers, "no probe server among this process's children"
+        assert all(server.environ()[TEST_SESSION_MARKER] == os.environ[TEST_SESSION_MARKER]
+                   for server in servers)
 
     @pytest.mark.asyncio
     async def test_unreachable_server_fails_at_start_not_later(self):

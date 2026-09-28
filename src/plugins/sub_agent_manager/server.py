@@ -15,6 +15,7 @@ from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.core.session_presence import presence_for, wake_blocked, wake_session
 from agent_system.services.session_manager import SessionNotFoundError
+from agent_system.services.session_service import is_ephemeral_session
 from agent_system.utils.id import short_id
 from agent_system.llm.token_utils import extract_text_from_content
 
@@ -2000,7 +2001,13 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         The core leaves this out of `wake_blocked` because it would parse the session file on the
         caller's loop at every armed wake. A create has just read and written this very session,
         so here it is the session manager's cache, or one read off the loop.
+
+        And a throwaway session (a stateless call: openai_api, a headless run) is never woken
+        either (`_wake_parent`): nobody continues it, so a woken run would answer nobody.
         """
+        if is_ephemeral_session(session_id):
+            return ("this call runs on a throwaway session that nobody continues, so a woken run "
+                    "would answer nobody")
         session = await manager._session_service.session_manager.load_session(user_id, session_id)
         if session.get("parent_session"):
             return ("this is a sub-agent's own session, and those are never woken: ending your "
@@ -2099,7 +2106,16 @@ class SubAgentManagerServer(SchemaBasedHookToolServer):
         on after the turn that asked for it, and `agent-cli chat`, whose prompt waits on the same
         loop. A one-shot `agent-cli run` that ends its turn takes the job with it, and nothing is
         left to wake anybody. README says so.
+
+        A throwaway session is not woken: nobody continues it, and a woken run of its parent
+        record (agent-cli, on the `Coordinator Session` this manager wrote) would be an agent's
+        turn that answers nobody -- or, the record already deleted with its turn, a wake that
+        finds no session.
         """
+        if is_ephemeral_session(parent_session_id):
+            logger.debug("Not waking %s for sub-agent %s: a throwaway session, nobody continues it",
+                         parent_session_id, instance_id)
+            return
         try:
             # Everything from here on belongs to the wake, reading the config included: a job that
             # is over and recorded must not end in its caller's exception handler, which would

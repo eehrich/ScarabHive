@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -22,6 +23,8 @@ from plugins.coding_cli import server as server_module
 from plugins.coding_cli.server import CodingCliServer
 
 FAKE = Path(__file__).resolve().parent / "fake_claude.py"
+# The root conftest ends what a test session leaves running by this variable.
+TEST_SESSION_MARKER = "AGENT_SYSTEM_TEST_SESSION"
 
 
 class Status:
@@ -89,7 +92,9 @@ def make_server(repo, **config):
     cfg = ToolServerConfig()
     cfg.workdirs = {"repo": {"path": str(repo), "exclude": ["config/secrets.env"]}}
     cfg.allowed_users = ["admin"]
-    cfg.pass_env = ["FAKE_CLAUDE_LOG"]
+    # The run gets an allowlisted environment; without the test session's
+    # marker the root conftest would never reap a run a test leaves behind.
+    cfg.pass_env = ["FAKE_CLAUDE_LOG", TEST_SESSION_MARKER]
     cfg.wait_s = 30
     for key, value in config.items():
         setattr(cfg, key, value)
@@ -283,6 +288,20 @@ async def test_the_child_gets_no_key_from_this_process(repo, log, monkeypatch):
     await call(server, "run_task", task="x")
     env = {name.upper() for name in log()["env"]}
     assert "ANTHROPIC_API_KEY" not in env and "OPENAI_API_KEY" not in env and "PATH" in env
+
+
+async def test_a_run_a_test_starts_carries_the_test_session_marker(repo):
+    """A run is detached and outlives its test when the test fails early; the
+    root conftest ends it at the end of the session only if it carries the
+    marker, and the allowlist in child_env leaves it out unless passed on."""
+    server = make_server(repo, wait_s=0.2)
+    started, _ = await call(server, "run_task", task="SLEEP 30")
+    try:
+        assert started["state"] == "running", started
+        run = psutil.Process(server._load(started["run_id"])["pid"])
+        assert run.environ()[TEST_SESSION_MARKER] == os.environ[TEST_SESSION_MARKER]
+    finally:
+        await call(server, "cancel_run", run_id=started["run_id"])
 
 
 async def test_only_listed_users_start_runs(repo, data_root):

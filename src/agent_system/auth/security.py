@@ -143,6 +143,19 @@ def generate_api_key() -> str:
     return secrets.token_urlsafe(32)
 
 
+def bearer_api_key(token: Optional[str]) -> Optional[str]:
+    """The API key in ``Authorization: Bearer <key>`` -- how OpenAI clients send theirs -- or None.
+
+    A JWT always has two dots; a key from ``generate_api_key`` (``token_urlsafe``) never has
+    one. So a dotless Bearer value is an API key, and the middleware and ``get_current_user``
+    both treat it exactly like an ``X-API-Key`` header: they must decide alike, or one layer
+    authenticates a user the other does not.
+    """
+    if token and "." not in token:
+        return token
+    return None
+
+
 def hash_api_key(api_key: str) -> str:
     """Hash an API key for storage (using SHA-256)."""
     return hashlib.sha256(api_key.encode()).hexdigest()

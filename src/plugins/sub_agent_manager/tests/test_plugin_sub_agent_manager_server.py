@@ -2554,6 +2554,25 @@ class TestTheCallerIsWokenWhenItsJobIsDone:
         assert "end your turn:" not in started["message"], started["message"]
 
     @pytest.mark.asyncio
+    async def test_a_throwaway_session_is_told_it_is_not_woken_and_is_not(self, server, monkeypatch):
+        """A stateless call (openai_api, a headless run) runs on a throwaway session nobody continues. Woken, its
+        parent record would start an agent-cli run whose answer nobody reads -- or, deleted with its turn, find
+        no session at all. So its caller is told to poll or wait, and the job's ending rings nobody."""
+        told = self.presence(monkeypatch)
+        self.arming(monkeypatch)  # the core has nothing against it: it does not look at the id
+        agent = SlowAgent()
+        session_service = TestCancelReachesABlockingRun.wire(server, agent)
+        session_service.session_manager.load_session.side_effect = None
+        session_service.session_manager.load_session.return_value = {
+            "agent_name": "coordinator", "context_vars": {}}  # the Coordinator Session: no parent of its own
+
+        started = await self.start(server, wake_when_done=True, _session_id="ephemeral-oai-1")
+        await self.run_to_end(server, agent)
+
+        assert "NOT be woken" in started["message"] and "throwaway" in started["message"], started["message"]
+        assert told == [], "a throwaway session was woken"
+
+    @pytest.mark.asyncio
     async def test_a_caller_that_can_be_woken_is_told_it_may_sleep(self, server, monkeypatch):
         """The counter-proof: without it the sentence above could be the only one there is."""
         self.presence(monkeypatch)

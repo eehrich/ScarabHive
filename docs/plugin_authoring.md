@@ -2460,8 +2460,36 @@ pytest src/plugins/my_scraper/tests -v
 pytest src/plugins/my_scraper/tests/test_plugin_my_scraper_basic.py -v
 ```
 
-Never run pytest on a server host: on POSIX the root `conftest.py` kills
-processes of the virtualenv (agent-api, workers).
+The root `conftest.py` terminates only processes it can prove a test run
+started: a child a session starts with the inherited environment carries
+`AGENT_SYSTEM_TEST_SESSION=<pid>:<start time>:<pid namespace>` of that pytest.
+At the end of a session it stops what carries its own marker; at the start,
+what carries the marker of a session that provably no longer runs (the
+leftovers of a crashed run). Only processes of the same user without a setuid
+identity qualify, and each is checked again right before the signal.
+agent-api, workers, audio or another agent's scripts carry no marker and are
+never touched. A child started with an environment of its own -- an
+allowlist such as coding_cli's `child_env` or an MCP stdio server's default
+environment -- carries none either: a test that starts one passes the marker
+on, or what it leaves behind keeps running.
+
+A test that starts a pytest of its own must set `AGENT_SYSTEM_TEST_NO_REAP=1`
+for that run: the inner session's sweeps would otherwise send real signals,
+outside whatever guards the outer run. The conftest cannot tell such a run
+apart itself -- an xdist worker, too, carries the marker of a live owner and
+must reap. `run_nested_pytest` in `tests/other/test_conftest_process_cleanup.py`
+does it right: switch set, every `-p` plugin of the outer run passed on, and a
+check that the inner session left nothing running (with its cleanup off,
+nothing would end it).
+
+Still don't run pytest on a server host: a test that starts the app as a
+subprocess loads the host's real config and `config/secrets.env` -- the
+conftest's fake LLM client does not reach it. `tests/app/test_app_shutdown.py`
+boots the full API on a free port in a temporary directory, blanks the API keys
+the config expands and gives coding_cli its own `CODING_CLI_DATA_ROOT`, but it
+still starts every plugin the host has enabled. (`tests/cli/test_cli_tool_invocation.py`
+runs agent-cli in-process on a scripted model and a temporary config, and fails
+on any network connection.)
 
 ## Packaging and Distribution
 

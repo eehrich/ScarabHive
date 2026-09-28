@@ -126,13 +126,18 @@ overhead with the five file tools (48k without an explicit tool list, M-CC-7);
 - **Secrets are found by value, not by meaning**: a secret in a file that is
   not excluded, or a value shorter than 8 characters, stays readable, and so
   does one written differently (split, encoded).
-- **pytest in a worktree of this repository kills the API on Linux**: the
-  tests do test the worktree (`pytest.ini` sets `pythonpath = src tests`), but
-  on POSIX the root `conftest.py` kills every python process whose command line
-  holds `.venv/` or `-m agent_system.app` — at session start, at its end and at
-  exit. That is the API, its workers and the run's owner. For a ScarabHive
-  workdir on Linux, allow no test command until that conftest limits itself
-  to its own children. On Windows it kills nothing.
+- **pytest in a worktree older than the marker-based cleanup kills the API**:
+  the tests do test the worktree (`pytest.ini` sets `pythonpath = src tests`).
+  The root `conftest.py` ends only what a test session started, on every
+  platform: at its end the processes whose start environment carries its
+  `AGENT_SYSTEM_TEST_SESSION` marker, at its start those of a session that no
+  longer runs — of the same user and without a setuid identity. The API, its
+  workers and the run's owner carry no marker. A worktree is made from the
+  workdir's HEAD, and a resumed run keeps its old one: a checkout from before
+  that change runs the old conftest, which on Linux and macOS kills every
+  python process whose command line holds `.venv/` or `-m agent_system.app` —
+  at session start, at its end and at exit. For a ScarabHive workdir whose
+  checkout may predate it, allow no test command.
 - **The quota guard is a lower bound**: it knows the window usage only as of
   the last run's start; the user's own sessions have used more since.
 - **A one-shot `agent-cli run` is never woken**: its process ends with its

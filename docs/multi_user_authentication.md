@@ -100,7 +100,19 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
 
 2. **API Keys**
    - Long-lived authentication
-   - Header: `X-API-Key: <key>`
+   - Header: `X-API-Key: <key>`, or `Authorization: Bearer <key>` as OpenAI
+     clients send it (a Bearer value without dots is a key, never a JWT;
+     two different keys in both headers are refused)
+   - Plugin routes take a key only when the plugin declares `accept_api_keys`
+     in its security config (`openai_api` does); all others stay tokens-only
+   - Routes that check their admin themselves (`user_management`,
+     `agent_editor`) use `get_token_user`: a token only, no key in either
+     header — `get_current_user` takes a Bearer key even when called with
+     `x_api_key=None`
+   - Both layers (middleware, dependencies) read the headers alike: the first
+     of a repeated header, the `Bearer` scheme in any case, and of two
+     `access_token` cookies the last (both parse the Cookie header with
+     Starlette's `cookie_parser`)
    - Hashed with SHA-256 before storage
 
 ## Configuration

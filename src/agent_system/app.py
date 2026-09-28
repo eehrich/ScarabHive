@@ -661,6 +661,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         if not _session_service:
             return
+        tracker = getattr(target_agent, "_session_tracker", None)
+        if tracker is not None and tracker.check_session_locked(sid)[0]:
+            # A run of this agent has it (its session lock): the copy in memory IS
+            # that run's, and the run asking here is refused at that lock anyway
+            # -- read back, the running turn lost what it had not saved yet, and
+            # its metadata named the asker (as open_for_run leaves it, in_use).
+            return
         manager = _session_service.session_manager
         changed = manager.changed_on_disk(user_id, sid)
         if changed is None:
@@ -728,6 +735,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="request_id is already running")
 
         return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
+
+    def _refused_at_the_lock(event: dict) -> bool:
+        """Whether a run event says the run was refused at the agent's session lock (Agent.run_events): another
+        run of this process has the session, and nothing of this request may be saved to it."""
+        from .servers.agent.server import SESSION_LOCKED
+
+        return event.get("type") == "error" and event.get("error_type") == SESSION_LOCKED
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -1712,6 +1726,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Get agent with LLM override
         selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
 
+        # A run without a session creates one, as with files and on /events. The text-only run goes through
+        # collect_final_result, which takes a missing id for a stateless call: a throwaway session, never saved.
+        # Its caller is headless (the writer's dispatches) and never learns the id: once saved, the session
+        # leaves the agent's tracker, which keeps what it holds for the life of the process.
+        made_session = False
+        if not session_id and not upload_files and task:
+            session_id, made_session = short_id(), True
+
         session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
         if session_exists:
             session_title = None  # it names a session the run creates, not one it continues
@@ -1726,9 +1748,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Mirrored into a job, so a page can follow the run (see _mirror_run_as_job).
             # First: a second run under a running id is refused before it takes the
             # id's ownership or the session.
-            mirror = await _mirror_run_as_job(
-                request_id, user_id, selected_agent.name, session_id,
-                llm_profile or selected_agent.agent_config.default_llm_profile)
+            try:
+                mirror = await _mirror_run_as_job(
+                    request_id, user_id, selected_agent.name, session_id,
+                    llm_profile or selected_agent.agent_config.default_llm_profile)
+            except HTTPException:
+                if made_session:  # opened already, and nothing below lets go of it
+                    selected_agent._session_tracker.discard_session(session_id)
+                raise
             held = None
             try:
                 # Register request ownership for status stream security -- AFTER
@@ -1740,8 +1767,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 refusal, held = await _claim_session(selected_agent, session_id, user_id, force)
                 if refusal:
                     raise HTTPException(status_code=409, detail=refusal)
+                refused = []
+
                 def on_event(event: dict) -> Any:
                     _carry_title(selected_agent, event, session_title)
+                    if _refused_at_the_lock(event):
+                        refused.append(event)
                     return mirror.put(event)
 
                 # Pass LLM override to collect_final_result
@@ -1768,8 +1799,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         logger.warning(f"Failed to format summary to HTML: {e}")
                         # Keep original markdown on error
 
-                # Save session after execution (if session_id was provided or created)
-                if session_id and _session_service:
+                # Save session after execution (if session_id was provided or created) --
+                # not one the run was refused: another run of this process has it.
+                if session_id and _session_service and not refused:
                     effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
                     await _session_service.save_session(
@@ -1785,6 +1817,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             finally:
                 mirror.close()
                 _let_go(selected_agent, held, user_id)
+                if made_session:
+                    selected_agent._session_tracker.discard_session(session_id)
                 # Cleanup: release request + derived sub-request ids (tool
                 # suffixes, sub-agents) from the ownership map
                 release_request_user_tree(request_id)
@@ -1869,6 +1903,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # Track if this is a new session
                 was_new_session = (session_id is None) or (not session_exists)
                 actual_session_id = session_id
+                refused = False  # the run was refused at the agent's session lock
                 # Session presence (core/session_presence.py): held before the
                 # run through the save after it; a session this run creates
                 # comes with the start event.
@@ -1882,6 +1917,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
+                        refused = refused or _refused_at_the_lock(event)
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
@@ -1919,8 +1955,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield "event: error\n"
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                 finally:
-                    # Save session after completion
-                    if _session_service and actual_session_id:
+                    # Save session after completion -- not one the run was refused:
+                    # another run of this process has it.
+                    if _session_service and actual_session_id and not refused:
                         # Use actual agent name and effective llm_profile (respecting overrides)
                         effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         await _session_service.save_session(
@@ -2135,6 +2172,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             was_new_session = (session_id is None) or (not session_exists)
             actual_session_id = session_id
+            refused = False  # the run was refused at the agent's session lock
 
             # Session presence (core/session_presence.py): held before the job
             # starts through the save after it; a session the job creates comes
@@ -2190,7 +2228,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             def take_the_session(ev: dict) -> None:
                 """The run's own stream holds a session the run creates, from its start event."""
-                nonlocal actual_session_id, held
+                nonlocal actual_session_id, held, refused
+                refused = refused or _refused_at_the_lock(ev)
                 if ev.get("type") == "start" and ev.get("session_id"):
                     actual_session_id = ev["session_id"]
                     if not held:
@@ -2231,8 +2270,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # NOTE: We do NOT cancel the job here! The job continues running in background.
                 # The job will be cancelled only via explicit /cancel endpoint.
                 
-                # Persist session if job is completed
-                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+                # Persist session if job is completed -- not one its run was refused:
+                # another run of this process has it, and the tracker holds that run's
+                # live state (a tool call without its result, say).
+                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
                     if actual_session_id and _session_service:
                         effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                         await _session_service.save_session(

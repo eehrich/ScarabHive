@@ -454,8 +454,25 @@ class SessionManager:
         await self._atomic_write_async(path, session_data)
 
     async def _atomic_write_async(self, path: Path, data: Dict[str, Any]) -> None:
-        """Async wrapper for atomic write to avoid blocking event loop."""
-        await asyncio.to_thread(self._atomic_write, path, data)
+        """Async wrapper for atomic write to avoid blocking event loop.
+
+        A cancel does not stop the thread, so it does not end the wait either: the write finishes first, then the
+        cancel goes on. Ended at once, it let go of the caller's locks (the session's, SessionService.save_lock)
+        while the thread still wrote -- and a checkpoint stopped before a run's final save, or a failed run's save
+        cancelled before its turn is put back, landed after the save that followed it, older data over newer.
+        """
+        write = asyncio.ensure_future(asyncio.to_thread(self._atomic_write, path, data))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            while not write.done():
+                try:
+                    await asyncio.wait({write})
+                except asyncio.CancelledError:
+                    pass  # cancelled again; the thread still writes
+            if not write.cancelled():
+                write.exception()  # retrieved: _atomic_write logged its own failure, the cancel is what goes on
+            raise
 
     def _read_session_file(self, path: Path) -> Dict[str, Any]:
         """Read and validate session file.

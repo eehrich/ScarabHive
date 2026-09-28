@@ -54,6 +54,11 @@ from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 logger = logging.getLogger(__name__)
 
+#: ``error_type`` of the error a run ends with when another request of this process holds its session's lock.
+#: It ran nothing and has nothing to save -- its caller must not save the session either: what the tracker holds
+#: is the other run's live state (app.py /run and /events).
+SESSION_LOCKED = "session_locked"
+
 # llm_progress hooks fire every this many characters of thinking. A hook sets
 # its own, coarser interval on top; this only bounds how often the loop pays
 # for a hook dispatch while it streams.
@@ -1895,57 +1900,64 @@ class Agent(ToolServer):
         self._request_manager.unregister_active_request(request_id)
         logger.debug("Cleaned up request tracking for %s", request_id)
 
-        # Release session lock BEFORE persisting (allows other requests to proceed)
-        # Note: unregister_request also releases the lock, but we do it explicitly here
-        # for clarity and to ensure it happens before session persistence
+        # The session lock is let go of after the save below, not before it.
         sid = self._session_tracker.get_session_for_request(request_id)
 
-        # Stop the background checkpoint loop BEFORE the final save. The loop
-        # does its own load-modify-save every ~30s; if it overlaps the final
-        # save it can resume after we persist and write its older, trimmed
-        # snapshot over the newer one (silent message loss). Cancelling and
-        # awaiting the task here guarantees any in-flight checkpoint write has
-        # completed, so the final save below writes last and wins. Idempotent:
-        # the outer run_events finally also calls stop_checkpoint_loop.
-        if sid and self._session_service:
-            try:
-                await self._session_service.stop_checkpoint_loop(sid)
-            except Exception as e:
-                logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
-
-        if sid:
-            await self._session_tracker.release_session_lock(sid, request_id)
-            logger.debug("Released session lock for %s (request %s)", sid, request_id)
-
-        # Persist session messages and keep the request->session mapping for a while
         persisted = False
-        if sid and messages:
-            try:
-                # Check if ANY tool modified the session messages during this request
-                # Tools can call session_tracker.set_compacted_messages() to replace the history
-                compacted_msgs = self._session_tracker.get_compacted_messages(sid)
+        try:
+            # Stop the background checkpoint loop BEFORE the final save. The loop
+            # does its own load-modify-save every ~30s; if it overlaps the final
+            # save it can resume after we persist and write its older, trimmed
+            # snapshot over the newer one (silent message loss). Cancelling and
+            # awaiting the task here guarantees any in-flight checkpoint write has
+            # completed, so the final save below writes last and wins. Idempotent:
+            # the outer run_events finally also calls stop_checkpoint_loop.
+            if sid and self._session_service:
+                try:
+                    await self._session_service.stop_checkpoint_loop(sid)
+                except Exception as e:
+                    logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
 
-                if compacted_msgs is not None:
-                    # A tool replaced the message history - use those messages for
-                    # persistence (already conversation-only, no filtering needed)
-                    logger.debug(
-                        f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
-                        f"(request had {len(messages)} messages)"
-                    )
-                    self._session_tracker.set_session_messages(sid, compacted_msgs)
-                    self._session_tracker.clear_compacted_messages(sid)
-                    # Save to disk even if no SSE client is connected
-                    # (e.g., browser disconnected during background job execution)
-                    persisted = await self._save_session_to_disk(sid)
-                else:
-                    # Normal case: persist the request's conversation messages
-                    persisted = await self._persist_conversation(
-                        sid, messages, to_disk=True, note="at end of request")
+            # Persist session messages and keep the request->session mapping for a while.
+            # Under the session lock: let go of before this save, a request of this
+            # process could open the session in between -- read it from disk, where
+            # this run's last exchange was not yet -- and its run saved over it.
+            if sid and messages:
+                try:
+                    # Check if ANY tool modified the session messages during this request
+                    # Tools can call session_tracker.set_compacted_messages() to replace the history
+                    compacted_msgs = self._session_tracker.get_compacted_messages(sid)
 
-                # Keep the request->session mapping (don't pop it immediately)
-                # This allows append requests that arrive shortly after completion to find the session
-            except Exception as e:
-                logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+                    if compacted_msgs is not None:
+                        # A tool replaced the message history - use those messages for
+                        # persistence (already conversation-only, no filtering needed)
+                        logger.debug(
+                            f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
+                            f"(request had {len(messages)} messages)"
+                        )
+                        self._session_tracker.set_session_messages(sid, compacted_msgs)
+                        self._session_tracker.clear_compacted_messages(sid)
+                        # Save to disk even if no SSE client is connected
+                        # (e.g., browser disconnected during background job execution)
+                        persisted = await self._save_session_to_disk(sid)
+                    else:
+                        # Normal case: persist the request's conversation messages
+                        persisted = await self._persist_conversation(
+                            sid, messages, to_disk=True, note="at end of request")
+
+                    # Keep the request->session mapping (don't pop it immediately)
+                    # This allows append requests that arrive shortly after completion to find the session
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+        finally:
+            # The lock goes once the conversation is on disk: a free lock then means
+            # "saved", and the next request of this session reads it whole. In a
+            # finally: a save cut short (the run cancelled) must not leave the
+            # session locked for the life of the process. The session end hooks
+            # after it only read the conversation.
+            if sid:
+                await self._session_tracker.release_session_lock(sid, request_id)
+                logger.debug("Released session lock for %s (request %s)", sid, request_id)
 
         # Session end hooks AFTER the save, and told whether it happened. A hook
         # that counts what the request carried as delivered -- debate_forum does
@@ -3779,7 +3791,7 @@ class Agent(ToolServer):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
             
-            yield {"type": "error", "message": error_msg, "request_id": request_id}
+            yield {"type": "error", "message": error_msg, "request_id": request_id, "error_type": SESSION_LOCKED}
             yield {"type": "end"}
             return
 

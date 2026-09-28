@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from agent_system.auth.database import get_db
-from agent_system.auth.dependencies import bearer_scheme, get_current_user
+from agent_system.auth.dependencies import bearer_scheme, get_token_user
 from agent_system.auth.models import UserRole
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.ui.resources import ui_templates
@@ -117,7 +117,7 @@ class AgentEditorWebEndpoints:
         """An active admin, checked against the database here, whatever the route rules in the config say."""
         if not self.plugin.auth_enabled:
             raise HTTPException(status_code=403, detail="The agent editor needs authentication to be enabled")
-        user = await get_current_user(request, await bearer_scheme(request), None, get_db())
+        user = await get_token_user(request, await bearer_scheme(request), get_db())
         if not user.is_active or user.role != UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin privileges required")
 
