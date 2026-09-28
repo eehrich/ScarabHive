@@ -104,7 +104,7 @@
 .ae-counts { display: flex; flex-wrap: wrap; gap: var(--space-1); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); }
 .ae-counts > li { display: inline-flex; align-items: center; gap: var(--space-1); padding: 1px var(--space-2); border-radius: var(--radius-sm); background: var(--surface-2); }
 .ae-list-bar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
-.ae-list-bar > .pk-tabs { flex: 1 1 auto; border-bottom: 0; }
+.ae-list-bar > .pk-tabs { flex: 1 1 auto; box-shadow: none; }  /* the bar draws the line */
 .ae-list-bar > .pk-search { flex: 0 1 16rem; margin-bottom: var(--space-1); }
 .ae-list-bar > .pk-select, .ae-filters > .pk-select { flex: none; width: auto; }
 .ae-list-bar > .pk-select { margin-bottom: var(--space-1); }

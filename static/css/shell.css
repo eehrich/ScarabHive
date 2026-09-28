@@ -142,16 +142,23 @@ body.app {
 }
 .app-dock-bar { display: flex; align-items: stretch; background: var(--surface-1); border-bottom: 1px solid var(--border-subtle); }
 .app-back { display: none; align-self: center; margin: 0 var(--space-1); }
-.app-dock-tabs { display: flex; align-items: stretch; gap: 1px; min-height: 36px; min-width: 0; overflow-x: auto; }
+/* As the kit's tabs: each as wide as its title while they all fit, then down to a few characters of it, then the bar
+   scrolls (workspace.js: the wheel turns it, a tab coming to the front is brought into sight) */
+.app-dock-tabs {
+  display: flex; align-items: stretch; gap: 1px; min-height: 36px; min-width: 0;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
 .dock-tab {
-  display: inline-flex; align-items: center; gap: var(--space-1); max-width: 220px;
+  display: inline-flex; align-items: center; gap: var(--space-1); flex: 0 1 auto; min-width: var(--dock-tab-min, 150px);
   padding: 0 var(--space-1) 0 var(--space-3); font-size: var(--text-sm); color: var(--text-secondary);
   background: transparent; border: 0; border-right: 1px solid var(--border-subtle); cursor: pointer; white-space: nowrap;
 }
 .dock-tab[aria-selected="true"] { color: var(--text-primary); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--accent); }
 .dock-tab[data-dragging] { opacity: 0.5; }
-.dock-tab .dock-tab-title { overflow: hidden; text-overflow: ellipsis; }
+.dock-tab .dock-tab-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }  /* a short title: the buttons stay at the end */
 .dock-tab .dock-tab-actions { display: inline-flex; }
+.dock-tab .dock-tab-actions .pk-btn--icon { width: 22px; }  /* three per tab: the kit's 28px leaves the icons far apart */
+.dock-tab:focus-visible { outline-offset: -2px; }  /* inside: the scrolling bar would cut a ring outside off */
 .app-dock-frames { position: relative; flex: 1; min-height: 0; }
 .panel-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--surface-2); }
 
@@ -171,6 +178,7 @@ body.app {
   border-bottom: 1px solid var(--border-subtle); cursor: grab; user-select: none; touch-action: none;
 }
 .app-window-bar:active { cursor: grabbing; }
+.app-window-bar > .pk-btn--icon + .pk-btn--icon { margin-left: calc(-1 * var(--space-2)); }  /* the buttons closer together */
 .app-window-title { flex: 1; min-width: 0; font-size: var(--text-sm); font-weight: 500; }
 .app-window-body { position: relative; flex: 1; min-height: 0; }
 .app-window-resize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }

@@ -12,6 +12,8 @@
 </div>
 <div id="t-a" role="tabpanel">a</div>
 <div id="t-b" role="tabpanel" hidden>b</div>
+<!-- a row of page links too narrow for them, the current page last: wired at load (start) -->
+<div style="width: 140px"><nav class="pk-tabs" id="navRow"><a class="pk-tab" href="#first">First page</a><a class="pk-tab" href="#second">Second page</a><a class="pk-tab" href="#third">Third page</a><a class="pk-tab" href="#here" aria-current="page">Current page</a></nav></div>
 <script type="module">
   import * as pk from '/static/kit/panel-kit.js';
 
@@ -153,6 +155,75 @@
     document.querySelector('[data-tab="b"]').click();
     return document.getElementById('t-a').hidden && !document.getElementById('t-b').hidden
       && document.querySelector('[data-tab="b"]').getAttribute('aria-selected') === 'true';
+  });
+
+  await check('tabs are as wide as their text while they fit, give way down to a few characters, then the row scrolls; the wheel turns it and a chosen tab comes into sight', () => {
+    const box = document.createElement('div');
+    const labels = ['Running requests', 'Tool servers and their state', 'Agents', 'LLM requests per session', 'Settings'];
+    box.innerHTML = `<div class="pk-tabs" role="tablist" data-pk-tabs>${labels.map((label, i) =>
+      `<button class="pk-tab" role="tab" aria-selected="${i === 0}" data-tab="w${i}">${label} <span class="pk-tab-count">${i}</span></button>`).join('')}</div>`;
+    document.body.append(box);
+    const list = box.firstElementChild;
+    const tabs = [...list.children];
+    const whole = (tab) => tab.scrollWidth <= tab.clientWidth;
+    try {
+      pk.initTabs(box);
+      box.style.width = '2000px';
+      const wide = tabs.every(whole) && list.scrollWidth <= list.clientWidth;
+      box.style.width = `${Math.round(tabs.reduce((sum, tab) => sum + tab.offsetWidth, 0) * 0.7)}px`;
+      const giving = !tabs.every(whole) && list.scrollWidth <= list.clientWidth;
+      box.style.width = '120px';
+      const least = parseFloat(getComputedStyle(tabs[0]).minWidth);
+      const scrolling = list.scrollWidth > list.clientWidth && tabs.every((tab) => tab.offsetWidth >= least - 0.5);
+      const wheel = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+      list.dispatchEvent(wheel);
+      const turned = list.scrollLeft > 0 && wheel.defaultPrevented;
+      tabs.at(-1).click();
+      const last = tabs.at(-1).getBoundingClientRect();
+      const row = list.getBoundingClientRect();
+      const inSight = last.left >= row.left - 0.5 && last.right <= row.right + 0.5;
+      // at its end the row lets the wheel go on to the page, and Ctrl+wheel stays the browser's zoom
+      list.scrollLeft = list.scrollWidth;
+      const atEnd = new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+      list.dispatchEvent(atEnd);
+      list.scrollLeft = 0;
+      const zoom = new WheelEvent('wheel', { deltaY: 100, ctrlKey: true, bubbles: true, cancelable: true });
+      list.dispatchEvent(zoom);
+      const handsOn = !atEnd.defaultPrevented && !zoom.defaultPrevented && list.scrollLeft === 0;
+      // a tab cut short says its whole text on hover
+      tabs[1].dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      const told = tabs[1].title === 'Tool servers and their state 1';
+      return wide && giving && scrolling && turned && inSight && handsOn && told;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a tab row in a column short of room keeps its height', () => {
+    const box = document.createElement('div');
+    box.style.cssText = 'display: flex; flex-direction: column; max-height: 120px; overflow: auto; width: 300px';
+    box.innerHTML = `<div class="pk-tabs" role="tablist" data-pk-tabs><button class="pk-tab" role="tab" aria-selected="true">One</button>
+      <button class="pk-tab" role="tab" aria-selected="false">Two</button></div><div style="height: 600px; flex-shrink: 0"></div>`;
+    document.body.append(box);
+    try {
+      pk.initTabs(box);
+      const list = box.firstElementChild;
+      return list.offsetHeight >= list.firstElementChild.offsetHeight && list.firstElementChild.offsetHeight > 0;
+    } finally {
+      box.remove();
+    }
+  });
+
+  await check('a row of page links scrolls as tabs do: its current page in sight from the start, the wheel turns it', () => {
+    const nav = document.getElementById('navRow');
+    const here = nav.querySelector('[aria-current="page"]').getBoundingClientRect();
+    const row = nav.getBoundingClientRect();
+    const inSight = nav.scrollWidth > nav.clientWidth && nav.scrollLeft > 0
+      && here.left >= row.left - 0.5 && here.right <= row.right + 0.5;
+    nav.scrollLeft = 0;
+    const wheel = new WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true });
+    nav.dispatchEvent(wheel);
+    return inSight && nav.scrollLeft > 0 && wheel.defaultPrevented;
   });
 
   await check('autoRefresh starts and stops', () => {

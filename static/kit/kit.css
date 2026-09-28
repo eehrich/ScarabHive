@@ -258,19 +258,30 @@
 
 /* -------------------------------------------------------------------- tabs */
 
-.pk-tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border-subtle); }
+/* Each tab as wide as its text while they all fit; short of room they give way down to a few characters (an
+   ellipsis), then the row scrolls sideways -- the wheel turns it too, and the chosen tab is brought into sight
+   (panel-kit.js; a nav of a.pk-tab links too, its current page brought into sight). The line under the row is a
+   shadow: a border would be cut off by the scrolling box, and with it the marker of the chosen tab that sits on it.
+   flex-shrink 0: a scrolling box has no least height of its own, and a column short of room squeezed the row to
+   nothing; in a row, a .pk-tabs that is to give way sideways gets flex: 1 1 auto (agent_editor's list bar). */
+.pk-tabs {
+  display: flex; flex-shrink: 0; gap: var(--space-1); box-shadow: inset 0 -1px 0 var(--border-subtle);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
 .pk-tab {
-  position: relative; display: inline-flex; align-items: center; gap: var(--space-2);
+  position: relative; display: block; flex: 0 1 auto; min-width: var(--pk-tab-min, 4.5em);
   height: var(--control-h-md); padding: 0 var(--space-3);
-  font: 500 var(--text-sm)/1 var(--font-ui); color: var(--text-secondary);
+  font: 500 var(--text-sm)/var(--control-h-md) var(--font-ui); color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
   background: none; border: 0; cursor: pointer;
 }
 .pk-tab:hover { color: var(--text-primary); }
+.pk-tab:focus-visible { outline-offset: -2px; }  /* inside: the scrolling row would cut a ring outside off */
 /* a.pk-tab in a nav: the pages of one panel, the current one marked with aria-current="page" */
 a.pk-tab { text-decoration: none; }
 .pk-tab[aria-selected="true"], .pk-tab[aria-current="page"] { color: var(--text-primary); }
 .pk-tab[aria-selected="true"]::after, .pk-tab[aria-current="page"]::after {
-  content: ""; position: absolute; left: var(--space-2); right: var(--space-2); bottom: -1px;
+  content: ""; position: absolute; left: var(--space-2); right: var(--space-2); bottom: 0;
   height: 2px; border-radius: 2px; background: var(--accent);
 }
 .pk-tab-count { font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }

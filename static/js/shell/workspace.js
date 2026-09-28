@@ -1,6 +1,6 @@
 // The workspace: panels docked as tabs beside the chat, or detached into
 // floating windows -- and the host side of the pk:* protocol every panel speaks.
-import { html, render, icon, showToast, showDialog } from '/static/kit/panel-kit.js';
+import { html, render, icon, showToast, showDialog, wheelScrollsAcross, keepInSight } from '/static/kit/panel-kit.js';
 
 // allow-modals keeps unmigrated panels' native dialogs working (docs/webui_konzept.md,
 // section 4.4) -- and a panel's beforeunload question (setDirty), which a sandbox
@@ -286,10 +286,18 @@ export class Workspace {
         </span>
       </div>`));
     docked.forEach((item) => { item.frame.hidden = item.key !== this.active; });
+    // The tab coming to the front is brought into sight -- a panel opened lands at the end of a full bar. A redraw
+    // for a new title leaves the viewer's scrolling alone; a bar out of sight measures nothing and waits.
+    const front = [...this.tabBar.children].find((tab) => tab.dataset.key === this.active);
+    if (front && this.active !== this.tabInSight && this.tabBar.clientWidth) {
+      keepInSight(this.tabBar, front);
+      this.tabInSight = this.active;
+    }
     this.items.forEach((item) => this.post(item, 'pk:visibility', { visible: this.shown(item) }));
   }
 
   wireTabBar() {
+    wheelScrollsAcross(this.tabBar);
     this.tabBar.addEventListener('click', (event) => {
       const tab = event.target.closest('.dock-tab');
       if (!tab) return;

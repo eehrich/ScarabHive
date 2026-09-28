@@ -394,6 +394,45 @@
     return probeChosen && tab('Settings').getAttribute('aria-selected') === 'true' && tab('Probe').tabIndex === 0;
   });
 
+  await check('dock tabs show their whole title while they fit, give way down to their least width, then the bar scrolls; the wheel turns it, the tab coming to the front is brought into sight, a new title leaves the scrolling alone', async () => {
+    const bar = $('.app-dock-tabs');
+    const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
+    const whole = (t) => { const title = t.querySelector('.dock-tab-title'); return title.scrollWidth <= title.clientWidth; };
+    const titleBefore = tab('Probe').querySelector('.dock-tab-title').textContent;
+    probe().pk.setTitle('Probe with a title long enough to need its room');
+    await until('the long title', () => tab('Probe').querySelector('.dock-tab-title').textContent.startsWith('Probe with'));
+    try {
+      bar.style.cssText = 'flex: none; width: 2000px';
+      need($$('.dock-tab').every(whole) && bar.scrollWidth <= bar.clientWidth, 'with room, a title is cut');
+      bar.style.width = `${Math.round($$('.dock-tab').reduce((sum, t) => sum + t.offsetWidth, 0) * 0.7)}px`;
+      need(!$$('.dock-tab').every(whole) && bar.scrollWidth <= bar.clientWidth, 'short of room, no tab gives way, or the bar scrolls already');
+      bar.style.width = '200px';
+      const least = parseFloat(getComputedStyle(tab('Probe')).minWidth);
+      need(least > 0 && bar.scrollWidth > bar.clientWidth && $$('.dock-tab').every((t) => t.offsetWidth >= least - 0.5),
+        'out of room, the tabs go below their least width or the bar does not scroll');
+      bar.scrollLeft = 0;
+      const wheel = new (win().WheelEvent)('wheel', { deltaY: 100, bubbles: true, cancelable: true });
+      bar.dispatchEvent(wheel);
+      need(bar.scrollLeft > 0 && wheel.defaultPrevented, 'the wheel does not turn the bar');
+      // the front tab (Settings, at the end) out of sight by a tab's width: a redraw for a new title leaves it so
+      bar.scrollLeft = 0;
+      need(tab('Settings').getBoundingClientRect().right > bar.getBoundingClientRect().right + 50, 'fixture: Settings is in sight');
+      probe().pk.setTitle('Probe with another title long enough to need its room');
+      await until('the new title', () => tab('Probe').querySelector('.dock-tab-title').textContent.startsWith('Probe with another'));
+      need(bar.scrollLeft === 0, `a new title moved the bar to ${bar.scrollLeft}`);
+      bar.scrollLeft = bar.scrollWidth;  // Probe's start scrolled away
+      tab('Probe').click();
+      await until('Probe in front', () => tab('Probe').getAttribute('aria-selected') === 'true');
+      const shown = tab('Probe').getBoundingClientRect();
+      const row = bar.getBoundingClientRect();
+      return need(shown.left >= row.left - 0.5 && shown.right <= row.right + 0.5, 'the tab brought to the front is not in sight');
+    } finally {
+      bar.style.cssText = '';
+      probe().pk.setTitle(titleBefore);
+      tab('Settings').click();  // as the check before left it
+    }
+  });
+
   await check('a framed kit panel leaves its title to the tab and keeps its content', async () => {
     const settings = panelFrame('/ui/panels/settings');
     const panel = await until('the settings panel', () => settings.contentDocument.querySelector('.pk-page-title') && settings.contentDocument);

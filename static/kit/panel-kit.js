@@ -1098,6 +1098,48 @@ function showTab(list, tab) {
     const panel = document.getElementById(t.getAttribute('aria-controls'));
     if (panel) panel.hidden = !on;
   });
+  keepInSight(list, tab);
+}
+
+/**
+ * A vertical mouse wheel over a row that scrolls sideways moves the row (the browser takes only Shift or a
+ * trackpad's sideways swipe for that). A row that fits, a sideways swipe and Ctrl (zoom) are left to the browser,
+ * and so is the wheel once the row is at its end: the page around it scrolls on.
+ */
+export function wheelScrollsAcross(row) {
+  row.addEventListener('wheel', (event) => {
+    if (!event.deltaY || event.deltaX || event.shiftKey || event.ctrlKey || row.scrollWidth <= row.clientWidth) return;
+    const before = row.scrollLeft;
+    row.scrollLeft += event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;  // Firefox counts lines
+    if (row.scrollLeft !== before) event.preventDefault();
+  }, { passive: false });
+}
+
+/** A row of .pk-tabs: the wheel turns it, and a tab cut short says its whole text on hover (a title of its own stays). */
+function wireTabRow(row) {
+  wheelScrollsAcross(row);
+  row.addEventListener('pointerover', (event) => {
+    const tab = event.target.closest?.('.pk-tab');
+    if (!tab || (tab.title && !('pkAutoTitle' in tab.dataset))) return;
+    if (tab.scrollWidth > tab.clientWidth) {
+      tab.title = tab.textContent.replace(/\s+/g, ' ').trim();
+      tab.dataset.pkAutoTitle = '';
+    } else if ('pkAutoTitle' in tab.dataset) {
+      tab.removeAttribute('title');
+      delete tab.dataset.pkAutoTitle;
+    }
+  });
+}
+
+/**
+ * Scrolls a sideways row just far enough that `item` is seen whole (its start, where it is wider than the row).
+ * Not scrollIntoView: that moves every scrolling box around it too, up to the shell.
+ */
+export function keepInSight(row, item) {
+  const box = row.getBoundingClientRect();
+  const it = item.getBoundingClientRect();
+  if (it.left < box.left) row.scrollLeft -= box.left - it.left;
+  else if (it.right > box.right) row.scrollLeft += Math.min(it.right - box.right, it.left - box.left);
 }
 
 /**
@@ -1110,6 +1152,7 @@ export function initTabs(root = document) {
   root.querySelectorAll('[data-pk-tabs]').forEach((list) => {
     if (!list.dataset.pkTabsReady) {
       list.dataset.pkTabsReady = 'true';
+      wireTabRow(list);
       const choose = (tab) => {
         showTab(list, tab);
         list.dispatchEvent(new CustomEvent('tabchange', { detail: { tab: tab.dataset.tab }, bubbles: true }));
@@ -1343,6 +1386,12 @@ export function initShellLink(root = document) {
 function start() {
   initShellLink();
   initTabs();
+  // a row of page links (a nav of a.pk-tab) scrolls as tabs do, its current page in sight
+  document.querySelectorAll('.pk-tabs:not([data-pk-tabs])').forEach((row) => {
+    wireTabRow(row);
+    const here = row.querySelector('[aria-current="page"]');
+    if (here) keepInSight(row, here);
+  });
   initSidebars();
   sortTables(document);
   keyRows(document);

@@ -93,7 +93,7 @@ function drawMachines() {
     const { kind, label, title } = state(one);
     const selected = one.name === shown;
     return html`<button type="button" class="pk-tab" role="tab" data-tab="${one.name}" aria-selected="${String(selected)}" tabindex="${selected ? 0 : -1}" title="${title}">
-      <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span>${one.name}${one.connected && one.latency_ms ? html`<span class="pk-tab-count">${label}</span>` : ''}
+      <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span> ${one.name}${one.connected && one.latency_ms ? html` <span class="pk-tab-count">${label}</span>` : ''}
     </button>`;
   }));
   if (focused !== undefined) [...$('tabs').children].find((tab) => tab.dataset.tab === focused)?.focus();
