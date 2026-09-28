@@ -58,9 +58,7 @@ env:
   # Known failures on a clean checkout, and tests that need the network.
   # Remove a line once its test is fixed.
   CI_TEST_SKIP: >-
-    --ignore=tests/auth/test_security_audit.py
     --ignore=tests/utils/test_vector_store.py
-    --deselect=tests/session/test_session_presence.py::TestTakingTheLock::test_a_lock_file_being_deleted_does_not_refuse_the_hold
     --deselect=tests/pluginsystem/test_plugin_deps_declared.py::test_plugin_modules_use_no_parent_relative_imports
     --deselect=tests/utils/test_yaml_io.py::test_no_production_code_calls_the_pure_python_loader
     --deselect=tests/utils/test_memory_profiling.py::TestMemoryLeakDetector::test_only_a_snapshot_asked_for_records_allocations_and_they_outlast_the_periodic_ones

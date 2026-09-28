@@ -57,6 +57,9 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     for name, role in [("root", UserRole.ADMIN), ("bob", UserRole.USER)]:
         db.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse", role=role))
     monkeypatch.setattr(logging.getLogger(AUDIT_LOGGER_NAME), "handlers", [])
+    # Propagating, or pytest's capture handlers (hung on non-propagating loggers)
+    # take the security.log's place -- see tests/auth/test_security_audit.py.
+    monkeypatch.setattr(logging.getLogger(AUDIT_LOGGER_NAME), "propagate", True)
     monkeypatch.setattr(SecurityAuditMiddleware, "_instance", None)
 
     shipped = yaml.safe_load((REPO / "config" / "config.yaml").read_text(encoding="utf-8"))["auth"]["endpoint_security"]["rules"]
