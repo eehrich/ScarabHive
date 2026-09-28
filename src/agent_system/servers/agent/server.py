@@ -5,6 +5,7 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import errno
 import json
@@ -3830,9 +3831,23 @@ class Agent(ToolServer):
                 self._request_manager.unregister_active_request(request_id)
                 self._session_tracker.unregister_request(request_id)
 
-        # Now open status_scope contexts - their START events will arrive AFTER the start event
-        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
+        # Now open status_scope contexts - their START events will arrive AFTER the start event.
+        # Entered before the block they cover, and guarded like the start event: entering one
+        # publishes, and a cancel or an error there came before the try whose finally ends a run
+        # -- the request stayed registered and its session held for good.
+        scopes = contextlib.AsyncExitStack()
+        try:
+            status_coordinator = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id))
+            status_worker = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_worker", worker_request_id))
+        except BaseException as error:
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)  # lets go of the session's lock too
+            # A scope already open is told why it ends, as `async with` would tell it
+            await scopes.__aexit__(type(error), error, error.__traceback__)
+            raise
+        async with scopes:
             try:
                 # The checkpoint loop: started with the session held, first thing in the
                 # try whose finally (_finalize_request) stops it -- this one, the loop this

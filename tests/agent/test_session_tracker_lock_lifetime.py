@@ -231,3 +231,46 @@ async def test_a_cancel_landing_in_the_run_s_cleanup_still_lets_go_of_the_sessio
     events = [event async for event in agent.run_events("again", session_id="stuck")]
     assert any(event.get("type") == "final" for event in events), \
         "the session was refused: still owned by the run that was gone"
+
+
+async def test_a_run_whose_status_scopes_do_not_open_lets_go_of_the_session(monkeypatch):
+    """Entering the run's status scopes publishes, after its start event and before the try whose finally ends
+    it. A cancel or an error there left the request registered and its session locked for good: every later
+    request on it was refused until the process restarted."""
+    from test_reasoning_loop_wiring import _real_agent
+
+    from agent_system.servers.agent import server as server_mod
+
+    real_scope = server_mod.status_scope
+    endings = []
+
+    class _Told:
+        """The coordinator's scope, noting how it is told to end."""
+
+        def __init__(self, scope):
+            self.scope = scope
+
+        async def __aenter__(self):
+            return await self.scope.__aenter__()
+
+        async def __aexit__(self, *exc):
+            endings.append(exc[0])
+            return await self.scope.__aexit__(*exc)
+
+    def failing_worker_scope(bus, name, request_id):
+        if name.endswith("_worker"):
+            raise RuntimeError("the status bus is gone")
+        return _Told(real_scope(bus, name, request_id))
+
+    agent = _real_agent()
+    agent.llm = _Answers()
+    monkeypatch.setattr(server_mod, "status_scope", failing_worker_scope)
+    with pytest.raises(RuntimeError):
+        [event async for event in agent.run_events("hello", session_id="stuck")]
+    monkeypatch.setattr(server_mod, "status_scope", real_scope)
+
+    assert agent._session_tracker.check_session_locked("stuck") == (False, None)
+    assert agent._session_tracker._active_requests == {}
+    assert endings == [RuntimeError], "the coordinator's scope ended as completed"
+    events = [event async for event in agent.run_events("again", session_id="stuck")]
+    assert any(event.get("type") == "final" for event in events), "the session was refused"
