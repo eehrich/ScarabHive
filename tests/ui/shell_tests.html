@@ -486,6 +486,113 @@
     }
   });
 
+  await check('a panel set to all sessions opens in a tab starting on all of them, pinned all the same; a start on all its path carries is spent once the chat\'s session is picked', async () => {
+    // What the tab then shows is the kit's part: kit_js_tests, "a page the shell opened set to all sessions ..."
+    const storedPath = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'probe').path;
+    const opened = [];
+    const open = win().open;
+    win().open = (...args) => { opened.push(args); return null; };
+    const scope = probeFrame().contentDocument.createElement('pk-session');
+    scope.setAttribute('all', '');
+    probeFrame().contentDocument.body.append(scope);
+    try {
+      const openTab = () => $$('.dock-tab').find((t) => t.textContent.includes('Probe')).querySelector('[data-act="tab"]').click();
+      const pickThenOpen = async (which) => {
+        (await until(`the ${which} scope`, () => scope.querySelector(`[data-scope="${which}"]`))).click();
+        await sleep(200);  // pk:scope on its way to the shell
+        openTab();
+      };
+      await pickThenOpen('all');
+      // pinned by a link (to s-2), then set to all: the tab starts on all sessions, its pin kept for the other choice
+      probe().pk.navigate('/tests/ui/shell_probe_panel.html?session_id=s-2');
+      await sleep(200);
+      openTab();
+      probe().pk.navigate();  // back to the path the probe shows
+      await sleep(200);
+      // set to the chat's session on a path that still carries a start on all sessions: that start is spent
+      probe().pk.navigate('/tests/ui/shell_probe_panel.html?session_scope=all&mark=kept');
+      await sleep(200);
+      await pickThenOpen('session');
+      const spent = storedPath();
+      probe().pk.navigate();
+      await sleep(200);
+      // set to all once more, then the page loads again: it starts on the chat's session, and so does its tab
+      (await until('the all scope', () => scope.querySelector('[data-scope="all"]'))).click();
+      await sleep(200);
+      const before = probe();
+      probeFrame().contentWindow.location.reload();
+      await until('the probe loaded again', () => probe() && probe() !== before && probe().pk.session.id === 's-1');
+      openTab();
+      const query = (n) => new URL(opened[n][0], location.origin).searchParams;
+      const allOf = (n, pin) => query(n).get('session_id') === pin && query(n).get('session_scope') === 'all';
+      const chats = (n) => query(n).get('session_id') === 's-1' && !query(n).has('session_scope');
+      need(opened.length === 4, `${opened.length} tabs opened`);
+      need(allOf(0, 's-1'), `the probe showing all sessions went to ${opened[0][0]}`);
+      need(allOf(1, 's-2'), `the pinned probe showing all sessions went to ${opened[1][0]}`);
+      need(spent === '/tests/ui/shell_probe_panel.html?mark=kept', `the path kept its start: ${spent}`);
+      need(chats(2), `the probe showing the chat's session went to ${opened[2][0]}`);
+      return need(chats(3), `the probe loaded again went to ${opened[3][0]}`);
+    } finally {
+      scope.remove();
+      win().open = open;
+    }
+  });
+
+  await check('a link opens the shell with a panel at its page, pinned as it was and its session in the chat too, a panel back at its own URL; a link to another origin or no address at all opens nothing, and the shell starts all the same', async () => {
+    // From a panel in a tab of its own (the kit's link there): the way back from a tab the shell opened.
+    const page = '/tests/ui/shell_probe_panel.html?session_id=s-1-sub&mark=linked';
+    const noPanel = () => $('.pk-toasts')?.textContent.includes('The link names no panel');
+    try {
+      await go(`/?panel=${encodeURIComponent(page)}`);
+      await until('the session in the chat', () => $('#headerSessionId').textContent === 'Research the icons');
+      const src = await until('the probe at the linked page',
+        () => probeFrame()?.src.includes('mark=linked') && new URL(probeFrame().src));
+      // the pin stays: a panel may keep more by it than the session it follows (message_debugger filters by it)
+      need(src.searchParams.get('session_id') === 's-1-sub', `the probe lost its pin: ${src}`);
+      await until('the probe pinned, its session in the chat', () => probe()?.pk.session.pinned === 's-1-sub'
+        && probe().pk.session.id === 's-1-sub');
+      need(win().location.search === '', `the address kept ${win().location.search}`);
+      // another origin, the probe's path behind it: no panel of this ScarabHive
+      await go(`/?panel=${encodeURIComponent('https://elsewhere.example/tests/ui/shell_probe_panel.html?mark=foreign')}`);
+      await until('the note on the foreign link', noPanel);
+      need(!probeFrame()?.src.includes('mark=foreign'), 'the probe went to the foreign link');
+      // a link to the panel's own URL brings a panel that went elsewhere by itself back there
+      const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'probe');
+      (await until('the probe back after the reload', () => probe()?.pk && probe())).pk.navigate('/tests/ui/shell_probe_panel.html?mark=self');
+      await until('the probe gone elsewhere by itself', () => stored()?.path === '/tests/ui/shell_probe_panel.html?mark=self'
+        && stored().linked === false);
+      await go(`/?panel=${encodeURIComponent('/tests/ui/shell_probe_panel.html')}`);
+      await until('the probe at its own URL', () => probeFrame()?.src.endsWith('/tests/ui/shell_probe_panel.html'));
+      // no address at all: the shell starts all the same, and says the link names no panel
+      await go(`/?panel=${encodeURIComponent('//')}`);
+      await until('the note on the link', noPanel);
+      return need($('.session-item') && !$('#chat').textContent.includes('could not start'), 'the shell did not start');
+    } finally {
+      await loadShell();
+      sessionButton('s-1', 'open').click();  // back where the checks below expect the chat
+      await until('s-1 again', () => $('#headerSessionId').textContent === 'Refactor the kit');
+    }
+  });
+
+  await check('a context link to the page a panel shows already loads nothing again', async () => {
+    const before = await until('the probe', () => probe()?.pk && probe());
+    // the probe shows s-1 pinned (so it says); the context link names the same page by its query alone
+    before.pk.navigate('/tests/ui/shell_probe_panel.html?session_id=s-1');
+    await sleep(200);
+    try {
+      sessionButton('s-1', 'info').click();
+      (await until('the context menu', () => $('#contextMenu [data-panel="probe"]'))).click();
+      // the link was taken -- stored as the link's own path -- whichever tab was in front before
+      const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).items.find((item) => item.panelId === 'probe');
+      await until('the link taken', () => stored().path === '?session_id=s-1' && stored().linked === true);
+      await sleep(500);
+      return need(probe() === before, 'the probe was loaded again');
+    } finally {
+      probe()?.pk.navigate();  // back to the path the probe shows
+      await sleep(200);
+    }
+  });
+
   await check('an open branch of the session tree stays open and current when the list refreshes', async () => {
     sessionButton('s-1', 'expand').click();
     await until('the sub-session', () => $('.session-item[data-id="s-1-sub"]'));
@@ -4698,6 +4805,134 @@
     return true;
   });
 
+  await check('a panel inside the shell offers no way into the shell', async () => {
+    // the kit page came in with the check above: a panel_base page, its header in the markup (hidden when framed)
+    const page = panelFrame('/ui/kit')?.contentDocument;
+    need(page?.readyState === 'complete' && page.querySelector('.pk-page-header'), 'fixture: no kit page with its header');
+    return need(!page.querySelector('[data-pk-shell-link]'), 'the framed kit page offers "Open in ScarabHive"');
+  });
+
+  await check("the header's right toggle puts the dock away, its front panel told so, and a reload keeps it, a narrow visit between included; on a narrow screen it steps the dock aside; a window leaves it away, a panel docked and Ctrl+Alt+B bring it back", async () => {
+    const tabs = $$('.dock-tab').length;
+    need(tabs > 2, 'fixture: fewer than three docked tabs');
+    const toggle = () => $('#dockToggle');
+    const shown = () => getComputedStyle($('#dock')).display !== 'none';
+    const away = () => !shown() && getComputedStyle($('#dockResizer')).display === 'none';
+    const expanded = () => toggle().getAttribute('aria-expanded');
+    const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).dockAway;
+    const heard = () => received('pk:visibility').at(-1)?.visible;
+    const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
+    // the chat takes the room the dock leaves
+    const chatToEdge = () => Math.abs($('.app-main').getBoundingClientRect().right - $('.app-body').getBoundingClientRect().right) <= 1;
+    const narrowLayout = () => until('the narrow layout', () => getComputedStyle($('#dockCollapse')).display !== 'none');
+    const wideLayout = () => until('the wide layout', () => getComputedStyle($('#dockCollapse')).display === 'none');
+    // made narrow, where panels cover the chat, a dock put away stays behind it -- decided on the frame after the resize
+    const narrowKeepsTheChat = async (when, then = async () => {}) => {
+      await withWidth('600px', async () => {
+        await narrowLayout();
+        await sleep(200);
+        need(!shown(), `made narrow ${when}, the dock put away covers the chat`);
+        await then();
+      });
+      await wideLayout();
+    };
+    try {
+      need(!away() && !chatToEdge() && expanded() === 'true' && !toggle().disabled, 'the dock is not shown at the start');
+      tab('Probe').click();  // in front: the panel that is told
+      await until('the probe told it shows', () => heard() === true);
+      $$('.dock-tab').filter((t) => !t.textContent.includes('Probe')).at(-1).querySelector('[data-act="float"]').click();
+      const window_ = await until('the window', () => $('#floatingLayer .app-window'));
+      toggle().click();
+      need(away() && chatToEdge() && expanded() === 'false' && stored() === true, 'the toggle did not put the dock away');
+      await until('the probe told it is hidden', () => heard() === false);
+      window_.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      need(away(), 'a window brought forward brought the dock back');
+      await narrowKeepsTheChat('after a window came forward', async () => {
+        // brought forward there, the window stays while the screen stays narrow, whatever it is resized to
+        $('#floatingList [data-key]').click();
+        need(getComputedStyle($('#floatingLayer')).display !== 'none', 'the window chip did not bring the window');
+        frame.style.width = '580px';
+        await sleep(200);
+        need(getComputedStyle($('#floatingLayer')).display !== 'none', 'resized on the narrow screen, the window went behind the chat');
+      });
+      window_.querySelector('[data-act="dock"]').click();
+      await until('the window docked again', () => !$('#floatingLayer .app-window') && $$('.dock-tab').length === tabs);
+      need(!away() && expanded() === 'true' && stored() === false, 'a panel docked did not bring the dock back');
+      tab('Probe').click();
+      toggle().click();
+      await loadShell();
+      await until('the restored tabs', () => $$('.dock-tab').length === tabs);
+      need(away() && expanded() === 'false' && stored() === true, 'the reload brought the dock back');
+      await narrowKeepsTheChat('after a reload');
+      // a visit on a narrow screen steps the panels aside as ever -- and the layout it saves keeps the wide choice
+      await withWidth('600px', async () => {
+        await loadShell();
+        await until('the restored tabs on the narrow screen', () => $$('.dock-tab').length === tabs);
+      });
+      await wideLayout();
+      need(away() && stored() === true, 'a narrow visit forgot the dock put away');
+      await until('the probe loaded', () => probe()?.pk);
+      const sessions = $('.app-body').dataset.sessions;
+      doc().dispatchEvent(new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }));
+      need(!away() && expanded() === 'true' && stored() === false && $('.app-body').dataset.sessions === sessions,
+        'Ctrl+Alt+B did not bring the dock back, or toggled the sessions too');
+      await until('the probe told it shows again', () => heard() === true);
+      // on a narrow screen the toggle steps the dock aside and back, and puts nothing away for the wide one
+      await withWidth('600px', async () => {
+        await narrowLayout();
+        toggle().click();
+        need(!shown() && stored() === false, 'the toggle did not step the dock aside on the narrow screen');
+        toggle().click();
+        need(shown(), 'the toggle did not bring the dock back on the narrow screen');
+        toggle().click();
+      });
+      // stepped aside there, the dock is back on the wide screen; the stylesheet shows it at once, the toggle is
+      // drawn on the frame after the resize
+      await until('the dock on the wide screen, the toggle saying so', () => !away() && expanded() === 'true');
+      return true;
+    } finally {
+      // a failure above leaves no window and no dock put away to the checks below
+      $$('#floatingLayer .app-window [data-act="dock"]').forEach((button) => button.click());
+      await sleep(100);
+      if (!shown() && $$('.dock-tab').length) toggle().click();
+    }
+  });
+
+  await check('the docked tab brought to the front comes back in front after a reload', async () => {
+    const panelOf = (key) => key.slice(0, key.lastIndexOf(':'));
+    const tabs = $$('.dock-tab');
+    const stored = () => JSON.parse(localStorage.getItem('scarabhive.layout.v1')).active;
+    // one the layout does not name yet: only its click can put it there
+    const pick = tabs.find((tab) => panelOf(tab.dataset.key) !== stored());
+    need(tabs.length > 1 && pick, 'fixture: no second docked tab');
+    const wanted = panelOf(pick.dataset.key);
+    pick.click();
+    await loadShell();
+    await until('the restored tabs', () => $$('.dock-tab').length === tabs.length);
+    const front = panelOf($('.dock-tab[aria-selected="true"]').dataset.key);
+    return need(front === wanted && stored() === wanted, `${front} in front after the reload, not ${wanted}`);
+  });
+
+  await check('with nothing docked, a dock once put away hides no window when the screen turns narrow', async () => {
+    const saved = localStorage.getItem('scarabhive.layout.v1');
+    const layout = JSON.parse(saved);
+    try {
+      localStorage.setItem('scarabhive.layout.v1', JSON.stringify({
+        ...layout, dockAway: true, items: [{ panelId: 'settings', place: 'float', path: '', rect: null }] }));
+      await loadShell();
+      await until('the window', () => $('#floatingLayer .app-window'));
+      return await withWidth('600px', async () => {
+        await until('the narrow layout', () => getComputedStyle($('#dockCollapse')).display !== 'none');
+        await sleep(200);  // the resize is weighed on the frame after it
+        return need(getComputedStyle($('#floatingLayer')).display !== 'none', 'the window went behind the chat');
+      });
+    } finally {
+      localStorage.setItem('scarabhive.layout.v1', saved);
+      await loadShell();
+      await until('the restored tabs', () => $$('.dock-tab').length === layout.items.filter((item) => item.place === 'dock').length);
+    }
+  });
+
   await check('a new window takes the first free step down, not the count of windows', async () => {
     // by panel id: a panel may retitle its tab (the session panel shows the session's title)
     const float = async (panelId, url) => {
@@ -4972,7 +5207,9 @@
     account('admin');
     await go(win().location.href);  // signed in again: the login page sends the user back
     await until('the shell again', () => win().location.pathname === '/' && $('#chat'));
-    return targets.join(',') === '/,/' && !trap;
+    // the page's query comes along: a ?panel= link opened signed out is followed once signed in
+    return need(targets.join(',') === '/?view=chat,/?view=chat', `the login page returns to ${targets.join(', ')}`)
+      && !trap;
   });
 
   await check('a server failure at start is shown, not a dead page', async () => {

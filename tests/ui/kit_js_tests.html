@@ -844,6 +844,44 @@
     }
   });
 
+  await check('a panel in a tab of its own offers ScarabHive with the page it shows when followed, all sessions included while it shows them', () => {
+    const box = document.createElement('div');
+    box.innerHTML = '<header class="pk-page-header"><h1 class="pk-page-title">T</h1></header>';
+    document.body.appendChild(box);
+    const before = location.search;
+    const pick = (which) => box.querySelector(`pk-session [data-scope="${which}"]`)?.click();
+    try {
+      pk.initShellLink(box);
+      pk.initShellLink(box);  // one link a header, however often it runs
+      const links = box.querySelectorAll('[data-pk-shell-link]');
+      const first = links[0]?.getAttribute('href');
+      // a filter set since load: the link is aimed again by a pointer, by focus, and by the click itself
+      const aimedBy = (act, query) => {
+        history.replaceState(history.state, '', `${location.pathname}?${query}`);
+        act();
+        return links[0].getAttribute('href') === `/?panel=${encodeURIComponent(`${location.pathname}?${query}`)}`;
+      };
+      const byPointer = aimedBy(() => links[0].dispatchEvent(new PointerEvent('pointerdown')), 'shown=pointed');
+      const byFocus = aimedBy(() => links[0].dispatchEvent(new FocusEvent('focus')), 'shown=focused');
+      box.addEventListener('click', (event) => event.preventDefault());  // aimed, not followed
+      const byClick = aimedBy(() => links[0].click(), 'shown=clicked');
+      // all sessions picked by hand, nothing in the address says so: the shell docks the page showing them too
+      box.insertAdjacentHTML('beforeend', '<pk-session all></pk-session>');
+      pick('all');
+      history.replaceState(history.state, '', `${location.pathname}?shown=all`);
+      links[0].click();
+      const allAdded = links[0].getAttribute('href') === `/?panel=${encodeURIComponent(`${location.pathname}?shown=all&session_scope=all`)}`;
+      pick('session');
+      const oneAgain = aimedBy(() => links[0].click(), 'shown=one');
+      return links.length === 1 && first === `/?panel=${encodeURIComponent(location.pathname + before)}`
+        && byPointer && byFocus && byClick && allAdded && oneAgain;
+    } finally {
+      pick('session');  // the kit's scope is one for the page: the checks below start on the chat's session
+      history.replaceState(history.state, '', location.pathname + before);
+      box.remove();
+    }
+  });
+
   await check('a refresh says whether the viewer or the timer asked', () => {
     const control = document.createElement('pk-refresh');
     document.body.appendChild(control);
@@ -1199,6 +1237,37 @@
       const quietWhileLoose = seen.join() === 'chat-2';
       doc.body.appendChild(control);
       return seen.join() === 'chat-2,chat-3' && quietWhileLoose && control.isConnected;
+    } finally {
+      window.removeEventListener('message', shell);
+      frame.remove();
+    }
+  });
+
+  await check('a page the shell opened set to all sessions starts on all of them, a shell docking it hears so, and a scope picked there drops that start from the address', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const told = [];
+    const shell = (event) => {
+      if (event.source !== frame.contentWindow) return;
+      told.push(event.data);
+      if (event.data.type === 'pk:ready') {
+        frame.contentWindow.postMessage({ type: 'pk:init', theme: 'dark', visible: true, session: { id: 'chat-1', title: 'One' } },
+          location.origin);
+      }
+    };
+    window.addEventListener('message', shell);
+    try {
+      await new Promise((resolve) => { frame.onload = resolve; frame.src = '/tests/ui/kit_session_probe.html?session_scope=all&keep=yes'; });
+      for (let i = 0; i < 200 && !told.some((m) => m.type === 'pk:scope'); i += 1) await nextFrame();
+      const pressed = (which) => frame.contentDocument.querySelector(`#withChoice [data-scope="${which}"]`).getAttribute('aria-pressed');
+      const { scope, shown } = frame.contentWindow.probeSession;
+      // told after the handshake: a shell resets the scope of a page that (re)loads when it says it is ready
+      const types = told.map((m) => m.type);
+      const started = scope === 'all' && shown === null && pressed('all') === 'true' && pressed('session') === 'false'
+        && told.find((m) => m.type === 'pk:scope')?.scope === 'all' && types.indexOf('pk:ready') < types.indexOf('pk:scope');
+      // picked anew: the start leaves the address, the rest of it stays
+      frame.contentDocument.querySelector('#withChoice [data-scope="session"]').click();
+      return started && frame.contentWindow.location.search === '?keep=yes';
     } finally {
       window.removeEventListener('message', shell);
       frame.remove();

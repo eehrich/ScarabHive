@@ -457,6 +457,7 @@ const WORDS = {
     allSessions: 'All sessions', sessionNamed: (id) => `Session ${id}`,
     pinnedTitle: (id) => `A link sent this panel to session ${id}: it does not follow the chat`,
     followChat: 'Follow the chat', followChatTitle: 'Show the session open in the chat again',
+    openInShell: 'Open in ScarabHive', openInShellTitle: 'Open ScarabHive with this panel docked beside the chat',
   },
   de: {
     notice: 'Hinweis', confirm: 'Bestätigen', input: 'Eingabe', cancel: 'Abbrechen',
@@ -469,6 +470,7 @@ const WORDS = {
     allSessions: 'Alle Sessions', sessionNamed: (id) => `Session ${id}`,
     pinnedTitle: (id) => `Ein Link hat dieses Panel auf Session ${id} gesetzt: es folgt dem Chat nicht`,
     followChat: 'Dem Chat folgen', followChatTitle: 'Wieder die Session zeigen, die im Chat offen ist',
+    openInShell: 'In ScarabHive öffnen', openInShellTitle: 'ScarabHive öffnen, dieses Panel neben dem Chat',
   },
 };
 const word = (key) => (WORDS[document.documentElement.lang.slice(0, 2).toLowerCase()] || WORDS.en)[key];
@@ -811,6 +813,12 @@ class SessionScope extends HTMLElement {
     this.wired = true;
     const pinned = session.pinned;
     const all = this.hasAttribute('all');
+    // A tab the shell opened for a panel set to all sessions (?session_scope=all) starts there, and a shell that
+    // docks this page again hears it
+    if (all && new URLSearchParams(location.search).get('session_scope') === 'all') {
+      scope = 'all';
+      tell('pk:scope', { scope });
+    }
     // Nothing to say: the panel follows the chat, and the chat is right there.
     this.hidden = !pinned && !all;
     // A name for the session shown, or the plain word for it: the label is what the viewer reads as "which session".
@@ -821,8 +829,8 @@ class SessionScope extends HTMLElement {
     render(this, html`
       ${all
         ? html`<div class="pk-row" role="group" aria-label="${word('sessionScope')}">
-            <button type="button" class="pk-btn pk-btn--sm" data-scope="session" aria-pressed="true" title="${title}">${named}</button>
-            <button type="button" class="pk-btn pk-btn--sm" data-scope="all" aria-pressed="false">${word('allSessions')}</button>
+            <button type="button" class="pk-btn pk-btn--sm" data-scope="session" aria-pressed="${String(scope === 'session')}" title="${title}">${named}</button>
+            <button type="button" class="pk-btn pk-btn--sm" data-scope="all" aria-pressed="${String(scope === 'all')}">${word('allSessions')}</button>
           </div>`
         : html`<span class="pk-badge" title="${title}">${named}</span>`}
       ${pinned ? html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" data-act="follow"
@@ -835,6 +843,15 @@ class SessionScope extends HTMLElement {
       const button = event.target.closest('[data-scope]');
       if (!button) return;
       scope = button.dataset.scope;  // the scope already shown asks nothing: announce() has nothing to tell
+      tell('pk:scope', { scope });  // a tab the shell opens for this panel shows the same
+      // The address's ?session_scope=all was where the page started: picked anew, a reload starts as any page does
+      // (the shell drops it from its path once the chat's session is picked; the link into the shell asks the scope)
+      const query = new URLSearchParams(location.search);
+      if (query.has('session_scope')) {
+        query.delete('session_scope');
+        const rest = query.toString();
+        history.replaceState(history.state, '', rest ? `${location.pathname}?${rest}` : location.pathname);
+      }
       this.querySelectorAll('[data-scope]').forEach((one) => one.setAttribute('aria-pressed', String(one === button)));
       this.announce();
     });
@@ -1296,7 +1313,35 @@ const bodySize = new ResizeObserver((entries) => entries.forEach(({ target, cont
   target.style.setProperty('--pk-body-height', `${contentRect.height}px`);
 }));
 
+/**
+ * A panel in a browser tab of its own gets the way into the shell: a link in its header that opens ScarabHive with
+ * this page docked beside the chat (the shell's ?panel=). It points at the page as it stands when followed, a query
+ * set since load included, and at all sessions while <pk-session all> shows them (?session_scope=all, however the
+ * page got there). Runs at start; in a frame there is a shell already.
+ */
+export function initShellLink(root = document) {
+  if (framed) return;
+  root.querySelectorAll('.pk-page-header').forEach((header) => {
+    if (header.querySelector(':scope > [data-pk-shell-link]')) return;
+    const link = document.createElement('a');
+    link.className = 'pk-btn pk-btn--ghost pk-btn--sm';
+    link.dataset.pkShellLink = '';
+    link.title = word('openInShellTitle');
+    render(link, html`${icon('panel-right', { size: 'sm' })} ${word('openInShell')}`);
+    const aim = () => {
+      const page = new URL(location.href);
+      if (scope === 'all') page.searchParams.set('session_scope', 'all');
+      link.href = `/?panel=${encodeURIComponent(page.pathname + page.search)}`;
+    };
+    aim();
+    // the click itself too: activated without a pointer or focus first, the link would follow the load-time page
+    ['pointerdown', 'focus', 'click'].forEach((type) => link.addEventListener(type, aim));
+    header.appendChild(link);
+  });
+}
+
 function start() {
+  initShellLink();
   initTabs();
   initSidebars();
   sortTables(document);

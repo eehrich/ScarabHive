@@ -136,6 +136,10 @@ body.app {
   width: min(var(--dock-width), calc(100vw - var(--sessions-width) - 365px)); min-width: 320px;
   display: flex; flex-direction: column; min-height: 0; background: var(--surface-2);
 }
+/* put away by the header's right toggle, on a wide screen: a narrow one steps the panels aside instead (see below) */
+@media not all and (max-width: 960px) {
+  .app-body[data-dock="away"] :is(.app-dock, .app-dock-resizer) { display: none; }
+}
 .app-dock-bar { display: flex; align-items: stretch; background: var(--surface-1); border-bottom: 1px solid var(--border-subtle); }
 .app-back { display: none; align-self: center; margin: 0 var(--space-1); }
 .app-dock-tabs { display: flex; align-items: stretch; gap: 1px; min-height: 36px; min-width: 0; overflow-x: auto; }

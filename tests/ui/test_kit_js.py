@@ -71,6 +71,7 @@ EXPECTED = [
     "pk-refresh remembers the viewer's interval and pause per page",
     "a side pane gets the width the viewer last dragged it to, keeps a new one per pane, and resizes at its corner",
     "a side pane folds away and back with its toggle, and a panel opened again finds it as the viewer left it",
+    "a panel in a tab of its own offers ScarabHive with the page it shows when followed, all sessions included while it shows them",
     "a refresh says whether the viewer or the timer asked",
     "hidden hides whatever display a component sets",
     "a panel pushed narrow scrolls sideways with its scrollbar in view, and prose tables still wrap",
@@ -86,6 +87,7 @@ EXPECTED = [
     "the scope picked says what a panel asks about, and the scope already shown asks nothing",
     "a link pins a panel to a session: the control names it, and the way back keeps the rest of the link",
     "the session control still reports the chat switching after it was moved in the page",
+    "a page the shell opened set to all sessions starts on all of them, a shell docking it hears so, and a scope picked there drops that start from the address",
 ]
 
 

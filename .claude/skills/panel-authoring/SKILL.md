@@ -24,7 +24,15 @@ funktioniert dieselbe Seite auch — dann zeigt sie Dialoge und Toasts selbst.
 Dorthin bringt sie auch der Knopf „Open in a new browser tab“ an Tab und
 Fensterleiste. Ein eigener Tab hat keinen Chat, dem er folgen könnte: ein Panel
 mit `session`-Kontext bekommt dabei die Session des Chats als `?session_id=`
-angeheftet und zeigt so dasselbe wie im Frame.
+angeheftet und zeigt so dasselbe wie im Frame. Steht `<pk-session all>` auf
+„alle Sessions“, startet der Tab dort (`?session_scope=all`) und bleibt trotzdem
+angeheftet: die Wahl „diese Session“ nennt dann eine. Der Rückweg: im eigenen
+Tab setzt das Kit „Open in ScarabHive“ in den Kopf — die Shell öffnet sich mit
+diesem Panel an dieser Seite (`/?panel=<Pfad der Seite>`; angedockt, oder wo es
+schon offen ist), auf „alle Sessions“, wenn es dort steht. Eine angeheftete
+Session öffnet sich dabei auch im Chat; die
+Anheftung bleibt, denn ein Panel kann mehr daran hängen als die Session, der es
+folgt (`message_debugger` filtert danach).
 
 Das iframe ist Stil-, Absturz- und Lebenszyklus-Grenze, **keine**
 Sicherheitsgrenze: Panels laufen mit `allow-same-origin` und dem Cookie der
@@ -302,6 +310,7 @@ Funktionen oben.
 | Panel → Shell | `pk:title` / `pk:navigate` / `pk:set-theme` | `text` / `path` / `theme` |
 | Panel → Shell | `pk:dirty` | `dirty` (ungespeicherte Eingaben; eine neue Seite im Panel gilt als sauber) |
 | Panel → Shell | `pk:open-session` | `session_id` (der Chat lädt diese Session; `openSession`) |
+| Panel → Shell | `pk:scope` | `scope` (`'session'`/`'all'`, von `<pk-session all>` beim Wählen und beim Laden mit `?session_scope=all`; ein Tab, den die Shell öffnet, startet im selben Bereich) |
 | Panel → Shell | `pk:preferences` | `preferences` (schon gespeichert; die Shell feuert `preferences:changed` für den Chat) |
 
 Was ein Panel vor `pk:init` sagt (Titel, Pfad), hält das Kit zurück und

@@ -1,5 +1,5 @@
 // ScarabHive shell entry: wires header, sessions, chat, panels, launcher and palette.
-import { api, ApiError, html, render, icon, placeMenu, setTheme, currentTheme, THEMES } from '/static/kit/panel-kit.js';
+import { api, ApiError, html, render, icon, placeMenu, setTheme, currentTheme, THEMES, showToast } from '/static/kit/panel-kit.js';
 import { Workspace } from './workspace.js';
 import { SessionManager } from './sessions.js';
 import { Launcher } from './launcher.js';
@@ -28,8 +28,10 @@ async function whoAmI() {
   } catch (error) {
     // 401: not signed in; 403: the account was deactivated -- the login page says so
     if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-      // replace: Back from the login page must not land on a page that sends it there again
-      window.location.replace(`/login?return=${encodeURIComponent(window.location.pathname + window.location.hash)}`);
+      // replace: Back from the login page must not land on a page that sends it there again. The query comes
+      // along: a ?panel= link opened signed out is followed once signed in.
+      const here = window.location.pathname + window.location.search + window.location.hash;
+      window.location.replace(`/login?return=${encodeURIComponent(here)}`);
       return new Promise(() => {});  // the page is leaving
     }
     if (error instanceof ApiError && error.status === 404) return null;  // auth disabled: one owner
@@ -196,6 +198,7 @@ function paletteEntries(sessions) {
   const entries = [
     { group: 'Actions', icon: 'plus', label: 'New session', run: () => sessions.newConversation() },
     { group: 'Actions', icon: 'panel-left', label: 'Toggle sessions', hint: 'Ctrl B', run: () => setSessionsOpen(!sessionsOpen()) },
+    { group: 'Actions', icon: 'panel-right', label: 'Toggle panels', hint: 'Ctrl Alt B', run: () => workspace.toggleDock() },
     ...THEMES.map((theme) => ({ group: 'Actions', icon: THEME_ICONS[theme], label: `Theme: ${theme}`, keywords: ['appearance'], run: () => applyTheme(theme) })),
   ];
   if (user) entries.push({ group: 'Actions', icon: 'log-out', label: 'Log out', run: logout });
@@ -295,6 +298,9 @@ async function start() {
       event.preventDefault();
       // not over an open question: the rest of the page waits for its answer, and so does the palette
       if (!document.querySelector('dialog.pk-dialog[open]:not(#palette)')) palette.open();
+    } else if (mod && event.altKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      workspace.toggleDock();
     } else if (mod && event.key.toLowerCase() === 'b') {
       event.preventDefault();
       setSessionsOpen(!sessionsOpen());
@@ -325,9 +331,37 @@ async function start() {
   await Promise.all([loadCatalog(), sessions.loadSessions(), pollHealth(), selectors, reattached]);
   workspace.restore();
   await sessions.restore();
+  await openFromLink(sessions);
   setInterval(pollHealth, 30000);
   // After restore, so the first poll asks about the rows that are actually shown.
   sessions.watchActivity();
+}
+
+/**
+ * /?panel=<a panel page's path>: ScarabHive opened from a panel in a tab of its own (the kit's link there), or from
+ * a link someone kept. The panel whose catalogue URL the path starts with opens at that page -- docked, or where it
+ * already is. A session the page was pinned to opens in the chat too; the pin stays, for a panel may keep more by
+ * it than the session it follows (message_debugger filters by it). The address goes back to plain, so a reload
+ * does not open it again.
+ */
+async function openFromLink(sessions) {
+  const wanted = new URLSearchParams(window.location.search).get('panel');
+  if (wanted === null) return;
+  history.replaceState(history.state, '', window.location.pathname + window.location.hash);
+  let page = null;
+  try { page = new URL(wanted, window.location.origin); } catch { /* no address at all: it names no panel either */ }
+  const path = page && page.pathname + page.search;
+  const panel = page?.origin === window.location.origin && catalog.panels
+    .filter((p) => path === p.url || path.startsWith(p.url.endsWith('/') ? p.url : `${p.url}/`) || path.startsWith(`${p.url}?`))
+    .sort((a, b) => b.url.length - a.url.length)[0];
+  if (!panel) {
+    showToast(document, 'The link names no panel of this ScarabHive', 'warn');
+    return;
+  }
+  const sessionId = page.searchParams.get('session_id');
+  if (sessionId && panel.contexts?.session) await sessions.loadSession(sessionId);
+  // the page itself, also the panel's own URL: a panel that went elsewhere by itself comes to the page linked
+  workspace.open(panel.id, { path });
 }
 
 function showStartupError(error) {

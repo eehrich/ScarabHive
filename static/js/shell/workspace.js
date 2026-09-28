@@ -44,12 +44,16 @@ export class Workspace {
     this.layer = document.getElementById('floatingLayer');
     this.floatingList = document.getElementById('floatingList');
     /**
-     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect, dirty}
+     * key -> {key, panelId, path, linked, place: 'dock'|'float', frame, element, title, rect, dirty, scope}
      * linked: the path is where a link sent the panel, not where it navigated itself
      * dirty: the page reported unsaved input (pk:dirty)
+     * scope: 'all' while its <pk-session all> shows all sessions (pk:scope)
      */
     this.items = new Map();
     this.active = null;
+    // The dock put away beside the chat on a wide screen (the header's right toggle), kept for the next visit.
+    // Not the narrow screen's "aside": that steps the panels back on every visit, and says nothing wide.
+    this.dockAway = false;
     this.draggedTab = null;
     this.tabDropped = false;
     this.zTop = 1;
@@ -58,12 +62,19 @@ export class Workspace {
     this.wireResizer();
     this.wireTabBar();
     document.getElementById('dockCollapse').addEventListener('click', () => this.stepAside());
+    this.toggle = document.getElementById('dockToggle');
+    this.toggle.addEventListener('click', () => this.toggleDock());
     let pending = false;
+    let wasNarrow = narrow();
     window.addEventListener('resize', () => {
       if (pending) return;
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
+        // turned narrow, where panels cover the chat, with the dock put away: they stay behind it, as on a narrow load.
+        // Nothing docked, nothing was put away -- a flag left from before would hide the windows for no reason.
+        if (this.narrow() && !wasNarrow && this.dockAway && this.docked().length) this.body.dataset.panels = 'aside';
+        wasNarrow = this.narrow();
         this.fitWindows();
         this.renderDock();  // crossing the narrow breakpoint shows or hides the dock
       });
@@ -94,7 +105,7 @@ export class Workspace {
     const existing = [...this.items.values()].find((item) => item.panelId === panelId);
     if (existing) {
       if (path || existing.linked) {
-        const moved = path !== existing.path;
+        const moved = this.url({ panelId, path }) !== this.url(existing);  // a link to the page it shows reloads nothing
         if (!moved || !existing.dirty || await this.mayDiscard(existing)) {
           existing.path = path;
           existing.linked = linked;
@@ -122,13 +133,16 @@ export class Workspace {
 
   /**
    * The panel's page in a browser tab of its own, as it stands. A tab has no chat to follow: a panel that shows
-   * the chat's session (it has a session entry) gets that session pinned the kit's way, ?session_id=.
+   * the chat's session (it has a session entry) gets that session pinned the kit's way, ?session_id=. One the
+   * viewer set to all sessions starts on all of them there (?session_scope=all) -- pinned all the same, so its
+   * choice of one session still names one.
    */
   openInTab(key) {
     const item = this.items.get(key);
     if (!item) return;
     const url = new URL(this.url(item), window.location.origin);
     const chatSession = this.session()?.id;
+    if (item.scope === 'all') url.searchParams.set('session_scope', 'all');
     if (chatSession && this.panel(item.panelId).contexts?.session && !url.searchParams.has('session_id')) {
       url.searchParams.set('session_id', chatSession);
     }
@@ -200,7 +214,7 @@ export class Workspace {
     return [...this.items.values()].filter((item) => item.place === 'dock');
   }
 
-  /** Whether a panel is on screen: the front tab of a shown dock, or a window while the panels are not aside. */
+  /** Whether a panel is on screen: the front tab of a shown dock, or a window while its layer shows. */
   shown(item) {
     if (item.place === 'float') return getComputedStyle(this.layer).display !== 'none';
     return item.key === this.active && getComputedStyle(this.dock).display !== 'none';
@@ -212,6 +226,20 @@ export class Workspace {
     this.renderDock();
   }
 
+  /** The header's right toggle: the dock put away (on a narrow screen stepped aside), or back with its panel in front. */
+  toggleDock() {
+    if (!this.docked().length) return;
+    if (getComputedStyle(this.dock).display === 'none') {
+      this.focus(this.active);
+    } else if (this.narrow()) {
+      this.stepAside();
+    } else {
+      this.dockAway = true;
+      this.renderDock();
+      this.save();
+    }
+  }
+
   /** quietly: put back (the layout restore), not brought forward by the viewer. */
   focus(key, { quietly = false } = {}) {
     const item = this.items.get(key);
@@ -219,11 +247,14 @@ export class Workspace {
     delete this.body.dataset.panels;
     if (item.place === 'dock') {
       this.active = key;
+      if (!quietly) this.dockAway = false;  // a window brought forward leaves a dock put away where it is
     } else {
       item.element.style.zIndex = String(++this.zTop);
       this.layer.querySelectorAll('.app-window').forEach((w) => { w.dataset.focused = String(w === item.element); });
     }
     this.renderDock();
+    // kept: the tab in front comes back in front on the next visit (the restore's last focus included)
+    if (item.place === 'dock') this.save();
     if (!quietly) this.onShow();
   }
 
@@ -236,6 +267,10 @@ export class Workspace {
     this.resizer.hidden = !open;
     this.body.style.setProperty('--dock-width', `${this.dockWidth}px`);
     if (open && !docked.some((item) => item.key === this.active)) this.active = docked[0].key;
+    if (this.dockAway) this.body.dataset.dock = 'away';  // shell.css hides it on a wide screen only
+    else delete this.body.dataset.dock;
+    this.toggle.disabled = !open;
+    this.toggle.setAttribute('aria-expanded', String(open && getComputedStyle(this.dock).display !== 'none'));
     // re-rendering the bar keeps the keyboard focus: render() finds the element again by its
     // data-key, and a tab and each of its buttons have one
     // While a tab is dragged the bar is left alone: a replaced drag source never gets its dragend.
@@ -476,6 +511,7 @@ export class Workspace {
     const layout = {
       dockWidth: this.dockWidth,
       active: this.items.get(this.active)?.panelId || null,
+      dockAway: this.dockAway,
       items: [...this.items.values()].map(({ panelId, path, linked, place, rect }) => ({ panelId, path, linked, place, rect })),
     };
     try { localStorage.setItem(this.layoutKey, JSON.stringify(layout)); } catch { /* storage unavailable */ }
@@ -488,13 +524,15 @@ export class Workspace {
   /**
    * Reopen what was open, in this browser. Panels that left the catalogue and
    * entries storage mangled are dropped. On a narrow screen the panels come
-   * back behind the chat instead of over it.
+   * back behind the chat instead of over it. A dock put away stays so: set before the panels come back, whose
+   * saves would forget it otherwise.
    */
   restore() {
     let layout = null;
     try { layout = JSON.parse(localStorage.getItem(this.layoutKey) || 'null'); } catch { /* unreadable: start empty */ }
     if (!layout || !Array.isArray(layout.items)) return;
     if (Number.isFinite(layout.dockWidth)) this.dockWidth = layout.dockWidth;
+    this.dockAway = layout.dockAway === true;
     const valid = layout.items.filter((saved) => saved && typeof saved.panelId === 'string' && this.panel(saved.panelId));
     // windows without a rectangle of their own last: they take the steps the others leave free
     const rectless = (saved) => saved.place === 'float' && !storedRect(saved.rect);
@@ -537,6 +575,7 @@ export class Workspace {
     switch (message.type) {
       case 'pk:ready':
         item.dirty = false;  // a page the panel went to itself starts with nothing unsaved
+        item.scope = 'session';  // and shows the chat's session, whatever the page before chose
         this.post(item, 'pk:init', { theme: this.theme(), visible: this.shown(item), session: this.session() });
         break;
       case 'pk:dialog': {
@@ -561,6 +600,18 @@ export class Workspace {
       case 'pk:dirty':
         item.dirty = message.dirty === true;
         break;
+      case 'pk:scope': {
+        item.scope = message.scope === 'all' ? 'all' : 'session';
+        // Picked anew: a start on all sessions the path carries (?session_scope=all) is spent, or the next load
+        // would begin there again. Whether a link set the path stays as it was.
+        const url = new URL(this.url(item), window.location.origin);
+        if (item.scope === 'session' && url.searchParams.has('session_scope')) {
+          url.searchParams.delete('session_scope');
+          item.path = url.pathname + url.search;
+          this.save();
+        }
+        break;
+      }
       case 'pk:set-theme':
         this.onSetTheme(String(message.theme));
         break;
