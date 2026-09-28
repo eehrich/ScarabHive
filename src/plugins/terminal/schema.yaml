@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_execute"
-      description: "Execute a shell command either synchronously (wait for completion) or as a background process."
+      description: "Execute a shell command either synchronously (wait for completion) or as a background process.{% if whitelisted %} This terminal runs only the commands its configuration allows, in its configured working directory and environment.{% endif %}"
       parameters:
         type: object
         properties:
@@ -13,21 +13,21 @@ tools:
             type: boolean
             default: false
             description: "Run as background process (default: false). If true, returns immediately with process_id."
-          cwd:
+          {% if not whitelisted %}cwd:
             type: string
             description: "Working directory for command execution (defaults to current directory)"
-          timeout:
+          {% endif %}timeout:
             type: number
             minimum: 1
             maximum: 3600
             default: 300
             description: "Timeout in seconds for foreground commands (1-3600, default: 300, ignored for background)"
-          env_vars:
+          {% if not whitelisted %}env_vars:
             type: object
             description: "Environment variables to set (merged with current environment)"
             additionalProperties:
               type: string
-          process_id:
+          {% endif %}process_id:
             type: string
             description: "Custom process ID for background processes (auto-generated if omitted, only used when background=true)"
           wake:
@@ -105,7 +105,8 @@ config:
     # workspace_root: .        # what workspace-write may write to; default = initial_cwd
   platform:
     # 'auto' = automatically detect bash location on system
-    # Persistent terminal sessions: environment variables and cwd persist across commands
+    # Every command runs in a fresh `bash -c` (executor.py): a `cd` or an
+    # `export` does not carry over to the next command.
     bash_path: auto
     # null = the directory the command was started in (relative paths are
     # resolved against the project); this is also the sandbox's workspace root

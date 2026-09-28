@@ -14,6 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs commands on the configured hosts.
 - `workspace_file_ops` -- the whole checkout, `config/secrets.env` and
   `data/users.db` included -- ships disabled; no shipped agent used it.
+- A terminal with a `security.whitelist` runs every command in its configured
+  working directory and environment: it neither offers nor accepts `cwd` and
+  `env_vars` (`error_type: ConfiguredOnly`), refuses control characters before
+  it matches, and keeps the shell line to one command whatever
+  `allow_command_chains` says. A whitelist checks the command string only, and
+  both let the model change what the allowed command does.
+- `allow_command_chains: false` now keeps the shell line to one command: a line
+  break, `;`, `&&`, `||`, `|`, `&`, a backtick, `$(`, `<(` or `>(` is refused
+  anywhere in the command, quoted or not. Before, only `&&`, `||` and `;` were
+  looked at, and most such chains still passed. The check is lexical; the
+  command stays exactly one only together with a whitelist that names the
+  program.
+- `state_graph_terminal` names its interpreter (`python`, `python3`, `py`, the
+  checkout's `.venv` interpreter by its relative path), separates words by
+  spaces only and starts in the directory the server runs from -- the checkout,
+  as every relative path of the configuration assumes; before, any program
+  whose name ended in `py` passed.
+- A tool server's generic dispatcher no longer calls private methods
+  (`<server>__<method>`); no schema names one.
 - The API does not start with an empty or short JWT signing key (an unset
   `${AUTH_SECRET_KEY}` used to sign every token with an empty key), and logs an
   error for a published one; `auth.reject_default_secret_key: true` refuses it.

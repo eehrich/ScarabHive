@@ -2,6 +2,21 @@
 
 from plugins.terminal.security import CommandSecurityValidator
 
+# Each runs, starts or feeds a second command. Harmless on purpose.
+SECOND_COMMANDS = [
+    "echo a && echo b",
+    "echo a || echo b",
+    "echo a; echo b",
+    "echo a | cat",
+    "echo a &",
+    "echo a\necho b",
+    "echo a\recho b",
+    "echo `id`",
+    "echo $(id)",
+    "cat <(echo a)",
+    "echo a > >(cat)",
+]
+
 
 class TestCommandSecurityValidator:
     """Test suite for CommandSecurityValidator."""
@@ -94,21 +109,71 @@ class TestCommandSecurityValidator:
             assert is_valid, f"Chained command '{cmd}' should be allowed but got: {msg}"
 
     def test_command_chains_blocked(self):
-        """Test that command chains are blocked when configured."""
+        """Chains off means exactly one command: whatever starts, joins or feeds a
+        second one is refused -- chains, pipes, a background ``&``, substitutions
+        and line breaks, which ``bash -c`` runs like ``;``."""
         validator = CommandSecurityValidator(allow_command_chains=False)
-        
-        # Note: Implementation checks for suspicious patterns after chain operators
-        # Simple chains without suspicious chars might still pass
-        suspicious_chains = [
-            "ls && `whoami`",
-            "echo test && $(rm -rf /)",
-            "pwd || $HOME"
-        ]
-        
-        for cmd in suspicious_chains:
+
+        for cmd in SECOND_COMMANDS:
             is_valid, msg = validator.validate_command(cmd)
-            # These should be caught either by chain blocking or injection detection
-            assert not is_valid, f"Suspicious chain '{cmd}' should be blocked"
+            assert not is_valid, f"{cmd!r} runs a second command and should be blocked"
+            assert "one command" in msg, msg
+
+    def test_the_refusal_names_why_the_line_is_one_command(self):
+        """Chains off and a whitelist refuse the same, for different reasons; the message says which."""
+        chains_off = CommandSecurityValidator(allow_command_chains=False)
+        whitelisted = CommandSecurityValidator(whitelist=[r"^echo .*$"], allow_command_chains=True)
+
+        assert "(command chains are off)" in chains_off.validate_command("echo a; echo b")[1]
+        assert "(its whitelist names single commands)" in whitelisted.validate_command("echo a; echo b")[1]
+
+    def test_one_command_passes_with_chains_off(self):
+        validator = CommandSecurityValidator(allow_command_chains=False)
+
+        for cmd in ("echo hi", "pwd", "id", "python script.py 12 --db /tmp/x.db", "echo\tindented"):
+            is_valid, msg = validator.validate_command(cmd)
+            assert is_valid, f"{cmd!r} is one command, got: {msg}"
+
+    def test_a_quoted_separator_is_refused_too_with_chains_off(self):
+        """Lexical on purpose: telling a quoted separator from a live one means
+        parsing the shell's grammar, and a mistake there lets a second command
+        through."""
+        validator = CommandSecurityValidator(allow_command_chains=False)
+
+        assert not validator.validate_command('echo "a;b"')[0]
+        assert not validator.validate_command("echo 'a|b'")[0]
+
+    def test_the_same_commands_stay_allowed_with_chains_on(self):
+        validator = CommandSecurityValidator(allow_command_chains=True)
+
+        for cmd in SECOND_COMMANDS:
+            is_valid, msg = validator.validate_command(cmd)
+            assert is_valid, f"{cmd!r} should be allowed with chains on, got: {msg}"
+
+    def test_a_whitelisted_instance_runs_one_command_with_chains_on_too(self):
+        """With a whitelist the pattern would otherwise be all that stands between the command it
+        names and a second one behind it -- ``^echo .*$`` matches any tail."""
+        validator = CommandSecurityValidator(whitelist=[r"^echo .*$", r"^cat .*$"], allow_command_chains=True)
+
+        for cmd in [c for c in SECOND_COMMANDS if c.startswith(("echo", "cat"))]:
+            is_valid, msg = validator.validate_command(cmd)
+            assert not is_valid, f"{cmd!r} passed a whitelisted instance with chains on"
+        assert "one command" in validator.validate_command("echo a; echo b")[1]
+        assert validator.validate_command("echo a b")[0]
+
+    def test_a_whitelisted_instance_refuses_control_characters(self):
+        """Before any pattern is asked and whatever the chain setting: a pattern is
+        easy to write so that a line break slips through (``\\s``, ``$``), and no
+        command a whitelist names needs a control character."""
+        loose = [r"^echo[\s\w]*$"]   # matches across a line break on its own
+        for chains in (True, False):
+            validator = CommandSecurityValidator(whitelist=loose, allow_command_chains=chains)
+            for cmd in ("echo a\nid", "echo a\rid", "echo a\x00", "echo a\x7f", "echo a\x1b"):
+                is_valid, msg = validator.validate_command(cmd)
+                assert not is_valid, f"{cmd!r} passed a whitelist (chains={chains})"
+                assert "control characters" in msg, msg
+            assert validator.validate_command("echo\ta")[0], "a tab is no control character here"
+            assert validator.validate_command("echo a")[0]
 
     def test_odd_quote_count_no_longer_blocked(self):
         """Unescaped-quote counting was removed -- the shell rejects this better.

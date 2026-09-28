@@ -143,25 +143,24 @@ class TestTerminalServerBasic:
             await server.cleanup()
 
     @pytest.mark.asyncio
-    async def test_command_with_cwd(self, mock_system_config, mock_server_config, mock_status):
+    async def test_command_with_cwd(self, mock_system_config, mock_server_config, mock_status, tmp_path):
         """Test command execution with custom working directory."""
-        import tempfile
         server = TerminalServer("test", mock_system_config, mock_server_config)
         
         try:
-            # Use system temp directory (works on Windows and Linux)
-            temp_dir = tempfile.gettempdir()
+            # A directory of its own, recognised by its name: Git Bash on Windows
+            # rewrites the path (/c/Users/...) but not the name. The system temp
+            # directory named no marker everywhere (macOS: /var/folders/.../T).
+            work_dir = tmp_path / "cwd-marker-4711"
+            work_dir.mkdir()
             result = await server.execute_command({
                 "command": "echo $PWD",  # Use echo $PWD instead of pwd to get actual path
-                "cwd": temp_dir,
+                "cwd": str(work_dir),
                 "_status": mock_status
             })
             
             assert result["status"] == "success"
-            # On Windows with Git Bash, paths may be converted to Unix-style (/c/Users/...)
-            # Check if output contains temp-related path component
-            stdout = result["stdout"].strip().lower()
-            assert any(marker in stdout for marker in ["temp", "tmp", "appdata"])
+            assert "cwd-marker-4711" in result["stdout"], result["stdout"]
         
         finally:
             await server.cleanup()

@@ -1093,7 +1093,8 @@ plugins:
 
       # Security settings
       security:
-        # Whitelist: If set, only these patterns are allowed
+        # Whitelist: only these patterns, one command per call, no cwd/env_vars.
+        # This example is a convenience filter, not a boundary (patterns: terminal README).
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"
@@ -1110,7 +1111,7 @@ plugins:
           - "mkfs"
           - "chmod 777"
 
-        # Allow chained commands (&&, ||, ;)
+        # false: one command per shell line (no ;, &&, ||, |, &, line break, substitution); a whitelist implies it
         allow_command_chains: true
 
         # Extra regex patterns added to the built-in hand-brake list

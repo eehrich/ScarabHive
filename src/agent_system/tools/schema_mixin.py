@@ -189,6 +189,15 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
         # Convert tool name to method name
         method_name = self._get_method_name(tool)
 
+        # A private method is no tool: no schema names one, and reached by name
+        # ("<server>__<method>" strips to "_<method>") it would skip whatever
+        # the public entry checks before it calls the helper.
+        if method_name.startswith("_"):
+            raise ValueError(
+                f"Tool '{tool}' not found in {self.name}. "
+                f"Available tools: {self._get_available_tool_names()}."
+            )
+
         # Check if the tool method exists
         if not hasattr(self, method_name):
             available = self._get_available_tool_names()
