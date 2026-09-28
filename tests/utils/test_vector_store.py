@@ -381,6 +381,7 @@ class TestVectorStoreConcurrency:
         specific inner add with one that records concurrency and assert the
         observed max-concurrency is exactly 1.
         """
+        import contextlib
         import threading
         import time
         from unittest.mock import patch
@@ -396,13 +397,15 @@ class TestVectorStoreConcurrency:
             with guard:
                 state["cur"] -= 1
 
+        # chromadb's write lock serializes the writes on its own: only the instance lock may do it here
         with patch.object(store, "_sqlite_vec_add", side_effect=fake_inner), \
-             patch.object(store, "_chromadb_add", side_effect=fake_inner):
+             patch.object(store, "_chromadb_add", side_effect=fake_inner), \
+             patch.object(store, "_chroma_write", contextlib.nullcontext):
             threads = [
                 threading.Thread(
                     target=store.add,
                     args=("c",),
-                    kwargs={"ids": [f"id{i}"], "documents": ["d"]},
+                    kwargs={"ids": [f"id{i}"], "documents": ["d"], "embeddings": [[0.1] * 384]},
                 )
                 for i in range(10)
             ]
@@ -412,6 +415,27 @@ class TestVectorStoreConcurrency:
                 t.join()
 
         assert state["max"] == 1, f"lock failed to serialize (max concurrency {state['max']})"
+
+    def test_a_model_that_fails_writes_nothing_the_others_must_reopen_for(self, store, monkeypatch):
+        """The documents are embedded before the store's write lock: a model readied on first use may wait
+        minutes for another process, not with every other process's write waiting behind it -- and one that fails
+        has touched no store, so nobody reopens theirs for it."""
+        from pathlib import Path
+        from agent_system.utils import vector_store
+        if store.backend != "chromadb":
+            pytest.skip("the write lock and its generation are chromadb's")
+        counter = Path(store.persist_path) / vector_store._CHROMA_GENERATION
+        store.add("notes", ids=["a"], documents=["first"], embeddings=[[0.1] * 384])  # no model: made here
+        before = counter.read_text(encoding="utf-8")
+
+        def failing(texts, *args, **kwargs):
+            raise RuntimeError("the embedding model could not be readied")
+        monkeypatch.setattr(vector_store, "compute_embeddings", failing)
+
+        with pytest.raises(RuntimeError, match="could not be readied"):
+            store.add("notes", ids=["b"], documents=["second"])
+
+        assert counter.read_text(encoding="utf-8") == before
 
     def test_reentrant_lock_allows_nested_calls(self, store):
         """The lock is reentrant: a synchronized method may call another."""
@@ -845,6 +869,29 @@ class TestTheOnnxModelIsReadiedOnce:
         said = [record.levelname for record in caplog.records if record.name == vector_store.logger.name]
         assert said == [level], said
 
+    @pytest.mark.parametrize("answer, waits", [("ENOLCK", False), ("EWOULDBLOCK", True), ("EACCES", True), (None, True)],
+                             ids=["refused", "held-elsewhere", "held-on-cifs", "granted"])
+    def test_a_file_system_refusing_flock_is_not_waited_out(self, tmp_path, monkeypatch, answer, waits):
+        """filelock takes any flock refusal but ENOSYS -- ENOLCK on NFS without lockd -- for a lock held elsewhere
+        and waits the whole timeout out; asked first, the readying goes on without the lock at once. A lock that is
+        held, or free, is still taken through filelock."""
+        import errno
+        import sys
+        import types
+        from agent_system.utils import vector_store
+
+        def flock(fd, operation):
+            if answer:
+                raise OSError(getattr(errno, answer), answer)
+        monkeypatch.setitem(sys.modules, "fcntl", types.SimpleNamespace(flock=flock, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8))
+        taken = []
+        monkeypatch.setattr(vector_store.FileLock, "acquire", lambda self, *args, **kwargs: taken.append(True))
+
+        with vector_store._cache_lock(tmp_path / "model"):
+            pass
+
+        assert bool(taken) is waits, taken
+
     def test_a_soft_lock_is_taken_not_waited_for(self, tmp_path, monkeypatch, caplog):
         """Without fcntl filelock falls back to a soft lock, whose file's existence is the lock: opened in advance,
         as Windows needs, it was never to be had, and every first use waited the whole timeout."""
@@ -870,10 +917,22 @@ class TestTheOnnxModelIsReadiedOnce:
             raise RuntimeError("the execution provider failed")
         monkeypatch.setattr(ONNXMiniLM_L6_V2, "__call__", failing)
 
-        with pytest.raises(RuntimeError, match="could not be readied"):
+        with pytest.raises(RuntimeError, match="could not be readied") as raised:
             vector_store._OnnxMiniLM()
 
         assert (ready_dir / "onnx" / "model.onnx").is_file()
+        said = str(raised.value)  # the remedy before the cause: file_ops keeps the first 300 characters
+        assert "ready it once" in said[:300] and said.index("ready it once") < said.index("the execution provider"), said
+
+    def test_the_model_never_runs_on_directml(self, ready_dir, monkeypatch):
+        """DirectML takes one Run at a time per session; this one session serves every thread of the process."""
+        from agent_system.utils import vector_store
+        monkeypatch.setattr(vector_store, "get_available_onnx_providers",
+                            lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+
+        model = vector_store._OnnxMiniLM()
+
+        assert "DmlExecutionProvider" not in model._function.model.get_providers()
 
     def test_one_onnx_run_takes_at_most_32_texts_padded_to_the_longest(self, ready_dir):
         """At 128 texts at once onnxruntime's arena grew the process by 0.9-1.4 GB for good, and it ran slower;

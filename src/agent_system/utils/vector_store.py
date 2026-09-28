@@ -22,6 +22,7 @@ Usage:
 """
 
 import contextlib
+import errno
 import functools
 import logging
 import math
@@ -220,6 +221,27 @@ _LOADING: dict[str, threading.Lock] = {}
 _MODEL_LOCK_TIMEOUT = 600.0
 
 
+def _refuses_flock(file: Any) -> None:
+    """Raise where the file system refuses flock itself -- ENOLCK on NFS without lockd, EOPNOTSUPP.
+
+    filelock takes any refusal but ENOSYS for a lock held elsewhere and waits the
+    whole timeout out; a lock that is held answers EWOULDBLOCK -- or EACCES, where
+    flock is emulated through fcntl locks and on CIFS. Without fcntl (Windows)
+    there is nothing to ask.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return
+    try:
+        fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            return  # held elsewhere: waited for below
+        raise
+    fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
 def _cache_lock(model_dir: Path):
     """A lock file beside the model's cache folder, held while one process -- or thread -- readies the model.
@@ -240,14 +262,14 @@ def _cache_lock(model_dir: Path):
         # holds, and waits out the whole timeout (measured 28.09.2026). Not for a soft lock (no fcntl):
         # there the file's existence is the lock, and this open would take it for good.
         if FileLock is not SoftFileLock:
-            with open(lock_path, "a", encoding="utf-8"):
-                pass
+            with open(lock_path, "a", encoding="utf-8") as probe:
+                _refuses_flock(probe)
         lock.acquire(timeout=_MODEL_LOCK_TIMEOUT)
         held = True
     except Timeout:  # an OSError too: caught first
         logger.warning("Waited %.0f s for %s; readying the embedding model without it",
                        _MODEL_LOCK_TIMEOUT, lock_path)
-    except (OSError, NotImplementedError) as error:  # read-only; a file system without flock
+    except (OSError, NotImplementedError) as error:  # read-only; a file system refusing flock
         logger.debug("no lock for the embedding model cache %s: %s", model_dir, error)
     # Outside the except: an error of the readying is not "during handling of" the lock's.
     try:
@@ -281,7 +303,10 @@ class _OnnxMiniLM:
 
     def __init__(self) -> None:
         from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
-        self._function = ONNXMiniLM_L6_V2(preferred_providers=get_available_onnx_providers())
+        # Never DirectML: it takes one Run at a time per session (onnxruntime's DirectML docs), and this
+        # one session serves every store and thread of the process.
+        providers = [name for name in get_available_onnx_providers() if name != "DmlExecutionProvider"]
+        self._function = ONNXMiniLM_L6_V2(preferred_providers=providers or ["CPUExecutionProvider"])
         self._tokenizer = self._ready()
         # Configured once, read by every thread after: a tokenizer changed while in use raises.
         self._tokenizer.enable_truncation(max_length=self.MAX_TOKENS)
@@ -318,11 +343,11 @@ class _OnnxMiniLM:
             return function.Tokenizer.from_file(str(folder / "tokenizer.json"))
 
     def _not_ready(self, model_dir: Path, error: Exception) -> RuntimeError:
-        # chromadb's own error names neither the model nor where it goes (a bare ConnectError offline)
+        # chromadb's own error names neither the model nor where it goes (a bare ConnectError offline).
+        # The remedy first: callers cut the message (file_ops keeps 300 characters).
         return RuntimeError(
-            f"The embedding model all-MiniLM-L6-v2 could not be readied in {model_dir}: {error}. "
-            f"It is downloaded once from {self._function.MODEL_DOWNLOAD_URL}; without network, or where "
-            f"that folder is read-only, ready it once as this user where it may write.")
+            f"The embedding model all-MiniLM-L6-v2 could not be readied in {model_dir}: ready it once, as this "
+            f"user, where it may write and reach {self._function.MODEL_DOWNLOAD_URL}. Cause: {error}")
 
     def encode(self, texts, batch_size: int = 32, normalize_embeddings: bool = False,
                convert_to_numpy: bool = True, show_progress_bar: bool = False):
@@ -527,9 +552,9 @@ class VectorStore:
         # shared chroma-collection dict from different threads at once -> "recursive
         # use of cursors", interleaved writes, corrupted reads. A reentrant lock
         # serializes every public operation per instance (reentrant so methods
-        # that call other locked methods don't deadlock). Held for the whole op
-        # incl. embedding, since the embedding model isn't guaranteed thread-safe
-        # either - correctness over parallel embedding.
+        # that call other locked methods don't deadlock). Held for the whole op,
+        # embedding included -- which needs no lock of its own: the model is one
+        # per process, shared by every store, and runs from any thread (_OnnxMiniLM).
         # The lock is the PATH's: an instance that replaces the shared client
         # must not do it under another instance's running query.
         self._lock = self._access.lock
@@ -651,6 +676,12 @@ class VectorStore:
             metadatas: Metadata dicts for each document (optional)
         """
         if self._backend == "chromadb":
+            if documents and not embeddings:
+                # The model of the collection's own function, through the lock that readies it and without
+                # chromadb's padding to 256 tokens: the vectors are the same (_OnnxMiniLM). Before the store's
+                # write lock: a first use may wait minutes for another process to ready the model, and a
+                # model that fails has written nothing the other processes must reopen for.
+                embeddings = compute_embeddings(documents)
             with self._chroma_write():
                 self._chromadb_add(collection, ids, documents, embeddings, metadatas)
         else:
@@ -983,11 +1014,6 @@ class VectorStore:
     ) -> None:
         """Add documents to ChromaDB collection."""
         coll = self._get_chromadb_collection(collection)
-        if documents and not embeddings:
-            # The model of the collection's own function, through the lock that readies it and without
-            # chromadb's padding to 256 tokens: the vectors are the same (_OnnxMiniLM).
-            embeddings = compute_embeddings(documents)
-
         kwargs: Dict[str, Any] = {"ids": ids}
         if documents:
             kwargs["documents"] = documents
@@ -1016,7 +1042,7 @@ class VectorStore:
         
         kwargs: Dict[str, Any] = {"n_results": actual_n_results}
         if query_text and not query_embedding:
-            query_embedding = compute_embedding(query_text)  # as _chromadb_add embeds the documents
+            query_embedding = compute_embedding(query_text)  # as add embeds the documents
         if query_embedding:
             kwargs["query_embeddings"] = [query_embedding]
         if where:
