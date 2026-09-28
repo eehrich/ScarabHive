@@ -51,6 +51,15 @@ _PASS_LOCK_NAME = ".file_ops_index_pass.lock"
 _FULL_PASS_WAIT = 900.0
 
 
+def _relative_to(path: Path, root: Path) -> Path:
+    """*path* relative to the directory it was found under; its name alone if
+    it does not lie there (a walk that followed a link out)."""
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return Path(path.name)
+
+
 class FileSearchEngine:
     """Fast file search with background indexing."""
 
@@ -428,7 +437,10 @@ class FileSearchEngine:
                                 # model reads 256 tokens, so a whole file would
                                 # be indexed by its head alone (see `symbols`).
                                 ids_here = []
-                                for doc in symbols.documents(file_path, content):
+                                # The path relative to its root: the part a
+                                # question can name (see `symbols`).
+                                for doc in symbols.documents(
+                                        _relative_to(file_path, base_dir), content):
                                     doc_id = f"{file_path}#{doc.line}"
                                     ids_here.append(doc_id)
                                     chroma_docs.append(doc.text)
@@ -599,6 +611,13 @@ class FileSearchEngine:
                 f"FILE_OPS: index state says {stored} documents, the store holds "
                 f"{count} — rebuilding")
             return
+        # Documents of another format would sit next to the new ones: only
+        # the files that change are re-embedded, and the ranking would compare
+        # vectors of two kinds of text.
+        if raw.get("format") != symbols.DOCUMENT_FORMAT:
+            logger.info(f"FILE_OPS: index built from document format {raw.get('format', 1)}, "
+                        f"now {symbols.DOCUMENT_FORMAT} — rebuilding")
+            return
 
         self.file_mtimes = {Path(p): entry["mtime"] for p, entry in files.items()}
         self.file_symbol_ids = {Path(p): entry["ids"] for p, entry in files.items()}
@@ -613,6 +632,7 @@ class FileSearchEngine:
         try:
             payload = {
                 "collection": self._collection_name,
+                "format": symbols.DOCUMENT_FORMAT,
                 "files": {
                     str(path): {"mtime": mtime,
                                 "ids": self.file_symbol_ids.get(path, [])}
