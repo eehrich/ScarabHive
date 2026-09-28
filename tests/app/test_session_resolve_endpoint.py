@@ -23,6 +23,7 @@ import pytest
 
 from agent_system.auth.security import create_access_token
 from agent_system.services.session_manager import SessionManager
+from live_accounts import token_generation
 
 pytestmark = pytest.mark.anyio
 
@@ -51,7 +52,7 @@ def account():
 @pytest.fixture
 def headers(account):
     return {"Authorization": "Bearer " + create_access_token(
-        {"sub": account[1], "user_id": account[0], "role": account[2]},
+        {"sub": account[1], "user_id": account[0], "role": account[2], "gen": token_generation(account[0])},
         secret_key=DEV_SECRET, algorithm="HS256")}
 
 

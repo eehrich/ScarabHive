@@ -9,11 +9,12 @@ from __future__ import annotations
 from typing import List, Literal, Optional, Any, Dict
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel
 
+from agent_system.api.auth_endpoints import renew_own_login
 from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
-from agent_system.auth.database import get_db, UserDatabase
+from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
 from agent_system.auth.dependencies import require_admin
 from agent_system.auth.middleware import (
     AUDIT_CATEGORIES,
@@ -226,6 +227,8 @@ async def create_user_admin(
 async def update_user(
     user_id: int,
     update_data: UserUpdate,
+    request: Request,
+    response: Response,
     admin_user: User = Depends(require_admin),
     db: UserDatabase = Depends(get_db),
 ) -> User:
@@ -253,8 +256,17 @@ async def update_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot demote or deactivate your own account"
         )
+    own_password = user_id == admin_user.id and update_data.password is not None
+    # One's own, as PATCH /auth/me: only while this login holds -- a reset from another process since is not
+    # overwritten by the login it ended -- and the fresh cookie is for the count this change makes
+    generation = request.state.login_generation if own_password else None
     try:
-        updated_user = db.update_user(user_id, update_data)
+        updated_user = db.update_user(user_id, update_data, expected_generation=generation)
+    except PasswordChangedMeanwhile:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The password was changed meanwhile; nothing was saved -- sign in again",
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -265,7 +277,9 @@ async def update_user(
         )
 
     logger.info(f"Admin {admin_user.username} updated user ID {user_id}")
-    
+    if own_password:
+        renew_own_login(response, updated_user, generation)
+
     return User(
         id=updated_user.id,
         username=updated_user.username,

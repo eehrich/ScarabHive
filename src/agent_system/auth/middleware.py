@@ -229,7 +229,7 @@ class EndpointSecurityMiddleware:
                 elif not all(c.isalnum() or c in '_-.' for c in username):
                     logger.warning("JWT token has invalid username format")
                 else:
-                    identity = self._lookup_token_user(username, payload.get("user_id"))
+                    identity = self._lookup_token_user(username, payload.get("user_id"), payload.get("gen", 0))
                     if identity != (None, None):
                         return identity
             except JWTError as e:
@@ -310,20 +310,23 @@ class EndpointSecurityMiddleware:
             return (None, None)
         return self._identity_of(user_in_db)
 
-    def _lookup_token_user(self, username: str, user_id: Any) -> tuple:
+    def _lookup_token_user(self, username: str, user_id: Any, generation: Any = 0) -> tuple:
         """Resolve a verified access token to its account, like the API-key branch.
 
         The token only names the account: it must still exist under the id it was
         issued for and be active, and the role is the account's current one -- so a
         demoted, deactivated or deleted admin loses access now, not at token expiry.
+        A password changed since it was issued (its generation) ends it the same way.
         """
         try:
-            user_in_db = self._get_user_db().get_user_by_username(username)
+            db = self._get_user_db()
+            user_in_db = db.get_user_by_username(username)
+            current = user_in_db and user_in_db.id == user_id and generation == db.token_generation(user_in_db.id)
         except Exception as exc:  # noqa: BLE001
             logger.error("JWT user DB lookup failed (%s: %s); request will return 401",
                          exc.__class__.__name__, exc)
             return (None, None)
-        if not user_in_db or user_in_db.id != user_id or not user_in_db.is_active:
+        if not current or not user_in_db.is_active:
             logger.debug("JWT does not match an active account - rejected")
             return (None, None)
         return self._identity_of(user_in_db)

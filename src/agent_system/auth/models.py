@@ -141,6 +141,7 @@ class TokenData(BaseModel):
     user_id: Optional[int] = None
     role: Optional[UserRole] = None
     token_type: Optional[str] = "access"  # "access" or "refresh"
+    generation: int = 0  # the account's password changes when issued (UserDatabase.token_generation)
 
 
 class LoginRequest(BaseModel):

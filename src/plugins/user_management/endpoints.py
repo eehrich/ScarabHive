@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
-from agent_system.auth.database import get_db
+from agent_system.api.auth_endpoints import renew_own_login
+from agent_system.auth.database import PasswordChangedMeanwhile, get_db
 from agent_system.auth.dependencies import bearer_scheme, get_current_user
 from agent_system.auth.models import UserCreate, UserRole, UserUpdate
 from agent_system.plugins.schema_router import create_schema_router
@@ -83,14 +86,23 @@ class UserManagementWebEndpoints:
         # The requester is an active admin, so refusing to demote or deactivate oneself always leaves one.
         if user_id == admin.id and (update.role not in (None, UserRole.ADMIN) or update.is_active is False):
             raise HTTPException(status_code=409, detail="You cannot take your own admin role or deactivate yourself")
+        own_password = user_id == admin.id and update.password is not None
+        # One's own, as PATCH /auth/me: only while this login holds (a reset since is not overwritten by the login
+        # it ended), and the fresh cookie is for the count this change makes
+        generation = request.state.login_generation if own_password else None
         try:
-            updated = db.update_user(user_id, update)
+            updated = db.update_user(user_id, update, expected_generation=generation)
+        except PasswordChangedMeanwhile:
+            raise HTTPException(status_code=409, detail="The password was changed meanwhile; nothing was saved -- sign in again")
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error))
         if updated is None:
             raise HTTPException(status_code=404, detail="User not found")
         logger.info("Admin %s updated user %s", admin.username, updated.username)
-        return public(updated)
+        response = JSONResponse(jsonable_encoder(public(updated)))
+        if own_password:  # the logins made before end, this one stays
+            renew_own_login(response, updated, generation)
+        return response
 
     async def delete_user(self, request: Request, user_id: int):
         admin, db = await self._admin(request)

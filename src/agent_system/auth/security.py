@@ -125,7 +125,9 @@ def decode_access_token(
             except ValueError:
                 pass
 
-        return TokenData(username=username, user_id=user_id, role=role, token_type=token_type)
+        # a token from before generations were counted is one of the first: 0
+        return TokenData(username=username, user_id=user_id, role=role, token_type=token_type,
+                         generation=payload.get("gen", 0))
     except JWTError:
         return None
 

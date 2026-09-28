@@ -293,9 +293,34 @@ Content-Type: application/json
 {
   "email": "newemail@example.com",
   "full_name": "New Full Name",
-  "password": "newpassword123"
+  "password": "newpassword123",
+  "current_password": "oldpassword123"
 }
 ```
+
+Ein neues Passwort braucht `current_password` (fehlt es: 400, falsch: 403) und
+**beendet jede frühere Anmeldung des Kontos**: ein Token trägt die
+Passwort-Generation, unter der es ausgestellt wurde (`gen`, Tabelle
+`token_generations`), und eines von vor dem Wechsel weisen die Prüfung jeder
+Anfrage (`get_current_user`, Security-Middleware) und `/auth/refresh` ab — auch
+eines ganz ohne `gen` (von vor dieser Regel), sobald das Passwort einmal
+gewechselt wurde. Der Browser, der es ändert, bekommt ein neues Cookie und bleibt
+angemeldet; wer mit einem Bearer-Token arbeitet, meldet sich neu an. Hat
+inzwischen jemand anderes das Passwort gesetzt (ein Admin, auch aus einem
+anderen Prozess), gilt dessen Passwort: die Änderung wird mit 409 abgelehnt,
+nichts gespeichert.
+
+Setzt ein Admin ein Passwort (Admin-API, Users-Panel, `agent-cli users`), enden
+die Anmeldungen dieses Kontos ebenso. Setzt er in Admin-API oder Users-Panel
+sein **eigenes**, bekommt sein Browser ein neues Cookie — geschrieben wird es wie bei
+`PATCH /auth/me` nur, solange seine Anmeldung gilt (kam ein Reset dazwischen: 409,
+nichts gespeichert); über `agent-cli` enden
+auch seine eigenen Browser-Anmeldungen. **Auch der API-Key des Kontos wird
+widerrufen** — er ist eine Anmeldung wie jede andere, und einen mit dem alten
+Passwort erzeugten konnte jeder anlegen, der es kannte. Wer einen braucht
+(`agent-cli reload` liest `AGENT_ADMIN_API_KEY`), erzeugt danach einen neuen
+(`POST /auth/api-key`, `agent-cli users generate-api-key`). Name oder E-Mail zu
+ändern lässt Anmeldungen und Key stehen.
 
 **Response:**
 ```json
@@ -316,7 +341,7 @@ Content-Type: application/json
 curl -X PATCH http://localhost:8000/auth/me \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"email": "newemail@example.com", "password": "newsecurepassword"}'
+  -d '{"email": "newemail@example.com", "password": "newsecurepassword", "current_password": "oldpassword123"}'
 ```
 
 #### GET/PUT /auth/me/preferences
@@ -345,6 +370,10 @@ was sie gewählt hat.
 
 #### POST /auth/api-key
 Generate a new API key for the current user.
+
+Der Key wird nur geschrieben, solange die Anmeldung gilt, mit der er angefragt
+wird (Token oder bisheriger Key): kommt ein Passwortwechsel dazwischen, auch aus
+einem anderen Prozess, antwortet der Endpunkt mit 401 und schreibt nichts.
 
 **Headers:**
 ```
@@ -561,13 +590,13 @@ agent-cli users revoke-api-key johndoe
 
 4. **Change Default Admin Password**
    ```bash
-   # Login as admin and generate API key
+   # First: the change ends every login made with the old password, the API key included
+   agent-cli users update admin --password NewSecurePassword
+
+   # Then log in with the new one (and generate an API key, if you need one)
    curl -X POST http://127.0.0.1:8000/auth/login \
      -H "Content-Type: application/json" \
-     -d '{"username": "admin", "password": "CHANGE_THIS_PASSWORD"}'
-   
-   # Use CLI to update password
-   agent-cli users update admin --password NewSecurePassword
+     -d '{"username": "admin", "password": "NewSecurePassword"}'
    ```
 
 5. **Create Additional Users**
@@ -601,8 +630,8 @@ To implement full session isolation:
 
 ## Database Schema
 
-The user database (`data/users.db`) contains two tables, `users` and
-`user_preferences`:
+The user database (`data/users.db`) contains three tables, `users`,
+`user_preferences` and `token_generations`:
 
 ```sql
 CREATE TABLE users (
@@ -624,11 +653,20 @@ CREATE TABLE user_preferences (
     data TEXT NOT NULL,        -- UserPreferences als JSON
     updated_at TEXT NOT NULL
 )
+
+CREATE TABLE token_generations (
+    user_id INTEGER PRIMARY KEY,
+    generation INTEGER NOT NULL  -- Passwortwechsel des Kontos bisher
+)
 ```
 
-`user_preferences` legt die Datenbank beim Start selbst an (auch in einer
-bestehenden `users.db`); gelöscht wird eine Zeile mit ihrem Konto. Eine Zeile gibt
-es erst, wenn jemand etwas gewählt hat — ohne sie gelten die Defaults.
+`user_preferences` und `token_generations` legt die Datenbank beim Start selbst
+an (auch in einer bestehenden `users.db`); gelöscht wird eine Zeile mit ihrem
+Konto. Eine Zeile gibt es erst, wenn jemand etwas gewählt bzw. das Passwort
+gewechselt hat — ohne sie gelten die Defaults bzw. die Generation 0.
+**`token_generations` gehört zu jeder Kopie und jedem Umzug der Datenbank:** ohne
+sie zählt jedes Konto wieder 0, und die Anmeldungen von vor einem Passwortwechsel
+gelten wieder.
 
 ### PostgreSQL Migration
 
@@ -637,7 +675,7 @@ To migrate to PostgreSQL:
 1. Install psycopg2: `pip install psycopg2-binary`
 2. Update database connection in `auth/database.py`
 3. Convert SQLite schema to PostgreSQL (adjust types as needed)
-4. Migrate user data (`users` and `user_preferences`)
+4. Migrate user data (`users`, `user_preferences` and `token_generations`)
 
 Example PostgreSQL schema:
 ```sql
@@ -659,6 +697,11 @@ CREATE TABLE user_preferences (
     user_id INTEGER PRIMARY KEY REFERENCES users(id),
     data JSONB NOT NULL,
     updated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE token_generations (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    generation INTEGER NOT NULL
 );
 ```
 

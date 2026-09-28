@@ -72,8 +72,12 @@ async def get_current_user(
         if token_data and token_data.username and token_data.token_type == "access":
             user_in_db = db.get_user_by_username(token_data.username)
             # The id binds the token to this account: a later account under a
-            # deleted user's name must not inherit that user's tokens.
-            if user_in_db and user_in_db.id == token_data.user_id:
+            # deleted user's name must not inherit that user's tokens. The
+            # generation to its password: a change ends the logins made before.
+            if (user_in_db and user_in_db.id == token_data.user_id
+                    and token_data.generation == db.token_generation(user_in_db.id)):
+                # What the request writes for this login holds only while it does (POST /auth/api-key)
+                request.state.login_generation = token_data.generation
                 # Convert to User (remove sensitive data)
                 return User(
                     id=user_in_db.id,
@@ -104,6 +108,10 @@ async def get_current_user(
                 if (last is None
                         or (datetime.now(timezone.utc) - last).total_seconds() > 3600):
                     await asyncio.to_thread(db.update_last_login, user_in_db.id)
+                # Read with the key, after the wait above: a password changed since the lookup revoked it
+                request.state.login_generation = db.api_key_generation(api_key_hash)
+                if request.state.login_generation is None:
+                    raise credentials_exception
                 return User(
                     id=user_in_db.id,
                     username=user_in_db.username,

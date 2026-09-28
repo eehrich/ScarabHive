@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent_system.auth import database
-from agent_system.auth.models import UserCreate, UserRole
+from agent_system.auth.models import UserCreate, UserRole, UserUpdate
 from agent_system.auth.security import create_access_token, verify_password
 from agent_system.config.models import AgentSystemConfig, AuthConfig, ToolServerConfig
 from plugins.user_management.plugin import PLUGIN_FACTORY
@@ -130,6 +130,40 @@ def test_an_admin_cannot_lock_themselves_out(db):
     kept = web.put(f"/plugins/user_management/users/{root}", headers=as_user("root"),
                    json={"role": "admin", "is_active": True, "full_name": "Root"})
     assert kept.status_code == 200 and db.get_user_by_id(root).full_name == "Root"
+
+
+def test_a_new_password_ends_that_accounts_logins_but_keeps_the_admin_who_set_their_own(db):
+    web = client()
+    users = "/plugins/user_management/users"
+    bob, root, before = ids(db).bob, ids(db).root, as_user("root")
+
+    others = web.put(f"{users}/{bob}", headers=before, json={"password": "for-bob-123"})
+    own = web.put(f"{users}/{root}", headers=before, json={"password": "for-root-123"})
+
+    assert others.status_code == own.status_code == 200
+    assert "access_token" not in others.cookies  # bob's logins end; the admin gets none of his
+    assert web.get(users, headers=before).status_code == 401  # the token from before the own change
+    fresh = own.cookies.get("access_token")
+    assert fresh and web.get(users, headers={"Authorization": f"Bearer {fresh}"}).status_code == 200
+
+
+def test_an_admin_whose_own_password_is_reset_meanwhile_does_not_overwrite_it(db, monkeypatch):
+    """As PATCH /auth/me: a reset from another process landing after the admin's login was checked stands, and the
+    login it ended gets no fresh cookie."""
+    root = ids(db).root
+    real = db.update_user
+
+    def overtaken(user_id, update, **kwargs):
+        real(user_id, UserUpdate(password="set-elsewhere-1"))  # another process's reset, just before this change
+        return real(user_id, update, **kwargs)
+
+    monkeypatch.setattr(db, "update_user", overtaken)
+    answer = client().put(f"/plugins/user_management/users/{root}", headers=as_user("root"),
+                          json={"password": "for-root-123"})
+
+    assert answer.status_code == 409, answer.text
+    assert "access_token" not in answer.cookies
+    assert verify_password("set-elsewhere-1", db.get_user_by_id(root).hashed_password)
 
 
 def test_another_admin_can_be_demoted_deactivated_and_deleted(db):

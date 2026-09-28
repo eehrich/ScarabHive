@@ -770,7 +770,8 @@ def main() -> None:
 
         if resp.status_code in (401, 403):
             print(json.dumps({"error": f"auth failed (HTTP {resp.status_code})",
-                              "hint": "pass --api-key or set AGENT_ADMIN_API_KEY to an admin user's API key"}, indent=2))
+                              "hint": "pass --api-key or set AGENT_ADMIN_API_KEY to an admin user's API key "
+                                      "(a password change revokes it: generate a new one)"}, indent=2))
             sys.exit(1)
         if resp.status_code != 200:
             print(json.dumps({"error": f"server returned HTTP {resp.status_code}",

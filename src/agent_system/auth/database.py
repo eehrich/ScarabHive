@@ -24,6 +24,20 @@ from agent_system.paths import data_path, resolve_data_path
 logger = logging.getLogger(__name__)
 
 
+class PasswordChangedMeanwhile(Exception):
+    """An expected_generation no longer holds: another password change came in between."""
+
+
+# The compare in a compare-and-set: the account's generation is still the one the caller checked (none counts 0)
+_SAME_GENERATION = "COALESCE((SELECT generation FROM token_generations WHERE user_id = ?), 0) = ?"
+
+
+def _refuse_unless_gone(conn: sqlite3.Connection, user_id: int) -> None:
+    """A compare-and-set that wrote nothing: the password changed meanwhile, unless the account is gone."""
+    if conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is not None:
+        raise PasswordChangedMeanwhile(f"The password of user ID {user_id} changed meanwhile")
+
+
 class UserDatabase:
     """User database manager using SQLite."""
 
@@ -76,6 +90,15 @@ class UserDatabase:
                     user_id INTEGER PRIMARY KEY,
                     data TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+            """)
+            # How often the account's password was changed: a token carries the count it
+            # was issued under (`gen`), and one issued before a change signs nobody in. A
+            # table of its own for the same reason; an account without a row counts 0.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS token_generations (
+                    user_id INTEGER PRIMARY KEY,
+                    generation INTEGER NOT NULL
                 )
             """)
             conn.commit()
@@ -197,14 +220,19 @@ class UserDatabase:
             cursor.execute("SELECT COUNT(*) FROM users")
             return int(cursor.fetchone()[0])
 
-    def update_user(self, user_id: int, update: UserUpdate) -> Optional[UserInDB]:
+    def update_user(self, user_id: int, update: UserUpdate,
+                    expected_generation: Optional[int] = None) -> Optional[UserInDB]:
         """
         Update user information.
-        
+
         Args:
             user_id: User ID to update
             update: Update data (only non-None fields are updated)
-        
+            expected_generation: the token generation under which the caller checked the
+                password this update replaces; another password change since refuses it
+                (PasswordChangedMeanwhile) -- an admin's reset is not overwritten by the
+                account whose logins it was meant to end
+
         Returns:
             Updated user or None if not found
         """
@@ -228,6 +256,8 @@ class UserDatabase:
             updates["role"] = update.role.value
         if update.password is not None:
             updates["hashed_password"] = get_password_hash(update.password)
+            # An API key is a login too: one made with the old password -- by whoever knew it -- ends with it
+            updates["api_key"] = None
         
         if not updates:
             return user
@@ -236,16 +266,28 @@ class UserDatabase:
         
         # Build UPDATE query
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        values = list(updates.values()) + [user_id]
-        
+        where, params = "id = ?", [user_id]
+        if expected_generation is not None:  # compare and set, in the statement that writes
+            where += f" AND {_SAME_GENERATION}"
+            params += [user_id, expected_generation]
+        values = list(updates.values()) + params
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                f"UPDATE users SET {set_clause} WHERE id = ?",
+                f"UPDATE users SET {set_clause} WHERE {where}",
                 values
             )
+            if expected_generation is not None and cursor.rowcount == 0:  # nothing written, nothing committed
+                _refuse_unless_gone(conn, user_id)
+                return None  # deleted meanwhile: as if it had been gone when looked up
+            if "hashed_password" in updates:  # the logins made with the old one end here
+                cursor.execute("""
+                    INSERT INTO token_generations (user_id, generation) VALUES (?, 1)
+                    ON CONFLICT(user_id) DO UPDATE SET generation = generation + 1
+                """, (user_id,))
             conn.commit()
-        
+
         logger.info(f"Updated user ID {user_id}")
         return self.get_user_by_id(user_id)
     
@@ -264,6 +306,7 @@ class UserDatabase:
             cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
             deleted = cursor.rowcount > 0  # read before the next statement resets it
             cursor.execute("DELETE FROM user_preferences WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM token_generations WHERE user_id = ?", (user_id,))
             conn.commit()
         
         if deleted:
@@ -301,6 +344,24 @@ class UserDatabase:
             conn.commit()
         return preferences
 
+    def api_key_generation(self, api_key_hash: str) -> Optional[int]:
+        """The token generation of the account this key belongs to, read with the key in one statement; None
+        once it belongs to none -- a password change revokes it in the transaction that counts up."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(g.generation, 0) FROM users u"
+                " LEFT JOIN token_generations g ON g.user_id = u.id WHERE u.api_key = ?", (api_key_hash,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def token_generation(self, user_id: int) -> int:
+        """The count a token of this account must carry (`gen`) to sign in: its password changes so far."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT generation FROM token_generations WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return row["generation"] if row else 0
+
     def update_last_login(self, user_id: int) -> None:
         """Update user's last login timestamp."""
         with self._get_connection() as conn:
@@ -311,12 +372,14 @@ class UserDatabase:
             )
             conn.commit()
     
-    def generate_user_api_key(self, user_id: int) -> Optional[str]:
+    def generate_user_api_key(self, user_id: int, expected_generation: Optional[int] = None) -> Optional[str]:
         """
         Generate and store a new API key for a user.
         
         Args:
             user_id: User ID
+            expected_generation: the token generation of the login that asks for the key; a password
+                change since ended that login and refuses it (PasswordChangedMeanwhile)
         
         Returns:
             Plain API key (save this, it won't be retrievable later)
@@ -327,13 +390,20 @@ class UserDatabase:
         
         api_key = generate_api_key()
         api_key_hash = hash_api_key(api_key)
+        where, params = "id = ?", [user_id]
+        if expected_generation is not None:  # compare and set, as update_user
+            where += f" AND {_SAME_GENERATION}"
+            params += [user_id, expected_generation]
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE users SET api_key = ?, updated_at = ? WHERE id = ?",
-                (api_key_hash, datetime.now(timezone.utc).isoformat(), user_id)
+                f"UPDATE users SET api_key = ?, updated_at = ? WHERE {where}",
+                [api_key_hash, datetime.now(timezone.utc).isoformat(), *params]
             )
+            if expected_generation is not None and cursor.rowcount == 0:
+                _refuse_unless_gone(conn, user_id)
+                return None
             conn.commit()
         
         logger.info(f"Generated API key for user ID {user_id}")

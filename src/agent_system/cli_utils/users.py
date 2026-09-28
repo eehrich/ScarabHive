@@ -293,6 +293,8 @@ def update_user(
             typer.echo(f"  Full Name: {updated_user.full_name or '-'}")
             typer.echo(f"  Role: {updated_user.role.value}")
             typer.echo(f"  Active: {'Yes' if updated_user.is_active else 'No'}")
+            if password:
+                typer.echo("  Logins made with the old password have ended; its API key is revoked.")
         else:
             typer.echo(f"Failed to update user '{username}'.", err=True)
             raise typer.Exit(1)

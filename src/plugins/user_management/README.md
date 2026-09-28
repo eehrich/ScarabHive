@@ -23,7 +23,9 @@ Opened from the panel launcher (category *admin*) or at `/plugins/user_managemen
 - **New user**: username, email, full name, role, active, password. A refusal (name or email taken, password too
   long, email invalid) is shown in the dialog.
 - **Edit**: email, full name, role, active, and a new password (left empty, the password stays). Only what was changed
-  is sent, so a change made meanwhile by someone else is not overwritten.
+  is sent, so a change made meanwhile by someone else is not overwritten. A new password ends every login of that
+  account made before it, its API key included; set on your own account, your browser gets a new cookie and stays
+  signed in -- unless your password was reset meanwhile (409, nothing saved: sign in again).
 - **Deactivate / Activate**: deactivating asks first; an inactive account can no longer sign in.
 - **Delete**: asks first.
 
