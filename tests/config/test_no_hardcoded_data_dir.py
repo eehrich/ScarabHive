@@ -57,9 +57,11 @@ def spellings(source: str) -> list[tuple[int, str]]:
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             if name in CALLS and any(_is_data(arg) for arg in node.args):
                 found.append((node.lineno, f'{name}("data")'))
-        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        elif isinstance(node, (ast.List, ast.Tuple)):
             # a directory list: allowed_directories or ["data"]. Only a list
             # of that one element -- ("type", "data", "cause") names fields.
+            # Not a set: {"data"} is a membership test on keys (the keys a
+            # JSON body may carry), never a list of directories.
             if len(node.elts) == 1 and _is_data(node.elts[0]):
                 found.append((node.lineno, '["data"]'))
         elif isinstance(node, ast.BoolOp):
@@ -89,6 +91,7 @@ h = cfg.get("allowed_directories") or ["data"]
 i = Path(value or "data")
 j = f"{ROOT}/data/x"
 k = {"kind": "data"}
+m = set(parsed) - {"data"}
 '''
     assert sorted(line for line, _ in spellings(source)) == [3, 4, 5, 6, 7, 10, 11, 12]
 
