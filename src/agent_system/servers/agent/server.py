@@ -1523,21 +1523,6 @@ class Agent(ToolServer):
         if llm_override is not None and hasattr(llm_override, 'set_app_title'):
             llm_override.set_app_title(self.name)
 
-        # Start a background checkpoint loop so long-running tool calls don't
-        # leave the session unsaved on disk. The loop persists messages up to
-        # the last consistent tool_call/tool_result boundary, so the file is
-        # always reload-safe (orphan-free).
-        checkpoint_session_id: Optional[str] = None
-        checkpoint_user_id: Optional[str] = None
-        if self._session_service and session_id and self._session_tracker is not None:
-            try:
-                meta = self._session_tracker.get_session_metadata(session_id) or {}
-                checkpoint_user_id = meta.get("user_id", "anonymous")
-                self._session_service.start_checkpoint_loop(self, checkpoint_user_id, session_id)
-                checkpoint_session_id = session_id
-            except Exception as e:
-                logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
-
         # The run sets its request id and its user in the context it runs in -- the
         # caller's: this generator runs in whoever iterates it. Its cleanup resets
         # them once a conversation context was built; a setup that failed before, or
@@ -1588,11 +1573,6 @@ class Agent(ToolServer):
                 await status_forwarder.stop_forwarding()
             except Exception as e:
                 logger.debug(f"Failed to stop status_forwarder for {request_id}: {e}")
-            if checkpoint_session_id and self._session_service:
-                try:
-                    await self._session_service.stop_checkpoint_loop(checkpoint_session_id)
-                except Exception as e:
-                    logger.debug(f"Failed to stop checkpoint loop for {checkpoint_session_id}: {e}")
             current_request_id.set(request_before)
             current_run_user.set(user_before)
 
@@ -1837,6 +1817,25 @@ class Agent(ToolServer):
             self._set_live_messages(session_id, messages.copy())
         return messages
 
+    def _start_checkpoint_loop(self, session_id: str) -> Optional[asyncio.Task]:
+        """Start a background checkpoint loop so long-running tool calls don't
+        leave the session unsaved on disk. The loop persists messages up to
+        the last consistent tool_call/tool_result boundary, so the file is
+        always reload-safe (orphan-free).
+
+        The loop this run started, or None when one runs for the session already
+        (an agent called as a tool on its caller's session): _finalize_request
+        stops this one and no other."""
+        if not (self._session_service and session_id and self._session_tracker is not None):
+            return None
+        try:
+            meta = self._session_tracker.get_session_metadata(session_id) or {}
+            return self._session_service.start_checkpoint_loop(
+                self, meta.get("user_id", "anonymous"), session_id)
+        except Exception as e:
+            logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
+            return None
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -1846,7 +1845,8 @@ class Agent(ToolServer):
         context: Optional[ConversationContext],
         messages: Optional[List[ChatMessage]],
         results: Dict[str, Any],
-        step: int
+        step: int,
+        checkpoint_loop: Optional[asyncio.Task] = None,
     ) -> None:
         """Finalize request and clean up resources.
 
@@ -1872,32 +1872,17 @@ class Agent(ToolServer):
             messages: Final conversation messages
             results: Execution results dictionary
             step: Final step number
+            checkpoint_loop: The checkpoint loop this run started (_start_checkpoint_loop)
         """
         # First, before anything that awaits: a cancellation there would leave the
         # finished run's model registered for the session's next /compact.
         self._step_llms.pop(session_id, None)
 
-        # Flush injected user messages that arrived too late to be processed
-        # (e.g. during the very last LLM call) into the conversation so they
-        # persist with the final save instead of being dropped with the request
-        # entry. They are answered by the next run on this session.
-        if messages is not None:
-            try:
-                messages = await self._take_in_late_messages(request_id, session_id, messages)
-            except Exception as e:
-                logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
-
-        # Clean up cancellation token
-        cancellation_manager = get_cancellation_manager()
-        cancellation_manager.unregister_request(request_id)
-
-        # Clean up request tracking but preserve session data
-        self._request_manager.unregister_active_request(request_id)
-        logger.debug("Cleaned up request tracking for %s", request_id)
-
-        # Release session lock BEFORE persisting (allows other requests to proceed)
-        # Note: unregister_request also releases the lock, but we do it explicitly here
-        # for clarity and to ensure it happens before session persistence
+        # The session this run holds, looked up first: whatever the steps below
+        # do, the hold is released in the finally. Skipped, the session would stay
+        # owned by a run that is gone and refuse every later request on it until
+        # restart. Nothing cancels those awaits today (neither yields to a second
+        # cancel), but the release must not depend on that.
         sid = self._session_tracker.get_session_for_request(request_id)
 
         # Stop the background checkpoint loop BEFORE the final save. The loop
@@ -1905,17 +1890,42 @@ class Agent(ToolServer):
         # save it can resume after we persist and write its older, trimmed
         # snapshot over the newer one (silent message loss). Cancelling and
         # awaiting the task here guarantees any in-flight checkpoint write has
-        # completed, so the final save below writes last and wins. Idempotent:
-        # the outer run_events finally also calls stop_checkpoint_loop.
-        if sid and self._session_service:
+        # completed, so the final save below writes last and wins.
+        # The loop this run started and no other: an agent called as a tool on
+        # its caller's session would otherwise stop the caller's. And first,
+        # before anything else awaits: stop_checkpoint_loop cancels it and takes
+        # it out of the registry before its own first await, so no cancel landing
+        # later leaves it running.
+        if checkpoint_loop is not None and self._session_service:
             try:
-                await self._session_service.stop_checkpoint_loop(sid)
+                await self._session_service.stop_checkpoint_loop(sid or session_id, started=checkpoint_loop)
             except Exception as e:
-                logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
+                logger.debug(f"Failed to stop checkpoint loop for {session_id} before final save: {e}")
 
-        if sid:
-            await self._session_tracker.release_session_lock(sid, request_id)
-            logger.debug("Released session lock for %s (request %s)", sid, request_id)
+        try:
+            # Flush injected user messages that arrived too late to be processed
+            # (e.g. during the very last LLM call) into the conversation so they
+            # persist with the final save instead of being dropped with the request
+            # entry. They are answered by the next run on this session.
+            if messages is not None:
+                try:
+                    messages = await self._take_in_late_messages(request_id, session_id, messages)
+                except Exception as e:
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+
+            # Clean up cancellation token
+            cancellation_manager = get_cancellation_manager()
+            cancellation_manager.unregister_request(request_id)
+
+            # Clean up request tracking but preserve session data
+            self._request_manager.unregister_active_request(request_id)
+            logger.debug("Cleaned up request tracking for %s", request_id)
+
+        finally:
+            # Release session lock BEFORE persisting (allows other requests to proceed)
+            if sid:
+                await self._session_tracker.release_session_lock(sid, request_id)
+                logger.debug("Released session lock for %s (request %s)", sid, request_id)
 
         # Persist session messages and keep the request->session mapping for a while
         persisted = False
@@ -3752,6 +3762,7 @@ class Agent(ToolServer):
         step = 0
         context = None
         messages = None
+        checkpoint_loop: Optional[asyncio.Task] = None
         results: Dict[str, Any] = {"task": task, "calls": []}
 
         # Register this request BEFORE emitting start event so appends work immediately
@@ -3785,12 +3796,29 @@ class Agent(ToolServer):
 
         # Emit start event BEFORE opening status_scope contexts
         # This ensures frontend has currentRequestId set before any status events arrive
-        yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+        started = False
+        try:
+            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+            started = True
+        finally:
+            if not started:
+                # Closed at its first event (a client gone at once): nothing below runs, the
+                # finally that ends a run included, and the session stayed held for good by a
+                # run that never ran. Let go of it as a refused request does.
+                self._request_manager.unregister_active_request(request_id)
+                self._session_tracker.unregister_request(request_id)
 
         # Now open status_scope contexts - their START events will arrive AFTER the start event
         async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
                    status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
             try:
+                # The checkpoint loop: started with the session held, first thing in the
+                # try whose finally (_finalize_request) stops it -- this one, the loop this
+                # run started. Started before the lock (in run_events, as it was), a
+                # request refused there registered a loop of its own between two runs,
+                # and the run after it went without one once that request cleaned up.
+                checkpoint_loop = self._start_checkpoint_loop(session_id)
+
                 # Session presence: held from here on, not from the first LLM
                 # call -- whoever lets go of the endpoint's hold meanwhile (a
                 # client that disconnects) would leave the session looking idle
@@ -3892,7 +3920,8 @@ class Agent(ToolServer):
                         context=context,
                         messages=messages if messages else (context.messages if context else None),
                         results=results,
-                        step=step
+                        step=step,
+                        checkpoint_loop=checkpoint_loop,
                     )
                 finally:
                     # Session presence: after the save, so input still waiting

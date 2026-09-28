@@ -550,17 +550,23 @@ class SessionService:
             logger.debug(f"[CHECKPOINT] Failed for session {session_id}: {e}")
             return False
 
-    def start_checkpoint_loop(self, agent, user_id: str, session_id: str) -> None:
+    def start_checkpoint_loop(self, agent, user_id: str, session_id: str) -> Optional[asyncio.Task]:
         """Start a background task that periodically checkpoints this session.
 
         Idempotent: a second call for the same session_id is a no-op as long as
         the previous loop is still running.
+
+        Returns the loop THIS call started, or None -- the one its caller stops
+        (``stop_checkpoint_loop(..., started=...)``). Stopped by the session id
+        alone, a run stopped whichever loop stood there: an agent called as a
+        tool on its caller's session ends by stopping the caller's loop, and the
+        caller then checkpointed nothing for the rest of its run.
         """
         if self.checkpoint_interval_seconds <= 0:
-            return
+            return None
         existing = self._checkpoint_tasks.get(session_id)
         if existing is not None and not existing.done():
-            return
+            return None
 
         interval = self.checkpoint_interval_seconds
 
@@ -576,17 +582,29 @@ class SessionService:
             task = asyncio.create_task(_loop(), name=f"session-checkpoint-{session_id}")
         except RuntimeError:
             # No running event loop (e.g. unit test in sync context)
-            return
+            return None
         self._checkpoint_tasks[session_id] = task
+        return task
 
-    async def stop_checkpoint_loop(self, session_id: str, final_checkpoint_agent=None, final_checkpoint_user_id: Optional[str] = None) -> None:
+    async def stop_checkpoint_loop(self, session_id: str, final_checkpoint_agent=None,
+                                   final_checkpoint_user_id: Optional[str] = None,
+                                   started: Optional[asyncio.Task] = None) -> None:
         """Stop the background checkpoint loop for this session.
+
+        ``started``: the loop a caller started (``start_checkpoint_loop``'s
+        answer) -- only that one is stopped, and the session's entry only while
+        it still is that one. Without it, whatever loop runs for the session.
 
         If ``final_checkpoint_agent`` is provided, runs one last checkpoint
         synchronously after cancelling the loop — useful to flush the final
         pre-save state when a request is winding down.
         """
-        task = self._checkpoint_tasks.pop(session_id, None)
+        if started is None:
+            task = self._checkpoint_tasks.pop(session_id, None)
+        else:
+            task = started
+            if self._checkpoint_tasks.get(session_id) is started:
+                del self._checkpoint_tasks[session_id]
         if task is not None and not task.done():
             task.cancel()
             try:

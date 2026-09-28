@@ -90,6 +90,12 @@ class SessionTracker:
         # Track which request owns which session lock: session_id -> request_id
         self._session_lock_owners: Dict[str, str] = {}
 
+        # How many requests hold or wait on a session's lock: session_id -> count.
+        # The lock goes with the last of them (_let_go_of_session_lock). Kept for
+        # good, every session ever run -- each one-shot call's ephemeral session
+        # included -- left its lock for the life of the process.
+        self._session_lock_users: Dict[str, int] = {}
+
         # Compacted messages pending to be applied: session_id -> List[ChatMessage]
         # When a compaction tool runs mid-request, it stores the compacted messages here.
         # The agent will use these instead of the request's local messages when persisting.
@@ -180,18 +186,36 @@ class SessionTracker:
             # Create lock if it doesn't exist
             if session_id not in self._session_locks:
                 self._session_locks[session_id] = asyncio.Lock()
-        
+            # Counted in the same step the lock is looked up: from here on this
+            # request holds or waits on it, and it is not taken away meanwhile.
+            lock = self._session_locks[session_id]
+            self._session_lock_users[session_id] = self._session_lock_users.get(session_id, 0) + 1
+
         # Try to acquire the lock with timeout
-        lock = self._session_locks[session_id]
+        acquired = owned = False
         try:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            acquired = True
             async with self._lock:
                 self._session_lock_owners[session_id] = request_id
+            owned = True
             logger.info("Request %s acquired lock for session %s", request_id, session_id)
             return True
         except asyncio.TimeoutError:
             logger.warning("Request %s timed out waiting for lock on session %s", request_id, session_id)
             return False
+        finally:
+            # Gave up waiting (timed out, cancelled), or cancelled on the way to owning it.
+            # Only for the lock this request counted on: delete_session or clear() may have
+            # taken it meanwhile -- they released it and dropped its count themselves, and a
+            # count there now belongs to the session's NEXT lock.
+            if not owned and self._session_locks.get(session_id) is lock:
+                if acquired:
+                    # Taken but never owned: release goes by the owner, so nobody else would
+                    # release it. (A window nothing opens today -- the tracker's lock is never
+                    # held across an await -- kept closed all the same.)
+                    lock.release()
+                self._let_go_of_session_lock(session_id)
     
     async def release_session_lock(self, session_id: str, request_id: str) -> None:
         """Release exclusive lock for a session.
@@ -221,6 +245,25 @@ class SessionTracker:
             if lock.locked():
                 lock.release()
                 logger.info("Request %s released lock for session %s", request_id, session_id)
+        self._let_go_of_session_lock(session_id)
+
+    def _let_go_of_session_lock(self, session_id: str) -> None:
+        """One request fewer holding or waiting on the session's lock. The lock goes
+        with the last of them -- and only then: while anybody holds it, waits on it
+        or owns the session, a new request must meet the SAME lock, or two runs
+        would write one session at once.
+
+        Synchronous on purpose: it runs in a finally of a cancelled acquire too,
+        where an await could be cut short, and without an await nothing interleaves.
+        """
+        users = self._session_lock_users.get(session_id, 0) - 1
+        if users > 0:
+            self._session_lock_users[session_id] = users
+            return
+        self._session_lock_users.pop(session_id, None)
+        lock = self._session_locks.get(session_id)
+        if lock is not None and not lock.locked() and session_id not in self._session_lock_owners:
+            del self._session_locks[session_id]
     
     def check_session_locked(self, session_id: str) -> tuple[bool, Optional[str]]:
         """Check if a session is currently locked.
@@ -347,6 +390,7 @@ class SessionTracker:
                         lock.release()
                         logger.info("Released session lock for %s during unregister of request %s", 
                                   session_id, request_id)
+                self._let_go_of_session_lock(session_id)
         
         # Remove request tracking
         self._active_requests.pop(request_id, None)
@@ -603,6 +647,10 @@ class SessionTracker:
         # Clear session locks to prevent memory leak
         if session_id in self._session_lock_owners:
             del self._session_lock_owners[session_id]
+        # And who counted on the lock: a run still holding it releases into an
+        # owner that is gone and forgets nothing, so a count left here kept every
+        # later lock of this session for good.
+        self._session_lock_users.pop(session_id, None)
         if session_id in self._session_locks:
             lock = self._session_locks.pop(session_id)
             # Release lock if still held (defensive)
@@ -629,3 +677,4 @@ class SessionTracker:
         self._held.clear()
         self._session_locks.clear()
         self._session_lock_owners.clear()
+        self._session_lock_users.clear()
