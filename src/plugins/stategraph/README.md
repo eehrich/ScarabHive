@@ -11,7 +11,7 @@ edit, run and debug it; the agent `stategraph_author` writes machines.
 - Format reference for authors: `skills/stategraph-authoring/references/format.md`
   (cheat sheet: `docs/format.md`); patterns and debugging next to it
 - New activity kinds: `docs/extending.md`
-- Examples: `machines/`
+- Examples: `machines/`; `showcase.yaml` uses every element of the format once (a test keeps it so)
 
 ## Setup
 

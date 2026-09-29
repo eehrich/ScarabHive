@@ -371,7 +371,7 @@ resources:
   store:
     open:  {call: namespace_for, args: {origin: "{{ run.origin }}"}}
     fork:  {call: copy_namespace, args: {source: "{{ fork_source }}"}}
-    close: {tool: v6_story_json_manage_json, args: {operation: stats, namespace: "{{ resources.store }}"}}
+    close: {tool: v6_story_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
 vars:
   json_namespace: "{{ resources.store }}"
 ```

@@ -26,7 +26,7 @@ states:
     do:
       agent: stategraph_example_agent
       task: |
-        Critique this scene{{ ' by the standard of a publisher' if params.strict else '' }}.
+        Critique this text{{ ' by the standard of a publisher' if params.strict else '' }}.
         Answer with one JSON object and nothing else:
         {"notes": "<what to change, as a short list>", "blocking": <true if it must be revised>}
 

@@ -18,6 +18,8 @@ The full reference is `references/format.md`. Read it before your first machine:
 `references/patterns.md` has ready patterns (review loop, retry with feedback,
 fan-out, map, human approval, submachines, shared error handling, the v6 ritual);
 `references/debugging.md` covers mocks, breakpoints, resume and fork.
+`stategraph_get_machine(machine_id="showcase")` shows one machine that uses every element of
+the format, with comments on the ones that are not obvious from their names.
 
 ## The loop
 

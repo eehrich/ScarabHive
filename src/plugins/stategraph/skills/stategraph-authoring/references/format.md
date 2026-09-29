@@ -1,7 +1,8 @@
 # The stategraph format, version 1
 
 The complete reference for machine authors. The contract behind it is
-`docs/stategraph_design.md` §2–§4; this file must never contradict it.
+`docs/stategraph_design.md` §2–§4; this file must never contradict it. One machine that
+uses every element below: `showcase` (`stategraph_get_machine(machine_id="showcase")`).
 
 Contents: 1 Files · 2 Top-level keys · 3 States · 4 Transitions · 5 Activities ·
 6 Python and templates · 7 Events · 8 Errors · 9 Purity and data · 10 Counters,
@@ -1090,7 +1091,7 @@ resources:
   store:
     open:  {call: namespace_for, args: {run_id: "{{ run.id }}"}}
     fork:  {call: copy_store, args: {source: "{{ fork_source }}", run_id: "{{ run.id }}"}}
-    close: {tool: v6_story_json_manage_json, args: {operation: stats, namespace: "{{ resources.store }}"}}
+    close: {tool: v6_story_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
 vars: {json_namespace: "{{ resources.store }}"}
 ```
 
