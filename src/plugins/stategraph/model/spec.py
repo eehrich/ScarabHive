@@ -329,7 +329,7 @@ class MachineSpec(Strict):
     id: str
     title: str = ""
     description: str = ""
-    group: str = Field("", description="its folder in the panel's machine list, nested by / (Writer/v6); empty: "
+    group: str = Field("", description="its folder in the panel's machine list, nested by / (Reviews/nightly); empty: "
                                        "the folder of where it comes from")
     python: Optional[str] = Field(None, description="companion module, relative to this file")
     imports: dict[str, str] = Field(default_factory=dict, description="alias -> ./relative.yaml or machine id")

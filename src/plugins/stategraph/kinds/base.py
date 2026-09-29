@@ -45,12 +45,13 @@ if TYPE_CHECKING:
 class KindSpec(Strict):
     """Keys every activity accepts, besides its own."""
 
-    retry: Optional[RetrySpec] = None
+    retry: Optional[RetrySpec] = Field(None, description="{attempts, backoff, errors}: try again before the failure "
+                                                         "becomes the state's error event; default: one attempt")
     timeout: Optional[Duration] = Field(None, description="deadline of one attempt")
     idempotent: Optional[bool] = Field(
         None, description="may a resumed run start it again if it was in flight at the crash? "
                           "default: true, tool: false")
-    description: str = ""
+    description: str = Field("", description="what the activity is for, for whoever reads the machine")
 
     @field_validator("timeout")
     @classmethod

@@ -13,6 +13,7 @@ import fnmatch
 import json
 import logging
 import math
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +38,13 @@ ROW_CHARS = 2000
 OUTPUT_CHARS = 20000
 ANSWER_CHARS = 200000  # a whole get_run answer: many short texts add up too
 READ_ONLY_TOOLS = frozenset({"catalog", "list_machines", "get_machine", "get_run", "list_runs"})
+#: The parameters control_run takes (schema.yaml); the framework's own start with "_".
+CONTROL_PARAMS = frozenset({"run_id", "action", "steps", "mocks", "state", "machine", "at_step", "definition",
+                            "breakpoints", "watchpoints", "expr", "path", "pause"})
+#: What the framework adds to a tool call without the "_" (an agent's programmatic dispatch; tools/base.py reads it).
+FRAMEWORK_PARAMS = frozenset({"request_id", "requestId"})
+#: A callback URL's token as the callback kind makes it (secrets.token_urlsafe) -- after ?token= or /callback/.
+CALLBACK_TOKEN = re.compile(r"(?:[?&]token=|/callback/)([A-Za-z0-9_-]+)")
 #: What a run's state asks of whoever reads it next (tool answers carry it as ``next``).
 NEXT = {
     "running": "it goes on by itself: stategraph_get_run(run_id, wait='finish') waits for its end, a pause or a wait",
@@ -191,6 +199,18 @@ class StateGraphServer(SchemaBasedToolServer):
         own and runs of nobody; without auth the app has one user."""
         return not self._auth_enabled() or owner in (None, user_id) or self._is_admin(user_id)
 
+    def _holds_tokens(self, user_id: Optional[str], owner: Optional[str]) -> bool:
+        """Whether a reader may see the run's callback URLs whole: its own user, or an admin (without auth, the one
+        user). Anyone else who sees the run -- a run of nobody -- would fire its events past send_event's gate."""
+        return not self._auth_enabled() or (owner is not None and owner == user_id) or self._is_admin(user_id)
+
+    def _callback_tokens(self, run_id: str) -> set[str]:
+        """The tokens of every callback URL the run made: in its callback activities' answers."""
+        tokens: set[str] = set()
+        for url in self.run_store.callback_urls(run_id):
+            tokens.update(CALLBACK_TOKEN.findall(url))
+        return tokens
+
     def _authorize(self, params: dict[str, Any], tool: str) -> Optional[str]:
         """None when the caller may use ``tool``; else the refusal (§8.3)."""
         if tool in READ_ONLY_TOOLS or not self._auth_enabled():
@@ -210,7 +230,7 @@ class StateGraphServer(SchemaBasedToolServer):
         if refusal:
             if status:
                 await status.error(refusal[:140])
-            return {"status": "error", "error": refusal}
+            return {"status": "error", "error": refusal, "error_type": "http_403"}
         try:
             result = await body()
         except ServiceError as exc:
@@ -392,13 +412,18 @@ class StateGraphServer(SchemaBasedToolServer):
             max_wait = _number(params, "max_wait", self.default_max_wait, 0, MAX_WAIT)
 
             def read() -> dict[str, Any]:
-                return self.service.get_run(_need(params, "run_id"), steps=params.get("steps") or 30,
+                # 0 is refused like control_run's, not read as "not given"
+                steps = params["steps"] if params.get("steps") is not None else 30
+                return self.service.get_run(_need(params, "run_id"), steps=steps,
                                             user_id=params.get("_user_id"), after=params.get("after"),
                                             kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
             row = read()  # the user's right to see it, and the filters, before any wait
             if wait == "finish" and (row["status"] == "running" or _timed(row)):  # another process's too: polled
                 await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
                 row = read()
+            if not self._holds_tokens(params.get("_user_id"), row.get("user_id")):
+                # on the whole values, before any text is cut: a token cut in two would leave its first part
+                row = _hidden(row, self._callback_tokens(row["id"]))
             view = row.get("view") or {}
             return _bounded({**_summary(row, full_output=_flag(params, "full_output")), "run_id": row["id"],
                              "frames": _capped(view.get("frames", []), ROW_CHARS),
@@ -409,6 +434,11 @@ class StateGraphServer(SchemaBasedToolServer):
 
     async def control_run(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
+            unknown = sorted(key for key in params
+                             if not key.startswith("_") and key not in CONTROL_PARAMS and key not in FRAMEWORK_PARAMS)
+            if unknown:
+                raise ServiceError(422, f"unknown argument(s) {', '.join(unknown)} for control_run; it takes "
+                                        f"{', '.join(sorted(CONTROL_PARAMS))}")
             run_id, action = _need(params, "run_id"), _need(params, "action")
             kwargs = {k: params[k] for k in ("state", "machine", "at_step", "definition", "breakpoints", "watchpoints",
                                               "expr", "path", "pause") if k in params}
@@ -680,6 +710,22 @@ def _bounded(answer: dict[str, Any]) -> dict[str, Any]:
         answer["frames_cut"] = ("ctx replaced by its keys and their sizes: read single values with "
                                 "control_run(action=evaluate) while the run is paused")
     return answer
+
+
+def _hidden(value: Any, tokens: set[str]) -> Any:
+    """``value`` with every one of ``tokens`` replaced by <hidden>, wherever a text holds it."""
+    if not tokens:
+        return value
+    if isinstance(value, str):
+        for token in tokens:
+            value = value.replace(token, "<hidden>")
+        return value
+    if isinstance(value, dict):
+        return {(_hidden(key, tokens) if isinstance(key, str) else key): _hidden(item, tokens)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_hidden(item, tokens) for item in value]
+    return value
 
 
 def _choice(params: dict[str, Any], key: str, choices: tuple[str, ...]) -> str:

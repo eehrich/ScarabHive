@@ -216,10 +216,10 @@ async function loadMachines() {
   drawMachineList();
 }
 
-/** Folders the author closed, by path ("Writer/v6"): kept for the next visit. */
+/** Folders the author closed, by path ("Reviews/nightly"): kept for the next visit. */
 const closedFolders = new Set(recall('closed-folders', []));
 
-/** The machines as a folder tree: a machine's group ("Writer/v6", set in its file, else where it comes from) is its
+/** The machines as a folder tree: a machine's group ("Reviews/nightly", set in its file, else where it comes from) is its
  * folder path. Folders keep the order the server lists their first machine in. */
 function folderTree(machines) {
   const root = { path: '', children: new Map(), machines: [] };
@@ -1014,7 +1014,7 @@ const STATE_FIELD_SCHEMA = {
 const MACHINE_FIELD_SCHEMA = {
   title: { type: 'string' },
   description: { type: 'string' },
-  group: { type: 'string', description: 'its folder in the machine list, nested by / (Writer/v6)' },
+  group: { type: 'string', description: 'its folder in the machine list, nested by / (Reviews/nightly)' },
   vars_from: { type: 'string', description: 'agent whose configured template_vars lie under vars' },
   params: { type: 'object', description: 'name: {type: string | integer | number | boolean | object | array, required, default, enum, description}' },
   events: { type: 'object', description: 'name: {description, data (a JSON schema of what it carries)}' },

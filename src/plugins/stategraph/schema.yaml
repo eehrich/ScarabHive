@@ -10,7 +10,7 @@ tools:
       parameters:
         type: object
         properties:
-          agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. v6_*; default: every agent"}
+          agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. review_*; default: every agent"}
           tools: {type: string, description: "fnmatch pattern on the flat tool name that narrows the tool list, e.g. *json*; default: every tool the runner may call"}
         additionalProperties: false
 
@@ -86,7 +86,7 @@ tools:
           pause_at_start: {type: boolean, default: false, description: "hold the run at its first hook (then step or continue with control_run)"}
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
           wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits for an event (a timer it waits out); background: return at once"}
-          max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish before returning status running"}
+          max_wait: {type: number, minimum: 0, maximum: 3600, description: "seconds to wait with wait=finish before returning status running; default: the instance's default_max_wait"}
         additionalProperties: false
 
   - type: function
@@ -97,12 +97,12 @@ tools:
         type: object
         properties:
           run_id: {type: string, description: "id from run_machine"}
-          steps: {type: integer, minimum: 1, maximum: 200, default: 30, description: "how many journal rows to return: the last ones, or the first after `after`"}
+          steps: {type: integer, minimum: 1, maximum: 500, default: 30, description: "how many journal rows to return: the last ones, or the first after `after`"}
           after: {type: integer, minimum: 0, description: "the rows after this journal seq (to page forward through a long run); without it, the last ones"}
           kinds: {type: array, items: {type: string, enum: ["activity", "trace", "event", "edit", "timer"]}, description: "only rows of these kinds (activity: what each activity was given and answered; trace: transitions with the guards they evaluated, pauses, finals)"}
           state: {type: string, description: "only rows of this state"}
           wait: {type: string, enum: ["now", "finish"], default: "now", description: "finish: a running run (or one in a timer) is waited for until it ends, pauses or waits for an event (at most max_wait seconds)"}
-          max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish"}
+          max_wait: {type: number, minimum: 0, maximum: 3600, description: "seconds to wait with wait=finish; default: the instance's default_max_wait"}
           full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
         required: [run_id]
         additionalProperties: false
@@ -126,7 +126,7 @@ tools:
           watchpoints: {type: array, items: {}, description: "set_watchpoints: Python expressions, or {expr, condition}"}
           expr: {type: string, description: "evaluate / set: a read-only Python expression over the paused scope"}
           path: {type: string, description: "set: the ctx path to assign, e.g. ctx.draft -- or out, at an exit or error breakpoint of a state with do: the activity completes with that out (a failure too)"}
-          steps: {type: integer, minimum: 1, maximum: 200, description: "how many of the run's last journal rows the answer carries (as get_run); without it, none"}
+          steps: {type: integer, minimum: 1, maximum: 500, description: "how many of the run's last journal rows the answer carries (as get_run); without it, none"}
         required: [run_id, action]
         additionalProperties: false
 

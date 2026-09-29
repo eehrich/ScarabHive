@@ -1,0 +1,953 @@
+@database "stategraph"
+@author "Enrico Ehrich"
+@$VER: stategraph.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "State Graph"
+@{h1}State Graph
+
+A workflow of several agents -- one writes, one reviews, a person approves,
+the draft goes back when the review fails -- written down as a state
+machine in YAML instead of in a prompt. Each state does one thing: runs an
+agent, calls a tool, lets a model decide, runs a Python function, waits
+for an event. Transitions say where to go next, with Python guards. The
+plugin runs a machine step by step, writes every step to a journal,
+resumes an interrupted run without repeating finished work, and stops on
+breakpoints like a debugger. You build, run and debug machines in the
+@{b}State Graph@{ub} panel; the agent @{tt}stategraph_author@{utt} writes
+them for you.
+
+@{image docs/panel.png "The State Graph panel with a machine as a graph, its inspector and a run"}
+
+@{code}
+For users
+  @{"  The State Graph panel  " link panel}
+  @{"  Machines  " link machines}
+  @{"  Runs  " link runs}
+
+For agents and developers
+  @{"  Tools: building machines  " link tools_machines}
+  @{"  Tools: running machines  " link tools_runs}
+  @{"  Tools: debugging a run  " link tools_debug}
+  @{"  The authoring agent  " link author}
+  @{"  Schedules  " link schedules}
+  @{"  Callback URLs  " link callbacks}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Security  " link security}
+@{body}
+@endnode
+
+@node panel "The State Graph panel"
+@{h1}The State Graph panel
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "State Graph"). It is
+for admins only: anyone else is refused. A link can open a machine and a run at once:
+@{tt}/plugins/stategraph/?machine=<id>&run=<run id>@{utt}.
+
+@{image docs/panel.png "The State Graph panel"}
+
+The panel has three parts; the toolbar buttons fold the outer two away.
+
+@{h2}The machine list (left)
+
+Every machine in the machine folders, in folders by the machine's
+@{tt}group@{utt} (@{tt}Reviews/nightly@{utt} is a folder inside another).
+A machine without a group sits in "My machines" when it lies in the
+writable folder, else in a folder named after the plugin it comes with.
+Each entry shows title, id, description and a badge: @{i}valid@{ui}, the
+number of errors or warnings, and @{i}read-only@{ui} for a machine outside
+the writable folder. Folders you close stay closed on your next visit; a
+search (id, title, description, group) opens every folder it finds
+something in. @{b}New@{ub} asks for an id and creates
+@{tt}<id>.yaml@{utt} with two states, @{tt}start@{utt} and
+@{tt}done@{utt}.
+
+@{h2}The machine (middle)
+
+The head shows title, id and file, the problems (a click lists them all in
+the inspector), and buttons to copy the id, @{b}Duplicate@{ub} the machine
+(a copy under a new id in the writable folder, its Python module copied
+as @{tt}<id>.py@{utt}, even of a shipped machine) and delete it (writable
+machines only: its file, its layout and its Python module unless another
+machine uses it; refused while another machine imports it; its runs stay
+readable).
+
+@{b}Graph@{ub} -- the machine as a diagram. The bar adds a state of each
+activity kind, or a plain State, Choice, Junction, Final or Composite (a
+composite comes with a first state inside it); new states go into the
+selected composite. @{b}Find a state@{ub} selects a state by name.
+@{b}Undo@{ub} and @{b}Redo@{ub} put the file back as it was before or
+after an edit (the last 20 edits). @{b}Fit@{ub}, the zoom buttons and
+@{b}Auto layout@{ub} (it asks before it drops positions you dragged)
+arrange the view.
+
+@{table}
+On the graph | Does
+drag a state | moves it; the position is kept in a layout file next to the machine
+drag from a state's handle to another state | adds a transition
+double-click a state | renames it; every transition and initial naming it follows
+Ctrl or Shift+click | adds a state or transition to the selection
+Ctrl or Shift+drag on empty canvas | selects the states wholly inside the box
+Delete, Backspace | removes what is selected, after asking
+Ctrl+Z; Ctrl+Shift+Z or Ctrl+Y | undo; redo
+wheel; Shift+wheel; Ctrl+wheel | scrolls; scrolls sideways; zooms
+Escape | clears the selection
+@{body}
+
+The keys work while the graph has the focus. A read-only machine can be
+moved around but not changed; its layout is kept only for the open view.
+
+@{b}YAML@{ub} -- the machine's files as text: the YAML, its Python module,
+the machines it imports. Tab indents with spaces. @{b}Validate@{ub} checks
+the unsaved text, @{b}Save@{ub} writes every changed file, @{b}Revert@{ub}
+drops the changes. @{b}Python module@{ub} gives a writable machine without
+one its module: a @{tt}python:@{utt} line and the file, both unsaved until
+Save. The problem list below the text leads to each problem's line.
+
+@{b}Runs@{ub} -- start a run and look at the machine's runs (see below).
+
+@{h2}The inspector (right)
+
+@{bullet}Nothing selected: the machine's overview -- initial state, counts,
+how transitions are drawn (right-angled or straight), every problem as a
+link to its place, a form for the machine's settings (title, description,
+group, params, events, context, vars, imports, resources, limits, finally
+...), the machines it imports, and "As an agent": which agents run this
+machine, and the @{tt}agent:@{utt} block that would offer it as one (see
+@{" Machines " link machines}).
+@{bullet}A state: @{b}Rename@{ub}, @{b}Initial@{ub} (makes it the first
+state of its region), @{b}Remove@{ub}; breakpoints on enter, exit or error
+(only the hooks that can stop there -- a choice or a top-level final has
+none, and the panel says why); its activity (the kind, and a field for
+each setting of that kind, with the agents, tools and decision profiles
+there are to pick from); its settings (type, max_visits, timeout, entry,
+exit, finally, a final's status and output); its transitions, in the
+order they are tried; and its YAML, to edit the state as text.
+@{bullet}A transition: trigger (with @{b}New event...@{ub}, which declares
+a new event and picks it), target, guard, effect, and how its line is
+drawn; move it up or down in the order, or remove it.
+@{bullet}Several states and transitions: how their lines are drawn,
+@{b}Group@{ub} (puts the states into a new composite) and
+@{b}Remove@{ub}.
+
+Every form has its own @{b}Apply@{ub}; it sends only the fields you
+changed, and the file's comments stay. What you typed into the other
+forms stays through an edit. The panel asks before it drops text you did
+not apply: when you select something else, reload the machine, or apply
+another edit while the state's YAML box holds text.
+
+@{h2}Starting a run
+
+In the Runs tab: a field per param of the machine (the last values you
+started it with come back), @{b}Mocks@{ub} (JSON: a state path and the
+answer its activity gives instead of running, see @{" Runs " link runs}),
+@{b}Mock only@{ub} (anything not mocked fails instead of calling an agent
+or a tool) and @{b}Pause at start@{ub}. Breakpoints and watches you set
+before the run go with it. @{b}Start@{ub} shows the new run.
+
+@{h2}Watching a run
+
+Pick a run in the list (filter by status; @{b}Older runs@{ub} loads
+more). While it is alive the panel reads it every second; everything else
+reloads every 10 seconds (the menu next to the reload button changes it).
+
+@{bullet}The @{b}debug bar@{ub} above the tabs: status, where it is paused
+or ended; @{b}Continue@{ub}, @{b}Step@{ub} (to the next hook),
+@{b}Pause@{ub}, @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally
+activities still run), @{b}Resume@{ub} for an interrupted run, and
+@{b}Fork@{ub}: a new run that replays this one up to a top-level step and
+goes on live from there (with Shift: on the machine as it is now, not as
+it was when the run started). A run waiting for an event has a button per
+event it takes. "not in this process" marks a run another process runs:
+you see its journal, but cannot pause it from here.
+@{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
+with breakpoints.
+@{bullet}The @{b}Result@{ub} card: output or error, the final state of each
+frame, and every finished activity folded -- open one for its full answer,
+its input, failed attempts, the agent's session (@{b}Open@{ub} shows the
+conversation in the chat) and the request id (the message debugger finds
+the LLM calls by it). @{b}Run again@{ub} starts a new run with the same
+params and mocks; @{b}Session@{ub} opens the run's own session (not for
+a mock-only run, which has none, nor for another user's run).
+@{bullet}The @{b}History@{ub} card: the last 200 journal rows, filtered by
+kind.
+@{bullet}The @{b}Debug@{ub} tab of the inspector: the run's params,
+output and error; watches (a watch pauses the run when its value
+changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub} while paused
+(Set writes into @{tt}ctx@{utt} -- or, at an exit or error breakpoint,
+sets the activity's answer); @{b}Send event@{ub} with data; and every
+frame with its state, step and @{tt}ctx@{utt}.
+
+Watches and breakpoints set while no run is live belong to the next run
+of this machine and are kept in the browser; set during a run they change
+that run only.
+
+@{h2}When the server says no
+
+@{bullet}An edit to a file that changed since the panel read it (another
+admin, an agent): "The file changed" -- @{b}Reload@{ub} shows it as it is
+now, @{b}Cancel@{ub} keeps your text so you can copy it first.
+@{bullet}A save with errors: @{b}Save anyway@{ub} writes it; a machine with
+errors does not run.
+@{bullet}A new file whose name is taken by a file the machine does not
+use: @{b}Use the existing file@{ub} or cancel.
+@{bullet}A run that cannot be read for a moment: the bar says "not
+refreshed" and the panel keeps trying.
+@endnode
+
+@node machines "Machines"
+@{h1}Machines
+
+A machine is one YAML file, @{tt}<id>.yaml@{utt}, in a machine folder.
+Here is a whole one: an agent builds a change, a second agent judges it,
+a person approves or sends it back with notes.
+
+@{code yaml}
+stategraph: 1
+id: build_review
+title: Build and review
+params:
+  task: {type: string, required: true, description: What to build}
+events:
+  approve: {description: A person accepts the change}
+  reject: {description: A person sends it back with notes, data: {type: string}}
+context: {change: null, notes: null}
+initial: build
+states:
+  build:
+    max_visits: 3
+    do:
+      agent: coder
+      task: "{{ params.task }} -- notes from the last review: {{ ctx.notes }}"
+      timeout: 10m
+    transitions:
+      - target: review
+        effect: ctx.change = out
+      - trigger: error
+        target: failed
+  review:
+    do:
+      decide: noul
+      by: reviewer
+      question: Is this change ready to merge?
+      input: "{{ ctx.change }}"
+    transitions:
+      - target: approval
+        guard: out["value"] >= 0.7
+      - target: build
+        guard: else
+  approval:
+    timeout: 24h
+    transitions:
+      - trigger: approve
+        target: done
+      - trigger: reject
+        target: build
+        effect: ctx.notes = event.data
+      - trigger: error
+        target: failed
+  done: {type: final, output: {change: "{{ ctx.change }}"}}
+  failed: {type: final, status: failed}
+@{body}
+
+@{h2}The parts
+
+@{bullet}@{b}params@{ub} are the run's input, @{b}context@{ub}
+(@{tt}ctx@{utt}) its variables, @{b}events@{ub} what may come from
+outside.
+@{bullet}A @{b}state@{ub} with @{tt}do:@{utt} runs one activity; when it
+ends, its answer is @{tt}out@{utt} and the transitions without a trigger
+are tried in order. A failure is the event @{tt}error@{utt}.
+@{bullet}A state without an activity whose transitions all wait for
+events is a @{b}wait state@{ub}; its @{tt}timeout@{utt} raises the error
+@{tt}wait_timeout@{utt}. A state with @{tt}after: 10m@{utt} is a
+@{b}timer@{ub}: it goes on by itself after that time.
+@{bullet}@{b}Guards@{ub} and @{b}effects@{ub} are plain Python over
+@{tt}params@{utt}, @{tt}ctx@{utt}, @{tt}out@{utt}, @{tt}event@{utt} and
+@{tt}error@{utt}; @{tt}else@{utt} is the last guard. Texts are templates
+(@{tt}{{ ctx.change }}@{utt}).
+@{bullet}A @{b}final@{ub} state ends the run -- with status
+@{tt}failed@{utt} as a failure -- and gives its @{tt}output@{utt}.
+@{bullet}@{b}Choice@{ub} and @{b}junction@{ub} states branch by guards,
+@{b}composite@{ub} states hold states of their own, @{tt}max_visits@{utt}
+bounds a loop (one entry more raises @{tt}loop_limit@{utt}),
+@{tt}finally@{utt} runs an activity on every way out.
+@{bullet}@{tt}python: <id>.py@{utt} names a @{b}companion module@{ub}: its
+public functions are in scope in guards, effects and templates, and can be
+@{tt}call@{utt} activities.
+
+@{h2}Activity kinds
+
+@{table}
+Kind | Does | out
+agent | runs a configured agent with a task, in a session of its own | its answer (parsed with schema or parse)
+tool | calls a tool directly, no LLM; only tools the runner agent may call | the tool's result
+decide | asks the decision model, a decision profile or an agent (by) a question | value, confidence, probabilities
+call | calls a Python function of the companion module | its return value
+machine | runs another machine (imports) in a frame of its own | that machine's final output
+parallel | runs several activities at once | an object with one answer per branch
+map | runs one activity per item of a list | the answers in item order
+emit | tells the caller and the run's session how far the run is | the text
+callback | makes a URL that sends one event to this run, once (see @{" Callback URLs " link callbacks}) | url, event, expires
+@{body}
+
+Every activity also takes @{tt}retry@{utt}, @{tt}timeout@{utt} (per
+attempt) and @{tt}idempotent@{utt}. The complete format -- every field,
+the scope of each code field, the validation codes -- is in
+@{" the format cheat sheet " link docs/format.md} and the authoring
+skill's reference, @{tt}skills/stategraph-authoring/references/format.md@{utt};
+new activity kinds: @{" Extending " link docs/extending.md}. The plugin
+ships examples in its @{tt}machines/@{utt} folder: @{tt}hello_agent@{utt},
+@{tt}approval@{utt}, @{tt}critique_round@{utt},
+@{tt}fan_out_review@{utt}, @{tt}scene_review@{utt} and
+@{tt}showcase@{utt}, which uses every element of the format once.
+
+@{h2}Validation
+
+A machine is checked whenever it is listed, opened, saved or started:
+format, graph (unreachable states, dead ends), Python (it compiles, the
+names exist, code fields stay pure), each activity's fields, and whether
+this installation can run it -- agents that exist, tools the runner may
+call. Each problem carries a level, a code (@{tt}SG002@{utt} ...), a
+message that names the fix, the path in the file and the line. A machine
+with errors is not started.
+
+@{h2}A machine as an agent
+
+An @{tt}agent:@{utt} block in the machine's file offers it as an agent: a
+SAM can spawn it, the chat can list it, other agents call it by name, and
+the answer is the run's output as JSON. This is the plugin
+@{tt}stategraph_machine@{utt}; the block takes effect when a process
+starts. The panel's overview shows the block to copy and whether it is
+declared.
+@endnode
+
+@node runs "Runs"
+@{h1}Runs
+
+@{h2}Statuses
+
+@{table}
+Status | Means | What goes on
+running | it works | by itself
+paused | a breakpoint, a watch, a step or Pause holds it | continue, step, run_to
+waiting | a wait state waits for an event, or a timer state for its time | send an event; a timer goes on by itself
+interrupted | the process that ran it stopped | resume
+succeeded | it reached a final state | --
+failed | a failed final state, or an error no transition took | --
+cancelled | terminated | --
+@{body}
+
+@{h2}The journal
+
+Every step goes into @{tt}runs.db@{utt}: each activity's input and answer,
+each transition with the guards it evaluated, events, timers, edits made
+in the debugger. That is what the panel's history and result show -- and
+what makes a run survive its process. A process that stops marks its
+runs @{tt}interrupted@{utt}; one that crashes leaves them
+@{tt}running@{utt} until its lease on them has run out (a minute), then
+the next process that looks marks them. A schedule resumes its slot's
+run, and a callback URL resumes its run before it sends the event.
+Nothing else resumes by itself: resume the run (panel,
+@{tt}control_run@{utt}), or start it again with its run key. A resumed run replays its journal: an
+activity that finished is not run again, its answer is read. One that was
+in flight is started again only if it is idempotent (the default; a
+@{tt}tool@{utt} activity is not, unless it says so) -- otherwise it fails
+with @{tt}interrupted@{utt}.
+
+@{h2}Mocks
+
+A test run can answer activities from a mock instead of running them. A
+mock is keyed by the state path (@{tt}review@{utt}, or
+@{tt}summarise/0@{utt} for the first item of a map):
+
+@{code json}
+{"build": {"$visits": ["patch v1", "patch v2"]},
+ "review": {"$visits": [{"value": 0.2}, {"value": 0.9}]},
+ "publish": {"$error": {"type": "tool_failed", "message": "down"}}}
+@{body}
+
+@{tt}$visits@{utt} answers each use of the path in turn, and the last one
+for every use after that; @{tt}$error@{utt} fails the activity.
+With @{b}mock only@{ub}, an agent, tool or decide activity without a mock
+fails with @{tt}unmocked@{utt}; a @{tt}call@{utt} activity runs, as it is
+local Python. A run lists the mocks it never used in
+@{tt}mocks_unused@{utt}.
+
+@{h2}Terminate, fork, run again
+
+@{bullet}@{b}Terminate@{ub} cancels what runs and then runs the
+@{tt}finally@{utt} activities; the run ends @{tt}cancelled@{utt}. An
+interrupted run can be terminated too: it is resumed into its end.
+@{bullet}@{b}Fork@{ub} makes a new run that replays the source's journal up
+to a top-level step and goes on live -- with the source's definition, or
+the machine as it is now. Stores, databases and agent conversations keep
+what the source did; the fork is a run of whoever forked it.
+@{bullet}A @{b}run key@{ub} (@{tt}run_key@{utt}) makes a start the same
+request again: see @{" Tools: running machines " link tools_runs}.
+
+@{h2}The run's session
+
+A run that is not mock-only has a chat session of its own,
+@{tt}sg_<run id>@{utt}: a message with its params when it starts, one with
+status, final state and output or error when it ends, and each agent it
+ran as a sub-session below it. It is read-only in the chat. A run started
+by an agent's tool call sits below that agent's session.
+
+@{h2}Who sees a run
+
+With auth on, a run belongs to the user who started it: others get it
+answered as missing, admins see every run, and a run of nobody (a schedule
+without a user) is visible to all. A resumed or terminated run runs as its
+own user, whoever triggered it.
+@endnode
+
+@node tools_machines "Tools: building machines"
+@{h1}Tools: building machines
+
+The tools are named after the plugin instance: @{tt}stategraph_catalog@{utt}
+and so on in the default setup. Every answer carries @{tt}status@{utt}
+@{tt}success@{utt}, or @{tt}error@{utt} with @{tt}error@{utt} (the reason)
+and @{tt}error_type@{utt} (@{tt}http_404@{utt}, @{tt}http_409@{utt},
+@{tt}http_422@{utt}). Validate and save need an admin or a user in
+@{tt}allowed_users@{utt} when auth is on; the others are open.
+
+@{h2}stategraph_catalog
+
+What a machine may use.
+
+@{table}
+Parameter | Meaning
+agents | fnmatch pattern on the agent names; default every agent
+tools | fnmatch pattern on the flat tool name; default every tool
+@{body}
+
+Answer: @{tt}kinds@{utt} (key, summary, and each field with its
+description), @{tt}agents@{utt} (name, description: every enabled agent a
+machine may run -- not the runner, not a machine agent, not an agent that
+can use a stategraph tool beyond the read-only ones), @{tt}runner@{utt}, @{tt}tools@{utt} (every
+tool the runner's allowlist lets through: flat name, description,
+parameters, required), @{tt}decision_profiles@{utt} and
+@{tt}examples@{utt} (the ids of the read-only machines).
+
+@{h2}stategraph_list_machines
+
+No parameters. @{tt}machines@{utt}: id, title, description, group, file,
+root (its machine folder), writable, valid, and the numbers of errors and
+warnings.
+
+@{h2}stategraph_get_machine
+
+@{tt}machine_id@{utt} (required). Answer: @{tt}files@{utt} (relative path
+to text: the YAML, its Python module, the machines it imports), @{tt}versions@{utt} (relative path to version -- pass them back
+when you save), @{tt}problems@{utt}, @{tt}writable@{utt},
+@{tt}agents@{utt} (the machine agents that run it) and @{tt}offer@{utt}
+(its @{tt}agent:@{utt} block's name, and whether it is declared).
+
+@{h2}stategraph_validate_machine
+
+Checks without saving.
+
+@{table}
+Parameter | Meaning
+files | relative path to text; the root is <machine_id>.yaml
+yaml | one machine file instead of files
+machine_id | the root machine; default the id in yaml, or the one file <id>.yaml whose id says so
+@{body}
+
+Answer: @{tt}machine_id@{utt}, @{tt}problems@{utt} (level, code, message,
+path, file, line), @{tt}valid@{utt} (no error).
+
+@{h2}stategraph_save_machine
+
+Validates, then writes all files or none into the writable folder.
+
+@{table}
+Parameter | Meaning
+files | required; relative path to text
+machine_id | as for validate
+expected_versions | relative path to the version get_machine gave, for every existing file you change
+@{body}
+
+Refused with the first three errors when validation finds errors
+(@{tt}http_422@{utt}); refused when a file changed since you read it, or
+when you change a file of the machine without its version
+(@{tt}http_409@{utt}, "pass its version from get_machine in
+expected_versions"); refused for a machine outside the writable folder
+(@{tt}http_403@{utt}: save a copy under a new id). Answer:
+@{tt}machine_id@{utt}, the new @{tt}versions@{utt}, @{tt}problems@{utt}
+(warnings). No tool deletes a machine; the panel does.
+
+@{code json}
+{"machine_id": "build_review"}
+{"files": {"build_review.yaml": "stategraph: 1\nid: build_review\n..."}, "expected_versions": {"build_review.yaml": "0a6ba1974579e791"}}
+@{body}
+@endnode
+
+@node tools_runs "Tools: running machines"
+@{h1}Tools: running machines
+
+@{tt}stategraph_run_machine@{utt} needs an admin or a user in
+@{tt}allowed_users@{utt} when auth is on; @{tt}stategraph_get_run@{utt}
+and @{tt}stategraph_list_runs@{utt} are open, but show only the runs the
+caller may see (see @{" Runs " link runs}).
+
+@{h2}stategraph_run_machine
+
+@{table}
+Parameter | Meaning
+machine_id | the machine to run
+request | instead of machine_id: "<id> {json params}" or "<id> key=value ..."; a value reads as the param's declared type (n=3, flag=true), quotes group words
+params | the run's input; with request, they win over the request's
+mocks | state path to answer; see Runs
+mock_only | true: no agent, tool or decision without a mock
+breakpoints | "state", "state\@exit", or {state, at, condition, machine}
+watchpoints | Python expressions, or {expr, condition, machine}
+pause_at_start | true: hold the run at its first hook
+run_key | the same request again (below)
+wait | finish (default): return when the run ends, pauses or waits for an event; background: return at once
+max_wait | 0 to 3600 seconds; default the server's default_max_wait (600)
+full_output | true: the output in full; else texts over 20,000 characters are cut
+@{body}
+
+A machine with errors is refused (@{tt}http_422@{utt}, the first three
+errors). The answer: @{tt}run_id@{utt}, @{tt}run_status@{utt},
+@{tt}state@{utt}, @{tt}output@{utt}, @{tt}error@{utt} (type, message,
+state, cause), @{tt}paused@{utt}, @{tt}accepts@{utt} (the events each
+frame takes now), @{tt}mocks_unused@{utt}, and @{tt}next@{utt}: what the
+run asks of you -- wait with get_run, send an event, continue, or resume.
+@{tt}status@{utt} success only says the call worked; whether the run did
+is @{tt}run_status@{utt}. A caller that is cancelled while it waits takes
+its run with it (terminated).
+
+@{b}run_key.@{ub} Every call looks up the newest run of the key: a run this
+process runs is attached to (@{tt}attached: true@{utt}); one another
+process runs is reported (@{tt}attached: false@{utt}, nothing started);
+an interrupted one is resumed (@{tt}resumed: true@{utt}); an ended one
+answers again with @{tt}ended@{utt}: its status, output or error. Only a
+run that failed transiently (@{tt}interrupted@{utt}, @{tt}timeout@{utt},
+@{tt}agent_failed@{utt}, @{tt}decision_failed@{utt}, @{tt}internal@{utt},
+@{tt}diverged@{utt}) starts a new run. The same key with another machine,
+params, mocks or mock_only is refused, as is a key of another user's run.
+
+@{h2}stategraph_get_run
+
+@{table}
+Parameter | Meaning
+run_id | required
+steps | how many journal rows: 1 to 500, default 30
+after | the rows after this journal seq (to page forward); without it, the last ones
+kinds | only rows of these kinds: activity, trace, event, edit, timer
+state | only rows of this state
+wait | now (default), or finish: wait while the run is running or in a timer
+max_wait | as for run_machine
+full_output | as for run_machine
+@{body}
+
+The answer adds to run_machine's: @{tt}frames@{utt} (each frame's
+machine, state, step, visits, @{tt}ctx@{utt} and params, what it waits
+for), @{tt}inbox@{utt} (events no frame has taken yet),
+@{tt}journal@{utt} and @{tt}debug@{utt} (breakpoints, watchpoints, their
+values, where it is paused). Texts in frames, journal and error are cut at
+2,000 characters. An answer over 200,000 characters drops the oldest
+journal rows first (@{tt}journal_cut@{utt} says how many), then shows each
+frame's ctx as its keys and their sizes (@{tt}frames_cut@{utt}). A reader
+that is cancelled while it waits leaves the run alone. A reader who is
+neither the run's user nor an admin gets every callback URL's token as
+@{tt}<hidden>@{utt} (see @{" Callback URLs " link callbacks}).
+
+@{h2}stategraph_list_runs
+
+The newest runs the caller may see, newest first.
+
+@{table}
+Parameter | Meaning
+machine_id | only runs of this machine
+status | only runs in this status
+limit | 1 to 200, default 20
+@{body}
+
+@{tt}runs@{utt}: id, machine_id, status, final_state, created_at,
+finished_at, run_key, parent_run (a fork's source) and a failed run's
+error message (300 characters).
+
+@{h2}Slash commands
+
+@{table}
+Command | Does
+/stategraph-run <id> [{json} or key=value ...] | starts a run in the background
+/stategraph-runs [machine id] | the newest runs you may see
+/stategraph-stop <run id> | terminates a run; its finally activities run
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"machine_id": "build_review", "params": {"task": "Add a retry to the fetcher"}, "mock_only": true,
+ "mocks": {"build": "patch v1", "review": {"value": 0.9}}}
+{"run_id": "7f449c8473f4", "kinds": ["activity"], "steps": 20}
+{"request": "build_review task='Add a retry to the fetcher'", "wait": "background"}
+@{body}
+@endnode
+
+@node tools_debug "Tools: debugging a run"
+@{h1}Tools: debugging a run
+
+Both tools need an admin or a user in @{tt}allowed_users@{utt} when auth
+is on, and act only on runs the caller may see.
+
+@{h2}stategraph_control_run
+
+@{table}
+action | Needs | Does
+pause | -- | stops at the next hook
+continue | -- | goes on from a pause
+step | -- | goes on to the next hook
+run_to | state, machine | goes on until that state is entered
+terminate | -- | ends the run; its finally activities run first (the answer waits up to 10 s)
+resume | -- | an interrupted run goes on from its journal
+fork | at_step, definition, pause, mocks | a new run from a top-level step
+set_breakpoints | breakpoints | replaces the run's breakpoints
+set_watchpoints | watchpoints | replaces the run's watchpoints
+evaluate | expr | a read-only Python expression in the paused scope
+set | path, expr | while paused: ctx.<path> = expr; or out at an exit or error breakpoint
+@{body}
+
+@{table}
+Parameter | Meaning
+run_id, action | required
+state, machine | run_to: the state, and the machine it belongs to (default any frame)
+at_step | fork: 0 or more; default where the source's journal ends
+definition | fork: snapshot (default, the run's own) or current (the machine now; refused if it has errors)
+pause | fork: hold the fork at the fork point
+mocks | fork: mocks over the source's; what the fork replays keeps its answer
+breakpoints, watchpoints | as for run_machine
+expr, path | evaluate and set
+steps | 1 to 500: the answer carries that many journal rows; without it none
+@{body}
+
+Every argument is checked before anything acts; a wrong type, or an
+argument the table does not name, is refused (@{tt}http_422@{utt}). Evaluate and set on a run that
+is not paused, or not in this process, are refused (@{tt}http_409@{utt}).
+The answer is the run as run_machine gives it plus @{tt}action@{utt} --
+for evaluate and set @{tt}value@{utt}, for fork the new
+@{tt}run_id@{utt} and @{tt}forked_from@{utt}. The debugger's state (a
+pause, a step, run_to) survives an interruption and a resume.
+
+@{h2}stategraph_send_event
+
+@{table}
+Parameter | Meaning
+run_id, name | required; name is an event some machine of the run declares
+data | the event's payload; checked against the event's declared data schema
+frame | the frame to send it to, when several accept it
+@{body}
+
+@{tt}accepted: true@{utt} with the @{tt}frame@{utt} that takes it; an event
+no frame accepts yet is kept in the run's inbox (@{tt}queued: true@{utt})
+until one does. Refused (@{tt}http_409@{utt}): an undeclared event, data
+that does not fit ("data does not match its declared schema"), several
+frames that accept it without @{tt}frame@{utt}, a run that has ended or
+runs in another process.
+@endnode
+
+@node author "The authoring agent"
+@{h1}The authoring agent
+
+@{tt}stategraph_author@{utt} writes machines. Give it a workflow in words;
+it looks up what it may use (catalog), writes the files, validates them
+(at most five rounds), saves them, and proves the machine with a
+mock-only test run that must reach the intended final state (at most three
+rounds). It hands over the machine id, the files, the validation result,
+the test run, what the mocks proved and what they cannot prove (prompts,
+real tool behaviour, timings), and what an operator has to configure.
+Anything short of a saved, clean, proven machine is handed over as NOT
+PROVEN.
+
+It starts a live run only when you ask for exactly that. It sees the
+chat (@{tt}visibility: both@{utt}); another agent reaches it through its
+SAM when that SAM lists @{tt}stategraph_author@{utt} in
+@{tt}allowed_agents@{utt}. Its saves go through the same checks as
+anyone's: with auth on, the user it works for must be an admin or in
+@{tt}allowed_users@{utt}.
+@endnode
+
+@node schedules "Schedules"
+@{h1}Schedules
+
+Machines the clock starts, in the server entry:
+
+@{code yaml}
+stategraph:
+  schedules:
+    - name: nightly_review
+      machine: build_review
+      every: 24h        # slots from 00:00 UTC in steps of every ...
+      offset: 3h        # ... plus offset: 03:00 UTC
+      late: 1h          # a slot first seen later than this after its start is left out
+      params: {task: "Tidy the nightly build"}
+      user: admin       # whose run it is; default nobody's (every user sees it)
+@{body}
+
+@{table}
+Key | Default | Meaning
+name | required | a name: lowercase letters, digits, _
+machine | required | the machine id
+every | required | at least 1m
+offset | 0 | shifts the slots
+late | every, at most 1h | at least 1m
+params | {} | the run's params
+user | none | the run's user
+@{body}
+
+A slot runs once: its run key is @{tt}schedule:<name>:<slot>@{utt}. After
+a transient failure it runs again 5 minutes after the last attempt ended,
+three attempts in all; a slot whose run was interrupted is resumed. One
+process starts the slots of an instance -- the one that holds the
+scheduler lease in @{tt}runs.db@{utt}; another takes over when that
+process stops. A wrong entry is logged as an error and left out.
+@endnode
+
+@node callbacks "Callback URLs"
+@{h1}Callback URLs
+
+A @{tt}callback@{utt} activity makes a URL that sends one event to its
+run, once -- for a system outside to answer a wait: a link in a mail, a
+webhook.
+
+@{code yaml}
+ask:
+  do: {callback: approve, expires: 48h}
+  transitions:
+    - target: waiting
+      effect: ctx.link = out["url"]
+@{body}
+
+@{tt}out@{utt} is @{tt}{url, event, expires}@{utt}; the event must be one
+the machine declares; @{tt}expires@{utt} defaults to 168h, at most 720h.
+The URL is @{tt}<public_url>/plugins/stategraph/callback?token=...@{utt}
+-- a path without @{tt}public_url@{utt}.
+
+@{bullet}GET shows a page that says what the link sends, with a button:
+a mail scanner that opens the link sends nothing.
+@{bullet}POST sends the event, with an optional JSON body
+@{tt}{"data": ...}@{utt} of at most 64 KB. The link is used up when the
+run took the event (or keeps it in its inbox); an interrupted run is
+resumed first. A link that is unknown, used, expired, or whose run ended
+answers 404; one the run cannot take right now answers 409 and stays
+usable; data that does not fit the event's schema answers 422.
+
+The token is the key. The table that holds the callbacks keeps only its
+hash, but the URL itself is the activity's answer: it is in the run's
+journal in plain text, and in whatever the machine keeps it in
+(@{tt}ctx@{utt}, the output). @{tt}get_run@{utt} shows it only to an
+admin and to the run's own user; anyone else who may see the run -- a run
+of nobody, such as a schedule's without @{tt}user@{utt} -- gets
+@{tt}<hidden>@{utt} in place of the token. The route
+is admin-only like the rest of the plugin until an operator opens it --
+see @{" Security " link security}.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; the catalog's field descriptions from the activity
+kinds. The chat's status line ends with the result: "run 7f449c8473f4:
+waiting in approval", "build_review: 1 error(s), 2 warning(s)", "saved
+build_review: 1 file(s), 0 error(s), 0 warning(s)", "event accepted by
+frame root", "catalog: 9 kinds, 4 agents, 12 tools". Refusals say what to
+change:
+
+@{bullet}"stategraph: only admins may use run_machine (user alice);
+machines contain Python and run agents and tools. An operator can list the
+user in the instance's allowed_users."
+@{bullet}"1 error(s), not saved: build_review.yaml:11 SG002 transition target
+'nowhere' is not a state of this machine"
+@{bullet}"build_review.yaml is a file of machine 'build_review' already:
+pass its version from get_machine in expected_versions to change it"
+@{bullet}"run_key 'k1' names run 0b802a51bef9 with other params; the same
+key is the same request -- use a new key for a new one"
+@{bullet}"max_wait must be a number from 0 to 3600, not 4000"
+@{bullet}A failed run's error names the state and the cause:
+"review: mock-only run and no mock for this decide activity"
+(@{tt}unmocked@{utt}).
+
+@{h2}The authoring agent
+
+@{tt}stategraph_author@{utt}'s system prompt is its own prompt (about 4 KB)
+and the body of the skill @{tt}stategraph-authoring@{utt} (about 11 KB):
+the method, one whole machine, the rules, the kinds, the mock syntax, the
+validation codes. It reads the full format reference (about 59 KB),
+@{tt}patterns.md@{utt} (20 KB) and @{tt}debugging.md@{utt} (15 KB) on
+demand; those are appended to the conversation. @{tt}context_engineer@{utt}
+is on for it.
+
+@{h2}Agents a machine runs
+
+They see their task and the template vars the machine gives them, nothing
+about the plugin. An agent that decides (@{tt}decide@{utt} with
+@{tt}by@{utt}) gets the question, the form of the answer and the input, and
+answers in JSON. The runner agent, @{tt}stategraph_runner@{utt}, is never
+talked to; its prompt only tells a stray visitor where to go.
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results, appended; nothing earlier
+changes. They grow with the machine: @{tt}get_machine@{utt} returns every
+file, @{tt}get_run@{utt} up to @{tt}steps@{utt} journal rows (at most
+200,000 characters). The author's system prompt holds no ticking values:
+a stable cache prefix. Runs cost the author no tokens -- the engine calls
+agents and tools itself. The plugin has no hook: it writes only into its
+runs' own sessions.
+
+@{h2}Known gaps
+
+@{bullet}Right after @{tt}send_event@{utt}, the run takes the event a
+moment later: a @{tt}get_run@{utt} at once -- also with
+@{tt}wait: finish@{utt} -- can still show the old wait, with the event in
+@{tt}inbox@{utt}. Read again.
+@{bullet}An agent activity's answer carries no token count or cost; a
+@{tt}decide@{utt} activity carries its model and cost.
+@{bullet}A mock-only test cannot drive a wait state's timeout without
+waiting it out.
+@{bullet}Runs of another process can be read, not paused, from here.
+@{bullet}A synchronous @{tt}call@{utt} function runs in a worker thread:
+terminate and timeouts end the activity at once, but the thread runs on
+to its end and its answer is dropped.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin ships its own configuration,
+@{tt}agents/stategraph.yaml@{utt} and
+@{tt}agents/stategraph_author.yaml@{utt}, which
+@{tt}config/config.yaml@{utt} includes
+(@{tt}../src/plugins*/*/agents/*.yaml@{utt}); nothing needs registering.
+The entry of the tool instance, without its comments and the lines for
+other plugins' machines (an @{tt}inject_params@{utt} entry among them):
+
+@{code yaml}
+plugins:
+  servers:
+    stategraph:
+      type: stategraph
+      enabled: true
+      description: "State machines for agent workflows: model, validate, run and debug them"
+      machine_dirs:
+        - data/stategraph/machines        # made in the panel; not versioned
+        - "src/plugins*/*/machines"        # shipped with their plugin
+      writable_machine_dirs:
+        - data/stategraph/machines
+      runs_db: data/stategraph/runs.db
+      runner_agent: stategraph_runner
+      allowed_users: []
+      default_max_wait: 600
+@{body}
+
+It comes with @{tt}stategraph_runner@{utt} (hosts the runs; its tool
+allowlist is what a @{tt}tool@{utt} activity may call),
+@{tt}stategraph_json@{utt} (a JSON store for machines' documents, kept
+without expiry so a resumed run finds them), @{tt}stategraph_author@{utt}
+and @{tt}stategraph_example_agent@{utt} (the plain agent of the example
+machines).
+
+@{h2}Letting machines use more
+
+@{bullet}An @{tt}agent@{utt} activity runs any configured, enabled agent the
+machine names -- no entry anywhere. A new agent needs a restart.
+@{bullet}A tool goes into @{tt}stategraph_runner@{utt}'s
+@{tt}tools.allowed@{utt} -- never a stategraph tool: validation refuses
+them (SG007), so a machine cannot save, start or control machines.
+@{bullet}A secret a tool needs goes into @{tt}inject_params@{utt}, never
+into the machine: @{tt}{tool pattern: {param: value}}@{utt}, fnmatch on
+the flat tool name, applied after the templates; the config's value wins,
+and a tool result that echoes it is redacted.
+
+@{code yaml}
+stategraph_runner:
+  agent_config:
+    tools:
+      allowed:
+        - "stategraph_json/*"
+        - "ticket_store/*"          # now a machine may call it
+@{body}
+
+An agent that should use the tools gets them in its allowlist, one by one
+or all: @{tt}"+stategraph/*"@{utt}.
+
+@{h2}Server settings
+
+@{table}
+Key | Default in code | Meaning
+machine_dirs | stategraph/machines in the data folder, src/plugins*/*/machines | machine folders in search order; the first with an id wins
+writable_machine_dirs | stategraph/machines in the data folder | where saves go
+runs_db | stategraph/runs.db in the data folder | runs and their journals (SQLite)
+runner_agent | stategraph_runner | host of runs; its allowlist bounds tool activities
+allowed_users | [] | fnmatch patterns of users who may validate, save, run and control besides admins
+inject_params | {} | secrets for tool activities, see above
+default_max_wait | 600 | seconds run_machine and get_run wait with wait finish
+public_url | "" | the app's URL as the outside reaches it: the base of callback URLs
+schedules | [] | see @{" Schedules " link schedules}
+@{body}
+
+Needs @{tt}ruamel.yaml@{utt}, @{tt}networkx@{utt} and
+@{tt}jsonschema@{utt}. Each machine's layout is a
+@{tt}<id>.layout.json@{utt} next to its file.
+@endnode
+
+@node security "Security"
+@{h1}Security
+
+Machines contain Python that runs in the API process with the rights of
+plugin code, and they run agents and tools. So:
+
+@{bullet}The panel and its API are for admins: the route rule
+@{tt}/plugins/stategraph/*@{utt} in @{tt}config/security.yaml@{utt}, and
+the plugin checks the role itself as well.
+@{bullet}With auth on, the tools that validate, save, run, control and send
+events need an admin or a user in @{tt}allowed_users@{utt}. Validating
+and saving never run a machine's Python module; only a run does.
+@{bullet}Runs belong to their user (see @{" Runs " link runs}).
+@{bullet}An @{tt}agent@{utt} activity runs only agents the file names --
+literally, or as a param with an enum -- and none that reaches machines:
+not the runner, not a machine agent, not one whose tools include a
+stategraph tool beyond the read-only ones (catalog, list, get), nor one
+that can start such an agent through its SAM. Checked when validating and again at run time; the same holds
+for the tool of a @{tt}tool@{utt} activity.
+@{bullet}@{tt}python:@{utt} and @{tt}imports:@{utt} resolve only inside the
+machine folders.
+@{bullet}A mock-only run has no connection to agents or tools at all.
+
+@{h2}Opening the callback route
+
+Callback URLs work only once an operator lets anonymous callers reach
+their path. In @{tt}config/security.yaml@{utt}, add one entry to each of
+two lists -- to @{tt}auth.endpoint_security.rules@{utt}:
+
+@{code yaml}
+      - pattern: "/plugins/stategraph/callback*"
+        policy: "allow_anonymous"
+@{body}
+
+and to @{tt}auth.plugin_security.endpoint_rules@{utt}, above the
+@{tt}/plugins/stategraph/*@{utt} rule (the first rule that matches
+wins):
+
+@{code yaml}
+      - pattern: "/plugins/stategraph/callback*"
+        policy: "allow_anonymous"
+@{body}
+
+Never as a block in @{tt}config/local.yaml@{utt}: a list there replaces
+the whole list of the files before it, and the login rules
+(@{tt}/auth/*@{utt}) and every admin rule would be gone.
+
+With @{tt}network.remote_paths@{utt} set, a caller on another machine
+reaches only the paths listed there: add
+@{tt}"/plugins/stategraph/callback"@{utt}.
+@endnode

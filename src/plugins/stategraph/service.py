@@ -129,6 +129,17 @@ class StateGraphService:
                 versions[rel] = version_of(text)
         return files, versions
 
+    def _own_files(self, machine_id: str) -> set[str]:
+        """The relative paths of the saved machine's files (none when there is no such machine)."""
+        if self.store.find(machine_id) is None:
+            return set()
+        own = {f"{machine_id}.yaml"}
+        try:
+            own |= set(self._files_of(machine_id, self.store.load(machine_id))[0])
+        except Exception:  # a file that does not load: its root file is still its own
+            pass
+        return own
+
     def _require(self, machine_id: str) -> None:
         if self.store.find(machine_id) is None:
             raise ServiceError(404, f"no machine {machine_id!r} in the machine roots")
@@ -277,7 +288,12 @@ class StateGraphService:
             raise ServiceError(422, f"{len(errors)} error(s), not saved: {first}")
         try:
             versions = self.store.write_files(machine_id, files, expected_versions)
-        except (FileInTheWay, VersionConflict) as exc:
+        except FileInTheWay as exc:
+            if exc.rel in self._own_files(machine_id):  # the machine's own file, sent without the version read
+                raise ServiceError(409, f"{exc.rel} is a file of machine {machine_id!r} already: pass its version "
+                                        "from get_machine in expected_versions to change it") from None
+            raise ServiceError(409, str(exc)) from None
+        except VersionConflict as exc:
             raise ServiceError(409, str(exc)) from None
         except PermissionError as exc:
             raise ServiceError(403, str(exc)) from None

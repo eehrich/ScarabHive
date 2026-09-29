@@ -24,7 +24,7 @@ the format, with comments on the ones that are not obvious from their names.
 ## The loop
 
 1. `stategraph_catalog` -- the activity kinds and their fields, the agents a machine may
-   run (`agents: "v6_*"` narrows the list), the tools the runner may call, the decision
+   run (`agents: "review_*"` narrows the list), the tools the runner may call, the decision
    profiles. Use nothing else.
 2. Write the tree: `<id>.yaml`, its companion `.py` if it has one, any imported machine.
 3. `stategraph_validate_machine(files={...})` until it reports no error. Fix warnings

@@ -31,8 +31,9 @@ import uvicorn  # noqa: E402
 
 from tests.ui.browser import _browsers_die_with_this_process, find_browser  # noqa: E402
 
-#: plugin -> shots: (file name, module with the panel test's app factory, its name, page, window size[, script]);
-#: the script runs in the page once it has loaded -- for a panel that shows the thing worth a picture only after a click
+#: plugin -> shots: (file name, module with the panel test's app factory, its name, page, window size[, extra]);
+#: extra is a script, or {"script": ..., "login": user}: the script runs in the page once it has loaded -- for a panel
+#: that shows the thing worth a picture only after a click -- and login signs every request in as that seeded user
 SHOTS = {
     "todo": [("panel.png", "plugins.todo.tests.test_plugin_todo_panel", "panel_app",
               "/plugins/todo/?session_id=s-1", (1000, 700))],
@@ -69,6 +70,57 @@ SHOTS = {
                        "/plugins/batch_monitor/", (1000, 540))],
     "session_archive": [("panel.png", "plugins.session_archive.tests.test_plugin_session_archive_panel", "panel_app",
                          "/plugins/session_archive/", (900, 380))],
+    "agent_editor": [("panel.png", "plugins.agent_editor.tests.test_plugin_agent_editor_panel", "panel_app",
+                      "/plugins/agent_editor/", (1240, 820), {"login": "root", "script": """
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        (await until(() => document.querySelector('[data-name="worker"]'))).click();
+        await new Promise((done) => setTimeout(done, 800));
+        for (const cell of document.querySelectorAll('.ae-item-desc')) {
+          if (cell.textContent.includes('<img')) cell.textContent = 'Reviews the changes';
+        }"""})],
+    "user_management": [("panel.png", "plugins.user_management.tests.test_plugin_user_management_panel", "panel_app",
+                         "/plugins/user_management/", (960, 470), {"login": "root", "script": """
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        await until(() => document.querySelector('#users tbody tr'));
+        for (const cell of document.querySelectorAll('#users td, #users td *')) {
+          if (!cell.children.length && cell.textContent.startsWith('<img')) cell.textContent = 'Guest reviewer';
+        }"""})],
+    "ssh_control": [("panel.png", "plugins.ssh_control.tests.test_plugin_ssh_control_panel", "panel_app",
+                     "/plugins/ssh_control/", (900, 640), """
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        for (const command of ['hostname', 'false']) {  // the stub machine answers; nothing runs anywhere
+          await fetch('/plugins/ssh_control/api/execute', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                           body: JSON.stringify({machine: 'alpha', command})});
+        }
+        document.querySelector('pk-refresh [data-act="now"]').click();
+        await until(() => document.querySelectorAll('#output .ssh-entry').length >= 2);""")],
+    "comfyui": [("panel.png", "plugins.comfyui.tests.test_plugin_comfyui_panel", "panel_app",
+                 "/plugins/comfyui/", (820, 900), """
+        // the seed's markup test strings are no sight: neutral words in their place, in the picture only -- on
+        // every redraw, as the panel draws its tables anew on each refresh
+        const neutral = () => {
+          const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+            if (node.data.includes('<img')) node.data = 'upscale';
+            if (node.data.includes('<b>CUDA</b>')) node.data = 'CUDA out of memory';
+          }
+        };
+        neutral();
+        new MutationObserver(neutral).observe(document.body, {childList: true, subtree: true, characterData: true});""")],
+    "stategraph": [("panel.png", "plugins.stategraph.tests.stategraph_panel_app", "panel_app",
+                    "/plugins/stategraph/?machine=build_review&run=demo_run", (1320, 880), """
+        // the stub serves the machines from a temporary folder: its path names this computer's user
+        const relative = () => {
+          const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+            if (/[A-Za-z]:\\\\.*machines\\\\/.test(node.data)) node.data = node.data.replace(/[A-Za-z]:\\\\.*machines\\\\/, 'machines/');
+          }
+        };
+        relative();
+        new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});""")],
     "debate_forum": [("panel.png", "plugins.debate_forum.tests.test_plugin_debate_forum_panel", "panel_app",
                       "/plugins/debate_forum/", (1000, 680), """
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;
@@ -82,6 +134,20 @@ SHOTS = {
         await until(() => document.querySelectorAll('.df-post').length === 4);
         setTimeout(() => { document.querySelector('.df-messages').scrollTop = 0; }, 300);""")],
 }
+
+
+def signed_in(app, user: str):
+    """The app, every request carrying the login cookie of ``user`` from the factory's user database."""
+    from agent_system.auth import database
+    from agent_system.auth.security import create_access_token
+
+    @app.middleware("http")
+    async def login(request, call_next):
+        account = database.get_db().get_user_by_username(user)
+        token = create_access_token({"sub": user, "user_id": account.id, "role": account.role.value})
+        request.scope["headers"] = [*request.scope["headers"], (b"cookie", f"access_token={token}".encode())]
+        return await call_next(request)
+    return app
 
 
 def with_script(app, page: str, script: str):
@@ -147,7 +213,8 @@ def main(plugins: list[str]) -> None:
     if browser is None:
         raise SystemExit("no Chromium-based browser installed")
     for plugin in plugins or SHOTS:
-        for name, module, factory, page, size, *script in SHOTS[plugin]:
+        for name, module, factory, page, size, *extra in SHOTS[plugin]:
+            extra = {"script": extra[0]} if extra and isinstance(extra[0], str) else (extra[0] if extra else {})
             # a plugin may keep its database open until the process ends: its folder is left then
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data:
                 build = getattr(importlib.import_module(module), factory)
@@ -156,8 +223,10 @@ def main(plugins: list[str]) -> None:
                 params = inspect.signature(build).parameters
                 patch = pytest.MonkeyPatch()
                 app = build(*[Path(data)][:len(params)], *([patch] if "monkeypatch" in params else []))
-                if script:
-                    app = with_script(app, page, script[0])
+                if extra.get("script"):
+                    app = with_script(app, page, extra["script"])
+                if extra.get("login"):  # added last, so it runs first: the route security sees the cookie
+                    app = signed_in(app, extra["login"])
                 # the folder is also the working directory, as in the panel tests: seeded names may be relative
                 with serve(app) as port, contextlib.chdir(data):
                     url = f"http://127.0.0.1:{port}{page}"

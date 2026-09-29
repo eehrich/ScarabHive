@@ -42,6 +42,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -88,7 +89,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "schema": {
           "anyOf": [
@@ -164,6 +166,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -189,7 +192,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -227,6 +231,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -270,7 +275,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -339,6 +345,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -410,7 +417,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -444,6 +452,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -473,7 +482,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -506,6 +516,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -542,7 +553,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -589,6 +601,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -635,7 +648,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -682,6 +696,7 @@
       "properties": {
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -743,7 +758,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -782,6 +798,7 @@
         },
         "description": {
           "default": "",
+          "description": "what the activity is for, for whoever reads the machine",
           "title": "Description",
           "type": "string"
         },
@@ -820,7 +837,8 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "{attempts, backoff, errors}: try again before the failure becomes the state's error event; default: one attempt"
         },
         "timeout": {
           "anyOf": [
@@ -1670,7 +1688,7 @@
     },
     "group": {
       "default": "",
-      "description": "its folder in the panel's machine list, nested by / (Writer/v6); empty: the folder of where it comes from",
+      "description": "its folder in the panel's machine list, nested by / (Reviews/nightly); empty: the folder of where it comes from",
       "title": "Group",
       "type": "string"
     },

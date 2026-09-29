@@ -15,7 +15,7 @@ The contract behind them is `docs/stategraph_design.md` (§2 format, §3 semanti
 stategraph: 1                       # format version: the integer 1
 id: my_machine                      # = file name; names match [a-z][a-z0-9_]*
 title: My machine
-# group: Writer/v6                  # folder in the panel's machine list
+# group: Reviews/nightly            # folder in the panel's machine list
 # python: my_machine.py             # companion module: its public functions are in scope
 # imports: {sub: ./sub.yaml}        # submachines, by alias: do: {machine: sub, params: {...}}
 params:                             # run input / submachine parameters

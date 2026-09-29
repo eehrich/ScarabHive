@@ -198,6 +198,41 @@ async def test_errors_have_the_error_shape(server):
     assert (server.machines.find("hello").path.read_text(encoding="utf-8")) == HELLO, "a refused save wrote the file"
 
 
+async def test_get_run_refuses_steps_of_zero_as_control_run_does(server):
+    """steps 0 is out of range: read as "not given", it answered 30 rows the caller did not ask for."""
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "mock_only": True})
+
+    result, closing = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "steps": 0})
+
+    assert result["status"] == "error" and "steps must be" in result["error"], result
+    assert closing.phase is StatusPhase.ERROR
+
+
+async def test_saving_a_machines_own_file_without_its_version_says_to_pass_it(server):
+    """A save of an existing machine without expected_versions: the answer names the fix, not "not one of its files"
+    -- which stays the answer for a stray file of that name (the panel's module dialog reads it)."""
+    result, _ = await run_tool(server, "stategraph_save_machine", {"files": {"hello.yaml": HELLO}})
+
+    assert result["status"] == "error" and result["error_type"] == "http_409", result
+    assert "expected_versions" in result["error"] and "not one of its files" not in result["error"], result
+
+    (server.machines.find("hello").path.parent / "stray.py").write_text("x = 1\n", encoding="utf-8")
+    version = server.service.get_machine("hello")["versions"]["hello.yaml"]
+    stray, _ = await run_tool(server, "stategraph_save_machine",
+                              {"files": {"hello.yaml": HELLO, "stray.py": "y = 2\n"},
+                               "expected_versions": {"hello.yaml": version}})
+    assert stray["status"] == "error" and stray["error"].startswith("stray.py exists already"), stray
+
+
+async def test_the_catalog_describes_every_field_of_every_kind(server):
+    """A field without a description showed the model "" (retry) or its bare type ("string")."""
+    result, _ = await run_tool(server, "stategraph_catalog", {})
+
+    bare = {(kind["key"], name) for kind in result["kinds"] for name, text in kind["fields"].items()
+            if text in ("", "string", "integer", "number", "boolean", "object", "array")}
+    assert not bare, sorted(bare)
+
+
 # ------------------------------------------------------------------ authorization (§8.3)
 
 def _enable_auth(server, monkeypatch, role_of: dict):
@@ -233,6 +268,123 @@ async def test_admin_refusal_when_auth_is_enabled(server, monkeypatch):
 
     read_only, _ = await run_tool(server, "stategraph_list_machines", {"_user_id": "alice"})
     assert read_only["status"] == "success", "read-only tools stay open"
+
+
+async def test_an_authorization_refusal_has_its_error_type(server, monkeypatch):
+    _enable_auth(server, monkeypatch, {"alice": "USER"})
+
+    refused, _ = await run_tool(server, "stategraph_run_machine",
+                                {"machine_id": "hello", "mock_only": True, "_user_id": "alice"})
+
+    assert refused["status"] == "error" and refused["error_type"] == "http_403", refused
+
+
+async def test_control_run_refuses_an_argument_it_does_not_take(server):
+    """A typo (stat for state) was dropped without a word: the action ran as if it had not been given."""
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "mock_only": True})
+
+    typo, _ = await run_tool(server, "stategraph_control_run",
+                             {"run_id": started["run_id"], "action": "terminate", "stat": "greet"})
+    fine, _ = await run_tool(server, "stategraph_control_run",
+                             {"run_id": started["run_id"], "action": "terminate", "_framework_key": 1})
+
+    assert typo["status"] == "error" and typo["error_type"] == "http_422" and "stat" in typo["error"], typo
+    assert fine["status"] == "success", fine
+
+
+CALLBACK = """\
+stategraph: 1
+id: ask
+events: {approve: {}}
+context: {link: null}
+initial: ask
+states:
+  ask:
+    do: {callback: approve}
+    transitions:
+      - target: waiting
+        effect: ctx.link = out["url"]
+  waiting:
+    transitions:
+      - {trigger: approve, target: done}
+  done: {type: final}
+"""
+
+
+async def test_get_run_hides_callback_tokens_from_a_reader_who_is_not_the_runs_user_or_an_admin(server, monkeypatch):
+    """A run of nobody is visible to every user; its callback URL would let one who may not send_event fire it."""
+    import json
+
+    (server.machines.find("hello").path.parent / "ask.yaml").write_text(CALLBACK, encoding="utf-8")
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "ask", "mock_only": True})
+    assert started["run_status"] == "waiting", started
+    token = server._callback_tokens(started["run_id"])
+    assert len(token) == 1
+    token = token.pop()
+    _enable_auth(server, monkeypatch, {"alice": "USER", "root": "ADMIN"})
+
+    seen_by_user, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "_user_id": "alice"})
+    seen_by_admin, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "_user_id": "root"})
+    seen_by_nobody, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"]})
+
+    assert seen_by_user["status"] == "success", seen_by_user
+    assert token not in json.dumps(seen_by_user) and "<hidden>" in json.dumps(seen_by_user["frames"])
+    assert token not in json.dumps(seen_by_nobody), "a caller without a user is not the user of a run of nobody"
+    assert token in json.dumps(seen_by_admin["frames"]) and token in json.dumps(seen_by_admin["journal"])
+
+
+CUT = """\
+stategraph: 1
+id: cut
+python: cut.py
+events: {approve: {}}
+context: {note: null, links: {}}
+initial: ask
+states:
+  ask:
+    do: {callback: approve}
+    transitions:
+      - target: waiting
+        effect: |
+          ctx.note = pad(out["url"])
+          ctx.links = {out["url"]: "sent"}
+  waiting:
+    transitions:
+      - {trigger: approve, target: done}
+  done: {type: final}
+"""
+# the token starts 10 characters before the 2,000 at which get_run cuts a text
+CUT_PY = "def pad(url):\n    at = url.index('token=') + 6\n    return 'x' * (1990 - at) + url + 'tail'\n"
+
+
+async def test_a_token_across_the_cut_and_one_in_a_key_are_hidden_whole(server, monkeypatch):
+    """Hidden after the cut, a token cut in two kept its first part (42 of 43 characters were measured); a ctx keyed
+    by the URL showed it whole in the key."""
+    import json
+
+    folder = server.machines.find("hello").path.parent
+    (folder / "cut.yaml").write_text(CUT, encoding="utf-8")
+    (folder / "cut.py").write_text(CUT_PY, encoding="utf-8")
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "cut", "mock_only": True})
+    assert started["run_status"] == "waiting", started
+    token = server._callback_tokens(started["run_id"]).pop()
+    _enable_auth(server, monkeypatch, {"alice": "USER"})
+
+    seen, _ = await run_tool(server, "stategraph_get_run", {"run_id": started["run_id"], "_user_id": "alice"})
+
+    text = json.dumps(seen)
+    assert token[:8] not in text and token[-8:] not in text, "a part of the token is visible"
+    assert "characters)" in json.dumps(seen["frames"]), "the note was not cut: the test does not reach the cut"
+
+
+async def test_control_run_takes_the_request_id_the_framework_adds(server):
+    """An agent's programmatic dispatch adds request_id and requestId without the "_" (tools/base.py reads them)."""
+    started, _ = await run_tool(server, "stategraph_run_machine", {"machine_id": "hello", "mock_only": True})
+
+    result, _ = await run_tool(server, "stategraph_control_run", {"run_id": started["run_id"], "action": "terminate",
+                                                                  "request_id": "r1", "requestId": "r1"})
+
+    assert result["status"] == "success", result
 
 
 async def test_allowed_users_pass_without_a_role_lookup(server, monkeypatch):

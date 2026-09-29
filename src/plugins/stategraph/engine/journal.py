@@ -402,6 +402,13 @@ class RunStore:
         with self._lock:
             return [self._journal_row(r) for r in self._db().execute(sql + " ORDER BY seq", args).fetchall()]
 
+    def callback_urls(self, run_id: str) -> list[str]:
+        """The URLs the run's callback activities answered with -- read from those rows only, not every activity's."""
+        sql = ("SELECT json_extract(data, '$.out.url') FROM journal WHERE run_id = ? AND kind = 'activity'"
+               " AND json_extract(data, '$.kind') = 'callback'")
+        with self._lock:
+            return [url for (url,) in self._db().execute(sql, (run_id,)).fetchall() if isinstance(url, str)]
+
     def has_row(self, run_id: str, kind: str, key: str) -> bool:
         with self._lock:
             return self._db().execute("SELECT 1 FROM journal WHERE run_id = ? AND kind = ? AND key = ?",
