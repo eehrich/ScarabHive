@@ -1152,7 +1152,9 @@ class BatchQueueManager:
         )
         
         # Clear request data to free memory (messages, tools can be large)
-        # Keep only metadata for debugging
+        # Keep only metadata for debugging -- and the input estimate, which is
+        # counted from the messages
+        job.metadata["estimated_input_tokens"] = job.estimated_input_tokens
         for request in (job.requests or []):
             request.messages = []  # Clear large message payloads
             request.tools = None   # Clear tool definitions
