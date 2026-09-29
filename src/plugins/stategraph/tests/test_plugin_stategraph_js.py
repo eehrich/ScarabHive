@@ -359,6 +359,7 @@ PANEL_CASES = [
     "a_click_on_a_states_handle_connects_nothing",
     "a_double_click_renames_the_state_under_the_pointer",
     "a_click_zoomed_out_selects_and_moves_nothing",
+    "a_composite_is_drawn_under_the_transitions_inside_it",
     "an_empty_machine_asks_for_a_first_state",
     "the_result_shows_every_activitys_answer_and_the_end_states",
     "a_live_runs_result_reads_on_from_where_it_stopped",

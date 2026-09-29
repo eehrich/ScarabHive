@@ -462,6 +462,8 @@ export class Canvas {
       el('path', { d: 'M0 0 L10 5 L0 10 z' }, marker);
     }
     this.viewport = el('g', { class: 'sg-viewport' }, svg);
+    // composites under the transitions: their filled box would hide the ones inside them
+    this.compositeLayer = el('g', { class: 'sg-composites' }, this.viewport);
     this.edgeLayer = el('g', { class: 'sg-edges' }, this.viewport);
     this.nodeLayer = el('g', { class: 'sg-nodes' }, this.viewport);
     this.dragLayer = el('g', { class: 'sg-drag' }, this.viewport);
@@ -510,10 +512,11 @@ export class Canvas {
   draw() {
     const { nodes, moved } = applyPositions(this.auto, this.positions);
     this.nodes = nodes;
+    this.compositeLayer.replaceChildren();
     this.edgeLayer.replaceChildren();
     this.nodeLayer.replaceChildren();
     const byName = new Map(this.graph.states.map((state) => [state.name, state]));
-    // composites first, so their children are drawn on top
+    // outer composites first, so the ones nested in them are drawn on top
     const order = Object.keys(nodes).sort((a, b) => depth(nodes, a) - depth(nodes, b));
     for (const id of order) {
       const box = nodes[id];
@@ -553,7 +556,7 @@ export class Canvas {
     const group = el('g', {
       class: `sg-node sg-node--${kind}${state.wait ? ' sg-node--wait' : ''}`,
       'data-state': state.name, tabindex: 0, role: 'button', 'aria-label': `State ${state.name}`,
-    }, this.nodeLayer);
+    }, state.composite ? this.compositeLayer : this.nodeLayer);
     const title = el('title', {}, group);
     title.textContent = [state.name, state.kind && `${state.kind}: ${state.label}`, state.description]
       .filter(Boolean).join('\n');
@@ -625,7 +628,7 @@ export class Canvas {
     const run = this.overlay.run;
     const problems = this.overlay.problems || { states: {}, transitions: {} };
     const breakpoints = this.overlay.breakpoints || new Set();
-    for (const group of this.nodeLayer.querySelectorAll('.sg-node')) {
+    for (const group of this.viewport.querySelectorAll('.sg-node')) {
       const name = group.dataset.state;
       const pinned = problems.states[name];
       group.classList.toggle('is-selected', this.selected?.kind === 'state' && this.selected.id === name);

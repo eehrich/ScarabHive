@@ -425,6 +425,20 @@ const CASES = {
     check(ASKED.some(([kind, text]) => kind === 'prompt' && text.startsWith('New name for write')), `asked: ${JSON.stringify(ASKED)}`);
   },
 
+  async a_composite_is_drawn_under_the_transitions_inside_it() {
+    await boot('?machine=review');
+    const drawn = $('canvas').descendants();  // document order = painting order
+    const composite = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === 'review');
+    const inner = MACHINE.graph.transitions.find((t) => t.source === 'read' && t.target === 'verdict');
+    const link = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === inner.id);
+    const leaf = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === 'read');
+    check(composite && link && leaf, 'the composite, its inner transition or its state is not drawn');
+    check(drawn.indexOf(composite) < drawn.indexOf(link), 'the composite covers the transition inside it');
+    check(drawn.indexOf(link) < drawn.indexOf(leaf), 'the transition covers the state it leaves');
+    await choose('review');
+    check(composite.classList.contains('is-selected'), 'a selected composite is not marked');
+  },
+
   async a_click_zoomed_out_selects_and_moves_nothing() {
     await boot('?machine=review');
     for (let i = 0; i < 9; i += 1) await $('zoomOut').fire('click', {});
