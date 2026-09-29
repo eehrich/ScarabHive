@@ -17,7 +17,7 @@ This document explains how to create plugins (tool servers) for AgentSystem. It 
   - [Agent-Based Plugins](#agent-based-plugins)
   - [Plugin Types Summary](#plugin-types-summary)
 - [Tools and Parameters](#tools-and-parameters)
-- [Model Experience (required in every plugin README)](#model-experience-required-in-every-plugin-readme)
+- [Model Experience (in the plugin's guide)](#model-experience-in-the-plugins-guide)
 - [Advanced Features](#advanced-features)
   - [Status and Progress Reporting](#status-and-progress-reporting)
   - [Cooperative Cancellation](#cooperative-cancellation)
@@ -228,7 +228,8 @@ src/plugins/<plugin_name>/
   ├── schema.yaml       # Tool definitions
   ├── server.py         # Main server implementation
   ├── tests/            # Colocated tests (test_*.py)
-  └── README.md         # Documentation
+  ├── README.md         # Short overview
+  └── <plugin_name>.guide  # The manual (Help panel)
 ```
 
 **Option 2: Separated**
@@ -239,7 +240,8 @@ src/plugins/<plugin_name>/
   ├── plugin.py         # PLUGIN_FACTORY export
   ├── server.py         # tool server (SchemaBasedToolServer)
   ├── tests/            # Colocated tests (test_*.py)
-  └── README.md         # Documentation
+  ├── README.md         # Short overview
+  └── <plugin_name>.guide  # The manual (Help panel)
 ```
 
 ```python
@@ -296,7 +298,7 @@ lives in `<plugin>/tests/`).
 - **`plugin.py`** (if separated structure): exports `PLUGIN_FACTORY` (the default entrypoint)
 - **`server.py`**: Server implementation; tool routing comes from the base class
 - **`tests/`**: Colocated plugin tests
-- **`README.md`**: Usage examples, configuration options, troubleshooting
+- **`README.md`**: a short overview; usage, configuration and troubleshooting go in `<plugin_name>.guide`
 
 ## Defining Metadata (`plugin.toml`)
 
@@ -575,7 +577,7 @@ class MyServer(SchemaBasedToolServer):
 - Keep numeric template variables unquoted so they render with correct types
 - Use `{{ name }}` for tool name prefixing to avoid conflicts between plugin instances
 - Validate template variables in your server initialization
-- Document custom template variables in your plugin's README
+- Document custom template variables in your plugin's guide
 - **Prefer `get_template_vars()` override** over `_load_schema()` override for custom variables
 
 **Why use `get_template_vars()` instead of overriding `_load_schema()`?**
@@ -1700,19 +1702,20 @@ itself — it recognizes `"status": "error"`, an `error` key without `status`, a
 `"success": False` together with `error`. `{"status": "failed"}` or
 `{"success": False}` without `error` show up as "completed".
 
-## Model Experience (required in every plugin README)
+## Model Experience (in the plugin's guide)
 
 A plugin's real interface is not its Python signature — it is **what the model
 sees**, and **what that costs**. Both have repeatedly been reconstructed by
 hand during reviews because nobody wrote them down. Three short sections in
-your `README.md` remove that guesswork. They are required for new plugins;
+your plugin's guide (`<folder>.guide`; the `README.md` until it has one) remove
+that guesswork -- the README itself stays a short overview. They are required for new plugins;
 retrofit an existing plugin only when you are already editing it. No test
 enforces this — reviews do.
 
 **Scope:** plugins whose tools a model calls. A package that exposes no tools
 to a model — `type = ["llm-provider"]` (the LLM clients under
 `src/plugins/`) or `type = ["library"]` — has no model-facing surface to
-describe, and these three sections do not apply to it. Its README still owes
+describe, and these three sections do not apply to it. Its guide still owes
 the ordinary things: what it provides, how to configure it, and the gotchas.
 
 ### 1. What the model sees
@@ -2651,7 +2654,7 @@ PLUGIN_FACTORY = MyPluginServer
 ✅ **Clear naming** - Use action verbs: `fetch_url`, `parse_html`, `extract_data`
 ✅ **Good error messages** - Help users understand what went wrong
 ✅ **Consistent responses** - Always include `status` field
-✅ **Documentation** - README with examples and troubleshooting
+✅ **Documentation** - a guide with examples and troubleshooting, a short README
 
 ### Implementation Checklist
 
@@ -2663,7 +2666,7 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] Support for `_cancellation_token` parameter (long-running tools)
 - [ ] Input validation and structured error responses
 - [ ] Server entry with `enabled: true` and the tools allowed for the agents that need them
-- [ ] README with the "Model Experience" sections
+- [ ] Guide with the "Model Experience" sections; README a short overview
 - [ ] Tests in `src/plugins/<name>/tests/test_plugin_<name>_*.py`
 - [ ] Optional: CLI (`cli.py` / `__main__.py` and a pyproject.toml script)
 
@@ -2702,7 +2705,7 @@ PLUGIN_FACTORY = MyPluginServer
 - [ ] All tools have clear descriptions
 - [ ] Parameter validation with helpful error messages
 - [ ] Configuration logging at startup
-- [ ] README with usage examples
+- [ ] Guide with usage examples
 - [ ] Tests covering normal operation, errors, and cancellation
 
 ### Performance Tips

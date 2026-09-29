@@ -1155,12 +1155,14 @@ is enabled.
 
 @{h2}Documentation
 
-Every plugin whose tools a model calls gets a @{tt}README.md@{utt} with a
-@{b}Model Experience@{ub} section: what the model sees (tool descriptions,
-error texts, injected notes), the token and prompt-cache effect, and known
-gaps. A plugin may also ship a guide of its own,
-@{tt}<folder>/<folder>.guide@{utt}, which this help shows instead of the
-README, see @{" Writing a guide " link authoring}. Tests:
+A plugin's @{tt}README.md@{utt} is a short overview; its manual is a
+guide of its own, @{tt}<folder>/<folder>.guide@{utt}, which this help shows
+instead of the README (@{" Writing a guide " link authoring}): the panel,
+every tool and hook with its settings, and for a plugin whose tools a model
+calls a @{b}Model Experience@{ub} part -- what the model sees (tool
+descriptions, error texts, injected notes), the token and prompt-cache
+effect, and known gaps. Until a plugin has a guide, that part is in its
+README. Tests:
 @{" Tests and conventions " link testing}.
 @endnode
 
@@ -1881,8 +1883,8 @@ goes into a prompt (@{" Hooks " link hooks}).
 @{bullet}Arguments are validated by the tool, errors are returned as
 @{tt}{"status": "error", "error": ...}@{utt} (@{" Tools " link tools}).
 @{bullet}No provider tables in LLM plugins (@{" LLM " link llm}).
-@{bullet}A plugin that a model calls has a README with a Model Experience
-section (@{" Writing a plugin " link plugins}).
+@{bullet}A plugin that a model calls documents its Model Experience in
+its guide (@{" Writing a plugin " link plugins}).
 @endnode
 
 @node help "Using this help"

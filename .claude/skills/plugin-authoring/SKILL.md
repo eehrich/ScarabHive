@@ -42,7 +42,8 @@ src/plugins/my_plugin/
   plugin.py        # entrypoint module, sits DIRECTLY in the plugin folder
   server.py
   schema.yaml      # required for tools; must sit next to the class's module
-  README.md        # with "Model Experience", see below
+  README.md        # a short overview, see below
+  my_plugin.guide  # the manual: panel, tools, hooks, settings
   tests/test_plugin_my_plugin_*.py
 ```
 
@@ -164,16 +165,25 @@ warning at startup, not by the validators.) Check those with
 `load_settings()` + `get_tool_server_config` in a config test
 (`src/plugins/amiga/tests/test_amiga_config.py`).
 
-## README: "Model Experience"
+## README and guide
 
-Required for every new plugin whose tools a model calls (not enforced by a test —
-write it anyway). Three sections:
+The README is a short overview: what the plugin is for, its tools, hooks and panel in a
+line each, how to switch it on -- and that the details are in its guide. The guide
+(`<folder>.guide`, see below) is the manual: the panel for users with a screenshot
+(`src/scripts/guide_screenshots.py` shoots it from the panel test's stub app, never from
+real data), every tool with its parameters and answers, every hook with its settings, the
+server settings. Write it from the code, not from the old README -- those drift.
+
+For a plugin whose tools a model calls, the guide also carries the "Model Experience"
+(a plugin without a guide yet keeps it in its README; not enforced by a test — write it
+anyway). Three parts:
 
 1. **What the model sees** — tool descriptions, error strings, injected notices, verbatim.
 2. **Token and cache effect** — append-only / prefix-changing (when, how often) / none.
 3. **Known gaps** — deliberate limits with the reason.
 
-Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
+Example of the new form: `src/plugins/todo/todo.guide` (with its short README). Still in the old
+form, the parts in the README: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
 
 ## User documentation: the Help panel
 

@@ -820,7 +820,7 @@ class TodoServer(SchemaBasedHookToolServer):
                 task_id=task_id,
                 new_status=status,
                 progress=progress,
-                priority=priority if priority != "medium" else None,
+                priority=params.get("priority"),  # the create default is no change here: medium must stay settable
                 add_note=note,
                 add_tags=tags,
                 set_depends_on=set_depends_on,
@@ -850,6 +850,7 @@ class TodoServer(SchemaBasedHookToolServer):
                 filter_tags=filter_tags,
                 only_unblocked=only_unblocked,
                 limit=limit,
+                offset=params.get("offset") or 0,
                 context=context,
             )
 
@@ -990,9 +991,6 @@ class TodoServer(SchemaBasedHookToolServer):
                     "message": msg,
                 }
 
-            # Generate task ID
-            task_id = self._generate_task_id(session_id)
-
             # Parse priority
             try:
                 priority_enum = TaskPriority(priority.lower())
@@ -1009,6 +1007,19 @@ class TodoServer(SchemaBasedHookToolServer):
                     "message": msg,
                 }
 
+            # A dependency that does not exist is refused, as on update, whether dependencies are enforced or not:
+            # ids are handed out in order, and a missing one would later name a task nobody meant
+            missing = next((dep for dep in depends_on or [] if dep not in collection.tasks), None)
+            if missing is not None:
+                msg = f"Dependency '{missing}' does not exist"
+                logger.info(f"Create rejected (dependency error): {msg}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "status": "validation_failed",
+                    "message": msg,
+                }
+
             # Prepare tags and metadata
             task_tags = tags or []
             task_metadata: Dict[str, str] = {}
@@ -1017,9 +1028,9 @@ class TodoServer(SchemaBasedHookToolServer):
             if idempotency_key:
                 task_metadata["idempotency_key"] = idempotency_key
 
-            # Create task
+            # Create task: validated (title, description) before it takes an id, so a refused create takes none
             task = Task(
-                task_id=task_id,
+                task_id="",
                 title=title,
                 description=description,
                 priority=priority_enum,
@@ -1042,6 +1053,8 @@ class TodoServer(SchemaBasedHookToolServer):
                     "status": "validation_failed",
                     "message": msg,
                 }
+
+            task_id = task.task_id = self._generate_task_id(session_id)
 
             # Update reverse dependency (blocks) on parent tasks
             for dep_id in task.depends_on:
@@ -1190,8 +1203,8 @@ class TodoServer(SchemaBasedHookToolServer):
                     # If task IS blocked, allow the status (it's redundant but harmless)
 
                 old_status = task.status
+                self._update_timestamps(task, new_status_enum)  # before the change: it compares with the old status
                 task.status = new_status_enum
-                self._update_timestamps(task, new_status_enum)
 
                 changes["status"] = f"{old_status.value} → {new_status_enum.value}"
 
