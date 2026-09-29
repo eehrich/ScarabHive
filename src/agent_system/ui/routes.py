@@ -11,6 +11,7 @@ from agent_system.auth.dependencies import require_admin
 from agent_system.auth.middleware import AUDIT_CATEGORIES, AUDIT_STATUS_CLASSES, security_audit_log
 
 from .catalog import Panel, PanelSpecError, build_catalog, core_panels, plugin_panel, roles_allowed
+from .help import panel_guides
 from .help import router as help_router
 from .resources import sprite_icons, ui_templates
 
@@ -86,7 +87,11 @@ async def catalog(request: Request):
         profiling_enabled=PROFILING_ENABLED,
         memory_profiling_enabled=MEMORY_PROFILING_ENABLED,
     )
-    return build_catalog(role, core, plugin_panels(config.auth))
+    plugins = plugin_panels(config.auth)
+    guides = panel_guides(config, [panel.id for panel in plugins])
+    for panel in plugins:
+        panel.help = guides.get(panel.id, "")
+    return build_catalog(role, core, plugins)
 
 
 @router.get("/ui/kit", response_class=HTMLResponse)

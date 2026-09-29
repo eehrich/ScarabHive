@@ -109,6 +109,33 @@ die Python-Markdown braucht (wie GitHub).
 - Routen: `/api/help/*` und `/ui/panels/help` fallen unter die Default-Policy
   `require_auth`; eigene Regeln braucht es nicht.
 
+## Hilfe-Knöpfe in der Shell
+
+- Oben rechts im Kopf (`#helpButton`, `templates/index.html`): öffnet das Help-Panel
+  mit dem Handbuch. Zeigt es schon das Handbuch (eine Seite davon, eine Suche), holt der
+  Knopf es nur nach vorn -- Seite und Retrace bleiben; auf einer Plugin-Guide oder der
+  Plugin-Liste fängt es wieder beim Handbuch an (`workspace.openManual()`).
+- Ein Plugin-Panel mit Guide oder README: ein `?` am Ende der Dock-Leiste (für den Tab
+  vorn, `#dockHelp`) und in der Fensterleiste eines herausgelösten Panels. Es öffnet
+  das Help-Panel an `?guide=<typ>&node=main`; zeigt es diese Guide schon, bleibt es auf
+  der Seite, die der Leser gerade liest (`workspace.openHelp()`). Muss es dafür den Platz
+  wechseln (Dock ↔ Fenster, der Dock-Knopf holt ein Help-Fenster ins Dock), lädt der
+  Frame dort neu: die Seite bleibt, Retrace beginnt leer. Nicht in jedem Dock-Tab: die
+  haben schon drei Knöpfe bei 150 px Mindestbreite.
+- Die Quelle ist der Katalog: `Panel.help` trägt die Guide-Id, `panel_guides()` in
+  `ui/help.py` setzt sie über den Plugin-Typ, den der Loader für die Instanz auflöst
+  (`settings._resolve_server_inheritance`: der `type` des Eintrags, über andere Einträge
+  weiterverfolgt; ohne Eintrag der Instanzname; scheitert die Vererbung, wie beim Loader
+  der `type` des Eintrags selbst) -- `skills_sam` findet die README von
+  `sub_agent_manager`. Ein Plugin-Ordner, den die API nicht lesen kann, kostet nur seine
+  eigenen Plugins (`plugin_docs`), nicht den Katalog.
+- Der Knopf der Dock-Leiste wird bei einem Tab ohne Guide unsichtbar (`data-idle`), nicht
+  entfernt: sein Platz bleibt, sonst änderten die schrumpfenden Tabs bei jedem Wechsel
+  ihre Breite. Aus einem Fenster öffnet die Hilfe als Fenster darüber (angedockt lag sie
+  darunter). Das Help-Panel meldet jede gezeigte Seite als eigenen Pfad (`pk:navigate`);
+  daran sieht die Shell, ob es gerade das Handbuch zeigt.
+- Ein Panel im eigenen Browser-Tab hat keinen Knopf (dort gibt es keine Shell).
+
 ## `<pk-guide>` in einem Plugin-Panel
 
 ```html

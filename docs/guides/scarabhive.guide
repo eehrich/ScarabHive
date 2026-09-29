@@ -1893,6 +1893,16 @@ AmigaOS: a guide is one text file holding a database of pages, called
 nodes. Buttons in the text lead to other nodes, in the same guide or in
 another one.
 
+@{h2}Where help opens
+
+@{bullet}The question mark at the top right of ScarabHive opens this manual.
+
+@{bullet}A panel whose plugin has a guide or a README shows a question mark
+as well: at the end of the dock's tab bar for the tab in front, and in the
+bar of a detached window. It opens that plugin's guide here -- or, when
+this viewer shows that guide already, brings it forward on the page you
+are reading.
+
 @{h2}The buttons above the page
 
 @{table}

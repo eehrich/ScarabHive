@@ -271,3 +271,7 @@ body.app {
   .app-search { width: auto; margin-left: auto; }
   .app-window { inset: 0 !important; width: auto !important; height: auto !important; border-radius: 0; }
 }
+
+/* The dock's help button: at the end of its bar, for the tab in front (workspace.js, openHelp) */
+.app-dock-help { align-self: center; margin: 0 var(--space-1) 0 auto; flex: none; }
+.app-dock-help[data-idle] { visibility: hidden; }  /* the tab in front has no guide: nothing to click, the place kept */

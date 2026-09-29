@@ -69,6 +69,8 @@ class Panel:
     contexts: dict[str, str] = field(default_factory=dict)
     #: Instances of one plugin share it (their common title); the launcher folds them together.
     group: str = ""
+    #: The plugin's guide in the Help panel (its id) when it has one or a README; the shell's help button opens it.
+    help: str = ""
 
     def visible_to(self, role: str) -> bool:
         return not self.roles or role in self.roles

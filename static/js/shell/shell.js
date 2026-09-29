@@ -277,6 +277,7 @@ async function start() {
   // header and menus
   $('sessionsToggle').addEventListener('click', () => setSessionsOpen(!sessionsOpen()));
   $('paletteButton').addEventListener('click', () => palette.open());
+  $('helpButton').addEventListener('click', () => workspace.openManual());  // a plugin's guide: its panel's own button
   $('themeButton').addEventListener('click', () => {
     const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
     applyTheme(next);

@@ -180,7 +180,9 @@ Examples: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
 The Help panel shows a plugin's docs next to the manual, found by convention:
 `<plugin folder>/<folder name>.guide` (AmigaGuide, extended by headings, lists, tables and
 code blocks in its own syntax -- not Markdown), else the plugin's `README.md` rendered as
-Markdown. A guide button or a README link to `docs/*.md` opens that file in the viewer. In the plugin's own panel: `<pk-guide guide="<folder>" node="config">` from
+Markdown. A guide button or a README link to `docs/*.md` opens that file in the viewer. With
+either, the plugin's panel gets a help button in the shell by itself (catalogue entry `help`;
+for an instance of another name the plugin type the loader resolves for it counts). In the plugin's own panel: `<pk-guide guide="<folder>" node="config">` from
 `/static/kit/guide.js`. Format and rules: Help → "Writing a guide", long form
 `docs/help_amigaguide.md`. `tests/ui/test_help.py -k repository` checks every guide in
 the repo (dead links, unknown commands).

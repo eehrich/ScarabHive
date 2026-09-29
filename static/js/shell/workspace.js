@@ -15,6 +15,11 @@ function storedRect(rect) {
     ? { x: rect.x, y: rect.y, w: rect.w, h: rect.h } : null;
 }
 
+/** The guide the Help panel shows: the page it reported or a link sent it to; none, the bare panel is the manual. */
+function shownGuide(help) {
+  return new URL(help.path || '?', window.location.origin).searchParams.get('guide');
+}
+
 export class Workspace {
   /**
    * @param {object} deps
@@ -64,6 +69,13 @@ export class Workspace {
     document.getElementById('dockCollapse').addEventListener('click', () => this.stepAside());
     this.toggle = document.getElementById('dockToggle');
     this.toggle.addEventListener('click', () => this.toggleDock());
+    // one help button for the dock, at the end of its bar: the tab in front's plugin guide
+    this.dockHelp = document.getElementById('dockHelp');
+    this.dockHelp.addEventListener('click', async () => {
+      await this.openHelp(this.items.get(this.active));
+      // Help in front has no guide of its own: the button went idle with the focus on it, the tab in front takes it
+      if (this.dockHelp.hasAttribute('data-idle')) this.tabBar.querySelector('.dock-tab[aria-selected="true"]')?.focus();
+    });
     let pending = false;
     let wasNarrow = narrow();
     window.addEventListener('resize', () => {
@@ -87,6 +99,35 @@ export class Workspace {
 
   panel(panelId) {
     return this.catalog().panels.find((p) => p.id === panelId) || null;
+  }
+
+  /** The Help panel on the manual: to the front where it shows the manual already (a page of it, a search -- the
+   *  reader keeps it and the way back), else at the manual's start (a plugin's guide, the plugin list). */
+  openManual() {
+    const help = [...this.items.values()].find((one) => one.panelId === 'help');
+    const guide = help && shownGuide(help);
+    return this.open('help', help && (!guide || guide === 'scarabhive') ? {} : { path: '?guide=scarabhive&node=main' });
+  }
+
+  /** The Help panel at the guide of the plugin behind a panel (its catalogue entry's `help`), if it has one --
+   *  where that panel is: in the dock beside a docked one, a window over a window (docked, it lay under it).
+   *  Help on that guide already keeps its page (and the way back, unless it has to change place: a move reloads
+   *  the frame); else it starts at `main`. */
+  async openHelp(item) {
+    const guide = item && this.panel(item.panelId)?.help;
+    if (!guide) return;
+    const path = `?${new URLSearchParams({ guide, node: 'main' })}`;
+    const help = [...this.items.values()].find((one) => one.panelId === 'help');
+    if (!help) return this.open('help', { path, place: item.place });
+    const other = shownGuide(help) !== guide;
+    if (help.place !== item.place) {
+      if (other) Object.assign(help, { path, linked: true });  // the move loads it there, once
+      await this.move(help.key, item.place);
+    } else if (other) {
+      await this.open('help', { path });
+    } else {
+      this.focus(help.key);
+    }
   }
 
   // ------------------------------------------------------------ opening
@@ -271,6 +312,9 @@ export class Workspace {
     else delete this.body.dataset.dock;
     this.toggle.disabled = !open;
     this.toggle.setAttribute('aria-expanded', String(open && getComputedStyle(this.dock).display !== 'none'));
+    const shown = open && this.items.get(this.active);
+    // idle, not hidden: the place stays taken, so the shrinking tabs keep their width when the front tab changes
+    this.dockHelp.toggleAttribute('data-idle', !(shown && this.panel(shown.panelId)?.help));
     // re-rendering the bar keeps the keyboard focus: render() finds the element again by its
     // data-key, and a tab and each of its buttons have one
     // While a tab is dragged the bar is left alone: a replaced drag source never gets its dragend.
@@ -411,6 +455,7 @@ export class Workspace {
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-back" data-act="aside" title="Back to the chat">${icon('arrow-left', { size: 'sm' })}</button>
         ${icon(panel.icon, { size: 'sm' })}
         <span class="app-window-title pk-truncate"></span>
+        ${panel.help && html`<button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="help" title="Help for this panel">${icon('circle-help', { size: 'sm' })}</button>`}
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="tab" title="Open in a new browser tab">${icon('external-link', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="dock" title="Dock beside the chat">${icon('panel-right', { size: 'sm' })}</button>
         <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-act="close" title="Close">${icon('x', { size: 'sm' })}</button>
@@ -428,6 +473,7 @@ export class Workspace {
     element.querySelector('[data-act="close"]').addEventListener('click', () => this.close(item.key));
     element.querySelector('[data-act="dock"]').addEventListener('click', () => this.move(item.key, 'dock'));
     element.querySelector('[data-act="tab"]').addEventListener('click', () => this.openInTab(item.key));
+    element.querySelector('[data-act="help"]')?.addEventListener('click', () => this.openHelp(item));
     this.dragging(element.querySelector('.app-window-bar'), item, (rect, dx, dy) => ({ ...rect, x: rect.x + dx, y: rect.y + dy }));
     this.dragging(element.querySelector('.app-window-resize'), item,
       (rect, dx, dy) => ({ ...rect, w: Math.max(MIN_WIDTH, rect.w + dx), h: Math.max(MIN_HEIGHT, rect.h + dy) }));

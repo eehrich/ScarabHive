@@ -21,6 +21,7 @@
       {{ icon('search') }}<span class="pk-grow">Search or run a command</span><kbd class="pk-kbd">Ctrl K</kbd>
     </button>
     <div class="app-header-actions">
+      <button id="helpButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Help: the ScarabHive manual">{{ icon('circle-help') }}</button>
       <button id="launcherButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" popovertarget="launcher" title="Panels">{{ icon('layout-grid') }}</button>
       <button id="themeButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon" title="Theme">{{ icon('monitor') }}</button>
       <button id="userButton" type="button" class="app-avatar" popovertarget="userMenu" title="Account"><span id="userInitials"></span></button>
@@ -62,6 +63,7 @@
       <div class="app-dock-bar">
         <button id="dockCollapse" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-back" title="Back to the chat">{{ icon('arrow-left', size='sm') }}</button>
         <div class="app-dock-tabs" role="tablist"></div>
+        <button id="dockHelp" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm app-dock-help" title="Help for this panel" data-idle>{{ icon('circle-help', size='sm') }}</button>
       </div>
       <div class="app-dock-frames"></div>
     </section>

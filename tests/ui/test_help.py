@@ -668,6 +668,61 @@ def test_a_file_that_cannot_be_read_costs_its_own_guide_only(plugins, monkeypatc
         "line 2: @embed needs a node and a readable file next to the guide, got ['held.txt']"]
 
 
+def test_a_panel_knows_the_guide_of_its_plugin_by_the_instance_type(plugins):
+    from agent_system.config.models import ToolServerConfig
+    from agent_system.ui.help import panel_guides
+
+    root, plugin = plugins
+    plugin("guided", guide='@node main "G"\nx\n@endnode')
+    plugin("readme_only", readme="# R")
+    plugin("bare")
+    plugin("scarabhive", readme="# Clash")  # named like the manual: its docs are left out, so no guide of its own
+    plugin("plugins", readme="# Clash")  # named like the generated plugin list: the same
+    config = SimpleNamespace(plugins=SimpleNamespace(plugin_dirs=[root], servers={
+        "workspace_guided": ToolServerConfig(type="guided"),
+        "readme_only": ToolServerConfig(type="bare"),  # named like a documented plugin, runs as another one
+        "my_sam": ToolServerConfig(type="coder_sam"), "coder_sam": ToolServerConfig(type="guided"),  # inherits
+        "loop_a": ToolServerConfig(type="loop_b"), "loop_b": ToolServerConfig(type="loop_a"),  # never loads
+        "guided": ToolServerConfig(type="guided", tools={"allowed": ["a/*"]}),
+        # a list the inheritance cannot merge: the loader runs the entry as written, a guided one
+        "mixed": ToolServerConfig(type="guided", tools={"allowed": ["+x/*", "y/*"]}),
+    }))
+
+    guides = panel_guides(config, ["workspace_guided", "readme_only", "bare", "scarabhive", "plugins", "unknown",
+                                   "guided", "my_sam", "loop_a", "mixed"])
+
+    # an instance is its entry's type, followed through other entries; one without an entry is its own name
+    assert guides == {"workspace_guided": "guided", "guided": "guided", "my_sam": "guided", "mixed": "guided"}
+    assert panel_guides(SimpleNamespace(plugins=None), ["guided"]) == {}
+
+
+def test_a_plugin_folder_that_cannot_be_read_costs_its_own_plugins_only(plugins, tmp_path, monkeypatch):
+    from agent_system.ui import help as help_module
+
+    root, plugin = plugins
+    plugin("locked", readme="# Locked")
+    plugin("fine", readme="# Fine")
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    real_iterdir, real_metadata = Path.iterdir, help_module.load_plugin_metadata
+
+    def iterdir(self):
+        if self == closed:
+            raise PermissionError(f"{self}: access denied")
+        return real_iterdir(self)
+
+    def metadata(folder):
+        if folder.name == "locked":
+            raise PermissionError(f"{folder}: access denied")
+        return real_metadata(folder)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    monkeypatch.setattr(help_module, "load_plugin_metadata", metadata)
+
+    # the catalogue asks for every plugin's docs: one it cannot read must not take the others with it
+    assert [doc.id for doc in help_module.plugin_docs([closed, root])] == ["fine"]
+
+
 def test_search_lays_every_node_out_once(plugins, monkeypatch):
     from agent_system.ui import help as help_module
 

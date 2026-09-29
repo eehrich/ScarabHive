@@ -13,7 +13,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent_system.auth.middleware import SecurityHeadersMiddleware
-from agent_system.config.models import AuthConfig, EndpointSecurityConfig, EndpointSecurityRule, PluginSecurityConfig
+from agent_system.config.models import (AuthConfig, EndpointSecurityConfig, EndpointSecurityRule, PluginSecurityConfig,
+                                         ToolServerConfig)
 from agent_system.plugins import tool_adapter, web_adapter
 from agent_system.ui.catalog import (
     PanelSpecError,
@@ -52,7 +53,7 @@ def test_a_declared_panel_becomes_a_catalogue_entry():
         "id": "probe", "title": "Probe", "url": "/plugins/probe/", "icon": "bug", "category": "debug",
         "description": "A panel for tests", "keywords": ["requests"], "roles": [],
         "window": {"width": 800, "height": 600},
-        "contexts": {"request": "/plugins/probe/?request_id={request_id}"}, "group": "",
+        "contexts": {"request": "/plugins/probe/?request_id={request_id}"}, "group": "", "help": "",
     }
 
 
@@ -120,7 +121,7 @@ def test_core_panels_follow_the_rules_plugins_follow():
     for panel in panels:
         declared = asdict(panel)
         declared["endpoint"] = declared.pop("url")
-        for built_only in ("id", "roles", "group"):
+        for built_only in ("id", "roles", "group", "help"):
             del declared[built_only]
         assert plugin_panel(panel.id, declared, ICONS, root="/") == replace(panel, roles=[])
 
@@ -222,7 +223,7 @@ def test_every_panel_url_may_be_framed_by_the_shell():
 def auth(enabled: bool, endpoint_rules=(), **plugin_security) -> SimpleNamespace:
     return SimpleNamespace(auth=AuthConfig(
         enabled=enabled, plugin_security=PluginSecurityConfig(**plugin_security),
-        endpoint_security=EndpointSecurityConfig(rules=list(endpoint_rules))))
+        endpoint_security=EndpointSecurityConfig(rules=list(endpoint_rules))), plugins=None)
 
 
 @pytest.fixture
@@ -253,6 +254,23 @@ def test_the_catalogue_lists_the_panels_registered_plugins_declare(app, register
     assert "probe" in ids and "routes_only" not in ids
     assert {"session", "system", "settings"} <= set(ids)
     assert [c["id"] for c in data["categories"]][:2] == ["session", "writer"]
+
+
+def test_a_plugin_panel_names_its_guide_for_the_shell_help_button(app, registered, tmp_path):
+    for name, readme in (("documented", "# Documented"), ("silent", None)):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "plugin.toml").write_text(f'[plugin]\nname = "{name}"\n', encoding="utf-8")
+        if readme:
+            (folder / "README.md").write_text(readme, encoding="utf-8")
+    registered("docs_instance", {"panel": spec(endpoint="/plugins/docs_instance/", contexts={})})
+    registered("silent", {"panel": spec(endpoint="/plugins/silent/", contexts={})})
+    app.state.config.plugins = SimpleNamespace(plugin_dirs=[str(tmp_path)],
+                                               servers={"docs_instance": ToolServerConfig(type="documented")})
+
+    panels = {p["id"]: p for p in TestClient(app).get("/api/ui/catalog").json()["panels"]}
+
+    assert (panels["docs_instance"]["help"], panels["silent"]["help"], panels["help"]["help"]) == ("documented", "", "")
 
 
 def test_a_plugin_loaded_like_production_reaches_the_catalogue(app, tmp_path, monkeypatch):

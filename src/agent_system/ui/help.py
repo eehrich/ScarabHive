@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from agent_system.config.settings import _resolve_server_inheritance
 from agent_system.plugins.plugin_manifest import load_plugin_metadata
 
 from .amigaguide import Guide, Node, decode, escape, file_node, inside, layout, parse, plain_text, stamp
@@ -82,16 +83,47 @@ def plugin_docs(plugin_dirs: Iterable[str | Path]) -> Iterator[PluginDoc]:
     """Every plugin (a folder with a plugin.toml) and the documentation it ships; the first of a name counts."""
     seen: set[str] = set()
     for root in map(Path, plugin_dirs):
-        if not root.is_dir():
+        try:
+            folders = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError as error:  # a folder that cannot be read costs its own plugins only
+            logger.warning("Help: plugin folder %s not readable: %s", root, error)
             continue
-        for folder in sorted(root.iterdir()):
-            metadata = load_plugin_metadata(folder) if folder.is_dir() else {}
-            if not metadata or folder.name in seen:
+        for folder in folders:
+            try:
+                metadata = load_plugin_metadata(folder) if folder.is_dir() else {}
+                if not metadata or folder.name in seen:
+                    continue
+                guide, readme = folder / f"{folder.name}.guide", folder / "README.md"
+                doc = PluginDoc(folder.name, folder, " ".join(str(metadata.get("description") or "").split()),
+                                guide if guide.is_file() else None, readme if readme.is_file() else None)
+            except OSError as error:
+                logger.warning("Help: plugin folder %s not readable: %s", folder, error)
                 continue
             seen.add(folder.name)
-            guide, readme = folder / f"{folder.name}.guide", folder / "README.md"
-            yield PluginDoc(folder.name, folder, " ".join(str(metadata.get("description") or "").split()),
-                            guide if guide.is_file() else None, readme if readme.is_file() else None)
+            yield doc
+
+
+def panel_guides(config: Any, instances: Iterable[str]) -> dict[str, str]:
+    """The guide of each plugin instance whose plugin is documented -- a guide or a README -- by instance.
+
+    An instance runs as the plugin the loader resolves for it: its server entry's type, followed through
+    other entries (``skills_sam`` is a ``sub_agent_manager``, ``my_sam: type: coder_sam`` whatever that one
+    is); an instance no entry names is its own type. A plugin named like a manual guide has no guide of its own.
+    """
+    if config.plugins is None:
+        return {}
+    taken = {guide_id(path.name) for path in GUIDES_DIR.glob("*.guide")} | {PLUGIN_INDEX}
+    documented = {guide_id(doc.id) for doc in plugin_docs(config.plugins.plugin_dirs or [])
+                  if doc.guide or doc.readme} - taken
+    guides = {}
+    for instance in instances:
+        try:
+            kind = _resolve_server_inheritance(instance, config)[0]  # the loader's own answer
+        except ValueError:  # the loader then runs the entry as written (get_tool_server_config)
+            kind = config.plugins.servers[instance].type
+        if guide_id(kind) in documented:
+            guides[instance] = guide_id(kind)
+    return guides
 
 
 def _readme_guide(plugin: PluginDoc) -> Callable[[str], str]:
