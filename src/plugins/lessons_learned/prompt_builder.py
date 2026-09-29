@@ -8,12 +8,13 @@ the system prompt during pre_llm_call hook.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def build_lesson_prompt(
     lessons: List[Dict[str, Any]],
     max_tokens: int = 1500,
+    shown: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Build a formatted lessons block for system prompt injection.
@@ -21,6 +22,8 @@ def build_lesson_prompt(
     Args:
         lessons: Active lessons sorted by priority/confidence
         max_tokens: Approximate token budget (chars * 0.25 heuristic)
+        shown: If given, the lessons that made it into the block are appended
+            to it -- the budget may leave some out.
 
     Returns:
         Formatted prompt injection string, or empty string if no lessons
@@ -79,12 +82,17 @@ def build_lesson_prompt(
             if tags_raw:
                 entry += f"\n  Tags: {', '.join(tags_raw)}"
 
-            candidate = cat_header + "\n".join(cat_entries + [entry]) + "\n"
-            if total_chars + len(candidate) > max_chars:
+            # What this entry adds to the block: itself and its line break, and
+            # the category heading with the first entry. (Adding the category's
+            # earlier entries again filled only half the budget.)
+            cost = len(entry) + 1 + (0 if cat_entries else len(cat_header))
+            if total_chars + cost > max_chars:
                 break
 
             cat_entries.append(entry)
-            total_chars += len(entry) + 1
+            total_chars += cost
+            if shown is not None:
+                shown.append(lesson)
 
         if cat_entries:
             body_parts.append(cat_header + "\n".join(cat_entries))

@@ -45,6 +45,14 @@ CONFIDENCE_BASE = {
     "auto": 0.4,
 }
 
+#: Seconds the extraction may take after a request. The session end hooks
+#: run before the session is free for the next message, so this is latency
+#: the user waits. A reading is started only while the longest one so far
+#: still fits: checked only before it started, a reading at 19.9 s ran to the
+#: hook's 30 s timeout, and a timeout between storing and logging leaves
+#: stored lessons with no anchor.
+EXTRACTION_BUDGET = 15.0
+
 AUTO_DEACTIVATE_THRESHOLD = 0.2
 AUTO_REACTIVATE_THRESHOLD = 0.4
 
@@ -80,6 +88,12 @@ def _beyond_tool_schema(params: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _limit(params: Dict[str, Any], default: int) -> int:
+    """The tool's `limit`, held to the 1 to 100 its schema promises: every row is returned whole."""
+    limit = params.get("limit")
+    return default if limit is None else min(100, max(1, int(limit)))
+
+
 def _tags(value: Any) -> List[str]:
     """Tags as a list, however they came: a list, a comma-separated string, or a stored row's JSON text of either."""
     if isinstance(value, str):
@@ -92,6 +106,13 @@ def _tags(value: Any) -> List[str]:
     if not isinstance(value, list):
         value = str(value).split(",")
     return [str(tag).strip() for tag in value if str(tag).strip()]
+
+
+def _stored_line(result: Dict[str, Any], stored: str) -> str:
+    """The status line of a store or teach: a similar lesson that took the evidence instead is no "stored"."""
+    if result.get("dedup_action"):
+        return f"Not stored: similar to {result.get('similar_to')}, evidence added"[:140]
+    return f"{stored}: {result.get('lesson_id', 'unknown')}"[:140]
 
 
 def _reason(error: Exception) -> str:
@@ -200,7 +221,15 @@ CREATE TABLE IF NOT EXISTS extraction_log (
     skipped_reason  TEXT,
     llm_profile     TEXT,
     token_usage     INTEGER,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    anchor          TEXT
+);
+
+-- The last number handed out per id prefix: MAX over the rows reused the id of
+-- a lesson deleted from the top, and an agent still holding it hit another lesson.
+CREATE TABLE IF NOT EXISTS lesson_id_counters (
+    prefix      TEXT PRIMARY KEY,
+    last_number INTEGER NOT NULL
 );
 """
 
@@ -244,6 +273,10 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         #: Failed vector writes and deletes per agent (_index_lost): a heal that
         #: began before one must not mark the agent reconciled.
         self._index_losses: Dict[str, int] = {}
+        #: (session, agent) pairs whose extraction runs in this process: two
+        #: requests of one session read the same messages in lockstep, and
+        #: every LLM call was made twice.
+        self._extracting: set[tuple[str, str]] = set()
 
         # Plugin config - read from server_config attributes (set from plugins.yaml)
         self.max_lessons_per_agent = int(getattr(server_config, "max_lessons_per_agent", 200))
@@ -254,9 +287,6 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         # with `extraction_llm_profile`; without this the plugin-level key was
         # declared in schema.yaml, shipped in plugins.yaml, and read by nobody.
         self.llm_profile = str(getattr(server_config, "llm_profile", "turbo"))
-
-        # Lesson ID counters (agent_name -> int)
-        self._lesson_counters: Dict[str, int] = {}
 
         # Initialize database
         self._ensure_database()
@@ -281,6 +311,14 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         conn = self._get_connection()
         try:
             conn.executescript(SCHEMA_SQL)
+            # A database from before the column: CREATE IF NOT EXISTS leaves the
+            # table as it was. Added without asking first: two processes starting
+            # at once both saw it missing, and the second failed to load.
+            try:
+                conn.execute("ALTER TABLE extraction_log ADD COLUMN anchor TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise
             # Seed default categories if empty
             count = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
             if count == 0:
@@ -293,24 +331,29 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         finally:
             conn.close()
 
-    def _generate_lesson_id(self, agent_name: str) -> str:
-        """Generate sequential lesson ID for an agent: {agent}_les_001, {agent}_les_002, ..."""
-        prefix = f"{agent_name}_les_"
-        if agent_name not in self._lesson_counters:
-            conn = self._get_connection()
-            try:
-                # Find the max numeric suffix for this agent's lessons
-                row = conn.execute(
-                    "SELECT MAX(CAST(SUBSTR(lesson_id, ?) AS INTEGER)) "
-                    "FROM lessons WHERE agent_name = ? AND lesson_id LIKE ?",
-                    (len(prefix) + 1, agent_name, f"{prefix}%"),
-                ).fetchone()
-                self._lesson_counters[agent_name] = (row[0] or 0)
-            finally:
-                conn.close()
+    @staticmethod
+    def _generate_lesson_id(conn: sqlite3.Connection, agent_name: str) -> str:
+        """The next id for an agent: {agent}_les_001, {agent}_les_002, ...
 
-        self._lesson_counters[agent_name] += 1
-        return f"{prefix}{self._lesson_counters[agent_name]:03d}"
+        Read and counted up inside the caller's write transaction, never in a
+        counter kept in memory: the API and every agent-cli process each run a
+        server on the same database, and a cached counter handed out an id
+        another process had taken meanwhile. A number is never handed out
+        twice: the counter row keeps the last one, also after that lesson is
+        deleted. The rows count too, over every id with the prefix -- a
+        database from before the counter, and a lesson moved to another agent,
+        which keeps its id.
+        """
+        prefix = f"{agent_name}_les_"
+        highest = conn.execute(
+            "SELECT MAX(CAST(SUBSTR(lesson_id, ?) AS INTEGER)) FROM lessons WHERE SUBSTR(lesson_id, 1, ?) = ?",
+            (len(prefix) + 1, len(prefix), prefix),
+        ).fetchone()[0] or 0
+        counted = conn.execute("SELECT last_number FROM lesson_id_counters WHERE prefix = ?", (prefix,)).fetchone()
+        number = max(highest, counted[0] if counted else 0) + 1
+        conn.execute("INSERT INTO lesson_id_counters (prefix, last_number) VALUES (?, ?) "
+                     "ON CONFLICT(prefix) DO UPDATE SET last_number = excluded.last_number", (prefix, number))
+        return f"{prefix}{number:03d}"
 
     def _collection_name(self, agent_name: str) -> str:
         """VectorStore collection name for an agent."""
@@ -439,8 +482,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 "error": f"Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(VALID_SOURCE_TYPES))}"
             }
         priority = _priority(priority)
-        
-        lesson_id = self._generate_lesson_id(agent_name)
+
         if confidence is None:
             confidence = CONFIDENCE_BASE.get(source_type, 0.5)
         if not (0.0 <= confidence <= 1.0):
@@ -451,6 +493,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
 
         conn = self._get_connection()
         try:
+            conn.execute("BEGIN IMMEDIATE")  # count, id and insert as one: another process may store meanwhile
             # Check limit
             count = conn.execute(
                 "SELECT COUNT(*) FROM lessons WHERE agent_name = ? AND status != 'archived'",
@@ -459,6 +502,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             if count >= self.max_lessons_per_agent:
                 return {"error": f"Lesson limit ({self.max_lessons_per_agent}) reached for agent '{agent_name}'. Archive or delete older lessons."}
 
+            lesson_id = self._generate_lesson_id(conn, agent_name)
             try:
                 conn.execute(
                     """INSERT INTO lessons
@@ -534,6 +578,18 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             finally:
                 conn.close()
 
+        # A status or category filter applies to the rows, after the vectors are
+        # ranked: taking only the `limit` closest first left out every match
+        # behind them -- "no active lesson" where the closest were drafts.
+        # Filtered, every vector of the agent is ranked.
+        sizes: Dict[str, int] = {}
+        if status or category:
+            conn = self._get_connection()
+            try:
+                sizes = dict(conn.execute("SELECT agent_name, COUNT(*) FROM lessons GROUP BY agent_name").fetchall())
+            finally:
+                conn.close()
+
         all_results: List[Dict[str, Any]] = []
         failed: List[str] = []
         for agent in agents_to_search:
@@ -543,7 +599,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     self.vector_store.query,
                     collection=self._collection_name(agent),
                     query_text=query,
-                    n_results=limit,
+                    n_results=max(limit, sizes.get(agent, 0)),
                     include=["documents", "metadatas", "distances"],
                 )
                 if results["ids"] and len(results["ids"][0]) > 0:
@@ -560,9 +616,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 logger.warning(f"VectorStore query for {agent} failed: {e}")
                 failed.append(f"{agent}: {_reason(e)}")
 
-        # Sort by similarity, take top N
+        # Sort by similarity; the top N are taken after the filter
         all_results.sort(key=lambda r: r["similarity"], reverse=True)
-        top_ids = [r["lesson_id"] for r in all_results[:limit]]
+        top_ids = [r["lesson_id"] for r in (all_results if status or category else all_results[:limit])]
 
         if not top_ids:
             if failed:
@@ -590,9 +646,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         # Build results with similarity scores
         lessons_by_id = {dict(r)["lesson_id"]: dict(r) for r in rows}
         results = []
-        for r in all_results[:limit]:
+        for r in all_results:
             lesson = lessons_by_id.get(r["lesson_id"])
-            if lesson:
+            if lesson and len(results) < limit:
                 lesson["similarity"] = r["similarity"]
                 lesson["tags"] = _tags(lesson.get("tags"))
                 results.append(lesson)
@@ -914,11 +970,29 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         
         conn = self._get_connection()
         try:
+            conn.execute("BEGIN IMMEDIATE")  # the check below and the insert as one
             row = conn.execute("SELECT * FROM lessons WHERE lesson_id = ?", (lesson_id,)).fetchone()
             if not row:
                 return {"error": f"Lesson '{lesson_id}' not found."}
 
             now = datetime.now(UTC).isoformat()
+            # One evidence of a kind per lesson and session: a session read
+            # again (the extraction, when a duplicate check failed or its
+            # anchor was compacted away) or a lesson confirmed twice in one
+            # conversation is one observation, not two.
+            # Nor does the session a lesson came from confirm it: read again,
+            # it would vouch for what it said itself.
+            own = evidence_type == "confirm" and row["source_session"] == session_id
+            if own or conn.execute(
+                    "SELECT 1 FROM lesson_evidence WHERE lesson_id = ? AND session_id = ? AND evidence_type = ?",
+                    (lesson_id, session_id, evidence_type)).fetchone():
+                return {
+                    "status": "evidence_exists",
+                    "lesson_id": lesson_id,
+                    "evidence_type": evidence_type,
+                    "new_confidence": round(row["confidence"], 3),
+                    "evidence_count": row["evidence_count"],
+                }
             try:
                 conn.execute(
                     """INSERT INTO lesson_evidence (lesson_id, session_id, agent_name, evidence_type, description)
@@ -1115,7 +1189,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         1. Fetch all non-archived lessons (per agent or globally)
         2. Find clusters of similar lessons via VectorStore
         3. LLM evaluates each cluster: best title/content, merge recommendation
-        4. Merge: keep primary, archive duplicates, bump evidence
+        4. Merge: keep primary, delete duplicates, move their evidence to it
 
         Returns summary of actions taken.
         """
@@ -1514,7 +1588,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         lessons: List[Dict[str, Any]],
         merge_decision: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Execute a merge: update primary lesson, archive duplicates, add evidence."""
+        """Execute a merge: update primary lesson, delete duplicates, move their evidence to it."""
         primary_id = merge_decision.get("primary_id", "")
         new_title = merge_decision.get("title", "")
         new_content = merge_decision.get("content", "")
@@ -1527,9 +1601,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             # Fallback: pick lesson with highest evidence_count
             primary_id = max(lessons, key=lambda lst: (lst["evidence_count"], lst["confidence"]))["lesson_id"]
 
-        # Calculate merged evidence count
-        total_evidence = sum(lesson["evidence_count"] for lesson in lessons)
-        total_applications = sum(lesson["application_count"] for lesson in lessons)
+        source_session = next(lesson.get("source_session") for lesson in lessons if lesson["lesson_id"] == primary_id)
 
         # Best confidence from the group (keeps strongest signal)
         best_confidence = max(lesson["confidence"] for lesson in lessons)
@@ -1554,24 +1626,21 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         if update_fields:
             warnings = (await self.update_lesson(primary_id, **update_fields)).get("warnings", [])
 
-        # Update evidence count and confidence on primary
         conn = self._get_connection()
         try:
             now = datetime.now(UTC).isoformat()
-            conn.execute(
-                "UPDATE lessons SET evidence_count = ?, application_count = ?, "
-                "confidence = ?, updated_at = ? WHERE lesson_id = ?",
-                (total_evidence, total_applications, best_confidence, now, primary_id),
-            )
-
             # Delete duplicates and add merge evidence
             deleted_ids = []
             for lesson in lessons:
                 if lesson["lesson_id"] == primary_id:
                     continue
-                # Delete evidence/applications for the duplicate
-                conn.execute("DELETE FROM lesson_evidence WHERE lesson_id = ?", (lesson["lesson_id"],))
-                conn.execute("DELETE FROM lesson_applications WHERE lesson_id = ?", (lesson["lesson_id"],))
+                # The duplicate's evidence and applications go to the primary:
+                # deleted, the primary's evidence_count (their sum) no longer
+                # matched its rows, and the next confirm counted it down again.
+                conn.execute("UPDATE lesson_evidence SET lesson_id = ? WHERE lesson_id = ?",
+                             (primary_id, lesson["lesson_id"]))
+                conn.execute("UPDATE lesson_applications SET lesson_id = ? WHERE lesson_id = ?",
+                             (primary_id, lesson["lesson_id"]))
                 # Delete the duplicate lesson
                 conn.execute("DELETE FROM lessons WHERE lesson_id = ?", (lesson["lesson_id"],))
                 # Add evidence record noting the merge on primary
@@ -1584,6 +1653,27 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 )
                 deleted_ids.append(lesson["lesson_id"])
 
+            # The moved rows may give the primary a second evidence of a kind
+            # from one session; the first stays (the merge notes are the
+            # merge's own record and stay whole).
+            conn.execute(
+                "DELETE FROM lesson_evidence WHERE lesson_id = ? AND session_id != 'consolidation' AND (id NOT IN "
+                "(SELECT MIN(id) FROM lesson_evidence WHERE lesson_id = ? GROUP BY session_id, evidence_type) "
+                # a confirm from the session the kept lesson came from, moved over from a duplicate
+                "OR (evidence_type = 'confirm' AND session_id = ?))",
+                (primary_id, primary_id, source_session))
+            # Evidence and applications counted from the rows as they stand now:
+            # the lessons were read before the LLM call, and a sum of those
+            # lost what the hook recorded meanwhile.
+            total_evidence = conn.execute("SELECT COUNT(*) FROM lesson_evidence WHERE lesson_id = ?",
+                                          (primary_id,)).fetchone()[0]
+            total_applications = conn.execute("SELECT COUNT(*) FROM lesson_applications WHERE lesson_id = ?",
+                                              (primary_id,)).fetchone()[0]
+            conn.execute(
+                "UPDATE lessons SET evidence_count = ?, application_count = ?, "
+                "confidence = ?, updated_at = ? WHERE lesson_id = ?",
+                (total_evidence, total_applications, best_confidence, now, primary_id),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -1666,7 +1756,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     if "error" in result:
                         await status_reporter.error(f"Failed to store lesson: {result['error']}")
                     else:
-                        await status_reporter.end(f"Lesson stored: {result.get('lesson_id', 'unknown')}")
+                        await status_reporter.end(_stored_line(result, "Lesson stored"))
             elif operation == "search":
                 if status_reporter:
                     await status_reporter.progress("Searching lessons...")
@@ -1702,7 +1792,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     if "error" in result:
                         await status_reporter.error(f"Failed to add evidence: {result['error']}")
                     else:
-                        await status_reporter.end(f"Evidence added: {result.get('evidence_type', 'unknown')} (confidence: {result.get('new_confidence', 'N/A')})")
+                        said = ("Evidence added" if result.get("status") == "evidence_added"
+                                else "Not counted, this session gave or made it")
+                        await status_reporter.end(f"{said}: {result.get('evidence_type', 'unknown')} (confidence: {result.get('new_confidence', 'N/A')})")
             elif operation == "teach":
                 if status_reporter:
                     await status_reporter.progress("Teaching lesson to target agent...")
@@ -1711,7 +1803,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     if "error" in result:
                         await status_reporter.error(f"Failed to teach lesson: {result['error']}")
                     else:
-                        await status_reporter.end(f"Lesson taught to {params.get('target_agent', 'unknown')}")
+                        await status_reporter.end(
+                            _stored_line(result, f"Lesson taught to {params.get('target_agent', 'unknown')}"))
             elif operation == "delete":
                 if status_reporter:
                     await status_reporter.progress("Deleting lesson...")
@@ -1785,7 +1878,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             query=query,
             agent_name=target if target else None,
             category=params.get("category"),
-            limit=params.get("limit", 10),
+            limit=_limit(params, 10),
         )
 
     async def _op_list(self, params: Dict[str, Any], agent_name: str) -> Dict[str, Any]:
@@ -1795,7 +1888,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             status=params.get("status"),
             category=params.get("category"),
             sort_by=params.get("sort_by", "priority"),
-            limit=params.get("limit", 20),
+            limit=_limit(params, 20),
         )
 
     async def _op_update(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1902,8 +1995,10 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             if not lessons:
                 return HookResult(success=True, modified=False)
 
-            # Build injection text
-            injection = build_lesson_prompt(lessons, max_tokens=max_tokens)
+            # Build injection text; `lessons` becomes what fits the budget
+            shown: List[Dict[str, Any]] = []
+            injection = build_lesson_prompt(lessons, max_tokens=max_tokens, shown=shown)
+            lessons = shown
             if not injection:
                 return HookResult(success=True, modified=False)
 
@@ -1947,8 +2042,44 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             logger.error(f"inject_lessons hook failed: {e}", exc_info=True)
             return HookResult(success=False, modified=False, metadata={"error": str(e)})
 
+    def last_anchor(self, session_id: str, agent_name: str) -> Optional[str]:
+        """The fingerprint of the last message an extraction of this session read (None: none yet)."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute("SELECT anchor FROM extraction_log WHERE session_id = ? AND agent_name = ? "
+                               "AND anchor IS NOT NULL ORDER BY id DESC LIMIT 1",
+                               (session_id, agent_name)).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def log_extraction(self, session_id: str, agent_name: str, extracted: int, anchor: Optional[str],
+                       llm_profile: Optional[str]) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute("INSERT INTO extraction_log (session_id, agent_name, extracted_count, llm_profile, anchor) "
+                         "VALUES (?, ?, ?, ?, ?)", (session_id, agent_name, extracted, llm_profile, anchor))
+            conn.commit()
+        finally:
+            conn.close()
+
     async def on_session_end(self, context: HookContext) -> HookResult:
-        """Extract lessons from conversation at session end."""
+        """Extract lessons from the part of the conversation no extraction has read yet.
+
+        The session end hooks run at the end of every request, each time with
+        the whole conversation so far. Read whole every time, the same first
+        messages went to the LLM at every turn and confirmed the same lessons
+        again and again. So the log keeps which message an extraction read
+        last, and the next one reads the written messages after it -- once
+        they are `min_turns`. A mere skip at an unchanged length would not do:
+        every request makes the conversation longer. See `unread_part` for why
+        it is a fingerprint, not a position.
+
+        One reading takes at most 8000 characters; readings follow each other
+        until what is left is less than `min_turns` messages, or
+        EXTRACTION_BUDGET is spent. One a request let a talkative session fall
+        further behind at every turn, and a compaction then deleted what no
+        reading had reached."""
         try:
             agent_name = context.agent_name
             session_id = context.session_id
@@ -1964,19 +2095,57 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             if not extraction_enabled:
                 return HookResult(success=True, modified=False)
 
-            # Count turns (user + assistant messages)
-            turn_count = sum(
-                1 for m in context.messages
-                if hasattr(m, 'role') and m.role in ('user', 'assistant')
-            )
-            if turn_count < min_turns:
-                logger.debug(f"Skipping extraction: {turn_count} turns < {min_turns} min")
-                return HookResult(success=True, modified=False)
+            key = (session_id, agent_name)
+            if key in self._extracting:  # the running one reads on to the end of what is there
+                return HookResult(success=True, modified=False, metadata={"skipped_reason": "extraction running"})
+            self._extracting.add(key)
+            try:
+                return await self._extract_readings(context, key, min_turns, max_lessons, auto_approve, config)
+            finally:
+                self._extracting.discard(key)
+        except Exception as e:
+            logger.error(f"extract_lessons hook failed: {e}", exc_info=True)
+            return HookResult(success=False, modified=False, metadata={"error": str(e)})
 
-            # Import and run extraction
-            from .extraction import extract_lessons_from_conversation
+    async def _extract_readings(self, context: HookContext, key: tuple[str, str], min_turns: int, max_lessons: int,
+                                auto_approve: bool, config: Dict[str, Any]) -> HookResult:
+        """The readings of one request, until too little is left or the budget would be passed."""
+        from .extraction import extract_lessons_from_conversation, unread_part
+
+        session_id, agent_name = key
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + EXTRACTION_BUDGET
+        longest = 0.0
+        totals = {"extracted": 0, "merged": 0, "confirmed": 0, "skipped": 0, "readings": 0}
+        checked = False
+        logged = False
+        while loop.time() + longest <= deadline:
+            # Read afresh every time: another process may have read on.
+            previous, unread = unread_part(context.messages, self.last_anchor(session_id, agent_name))
+            if logged and previous is None:
+                # The anchor just logged is not found in this very list:
+                # reading on would read the same messages until the budget
+                # is spent.
+                logger.warning(f"Extraction for '{agent_name}' stops: its anchor is not found again")
+                break
+
+            # Count turns (what a person or the assistant wrote, not yet read)
+            if len(unread) < min_turns:
+                logger.debug(f"Skipping extraction: {len(unread)} turns < {min_turns} min")
+                break
+            if not checked:
+                # Without the duplicate check nothing is stored and nothing
+                # logged: the LLM would be asked about the same messages at
+                # every request. Asked once the check works again.
+                probe = await self.check_duplicate(agent_name, "lessons learned", "availability probe")
+                if probe.error:
+                    logger.warning(f"Extraction for '{agent_name}' waits: no duplicate check ({probe.error})")
+                    break
+                checked = True
+
+            began = loop.time()
             result = await extract_lessons_from_conversation(
-                messages=context.messages,
+                messages=unread,
                 agent_name=agent_name,
                 session_id=session_id,
                 server=self,
@@ -1984,22 +2153,17 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                 auto_approve=auto_approve,
                 llm_profile=config.get("extraction_llm_profile", self.llm_profile),
                 agent=context.agent,
+                previous=previous,
             )
+            longest = max(longest, loop.time() - began)
+            totals["readings"] += 1
+            totals["extracted"] += result.created_count
+            totals["merged"] += result.merged_count
+            totals["confirmed"] += result.confirmed_count
+            totals["skipped"] += result.skipped_count
+            if not result.anchor:  # not logged: the same messages again next request
+                break
+            logged = True
 
-            logger.info(
-                f"Extraction for '{agent_name}': created={result.created_count}, "
-                f"merged={result.merged_count}, confirmed={result.confirmed_count}, "
-                f"skipped={result.skipped_count}"
-            )
-            return HookResult(
-                success=True, modified=False,
-                metadata={
-                    "extracted": result.created_count,
-                    "merged": result.merged_count,
-                    "confirmed": result.confirmed_count,
-                    "skipped": result.skipped_count,
-                },
-            )
-        except Exception as e:
-            logger.error(f"extract_lessons hook failed: {e}", exc_info=True)
-            return HookResult(success=False, modified=False, metadata={"error": str(e)})
+        logger.info(f"Extraction for '{agent_name}': {totals}")
+        return HookResult(success=True, modified=False, metadata=totals)

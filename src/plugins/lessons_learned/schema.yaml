@@ -118,14 +118,14 @@ config:
   dedup_similarity_threshold:
     type: number
     default: 0.82
-    description: "Vector similarity threshold to consider lessons as potential duplicates"
+    description: "Similarity from which a stored lesson counts as a duplicate: the existing one gets evidence instead, and consolidation clusters lessons"
     minimum: 0.5
     maximum: 1.0
 
   exact_duplicate_threshold:
     type: number
     default: 0.95
-    description: "Similarity threshold to treat as exact duplicate (add evidence instead of creating new)"
+    description: "Similarity from which a duplicate counts as exact; changes only the evidence text and dedup_action (confirm, not merge)"
     minimum: 0.8
     maximum: 1.0
 
@@ -146,7 +146,8 @@ tools:
       description: |
         Manage persistent lessons learned across sessions.
         Store insights, search by topic, teach other agents, and confirm lesson effectiveness.
-        Active lessons are added to the conversation automatically when the inject_lessons hook is enabled.
+        A stored or taught lesson is a draft; only active lessons are found by search and added to the
+        conversation (when the inject_lessons hook is enabled).
       parameters:
         type: object
         properties:
@@ -155,12 +156,12 @@ tools:
             enum: ["store", "search", "list", "update", "confirm", "teach", "delete"]
             description: |
               Operations:
-              - store: Save a new lesson (title + content required). Automatically deduplicates.
-              - search: Semantic search for lessons by query string.
-              - list: List lessons with filters (agent_name, status, category).
+              - store: Save a new lesson as a draft (title + content required). If a lesson of this agent is already that similar, nothing is stored; the existing one gets confirming evidence.
+              - search: Semantic search among the active lessons by query string.
+              - list: List lessons of every status with filters (agent_name, status, category).
               - update: Edit an existing lesson (lesson_id required).
               - confirm: Add evidence that a lesson is correct/incorrect (lesson_id + evidence_type).
-              - teach: Share a lesson with another agent (target_agent + title + content).
+              - teach: Store a lesson as a draft for another agent (target_agent + title + content); deduplicated against that agent's lessons.
               - delete: Permanently delete a trivial, nonsensical, or outdated lesson (lesson_id required).
 
           # For store / teach operations
@@ -179,14 +180,13 @@ tools:
           category:
             type: string
             enum: ["style", "workflow", "error_pattern", "domain_knowledge", "tool_usage", "communication", "performance", "quality", "general"]
-            description: "Lesson category (default: general)"
+            description: "Lesson category (store/teach: default general); a filter for list and search"
 
           priority:
             type: integer
             minimum: 1
             maximum: 10
-            default: 5
-            description: "Priority level 1-10 (higher = more important, default: 5)"
+            description: "Priority level 1-10 (higher = more important; store/teach without it: 5)"
 
           tags:
             type: array
@@ -206,26 +206,25 @@ tools:
           # For update / confirm operations
           lesson_id:
             type: string
-            description: "Lesson ID (required for update/confirm, format: les_NNN)"
+            description: "Lesson ID (required for update/confirm/delete), as returned: <agent>_les_NNN"
 
           # For update operation
           status:
             type: string
             enum: ["draft", "active", "inactive", "archived"]
-            description: "Lesson status (for update operation)"
+            description: "Lesson status (for update; a filter for list)"
 
           confidence:
             type: number
             minimum: 0.0
             maximum: 1.0
-            description: "Manual confidence override (for update)"
+            description: "Manual confidence override (for update); the next evidence recalculates it"
 
           # For confirm operation
           evidence_type:
             type: string
             enum: ["confirm", "contradict", "neutral"]
-            default: "confirm"
-            description: "Type of evidence (for confirm operation)"
+            description: "Type of evidence (for confirm operation; without it: confirm)"
 
           description:
             type: string
@@ -246,13 +245,11 @@ tools:
             type: integer
             minimum: 1
             maximum: 100
-            default: 20
-            description: "Maximum results to return"
+            description: "Maximum results to return (list: 20, search: 10 without it)"
 
           sort_by:
             type: string
-            enum: ["priority", "confidence", "created", "updated", "applied"]
-            default: "priority"
-            description: "Sort field for list operation"
+            enum: ["priority", "confidence", "evidence", "created", "updated", "applied"]
+            description: "Sort field for list operation, highest or newest first (without it: priority)"
 
         required: ["operation"]
