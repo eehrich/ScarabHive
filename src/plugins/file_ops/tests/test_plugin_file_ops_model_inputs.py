@@ -147,3 +147,64 @@ async def test_a_whole_number_sent_as_a_float_is_one(tmp_path):
 
     result = await _server([str(tmp_path)]).read_file({"filePath": str(target), "offset": 12.5})
     assert result["status"] == "error" and "offset" in result["error"]
+
+
+# ── what read_file promises ──────────────────────────────────────────────────
+
+def test_read_file_describes_this_instances_limits(tmp_path):
+    """The description said "truncates at 2000 lines", a limit nothing applies;
+    what applies is the size ceiling and the default page, both configurable."""
+    server_config = ToolServerConfig(type="file_ops", enabled=True)
+    server_config.allowed_directories = [str(tmp_path)]
+    server_config.search = {"enable_semantic_search": False}
+    server_config.max_unpaginated_file_size_kb = 200
+    server_config.default_line_limit = 300
+    tools = FileOpsServer("fs", Mock(spec=AgentSystemConfig), server_config).get_tools()
+    description = next(t["function"]["description"] for t in tools
+                       if t["function"]["name"] == "fs_read_file")
+    assert "200 KB" in description and "first 300 lines" in description, description
+    assert "2000" not in description
+
+
+# ── yes/no as text ───────────────────────────────────────────────────────────
+
+async def test_false_as_text_does_not_delete_a_tree_or_replace_a_file(tmp_path):
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "tree" / "keep.txt").write_text("keep")
+    server = _server([str(tmp_path)])
+
+    result = await server.manage({"operation": "delete", "path": str(tmp_path / "tree"), "recursive": "false"})
+    assert result["error_type"] == "DirectoryNotEmptyError", result
+    result = await server.manage({"operation": "create", "path": str(tmp_path / "tree" / "keep.txt"),
+                                  "content": "new", "overwrite": "false"})
+    assert result["error_type"] == "FileExistsError", result
+    assert (tmp_path / "tree" / "keep.txt").read_text() == "keep"
+
+    result = await server.manage({"operation": "delete", "path": str(tmp_path / "tree"), "recursive": "True"})
+    assert result["status"] == "success", result
+
+
+async def test_a_yes_no_value_that_is_neither_is_named(tmp_path):
+    result = await _server([str(tmp_path)]).grep_search({"query": "x", "is_regex": "maybe"})
+    assert result["status"] == "error" and "is_regex: true or false" in result["error"], result
+
+
+# ── the schema's bounds, held by the server ──────────────────────────────────
+
+async def test_a_negative_max_results_is_one(tmp_path):
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("x")
+    server = _server([str(tmp_path)])
+
+    listing = await server.list_directory({"dir_path": str(tmp_path), "max_results": -1})
+    assert listing["status"] == "success" and listing["total_files"] == 1, listing
+    found = await server.search_files({"pattern": "*.txt", "max_results": -1})
+    assert found["total_found"] == 1 and len(found["files"]) == 1, found
+
+
+async def test_context_lines_stop_at_the_schemas_maximum(tmp_path):
+    (tmp_path / "a.txt").write_text("".join(f"line {i}\n" for i in range(40)) + "needle\n")
+
+    result = await _server([str(tmp_path)]).grep_search({"query": "needle", "context_lines": 50})
+
+    assert len(result["matches"][0]["context_before"]) == 10, result

@@ -244,7 +244,7 @@ def resolve_configured_root(value: str) -> Path:
     other relative path counts against the working directory -- the
     installation, which both CLIs enter at startup.
     """
-    if value == ".":
+    if value and Path(value) == Path("."):
         return launch_dir().resolve()
     return (Path.cwd() / value).resolve()
 

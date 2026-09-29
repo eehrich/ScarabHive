@@ -31,7 +31,6 @@ plugins:
         # root is never hidden by an ignore rule of the root above it.
         - src/
         - .
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:
@@ -83,7 +82,6 @@ plugins:
         - src/plugins/coder/skills/
         - src/
         - .
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 200
       default_line_limit: 500
       search:

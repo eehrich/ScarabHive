@@ -15,7 +15,7 @@ from .search import FileSearchEngine
 from .security import PathValidator, SecurityError
 
 
-def _int_param(params: Dict[str, Any], key: str, default: Any) -> Any:
+def _whole_number(params: Dict[str, Any], key: str, default: Any) -> Any:
     """A whole-number parameter, or a ValueError that says which and how.
 
     The framework does not check arguments against the schema, and models send
@@ -42,6 +42,44 @@ def _int_param(params: Dict[str, Any], key: str, default: Any) -> Any:
     if number is not None and number.is_integer():
         return int(number)
     raise ValueError(f"{key}: a whole number, got {value!r}")
+
+
+def _int_param(params: Dict[str, Any], key: str, default: Any,
+               low: int | None = None, high: int | None = None) -> Any:
+    """``_whole_number``, held within the bounds the schema shows the model.
+
+    Nothing else enforces them: `max_results: -1` made list_directory raise
+    IndexError and search_files answer `total_found: -1`, and a maximum the
+    model reads is no limit when the server takes any number.
+    """
+    value = _whole_number(params, key, default)
+    if value is None:
+        return None
+    if low is not None:
+        value = max(low, value)
+    if high is not None:
+        value = min(high, value)
+    return value
+
+
+def _bool_param(params: Dict[str, Any], key: str) -> bool:
+    """A yes/no parameter, or a ValueError that says which and how.
+
+    Models send booleans as text too, and `"false"` is a true value in Python:
+    `recursive: "false"` deleted a whole directory tree, `overwrite: "false"`
+    replaced the file it was meant to protect.
+    """
+    value = params.get(key)
+    if value is None or value == "":
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    raise ValueError(f"{key}: true or false, got {value!r}")
 
 
 logger = logging.getLogger(__name__)
@@ -82,8 +120,10 @@ class FileOpsServer(SchemaBasedToolServer):
         super().__init__(name, system_config, server_config)
 
         # Extract configuration
-        allowed_dirs = getattr(server_config, "allowed_directories", [])
-        if not allowed_dirs:
+        # Only a MISSING key gets the defaults. An empty list is someone
+        # closing the sandbox, and it used to open these four folders instead.
+        allowed_dirs = getattr(server_config, "allowed_directories", None)
+        if allowed_dirs is None:
             # Default to project root subdirectories
             project_root = Path.cwd()
             allowed_dirs = [
@@ -97,7 +137,14 @@ class FileOpsServer(SchemaBasedToolServer):
             project_root = Path.cwd()
             resolved_dirs = []
             for dir_path in allowed_dirs:
-                if dir_path == ".":
+                if not str(dir_path).strip():
+                    # pathlib reads "" as "." -- an empty entry would open
+                    # the whole folder the CLI was started in.
+                    logger.warning("allowed_directories: empty entry ignored")
+                    continue
+                # "./" and ".\" are the same "." -- compared as text they
+                # quietly meant the project instead.
+                if Path(dir_path) == Path("."):
                     # "." is where the PERSON stands, not where the process
                     # runs. Both CLIs enter the project at startup, so the
                     # working directory is the checkout -- allowing "." is
@@ -160,6 +207,9 @@ class FileOpsServer(SchemaBasedToolServer):
         """Provide template variables for schema.yaml rendering."""
         vars = super().get_template_vars()
         vars['read_only'] = self.read_only
+        # What read_file promises the model is what it does with THIS instance's limits.
+        vars['max_unpaginated_kb'] = self.operations.max_unpaginated_size // 1024
+        vars['default_line_limit'] = self.operations.default_line_limit
         return vars
 
     def file_access_roots(self) -> list[Path]:
@@ -185,7 +235,7 @@ class FileOpsServer(SchemaBasedToolServer):
             offset = _int_param(params, "offset", 0)
             if offset > 0:
                 offset -= 1  # Convert 1-indexed to 0-indexed for internal use
-            limit = _int_param(params, "limit", None)
+            limit = _int_param(params, "limit", None, low=1)
             encoding = "utf-8"  # Always UTF-8
 
             if status:
@@ -300,6 +350,16 @@ class FileOpsServer(SchemaBasedToolServer):
                     "error_type": "ValidationError"
                 }
 
+        except FileNotFoundError as e:
+            # A path that is not there is the model's mistake, not ours: it
+            # used to land below, logged with a traceback as "Unexpected error".
+            if status:
+                await status.error(str(e), meta={"error_type": "FileNotFoundError"})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": "FileNotFoundError"
+            }
         except SecurityError as e:
             error_msg = str(e)
             if status:
@@ -319,11 +379,22 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error_type": type(e).__name__
             }
 
+    def _refuse_root(self, path: Path, operation: str) -> None:
+        """SecurityError when ``path`` is one of the allowed directories itself.
+
+        The roots are the sandbox, not something in it: `delete . recursive`
+        on an instance allowed "." removed the whole folder the person had
+        started in, and a moved or renamed root takes the boundary with it.
+        """
+        if path in self.validator.allowed_dirs:
+            raise SecurityError(f"Cannot {operation} {path}: it is one of the allowed "
+                                f"directories itself. Work on what is inside it.")
+
     async def _manage_create(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Create operation: create a file, or replace it whole with overwrite."""
         path = params["path"]
         content = params.get("content")
-        overwrite = bool(params.get("overwrite", False))
+        overwrite = _bool_param(params, "overwrite")
 
         if content is None:
             return {
@@ -358,12 +429,13 @@ class FileOpsServer(SchemaBasedToolServer):
     async def _manage_delete(self, params: Dict[str, Any], status) -> Dict[str, Any]:
         """Delete operation: delete file or directory."""
         path = params["path"]
-        recursive = params.get("recursive", False)
+        recursive = _bool_param(params, "recursive")
 
         if status:
             await status.progress(f"Deleting: {Path(path).name}")
 
-        safe_path = self.validator.validate_path(path, must_exist=True)
+        safe_path = self.validator.validate_entry(path)
+        self._refuse_root(safe_path, "delete")
 
         result = await self.operations.delete_path_safe(safe_path, recursive=recursive)
 
@@ -392,7 +464,8 @@ class FileOpsServer(SchemaBasedToolServer):
         if status:
             await status.progress(f"Moving: {Path(path).name} → {Path(destination).name}")
 
-        safe_source = self.validator.validate_path(path, must_exist=True)
+        safe_source = self.validator.validate_entry(path)
+        self._refuse_root(safe_source, "move")
         safe_dest = self.validator.validate_path(destination)
 
         result = await self.operations.move_path_safe(safe_source, safe_dest)
@@ -418,11 +491,20 @@ class FileOpsServer(SchemaBasedToolServer):
                 "error": "Parameter 'new_name' is required for rename operation",
                 "error_type": "ValidationError"
             }
+        # Before any path is built from it: joined to the folder, a name like
+        # "\??\UNC\host\share" is a path of its own that the check below resolves.
+        if "/" in str(new_name) or "\\" in str(new_name):
+            return {
+                "status": "error",
+                "error": f"new_name must not contain path separators: {new_name}",
+                "error_type": "ValidationError"
+            }
 
         if status:
             await status.progress(f"Renaming: {Path(path).name} → {new_name}")
 
-        safe_path = self.validator.validate_path(path, must_exist=True)
+        safe_path = self.validator.validate_entry(path)
+        self._refuse_root(safe_path, "rename")
 
         # Validate destination is also in allowed directories
         new_path = safe_path.parent / new_name
@@ -527,9 +609,9 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             dir_path = params["dir_path"]
-            recursive = params.get("recursive", False)
+            recursive = _bool_param(params, "recursive")
             pattern = params.get("pattern")
-            include_hidden = params.get("include_hidden", False)
+            include_hidden = _bool_param(params, "include_hidden")
 
             if status:
                 msg = f"Listing: {Path(dir_path).name}"
@@ -546,8 +628,8 @@ class FileOpsServer(SchemaBasedToolServer):
                 recursive=recursive,
                 pattern=pattern,
                 include_hidden=include_hidden,
-                max_results=_int_param(params, "max_results", 200),
-                include_ignored=params.get("include_ignored", False),
+                max_results=_int_param(params, "max_results", 200, low=1, high=1000),
+                include_ignored=_bool_param(params, "include_ignored"),
                 excludes=self.search_engine._search_backend_options()["excludes"],
             )
 
@@ -599,8 +681,8 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             pattern = params["pattern"]
-            max_results = _int_param(params, "max_results", 50)
-            include_ignored = params.get("include_ignored", False)
+            max_results = _int_param(params, "max_results", 50, low=1, high=500)
+            include_ignored = _bool_param(params, "include_ignored")
 
             if status:
                 await status.progress(f"Searching files: {pattern}")
@@ -636,12 +718,12 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             query = params["query"]
-            is_regex = params.get("is_regex", False)
+            is_regex = _bool_param(params, "is_regex")
             include_pattern = params.get("include_pattern")
-            case_sensitive = params.get("case_sensitive", False)
-            max_results = _int_param(params, "max_results", 100)
-            context_lines = _int_param(params, "context_lines", 2)
-            include_ignored = params.get("include_ignored", False)
+            case_sensitive = _bool_param(params, "case_sensitive")
+            max_results = _int_param(params, "max_results", 100, low=1, high=500)
+            context_lines = _int_param(params, "context_lines", 2, low=0, high=10)
+            include_ignored = _bool_param(params, "include_ignored")
 
             if status:
                 msg = f"Searching text: '{query[:40]}...'"
@@ -689,7 +771,7 @@ class FileOpsServer(SchemaBasedToolServer):
 
         try:
             query = params["query"]
-            max_results = _int_param(params, "max_results", 10)
+            max_results = _int_param(params, "max_results", 10, low=1, high=50)
             filter_pattern = params.get("filter_pattern")
 
             if status:

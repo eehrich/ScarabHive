@@ -5,7 +5,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_read_file"
-      description: "Read the contents of a file. Line numbers are 1-indexed. This tool will truncate its output at 2000 lines and may be called repeatedly with offset and limit parameters to read larger files in chunks."
+      description: "Read the contents of a text file. Line numbers are 1-indexed. A file up to {{ max_unpaginated_kb }} KB comes back whole; a larger one, read without limit, comes back as its first {{ default_line_limit }} lines -- the answer's total_lines says how many there are, and offset and limit read the rest in chunks."
       parameters:
         type: object
         properties:
@@ -40,9 +40,10 @@ tools:
             description: |
               Operation to perform:
               - create: Create file with content. Fails if it exists, unless overwrite is true -- that replaces the whole content in one call, no delete first.
-              - delete: Delete file or empty directory
+              - delete: Delete a file or an empty directory (a non-empty one with recursive: true). A link is removed, never what it points to.
               - move: Move file/directory to new location
               - rename: Rename file/directory (same directory)
+              The allowed directories themselves cannot be deleted, moved or renamed.
           path:
             type: string
             description: "Absolute path to the file or directory to operate on"
@@ -70,7 +71,7 @@ tools:
     function:
       name: "{{ name }}_replace_string_in_file"
       description: |
-        This is a tool for making edits in an existing file in the workspace. For moving or renaming files, use run in terminal tool with the 'mv' command instead. For larger edits, split them into smaller edits and call the edit tool multiple times to ensure accuracy. Before editing, always ensure you have the context to understand the file's contents and context. To edit a file, provide: 1) filePath (absolute path), 2) oldString (MUST be the exact literal text to replace including all whitespace, indentation, newlines, and surrounding code etc), and 3) newString (MUST be the exact literal text to replace \`oldString\` with (also including all whitespace, indentation, newlines, and surrounding code etc.). Ensure the resulting code is correct and idiomatic.). Each use of this tool replaces exactly ONE occurrence of oldString.
+        This is a tool for making edits in an existing file in the workspace. For moving or renaming files, use {{ name }}_manage (move, rename). For larger edits, split them into smaller edits and call the edit tool multiple times to ensure accuracy. Before editing, always ensure you have the context to understand the file's contents and context. To edit a file, provide: 1) filePath (absolute path), 2) oldString (MUST be the exact literal text to replace including all whitespace, indentation, newlines, and surrounding code etc), and 3) newString (MUST be the exact literal text to replace \`oldString\` with (also including all whitespace, indentation, newlines, and surrounding code etc.). Ensure the resulting code is correct and idiomatic.). Each use of this tool replaces exactly ONE occurrence of oldString.
 
         CRITICAL for \`oldString\`: Must uniquely identify the single instance to change. Include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. If this string matches multiple locations, or does not match exactly, the tool will fail.
       parameters:
@@ -81,7 +82,7 @@ tools:
             description: "An absolute path to the file to edit."
           oldString:
             type: string
-            description: "The exact literal text to replace, preferably unescaped. For single replacements (default), include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. For multiple replacements, specify expected_replacements parameter. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail."
+            description: "The exact literal text to replace, preferably unescaped. It must occur exactly once in the file: include at least 3 lines of context BEFORE and AFTER the target text, matching whitespace and indentation precisely. If this string is not the exact literal text (i.e. you escaped it) or does not match exactly, the tool will fail."
           newString:
             type: string
             description: "The exact literal text to replace `old_string` with, preferably unescaped. Provide the EXACT text. Ensure the resulting code is correct and idiomatic."
@@ -240,16 +241,22 @@ tools:
         additionalProperties: false
 
 config:
-  # Read-only mode: disables all write/modification operations
-  # When true, only read_file, list_directory, search_files, grep_search, semantic_search are available
+  # DOCUMENTATION, not defaults: a tool server does not read this block. The
+  # values are what server.py falls back to when the server entry in
+  # plugins.yaml leaves a key out.
+
+  # Read-only mode: the write tools (manage, replace_string_in_file) are not
+  # rendered, and the server refuses them if one is called anyway.
   read_only: false
-  
-  # Sandbox security: restricts file operations to these directories only
-  # Prevents path traversal attacks and unauthorized file access
+
+  # The sandbox: every path a tool takes must resolve inside one of these.
+  # Relative entries count from the project; "." is the folder the CLI was
+  # started in. Without the key: src, docs, tests and tmp of the project.
   allowed_directories:
-    - data/workspace
-  max_file_size_for_indexing_kb: 1024
-  max_file_size_mb: 10
+    - src
+    - docs
+    - tests
+    - tmp
   
   # File reading limits to prevent memory issues with large files
   max_unpaginated_file_size_kb:
@@ -286,6 +293,8 @@ config:
     # Off unless configured — the server defaults it to false.
     enable_semantic_search: false
     auto_reindex_interval: 300
+    # Files larger than this are left out of the index, and grep skips them.
+    max_file_size_for_indexing_kb: 1024
 
     # Search dotfiles and dot-directories as well.
     search_hidden: false

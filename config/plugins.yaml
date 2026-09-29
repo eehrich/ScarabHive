@@ -796,7 +796,6 @@ plugins:
       enabled: true
       allowed_directories:
         - data/workspace
-      max_file_size_mb: 10
       max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
       default_line_limit: 500  # Default lines when paginating large files
       search:
@@ -821,7 +820,6 @@ plugins:
       enabled: false
       allowed_directories:
         - .
-      max_file_size_mb: 200
       max_unpaginated_file_size_kb: 100  # Auto-paginate files larger than 100KB
       default_line_limit: 500  # Default lines when paginating large files
       search:
