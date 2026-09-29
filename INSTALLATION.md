@@ -1,645 +1,202 @@
-# Installation and Configuration Guide
+# Installation
 
-Complete setup guide for ScarabHive - from installation to production deployment.
+This gets ScarabHive running on one machine: the web UI at `http://127.0.0.1:8000` and the
+`agent-cli` command. Everything you can configure after that is in
+[docs/configuration.md](docs/configuration.md).
 
-## Table of Contents
+## 1. What you need
 
-- [System Requirements](#system-requirements)
-- [Installation](#installation)
-  - [Quick Install](#quick-install)
-  - [Development Install](#development-install)
-  - [Docker](#docker)
-- [Configuration](#configuration)
-  - [Configuration Structure](#configuration-structure)
-  - [LLM Provider Setup](#llm-provider-setup)
-  - [Plugin Configuration](#plugin-configuration)
-  - [Agent Configuration](#agent-configuration)
-- [Running the System](#running-the-system)
-- [Authentication Setup](#authentication-setup)
-- [Advanced Configuration](#advanced-configuration)
-- [Troubleshooting](#troubleshooting)
+- **Python 3.11 or newer** (3.12 recommended; the Docker image uses it), and git. Check with
+  `python --version` (`python3 --version` on Linux and macOS).
+- **A few GB of disk**: the dependencies include PyTorch. The first `pip install` takes many
+  minutes.
+- **Linux**: a compiler and the headers `pycairo` builds against (it has no Linux wheels):
 
----
+  ```bash
+  sudo apt-get install python3-venv python3-dev build-essential libcairo2-dev pkg-config
+  ```
 
-## System Requirements
+  On Linux and macOS, type `python3` wherever this guide says `python` until the virtual environment is
+  active.
+- **macOS**: `brew install cairo pkg-config`.
+- **An OpenRouter API key** ([openrouter.ai/keys](https://openrouter.ai/keys)): the default
+  chat agent runs on it. Keys for other providers are optional.
 
-- **Python**: 3.11 or higher
-- **Operating System**: Windows, Linux, or macOS
-- **Shell**: Git Bash recommended on Windows, any bash-compatible shell on Linux/macOS
-- **Memory**: Minimum 2GB RAM (4GB+ recommended for multi-agent workflows)
-- **Disk Space**: several GB (the dependencies include PyTorch and embedding models) + space for session storage
-- **Build tools on Linux/macOS**: the cairo headers for `pycairo` -- `sudo apt-get install libcairo2-dev pkg-config` (Debian/Ubuntu), `brew install cairo pkg-config` (macOS)
-
-### Optional Dependencies
-
-- **Git**: For development and version control
-
----
-
-## Installation
-
-### Quick Install
-
-For basic usage with default configuration:
+## 2. Install
 
 ```bash
-# Clone the repository
-git clone https://github.com/eehrich/ScarabHive.git
+git clone https://github.com/eehrich/ScarabHive.git ScarabHive
 cd ScarabHive
-
-# Create virtual environment
 python -m venv .venv
 
-# Activate virtual environment
-# Windows (Git Bash)
-source .venv/Scripts/activate
+source .venv/Scripts/activate      # Windows, Git Bash
+# .venv\Scripts\Activate.ps1       # Windows, PowerShell
+# source .venv/bin/activate        # Linux/macOS
 
-# Linux/macOS
-source .venv/bin/activate
-
-# Install package
 pip install -U pip
 pip install -e .
-
-# Verify installation
-agent-cli --help
+agent-cli --help                   # the install worked if this prints the commands
 ```
 
-To run tests, read [CONTRIBUTING.md](CONTRIBUTING.md#tests) first: run the tests for what you
-changed (the full suite takes 20+ minutes). pytest ends only the processes its own session
-started, and orphans of test sessions that provably ended.
+- **PowerShell refuses `Activate.ps1`** ("running scripts is disabled on this system"): run
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
+- **Linux without an NVIDIA GPU:** install the CPU build of PyTorch before `pip install -e .`,
+  otherwise pip downloads the much larger CUDA build:
+  `pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu`
 
-### Development Install
+## 3. Put in your API key
 
-For development with additional tools (linting, type checking, testing utilities):
+API keys live in `config/secrets.env`, which is read at every start. A real environment
+variable of the same name takes precedence over the file.
+
+Start from a fresh copy of the template. If `config/secrets.env` is already there and you did
+not write it, replace it:
 
 ```bash
-# After basic installation above
-pip install -e '.[dev,test]'
-
-# Run linting and type checking, as CI does
-ruff check .
-mypy src/agent_system src/plugins
+cp config/secrets.env.example config/secrets.env                    # Git Bash, Linux, macOS
+# Copy-Item config/secrets.env.example config/secrets.env -Force    # PowerShell
 ```
 
-Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) for the tests to run and the conventions.
+Open `config/secrets.env`, remove the `#` in front of `OPENROUTER_API_KEY=` and replace
+`sk-or-v1-...` with your key. Leave the other lines alone unless you use that service.
 
-### Docker
+- **One line per name.** If a name appears twice, the **first** line counts.
+- **A template value such as `sk-or-v1-...` counts as set**, so no warning appears when the
+  config loads; the provider simply refuses it. The Setup panel (step 5) lists it as
+  *placeholder*.
+- **Never commit this file.** It is still tracked in the repository for now: `git status`
+  shows it as changed, and `git pull` may ask you to stash it.
 
-The image runs the API server (`agent-api`) with the configuration from your checkout.
+## 4. Make your own signing key
+
+Logins are signed with `auth.secret_key` from `config/config.yaml`. The value shipped there
+is public: it is in the repository, so anyone could sign an admin login for your
+installation. The API logs an error about it at every start. Make your own key:
 
 ```bash
-# API keys go into config/secrets.env (template: config/secrets.env.example)
-test -f config/secrets.env || cp config/secrets.env.example config/secrets.env
+python -c "import secrets; print(secrets.token_hex(32))"
+# or: openssl rand -hex 32
+```
 
+1. Add the printed value to `config/secrets.env` as a line of its own, for example
+   `AUTH_SECRET_KEY=3f9c...` (the whole value, without quotes or brackets).
+2. `config/config.yaml` already has an `auth:` block (near line 100) with a line
+   `secret_key: "..."`. Change only that line's value:
+
+   ```yaml
+     secret_key: "${AUTH_SECRET_KEY}"
+   ```
+
+   Do **not** add a second `auth:` block. YAML keeps only the last one, and the rest of the
+   first block would be lost, login included.
+
+- **A key that is too short stops the start.** The API refuses to start with an empty key
+  (for example an unset `AUTH_SECRET_KEY`) or one under 32 characters.
+- **Where the key must go:** `auth` is read from `config/config.yaml` only. `config/local.yaml`
+  cannot set it. Your change stays a local change of `config/config.yaml`; `git pull` may ask
+  you to stash it.
+- **Optional:** `auth.reject_default_secret_key: true` makes a published key a start error
+  instead of a log line.
+
+## 5. Start it and log in
+
+```bash
+agent-api
+```
+
+Open `http://127.0.0.1:8000` and log in. On the very first start, while the user database
+(`data/users.db`) is still empty, the API creates the admin `admin` with the password
+`admin123` (`auth.default_admin_username` / `default_admin_password` in `config/config.yaml`).
+
+Then open the **Setup** panel: click the grid icon in the top bar (tooltip *Panels*) and type
+`setup`. It shows:
+
+- **API keys:** every key the configuration uses, each as *set*, *missing* or *placeholder*.
+- **Admin password:** whether the admin still has the known password, with a form to change
+  it while it does.
+- **Signing key:** whether logins are signed with a known key, and whether a restart is still
+  needed for a new one.
+- **Test the chat:** sends one short request through the default chat model and shows the
+  answer or the provider's error.
+
+The API reads `config/secrets.env` only when it starts. After editing it, stop `agent-api`
+(Ctrl+C) and start it again.
+
+The command line works too:
+
+```bash
+agent-cli chat
+```
+
+## Docker
+
+Instead of installing and starting with Python (steps 1, 2 and 5): do steps 3 and 4, then
+
+```bash
 docker compose up -d --build
 docker compose logs -f scarabhive
 ```
 
-The web UI is then at `http://127.0.0.1:8000`, published on the loopback interface only.
-`config/` is mounted read-only; sessions, `users.db`, plugin data, logs and downloaded models
-live in named volumes. Build arguments (CPU/CUDA PyTorch, extra system packages, the container
-user's ids) are described in [docker-compose.yml](docker-compose.yml) and the [Dockerfile](Dockerfile).
+Log in and open the Setup panel as in step 5. The web UI is at `http://127.0.0.1:8000`,
+published on the loopback interface only.
 
----
+- **Signing key without Python on the host:** `openssl rand -hex 32`.
+- **`config/secrets.env` must be readable by the container user** (uid 10001 by default). A
+  file only your own user can read (mode 600) is not read: the log says
+  `Could not read .../config/secrets.env: [Errno 13] Permission denied`, and every key then shows
+  as unset. Details are in [docker-compose.yml](docker-compose.yml).
+- **Reaching it from other machines:** set `SCARABHIVE_BIND=0.0.0.0` in the shell or in `.env`.
+  `network.host` in `config/local.yaml` has no effect in the container. The precautions of the
+  next section apply all the same.
+- **Configuration:** `config/` is mounted read-only.
+- **Your data:** sessions, `users.db`, plugin data, logs and downloaded models live in named
+  volumes.
+- **Build arguments:** CPU or CUDA PyTorch, extra system packages and the container user's ids
+  are described in [docker-compose.yml](docker-compose.yml) and the [Dockerfile](Dockerfile).
 
-## Configuration
+## Reaching it from other machines
 
-ScarabHive uses a hierarchical YAML configuration system in the `config/` directory.
-
-### Configuration Structure
-
-```
-config/
-├── config.yaml              # Main config with includes
-├── llm.yaml                 # LLM provider settings
-├── llm_openrouter.yaml      # OpenRouter models and profiles
-├── plugins.yaml             # Plugin configuration
-├── mcp_servers.yaml         # External MCP servers
-├── secrets.env.example      # Template for secrets.env (API keys, loaded at startup)
-└── agents/                  # Config-based agents (YAML files)
-    ├── agents.yaml          # base agents (multi_turn_agent, skills_agent, chat_agent)
-    ├── sysadmin_agent.yaml
-    └── okf_agent.yaml
-```
-
-### LLM Provider Setup
-
-Edit `config/llm.yaml` to configure your LLM provider(s). The config uses a `models` section with named model definitions:
-
-#### OpenAI Example
+By default the API listens on `127.0.0.1` only. To open it to your network, add this to
+`config/local.yaml` (create the file if it is not there). It is this machine's own file and
+never goes into the repository:
 
 ```yaml
-llm_system:
-  models:
-    gpt-4-turbo:
-      provider: openai
-      model: gpt-4-turbo-preview
-      # api_key: omit to use OPENAI_API_KEY environment variable (recommended)
-      # api_key: "sk-..."  # or hardcode (not recommended for production)
-      context_window: 128000
-      request_timeout: 180
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
+network:
+  host: 0.0.0.0
 ```
 
-Set environment variable:
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-**Note**: When `api_key` is omitted, the system automatically uses `os.getenv("OPENAI_API_KEY")` as fallback.
-
-#### Anthropic (Claude) Example
-
-```yaml
-llm_system:
-  models:
-    claude-sonnet:
-      provider: anthropic
-      model: claude-3-5-sonnet-20241022
-      # api_key: omit to use ANTHROPIC_API_KEY environment variable (recommended)
-      context_window: 200000
-      request_timeout: 180
-      capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-```
-
-Set environment variable:
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-#### Google (Gemini) Example
-
-```yaml
-llm_system:
-  models:
-    gemini-pro:
-      provider: gemini_sdk
-      model: gemini-3-pro-preview
-      # api_key: omit to use GEMINI_API_KEY or GOOGLE_API_KEY environment variable (recommended)
-      context_window: 200000
-      capabilities:
-        tools: true
-        image_input: true
-        streaming: true
-```
-
-Set environment variable:
-```bash
-export GOOGLE_API_KEY="AIza..."
-# or
-export GEMINI_API_KEY="AIza..."
-```
-
-#### Using Models in Agents
-
-Agents reference a **profile**, and a profile points at a model via `model_ref`:
-```yaml
-llm_system:
-  profiles:
-    gpt-4-turbo:
-      model_ref: gpt-4-turbo   # key under llm_system.models
-
-plugins:
-  servers:
-    my_agent:
-      agent_config:
-        llm_profile: gpt-4-turbo  # a name under llm_system.profiles
-```
-
-**API keys**: `${ENV_VAR}` placeholders are expanded in every config file, `llm.yaml` included (`api_key: ${OPENAI_API_KEY}`); an unset variable becomes empty and is named in a startup warning. Variables can also be put in `config/secrets.env` (template: `config/secrets.env.example`), which is loaded at startup without overriding the real environment. Omitting `api_key` falls back to the provider's environment variable as described above.
-
-### Plugin Configuration
-
-Edit `config/plugins.yaml` to enable/disable plugins and configure settings:
-
-```yaml
-plugins:
-  # Plugin discovery directories
-  plugin_dirs:
-    - src/plugins
-    - /custom/plugin/path  # Optional
-  
-  # Individual plugin servers
-  servers:
-    # Built-in plugins
-    basic_operations:
-      type: basic_operations
-      enabled: true
-      description: "Utility tools for testing"
-    
-    # Where settings go is per plugin: these three read them directly on the
-    # entry, others (e.g. context_engineer) under a `config:` key
-    terminal:
-      type: terminal
-      enabled: true
-      security:
-        blacklist:
-          - "rm -rf /"
-          - "mkfs"
-      limits:
-        max_output_size_kb: 60
-        default_timeout_seconds: 300
-    
-    web_scraper:
-      type: web_scraper
-      enabled: true
-      cache_ttl: 1800
-      user_agent: "ScarabHive/1.0"
-    
-    ssh_control:
-      type: ssh_control
-      enabled: false  # false is the default; config/agents/sysadmin_agent.yaml ships an enabled entry
-      defaults:  # applied to every entry under machines:
-        connection_timeout: 10
-        command_timeout: 300
-```
-
-### Agent Configuration
-
-Create custom agents in `config/agents/*.yaml` without writing code:
-
-**Example: the research agent, a config-only plugin** (`src/plugins/research/agents/research_agent.yaml`, picked up by the `../src/plugins*/*/agents/*.yaml` include)
-```yaml
-plugins:
-  servers:
-    research_agent:
-      type: multi_turn_agent   # inherits the base agent from config/agents/agents.yaml
-      enabled: true
-      description: "Web research with cited sources"
-
-      agent_config:
-        llm_profile: [or-deepseek-flash, deepseek-chat]
-        max_steps: 40
-        system_template: "./prompts/research_agent.md"   # next to the YAML
-        skills:
-          always: ["web-research"]                       # from the plugin's skills/
-        tools:
-          allowed:                                       # "+" adds to the inherited list
-            - "+tavily_search/*"
-            - "+duckduckgo_search/*"
-            - "+web_scraper/*"
-
-      metadata:
-        visibility: "both"  # or "ui", "tool"
-```
-
-See the existing agents in `config/agents/` for more examples.
-
----
-
-## Running the System
-
-### API Server
-
-Start the FastAPI server for web UI and API access:
-
-```bash
-# Host/port from config/config.yaml (network.host/port, default 127.0.0.1:8000), HOST/PORT env override
-agent-api
-
-# Via uvicorn directly - single worker: run state (cancellation, mid-run messages, status streams) is per process
-uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000
-# (bind 0.0.0.0 only after changing auth.secret_key and auth.default_admin_password)
-
-# With specific log level
-AGENT_LOG_LEVEL=debug agent-api
-```
-
-Access the web UI at `http://localhost:8000`
-
-### CLI Mode
-
-Use the command-line interface:
-
-```bash
-# Interactive chat
-agent-cli chat
-
-# Single query
-agent-cli "What is the weather in Berlin?"
-
-# With specific agent (run options follow the task)
-agent-cli run "Research quantum computing" --agent research_agent
-
-# Plugins, agents among them as instances
-agent-cli plugins list
-```
-
-### VS Code Tasks
-
-Use predefined VS Code tasks (`.vscode/tasks.json`):
-
-1. Open Command Palette (Ctrl+Shift+P)
-2. Select "Tasks: Run Task"
-3. Choose:
-   - `AgentSystem: Run API` - Start API server
-   - `AgentSystem: Run API with Debug Output` - Debug mode
-   - `Python: Run all tests (venv)` - The whole suite (20+ minutes; see [Testing](#testing))
-   - `Python: Ruff (check & fix)` - Lint code
-   - `Python: Mypy (type check)` - Type checking
-
----
-
-## Authentication Setup
-
-Enable multi-user authentication (optional; `auth.enabled` defaults to `false`, the shipped `config/config.yaml` sets it to `true`):
-
-### 1. Enable Authentication
-
-Edit `config/config.yaml`:
-
-```yaml
-auth:
-  enabled: true
-  secret_key: "${AUTH_SECRET_KEY}"  # Generate: openssl rand -hex 32
-  algorithm: "HS256"
-  access_token_expire_minutes: 30
-  
-  # Database settings
-  database_path: "data/users.db"
-  
-  # CORS settings for web UI
-  cors_enabled: true
-  cors_origins:
-    - "http://localhost:3000"
-    - "http://localhost:8000"
-  cors_credentials: true
-```
-
-### 2. Generate Secret Key
-
-```bash
-# Generate secure secret key
-openssl rand -hex 32
-
-# Set as environment variable
-export AUTH_SECRET_KEY="your-generated-secret"
-```
-
-The server checks the key at startup: an empty one (for example an unset
-`AUTH_SECRET_KEY`) or one shorter than 32 characters stops it; a published
-key -- the shipped development key, the built-in default -- is logged as an
-error. Set `auth.reject_default_secret_key: true` to refuse starting with one.
-
-### 3. Create Admin User
-
-On first startup with auth enabled (and no users in the database), a default admin user is created:
-
-```
-Username: admin
-Password: admin123
-```
-
-**Important**: Change the default password immediately! The default credentials are set in `config/config.yaml` under `auth.default_admin_username` and `auth.default_admin_password`. Without `default_admin_password`, a random password is generated and printed in the startup log.
-
-### 4. User Management
-
-```bash
-# List users
-agent-cli users list
-
-# Create new user (prompts for the password unless -p is given)
-agent-cli users create alice alice@example.com --role user
-
-# Generate API key for automation
-agent-cli users generate-api-key alice
-
-# Update user
-agent-cli users update alice --role admin
-
-# Delete user
-agent-cli users delete alice
-```
-
-### 5. Using Authentication
-
-**Web UI**: Opening `/` redirects to the login form at `/login` - use username/password
-
-**API**: Include JWT token in requests:
-```bash
-# Login to get token
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "your-password"}'
-
-# Use token in requests
-curl http://localhost:8000/agents \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
-
-**API Key**: For long-lived access:
-```bash
-curl http://localhost:8000/agents \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
----
-
-## Advanced Configuration
-
-### Context Management
-
-Context management is done by the hook plugins `context_engineer` (layered compaction) and `context_summarizer` (LLM summaries), configured on their entries in `config/plugins.yaml`. There is no `agent_config.context_management` block — `agent_config` rejects unknown keys.
-
-```yaml
-plugins:
-  servers:
-    context_engineer:
-      type: context_engineer
-      enabled: true
-      config:
-        layer1_threshold: 140000  # start reversible compaction
-        layer2_threshold: 170000  # start archiving old turns with summaries
-        layer3_threshold: 200000  # start dropping old messages
-        target_tokens: 70000      # target after compaction
-    context_summarizer:
-      type: context_summarizer
-      enabled: true
-      config:
-        llm_profile: or-deepseek-flash
-        summarization_trigger_percentage: 0.8
-```
-
-Per agent, hooks are switched on or off with `agent_config.hooks.overrides` (see `docs/plugin_hooks.md`).
-
-### External MCP Servers
-
-Connect to remote MCP servers.
-
-Edit `config/mcp_servers.yaml`:
-
-```yaml
-external_servers:
-  remote_servers:
-    weather_service:
-      url: "https://api.weather.com/mcp"
-      transport: "http"  # streamable HTTP (default "streaming"); also "sse", "stdio"
-      enabled: true
-      auth:
-        type: "api_key"
-        api_key: "${WEATHER_API_KEY}"
-      timeout: 30
-```
-
-### Session Storage
-
-Session storage is handled automatically. Sessions are stored in `data/sessions/{user_id}/` by default. The storage path is managed by the system and doesn't require explicit configuration in `config.yaml`.
-
-For a custom storage location, set the `AGENT_SESSION_STORAGE_PATH` environment variable.
-
-### Logging Configuration
-
-```yaml
-logging:
-  enabled: true
-  level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  
-  # File logging
-  file: logs/agent.log
-  file_cli: logs/cli.log
-  file_api: logs/api.log
-```
-
-Note: Log format is handled by the logging system. Rotation is configured with `rotation_enabled`, `max_bytes` and `backup_count` (defaults: on, `10MB`, 5 backups).
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. Import Errors
-
-**Error**: `ModuleNotFoundError: No module named 'agent_system'`
-
-**Solution**:
-```bash
-# Ensure venv is activated
-source .venv/Scripts/activate  # Windows Git Bash
-source .venv/bin/activate      # Linux/macOS
-
-# Reinstall in editable mode
-pip install -e .
-```
-
-#### 2. LLM API Errors
-
-**Error**: `OpenAI API key not found`
-
-**Solution**:
-```bash
-# Set environment variable (recommended)
-export OPENAI_API_KEY="sk-..."
-
-# Or hardcode in config/llm.yaml (not recommended)
-llm_system:
-  models:
-    your_model:
-      api_key: "sk-..."  # or ${OPENAI_API_KEY}
-```
-
-#### 3. Plugin Loading Failures
-
-**Error**: Plugin not found or failed to load
-
-**Solution**:
-```bash
-# List available plugins
-agent-cli plugins list
-
-# Details of one plugin, including ENABLED
-agent-cli plugins info PLUGIN_NAME
-
-# Verify plugin directories in config/plugins.yaml
-plugins:
-  plugin_dirs:
-    - src/plugins
-```
-
-#### 4. Port Already in Use
-
-**Error**: `[Errno 98] error while attempting to bind on address ('127.0.0.1', 8000): [errno 98] address already in use` (Errno 48 on macOS)
-
-**Solution**:
-```bash
-# Use different port (or set network.port in config/config.yaml)
-PORT=8001 agent-api
-
-# Or kill existing process
-lsof -ti:8000 | xargs kill -9  # Linux/macOS
-# Windows: Use Task Manager or scripts/kill_project_python_processes.ps1
-```
-
-#### 5. Permission Errors
-
-**Error**: Permission denied when accessing files
-
-**Solution**:
-```bash
-# Ensure correct ownership
-sudo chown -R $USER:$USER .
-
-# Check directory permissions
-chmod 755 data/sessions
-```
-
-### Debug Mode
-
-Enable verbose logging:
-
-```bash
-# CLI (progress messages and tool call details)
-agent-cli -v --show-tools "your query"
-
-# API
-AGENT_LOG_LEVEL=debug agent-api
-
-# Or edit config/config.yaml
-logging:
-  level: DEBUG
-```
-
-### Testing
-
-Run the tests for what you changed -- the full suite takes 20+ minutes; details, including
-which processes pytest ends, in [CONTRIBUTING.md](CONTRIBUTING.md#tests):
-
-```bash
-# The tests need the [test] extra: pip install -e '.[test]'
-
-# Specific test suite
-pytest tests/agent/ -v
-pytest tests/plugins/ -v
-
-# With coverage report (pytest-cov comes with the [test] extra)
-pytest tests/agent/ --cov=agent_system --cov-report=html
-```
-
-### Getting Help
-
-1. **Check logs**: `logs/api.log` (agent-api), `logs/cli.log` (agent-cli); names set by `logging.file_api` / `file_cli` in `config/config.yaml`
-2. **Review documentation**: `docs/` directory
-3. **Enable debug mode**: Set `AGENT_LOG_LEVEL=debug`
-4. **Run tests**: the suites for the area you changed (see [Testing](#testing))
-
----
-
-## Next Steps
-
-After successful installation:
-
-1. **Explore Plugins**: Browse `src/plugins/` for plugin READMEs and examples
-2. **Create Custom Agent**: Add your agent definition as `config/agents/your_agent.yaml`
-3. **Read Architecture Docs**: Understand the system design in `docs/`
-4. **Try Examples**: Explore example workflows in plugin documentation
-5. **Develop Plugins**: Follow `docs/plugin_authoring.md` to create custom tools
-
-For production deployments, see the deployment view in `docs/_arch_agent_system_architecture.md` (section 9).
+Then restart `agent-api`. Do this only after step 4 and after changing the admin password:
+until then, anyone on the network can log in with `admin123` or sign their own login.
+
+- **Registration:** anyone who reaches the login page can register an account. With the
+  shipped `auth.registration` settings, a new account stays inactive until an admin activates
+  it.
+- **`network.remote_paths`:** if this is set, other machines reach only the paths it lists.
+
+Two environment variables override host and port for a single start: `HOST` and `PORT`, for
+example `PORT=8001 agent-api` (PowerShell: `$env:PORT = "8001"; agent-api`, which keeps the
+value for the rest of that PowerShell window).
+
+## The first semantic search
+
+Memory, file search and related plugins use the embedding model all-MiniLM-L6-v2. It is
+downloaded once, on first use, into `~/.cache/chroma`, so that first use needs network access.
+
+## If something goes wrong
+
+| What you see | What it means |
+|---|---|
+| `pip install` fails building `pycairo`, or asks for a C compiler | Install the build packages (step 1). |
+| `running scripts is disabled on this system` | PowerShell's execution policy (step 2). |
+| `agent-cli: command not found`, or `The term 'agent-cli' is not recognized` | The virtual environment is not activated (step 2). |
+| `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only `OPENROUTER_API_KEY` must not be in the list. |
+| `Refusing to start: auth.secret_key is empty ...` or `... has N characters, at least 32 are needed` | Step 4: the key is missing (`AUTH_SECRET_KEY` not in `config/secrets.env`) or too short. |
+| `auth.secret_key is a published default ...` in the log | Step 4 is not done yet. The API runs, but anyone can sign a login. |
+| The chat test fails with 401, or the provider says the user is unknown | The API key is missing, or still the template value. The Setup panel shows which. After fixing it, restart the API. |
+| `address already in use`, or on Windows `[Errno 10048] ... only one usage of each socket address` | Another program uses port 8000: start with another `PORT` (see above), or set `network.port`. |
+| `The embedding model all-MiniLM-L6-v2 could not be readied ...` | Its first use had no network access, or `~/.cache/chroma` is not writable. |
+
+The logs are in `logs/api.log` (the API) and `logs/cli.log` (`agent-cli`).
+
+Working on the code: [CONTRIBUTING.md](CONTRIBUTING.md) covers the development extras and which
+tests to run.

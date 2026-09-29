@@ -42,7 +42,7 @@ API keys go into `config/secrets.env` (if it does not exist yet, copy
 environment; a real environment variable wins over the file. The file
 is read by the config loader and must never be committed. Start the server
 with `agent-api` (web UI on <http://127.0.0.1:8000>) or use `agent-cli`.
-[INSTALLATION.md](INSTALLATION.md) covers configuration in detail.
+[docs/configuration.md](docs/configuration.md) covers configuration in detail.
 
 ## Tests
 

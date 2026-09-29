@@ -55,7 +55,8 @@ ScarabHive is designed for developers who need:
 
 ## Quick Links
 
-- **[Installation Guide](INSTALLATION.md)** - Setup, configuration, and deployment
+- **[Installation Guide](INSTALLATION.md)** - From a checkout to the first login
+- **[Configuration](docs/configuration.md)** - LLM providers, plugins, agents, authentication, troubleshooting
 - **Documentation**: [`docs/`](docs/) - Architecture, plugin authoring, API reference
 - **Plugins**: [`src/plugins/`](src/plugins/) - Built-in plugins with individual READMEs
 - **Configuration**: [`config/`](config/) - YAML-based system and agent configuration

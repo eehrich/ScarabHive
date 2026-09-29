@@ -734,7 +734,7 @@ AGENT_ENABLE_PROFILING=1   # debug/profiling endpoints
 ### 10.3 User Guides
 
 - [Plugin Authoring](plugin_authoring.md) - How to create plugins
-- [Configuration Guide](../INSTALLATION.md#configuration) - Configuration reference
+- [Configuration Guide](configuration.md) - Configuration reference
 - API reference: the OpenAPI UI of a running server at `/docs` (`/openapi.json`); design notes in [_arch_app_architecture.md](_arch_app_architecture.md), partly outdated
 - [CLI Reference](cli_reference.md) - Command-line usage
 
