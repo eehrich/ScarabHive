@@ -15,8 +15,10 @@ const SHAPES = { choice: [30, 30], junction: [14, 14], final: [26, 26] };
 const INITIAL_SIZE = 14;
 /** Between an initial dot and the state placed by hand it points to. */
 const INITIAL_GAP = 40;
-/** How far a straight transition is drawn beside the centre line when another goes back between the same two. */
-const PAIR_GAP = 6;
+/** Between the straight lines of two transitions that join the same two states; of three or more, wider than a label
+ * above its line reaches (17): it stays clear of the next line. */
+const LANE_GAP = 12;
+const CROWD_GAP = 20;
 
 export const ROOT_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -266,10 +268,37 @@ export function clipToBox(box, tx, ty) {
   return [cx + dx * scale, cy + dy * scale];
 }
 
-/** A drawn edge: ELK's route, or a straight line when an end was moved by hand. `paired`: a transition goes back
- * between the two as well -- each straight line is drawn beside the centre line, on its right (`side`), so the two
- * do not cover each other. */
-export function edgeRoute(route, source, target, moved, paired = false) {
+/**
+ * Transitions between the same two states, either way, side by side: {transition id: {offset, at, crowd}}. `offset`:
+ * how far to the right of its own direction its straight line is drawn -- 0 for one alone, each 6 to its right for
+ * one there and one back, their labels beside them. Three or more (`crowd`) lie wider apart, each label above its
+ * line at its own place along the way (`at`, a fraction of it). Self-transitions and internal ones are no pair.
+ */
+export function lanes(transitions) {
+  const between = new Map();
+  for (const t of transitions) {
+    if (!t.target || t.target === t.source) continue;
+    const key = [t.source, t.target].sort().join('\n');
+    if (!between.has(key)) between.set(key, []);
+    between.get(key).push(t);
+  }
+  const found = {};
+  for (const group of between.values()) {
+    const crowd = group.length > 2;
+    group.forEach((t, i) => {
+      // across and along the way from the first name to the second; a transition the other way counts from its end
+      const across = (i - (group.length - 1) / 2) * (crowd ? CROWD_GAP : LANE_GAP);
+      const along = crowd ? (i + 1) / (group.length + 1) : 0.5;
+      const forward = t.source < t.target;
+      found[t.id] = { offset: forward ? -across : across, at: forward ? along : 1 - along, crowd };
+    });
+  }
+  return found;
+}
+
+/** A drawn edge: ELK's route, or a straight line when an end was moved by hand; its `lane` (lanes) draws that line
+ * beside the centre line: `side` says on which side, for its label, or a crowd's `at` where along it. */
+export function edgeRoute(route, source, target, moved, lane = null) {
   if (route && route.points.length && !moved) return { points: route.points, label: route.label, straight: false };
   if (source === target) {  // a self-transition: a loop over the top right corner
     const x = source.x + source.w * 0.75;
@@ -278,19 +307,23 @@ export function edgeRoute(route, source, target, moved, paired = false) {
   }
   const from = clipToBox(source, target.x + target.w / 2, target.y + target.h / 2);
   const to = clipToBox(target, source.x + source.w / 2, source.y + source.h / 2);
-  if (!paired) return { points: [from, to], label: null, straight: true };
+  const offset = lane?.offset || 0;
+  if (!offset) return { points: [from, to], label: null, straight: true };  // a crowd's middle one too: its at is 0.5
   const length = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
-  const side = [-(to[1] - from[1]) / length, (to[0] - from[0]) / length];
-  const shift = ([x, y]) => [x + side[0] * PAIR_GAP, y + side[1] * PAIR_GAP];
-  return { points: [shift(from), shift(to)], label: null, straight: true, side };
+  const right = [-(to[1] - from[1]) / length, (to[0] - from[0]) / length];
+  const shift = ([x, y]) => [x + right[0] * offset, y + right[1] * offset];
+  const drawn = { points: [shift(from), shift(to)], label: null, straight: true };
+  return lane.crowd ? { ...drawn, at: lane.at } : { ...drawn, side: right.map((v) => v * Math.sign(offset)) };
 }
 
 /** Where an edge's label text starts ([x, baseline]; its box reaches 3 beyond, 11 above and 4 below): ELK's spot,
- * above the middle of a straight line, or beside it on its `side` -- clear of the line going back. */
+ * above the middle of a straight line -- one of a crowd above its place along it (`at`) --, or beside it on its
+ * `side`, clear of the line going back. */
 export function labelSpot(drawn, width) {
   if (drawn.label) return [drawn.label.x + 4, drawn.label.y + 12];
   const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];
-  const [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const at = drawn.at ?? 0.5;
+  const [mx, my] = [a[0] + (b[0] - a[0]) * at, a[1] + (b[1] - a[1]) * at];
   if (!drawn.side) return [mx - width / 2, my - 6];
   const [sx, sy] = drawn.side;
   const reach = Math.abs(sx) * (width / 2 + 3) + Math.abs(sy) * 7.5 + 4;  // half the box across the line, and a gap
@@ -636,15 +669,14 @@ export class Canvas {
           this.edgeLayer);
       }
     }
-    const linked = new Set(this.graph.transitions.map((t) => `${t.source}\n${t.target}`));
+    const lanesOf = lanes(this.graph.transitions);
     for (const transition of this.graph.transitions) {
       const source = nodes[stateId(transition.source)];
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
       const route = this.auto.edges[edgeId(transition.id)];
       const drawn = edgeRoute(route, source, target,
-        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)),
-        linked.has(`${transition.target}\n${transition.source}`));
+        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)), lanesOf[transition.id]);
       this.drawEdge(transition, drawn);
     }
     this.decorate();

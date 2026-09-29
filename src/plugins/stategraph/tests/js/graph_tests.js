@@ -6,7 +6,7 @@
 import {
   applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
-  groupedSpots, labelSpot, selectedTransitions, selectionOf, statesWithin, toggled,
+  groupedSpots, labelSpot, lanes, selectedTransitions, selectionOf, statesWithin, toggled,
 } from '../../static/graph.js';
 
 const results = [];
@@ -150,8 +150,8 @@ test('applyPositions: an initial dot sits left of its state once that one is pla
 test('edgeRoute / labelSpot: a transition back between the same two is drawn beside the other, its label on its side', () => {
   const a = { x: 0, y: 0, w: 100, h: 40 };
   const b = { x: 300, y: 0, w: 100, h: 40 };
-  const there = edgeRoute(null, a, b, true, true);
-  const back = edgeRoute(null, b, a, true, true);
+  const there = edgeRoute(null, a, b, true, { offset: 6 });
+  const back = edgeRoute(null, b, a, true, { offset: 6 });
   equal([there.points, back.points], [[[100, 26], [300, 26]], [[300, 14], [100, 14]]], 'each 6 to the right of its way');
   const plain = edgeRoute(null, a, b, true);
   equal([plain.points, plain.side], [[[100, 20], [300, 20]], undefined], 'alone: through the middle');
@@ -159,9 +159,53 @@ test('edgeRoute / labelSpot: a transition back between the same two is drawn bes
   const [, below] = labelSpot(there, 80);
   const [, above] = labelSpot(back, 80);
   assert(below - 11 > 26 && above + 4 < 14, `the labels clear both lines: box ${below - 11}..${below + 4} and ${above - 11}..${above + 4}`);
-  const down = edgeRoute(null, a, { x: 0, y: 200, w: 100, h: 40 }, true, true);
+  const down = edgeRoute(null, a, { x: 0, y: 200, w: 100, h: 40 }, true, { offset: 6 });
   const [left] = labelSpot(down, 80);
   assert(left + 80 + 3 < down.points[0][0], `beside a vertical line, the label ends left of it: ${left + 83} ${down.points[0][0]}`);
+  const other = edgeRoute(null, a, b, true, { offset: -6 });
+  equal([other.points, other.side], [[[100, 14], [300, 14]], [-0, -1]], 'a negative offset: on its left, the label there too');
+});
+
+test('lanes: the transitions between two states, either way, side by side', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const offsets = (found) => Object.fromEntries(Object.entries(found).map(([id, lane]) => [id, lane.offset]));
+  equal(offsets(lanes([t('a#0', 'a', 'b'), t('b#0', 'b', 'a')])), { 'a#0': 6, 'b#0': 6 }, 'there and back: each on its right');
+  equal(offsets(lanes([t('x#0', 'x', 'y'), t('x#1', 'x', 'y')])), { 'x#0': 6, 'x#1': -6 }, 'twice the same way: one right, one left');
+  const three = lanes([t('y#0', 'y', 'x'), t('y#1', 'y', 'x'), t('x#0', 'x', 'y')]);
+  equal(three, { 'y#0': { offset: -20, at: 0.75, crowd: true }, 'y#1': { offset: 0, at: 0.5, crowd: true },
+    'x#0': { offset: -20, at: 0.75, crowd: true } }, 'three: 20 apart, each label at its own place along the way (y to x counts from x)');
+  equal(offsets(lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'a'), t('a#2', 'a', null), t('c#0', 'c', 'a')])), { 'a#0': 0, 'c#0': 0 },
+    'alone: through the middle; a self-transition and an internal one are no pair');
+});
+
+test('lanes / edgeRoute / labelSpot: of three or four between two states, no label covers another or another\'s line', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const width = 180;
+  const boxOf = (drawn) => {  // the label's box: 3 beyond the text, 11 above its baseline, 4 below
+    const [x, y] = labelSpot(drawn, width);
+    return { x: x - 3, y: y - 11, w: width + 6, h: 15 };
+  };
+  const meets = (p, q) => p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h;
+  const crosses = (box, [[x1, y1], [x2, y2]]) => {  // a straight line through a box: sampled finely
+    for (let s = 0; s <= 400; s += 1) {
+      const [x, y] = [x1 + ((x2 - x1) * s) / 400, y1 + ((y2 - y1) * s) / 400];
+      if (x > box.x && x < box.x + box.w && y > box.y && y < box.y + box.h) return true;
+    }
+    return false;
+  };
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  for (const [where, b] of [['beside', { x: 700, y: 0, w: 100, h: 40 }], ['below', { x: 0, y: 500, w: 100, h: 40 }]]) {
+    for (const group of [[t('a#0', 'a', 'b'), t('a#1', 'a', 'b'), t('b#0', 'b', 'a')],
+      [t('a#0', 'a', 'b'), t('b#0', 'b', 'a'), t('a#1', 'a', 'b'), t('b#1', 'b', 'a')]]) {
+      const found = lanes(group);
+      const drawn = group.map((one) => (one.source === 'a' ? edgeRoute(null, a, b, true, found[one.id]) : edgeRoute(null, b, a, true, found[one.id])));
+      const boxes = drawn.map(boxOf);
+      boxes.forEach((box, i) => boxes.forEach((other, j) => {
+        assert(i >= j || !meets(box, other), `${where}, ${group.length}: labels ${i} and ${j} meet`);
+        if (where === 'beside') assert(i === j || !crosses(box, drawn[j].points), `${where}, ${group.length}: label ${i} covers line ${j}`);
+      }));
+    }
+  }
 });
 
 test('clipToBox and edgeRoute: straight lines leave the boxes at their border', () => {
