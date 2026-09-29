@@ -9,6 +9,7 @@ guide shows it with ``@{image docs/<name>.png}``.
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import shutil
 import socket
@@ -34,6 +35,12 @@ SHOTS = {
               "/plugins/todo/?session_id=s-1", (1000, 700))],
     "memory": [("panel.png", "plugins.memory.tests.test_plugin_memory_panel", "panel_app",
                 "/plugins/memory/?session_id=s-1", (1000, 480))],
+    "message_debugger": [("panel.png", "plugins.message_debugger.tests.test_plugin_message_debugger_panel", "panel_app",
+                          "/plugins/message_debugger/?request_id=r-1", (1000, 560))],
+    "context_summarizer": [("panel.png", "plugins.context_summarizer.tests.test_plugin_context_summarizer_panel",
+                            "panel_app", "/plugins/context_summarizer/?session_id=s-1", (980, 380))],
+    "lessons_learned": [("panel.png", "plugins.lessons_learned.tests.test_plugin_lessons_learned_panel", "panel_app",
+                         "/plugins/lessons_learned/", (1100, 820))],
 }
 
 
@@ -84,8 +91,11 @@ def main(plugins: list[str]) -> None:
         raise SystemExit("no Chromium-based browser installed")
     for plugin in plugins or SHOTS:
         for name, module, factory, page, size in SHOTS[plugin]:
-            with tempfile.TemporaryDirectory() as data:
-                app = getattr(importlib.import_module(module), factory)(Path(data))
+            # a plugin may keep its database open until the process ends: its folder is left then
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data:
+                build = getattr(importlib.import_module(module), factory)
+                # a factory that keeps data on disk takes the folder for it; one that holds it in memory takes none
+                app = build(Path(data)) if inspect.signature(build).parameters else build()
                 with serve(app) as port:
                     url = f"http://127.0.0.1:{port}{page}"
                     # the browser takes a picture of an error page as well: a page that fails keeps the old one

@@ -14,7 +14,7 @@ hooks:
     type: post_llm_call
     enabled: true
     timeout: 20.0
-    description: "Captures LLM response immediately after receiving from LLM (runs first in post-chain)"
+    description: "Captures the messages and the LLM response after the LLM call"
     category: "message_debugging"
     order:
       after: ["begin"]
@@ -65,7 +65,7 @@ config:
   db_path:
     type: string
     default: ""
-    description: "Path to SQLite database file (default: data/message_debugger/debugger.db)"
+    description: "Path to the SQLite database file; empty: message_debugger/debugger.db in the data directory"
   
   include_tool_calls:
     type: boolean
@@ -86,7 +86,7 @@ config:
   max_db_size_mb:
     type: integer
     default: 5120
-    description: "Hard cap on the debugger DB's data size (MB). Above ~90% the oldest turns/requests are pruned down to ~75% (hysteresis). The file plateaus at this size and reuses freed pages (no VACUUM). 0 disables retention."
+    description: "Hard cap on the debugger DB's data size (MB), measured every 200 writes. Above ~90% the oldest raw payloads are stripped (their cost columns stay) and the oldest turns deleted, down to ~75% (hysteresis); only when nothing else is left are the oldest request rows deleted. The file plateaus at this size and reuses freed pages (no VACUUM). 0 disables retention."
     minimum: 0
     maximum: 1048576
 
