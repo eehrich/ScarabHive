@@ -172,8 +172,9 @@ test('lanes: the transitions between two states, either way, side by side', () =
   equal(offsets(lanes([t('a#0', 'a', 'b'), t('b#0', 'b', 'a')])), { 'a#0': 6, 'b#0': 6 }, 'there and back: each on its right');
   equal(offsets(lanes([t('x#0', 'x', 'y'), t('x#1', 'x', 'y')])), { 'x#0': 6, 'x#1': -6 }, 'twice the same way: one right, one left');
   const three = lanes([t('y#0', 'y', 'x'), t('y#1', 'y', 'x'), t('x#0', 'x', 'y')]);
-  equal(three, { 'y#0': { offset: -20, at: 0.75, crowd: true }, 'y#1': { offset: 0, at: 0.5, crowd: true },
-    'x#0': { offset: -20, at: 0.75, crowd: true } }, 'three: 20 apart, each label at its own place along the way (y to x counts from x)');
+  equal(three, { 'y#0': { offset: -20, at: 0.75, crowd: true, spread: 20 }, 'y#1': { offset: 0, at: 0.5, crowd: true, spread: 20 },
+    'x#0': { offset: -20, at: 0.75, crowd: true, spread: 20 } },
+    'three: 20 apart, each label at its own place along the way (y to x counts from x); the widest offset is their spread');
   equal(offsets(lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'a'), t('a#2', 'a', null), t('c#0', 'c', 'a')])), { 'a#0': 0, 'c#0': 0 },
     'alone: through the middle; a self-transition and an internal one are no pair');
 });
@@ -210,6 +211,57 @@ test('orthogonalRoute: out of the facing side, one bend half way, in through the
   equal(orthogonalRoute(a, { x: 105, y: 45, w: 10, h: 10 }), null, 'all but meeting at a corner: no right angle fits');
 });
 
+test('orthogonalRoute: a group of lanes takes one way, squeezed where it must; a composite and a state inside it', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const a = { x: 0, y: 0, w: 96, h: 34 };
+  const pair = lanes([t('a#0', 'a', 'b'), t('b#0', 'b', 'a')]);
+  const close = { x: 136, y: -26, w: 96, h: 34 };  // 40 apart: a Z fits one line, not two 12 apart
+  const [there, back] = [orthogonalRoute(a, close, pair['a#0']), orthogonalRoute(close, a, pair['b#0'])];
+  equal([there.points, back.points], [[[96, 20.6], [119.6, 20.6], [119.6, -5.4], [136, -5.4]],
+    [[136, -12.6], [112.4, -12.6], [112.4, 13.4], [96, 13.4]]], 'both a Z, 7.2 apart instead of 12: as little closer as it takes');
+  const three = lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'b'), t('a#2', 'a', 'b')]);
+  const near = { x: 146, y: 10, w: 96, h: 34 };  // 50 apart: the middle one alone would bend, the outer ones not
+  equal(['a#0', 'a#1', 'a#2'].map((id) => orthogonalRoute(a, near, three[id]).points),
+    [[[96, 25], [113, 25], [113, 35], [146, 35]], [[96, 17], [121, 17], [121, 27], [146, 27]], [[96, 9], [129, 9], [129, 19], [146, 19]]],
+    'all three bend, 8 apart: each starts and ends on its box');
+  equal(orthogonalRoute(a, { x: 101, y: 60, w: 40, h: 34 }, three['a#1']).points, [[48, 34], [48, 77], [101, 77]],
+    'the middle one alone would go right first: the outer ones\' legs would be too short that way, so all go down first');
+  const far = orthogonalRoute(a, { x: 400, y: 200, w: 96, h: 34 }, three['a#0']);
+  equal([far.points, labelSpot(far, 40)], [[[28, 34], [28, 137], [428, 137], [428, 200]], [108, 131]],
+    'three 20 apart fit the boxes\' width, not their height: down first, the label above the level middle, a quarter along');
+  const beside = ['a#0', 'a#2'].map((id) => orthogonalRoute(a, { x: 400, y: 40, w: 96, h: 34 }, three[id]));
+  equal(beside.map((drawn) => [drawn.points[0][1], labelSpot(drawn, 60)]), [[33, [100, 27]], [1, [192, -5]]],
+    'sideways, 16 apart: each label above its own first leg, clear of the others');
+  const onSide = ([x, y], b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h
+    && (x === b.x || x === b.x + b.w || y === b.y || y === b.y + b.h);
+  const tall = { x: 0, y: 0, w: 96, h: 80 };
+  for (const [from, to] of [[tall, { x: 400, y: 100, w: 96, h: 34 }], [a, { x: 400, y: 100, w: 96, h: 80 }],  // Zs
+    [tall, { x: 130, y: 120, w: 30, h: 34 }], [{ x: 0, y: 0, w: 96, h: 30 }, { x: 150, y: 60, w: 96, h: 80 }]]) {  // Ls
+    for (const id of ['a#0', 'a#1', 'a#2']) {
+      const drawn = orthogonalRoute(from, to, three[id]);
+      assert(drawn && onSide(drawn.points[0], from) && onSide(drawn.points[drawn.points.length - 1], to),
+        `${JSON.stringify([from, to])} ${id}: a lane starts or ends beside its box: ${JSON.stringify(drawn?.points)}`);
+    }
+  }
+  const box = { x: 0, y: 0, w: 300, h: 200 };
+  equal([orthogonalRoute({ x: 40, y: 60, w: 96, h: 34 }, box).points, orthogonalRoute(box, { x: 40, y: 60, w: 96, h: 34 }).points],
+    [[[40, 77], [0, 77]], [[0, 77], [40, 77]]], 'to and from the composite\'s nearest border: left');
+  equal(orthogonalRoute({ x: 150, y: 150, w: 96, h: 34 }, box).points, [[198, 184], [198, 200]], 'nearest the bottom: down');
+  equal([orthogonalRoute({ x: 0, y: 60, w: 96, h: 34 }, box).points, orthogonalRoute({ x: 4, y: 60, w: 96, h: 34 }, box).points],
+    [[[48, 94], [48, 200]], [[52, 94], [52, 200]]], 'against the left border, or 4 from it: no line there, to the next nearest');
+  equal(orthogonalRoute({ x: 100, y: 34, w: 96, h: 34 }, box).points, [[100, 51], [0, 51]],
+    'nearest the top: not through the composite\'s name, to the next nearest');
+  equal(orthogonalRoute({ x: 14, y: 60, w: 96, h: 34 }, box).points, [[14, 77], [0, 77]], 'the padding ELK leaves (14) is room enough');
+  equal(orthogonalRoute({ x: 2, y: 2, w: 96, h: 36 }, { x: 0, y: 0, w: 100, h: 40 }), null, 'filling its composite: no room for a line');
+  const kid = { x: 40, y: 60, w: 96, h: 34 };
+  const inside = lanes([t('kid#0', 'kid', 'box'), t('box#0', 'box', 'kid')]);
+  equal([orthogonalRoute(kid, box, inside['kid#0']).points, orthogonalRoute(box, kid, inside['box#0']).points],
+    [[[40, 83], [0, 83]], [[0, 71], [40, 71]]], 'there and back: side by side, each left of its way (offset -6)');
+  const crowded = lanes([t('kid#0', 'kid', 'box'), t('kid#1', 'kid', 'box'), t('kid#2', 'kid', 'box')]);
+  equal(['kid#0', 'kid#2'].map((id) => orthogonalRoute(kid, box, crowded[id]).points[0][1]), [93, 61],
+    'three 20 apart would leave the state (34 high): 16 apart');
+});
+
 test('orthogonalRoute: transitions between the same two states on lanes neither cover nor cross each other', () => {
   const t = (id, source, target) => ({ id, source, target });
   const segments = (points) => points.slice(1).map((p, i) => [points[i], p]);
@@ -240,7 +292,7 @@ test('orthogonalRoute: transitions between the same two states on lanes neither 
       }));
       // two: each label clear of the other's line (a crowd's may cross its neighbours', as straight). ponytail: not an
       // L's -- where no Z fits, a label of 120 is longer than its leg, and one beside the inner L lies on the outer
-      if (group.length === 2 && !drawn.some((route) => route.span)) {
+      if (group.length === 2 && !drawn.some((route) => route.points.length === 3)) {
         drawn.forEach((p, i) => segments(drawn[1 - i].points).forEach((s) => assert(!touch(boxes[i], s),
           `${where}: label ${i} covers the other line at ${JSON.stringify(s)}`)));
       }

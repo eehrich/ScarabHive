@@ -273,10 +273,11 @@ export function clipToBox(box, tx, ty) {
 }
 
 /**
- * Transitions between the same two states, either way, side by side: {transition id: {offset, at, crowd}}. `offset`:
+ * Transitions between the same two states, either way, side by side: {transition id: {offset, at, crowd, spread}}. `offset`:
  * how far to the right of its own direction its straight line is drawn -- 0 for one alone, each 6 to its right for
  * one there and one back, their labels beside them. Three or more (`crowd`) lie wider apart, each label above its
- * line at its own place along the way (`at`, a fraction of it). Self-transitions and internal ones are no pair.
+ * line at its own place along the way (`at`, a fraction of it). `spread`: the widest offset of the group, so all of
+ * it are routed alike (orthogonalRoute). Self-transitions and internal ones are no pair.
  */
 export function lanes(transitions) {
   const between = new Map();
@@ -289,12 +290,13 @@ export function lanes(transitions) {
   const found = {};
   for (const group of between.values()) {
     const crowd = group.length > 2;
+    const spread = ((group.length - 1) / 2) * (crowd ? CROWD_GAP : LANE_GAP);  // the widest offset of them
     group.forEach((t, i) => {
       // across and along the way from the first name to the second; a transition the other way counts from its end
       const across = (i - (group.length - 1) / 2) * (crowd ? CROWD_GAP : LANE_GAP);
       const along = crowd ? (i + 1) / (group.length + 1) : 0.5;
       const forward = t.source < t.target;
-      found[t.id] = { offset: forward ? -across : across, at: forward ? along : 1 - along, crowd };
+      found[t.id] = { offset: forward ? -across : across, at: forward ? along : 1 - along, crowd, spread };
     });
   }
   return found;
@@ -324,13 +326,28 @@ export function edgeRoute(route, source, target, moved, lane = null) {
  * A right-angled route between two boxes, as a person draws one: out of the side that faces the other box, one bend
  * half way, in through the side that faces back (a Z; a straight line when both are level). Along the other axis when
  * the facing sides leave no room; with room on neither, an L: out of a side, in through the top or bottom (or the
- * other way round), its label on the level leg (`span`); with no room for its legs either, a straight line across
- * where the two face each other. null when the boxes overlap or all but meet corner to corner. Its `lane` (lanes)
- * moves it to the right of its way and bends lanes apart, so transitions between the same two states neither cover
- * nor cross each other; a lane's label goes beside the middle segment, on the side its lane bends to (`side`).
+ * other way round); with no room for its legs either, a straight line across where the two face each other. Between
+ * a composite and a state inside it: straight from the state to the composite's nearest border but the top, where
+ * its name is (or back). null when the boxes overlap or all but meet corner to corner. Its `lane` (lanes) moves it to
+ * the right of its way and bends lanes apart, so transitions between the same two states neither cover nor cross each
+ * other: every lane of a group takes the same way (the checks count the group's `spread`, in the gaps and across the
+ * boxes), squeezed closer where it leaves no room -- a right angle before room for their labels. A crowd's label sits
+ * on a level segment of its own (`span`: a Z's level leg or middle segment, an L's level leg) at its place along it
+ * (`at`); a pair's beside the middle, on the side its lane bends to (`side`).
  */
 export function orthogonalRoute(source, target, lane = null) {
+  const spread = lane ? lane.spread ?? Math.abs(lane.offset || 0) : 0;
+  // ponytail: fixed steps, not the exact fit -- each step is one more try of three short loops
+  for (const k of spread ? [1, 0.8, 0.6, 0.4, 0.2] : [1]) {
+    const drawn = rightAngle(source, target, lane && { ...lane, offset: (lane.offset || 0) * k, spread: spread * k });
+    if (drawn) return drawn;
+  }
+  return null;
+}
+
+function rightAngle(source, target, lane) {
   const offset = lane?.offset || 0;
+  const spread = lane?.spread || 0;
   const s = [source.x + source.w / 2, source.y + source.h / 2];
   const t = [target.x + target.w / 2, target.y + target.h / 2];
   const order = Math.abs(t[0] - s[0]) >= Math.abs(t[1] - s[1]) ? [0, 1] : [1, 0];  // sideways first, or up or down
@@ -347,10 +364,31 @@ export function orthogonalRoute(source, target, lane = null) {
     return { points: [place(u)(out, across), place(u)(into, across)], label: null,
       ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
   };
+  const within = (a, b) => a.w * a.h < b.w * b.h  // not itself: a self-transition keeps its loop
+    && a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h;
+  const inner = within(source, target) ? source : within(target, source) ? target : null;
+  if (inner) {  // a composite and a state inside it: straight between the state and the composite's nearest border
+    const outer = inner === source ? target : source;
+    const gaps = [inner.x - outer.x, outer.x + outer.w - inner.x - inner.w, inner.y - outer.y, outer.y + outer.h - inner.y - inner.h];
+    // not the top, where the composite's name is; a border it lies against leaves no line
+    const room = gaps.map((gap, i) => (i !== 2 && gap >= RUN / 2 ? gap : Infinity));
+    if (Math.min(...room) === Infinity) return null;
+    const side = room.indexOf(Math.min(...room));  // left, right, top, bottom
+    const u = side < 2 ? 0 : 1;
+    const [low, size] = axis(u);
+    const [cross, span] = axis(1 - u);
+    if (2 * spread >= inner[span]) return null;  // lanes wider than the state: closer
+    const border = side % 2 ? outer[low] + outer[size] : outer[low];
+    const face = side % 2 ? inner[low] + inner[size] : inner[low];
+    const [out, into] = inner === source ? [face, border] : [border, face];
+    const dir = Math.sign(into - out) || 1;
+    return level(u, dir, out, into, inner[cross] + inner[span] / 2 + (u === 0 ? dir : -dir) * offset);
+  }
   for (const u of order) {  // a Z: out through a left or right side (x), or top or bottom (y)
     const v = 1 - u;
     const [dir, out, into] = ends(u);
-    if ((into - out) * dir < 2 * (RUN + Math.abs(offset))) continue;
+    // room for the runs, and lanes that start and end on the boxes' sides
+    if ((into - out) * dir < 2 * (RUN + spread) || 2 * spread >= Math.min(source[axis(v)[1]], target[axis(v)[1]])) continue;
     const shift = (u === 0 ? dir : -dir) * offset;  // to the right of the way
     const [sv, tv] = [s[v] + shift, t[v] + shift];
     if (Math.abs(tv - sv) < 1) return level(u, dir, out, into, sv);
@@ -359,15 +397,17 @@ export function orthogonalRoute(source, target, lane = null) {
     const at = place(u);
     const outward = Math.sign(bend - (out + into) / 2);
     return { points: [at(out, sv), at(bend, sv), at(bend, tv), at(into, tv)], label: null,
-      ...(crowd || (outward ? { side: at(outward, 0) } : {})) };
+      ...(crowd ? { ...crowd, span: u === 0 ? [at(out, sv), at(bend, sv)] : [at(bend, sv), at(bend, tv)] }
+        : outward ? { side: at(outward, 0) } : {}) };
   }
   for (const u of order) {  // an L: the first leg along u, the second along v
     const v = 1 - u;
     const [du, out] = ends(u);
     const [dv, , into] = ends(v);
+    if ((t[u] - out) * du - spread < RUN || (into - s[v]) * dv - spread < RUN
+      || 2 * spread >= source[axis(v)[1]] || 2 * spread >= target[axis(u)[1]]) continue;
     const leg = s[v] + (u === 0 ? du : -du) * offset;  // each leg to the right of its way
     const corner = t[u] + (u === 0 ? -dv : dv) * offset;
-    if ((corner - out) * du < RUN || (into - leg) * dv < RUN) continue;
     const at = place(u);
     const points = [at(out, leg), at(corner, leg), at(corner, into)];
     return { points, label: null, span: u === 0 ? points.slice(0, 2) : points.slice(1),
@@ -377,8 +417,7 @@ export function orthogonalRoute(source, target, lane = null) {
     const [low, size] = axis(1 - u);
     const [dir, out, into] = ends(u);
     const [from, to] = [Math.max(source[low], target[low]), Math.min(source[low] + source[size], target[low] + target[size])];
-    const across = (from + to) / 2 + (u === 0 ? dir : -dir) * offset;
-    if ((into - out) * dir > 0 && across > from && across < to) return level(u, dir, out, into, across);
+    if ((into - out) * dir > 0 && (to - from) / 2 > spread) return level(u, dir, out, into, (from + to) / 2 + (u === 0 ? dir : -dir) * offset);
   }
   return null;
 }
