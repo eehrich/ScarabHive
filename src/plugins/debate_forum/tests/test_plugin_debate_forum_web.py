@@ -26,8 +26,8 @@ def test_the_list_counts_every_match_of_status_group_and_search(client, monkeypa
 
 def test_messages_come_rendered_and_raw_and_as_text_without_a_converter(client, monkeypatch):
     messages = client.get(f"{API}/channels/1/messages").json()["messages"]
-    assert messages[0]["content"] == "Synopsis A drags in the **middle**."
-    assert messages[0]["content_html"] == "<p>Synopsis A drags in the <strong>middle</strong>.</p>"
+    assert messages[0]["content"] == "Schema A nests too **deep**."
+    assert messages[0]["content_html"] == "<p>Schema A nests too <strong>deep</strong>.</p>"
     monkeypatch.setattr(web_endpoints, "markdown_to_html", lambda text: None)
     assert client.get(f"{API}/channels/3/messages").json()["messages"][0]["content_html"].startswith("&lt;script&gt;")
 
@@ -47,6 +47,12 @@ def test_a_post_goes_into_the_latest_round_and_is_refused_when_it_cannot(client)
     assert client.post(f"{API}/channels/2/messages", json={"agent_name": "A", "content": "x"}).status_code == 409
     assert client.post(f"{API}/channels/1/messages", json={"agent_name": " ", "content": "x"}).status_code == 422
     assert client.post(f"{API}/channels/99/messages", json={"agent_name": "A", "content": "x"}).status_code == 404
+
+
+def test_a_post_into_an_empty_channel_opens_round_one(client):
+    """The tool's first round is 1; the viewer's first post must not open a round 0 in front of the debate."""
+    channel = client.post(f"{API}/channels", json={"name": "fresh"}).json()["channel_id"]
+    assert client.post(f"{API}/channels/{channel}/messages", json={"agent_name": "A", "content": "x"}).json()["round"] == 1
 
 
 def test_channel_actions_refuse_what_they_cannot_do(client):

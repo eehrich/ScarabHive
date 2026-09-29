@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from plugins.debate_forum.database import DebateForumDB
-from plugins.debate_forum.hooks import DebateForumHooks, INJECTION_MARKER, INJECTION_MARKER_POSTS
+from plugins.debate_forum.hooks import DEBATE_COUNTERS, DebateForumHooks, INJECTION_MARKER, INJECTION_MARKER_POSTS
+from plugins.sub_agent_manager.manager import SubAgentManager
 from agent_system.llm.models import ChatMessage
 from agent_system.hooks import HookContext
 
@@ -223,6 +224,23 @@ class TestInjectDebateContext:
             assert f"Argument {i}" in content
 
     @pytest.mark.asyncio
+    async def test_inside_a_running_turn_new_posts_go_after_what_was_sent(self, hooks: DebateForumHooks,
+                                                                          db: DebateForumDB):
+        """Behind the task, the turn's exchange was sent already and sits in the provider's cache: posts
+        inserted in front of the task would move it and lose that cache on every post."""
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        db.post_message(cid, "Sven", "critic", 1, "My argument")
+        msgs = [_sys("System prompt"), _user("The task"), _assistant("Looking it up"),
+                ChatMessage(role="tool", content="the result", tool_call_id="c1")]
+        sent = [m.content for m in msgs]
+
+        result = await hooks.inject_debate_context(_make_context(msgs, context_vars={"debate_channel_id": cid}))
+
+        messages = result.context.messages
+        assert [m.content for m in messages[:4]] == sent
+        assert INJECTION_MARKER_POSTS in [m.injected_by for m in messages[4:]]
+
+    @pytest.mark.asyncio
     async def test_user_injection_before_last_user_message(self, hooks: DebateForumHooks, db: DebateForumDB):
         """User injection should appear before the last user message."""
         ch = db.create_channel(name="test", topic="Test")
@@ -307,8 +325,8 @@ class TestInjectDebateContext:
         assert "Pinned summary" not in user_injected[0].content
 
     @pytest.mark.asyncio
-    async def test_tracks_last_injected_id(self, hooks: DebateForumHooks, db: DebateForumDB):
-        """Hook should update debate_last_injected_msg_id in session vars."""
+    async def test_notes_what_it_handed_over(self, hooks: DebateForumHooks, db: DebateForumDB):
+        """One session var notes the owner and, per channel, each post given with its length."""
         ch = db.create_channel(name="test", topic="Track test")
         cid = ch["channel_id"]
         db.post_message(cid, "Sven", "critic", 1, "First")
@@ -323,8 +341,9 @@ class TestInjectDebateContext:
         tracker = ctx.agent._session_tracker
         set_calls = tracker.set_session_template_vars.call_args_list
         assert len(set_calls) == 1
-        stored_id = set_calls[0][0][1]["debate_last_injected_msg_id"]
-        assert stored_id == r2["message_id"]
+        note = set_calls[0][0][1][DEBATE_COUNTERS]
+        assert note == {"owner": "test-session",
+                        "channels": {str(cid): {str(r2["message_id"] - 1): 5, str(r2["message_id"]): 6}}}
 
     @pytest.mark.asyncio
     async def test_a_newly_pinned_message_is_appended_behind_the_old_block(
@@ -481,6 +500,54 @@ class TestInjectDebateContext:
         assert "New content" in latest
         assert "Old content" not in latest
 
+    @pytest.mark.asyncio
+    async def test_a_counter_from_another_channel_does_not_skip_this_ones_posts(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """Message ids are global: two debates held in parallel interleave them. A session moved from one channel
+        to the other must get the second channel's earlier posts, not only those above the first one's counter."""
+        first = db.create_channel(name="first", topic="First")["channel_id"]
+        second = db.create_channel(name="second", topic="Second")["channel_id"]
+        db.post_message(second, "Ada", "reviewer", 1, "Earlier post in the second debate")
+        db.post_message(first, "Bo", "coder", 1, "Post in the first debate")
+
+        context_vars = {"debate_channel_id": first}
+        ctx = _make_context([_sys("system"), _user("go")], context_vars=context_vars)
+        await hooks.inject_debate_context(ctx)
+
+        context_vars = ctx.agent._session_tracker.get_session_template_vars("test-session")
+        context_vars["debate_channel_id"] = second
+        ctx.messages.append(_user("next"))
+        await hooks.inject_debate_context(ctx)
+
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 2
+        assert "Earlier post in the second debate" in posts[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_post_unpinned_later_reaches_a_session_with_an_inherited_counter(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """An inherited counter is not the session's: a post below it (here one pinned at first, then unpinned)
+        must still reach the session."""
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        post = db.post_message(cid, "Ada", "reviewer", 1, "Pinned first, unpinned later")["message_id"]
+        db.pin_message(post)
+
+        ctx = _make_context(
+            [_sys("system"), _user("go")], session_id="child",
+            context_vars={"debate_channel_id": cid, "debate_last_injected_msg_id": post,
+                          "debate_counter_owner": "parent"},
+        )
+        await hooks.inject_debate_context(ctx)
+        assert not [m for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+
+        db.unpin_message(post)
+        ctx.messages.append(_user("next"))
+        await hooks.inject_debate_context(ctx)
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 1 and "Pinned first, unpinned later" in posts[0]
+
 
 class TestDebateForumHooksSchema:
     """Tests for hook schema loading and configuration."""
@@ -546,3 +613,115 @@ class TestWhereNewPostsGo:
         ]
 
         assert DebateForumHooks._find_last_user_position(messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_moving_back_to_a_channel_does_not_replay_it(self, hooks: DebateForumHooks, db: DebateForumDB):
+        first = db.create_channel(name="first", topic="First")["channel_id"]
+        second = db.create_channel(name="second", topic="Second")["channel_id"]
+        db.post_message(first, "Bo", "coder", 1, "Post in the first debate")
+        db.post_message(second, "Ada", "reviewer", 1, "Post in the second debate")
+        ctx = _make_context([_sys("system"), _user("go")], context_vars={"debate_channel_id": first})
+        session_vars = ctx.agent._session_tracker.get_session_template_vars("test-session")
+        for channel in (first, second, first):
+            session_vars["debate_channel_id"] = channel
+            ctx.messages.append(_user("next"))
+            await hooks.inject_debate_context(ctx)
+
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 2, posts
+
+    @pytest.mark.asyncio
+    async def test_an_inherited_note_replays_the_channel(self, hooks: DebateForumHooks, db: DebateForumDB):
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        post = db.post_message(cid, "Ada", "reviewer", 1, "Posted before the spawn")["message_id"]
+        ctx = _make_context(
+            [_sys("system"), _user("go")], session_id="child",
+            context_vars={"debate_channel_id": cid,
+                          DEBATE_COUNTERS: {"owner": "parent", "channels": {str(cid): {str(post): 23}}}},
+        )
+        await hooks.inject_debate_context(ctx)
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 1 and "Posted before the spawn" in posts[0]
+
+    @pytest.mark.asyncio
+    async def test_a_continued_sub_agent_keeps_its_note_through_the_parent_merge(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """A continued sub-agent gets the parent's live vars merged in for every key it has not changed itself
+        (SubAgentManager.merge_parent_context_vars). The note must stay the child's as a whole, or posts are
+        skipped or replayed."""
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        db.post_message(cid, "Ada", "reviewer", 1, "Opening post")
+        inherited = {"debate_channel_id": cid}
+        ctx = _make_context([_sys("system"), _user("go")], session_id="child", context_vars=dict(inherited))
+        await hooks.inject_debate_context(ctx)  # the child's first step
+
+        later = db.post_message(cid, "Bo", "coder", 1, "Posted while the child waited")["message_id"]
+        parent_live = {"debate_channel_id": cid,
+                       DEBATE_COUNTERS: {"owner": "parent", "channels": {str(cid): {str(later): 29}}}}
+        child_vars = ctx.agent._session_tracker.get_session_template_vars("child")
+        merged, _ = SubAgentManager.merge_parent_context_vars(
+            {"context_vars": dict(child_vars), "context_vars_inherited": inherited}, parent_live)
+        child_vars.clear()
+        child_vars.update(merged)
+
+        ctx.messages.append(_user("continue"))
+        await hooks.inject_debate_context(ctx)
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 2
+        assert "Posted while the child waited" in posts[-1] and "Opening post" not in posts[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_chunk_appended_later_is_handed_over_as_a_continuation(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        post = db.post_message(cid, "Ada", "reviewer", 1, "First chunk of a long review. ")["message_id"]
+        ctx = _make_context([_sys("system"), _user("go")], context_vars={"debate_channel_id": cid})
+        await hooks.inject_debate_context(ctx)
+
+        db.append_message(post, "Second chunk.")
+        ctx.messages.append(_user("next"))
+        await hooks.inject_debate_context(ctx)
+        ctx.messages.append(_user("again"))
+        await hooks.inject_debate_context(ctx)
+
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 2, "the continuation was handed over twice, or not at all"
+        assert f'msg_id="{post}" continuation_of="{post}"' in posts[1]
+        assert "Second chunk." in posts[1] and "First chunk" not in posts[1]
+
+    @pytest.mark.asyncio
+    async def test_a_note_in_the_old_keys_is_read_once_without_a_replay(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        """Sessions running when the note became one var carry the old counter; they must not get the whole
+        channel again."""
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        old = db.post_message(cid, "Ada", "reviewer", 1, "Given before the change")["message_id"]
+        db.post_message(cid, "Bo", "coder", 1, "Posted after the change")
+        ctx = _make_context(
+            [_sys("system"), _user("go")],
+            context_vars={"debate_channel_id": cid, "debate_last_injected_msg_id": old,
+                          "debate_counter_owner": "test-session"},
+        )
+        await hooks.inject_debate_context(ctx)
+        posts = [m.content for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]
+        assert len(posts) == 1
+        assert "Posted after the change" in posts[0] and "Given before the change" not in posts[0]
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_post_that_grows_comes_only_in_the_channel_block(
+        self, hooks: DebateForumHooks, db: DebateForumDB
+    ):
+        cid = db.create_channel(name="test", topic="Test")["channel_id"]
+        post = db.post_message(cid, "Ada", "reviewer", 1, "The task, first part. ")["message_id"]
+        ctx = _make_context([_sys("system"), _user("go")], context_vars={"debate_channel_id": cid})
+        await hooks.inject_debate_context(ctx)
+        db.pin_message(post)
+        db.append_message(post, "Second part.")
+        ctx.messages.append(_user("next"))
+        await hooks.inject_debate_context(ctx)
+
+        assert len([m for m in ctx.messages if m.injected_by == INJECTION_MARKER_POSTS]) == 1
+        assert "Second part." in [m for m in ctx.messages if m.injected_by == INJECTION_MARKER][-1].content

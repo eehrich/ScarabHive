@@ -70,19 +70,19 @@
     await until('the groups', () => all('.df-group').length === 3, 3000);  // not the first tick's
     await autoOff();
     const counted = text('#stats') === '2 active 1 concluded 1 archived 6 messages';
-    const order = texts('.df-group > summary').join('|') === 'Ungrouped1|<b>Markup group</b>1|Story design2';
+    const order = texts('.df-group > summary').join('|') === 'Ungrouped1|<b>Markup group</b>1|Schema review2';
     const closed = all('.df-group').every((group) => !group.open);
-    const options = texts('#group option').sort().join('|') === '<b>Markup group</b> (1)|Every group|Story design (2)';
+    const options = texts('#group option').sort().join('|') === '<b>Markup group</b> (1)|Every group|Schema review (2)';
     return counted && order && closed && options && text('#placeholder') === 'No channel chosen Choose a channel to read its debate.'
       && $('#open').hidden && (await asked()).messages === 0;
   });
 
   await check('a group opens and closes, stays so across a tick and a reload, and lists its channels oldest first', async () => {
-    groupNamed('Story design').querySelector('summary').click();
+    groupNamed('Schema review').querySelector('summary').click();
     groupNamed('Ungrouped').querySelector('summary').click();
     tick();
     await sleep(300);
-    const listed = texts('.df-group[open] .df-channel .pk-truncate').join() === 'old-debate,synopsis,titles'
+    const listed = texts('.df-group[open] .df-channel .pk-truncate').join() === 'old-debate,schema,titles'
       && channel(1).querySelector('.pk-dot--ok') && channel(2).querySelector('.pk-dot--info') && !channel(4).querySelector('[class*="pk-dot--"]')
       && channel(1).querySelector('.pk-tab-count').textContent === '4' && channel(2).title === 'Which title?';
     groupNamed('Ungrouped').querySelector('summary').click();
@@ -90,7 +90,7 @@
     await go('/plugins/debate_forum/');
     await until('the groups again', () => all('.df-group').length === 3);
     await autoOff();
-    const kept = groupNamed('Story design').open && !groupNamed('Ungrouped').open && !groupNamed('<b>Markup group</b>').open;
+    const kept = groupNamed('Schema review').open && !groupNamed('Ungrouped').open && !groupNamed('<b>Markup group</b>').open;
     return Boolean(listed) && kept;
   });
 
@@ -115,14 +115,14 @@
 
   await check('a channel shows its thread: a round opens only where a later one begins, participants, pins, Markdown, code and the line to post', async () => {
     await open(1);
-    const head = text('#name') === 'synopsis #1' && text('#topic') === 'Which synopsis is best?' && text('#state') === 'Active'
+    const head = text('#name') === 'schema #1' && text('#topic') === 'Which schema is best?' && text('#state') === 'Active'
       && $('#state .pk-badge--ok') && $('#reopen').hidden && !$('#archive').hidden && !$('#composer').hidden;
     const people = texts('#participants .pk-badge').join('|') === 'Mira2|Sven1|Moderator1';
     const rounds = texts('.df-round').join() === 'Round 1,Round 2';
     const order = all('.df-post').map((one) => one.dataset.message).join() === '1,2,3,4';
     const pins = all('.df-pin').map((pin) => pin.getAttribute('aria-pressed')).join() === 'false,true,false,false'
       && post(2).classList.contains('df-pinned') && !post(1).classList.contains('df-pinned');
-    const markdown = post(1).querySelector('.df-md strong')?.textContent === 'middle';
+    const markdown = post(1).querySelector('.df-md strong')?.textContent === 'deep';
     const slots = post(1).querySelector('.df-avatar').className === post(3).querySelector('.df-avatar').className
       && post(1).querySelector('.df-avatar').className !== post(2).querySelector('.df-avatar').className
       && post(1).querySelector('.df-avatar').textContent === 'M';
@@ -282,11 +282,11 @@
     $('#delete').click();
     asking = await until('the question again', question);
     channel(1).click();  // another channel chosen while asked
-    await until('synopsis shown', () => text('#name') === 'synopsis #1');
+    await until('schema shown', () => text('#name') === 'schema #1');
     asking.querySelector('[data-index="1"]').click();
     await until('titles gone', () => !channel(2));
     await sleep(300);
-    const other = (await stored(2)) === null && text('#name') === 'synopsis #1' && !$('#open').hidden && !toasts('error').length;
+    const other = (await stored(2)) === null && text('#name') === 'schema #1' && !$('#open').hidden && !toasts('error').length;
     const { channel_id: doomed } = await (await post_('/__stub/create?name=doomed')).json();
     now();
     await open(doomed);
@@ -369,7 +369,7 @@
     $('#status').dispatchEvent(new Event('change'));
     await until('all again', () => all('.df-group').length >= 2);
     const lists = (await asked()).channels;
-    for (const typed of ['s', 'sy', 'syn']) {
+    for (const typed of ['s', 'sc', 'sch']) {
       $('#search').value = typed;
       $('#search').dispatchEvent(new Event('input'));
       await sleep(50);
@@ -395,7 +395,7 @@
 
   await check('the focus stays on a channel and a group when the list is drawn anew', async () => {
     expandAll();
-    await until('synopsis listed', () => channel(1));
+    await until('schema listed', () => channel(1));
     channel(1).focus();
     tick();
     await sleep(600);
@@ -404,10 +404,10 @@
     tick();
     await sleep(600);
     const optionsKept = option.isConnected;
-    groupNamed('Story design').querySelector('summary').focus();
+    groupNamed('Schema review').querySelector('summary').focus();
     tick();
     await sleep(600);
-    return onChannel && optionsKept && doc().activeElement === groupNamed('Story design').querySelector('summary');
+    return onChannel && optionsKept && doc().activeElement === groupNamed('Schema review').querySelector('summary');
   });
 
   await check('copying puts the debate as text on the clipboard, and says when it cannot', async () => {
@@ -417,7 +417,7 @@
     Object.defineProperty(frame.contentWindow.navigator.clipboard, 'writeText', { configurable: true, value: async (value) => { copied = value; } });
     $('#copy').click();
     await toasted('ok', 'The debate is copied');
-    const shape = copied.startsWith('# synopsis\nTopic: Which synopsis is best?\n\n--- Round 1 ---\n\n[CRITIC "Mira"]\nSynopsis A drags in the **middle**.\n\n')
+    const shape = copied.startsWith('# schema\nTopic: Which schema is best?\n\n--- Round 1 ---\n\n[CRITIC "Mira"]\nSchema A nests too **deep**.\n\n')
       && copied.includes('--- Round 2 ---\n\n[CRITIC "Mira"]\nScores:') && copied.includes('\n--- Round 1 ---\n\n[MODERATOR "Moderator"]');
     Object.defineProperty(frame.contentWindow.navigator.clipboard, 'writeText', { configurable: true, value: async () => { throw new Error('denied'); } });
     $('#copy').click();
@@ -454,7 +454,7 @@
       uncookie('df_channel');
       uncookie('df_channel_fails');
       channel(1).click();
-      await until('the channel again', () => !$('#open').hidden && text('#name') === 'synopsis #1');
+      await until('the channel again', () => !$('#open').hidden && text('#name') === 'schema #1');
       return shown && afterCreate && afterSelect;
     } finally {
       uncookie('df_list');
@@ -517,9 +517,9 @@
       tick();  // a tick for the archived channel: its detail only, after 1.5 s
       await sleep(300);
       channel(1).click();
-      await until('synopsis', () => text('#name') === 'synopsis #1' && !$('#open').hidden);
+      await until('schema', () => text('#name') === 'schema #1' && !$('#open').hidden);
       await sleep(1800);
-      const tickDropped = text('#name') === 'synopsis #1' && !$('#open').hidden;
+      const tickDropped = text('#name') === 'schema #1' && !$('#open').hidden;
       return failureDropped && listDropped && threadDropped && errorDropped && messagesDropped && tickDropped;
     } finally {
       uncookie('df_list');

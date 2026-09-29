@@ -103,7 +103,8 @@ class DebateForumWebFactory:
         name, content = post.agent_name.strip(), post.content.strip()
         if not name or not content:
             raise HTTPException(status_code=422, detail="A post needs a name and a text")
-        latest = max((message["round"] for message in self.db.get_messages(channel_id)), default=0)
+        # an empty channel has not begun: its first round is 1, as the tool's
+        latest = max((message["round"] for message in self.db.get_messages(channel_id)), default=1)
         result = self.db.post_message(channel_id=channel_id, agent_name=name, agent_role=post.agent_role.strip() or "user",
                                       round_num=latest, content=content)
         return {"message_id": result["message_id"], "channel_id": channel_id, "round": latest}

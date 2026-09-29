@@ -303,6 +303,40 @@ class TestDebateForumServer:
         assert "error" in result
 
     @pytest.mark.asyncio
+    async def test_an_explicit_null_takes_the_default(self, server: DebateForumServer):
+        """The framework fills no schema defaults, and models send null for a parameter they leave open."""
+        cid = (await server.create_channel({"name": "a", "topic": "t"}))["channel_id"]
+        assert (await server.create_group({"name": "reviews", "description": None}))["status"] != "error"
+        posted = await server.post_message({"channel_id": cid, "agent_name": "Ada", "round": None,
+                                            "append": None, "agent_role": None, "content": "x" * 60})
+        assert server.db.get_message(posted["message_id"])["round"] == 1
+        assert (await server.get_thread({"channel_id": cid, "max_messages": None, "format": None}))["message_count"] == 1
+        assert (await server.list_channels({"limit": None}))["count"] == 1
+        assert (await server.list_groups({"limit": None}))["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_false_as_text_is_false(self, server: DebateForumServer):
+        cid = (await server.create_channel({"name": "a", "topic": "t"}))["channel_id"]
+        mid = (await server.post_message({"channel_id": cid, "agent_name": "Ada", "content": "x" * 60}))["message_id"]
+        assert (await server.pin_message({"message_id": mid, "pinned": "false"}))["status"] == "unpinned"
+        assert not server.db.get_message(mid)["pinned"]
+        assert (await server.pin_message({"message_id": mid, "pinned": None}))["status"] == "pinned"
+        await server.pin_message({"message_id": mid, "pinned": False})
+        assert (await server.pin_message({"message_id": mid, "pinned": ""}))["status"] == "pinned"  # empty: the default
+        posted = await server.post_message({"channel_id": cid, "agent_name": "Ada", "append": "false",
+                                            "message_id": mid, "content": "y" * 60})
+        assert posted["status"] == "posted" and posted["message_id"] != mid
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_group_is_refused_with_a_message(self, server: DebateForumServer):
+        """The foreign key would raise a bare IntegrityError; the model needs to know which id is wrong."""
+        result = await server.create_channel({"name": "a", "topic": "t", "group_id": 99})
+        assert result == {"error": "Group 99 not found (see list_groups)"}
+        assert server.db.list_channels() == []
+        group = server.db.create_group("reviews")["group_id"]
+        assert (await server.create_channel({"name": "a", "topic": "t", "group_id": group}))["group_id"] == group
+
+    @pytest.mark.asyncio
     async def test_post_message_tool(self, server: DebateForumServer, status_mock: AsyncMock):
         ch = await server.create_channel({"name": "ch", "topic": "t"})
         result = await server.post_message({

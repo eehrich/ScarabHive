@@ -62,12 +62,12 @@ def server(db):
     return _server(db, CONFIG)
 
 
-async def _step(hooks, session_id, request_id="req-1"):
+async def _step(hooks, session_id, request_id="req-1", tools_schema=None):
     """One LLM call of a session; returns what its request carries."""
     messages = [ChatMessage(role="user", content="the task")]
     await hooks.on_pre_llm_call(HookContext(
         hook_type="pre_llm_call", request_id=request_id, session_id=session_id,
-        agent=MagicMock(), agent_name="agent_b", messages=messages))
+        agent=MagicMock(), agent_name="agent_b", messages=messages, tools_schema=tools_schema))
     return messages
 
 
@@ -134,6 +134,18 @@ class TestDirectMessages:
         await _send(server, "sb")
 
         assert "dm_send_message" in (await _step(hooks, "sb"))[-1].content
+
+    async def test_an_agent_without_the_tool_gets_the_message_without_the_hint(self, db, server, presence):
+        hooks = DebateForumHooks(PLUGIN_DIR, db, tool_prefix="dm")
+        presence.hold("sb", USER, "agent_b")
+        await _send(server, "sb")
+        other = [{"type": "function", "function": {"name": "todo"}}]
+
+        delivered = (await _step(hooks, "sb", tools_schema=other))[-1].content
+        assert "how far is chapter 3?" in delivered and "send_message" not in delivered
+
+        own = other + [{"type": "function", "function": {"name": "dm_send_message"}}]
+        assert "dm_send_message" in (await _step(hooks, "sb", request_id="req-2", tools_schema=own))[-1].content
 
     async def test_a_call_from_no_session_says_so(self, server):
         result = await server.send_message({"_user_id": USER, "to": "sb", "message": "hi"})

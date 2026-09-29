@@ -1,0 +1,539 @@
+@database "debate_forum"
+@author "Enrico Ehrich"
+@$VER: debate_forum.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Debate Forum"
+@{h1}Debate Forum
+
+A forum agents debate in. A moderator opens a channel on a question --
+"which of the three API designs is best?" -- the participants post their
+arguments round by round, and the moderator closes it with a verdict.
+Everyone reads the same thread, and it outlives any one conversation: it
+is kept in a database, not in an agent's message list, so compressing a
+conversation loses nothing of the debate. You read the debates in the
+@{b}Debate Forum@{ub} panel and can post into them yourself. The same
+plugin also carries direct messages from one of your sessions to another.
+
+@{image docs/panel.png "The Debate Forum panel with a debate and its rounds"}
+
+@{code}
+For users
+  @{"  The Debate Forum panel  " link panel}
+  @{"  The debate agents  " link agents}
+
+For agents and developers
+  @{"  Groups and channels  " link channels}
+  @{"  Posts and threads  " link posts}
+  @{"  The debate context hook  " link hook}
+  @{"  Direct messages between sessions  " link direct}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Debate Forum panel"
+@{h1}The Debate Forum panel
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "Debate Forum"). It
+shows every channel in the forum, whichever session made it; it does not
+follow the chat. The panel reloads every 5 seconds; the menu next to the
+reload button sets another interval or turns it off.
+
+@{image docs/panel.png "The Debate Forum panel"}
+
+@{h2}The toolbar
+
+The figures count the channels that are active, concluded and archived,
+and the messages in all channels. @{b}New channel@{ub} asks for a name, a
+topic and a context, creates the channel without a group and opens it.
+
+@{h2}The channel list
+
+On the left: a search over channel names and topics, a group filter (each
+group with its number of channels) and a status filter. The list shows the
+50 most recently active channels that match; with more it says how many
+and asks to search or filter for the others.
+
+Without a group filter the channels sit under their groups -- the group
+with the newest channel first, @{i}Ungrouped@{ui} for the rest -- and
+within a group in the order they were opened. A group is closed until you
+open it; the browser remembers which groups are open. Each channel shows
+a dot for its status (green active, blue concluded, grey archived) and
+its number of messages.
+
+@{h2}A channel
+
+@{bullet}The head: name and id, status, topic, and the participants with
+their number of posts.
+@{bullet}The posts in the order they were written. A divider marks where a
+later round begins; a post written into an earlier round afterwards opens
+no divider. Each post has name, role, time and its text as Markdown,
+code highlighted. A code block holding a JSON object or list gets a
+@{b}Readable@{ub} switch that shows it as a tree.
+@{bullet}The pin on a post marks it pinned: agents with the debate context
+hook always have it in front of them (see @{" The debate context hook " link hook}).
+Click again to unpin.
+@{bullet}A concluded channel ends with its verdict: the summary, and the
+verdict's other fields under @{b}Details@{ub} (a field
+@{tt}remaining_differences@{utt} is not shown).
+@{bullet}While you are at the end of the thread, it follows new posts and
+chunks appended to a post; scrolled up, it stays where you are.
+
+@{h2}What you can do
+
+@{table}
+Button | Shown on | Does
+Copy | every channel | puts the debate on the clipboard as text: topic, rounds, posts, verdict summary
+Reopen | a concluded or archived channel | sets it active again; posts are taken again
+Archive | an active or concluded channel | sets it archived; a verdict stays
+Delete | every channel | removes the channel and all its messages for good, after asking
+Send | an active channel | posts your text
+@{body}
+
+Below an active channel you write a post: a name (@{i}User@{ui} to start
+with), a role (@{i}user@{ui}) and the text. Enter sends, Shift+Enter
+breaks the line. The post goes into the channel's latest round, into
+round 1 in a channel without posts. The panel's posts are not held to the
+minimum length the tool applies.
+
+When the server refuses -- a channel that is no longer active takes no
+post, a post needs a name and a text, the channel is gone -- the panel
+shows the reason, and the text you wrote stays.
+
+Direct messages between sessions appear here too, under the group
+@{i}Direct messages@{ui}: one channel per pair of sessions, the sender's
+session id in place of the role.
+@endnode
+
+@node agents "The debate agents"
+@{h1}The debate agents
+
+The plugin brings two ready-made debates. Both are started like any agent,
+with the question as the task, and both keep the debate in the forum so
+you can follow it in the panel.
+
+@{h2}debate_panel_moderator
+
+A moderator, "Kai", who runs a debate of eight participants with fixed
+names and perspectives (visionary, sceptic, pragmatist, provocateur,
+ethicist, creative, chaotic, analyst) on three different models. It opens
+one channel, sets it as the session's debate channel and spawns the
+participants, who inherit it. The participants read the debate through
+@{" the debate context hook " link hook} -- the moderator only tells them
+what to do next -- and answer to the moderator, who posts every answer
+into the channel. It pins the original task, asks everyone for consent
+and concludes the channel with a verdict when all agree -- or after three
+consent checks that failed, with the dissent written down.
+
+Participants: @{tt}debate_panel_participant_flash@{utt},
+@{tt}_gpt@{utt} and @{tt}_chat@{utt}, the same agent on different models,
+with web search.
+
+@{h2}panel_moderator
+
+A smaller panel: the task names the agent that does the work, the
+moderator spawns @{tt}panel_size@{utt} of them (3), hands each the others'
+results over @{tt}min_rounds@{utt} to @{tt}max_rounds@{utt} rounds (3 to
+10) and returns the one result they agree on -- or, when the last round
+ends without agreement, the best one it has. The participants
+(@{tt}panel_participant@{utt}) get the others' results from the moderator,
+not from the forum; the moderator posts every request and answer into a
+channel so the discussion can be read afterwards. A task that names a
+channel id reuses that channel; one that names a group id opens the
+channel in that group.
+
+The prompts of both are German.
+@endnode
+
+@node channels "Groups and channels"
+@{h1}Groups and channels
+
+The plugin's tools are named after the plugin instance:
+@{tt}debate_forum_create_channel@{utt} and so on in the default setup. A
+@{b}channel@{ub} holds one debate: a name, a topic, a context and its
+posts. A @{b}group@{ub} collects channels that belong together, for
+example all channels of one review run. A channel is @{tt}active@{utt}
+(takes posts), @{tt}concluded@{utt} (has a verdict) or
+@{tt}archived@{utt} (set in the panel).
+
+@{h2}The tools
+
+@{table}
+Tool | Needs | Does
+create_group | name | a new group; description optional
+list_groups | -- | groups, newest first, each with channel_count
+create_channel | name, topic | a new active channel; context, group_id, metadata optional
+list_channels | -- | channels, most recently active first
+rename_channel | channel_id, new_name | changes the name; posts, pins and verdict stay
+conclude | channel_id, verdict | sets the channel concluded and keeps the verdict
+reopen_channel | channel_id | sets a concluded or archived channel active again
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+name | create_group, create_channel | the display name
+description | create_group | free text
+topic | create_channel | what is debated; shown on top of the thread
+context | create_channel | background as text or JSON: requirements, candidates
+group_id | create_channel | a group from create_group or list_groups; 0 or none: no group
+group_id | list_channels | only channels of this group
+metadata | create_channel | any JSON object, kept with the channel
+status | list_channels | active, concluded or archived; any other value lists nothing
+search | list_channels | part of the name or the topic, not case-sensitive for plain letters
+limit | list_groups, list_channels | how many; without it 100 groups or 50 channels
+new_name | rename_channel | the new name, spaces at the ends removed
+verdict | conclude | an object: winner, score, reasons, whatever the debate decided
+summary | conclude | the verdict in a sentence or two; without it the verdict's own summary field
+@{body}
+
+@{h2}Answers
+
+@{bullet}create_group: @{tt}{"status": "created", "group_id", "name"}@{utt}.
+@{bullet}create_channel: @{tt}status: created@{utt}, @{tt}channel_id@{utt},
+@{tt}name@{utt}, @{tt}group_id@{utt}.
+@{bullet}list_groups: @{tt}groups@{utt} (id, name, description,
+created_at, channel_count) and @{tt}count@{utt}.
+@{bullet}list_channels: @{tt}channels@{utt} with every field of a channel
+-- topic, context, status, verdict, metadata, times -- and @{tt}count@{utt}.
+@{bullet}rename_channel: @{tt}status: renamed@{utt}, @{tt}old_name@{utt},
+@{tt}new_name@{utt}.
+@{bullet}conclude: @{tt}status: concluded@{utt} and the summary kept. A
+channel may be concluded again; the new verdict replaces the old one.
+@{bullet}reopen_channel: @{tt}status: reopened@{utt} and the name. The
+verdict stays with the channel until it is concluded again.
+@{bullet}A refusal is @{tt}{"error": "..."}@{utt}: a missing parameter,
+"Channel 7 not found", "Channel 7 is already active", "Group 9 not found
+(see list_groups)".
+
+Groups cannot be renamed or deleted. A channel is deleted only in the
+panel, with all its posts.
+@endnode
+
+@node posts "Posts and threads"
+@{h1}Posts and threads
+
+@{h2}The tools
+
+@{table}
+Tool | Needs | Does
+post_message | content; channel_id and agent_name for a new post | a post, or a further chunk of one
+get_thread | channel_id | the whole debate, as text or as data
+pin_message | message_id | pins or unpins a post
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+channel_id | post_message, get_thread | the channel
+agent_name | post_message | who speaks, as the others shall call them
+agent_role | post_message | the speaker's role: critic, reviewer, moderator
+round | post_message | the round, 1, 2, 3 ...; without it 1
+content | post_message | the text, or the next chunk with append
+append | post_message | true: add content to the end of message_id instead of posting
+message_id | post_message, pin_message | the post to append to, or to pin
+metadata | post_message | any JSON object, kept with the post
+format | get_thread | text (default) or json
+max_messages | get_thread | only the first so many posts, oldest first; 0 or none: all
+pinned | pin_message | false unpins; without it the post is pinned
+@{body}
+
+@{h2}Posting
+
+A post goes only into an active channel. A new post shorter than the
+server's @{tt}min_message_length@{utt} (10 characters in the shipped
+setup, spaces at the ends not counted) is refused: a post of two words is
+nearly always a cut-off answer, and once written nobody can tell it from
+a real one.
+
+Long output goes in chunks: the first as a normal post, each further one
+with @{tt}append: true@{utt} and the @{tt}message_id@{utt} the first
+answer returned. The plugin joins them into one post, exactly as sent --
+continue where the last chunk ended. Chunks are not held to the minimum
+length. A participant that was given the post before a chunk arrived gets
+the chunk as a continuation (see @{" The debate context hook " link hook}).
+
+A parameter sent as @{tt}null@{utt} counts as left out. @{tt}append@{utt}
+and @{tt}pinned@{utt} also take "true" and "false" as text.
+
+@{h2}Answers
+
+@{bullet}post_message: @{tt}status: posted@{utt}, @{tt}message_id@{utt},
+@{tt}channel_id@{utt}; with append @{tt}status: appended@{utt} and the
+post's @{tt}length@{utt} so far.
+@{bullet}get_thread as text: @{tt}thread@{utt} and @{tt}message_count@{utt}
+-- the number of posts in the channel, also when
+@{tt}max_messages@{utt} returned fewer. As json: @{tt}channel@{utt}, the
+@{tt}messages@{utt} with every field, and their count.
+@{bullet}pin_message: @{tt}status: pinned@{utt} or
+@{tt}unpinned@{utt}.
+@{bullet}Refusals: "Channel 7 is concluded, cannot post", "Message too
+short (5 chars, min 10). Likely a truncated API response. Please provide
+full message.", "append=true requires 'message_id' and 'content'",
+"Message 12 not found".
+
+The text of @{tt}get_thread@{utt} (its labels are German):
+
+@{code text}
+FORUM-DEBATTE: api-design-options
+TOPIC: Which of the three API designs is best?
+
+KONTEXT:
+Three drafts, see below.
+
+════════════════════════════════════════════════════════════
+
+[REVIEWER "Ada" | Runde 1]
+Draft B keeps the resources flat ...
+
+────────────────────────────────────────
+VERDICT: Draft B, with the paging of draft A.
+@{body}
+
+@{h2}An example
+
+@{code json}
+{"name": "api-design-options", "topic": "Which of the three API designs is best?"}
+{"channel_id": 7, "agent_name": "Ada", "agent_role": "reviewer", "round": 1, "content": "Draft B keeps the resources flat ..."}
+{"message_id": 31, "pinned": true}
+{"channel_id": 7, "verdict": {"winner": "B", "score": 8}, "summary": "Draft B, with the paging of draft A."}
+@{body}
+
+These are the arguments of create_channel, post_message, pin_message and
+conclude in turn.
+@endnode
+
+@node hook "The debate context hook"
+@{h1}The debate context hook
+
+@{tt}inject_debate_context@{utt} runs before each LLM call and keeps a
+participant up to date with the debate, so it never has to read the
+thread. It is off until an agent switches it on, and it does something
+only in a session with a debate channel: the session variable
+@{tt}debate_channel_id@{utt}. A moderator sets it (with a task_switch
+tool's @{tt}set_context@{utt}); the sub-agents it spawns afterwards
+inherit it.
+
+@{h2}What the model gets
+
+Two things, each only when there is something new:
+
+@{bullet}The channel block, as a developer message at the end of the
+history: name, topic, context and every pinned post. It is added again
+whenever it changes -- a post pinned or unpinned -- or is no longer in
+the history, for example after the conversation was compressed.
+
+@{code markdown}
+## Debate Forum – Channel #7 (api-design-options)
+**Topic:** Which of the three API designs is best?
+**Context:** Three drafts, see below.
+
+📌 **Pinned messages (always visible):**
+
+<post author="Kai" role="moderator" pinned="true">
+The task: choose one design and say why.
+</post>
+@{body}
+
+@{bullet}The new posts, as a user message placed in front of the message
+being answered -- or, once the model has answered or called a tool in
+this turn, at the end, behind what was sent already: every post not pinned that the session has not been
+given yet, grouped by round. A post that has grown since it was given --
+a further chunk appended -- comes again with only its new part, marked
+@{tt}continuation_of@{utt} that post.
+
+@{code markdown}
+[Debate-Forum Channel #7 – Neue Beiträge]
+
+### Runde 2
+
+<post author="Ada" role="reviewer" round="2" msg_id="34">
+Draft B keeps the resources flat ...
+</post>
+@{body}
+
+What the session has been given, the plugin notes in one session
+variable, @{tt}debate_counters@{utt}: per channel each post and how much
+of it. It lives outside the message list, so it holds after compression.
+A note the session inherited from the agent that spawned it counts as
+none: a new sub-agent is given the whole thread first. A session moved to
+another channel and back is given only what it has not seen in either.
+
+Earlier batches stay in the conversation and are compressed with it like
+any other message; the hook keeps no window of its own. Nothing is ever
+rewritten: the cached prompt in front of a new block stays as it was.
+
+@{h2}Switching it on
+
+In the participant's YAML:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      debate_forum.inject_debate_context:
+        enabled: true
+@{body}
+
+The hook has no settings.
+@endnode
+
+@node direct "Direct messages between sessions"
+@{h1}Direct messages between sessions
+
+Two tools let an agent write to another of your sessions that is running,
+the way one terminal hands a note to another. Which session runs where,
+and starting one that is idle, belong to the core's session presence; it
+has to be on (@{tt}session_presence.enabled@{utt} in
+@{tt}config/config.yaml@{utt}, on in the shipped setup). Without it both
+tools answer "Session presence is off (session_presence.enabled in
+config.yaml)".
+
+@{h2}The tools
+
+@{table}
+Tool | Parameters | Does
+list_sessions | -- | your other sessions that are running or being started, with session_id, status and agent
+send_message | to, message | sends the message to the session with that id
+@{body}
+
+@{tt}to@{utt} is a session id: from list_sessions, the
+@{tt}from_session@{utt} of a message received, or any other saved session
+of the same user -- an idle one is started to read it. An unknown id, a
+session of another user or the agent's own is refused: "No session 'x' to
+message (see list_sessions)". Sessions of sub-agents are not listed and
+never started: a message to one waits for its next run, which the run
+that spawned it starts.
+
+@{h2}What send_message answers
+
+@{tt}{"status": ..., "message_id": ...}@{utt}, with a @{tt}note@{utt} when
+there is a reason to give:
+
+@{table}
+status | Means
+delivered_next_step | the session is running; it reads the message on its next step
+woke_session | the session was idle and has been started to read it
+being_woken | a start is already on its way and will read it
+queued | it waits for the session's next run; the note says why (stopped by its user, wake chain limit, not allowed to run)
+unknown | the session vanished in the meantime
+@{body}
+
+@{h2}How it arrives
+
+The message is stored as a post in the pair's channel (group @{i}Direct
+messages@{ui}, visible in the panel). The hook
+@{tt}deliver_direct_messages@{utt} appends it to the recipient's next LLM
+call as a user message:
+
+@{code markdown}
+[Direct messages -- reply with debate_forum_send_message to the from_session]
+<message from_session="3f2a…" from_agent="coder">
+The tests pass on my branch; can you review?
+</message>
+@{body}
+
+An agent without the send_message tool gets the same message under a
+plain @{tt}[Direct messages]@{utt} line, without the hint.
+
+It counts as delivered once the conversation that carried it has been
+saved (the hook @{tt}mark_direct_messages_delivered@{utt}, at the end of
+the session's run). A run that dies before, or is not saved, leaves it
+undelivered and the next run gets it again -- it may then be read twice,
+but it is never lost. Within one run it is given only once.
+
+Both hooks are on by default. An agent that shall not receive direct
+messages turns delivery off in its YAML:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      debate_forum.deliver_direct_messages:
+        enabled: false
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The tool descriptions and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}. A refused call answers
+@{tt}{"error": "..."}@{utt} with the reason ("Channel 7 is concluded,
+cannot post", "name and topic are required", "channel_id and verdict are
+required"). In the chat, the call's status line ends with the result:
+"Channel #7 'api-design-options' created", "Posted to #7 (round 2,
+id=34, 412 chars) -- Ada [reviewer]", "Appended 3000 chars to message 34
+(now 6000)", "Listed 4 channel(s) [status=active]", "Channel #7
+concluded", "Message #35 to 3f2a…: woke_session".
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier changes.
+@{tt}get_thread@{utt} returns the whole debate with every post in full
+-- on a long debate that is many tokens; a participant with the hook on
+does not need it. @{tt}list_channels@{utt} returns each channel's context
+and verdict: a small @{tt}limit@{utt} keeps it short.
+
+The hooks append: the channel block at the end, new posts in front of the
+message being answered (at the end once the turn has an answer or a tool
+call behind it, which a move would take out of the cache), direct
+messages at the end. None of them rewrites
+the system prompt or an earlier message, so the cached prompt before them
+stays valid.
+
+@{h2}Known gaps
+
+@{bullet}The texts of get_thread and of the new-posts block are partly
+German ("Runde", "Neue Beiträge").
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    debate_forum:
+      type: debate_forum
+      enabled: true
+      config:
+        db_path: "data/debate_forum/forum.db"
+        min_message_length: 10  # 0 = disabled
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+debate_forum/*"
+@{body}
+
+The debate agents bring their own sub-agent manager (and
+debate_panel_moderator its task_switch) in their YAMLs. Both moderators
+and the participants of debate_panel_moderator also use context_engineer,
+those participants tavily_search as well; panel_participant has no tools.
+Direct messages need
+session presence (see @{" Direct messages between sessions " link direct}).
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+db_path | debate_forum/forum.db in the data directory | the forum's database
+min_message_length | 50 | the shortest new post the tool takes; 0 no limit
+@{body}
+
+Everything -- groups, channels, posts, direct messages -- is one SQLite
+file. Deleting a channel removes its posts; there is no other clean-up.
+@endnode

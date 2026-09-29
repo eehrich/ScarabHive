@@ -176,7 +176,7 @@ Poste deine Zusammenfassung der bisherigen Diskussion und des möglichen Ergebni
 
 **Schritt B: Alle 8 Teilnehmer parallel abfragen**
 Starte ALLE 8 mit blocking: false und continue:
-- message: "Die Zusammenfassung und das vorgeschlagene Ergebnis des Moderators sind bereits in deinem Kontext sichtbar (im Debate Forum Block oben). Bist du mit dem vorgeschlagenen Ergebnis einverstanden? Antworte mit EINVERSTANDEN: JA oder EINVERSTANDEN: NEIN (mit kurzer Begründung)."
+- message: "Die Zusammenfassung und das vorgeschlagene Ergebnis des Moderators sind bereits in deinem Kontext sichtbar (in den neuen Forum-Beiträgen oben). Bist du mit dem vorgeschlagenen Ergebnis einverstanden? Antworte mit EINVERSTANDEN: JA oder EINVERSTANDEN: NEIN (mit kurzer Begründung)."
 
 Warte auf alle 8. Poste IMMER alle 8 Antworten ins Forum — auch wenn alle einverstanden sind! Jede Stimme muss im Forum dokumentiert sein.
 
@@ -215,7 +215,7 @@ Falls nach dem Abschluss doch noch weiter verhandelt werden muss, nutze `debate_
 Nutze `debate_forum_pin_message` um wichtige Nachrichten zu pinnen:
 - **Originalauftrag** des Users: Immer pinnen, damit er nicht aus dem Kontextfenster der Teilnehmer rausfällt
 - **Schlüsselentscheidungen**: Wenn das Panel etwas Wichtiges beschlossen hat, pinne das
-- **Pinned = immer im Kontext**: Gepinnte Nachrichten werden den Sub-Agents IMMER injiziert, unabhängig vom Sliding-Window
+- **Pinned = immer im Kontext**: Gepinnte Nachrichten stehen IMMER im Kanal-Block der Sub-Agents, auch wenn ältere Beiträge längst komprimiert sind
 - Zum Entpinnen: `debate_forum_pin_message` mit message_id und pinned: false. Enpinne nicht relevante wieder
 
 ## Regeln

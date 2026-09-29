@@ -10,19 +10,20 @@ Two-tier injection strategy:
   it compaction-safe, and it need not be: a block that is no longer in the
   history is simply appended again, the same branch as the first one.
 - **Unpinned forum posts** → ``role="user"`` (permanent, persisted in session).
-  Only NEW messages since the last hook call are added (diff-based).
-  Context optimiser plugins (context_engineer, context_summarizer) can compress
-  older batches over time — no sliding-window limit needed.
+  Only NEW posts, and the new part of posts that grew by an appended chunk,
+  are added (diff-based). Context optimiser plugins (context_engineer,
+  context_summarizer) can compress older batches over time — no
+  sliding-window limit needed.
 
 Diff tracking:
-  ``debate_last_injected_msg_id`` is stored in session template vars via the
-  SessionTracker.  This survives context compression (the tracker lives outside
-  the message list).
+  ``debate_counters`` (owner session, per channel each post given and its
+  length) is stored in session template vars via the SessionTracker. This
+  survives context compression (the tracker lives outside the message list).
 
 Flow:
 1. Moderator sets context_var ``debate_channel_id`` (via task_switch/set_context)
 2. Sub-agents inherit it when spawned
-3. This hook injects pinned context (system) and new posts (user)
+3. This hook injects pinned context (developer) and new posts (user)
 4. Old post batches stay in the conversation and get optimised automatically
 
 Direct messages between sessions (deliver_direct_messages) need no channel
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 INJECTION_MARKER = "inject_debate_context"
 INJECTION_MARKER_POSTS = "debate_forum_posts"
 INJECTION_MARKER_DIRECT = "debate_forum_direct"
+# The session var noting what the session has been given (see inject_debate_context)
+DEBATE_COUNTERS = "debate_counters"
 
 
 class DebateForumHooks(SchemaBasedPluginHook):
@@ -127,74 +130,62 @@ class DebateForumHooks(SchemaBasedPluginHook):
                     )
                     modified = True
 
-            # ── 2. New posts → user injection (permanent, diff-based) ─────
-            # The counter ``debate_last_injected_msg_id`` is a per-session
-            # diff marker. Sub-agents inherit ``context_vars`` from their
-            # parent at spawn time (sub_agent_manager.manager._create_sub_session),
-            # which means the parent's counter leaks into fresh sub-sessions
-            # and causes them to skip messages that were posted to the
-            # channel BEFORE the sub-agent was spawned. Symptom observed:
-            # Falk (Provocateur) sub-agent saw only the latest Autor-C
-            # synopsis post because the moderator's counter was already
-            # at Autor-B's msg_id when Falk was spawned.
-            #
-            # Fix: tag the counter with the owning session_id. If the
-            # counter belongs to a different session (i.e. inherited from
-            # parent), treat this as a fresh session and replay the full
-            # channel history.
-            session_vars = context.agent._session_tracker.get_session_template_vars(
-                context.session_id
-            )
-            counter_owner = session_vars.get("debate_counter_owner")
-            if counter_owner == context.session_id:
-                last_injected_id = int(session_vars.get("debate_last_injected_msg_id", 0))
-            else:
-                # Inherited (or no) counter — replay full channel history
-                last_injected_id = 0
-                if counter_owner is not None:
-                    logger.debug(
-                        "[DebateForumHook] Counter inherited from session %s "
-                        "into %s — resetting to replay channel #%d",
-                        counter_owner, context.session_id, channel_id,
-                    )
+            # ── 2. New posts and new chunks → user injection (permanent, diff-based) ──
+            # What the session has been given is noted in ONE session var,
+            # DEBATE_COUNTERS = {"owner": session_id, "channels": {channel_id:
+            # {msg_id: length handed over}}}:
+            # - owner: sub-agents inherit context_vars from their parent at spawn,
+            #   and a continued one gets the parent's live values merged in
+            #   (sub_agent_manager merge_parent_context_vars) for every key it has
+            #   not changed itself. A note owned by another session counts as none,
+            #   so the channel is replayed. One composite var, not several: the
+            #   merge takes a key as the child's own only as a whole.
+            # - per channel: message ids are global, so an id reached in one
+            #   channel says nothing about another.
+            # - per post the length handed over: a chunk appended later
+            #   (post_message append=true) is handed over as a continuation.
+            tracker = context.agent._session_tracker
+            session_vars = tracker.get_session_template_vars(context.session_id)
+            given = self._given_posts(session_vars, context.session_id, channel_id)
 
-            all_messages = self.db.get_messages(channel_id, limit=0)
-            new_messages = [
-                m for m in all_messages
-                if m["id"] not in pinned_ids and m["id"] > last_injected_id
-            ]
+            fresh, grown = [], []
+            for m in self.db.get_messages(channel_id, limit=0):
+                handed = given.get(str(m["id"]))
+                if m["id"] in pinned_ids:
+                    continue  # whole in the channel block; the rest follows if it is unpinned
+                if handed is None:
+                    fresh.append(m)
+                elif len(m["content"]) > handed:
+                    grown.append({**m, "content": m["content"][handed:], "continues": True})
 
-            if new_messages:
-                posts_text = self._format_new_posts(new_messages, channel_id)
+            if fresh or grown:
+                batch = sorted(fresh + grown, key=lambda m: m["id"])
                 insert_pos = self._find_last_user_position(context.messages)
+                if any(m.role in ("assistant", "tool") for m in context.messages[insert_pos + 1:]):
+                    # inside a running turn: what follows the input was sent already and is cached --
+                    # in front of it the posts would move all of it, on every new post
+                    insert_pos = len(context.messages)
                 context.messages.insert(
                     insert_pos,
                     ChatMessage(
                         role="user",
-                        content=posts_text,
+                        content=self._format_new_posts(batch, channel_id),
                         injected_by=INJECTION_MARKER_POSTS,
                     ),
                 )
-                max_id = max(m["id"] for m in new_messages)
-                context.agent._session_tracker.set_session_template_vars(
+                note = session_vars.get(DEBATE_COUNTERS)
+                channels = dict(note["channels"]) if self._owned(note, context.session_id) else {}
+                channels[str(channel_id)] = {
+                    **given, **{str(m["id"]): len(m["content"]) + given.get(str(m["id"]), 0)
+                                for m in batch}}
+                tracker.set_session_template_vars(
                     context.session_id,
-                    {
-                        "debate_last_injected_msg_id": max_id,
-                        "debate_counter_owner": context.session_id,
-                    },
+                    {DEBATE_COUNTERS: {"owner": context.session_id, "channels": channels}},
                 )
                 modified = True
                 logger.info(
-                    f"[DebateForumHook] Injected {len(new_messages)} new posts "
-                    f"(msg_id {last_injected_id + 1}..{max_id}) from channel #{channel_id}"
-                )
-            elif counter_owner != context.session_id:
-                # No new messages but we still need to claim ownership so
-                # the next call doesn't see a stale inherited counter.
-                context.agent._session_tracker.set_session_template_vars(
-                    context.session_id,
-                    {"debate_counter_owner": context.session_id},
-                )
+                    "[DebateForumHook] Injected %d new post(s) and %d continuation(s) "
+                    "from channel #%d", len(fresh), len(grown), channel_id)
 
             if pinned_messages:
                 logger.info(
@@ -222,7 +213,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
             from agent_system.llm.models import ChatMessage
 
             context.messages.append(ChatMessage(
-                role="user", content=self._format_direct(direct),
+                role="user", content=self._format_direct(direct, self._can_reply(context)),
                 injected_by=INJECTION_MARKER_DIRECT,
             ))
             # Still undelivered in the store: only the end of this request says
@@ -254,6 +245,25 @@ class DebateForumHooks(SchemaBasedPluginHook):
                 logger.error("[DebateForumHook] Could not mark direct messages delivered: %s",
                              e, exc_info=True)
         return HookResult(success=True, modified=False, context=context)
+
+    @staticmethod
+    def _owned(note: Any, session_id: str) -> bool:
+        return (isinstance(note, dict) and note.get("owner") == session_id
+                and isinstance(note.get("channels"), dict))
+
+    def _given_posts(self, session_vars: dict, session_id: str, channel_id: int) -> dict[str, int]:
+        """{msg_id: length handed over} of the channel's posts this session was given."""
+        note = session_vars.get(DEBATE_COUNTERS)
+        if note is not None:
+            return dict(note["channels"].get(str(channel_id), {})) if self._owned(note, session_id) else {}
+        # Written before the note was one var: a counter of the last post given
+        # and the session that owns it. The posts up to it count as given in
+        # full -- how much of a post was given was not noted.
+        if session_vars.get("debate_counter_owner") != session_id:
+            return {}
+        last = int(session_vars.get("debate_last_injected_msg_id") or 0)
+        return {str(m["id"]): len(m["content"])
+                for m in self.db.get_messages(channel_id, limit=0) if m["id"] <= last}
 
     def _get_channel_id(self, context: HookContext) -> int | None:
         """Extract debate_channel_id from session context_vars."""
@@ -309,7 +319,7 @@ class DebateForumHooks(SchemaBasedPluginHook):
         messages: list[dict[str, Any]],
         channel_id: int,
     ) -> str:
-        """Format new forum posts for permanent user injection."""
+        """Format new forum posts, and the new part of posts given before, for permanent user injection."""
         parts = [f"[Debate-Forum Channel #{channel_id} – Neue Beiträge]\n"]
 
         current_round = None
@@ -323,18 +333,28 @@ class DebateForumHooks(SchemaBasedPluginHook):
             role = msg.get("agent_role", "?")
             content = msg.get("content", "").strip()
             msg_id = msg.get("id", "?")
+            continues = f' continuation_of="{msg_id}"' if msg.get("continues") else ""
             parts.append(
-                f'<post author="{name}" role="{role}" round="{r}" msg_id="{msg_id}">\n'
+                f'<post author="{name}" role="{role}" round="{r}" msg_id="{msg_id}"{continues}>\n'
                 f"{content}\n"
                 f"</post>"
             )
 
         return "\n".join(parts)
 
-    def _format_direct(self, messages: list[dict[str, Any]]) -> str:
-        """The messages as the session sees them, with the tool that answers."""
+    def _can_reply(self, context: HookContext) -> bool:
+        """Does the agent have the tool that answers? Unknown (no tool list) counts as yes."""
+        if context.tools_schema is None:
+            return True
+        name = f"{self.tool_prefix}_send_message"
+        return any((tool.get("function") or {}).get("name") == name
+                   for tool in context.tools_schema if isinstance(tool, dict))
+
+    def _format_direct(self, messages: list[dict[str, Any]], can_reply: bool = True) -> str:
+        """The messages as the session sees them; with the tool that answers only
+        when the agent has it -- a hint naming a tool it lacks is worse than none."""
         parts = [f"[Direct messages -- reply with {self.tool_prefix}_send_message "
-                 "to the from_session]"]
+                 "to the from_session]" if can_reply else "[Direct messages]"]
         for msg in messages:
             parts.append(
                 f'<message from_session="{msg["agent_role"]}" from_agent="{msg["agent_name"]}">\n'

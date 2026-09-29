@@ -32,16 +32,16 @@ tools:
       name: "{{ name }}_create_group"
       description: >
         Create a new channel group. Groups let you organize related debate channels
-        together (e.g. all channels for one story design run). Returns the group_id.
+        together (e.g. all channels of one review run). Returns the group_id.
       parameters:
         type: object
         properties:
           name:
             type: string
-            description: "Group name (e.g. 'Story Design - Buch 5 - 2024-03-15')"            
+            description: "Group name (e.g. 'Code review - payment service')"
           description:
             type: string
-            description: "Optional description (e.g. 'V5b pipeline run for book 5')"
+            description: "Optional description"
         required: [name]
 
   - type: function
@@ -67,19 +67,19 @@ tools:
         properties:
           name:
             type: string
-            description: "Short channel name (e.g. 'synopsis-debatte-book-3')"
+            description: "Short channel name (e.g. 'api-design-options')"
           topic:
             type: string
-            description: "What is being debated (e.g. 'Welche der 3 Synopsen ist am besten?')"
+            description: "What is being debated (e.g. 'Which of the three API designs is best?')"
           context:
             type: string
-            description: "Background context as text or JSON (genre, premise, candidates, etc.)"
+            description: "Background context as text or JSON (requirements, candidates, etc.)"
           group_id:
             type: integer
-            description: "Optional group ID to assign this channel to"
+            description: "Optional group ID to assign this channel to (from create_group or list_groups)"
           metadata:
             type: object
-            description: "Optional metadata (book_id, stage, pipeline, etc.)"
+            description: "Optional metadata, stored with the channel"
         required: [name, topic]
 
   - type: function
@@ -88,22 +88,23 @@ tools:
       description: >
         Post a message to a debate channel. Long output: post the first chunk, then send
         the rest with append=true + the returned message_id (concatenated server-side into
-        one message) — never truncate or summarize.
+        one message) — never truncate or summarize. A new post shorter than the
+        server's minimum length is refused.
       parameters:
         type: object
         properties:
           channel_id:
             type: integer
-            description: "Channel to post to (new message)"
+            description: "Channel to post to; required for a new post"
           agent_name:
             type: string
-            description: "Agent display name (e.g. 'Mira', 'Sven')"
+            description: "Agent display name (e.g. 'Mira', 'Sven'); required for a new post"
           agent_role:
             type: string
             description: "Role in the debate"
           round:
             type: integer
-            description: "Round number (1, 2, 3, ...)"
+            description: "Round number (1, 2, 3, ...); default 1"
           content:
             type: string
             description: "Message content (or next chunk if append=true)"
@@ -136,7 +137,7 @@ tools:
             enum: ["text", "json"]
           max_messages:
             type: integer
-            description: "Limit number of messages returned (0=all, default=0)"
+            description: "Return only the first N messages, oldest first (0 = all, the default)"
         required: [channel_id]
 
   - type: function
@@ -215,8 +216,8 @@ tools:
     function:
       name: "{{ name }}_pin_message"
       description: >
-        Pin or unpin a message. Pinned messages are always included in the context
-        injection for sub-agents, regardless of the sliding window size.
+        Pin or unpin a message. Pinned messages are always part of the channel block
+        that agents with the debate context hook get, together with topic and context.
         Use this to preserve important context (original task, key decisions, etc.).
       parameters:
         type: object

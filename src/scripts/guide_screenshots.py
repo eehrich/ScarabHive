@@ -25,11 +25,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(REPO), str(REPO / "src")]
 
+import pytest  # noqa: E402
 import uvicorn  # noqa: E402
 
 from tests.ui.browser import _browsers_die_with_this_process, find_browser  # noqa: E402
 
-#: plugin -> shots: (file name, module with the panel test's app factory, its name, page, window size)
+#: plugin -> shots: (file name, module with the panel test's app factory, its name, page, window size[, script]);
+#: the script runs in the page once it has loaded -- for a panel that shows the thing worth a picture only after a click
 SHOTS = {
     "todo": [("panel.png", "plugins.todo.tests.test_plugin_todo_panel", "panel_app",
               "/plugins/todo/?session_id=s-1", (1000, 700))],
@@ -43,7 +45,45 @@ SHOTS = {
                          "/plugins/lessons_learned/", (1100, 820))],
     "context_usage_tracker": [("panel.png", "plugins.context_usage_tracker.tests.test_plugin_context_usage_tracker_panel",
                                "panel_app", "/plugins/context_usage_tracker/?session_id=s-1", (1000, 760))],
+    "context_engineer": [("panel.png", "plugins.context_engineer.tests.test_plugin_context_engineer_panel", "panel_app",
+                          "/plugins/context_engineer/?session_id=s-1", (980, 700), """
+        // the seed's markup test strings are no sight: neutral words in their place, in the picture only
+        await new Promise((done) => setTimeout(done, 1500));
+        const cells = [...document.querySelectorAll('td, td *')].filter((el) => !el.children.length);
+        for (const cell of cells.filter((el) => el.textContent.trim().startsWith('<img'))) {
+          cell.textContent = cell.closest('#facts, [data-table="facts"], table')?.querySelector('th')?.textContent
+            .includes('Category') ? 'Keep the public API stable' : 'coder';
+        }""")],
+    "debate_forum": [("panel.png", "plugins.debate_forum.tests.test_plugin_debate_forum_panel", "panel_app",
+                      "/plugins/debate_forum/", (1000, 680), """
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        await fetch('/__stub/delete?channel=3', {method: 'POST'});  // the markup test channel is no sight
+        document.querySelector('pk-refresh [data-act="now"]').click();
+        const group = () => [...document.querySelectorAll('.df-group > summary')];
+        await until(() => group().length && !group().some((one) => one.textContent.includes('Markup')));
+        group().find((one) => one.textContent.includes('Schema review')).click();
+        (await until(() => document.querySelector('[data-channel="1"]'))).click();
+        await until(() => document.querySelectorAll('.df-post').length === 4);
+        setTimeout(() => { document.querySelector('.df-messages').scrollTop = 0; }, 300);""")],
 }
+
+
+def with_script(app, page: str, script: str):
+    """The app, its page carrying ``script`` as a module at the end of its body."""
+    from starlette.responses import Response
+
+    path = page.split("?")[0]
+
+    @app.middleware("http")
+    async def add_script(request, call_next):
+        response = await call_next(request)
+        if request.url.path != path:
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator]).decode("utf-8")
+        body = body.replace("</body>", f'<script type="module">{script}</script></body>', 1)
+        return Response(body, status_code=response.status_code, media_type="text/html")
+    return app
 
 
 def shoot(browser: str, url: str, out: Path, size: tuple[int, int]) -> None:
@@ -92,12 +132,17 @@ def main(plugins: list[str]) -> None:
     if browser is None:
         raise SystemExit("no Chromium-based browser installed")
     for plugin in plugins or SHOTS:
-        for name, module, factory, page, size in SHOTS[plugin]:
+        for name, module, factory, page, size, *script in SHOTS[plugin]:
             # a plugin may keep its database open until the process ends: its folder is left then
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data:
                 build = getattr(importlib.import_module(module), factory)
-                # a factory that keeps data on disk takes the folder for it; one that holds it in memory takes none
-                app = build(Path(data)) if inspect.signature(build).parameters else build()
+                # a factory that keeps data on disk takes the folder for it; one that holds it in memory takes none;
+                # one that patches the plugin takes pytest's monkeypatch as well
+                params = inspect.signature(build).parameters
+                patch = pytest.MonkeyPatch()
+                app = build(*[Path(data)][:len(params)], *([patch] if "monkeypatch" in params else []))
+                if script:
+                    app = with_script(app, page, script[0])
                 with serve(app) as port:
                     url = f"http://127.0.0.1:{port}{page}"
                     # the browser takes a picture of an error page as well: a page that fails keeps the old one
@@ -108,6 +153,7 @@ def main(plugins: list[str]) -> None:
                     out.parent.mkdir(exist_ok=True)
                     shoot(browser, url, out, size)
                     print(f"{out.relative_to(REPO)}")
+                patch.undo()
 
 
 if __name__ == "__main__":
