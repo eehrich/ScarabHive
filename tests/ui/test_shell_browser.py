@@ -1602,7 +1602,7 @@ EXPECTED = [
     "a panel's title and toast reach the shell",
     'a second docked panel takes the front and the first is told it is hidden',
     'a dock tab is chosen with the keyboard',
-    'dock tabs show their whole title while they fit, give way down to their least width, then the bar scrolls; the wheel turns it, the tab coming to the front is brought into sight, a new title leaves the scrolling alone',
+    'dock tabs show their whole title while they fit, give way down to five characters of it, then the bar scrolls; the wheel turns it, the tab coming to the front is brought into sight, a new title leaves the scrolling alone',
     'a framed kit panel leaves its title to the tab and keeps its content',
     'a docked panel detaches into a window and docks back',
     'a window gets its size back once the browser window grows again',

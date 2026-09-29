@@ -56,6 +56,33 @@
   // A condition a check needs, failing with the condition itself as the reason -- a bare
   // `return false` reports 'failed' and leaves the reader to guess which line it was.
   const need = (ok, why) => { if (!ok) throw new Error(why); return true; };
+  // Does a title cut short keep five characters and the ellipsis? The room from its first character to the end of its
+  // box, against those six set in its font (as kit_js_tests.html).
+  const holdsFive = (box) => {
+    const doc = box.ownerDocument;
+    const walk = doc.createTreeWalker(box, NodeFilter.SHOW_TEXT, { acceptNode: (node) => node.data.trim() ? 1 : 3 });
+    const text = walk.nextNode();
+    const first = doc.createRange();
+    first.setStart(text, text.data.search(/\S/));
+    first.setEnd(text, text.data.search(/\S/) + 1);
+    const style = doc.defaultView.getComputedStyle(box);
+    const room = box.getBoundingClientRect().right - parseFloat(style.paddingRight) - first.getBoundingClientRect().left;
+    const probe = doc.createElement('span');
+    probe.style.cssText = `position: absolute; white-space: pre; font: ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    probe.textContent = `${box.textContent.trim().slice(0, 5)}…`;
+    doc.body.append(probe);
+    const need = probe.getBoundingClientRect().width;
+    probe.remove();
+    return room >= need - 0.5;
+  };
+  // Is a whole title no wider than its text -- a short one not padded out to the least width? (as kit_js_tests.html)
+  const snug = (box) => {
+    const doc = box.ownerDocument;
+    const content = doc.createRange();
+    content.selectNodeContents(box);
+    const style = doc.defaultView.getComputedStyle(box);
+    return box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - content.getBoundingClientRect().width < 1;
+  };
   // The chat's display preferences, as the shell hands them on from the Settings panel.
   const CHAT_DEFAULTS = { fold_steps: 'at_end', thinking: 'collapsed', sub_agents: 'expanded', sub_agent_output: 'collapsed' };
   const choose = (chat) => win().dispatchEvent(new (win().CustomEvent)('preferences:changed',
@@ -394,7 +421,7 @@
     return probeChosen && tab('Settings').getAttribute('aria-selected') === 'true' && tab('Probe').tabIndex === 0;
   });
 
-  await check('dock tabs show their whole title while they fit, give way down to their least width, then the bar scrolls; the wheel turns it, the tab coming to the front is brought into sight, a new title leaves the scrolling alone', async () => {
+  await check('dock tabs show their whole title while they fit, give way down to five characters of it, then the bar scrolls; the wheel turns it, the tab coming to the front is brought into sight, a new title leaves the scrolling alone', async () => {
     const bar = $('.app-dock-tabs');
     const tab = (name) => $$('.dock-tab').find((t) => t.textContent.includes(name));
     const whole = (t) => { const title = t.querySelector('.dock-tab-title'); return title.scrollWidth <= title.clientWidth; };
@@ -402,14 +429,22 @@
     probe().pk.setTitle('Probe with a title long enough to need its room');
     await until('the long title', () => tab('Probe').querySelector('.dock-tab-title').textContent.startsWith('Probe with'));
     try {
+      await doc().fonts.load('13px Inter');  // the widths are Inter's: with a stand-in font they measure that one
+      const title = (t) => t.querySelector('.dock-tab-title');
+      const settings = doc().createRange();
+      settings.selectNodeContents(title(tab('Settings')));
+      need(settings.getBoundingClientRect().width < 4.5 * parseFloat(win().getComputedStyle(title(tab('Settings'))).fontSize),
+        'fixture: the Settings title is not shorter than the room for five characters');
       bar.style.cssText = 'flex: none; width: 2000px';
-      need($$('.dock-tab').every(whole) && bar.scrollWidth <= bar.clientWidth, 'with room, a title is cut');
+      need($$('.dock-tab').every((t) => whole(t) && snug(title(t))) && bar.scrollWidth <= bar.clientWidth,
+        'with room, a title is cut or padded out');
       bar.style.width = `${Math.round($$('.dock-tab').reduce((sum, t) => sum + t.offsetWidth, 0) * 0.7)}px`;
       need(!$$('.dock-tab').every(whole) && bar.scrollWidth <= bar.clientWidth, 'short of room, no tab gives way, or the bar scrolls already');
       bar.style.width = '200px';
-      const least = parseFloat(getComputedStyle(tab('Probe')).minWidth);
-      need(least > 0 && bar.scrollWidth > bar.clientWidth && $$('.dock-tab').every((t) => t.offsetWidth >= least - 0.5),
-        'out of room, the tabs go below their least width or the bar does not scroll');
+      need(!whole(tab('Probe')), 'fixture: the long title is not cut');
+      need(whole(tab('Settings')) && snug(title(tab('Settings'))), 'out of room, the short Settings title is cut or padded out');
+      need(bar.scrollWidth > bar.clientWidth && $$('.dock-tab').every((t) => whole(t) || holdsFive(title(t))),
+        'out of room, a tab keeps less than five characters of its title, or the bar does not scroll');
       bar.scrollLeft = 0;
       const wheel = new (win().WheelEvent)('wheel', { deltaY: 100, bubbles: true, cancelable: true });
       bar.dispatchEvent(wheel);

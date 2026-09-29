@@ -1140,6 +1140,10 @@ export function keepInSight(row, item) {
   const it = item.getBoundingClientRect();
   if (it.left < box.left) row.scrollLeft -= box.left - it.left;
   else if (it.right > box.right) row.scrollLeft += Math.min(it.right - box.right, it.left - box.left);
+  // A tab shorter than its least width is as wide as its text, so a font still loading (the measuring above starts
+  // the load) moves the tabs once it arrives: then the item is brought into sight again.
+  const fonts = row.ownerDocument.fonts;
+  if (fonts?.status === 'loading') fonts.ready.then(() => { if (item.isConnected) keepInSight(row, item); });
 }
 
 /**
