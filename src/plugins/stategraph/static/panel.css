@@ -174,6 +174,7 @@
 .sg-edge { fill: none; stroke: var(--text-muted); stroke-width: 1.4; }
 .sg-edge--initial { stroke: var(--text-primary); }
 .sg-edge--draft { stroke: var(--accent); stroke-dasharray: 4 3; }
+.sg-band { fill: var(--accent-subtle); fill-opacity: 0.5; stroke: var(--accent); stroke-dasharray: 4 3; }
 .sg-hit { fill: none; stroke: transparent; stroke-width: 12; }
 .sg-link--event > .sg-edge { stroke: var(--info); }
 .sg-link--error > .sg-edge { stroke: var(--danger); stroke-dasharray: 5 3; }

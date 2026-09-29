@@ -35,6 +35,7 @@ let journalOf = { r1: RUN.journal, r2: JOURNAL2 };
 const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
   profiles: ['fast'] };
 let editAnswer = null;
+let reviewAnswer = MACHINE;  // GET of the review machine
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
@@ -47,7 +48,7 @@ globalThis.SERVER = (method, path, json) => {
     return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
       group: groups[id] || 'My machines' }));
   }
-  if (p === '/machines/review' && method === 'GET') return MACHINE;
+  if (p === '/machines/review' && method === 'GET') return reviewAnswer;
   if (p === '/machines/other' && method === 'GET') return OTHER;
   if (p === '/machines/hooks' && method === 'GET') return HOOKS;
   if (p === '/machines/ro' && method === 'GET') return READ_ONLY;
@@ -108,6 +109,19 @@ const element = (tag, attrs) => {
   return el;
 };
 const clickMachine = (id) => $('machineList').fire('click', { target: element('button', { 'data-machine': id }) });
+/** The canvas as the pointer sees it: a state's node, its box in canvas units, and a canvas point in client pixels
+ * through the view (translate, scale) the canvas drew with. */
+function canvasGeometry() {
+  const transform = $('canvas').querySelector('.sg-viewport').getAttribute('transform') || 'translate(0 0) scale(1)';
+  const [tx, ty, k] = transform.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi).map(Number);
+  const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+  const boxOf = (name) => {
+    const rect = node(name).querySelector('.sg-box');
+    return { x: Number(rect.getAttribute('x')), y: Number(rect.getAttribute('y')), w: Number(rect.getAttribute('width')),
+      h: Number(rect.getAttribute('height')) };
+  };
+  return { k, node, boxOf, client: (x, y) => ({ clientX: x * k + tx, clientY: y * k + ty }) };
+}
 async function choose(name) {
   const node = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
   check(node, `no node ${name} on the canvas`);
@@ -437,6 +451,195 @@ const CASES = {
     check(drawn.indexOf(link) < drawn.indexOf(leaf), 'the transition covers the state it leaves');
     await choose('review');
     check(composite.classList.contains('is-selected'), 'a selected composite is not marked');
+  },
+
+  async a_composite_from_the_palette_is_one_edit_with_its_first_state() {
+    await boot('?machine=review');
+    check(/data-add-type="composite"/.test($('palette').innerHTML), 'the palette offers no composite');
+    ANSWERS.prompt.push('group');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
+    await settle();
+    const sent = lastEdit();
+    check(sent?.op === 'batch' && JSON.stringify(sent.ops) === JSON.stringify([
+      { op: 'add_state', name: 'group', type: 'state', parent: null },
+      { op: 'add_state', name: 'start', type: 'state', parent: 'group' }]), `sent: ${JSON.stringify(sent)}`);
+  },
+
+  async ctrl_and_shift_click_select_several_states_and_delete_removes_them_in_one_edit() {
+    await boot('?machine=review');
+    const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+    const click = async (name, keys) => {
+      await $('canvas').fire('pointerdown', { button: 0, target: node(name), clientX: 10, clientY: 10, pointerId: 1, ...keys });
+      await $('canvas').fire('pointerup', { target: node(name), clientX: 10, clientY: 10 });
+      await settle();
+    };
+    await choose('write');
+    await click('review', { ctrlKey: true });
+    await click('read', { shiftKey: true });  // inside review: it goes with review
+    await click('done', { ctrlKey: true });
+    await click('done', { ctrlKey: true });  // a second click takes it out again
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">3 states</h3>'), 'the inspector does not show 3 states');
+    check(['write', 'review', 'read'].every((name) => node(name).classList.contains('is-selected'))
+      && !node('done').classList.contains('is-selected'), 'the selected states are not marked');
+    ANSWERS.confirm = true;
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas') });
+    await settle();
+    const sent = lastEdit();
+    check(sent?.op === 'batch' && JSON.stringify(sent.ops) === JSON.stringify([
+      { op: 'remove_state', name: 'write' }, { op: 'remove_state', name: 'review' }]), `sent: ${JSON.stringify(sent)}`);
+  },
+
+  async a_selected_state_gone_after_a_reload_leaves_the_selection() {
+    await boot('?machine=review');
+    const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('2 states'), 'not two states selected');
+    reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' }, graph: { ...MACHINE.graph,
+      states: MACHINE.graph.states.filter((s) => s.name !== 'failed'),
+      transitions: MACHINE.graph.transitions.filter((t) => t.target !== 'failed') } };
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    await release();
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'the one state left is not shown as a state');
+  },
+
+  async a_drag_of_a_selected_state_moves_every_selected_one() {
+    await boot('?machine=review');
+    const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 10, clientY: 10 });
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: node('write'), clientX: 60, clientY: 30 });
+    await $('canvas').fire('pointerup', { target: node('write'), clientX: 60, clientY: 30 });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop();
+    const moved = saved && Object.keys(saved[2].layout.positions).sort();
+    check(JSON.stringify(moved) === JSON.stringify(['done', 'failed', 'write']), `positions saved: ${JSON.stringify(moved)}`);
+    check($('side-inspect').innerHTML.includes('2 states'), 'the drag lost the selection');
+  },
+
+  async a_shift_drag_on_the_empty_canvas_selects_the_states_inside_the_band() {
+    await boot('?machine=review');
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: $('canvas'), clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'a Shift+click on the canvas dropped the selection');
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, clientX: -9000, clientY: -9000, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: $('canvas'), clientX: 9000, clientY: 9000 });
+    check($('canvas').querySelectorAll('.sg-band').length === 1, 'no band is drawn');
+    await $('canvas').fire('pointerup', { target: $('canvas'), clientX: 9000, clientY: 9000 });
+    await settle();
+    const all = MACHINE.graph.states.length;
+    check($('side-inspect').innerHTML.includes(`<h3 class="sg-inspect-name">${all} states</h3>`), `not all ${all} states selected`);
+    check(!$('canvas').querySelectorAll('.sg-band').length, 'the band stays after the drag');
+  },
+
+  async a_band_from_any_corner_selects_only_what_lies_wholly_inside_it() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const box = boxOf('write');
+    // from below right to above left, around write only: canvas units through the view, as the pointer gives them
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, pointerId: 1, ...client(box.x + box.w + 3, box.y + box.h + 3) });
+    await $('canvas').fire('pointermove', { target: $('canvas'), ...client(box.x - 3, box.y - 3) });
+    await $('canvas').fire('pointerup', { target: $('canvas'), ...client(box.x - 3, box.y - 3) });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'the band did not select write alone');
+    // a Ctrl+drag that starts on a state draws a band as well: here around nothing whole -- no toggle of that state
+    const composite = boxOf('review');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('review'), ctrlKey: true, pointerId: 1, ...client(composite.x + 2, composite.y + 2) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...client(composite.x + 12, composite.y + 12) });
+    await $('canvas').fire('pointerup', { target: node('review'), ...client(composite.x + 12, composite.y + 12) });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">write</h3>'), 'a Ctrl+drag on a state toggled it');
+  },
+
+  async a_selected_composite_moves_with_its_states_by_the_pointers_distance() {
+    await boot('?machine=review');
+    for (let i = 0; i < 5; i += 1) await $('zoomIn').fire('click', {});  // zoomed in: one pixel is less than a unit
+    const { k, boxOf, node } = canvasGeometry();
+    const before = boxOf('review');
+    await choose('review');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('read'), clientX: 10, clientY: 10 });
+    await settle();
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), clientX: 10, clientY: 10, pointerId: 1 });
+    for (let x = 11; x <= 50; x += 1) await $('canvas').fire('pointermove', { target: node('read'), clientX: x, clientY: 10 });
+    await $('canvas').fire('pointerup', { target: node('read'), clientX: 50, clientY: 10 });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.positions;
+    check(saved && !('read' in saved), `read moved on its own too: ${JSON.stringify(saved)}`);
+    check(Math.abs(saved.review.x - (before.x + 40 / k)) <= 1 && Math.abs(saved.review.y - before.y) <= 1,
+      `review at ${JSON.stringify(saved.review)}, expected x ${before.x + 40 / k}, y ${before.y}`);
+  },
+
+  async a_composite_named_like_its_first_state_gets_another_one() {
+    await boot('?machine=review');
+    ANSWERS.prompt.push('start');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'composite' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()?.ops?.[1]) === JSON.stringify({ op: 'add_state', name: 'start_2', type: 'state', parent: 'start' }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async the_remove_button_and_its_question_name_what_goes() {
+    await boot('?machine=review');
+    await choose('write');
+    await $('canvas').fire('keydown', { key: 'Enter', shiftKey: true, target: canvasGeometry().node('review') });  // keyboard adds
+    await $('canvas').fire('keydown', { key: ' ', ctrlKey: true, target: canvasGeometry().node('read') });
+    await settle();
+    check($('side-inspect').innerHTML.includes('Remove 2 states'), 'the button does not count what goes (read goes with review)');
+    ANSWERS.confirm = true;
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-states' }) });
+    await settle();
+    const asked = ASKED.filter(([kind]) => kind === 'confirm').pop()?.[1] || '';
+    check(asked.startsWith('Remove 2 states write, review with the states inside?'), `asked: ${asked}`);
+    check(JSON.stringify(lastEdit()?.ops) === JSON.stringify([{ op: 'remove_state', name: 'write' }, { op: 'remove_state', name: 'review' }]),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async several_states_of_a_read_only_machine_are_not_asked_about_and_the_last_ones_are_kept() {
+    await boot('?machine=ro');
+    const { node } = canvasGeometry();
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('done'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('done'), clientX: 10, clientY: 10 });
+    await settle();
+    const asked = ASKED.length;
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas') });
+    await settle();
+    check(ASKED.length === asked && TOASTS.some(([, text]) => text.includes('read-only')), 'a read-only machine asked before it refused');
+    await clickMachine('review');
+    await settle();
+    await release();
+    await settle();
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, clientX: -9000, clientY: -9000, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: $('canvas'), clientX: 9000, clientY: 9000 });
+    await $('canvas').fire('pointerup', { target: $('canvas'), clientX: 9000, clientY: 9000 });
+    await settle();
+    const edits = CALLS.filter(([, path]) => path.endsWith('/edit')).length;
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas') });
+    await settle();
+    check(CALLS.filter(([, path]) => path.endsWith('/edit')).length === edits && TOASTS.some(([, text]) => text.includes('at least one state')),
+      'removing every state was sent');
+  },
+
+  async a_double_click_with_ctrl_renames_nothing() {
+    await boot('?machine=review');
+    const { node } = canvasGeometry();
+    document.elementFromPoint = () => node('write');
+    try {
+      await $('canvas').fire('dblclick', { target: $('canvas'), ctrlKey: true, clientX: 10, clientY: 10 });
+      await settle();
+    } finally {
+      document.elementFromPoint = () => null;
+    }
+    check(!ASKED.some(([kind]) => kind === 'prompt'), `asked: ${JSON.stringify(ASKED)}`);
   },
 
   async a_click_zoomed_out_selects_and_moves_nothing() {

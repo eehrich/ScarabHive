@@ -284,7 +284,7 @@ class StateGraphService:
         return {"machine_id": machine_id, "versions": versions, "problems": self._problems(tree),
                 "graph": self._graph(tree)}
 
-    def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str]) -> dict[str, Any]:
+    async def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str]) -> dict[str, Any]:
         from .model.yamledit import EditError, apply_op
 
         self._require(machine_id)
@@ -292,7 +292,9 @@ class StateGraphService:
         if expected_version != version_of(text):
             raise ServiceError(409, f"the file changed since you read it (current version {version_of(text)})")
         try:
-            new_text = apply_op(text, op)
+            # the edit renders the file anew (a batch once per edit it holds): off the event loop. The write stays
+            # on it and checks the version again -- a request that wrote meanwhile makes this one a conflict
+            new_text = await asyncio.to_thread(apply_op, text, op)
         except EditError as exc:
             raise ServiceError(422, str(exc)) from None
         root = f"{machine_id}.yaml"

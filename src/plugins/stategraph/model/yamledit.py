@@ -48,6 +48,8 @@ STATE_FIELDS = ("type", "description", "entry", "exit", "max_visits", "timeout",
 MACHINE_FIELDS = ("title", "description", "group", "vars_from", "limits", "params", "events", "context", "vars",
                   "imports", "machines", "resources", "finally", "agent")
 _NAME = re.compile(NAME_PATTERN)
+#: The edits one batch may hold (a batch of 100 removes on a 1000-line machine takes about 10 s).
+MAX_BATCH = 100
 
 
 class EditError(ValueError):
@@ -366,7 +368,27 @@ def _put(edit: "_Edit", what: str, mapping: CommentedMap, key: str, value: Any, 
     mapping.insert(at, key, node)
 
 
+def _batch(edit: "_Edit", op: dict[str, Any]) -> str:
+    """Several edits as one (one undo step in the panel): each on the text the one before it left, all or none.
+    Each renders the file anew, so a batch holds at most MAX_BATCH of them."""
+    ops = op.get("ops")
+    if not isinstance(ops, list) or not ops:
+        raise EditError("ops: a list of edits")
+    if len(ops) > MAX_BATCH:
+        raise EditError(f"a batch holds at most {MAX_BATCH} edits, not {len(ops)}")
+    text = edit.text
+    for number, sub in enumerate(ops, 1):
+        if isinstance(sub, dict) and sub.get("op") == "batch":
+            raise EditError("a batch holds no batch")
+        try:
+            text = apply_op(text, sub)
+        except EditError as exc:
+            raise EditError(f"edit {number} of {len(ops)}: {exc.message}") from None
+    return text
+
+
 _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
+    "batch": _batch,
     "add_state": _add_state,
     "remove_state": _remove_state,
     "rename_state": _rename_state,

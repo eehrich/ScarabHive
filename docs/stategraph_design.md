@@ -1026,7 +1026,7 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations); `PUT /api/machines/{id}/layout`;
+  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.
 - **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
   the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
@@ -1055,7 +1055,10 @@ an agent's instance session and the run's own session (§5.8) open in the chat.
 
 **Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
 before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
-scrolls the graph, Ctrl+wheel zooms; narrow, the state palette is a menu and the machine list folds
+scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
+one undo step); Ctrl or Shift+click (or +Enter), or a Ctrl or Shift+drag box, selects several states -- dragging
+one moves them all, Delete removes them in one edit (a state inside a selected composite goes with it);
+narrow, the state palette is a menu and the machine list folds
 away once a machine is open. **Duplicate** copies a machine (a shipped one too) under a new id into
 the writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
 with every problem, each a link to its place. The machine's settings stand first in the overview;

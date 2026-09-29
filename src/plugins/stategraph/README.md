@@ -125,7 +125,10 @@ an interrupted run can be terminated (its `finally` activities run).
 
 Working with it: the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
 before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
-scrolls the graph, Ctrl+wheel zooms; narrow, the state palette is a menu and the machine list folds
+scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
+one undo step); Ctrl or Shift+click (or +Enter), or a Ctrl or Shift+drag box, selects several states -- dragging
+one moves them all, Delete removes them in one edit (a state inside a selected composite goes with it);
+narrow, the state palette is a menu and the machine list folds
 away once a machine is open. **Duplicate** copies a machine (a shipped one too) under a new id into
 the writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
 with every problem, each a link to its place. The machine's settings stand first in the overview;

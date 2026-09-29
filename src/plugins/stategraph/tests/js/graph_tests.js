@@ -5,7 +5,8 @@
 
 import {
   applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
-  posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId,
+  posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
+  statesWithin, toggled,
 } from '../../static/graph.js';
 
 const results = [];
@@ -285,6 +286,29 @@ test('fragmentLock: a state that uses an alias is applied in its place in the fi
   ].join('\n');
   equal(['a', 'b', 'c', 'd'].map((name) => Boolean(fragmentLock(file, file.split('\n').indexOf(`  ${name}:`) + 1))),
     [false, false, false, false], 'set_state reads the text where it stands: an alias there resolves');
+});
+
+test('toggled / statesSelection / sameSelection: Ctrl or Shift+click adds a state or takes it out', () => {
+  const two = toggled({ kind: 'state', id: 'a' }, 'b');
+  equal(two, { kind: 'states', ids: ['a', 'b'] }, 'a second state makes a selection of several');
+  equal(toggled(two, 'a'), { kind: 'state', id: 'b' }, 'taking one out of two leaves one state');
+  equal(toggled({ kind: 'state', id: 'a' }, 'a'), null, 'taking out the only one leaves none');
+  equal(toggled({ kind: 'transition', id: 'a#0' }, 'b'), { kind: 'state', id: 'b' }, 'a transition is no state to keep');
+  assert(!sameSelection(two, { kind: 'states', ids: ['a', 'c'] }), 'two selections of several differ by their states');
+  assert(sameSelection(two, { kind: 'states', ids: ['a', 'b'] }), 'the same states are the same selection');
+  equal(selectedStates(two), ['a', 'b'], 'the names of a selection of several');
+});
+
+test('statesWithin: only the states wholly inside the band', () => {
+  const nodes = { 's:a': { x: 10, y: 10, w: 50, h: 30 }, 's:b': { x: 100, y: 10, w: 50, h: 30 }, 'i:': { x: 0, y: 0, w: 14, h: 14 } };
+  equal(statesWithin(nodes, { x: 0, y: 0, w: 120, h: 60 }), ['a'], 'b reaches out of the band');
+  equal(statesWithin(nodes, { x: 0, y: 0, w: 200, h: 60 }), ['a', 'b'], 'both inside; the initial dot is no state');
+});
+
+test('outermost: a state inside another selected one goes with it', () => {
+  const parents = { read: 'review', verdict: 'review', review: null, deep: 'read' };
+  equal(outermost(['read', 'review', 'write', 'deep'], (name) => parents[name] ?? null), ['review', 'write'],
+    'read and deep lie inside review');
 });
 
 // ------------------------------------------------------------------ run

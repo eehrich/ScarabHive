@@ -103,6 +103,30 @@ def test_add_state_into_an_emptied_region_or_an_empty_state():
     assert grown == {"initial": "c", "states": {"c": {}}}
 
 
+def test_a_batch_applies_its_edits_one_after_another_as_one_edit():
+    out = apply_op(MACHINE, {"op": "batch", "ops": [{"op": "add_state", "name": "group"},
+                                                    {"op": "add_state", "name": "start", "parent": "group"},
+                                                    {"op": "remove_state", "name": "failed"}]})
+
+    states = data(out)["states"]
+    assert states["group"] == {"initial": "start", "states": {"start": {}}}, "the second edit sees the first"
+    assert "failed" not in states and not any(t.get("target") == "failed" for t in states["write"]["transitions"])
+    assert kept(out, "# a failed run") == [] and loads_cleanly(out)  # the removed state's comment goes with it
+
+
+@pytest.mark.parametrize("ops,says", [
+    ([{"op": "add_state", "name": "group"}, {"op": "remove_state", "name": "nowhere"}], "edit 2 of 2: "),
+    ([{"op": "batch", "ops": [{"op": "add_state", "name": "x"}]}], "a batch holds no batch"),
+    ([], "ops: a list of edits"),
+    ([{"op": "add_state", "name": f"s{n}"} for n in range(101)], "at most 100 edits"),
+])
+def test_a_batch_that_cannot_be_applied_whole_changes_nothing(ops, says):
+    with pytest.raises(EditError) as refused:
+        apply_op(MACHINE, {"op": "batch", "ops": ops})
+
+    assert says in refused.value.message, refused.value.message
+
+
 def test_add_state_into_a_composite_lands_in_its_region():
     out = apply_op(MACHINE, {"op": "add_state", "name": "second", "parent": "review"})
 

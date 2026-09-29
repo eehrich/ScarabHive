@@ -246,3 +246,35 @@ async def _tick():
     import asyncio
 
     await asyncio.sleep(0.02)
+
+
+async def test_an_edit_renders_the_file_off_the_event_loop(server, monkeypatch):
+    """A batch renders the file once per edit it holds -- seconds on a large machine: the API must go on meanwhile."""
+    import asyncio
+    import time
+
+    from plugins.stategraph.model import yamledit
+
+    real = yamledit.apply_op
+
+    def slow(text, op):
+        time.sleep(0.3)
+        return real(text, op)
+
+    monkeypatch.setattr(yamledit, "apply_op", slow)
+    ticks = []
+
+    async def ticker():
+        while True:
+            ticks.append(1)
+            await asyncio.sleep(0.02)
+
+    version = server.service.get_machine("hello")["versions"]["hello.yaml"]
+    beat = asyncio.create_task(ticker())
+    try:
+        answer = await server.service.edit_machine("hello", {"op": "add_state", "name": "later"}, version)
+    finally:
+        beat.cancel()
+
+    assert any(state["name"] == "later" for state in answer["graph"]["states"])
+    assert len(ticks) >= 5, f"the event loop stood still during the edit ({len(ticks)} ticks in 0.3 s)"

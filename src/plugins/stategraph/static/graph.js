@@ -186,6 +186,47 @@ export function applyPositions(layout, positions) {
   return { nodes, moved };
 }
 
+/** The state names a selection holds: one state ({kind: 'state'}), several ({kind: 'states'}), or none. */
+export function selectedStates(selection) {
+  if (selection?.kind === 'state') return [selection.id];
+  if (selection?.kind === 'states') return [...selection.ids];
+  return [];
+}
+
+/** The selection of these state names: none, one state, or several. */
+export function statesSelection(names) {
+  const unique = [...new Set(names)];
+  if (!unique.length) return null;
+  return unique.length === 1 ? { kind: 'state', id: unique[0] } : { kind: 'states', ids: unique };
+}
+
+export function sameSelection(a, b) {
+  if (a?.kind !== b?.kind) return false;
+  return a?.kind === 'states' ? a.ids.join('\n') === b.ids.join('\n') : a?.id === b?.id;
+}
+
+/** Ctrl/Shift+click: the selection with `name` added, or taken out when it was in it. */
+export function toggled(selection, name) {
+  const names = selectedStates(selection);
+  return statesSelection(names.includes(name) ? names.filter((n) => n !== name) : [...names, name]);
+}
+
+/** The states whose box lies wholly inside `band` (a rubber band, canvas units). */
+export function statesWithin(nodes, band) {
+  return Object.entries(nodes).filter(([id, box]) => id.startsWith('s:') && box.x >= band.x && box.y >= band.y
+    && box.x + box.w <= band.x + band.w && box.y + box.h <= band.y + band.h).map(([id]) => id.slice(2));
+}
+
+/** The names without those inside another of them (`parentOf(name)`: its composite's name): moving or removing a
+ * composite takes the states inside it along. */
+export function outermost(names, parentOf) {
+  const chosen = new Set(names);
+  return names.filter((name) => {
+    for (let parent = parentOf(name); parent; parent = parentOf(parent)) if (chosen.has(parent)) return false;
+    return true;
+  });
+}
+
 /** The point where the line from the centre of box towards (tx, ty) leaves the box. */
 export function clipToBox(box, tx, ty) {
   const cx = box.x + box.w / 2;
@@ -437,7 +478,7 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
 }
 
 /**
- * The canvas. Callbacks: onSelect({kind: 'state'|'transition', id} | null), onConnect(source, target),
+ * The canvas. Callbacks: onSelect({kind: 'state'|'transition', id} | {kind: 'states', ids} | null), onConnect(source, target),
  * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click.
  */
 export class Canvas {
@@ -628,10 +669,11 @@ export class Canvas {
     const run = this.overlay.run;
     const problems = this.overlay.problems || { states: {}, transitions: {} };
     const breakpoints = this.overlay.breakpoints || new Set();
+    const chosen = new Set(selectedStates(this.selected));
     for (const group of this.viewport.querySelectorAll('.sg-node')) {
       const name = group.dataset.state;
       const pinned = problems.states[name];
-      group.classList.toggle('is-selected', this.selected?.kind === 'state' && this.selected.id === name);
+      group.classList.toggle('is-selected', chosen.has(name));
       group.classList.toggle('is-active', Boolean(run?.active.has(name)));
       group.classList.toggle('is-current', run?.current === name);
       group.classList.toggle('is-paused', run?.paused === name);
@@ -743,10 +785,22 @@ export class Canvas {
       const node = event.target.closest?.('.sg-node');
       const link = event.target.closest?.('.sg-link');
       const [x, y] = this.toCanvas(event);
+      const adding = event.shiftKey || event.ctrlKey || event.metaKey;
       if (handle) {
         gesture = { type: 'connect', source: handle.dataset.handle, x, y };
+      } else if (adding) {
+        // with Ctrl or Shift: a click toggles the state under it, a drag -- from anywhere -- draws a band
+        gesture = { type: 'band', name: node?.dataset.state || null, x, y, moved: false };
       } else if (node) {
-        gesture = { type: 'move', name: node.dataset.state, x, y, moved: false };
+        // a state of a selection of several moves them all (a composite takes the states inside it along); the
+        // positions count from where they were, not step by step: a rounded step would drift, or stick when zoomed
+        const name = node.dataset.state;
+        const chosen = selectedStates(this.selected);
+        const names = this.selected?.kind === 'states' && chosen.includes(name)
+          ? outermost(chosen, (child) => this.nodes?.[stateId(child)]?.parent?.slice(2) || null) : [name];
+        const { nodes } = applyPositions(this.auto, this.positions);
+        const from = Object.fromEntries(names.map((one) => [one, relativeSpot(nodes, stateId(one))]));
+        gesture = { type: 'move', name, names, from, x, y, moved: false };
       } else if (link) {
         this.select({ kind: 'transition', id: link.dataset.transition }, { quiet: false });
         return;
@@ -766,6 +820,15 @@ export class Canvas {
         return;
       }
       const [x, y] = this.toCanvas(event);
+      if (gesture.type === 'band') {
+        gesture.moved ||= (Math.abs(x - gesture.x) + Math.abs(y - gesture.y)) * this.view.k > 4;
+        if (!gesture.moved) return;
+        gesture.band ={ x: Math.min(x, gesture.x), y: Math.min(y, gesture.y), w: Math.abs(x - gesture.x), h: Math.abs(y - gesture.y) };
+        this.dragLayer.replaceChildren();
+        const { band } = gesture;
+        el('rect', { x: band.x, y: band.y, width: band.w, height: band.h, class: 'sg-band' }, this.dragLayer);
+        return;
+      }
       if (gesture.type === 'connect') {
         gesture.moved ||= (Math.abs(x - gesture.x) + Math.abs(y - gesture.y)) * this.view.k > 4;
         const box = this.nodes[stateId(gesture.source)];
@@ -779,11 +842,9 @@ export class Canvas {
       // screen pixels, not canvas units: zoomed out, 4 units are less than a pixel and a click became a drag
       if (!gesture.moved && (Math.abs(dx) + Math.abs(dy)) * this.view.k < 4) return;
       gesture.moved = true;
-      const id = stateId(gesture.name);
-      const spot = relativeSpot(applyPositions(this.auto, this.positions).nodes, id);
-      gesture.x = x;
-      gesture.y = y;
-      this.positions = { ...this.positions, [gesture.name]: { x: spot.x + dx, y: spot.y + dy } };
+      const moved = Object.fromEntries(gesture.names.map((name) => [name,
+        { x: gesture.from[name].x + dx, y: gesture.from[name].y + dy }]));
+      this.positions = { ...this.positions, ...moved };
       this.draw();
     });
     const finish = (event) => {
@@ -797,10 +858,18 @@ export class Canvas {
         // a click on the handle is no connection: a self-transition takes a drag out and back
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sg-node');
         if (target && done.moved && event.type === 'pointerup') this.handlers.onConnect?.(done.source, target.dataset.state);
+      } else if (done.type === 'band') {
+        // a band adds what lies wholly inside it; a click toggles its state -- on the empty canvas it keeps all
+        if (done.moved && done.band) {
+          this.select(statesSelection([...selectedStates(this.selected), ...statesWithin(this.nodes, done.band)]),
+            { quiet: false });
+        } else if (!done.moved && done.name) {
+          this.select(toggled(this.selected, done.name), { quiet: false });
+        }
       } else if (done.type === 'move') {
         if (done.moved) {
           const { nodes } = applyPositions(this.auto, this.positions);
-          this.handlers.onMove?.({ [done.name]: relativeSpot(nodes, stateId(done.name)) });
+          this.handlers.onMove?.(Object.fromEntries(done.names.map((name) => [name, relativeSpot(nodes, stateId(name))])));
         } else {
           this.select({ kind: 'state', id: done.name }, { quiet: false });
         }
@@ -809,6 +878,7 @@ export class Canvas {
     svg.addEventListener('pointerup', finish);
     svg.addEventListener('pointercancel', finish);
     svg.addEventListener('dblclick', (event) => {
+      if (event.shiftKey || event.ctrlKey || event.metaKey) return;  // two quick toggles are no rename
       // pointerdown captured the pointer for the svg, and a click goes where the pointer is captured: what was
       // clicked is what lies under the pointer
       const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
@@ -821,7 +891,9 @@ export class Canvas {
       const node = event.target.closest?.('.sg-node');
       if (node && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();
-        this.select({ kind: 'state', id: node.dataset.state }, { quiet: false });
+        const name = node.dataset.state;
+        const adding = event.shiftKey || event.ctrlKey || event.metaKey;
+        this.select(adding ? toggled(this.selected, name) : { kind: 'state', id: name }, { quiet: false });
       }
     });
   }
