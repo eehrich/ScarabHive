@@ -1,0 +1,427 @@
+@database "comfyui"
+@author "Enrico Ehrich"
+@$VER: comfyui.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "ComfyUI"
+@{h1}ComfyUI
+
+An agent that should make an image, a sound, a video or a text with a
+ComfyUI server uses this plugin. You export a workflow from ComfyUI and
+name the inputs an agent may set -- the prompt, the seed, the size; the
+agent picks a workflow, fills in those inputs and gets the files back,
+and can look at them itself. With several ComfyUI servers the plugin hands
+each job to the least busy one. Every job is recorded; the @{b}ComfyUI@{ub}
+panel shows the servers and the jobs and lets you cancel one.
+
+@{image docs/panel.png "The ComfyUI panel with two servers and their jobs"}
+
+@{code}
+For users
+  @{"  The ComfyUI panel  " link panel}
+
+For agents and developers
+  @{"  The workflow tool  " link tool}
+  @{"  Waiting, results and files  " link results}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Workflows  " link workflows}
+@{body}
+@endnode
+
+@node panel "The ComfyUI panel"
+@{h1}The ComfyUI panel
+
+Open it from the launcher (@{b}Agents & tools@{ub}, "ComfyUI"). It shows
+the jobs of every session and every agent; it does not follow the chat.
+
+@{image docs/panel.png "The ComfyUI panel"}
+
+The panel loads every 5 seconds from the moment it opens; the menu next to
+the reload button sets another interval or turns it off, and the toolbar
+shows when it last loaded.
+
+@{h2}Before it lists anything
+
+Each load first asks the servers what became of the jobs still open, and
+records it:
+
+@{bullet}a job a server runs is marked running;
+@{bullet}a job no reachable server has in its queue is looked up in the
+history of the server that got it: completed or failed as it says there,
+and failed as @{i}Job lost (server restart or queue cleared)@{ui} when it is
+not there either;
+@{bullet}a job on a server that cannot be reached is left as it was; with
+no server reachable, nothing is changed.
+
+@{h2}What you see
+
+@{bullet}@{b}Servers@{ub}: every configured server, online with how many
+jobs it runs and has queued, or offline with the reason.
+@{bullet}Five figures: jobs active (queued or running), completed, failed,
+cancelled, and all recorded.
+@{bullet}@{b}Active jobs@{ub}, oldest first: the start of the job id (the
+whole id on hover), the workflow, the status, when it was submitted and
+how long it has run -- or waited, while it has not started.
+@{bullet}@{b}Recently finished@{ub}: the last ten, newest first, with the
+outcome, the error of a failed one, when and after how long it finished,
+and how many images, sounds, videos and texts it made.
+
+A click on a column head sorts by that column; the order holds when the
+list reloads.
+
+@{h2}Cancelling a job
+
+@{b}Cancel@{ub} on an active job asks first. Confirmed, a queued job is
+taken out of its server's queue, a running one is interrupted on the
+server that runs it. The list loads anew either way. When the server
+refuses or cannot be reached, or the job finished in the meantime, the
+panel says so and the job keeps what it had or gets its real outcome.
+
+@{h2}When the list cannot be loaded
+
+The panel says @{i}Jobs could not be loaded@{ui} with the reason and shows
+nothing of before, so nothing out of date passes for current.
+@endnode
+
+@node tool "The workflow tool"
+@{h1}The workflow tool
+
+The plugin gives an agent one tool, @{tt}comfyui_workflow@{utt} (the
+plugin instance's name followed by @{tt}_workflow@{utt}). Every call names
+an @{tt}operation@{utt}.
+
+@{h2}Operations
+
+@{table}
+operation | Needs | Does
+list | -- | the configured workflows with their parameters; category filters
+execute | workflow_id | queues the workflow with the given parameters; answers the prompt_id
+wait_for_completion | prompt_id | waits until the job is done, failed, lost or timed out
+status | prompt_id | the job's state now
+result | prompt_id | the job's outputs, downloaded
+load | prompt_id, file_path or filename | attaches files made before, for the model to look at
+cancel | prompt_id | takes a queued job out of the queue, interrupts a running one
+server_status | -- | whether the primary server answers, and its queue lengths
+queue | -- | the primary server's queue
+upload_image | file_path | copies a local image into ComfyUI's input folder
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+workflow_id | execute | an id that list returns
+parameters | execute | the workflow's inputs as a JSON object in a string, e.g. {"prompt": "a lighthouse at dusk", "seed": 7}
+category | list | only the workflows of that category
+prompt_id | status, result, wait_for_completion, cancel, load | the id execute returned
+poll_interval | wait_for_completion | seconds between looks, at least 1; without it 2
+include_content | result, wait_for_completion | true: the outputs are attached for the model; default false
+download | result | false: nothing is saved, only listed; default true
+output_prefix | result, wait_for_completion | saved files are named <prefix>_<name>; 1 to 64 letters, digits, _ . -; default comfy
+file_path | load, upload_image | load: a file in the output folder; upload_image: the image to upload
+filename | load | a file name looked for in the output folder
+@{body}
+
+A parameter the workflow does not name is ignored. One it names but the
+call leaves out gets its default from the workflow's configuration; with
+no default the workflow file keeps its own value. A parameter marked
+required and left out fails the call.
+
+@{h2}execute
+
+The job goes to the least busy server (see @{" Setting it up " link setup})
+and is recorded with that server; every later call about it asks that
+server. The answer: @{tt}status: queued@{utt}, @{tt}prompt_id@{utt},
+@{tt}workflow_id@{utt}, @{tt}workflow_name@{utt}.
+
+An image input -- a parameter that sets @{tt}inputs.image@{utt} of a
+@{tt}LoadImage@{utt} node -- may name a local file: a path, or just the
+name of a file the plugin downloaded before (the newest of that name
+wins). The plugin uploads it to the server that runs the job and puts the
+server's name for it into the workflow. A value that is no such file is
+passed on as it is, as the name of a file already in ComfyUI's input
+folder. Only files in @{tt}upload_source_dirs@{utt} with an image
+extension are uploaded.
+
+@{h2}status
+
+@{tt}status@{utt} is @{tt}pending@{utt} (with @{tt}position@{utt} in the
+queue), @{tt}running@{utt}, @{tt}completed@{utt}, @{tt}failed@{utt} (with
+@{tt}error@{utt}) or @{tt}unknown@{utt}: neither queued, running nor in the
+history -- or, with an @{tt}error@{utt}, the server could not be asked. For
+a recorded job the answer adds the workflow and the times:
+@{tt}submitted_at@{utt}, @{tt}started_at@{utt}, @{tt}completed_at@{utt},
+@{tt}duration_seconds@{utt}.
+
+@{h2}cancel
+
+A queued job is deleted from the queue; a running one is interrupted.
+The answer's @{tt}status@{utt}:
+
+@{bullet}@{tt}cancelled@{utt}, with @{tt}was_pending@{utt} or
+@{tt}was_running@{utt};
+@{bullet}@{tt}already_finished@{utt}, with the job's real
+@{tt}job_status@{utt} (and its error), which is recorded;
+@{bullet}@{tt}error@{utt}: the server refused, could not be reached, or
+does not know the job. An unknown job is never interrupted: an interrupt
+stops whatever job the server runs at that moment.
+
+@{h2}server_status, queue, upload_image
+
+These three ask the primary server -- the first in @{tt}servers@{utt}.
+@{tt}server_status@{utt} answers @{tt}status: online@{utt} with
+@{tt}queue_pending@{utt} and @{tt}queue_running@{utt}, @{tt}offline@{utt}
+with an @{tt}error@{utt}, or @{tt}error@{utt} with the HTTP @{tt}code@{utt}
+and an @{tt}error@{utt} when the server answers but not with its queue.
+@{tt}queue@{utt} answers the
+counts, @{tt}pending@{utt} and @{tt}running@{utt}, and the server's whole
+queue; an unreachable server is @{tt}status: error@{utt}.
+@{tt}upload_image@{utt} reads a file inside @{tt}upload_source_dirs@{utt}
+with an image extension and answers @{tt}status: uploaded@{utt} with the
+@{tt}filename@{utt} to pass as a workflow parameter. With several servers,
+pass the local file to execute instead: the upload then reaches the
+server that runs the job.
+
+@{h2}An example
+
+@{code json}
+{"operation": "list", "category": "image_generation"}
+{"operation": "execute", "workflow_id": "sdxl_txt2img", "parameters": "{\"prompt\": \"a lighthouse at dusk\", \"seed\": 7}"}
+{"operation": "wait_for_completion", "prompt_id": "5f0c...", "include_content": true}
+@{body}
+@endnode
+
+@node results "Waiting, results and files"
+@{h1}Waiting, results and files
+
+@{h2}wait_for_completion
+
+Asks the job's server every @{tt}poll_interval@{utt} seconds until the job
+is done. The answer's @{tt}status@{utt}:
+
+@{table}
+status | When
+completed | the job finished; with elapsed_seconds
+failed | the job failed on the server, with its error
+failed | lost: unknown_threshold_seconds long neither queued, running nor in the history; with unknown_duration
+unreachable | the job's server could not be asked for unknown_threshold_seconds; with a hint to ask status later
+timeout | not finished after timeout_seconds of the plugin's configuration
+cancelled | the agent's run was stopped while it waited
+@{body}
+
+The job's outcome is recorded as soon as it is seen -- a lost job as
+failed. An unreachable server records nothing: the job may still run, and
+stays active until the server answers again. Then a @{tt}status@{utt}
+call records it running, completed or failed; a job the server no longer
+knows stays active until the panel, or the first tool call after a
+restart, marks it lost. With
+@{tt}include_content: true@{utt} a completed job is answered as
+@{tt}result@{utt} answers it -- always downloaded, and attached -- plus
+@{tt}elapsed_seconds@{utt}. The wait has no timeout of its own; the
+plugin's @{tt}timeout_seconds@{utt} is the limit.
+
+@{h2}result
+
+Downloads each output file of a finished job into the output folder, named
+@{tt}<output_prefix>_<name>@{utt}, and records it. The answer:
+@{tt}status: completed@{utt}, @{tt}total_files@{utt} and
+@{tt}outputs@{utt} with the lists @{tt}images@{utt}, @{tt}audio@{utt},
+@{tt}video@{utt} (animations included) and @{tt}text@{utt}:
+
+@{bullet}a file: @{tt}filename@{utt} and @{tt}subfolder@{utt} on the
+server, @{tt}local_path@{utt} (the name in the output folder) and
+@{tt}full_path@{utt}, or @{tt}download_error@{utt};
+@{bullet}a text: its @{tt}content@{utt}, its @{tt}size_bytes@{utt}, the
+@{tt}node_id@{utt} that made it, and the file it was saved to. A text
+over 100,000 characters is cut there and marked @{tt}truncated: true@{utt};
+the file holds all of it.
+
+With @{tt}download: false@{utt} the files are listed and nothing is saved;
+texts still come with their content, and what an earlier call saved stays
+recorded for @{tt}load@{utt}. A job that failed answers
+@{tt}status: failed@{utt} with ComfyUI's messages. A job not in the
+history answers an @{tt}error@{utt} that says whether it is still pending
+or running -- then wait --, finished in the meantime -- then ask again --,
+failed, or not known at all; a server that cannot be asked is said to be
+one, with the reason. An output name from the server that would lead out
+of the output folder is not saved; the file gets a
+@{tt}download_error@{utt}.
+
+@{h2}load
+
+Attaches files made before, so the model can look at them again; a text
+file comes in the answer instead:
+
+@{bullet}@{tt}prompt_id@{utt}: every output @{tt}result@{utt} saved for the
+job;
+@{bullet}@{tt}file_path@{utt}: one file, relative to the output folder;
+@{bullet}@{tt}filename@{utt}: a name looked for in the output folder, then
+-- a bare name only -- in its subfolders.
+
+Only files inside the output folder are read; a path that leads out of it
+is refused before anything is read. The answer lists
+@{tt}loaded_files@{utt} with path, name, type and size, a text with its
+@{tt}content@{utt} -- cut at 100,000 characters as in @{tt}result@{utt}. A job whose outputs were never fetched with @{tt}result@{utt}
+has nothing to load.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description and every parameter's description come from the
+plugin's @{tt}schema.yaml@{utt}; the workflows and their parameters the
+model learns from @{tt}list@{utt}, with each parameter's name, type,
+whether it is required, its default and description. A refused call
+answers @{tt}{"error": "..."}@{utt}, some with a @{tt}hint@{utt}:
+"Unknown workflow: x" with the @{tt}available@{utt} ids, "Required
+parameter missing: prompt", "parameters is not valid JSON: ...",
+"Workflow file not found: ..." with the hint to export it in API format.
+When ComfyUI rejects the workflow, its @{tt}node_errors@{utt} come along;
+for an image input it cannot find, the hint says to pass the local path
+instead.
+
+The chat's status line ends with the result: "Queued 'SDXL
+Text-to-Image'", "'SDXL Text-to-Image' completed (41s), 1 output
+file(s)", "Job 5f0c...: running", "Job status unavailable: ...".
+
+@{h2}Attached files
+
+With @{tt}include_content@{utt} and with @{tt}load@{utt}, images, sounds
+and videos go to the model as attachments of the tool result -- kept apart
+from the result's JSON, which only names them. Texts are never attached:
+their content is in the JSON, once, up to 100,000 characters each.
+Whether the
+model can take a kind of file depends on its provider; a file too large
+to attach (images and videos over 20 MB, sounds over 25 MB) is left out.
+An attached file stays in the conversation and costs input tokens like
+the rest of it.
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary tool results: appended, nothing earlier
+changes. @{tt}queue@{utt} returns the server's whole queue, each entry
+with its full workflow -- with many jobs queued, the counts from
+@{tt}server_status@{utt} are the cheaper question.
+
+@{h2}Known gaps
+
+@{bullet}@{tt}server_status@{utt}, @{tt}queue@{utt} and
+@{tt}upload_image@{utt} see only the primary server.
+@{bullet}A parameter whose node or field is missing in the workflow file is
+skipped with a warning in the log; the job runs with the file's value.
+@{bullet}@{tt}output_prefix@{utt} given to @{tt}execute@{utt} is recorded
+but not used; the prefix is the one @{tt}result@{utt} or
+@{tt}wait_for_completion@{utt} is called with.
+@{bullet}Recorded jobs are kept; their files are deleted after
+@{tt}cleanup_age_hours@{utt}, and @{tt}load@{utt} finds nothing then.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+@{code yaml}
+plugins:
+  servers:
+    comfyui:
+      type: comfyui
+      enabled: true
+      host: "comfy.example"
+      port: 8188
+      strategy: "least_loaded"
+      timeout_seconds: 1200
+      servers:
+        - host: "comfy.example"
+          port: 8188
+        - host: "comfy.example"
+          port: 8189
+      unknown_threshold_seconds: 60
+      output_dir: "data/comfyui/outputs"
+      workflow_files_dir: "config/comfyui_workflows"
+      cleanup_age_hours: 48
+      upload_source_dirs:
+        - "data/comfyui/outputs"
+        - "data/comfyui"
+      workflows:
+        - id: sdxl_txt2img
+          ...
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+comfyui/*"
+@{body}
+
+The plugin also ships an agent, @{tt}comfyui_agent@{utt}, that generates
+media with the tool. The plugin needs @{tt}aiohttp@{utt} and a ComfyUI
+server the machine can reach.
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+host, port | 127.0.0.1, 8188 | the server when servers is not set
+servers | -- | a list of host and port; the first is the primary
+strategy | least_loaded | least_loaded asks every server for its queue and takes the shortest; random picks one
+timeout_seconds | 300 | the longest wait_for_completion waits, and the limit of a request to a server
+unknown_threshold_seconds | 60 | how long a job may be unknown, or its server unreachable, before wait_for_completion says so
+output_dir | comfyui/outputs in the data directory | where outputs are saved; may contain {session_id}
+workflow_files_dir | config/comfyui_workflows | where the workflow files lie
+workflows | -- | the workflows agents may run; see Workflows
+cleanup_age_hours | 48 | output files older than this are deleted; 0 keeps them
+upload_source_dirs | the output folder, comfyui in the data directory and one more asset folder | the only folders upload_image and image inputs read; an empty list turns both off
+upload_image_extensions | .png .jpg .jpeg .webp .gif .bmp | the files upload_image takes
+@{body}
+
+With least_loaded, a server that did not answer is skipped for a minute;
+when none answers, the primary gets the job. With
+@{tt}{session_id}@{utt} in @{tt}output_dir@{utt} each session saves into a
+folder of its own. Old files are deleted on the first tool call and after
+each @{tt}result@{utt}.
+
+The jobs are recorded in @{tt}jobs.db@{utt}, next to the output folder
+(@{tt}data/comfyui/jobs.db@{utt} by default). Instances of the plugin with
+the same output folder share it; each leaves the jobs of the other's
+servers alone.
+@endnode
+
+@node workflows "Workflows"
+@{h1}Workflows
+
+In ComfyUI, build the workflow and export it with @{b}Save (API
+Format)@{ub} into @{tt}workflow_files_dir@{utt}. Then name it in the
+plugin's configuration with the inputs an agent may set:
+
+@{code yaml}
+workflows:
+  - id: sdxl_txt2img
+    name: "SDXL Text-to-Image"
+    description: "An image from a text prompt"
+    category: image_generation
+    workflow_file: sdxl_txt2img.json
+    parameters:
+      - {name: prompt, type: string, required: true, node_id: "6", field: inputs.text,
+         description: "What the image shows"}
+      - {name: seed, type: integer, default: 42, node_id: "3", field: inputs.seed}
+@{body}
+
+@{table}
+Key | Meaning
+id | what execute names
+name, description, category | shown by list; category general when left out
+workflow_file | the file in workflow_files_dir; without it <id>.json
+parameters | the inputs an agent may set
+@{body}
+
+A parameter's @{tt}node_id@{utt} is the number ComfyUI shows on the node
+(@{tt}#6@{utt}), @{tt}field@{utt} the dot path of the value in the node
+(@{tt}inputs.text@{utt}). The value is written as the agent sends it;
+@{tt}type@{utt} only tells the model what to send. The workflow file is
+read on every execute: a changed file needs no restart.
+@endnode

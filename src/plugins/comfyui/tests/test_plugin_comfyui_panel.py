@@ -2,7 +2,7 @@
 files. Only the network is a stand-in, where the client opens its HTTP sessions: two ComfyUI servers answered in memory.
 
 Configured: ``gpu1.test:8188`` (online) and ``gpu2.test:8189`` (refuses every connection). gpu1 runs ``run-1111-a``
-and has ``wait-2222-b`` and ``other-9999-z`` (not tracked: another client's) queued; its history holds ``hist-7777-g`` (succeeded). Tracked: ``run-1111-a`` (Flux Cover,
+and has ``wait-2222-b`` and ``other-9999-z`` (not tracked: another client's) queued; its history holds ``hist-7777-g`` (succeeded). Tracked: ``run-1111-a`` (Flux Portrait,
 queued in the tracker although gpu1 runs it), ``wait-2222-b`` (Stable Audio, queued 200 s ago), ``far-6666-f`` (queued
 on gpu2), ``lost-3333-c`` (queued on gpu1, but neither in its queue nor in its history), ``hist-7777-g`` (running in the
 tracker), ``done-4444-d`` (completed ten minutes ago after 125.4 s, two images and a text; submitted before
@@ -128,16 +128,16 @@ def seed(tracker) -> None:
         conn.execute("DELETE FROM jobs")
     rows = [
         # prompt_id, workflow_id, workflow_name, status, submitted, started, completed, duration, outputs, error, server
-        ("run-1111-a", "flux_cover", "Flux Cover", "queued", ago(300), None, None, None, None, None, GPU1),
+        ("run-1111-a", "flux_portrait", "Flux Portrait", "queued", ago(300), None, None, None, None, None, GPU1),
         ("wait-2222-b", "stable_audio", "Stable Audio", "queued", ago(200), None, None, None, None, None, GPU1),
-        ("far-6666-f", "flux_cover", "Flux Cover", "queued", ago(100), None, None, None, None, None, GPU2),
-        ("lost-3333-c", "flux_cover", None, "queued", ago(400), None, None, None, None, None, GPU1),
+        ("far-6666-f", "flux_portrait", "Flux Portrait", "queued", ago(100), None, None, None, None, None, GPU2),
+        ("lost-3333-c", "flux_portrait", None, "queued", ago(400), None, None, None, None, None, GPU1),
         ("hist-7777-g", "stable_audio", "Stable Audio", "running", ago(80), ago(50), None, None, None, None, GPU1),
-        ("done-4444-d", "flux_cover", "Flux Cover", "completed", ago(9500), ago(9400), ago(600), 125.4,
+        ("done-4444-d", "flux_portrait", "Flux Portrait", "completed", ago(9500), ago(9400), ago(600), 125.4,
          json.dumps({"images": ["a.png", "b.png"], "text": ["t.txt"]}), None, GPU1),
         ("fail-5555-e", "tts", '<img src=x onerror="window.parent.__xss=1">', "failed", ago(9000), ago(8000), ago(900),
          3725, None, "<b>CUDA</b> out of memory", GPU1),
-        ("old-8888-h", "flux_cover", "Flux Cover", "completed", ago(9900), None, ago(9800), None,
+        ("old-8888-h", "flux_portrait", "Flux Portrait", "completed", ago(9900), None, ago(9800), None,
          json.dumps({"images": ["c.png", "d.png", "e.png", "f.png"]}), None, GPU1),
     ]
     with sqlite3.connect(tracker.db_path) as conn:

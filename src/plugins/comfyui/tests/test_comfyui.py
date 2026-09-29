@@ -865,12 +865,8 @@ class TestComfyUIServer:
         assert result["outputs"]["text"][0]["content"] == "This is generated text content"
         assert "local_path" in result["outputs"]["text"][0]
         
-        # Check multimodal content includes text
-        assert "_multimodal_content" in result
-        text_items = [m for m in result["_multimodal_content"] if m["type"] == "text"]
-        assert len(text_items) == 1
-        assert text_items[0]["content"] == "This is generated text content"
-        assert text_items[0]["mime_type"] == "text/plain"
+        # The image is attached; the text is not -- its content is in the answer (only Gemini reads text attachments)
+        assert [m["type"] for m in result["_multimodal_content"]] == ["image"]
 
     async def test_a_text_output_without_a_file_attaches_nothing_invalid(
         self,
@@ -980,11 +976,9 @@ class TestComfyUIServer:
         assert len(result["loaded_files"]) == 1
         assert result["loaded_files"][0]["type"] == "text"
         
-        # Check multimodal content includes text with content
-        assert "_multimodal_content" in result
-        assert len(result["_multimodal_content"]) == 1
-        assert result["_multimodal_content"][0]["type"] == "text"
-        assert result["_multimodal_content"][0]["content"] == "This is test text content for LLM analysis"
+        # The text is in the answer, not attached
+        assert result["loaded_files"][0]["content"] == "This is test text content for LLM analysis"
+        assert "_multimodal_content" not in result
     
     @pytest.mark.asyncio
     async def test_load_text_by_prompt_id(
@@ -1027,10 +1021,9 @@ class TestComfyUIServer:
         assert len(result["loaded_files"]) == 1
         assert result["loaded_files"][0]["type"] == "text"
         
-        # Content should be loaded
-        text_content = [m for m in result["_multimodal_content"] if m["type"] == "text"]
-        assert len(text_content) == 1
-        assert text_content[0]["content"] == "Generated text from workflow"
+        # Content is in the answer, not attached
+        assert result["loaded_files"][0]["content"] == "Generated text from workflow"
+        assert "_multimodal_content" not in result
     
     @pytest.mark.asyncio
     async def test_get_content_type_from_path(
@@ -1069,7 +1062,7 @@ class TestComfyUIServer:
         workflow_file: Path,
         tmp_path: Path
     ) -> None:
-        """Test _build_multimodal_content includes text properly."""
+        """Test _build_multimodal_content attaches files, never texts."""
         from plugins.comfyui.server import ComfyUIServer
         
         server = ComfyUIServer("comfyui", mock_system_config, mock_server_config)
@@ -1091,7 +1084,7 @@ class TestComfyUIServer:
             "video": [],
             "text": [
                 {
-                    "content": "Generated story text",
+                    "content": "Generated caption text",
                     "local_path": "test_text.txt",  # Filename only
                     "full_path": str(text_path),  # Full path for multimodal encoding
                     "filename": "test_text.txt",
@@ -1103,17 +1096,8 @@ class TestComfyUIServer:
         
         multimodal = server._build_multimodal_content(outputs)
         
-        # Should have both image and text
-        types = [m["type"] for m in multimodal]
-        assert "image" in types
-        assert "text" in types
-        
-        # Text should have content directly
-        text_items = [m for m in multimodal if m["type"] == "text"]
-        assert len(text_items) == 1
-        assert text_items[0]["content"] == "Generated story text"
-        assert text_items[0]["mime_type"] == "text/plain"
-        assert text_items[0]["path"] == str(text_path)
+        # Only the image: a text's content is in outputs["text"] already
+        assert [(m["type"], m["path"]) for m in multimodal] == [("image", str(image_path))]
 
 
 # =============================================================================
