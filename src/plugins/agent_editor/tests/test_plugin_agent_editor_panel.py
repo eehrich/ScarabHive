@@ -6,17 +6,17 @@ The config tree (``config/config.yaml`` includes ``llm.yaml``, ``plugins.yaml``,
 
 - ``llm.yaml``: the profiles ``fast`` (ollama small-1), ``smart`` (openai large-2) and ``deep`` (anthropic deep-3).
 - ``plugins.yaml``: ``default_config`` (``llm_profile: [fast]``, ``max_steps: 20``, the template
-  ``config/prompts/base.md``, no tools), the sub-agent manager ``manager`` (allows ``writer``), the tool servers
+  ``config/prompts/base.md``, no tools), the sub-agent manager ``manager`` (allows ``worker``), the tool servers
   ``files`` and ``web``, and the agent ``twin``.
-- ``agents/team.yaml``: ``writer`` (own model chain, ``max_steps: 30``, ``files/*``) and its child ``editor``
+- ``agents/team.yaml``: ``worker`` (own model chain, ``max_steps: 30``, ``files/*``) and its child ``editor``
   (``+web/web_search``, a description in markup), with comments.
 - ``agents/extra.yaml``: ``scout`` (disabled, an inline prompt) and ``twin`` a second time: read-only.
 - ``src/plugins/demo/agents/demo.yaml``: ``demo``, in its own group, with the template ``./prompts/demo.md``.
-- ``skills/``: the skills ``alpha`` and ``beta``; ``writer`` takes ``beta`` on demand, ``editor`` has the bare list
+- ``skills/``: the skills ``alpha`` and ``beta``; ``worker`` takes ``beta`` on demand, ``editor`` has the bare list
   ``[alpha]``.
 
 The running app, as the plugin sees it: every enabled server declared except ``demo`` (new, needs a restart);
-``writer`` runs unbuilt with ``max_steps: 25`` (changed; unbuilt, only a restart applies that). Built are only the
+``worker`` runs unbuilt with ``max_steps: 25`` (changed; unbuilt, only a restart applies that). Built are only the
 tool servers ``files`` (``files_read``, ``files_write``) and ``web`` (``web_search``, ``web_fetch``). A second
 instance, ``ae_off``, runs with authentication off.
 
@@ -52,7 +52,7 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parents[3]
-AGENTS = ("writer", "editor", "scout", "twin", "demo")
+AGENTS = ("worker", "editor", "scout", "twin", "demo")
 
 
 def config_files(root: Path) -> dict[str, str]:
@@ -112,7 +112,7 @@ def config_files(root: Path) -> dict[str, str]:
             "    manager:\n"
             "      type: sub_agent_manager\n"
             "      enabled: true\n"
-            "      allowed_agents: [writer]\n"
+            "      allowed_agents: [worker]\n"
             "    files:\n"
             "      type: example\n"
             "      enabled: true\n"
@@ -125,17 +125,17 @@ def config_files(root: Path) -> dict[str, str]:
             "      description: Defined twice\n"
         ),
         "config/agents/team.yaml": (
-            "# Agents of the writing team.\n"
+            "# Agents of the working team.\n"
             "plugins:\n"
             "  servers:\n"
-            "    # The base writer: everything the team shares.\n"
-            "    writer:\n"
+            "    # The base worker: everything the team shares.\n"
+            "    worker:\n"
             "      type: basic_agent\n"
             "      enabled: true\n"
             "      description: Writes things\n"
             "      metadata:\n"
             "        visibility: ui\n"
-            "        category: writing\n"
+            "        category: working\n"
             "        tags: [prose]\n"
             "      agent_config:\n"
             "        llm_profile: [smart, fast]\n"
@@ -144,9 +144,9 @@ def config_files(root: Path) -> dict[str, str]:
             "          on_demand: [beta]\n"
             "        tools:\n"
             "          allowed: [files/*]\n"
-            "    # A writer that also searches the web.\n"
+            "    # A worker that also searches the web.\n"
             "    editor:\n"
-            "      type: writer\n"
+            "      type: worker\n"
             "      enabled: true\n"
             "      description: <img src=x onerror=parent.__xss=1>\n"
             "      agent_config:\n"
@@ -218,13 +218,13 @@ class RuntimeStandIn:
 
 
 def running_app(config, as_started: bool = True) -> RuntimeStandIn:
-    """As started, writer runs with other max_steps than its file says; after a reload with what the file says."""
+    """As started, worker runs with other max_steps than its file says; after a reload with what the file says."""
     declarations = {}
     for name, server in config.plugins.servers.items():
         if not server.enabled or name == "demo":
             continue
         merged = get_tool_server_config(name, config)
-        if name == "writer" and as_started:
+        if name == "worker" and as_started:
             merged = merged.model_copy(update={
                 "agent_config": merged.agent_config.model_copy(update={"max_steps": 25})})
         declarations[name] = ServerDecl(name=name, type=merged.type, server_config=merged, factory=None,
@@ -282,7 +282,7 @@ def panel_app(root: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     async def reload_config():
         # a stand-in for the core route: the running app takes what the files say now
         app.state.runtime = running_app(load_settings(str(config_path)), as_started=False)
-        return {"report": {"refreshed": ["writer"], "errors": []}}
+        return {"report": {"refreshed": ["worker"], "errors": []}}
 
     @app.post("/__stub/register")
     async def register(name: str):

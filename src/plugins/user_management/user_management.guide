@@ -1,0 +1,301 @@
+@database "user_management"
+@author "Enrico Ehrich"
+@$VER: user_management.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Users"
+@{h1}Users
+
+When the server runs with sign-in, every person using it has an account:
+a username, an e-mail address, a password, a role and an active state.
+The @{b}Users@{ub} panel is where an admin keeps these accounts: creates
+them, changes a role or a password, switches an account off, deletes it.
+Only an active admin may open it, and the panel will not let an admin lock
+themselves out -- so there is always one admin left who can fix things.
+The plugin has no tools; agents never see it.
+
+@{image docs/panel.png "The Users panel with four accounts"}
+
+@{code}
+For users
+  @{"  The Users panel  " link panel}
+  @{"  Account rules  " link rules}
+  @{"  Who may do what  " link security}
+
+For developers
+  @{"  The HTTP API  " link api}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Users panel"
+@{h1}The Users panel
+
+Open it from the launcher (@{b}Administration@{ub}, "Users"). The launcher
+shows it to admins only. Anyone else is refused: by the route rule, or --
+where that rule is loosened -- by the plugin, and the panel then shows the
+server's refusal instead of a list.
+
+@{image docs/panel.png "The Users panel"}
+
+With sign-in switched off the panel says "Authentication is off" and
+shows nothing else; see @{" Setting it up " link setup}.
+
+@{h2}What you see
+
+@{bullet}Three figures: all accounts, the active ones, and the active
+admins.
+@{bullet}A search box. It filters the table by username, e-mail and full
+name as you type, ignoring case, and says when nothing matches.
+@{bullet}The accounts, newest first: the username with the full name below
+it, "(you)" on your own account and a key symbol on an account that has an
+API key; the e-mail; the role; Active or Inactive (an inactive row is
+dimmed); the day it was created and the day of its last sign-in, or
+"Never". A click on a column head sorts by that column.
+
+By default the list does not reload by itself. The reload button in the toolbar
+loads it anew; the menu next to it turns on an automatic reload (every 30
+seconds unless you pick another interval). When the list cannot be loaded
+the panel shows the reason and hides the accounts it showed before, rather
+than pretend they are still so.
+
+@{h2}What you can do
+
+@{table}
+Button | Does
+New user | opens the form for a new account
+Edit (pencil) | opens the form with the account's e-mail, full name, role and state
+Deactivate (ban) | asks, then switches the account off
+Activate (check) | shown instead on an inactive account; switches it on again
+Delete (bin) | asks, then deletes the account; it cannot be undone
+@{body}
+
+@{h2}The form
+
+A new account needs a username, an e-mail address and a password; full
+name, role (User unless you pick Admin or Guest) and Active are optional.
+Editing, the username cannot be changed and the password field is empty:
+leave it empty and the password stays, type one and it is replaced. Only
+the fields you changed are sent -- a change someone else made meanwhile to
+another field stays. When the server refuses (a name or address taken, a
+password too short or too long, an address it does not take) the reason
+appears in the form and nothing is saved; see @{" Account rules " link rules}.
+
+@{h2}Your own account
+
+You cannot deactivate, delete or demote yourself here: those buttons are
+off on your row, and in the form role and Active are locked with a note
+that another admin changes them. The server refuses the same, whatever a
+client sends. You can change your own e-mail, full name and password. A
+new password ends your other logins; the browser you set it from gets a
+fresh login and stays signed in. If your password was changed elsewhere
+since you signed in, nothing is saved and you are asked to sign in again.
+
+@{h2}When the server refuses
+
+A refused button -- the account is gone, you are no longer an admin --
+shows the reason as a message, and the list is loaded anew.
+@endnode
+
+@node rules "Account rules"
+@{h1}Account rules
+
+@{table}
+Field | Rule
+username | 3 to 50 letters, digits, @{tt}_@{utt} or @{tt}-@{utt}; unique ignoring case; cannot be changed later
+e-mail | a valid address with a domain; unique
+full name | free text, optional
+role | admin, user or guest
+active | an inactive account cannot sign in
+password | at least 8 characters and at most 72 bytes (UTF-8)
+@{body}
+
+@{bullet}The names @{tt}cli_user@{utt} and @{tt}anonymous@{utt} are
+reserved, in any case: they are the identities of the command line and of
+access without sign-in, and an account under either would share their
+sessions.
+@{bullet}Two addresses that differ only in the case of the part before the
+@{tt}\@@{utt} count as two addresses.
+@{bullet}The password is taken as typed: spaces count, nothing is trimmed.
+The 72-byte limit is the one of the hashing (bcrypt); a password with many
+accented letters or symbols reaches it before 72 characters.
+
+@{h2}What a change does to the account
+
+@{bullet}@{b}A new password@{ub} ends every login of that account made
+before it -- browser sessions and tokens alike -- and removes its API key;
+the account can make a new one after signing in.
+@{bullet}@{b}A new role@{ub} holds from the account's next request: its
+existing login is not signed again, the server reads the role from the
+database each time.
+@{bullet}@{b}Deactivating@{ub} ends the account's access at its next
+request; activating gives it back with the same password.
+@{bullet}@{b}Deleting@{ub} removes the account with its display
+preferences and its count of password changes. A new account made later under the same
+name does not inherit the old one's logins.
+
+@{h2}Roles
+
+@{tt}guest@{utt} is below @{tt}user@{utt}, @{tt}user@{utt} below
+@{tt}admin@{utt}. What each may open is decided by the route rules in
+@{tt}config/security.yaml@{utt} (@{tt}min_role@{utt} per path), not by
+this plugin; it only sets the role.
+@endnode
+
+@node security "Who may do what"
+@{h1}Who may do what
+
+@{h2}Two locks
+
+@{bullet}@{b}The route rule@{ub} in @{tt}config/security.yaml@{utt}:
+@{tt}/plugins/user_management/*@{utt} needs a signed-in account with the
+admin role. It also decides who sees the panel in the launcher.
+@{bullet}@{b}The plugin itself@{ub} checks every request for the account
+list or a change, whatever the route rules say: the caller must be signed
+in with a login token (browser cookie or @{tt}Authorization: Bearer@{utt}),
+and the account must exist, be active and be an admin @{i}in the
+database@{ui}. The role written into a token counts for nothing; an API
+key is refused; a refresh token is refused.
+
+So a user or guest can list nothing, create nothing and change nothing
+here, also when the route rules are loosened or the plugin runs under
+another instance name. With sign-in switched off the plugin refuses every
+request for data (403): there is no admin to check.
+
+@{h2}What an admin may do
+
+An active admin may list every account, create accounts with any role
+(admin included), and change or delete any account but their own in these
+ways:
+
+@{table}
+On their own account | Allowed
+e-mail, full name | yes
+password | yes; their other logins end, this browser's login is renewed (a cookie) -- a bearer token ends too
+role other than admin | no (409)
+deactivate | no (409)
+delete | no (409)
+@{body}
+
+@{h2}The last admin
+
+Every change is made by an active admin, and no admin can take the admin
+role or the active state from themselves or delete themselves. So a change
+through this panel always leaves at least one active admin: the one who
+made it. Two admins demoting each other at the same moment cannot both
+win either -- the plugin checks the caller against the database right
+before it writes, with nothing in between in which the other request
+could run.
+
+That holds for the requests one server handles. The command line
+(@{tt}agent-cli users ...@{utt}) writes the database directly and is not
+checked, and neither is a second server on the same database. If no
+active admin is left, the command line is the way back:
+
+@{code bash}
+agent-cli users update <name> --role admin --activate
+@{body}
+
+@{h2}What never leaves the server
+
+No answer carries a password hash or an API key; the list says only
+whether an account has a key. Fields a request sends that the plugin does
+not take -- a password hash, an API key, a username in a change -- are
+ignored. A creation must come as JSON: a plain form post, which another
+web page could send in your name, is refused.
+@endnode
+
+@node api "The HTTP API"
+@{h1}The HTTP API
+
+Everything under @{tt}/plugins/user_management/@{utt} (the plugin's
+instance name), JSON in and out. The panel uses exactly these; every data
+route checks the caller as in @{" Who may do what " link security}.
+
+@{table}
+Method | Path | Does
+GET | / | the panel page
+GET | /users | @{tt}{"me": <your id>, "users": [...]}@{utt}: every account, newest first
+POST | /users | creates an account: username, email, password; full_name, role, is_active optional
+PUT | /users/{id} | changes any of email, full_name, role, is_active, password; only the fields sent
+DELETE | /users/{id} | deletes the account; answers @{tt}{"deleted": <id>}@{utt}
+@{body}
+
+Each account in an answer has @{tt}id@{utt}, @{tt}username@{utt},
+@{tt}email@{utt}, @{tt}full_name@{utt}, @{tt}role@{utt},
+@{tt}is_active@{utt}, @{tt}created_at@{utt}, @{tt}last_login@{utt} and
+@{tt}has_api_key@{utt}. POST and PUT answer with the account as it is
+now. A PUT on your own account with a new password also sets a fresh
+@{tt}access_token@{utt} cookie.
+
+@{h2}Refusals
+
+@{table}
+Status | When
+401 | not signed in, an expired or refresh token, an API key, an account deleted since
+403 | not an active admin, or sign-in switched off
+404 | no account with that id
+409 | username or e-mail taken, a reserved username, a change to your own role, active state or existence, your own password changed meanwhile
+415 | a creation sent without @{tt}Content-Type: application/json@{utt}
+422 | a field against the @{" account rules " link rules}, an unknown role
+@{body}
+
+The refusal's @{tt}detail@{utt} says why, for example "Admin privileges
+required", "Username 'alice' already exists" or "You cannot take your own
+admin role or deactivate yourself"; a 422 lists each field that failed.
+
+@{h2}An example
+
+@{code bash}
+curl -X PUT http://<server>/plugins/user_management/users/7 \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"role": "guest"}'
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    user_management:
+      type: user_management
+      enabled: true
+@{body}
+
+It has no settings of its own and needs no package beyond the server's.
+What it works on is the server's sign-in, in @{tt}config/config.yaml@{utt}:
+
+@{table}
+Key | Default in code | Meaning
+auth.enabled | false | true: accounts and sign-in; false: the panel says so and the API refuses
+auth.database_path | data/users.db | the accounts database; a data/... path lands in the data directory
+@{body}
+
+The first admin comes from the command line, on the machine the server
+runs on:
+
+@{code bash}
+agent-cli users create <name> <email> --admin
+@{body}
+
+It asks for the password. From then on that admin creates the other
+accounts in the panel.
+
+The route rule that keeps the panel for admins is in
+@{tt}config/security.yaml@{utt}, under
+@{tt}auth.plugin_security.endpoint_rules@{utt}:
+
+@{code yaml}
+- pattern: "/plugins/user_management/*"
+  policy: "require_auth"
+  min_role: "admin"
+@{body}
+
+The plugin checks for an admin itself as well, so the rule is not what
+keeps the accounts safe -- it keeps the panel out of other people's
+launchers.
+@endnode
