@@ -25,10 +25,12 @@ tools:
         - Context window is approaching limits
 
         The summarization will:
-        - Preserve recent messages (default: last 10)
+        - Preserve recent messages (the last 10 unless configured otherwise)
         - Preserve all system messages
-        - Create concise summaries of older message blocks
-        - Update the conversation with summarized version
+        - Replace older messages with summaries (user messages starting "[Summary of ...]")
+        - Keep the original history when there is too little to summarize or the summaries would
+          not make it smaller by the configured minimum (30% by default); then the answer has
+          "modified": false and "not_applied" says why
 
         Example: If context feels cluttered with old discussion, call this to compress history.
       parameters:
@@ -41,14 +43,12 @@ tools:
             type: integer
             minimum: 2
             maximum: 50
-            default: 10
-            description: "Number of older messages to summarize together. Larger = more aggressive compression."
+            description: "Number of older messages to summarize together (2-50; without it the configured size, 10 by default). Larger = more aggressive compression."
           preserve_recent:
             type: integer
             minimum: 2
             maximum: 100
-            default: 10
-            description: "Number of recent messages to keep untouched. Increase if you need more recent context."
+            description: "Number of recent messages to keep untouched (2-100; without it the configured count, 10 by default). Increase if you need more recent context."
         additionalProperties: false
 
   - type: function
@@ -61,7 +61,8 @@ tools:
         - Total message count
         - Estimated token usage
         - Context window utilization percentage
-        - Recommendation (summarize vs ok)
+        - Recommendation (summarize vs ok): "summarize" when the utilization reaches the
+          automatic trigger or the message count exceeds max_messages
 
         Use this to assess if manual summarization would be beneficial before calling summarize.
       parameters:
@@ -155,16 +156,6 @@ config:
     description: "Minimum reduction ratio (0-1) to accept summary. If summary doesn't reduce by at least this much, keep original."
     minimum: 0.1
     maximum: 0.9
-
-  store_original_metadata:
-    type: boolean
-    default: true
-    description: "Store original messages in metadata for audit trail and debugging"
-
-  summary_marker_format:
-    type: string
-    default: "[Summary of {count} messages from {start_time} to {end_time}]"
-    description: "Format for summary marker. Placeholders: {count}, {start_time}, {end_time}"
 
   min_time_between_summarizations:
     type: number

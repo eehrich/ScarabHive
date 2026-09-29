@@ -41,8 +41,6 @@ _ALIASES = {
     "preserve_system_messages": "preserve_system",
     "summary_prompt_template": "prompt_template",
     "min_summary_reduction": "min_reduction",
-    "store_original_metadata": "store_metadata",
-    "summary_marker_format": "marker_format",
     "max_message_preview_length": "max_preview_length",
     "min_time_between_summarizations": "min_time_between",
     "max_tracked_sessions": "_max_tracked_sessions",

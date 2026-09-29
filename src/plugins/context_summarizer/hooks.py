@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
+from agent_system.llm.message_roles import opens_a_turn
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 from agent_system.tools.status import status_bus, StatusScope
@@ -32,7 +33,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
     Configuration is loaded from schema.yaml.
     """
 
-    def __init__(self, plugin_dir: Path | str, summarization_history: List[Dict[str, Any]] | None = None):
+    def __init__(self, plugin_dir: Path | str, summarization_history: List[Dict[str, Any]] | None = None,
+                 instance_name: str | None = None):
         """Initialize the context summarizer plugin.
 
         Args:
@@ -43,6 +45,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         # Web UI history tracking
         self.summarization_history = summarization_history
+
+        # injected_by of the summary messages: written by this plugin instance, not by a person
+        self.summary_mark = instance_name or self.name
 
         # Session tracking for rate limiting (with LRU eviction)
         self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
@@ -98,9 +103,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.llm_profile = str(config.get('llm_profile', 'turbo'))
         self.prompt_template = str(config.get('summary_prompt_template', ''))
         self.min_reduction = float(config.get('min_summary_reduction', 0.3))
-        self.store_metadata = bool(config.get('store_original_metadata', True))
-        self.marker_format = str(config.get('summary_marker_format',
-                                        '[Summary of {count} messages from {start_time} to {end_time}]'))
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
         self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
         self.max_messages = int(config.get('max_messages', 0))  # 0 = disabled
@@ -254,6 +256,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # This prevents tool_calls without responses from causing issues during summarization
             messages_as_dicts = self._remove_orphaned_tool_calls(messages_as_dicts)
 
+            # A manual run's overrides live in its own context, never on self: another session's hook running
+            # meanwhile would otherwise summarize with them. Only a manual run's: an automatic run's metadata carries
+            # what earlier hooks of the chain merged into it.
+            metadata = context.metadata if is_manual_trigger else {}
+            preserve_recent = int(metadata.get('preserve_recent', self.preserve_recent))
+            chunk_size = int(metadata.get('chunk_size', self.chunk_size))
+
             # Generate unique request_id for summarizer status messages (like tool calls)
             # This must be done BEFORE creating StatusScope so all messages use the same unique ID
             summarizer_request_id = context.request_id
@@ -261,7 +270,29 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 summarizer_request_id = await context.agent.next_internal_tool_request_id(context.request_id)
 
             # Separate messages into categories first (needed for start message)
-            system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages_as_dicts)
+            system_msgs, recent_msgs, old_msgs = self._categorize_messages(messages_as_dicts, preserve_recent)
+
+            # The heads of the running turn -- every message that opened a turn after the last final answer: the
+            # task, and what a person typed into the run since -- stay in place when a long tool chain has pushed
+            # them out of the recent messages. Summarized, the model lost its task, and with the summaries marked
+            # as injected no message opened the turn any more: /undo, /retry and file_checkpoints found none.
+            # Summaries come before, between and after them. An answer ends the turn only when no injected message
+            # follows it: a hook's follow-up (agent_continuation's "Continue") keeps the turn going, and counted
+            # from that answer the task in front of it was summarized -- also when a person wrote into the run
+            # after the follow-up.
+            answered = max((i for i, msg in enumerate(messages_as_dicts)
+                            if msg.get('role') == 'assistant' and not msg.get('tool_calls')
+                            and not (i + 1 < len(messages_as_dicts)
+                                     and messages_as_dicts[i + 1].get('injected_by'))), default=-1)
+            running = {id(msg) for msg in messages_as_dicts[answered + 1:] if opens_a_turn(msg)}
+            heads: list[tuple[int, dict]] = []  # (position among the messages summarized, the head)
+            rest = []
+            for msg in old_msgs:
+                if id(msg) in running:
+                    heads.append((len(rest), msg))
+                else:
+                    rest.append(msg)
+            old_msgs = rest
 
             if len(old_msgs) < 2:
                 # Not enough old messages to summarize
@@ -379,7 +410,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 summarized_msgs, summary_stats = await self._summarize_messages(
                     old_msgs,
                     context,
-                    scope
+                    scope,
+                    chunk_size,
+                    heads
                 )
                 # Only its own stamp: a manual run may have stamped this session meanwhile.
                 if summary_stats['llm_calls'] == 0 and self._last_summarization_time.get(session_id) == current_time:
@@ -502,7 +535,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'reduction_ratio': reduction_ratio,
                             'status': 'success',  # Mark successful summarizations
                             'before_messages': [self._serialize_message(m) for m in old_msgs],  # ALL messages that were removed (summarized)
-                            'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
+                            'after_messages': [self._serialize_message(m) for m in summarized_msgs
+                                               if all(m is not head for _, head in heads)],  # Summary messages created from old_msgs
                             'summary_stats': summary_stats
                         }
                         self._record(event)
@@ -722,7 +756,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
     def _categorize_messages(
         self,
-        messages: List[Dict]
+        messages: List[Dict],
+        preserve_recent: int | None = None
     ) -> tuple[List[Dict], List[Dict], List[Dict]]:
         """Categorize messages into system, recent, and old.
 
@@ -731,10 +766,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         Args:
             messages: List of all messages
+            preserve_recent: How many of the last messages stay (default: the configured count)
 
         Returns:
             Tuple of (system_messages, recent_messages, old_messages)
         """
+        if preserve_recent is None:
+            preserve_recent = self.preserve_recent
         system_msgs = []
         recent_msgs = []
         old_msgs = []
@@ -742,7 +780,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Phase 1: Initial categorization
         for i, msg in enumerate(messages):
             is_system = msg.get('role') == 'system'
-            is_recent = i >= len(messages) - self.preserve_recent
+            is_recent = i >= len(messages) - preserve_recent
 
             if is_system and self.preserve_system:
                 system_msgs.append((i, msg))
@@ -829,10 +867,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             if msg.get('role') == 'tool' and msg.get('tool_call_id'):
                 responded_tool_call_ids.add(msg['tool_call_id'])
         
-        # Clean assistant messages: remove tool_calls without responses
+        # Clean assistant messages: remove tool_calls without responses. Not those of the LAST message: they are
+        # still running -- a manual run is one of them -- and their results are appended after it; stripped, the
+        # results would answer calls that are no longer in the history.
         cleaned_messages = []
-        for msg in messages:
-            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+        last = len(messages) - 1
+        for index, msg in enumerate(messages):
+            if index != last and msg.get('role') == 'assistant' and msg.get('tool_calls'):
                 # Filter tool_calls to only those with responses
                 original_tool_calls = msg.get('tool_calls', [])
                 kept_tool_calls = []
@@ -993,7 +1034,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self,
         messages: List[dict],
         context: HookContext,
-        scope: StatusScope
+        scope: StatusScope,
+        chunk_size: int | None = None,
+        heads: list[tuple[int, dict]] | None = None
     ) -> tuple[List[dict], Dict[str, Any]]:
         """Summarize messages in chunks using LLM.
         
@@ -1007,32 +1050,60 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             messages: Messages to summarize
             context: Hook context with LLM access
             scope: StatusScope for progress updates
+            chunk_size: Messages per chunk (default: the configured size)
+            heads: (position in messages, message) of each head of the running turn, in order: kept as it is
+                between the chunks before and after it -- never inside a chunk
 
         Returns:
             Tuple of (summarized_messages, statistics)
         """
+        heads = heads or []
+        # the parts between the heads, each chunked on its own
+        cuts = [0, *(at for at, _ in heads), len(messages)]
+        parts = [messages[start:end] for start, end in zip(cuts, cuts[1:])]
+        unchanged = list(parts[0])
+        for (_, head), part in zip(heads, parts[1:]):
+            unchanged += [head, *part]
+
         # Get LLM with configured profile (not agent's LLM!)
         summarizer_llm = self._get_summarizer_llm(context)
         
         if not summarizer_llm:
             logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
-            return messages, {'summary_count': 0, 'reason': 'no_llm', 'llm_calls': 0}
+            return unchanged, {'summary_count': 0, 'reason': 'no_llm', 'llm_calls': 0}
 
         # Calculate effective chunk_size to respect max_chunks limit
-        effective_chunk_size = self.chunk_size
+        effective_chunk_size = self.chunk_size if chunk_size is None else chunk_size
         if self.max_chunks > 0 and len(messages) > 0:
-            # Calculate minimum chunk size needed to stay within max_chunks
-            min_chunk_size_for_limit = (len(messages) + self.max_chunks - 1) // self.max_chunks
-            if min_chunk_size_for_limit > effective_chunk_size:
+            # The smallest chunk size whose chunks, counted over every part, stay within max_chunks -- the parts
+            # are chunked apart, so a size taken from the total alone gave one chunk more per head. Counted as
+            # _create_smart_chunks cuts them: it keeps a call with its results whole, so more chunks than
+            # len / size. At the longest part every part is one chunk. Searched by halving: the greedy packing
+            # never needs more chunks at a larger size, and counting up one by one re-chunked the whole history
+            # hundreds of times inside the hook (seconds for a few thousand messages).
+            configured = effective_chunk_size
+            low, high = configured, max(configured, max(len(part) for part in parts))
+            while low < high:
+                size = (low + high) // 2
+                if sum(len(self._create_smart_chunks(part, size)) for part in parts) > self.max_chunks:
+                    low = size + 1
+                else:
+                    high = size
+            effective_chunk_size = low
+            if effective_chunk_size > configured:
                 logger.info(
-                    f"[ContextSummarizer] Increasing chunk_size from {effective_chunk_size} to "
-                    f"{min_chunk_size_for_limit} to respect max_chunks={self.max_chunks} "
-                    f"(messages={len(messages)})"
+                    f"[ContextSummarizer] Increasing chunk_size from {configured} to "
+                    f"{effective_chunk_size} to respect max_chunks={self.max_chunks} "
+                    f"(messages={len(messages)}, parts={len(parts)})"
                 )
-                effective_chunk_size = min_chunk_size_for_limit
 
         # CRITICAL: Create chunks that keep tool_calls/tool response pairs together
-        chunks = self._create_smart_chunks(messages, effective_chunk_size)
+        chunks = []
+        placed = []  # (index of the first chunk after it, head)
+        for index, part in enumerate(parts):
+            if index:
+                placed.append((len(chunks), heads[index - 1][1]))
+            chunks += self._create_smart_chunks(part, effective_chunk_size)
 
         total_chunks = len(chunks)
         
@@ -1049,7 +1120,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Check for cancellation before starting
         if cancellation_token and cancellation_token.is_cancelled:
             logger.info("[ContextSummarizer] Cancellation requested before starting")
-            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0, 'llm_calls': 0}
+            return unchanged, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0, 'llm_calls': 0}
 
         # Send progress update
         await scope.progress(
@@ -1059,7 +1130,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
         # Process ALL chunks in parallel for batch API efficiency
         summarized, stats = await self._summarize_chunks_parallel(
-            chunks, summarizer_llm, cancellation_token, scope, total_chunks
+            chunks, summarizer_llm, cancellation_token, scope, total_chunks, placed
         )
 
         return summarized, stats
@@ -1117,10 +1188,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Create summary marker with message count
             marker = f"[Summary of {len(chunk)} older messages (chunk {chunk_num}/{total_chunks})]"
 
-            # Create summary message as 'user' role so it gets persisted in sessions
+            # Create summary message as 'user' role so it gets persisted in sessions. injected_by: nobody typed it --
+            # unmarked, every summary counted as a turn a person took (/undo, /retry, turn ages, "the last thing the
+            # user wrote").
             summary_msg = {
                 'role': 'user',
                 'name': '__context_summary__',  # Special marker for UI styling
+                'injected_by': self.summary_mark,
                 'content': f"{marker}\n\n{summary_content}",
                 'metadata': {
                     'is_summary': True,
@@ -1129,10 +1203,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     'total_chunks': total_chunks
                 }
             }
-
-            # Store original messages in metadata if configured
-            if self.store_metadata:
-                summary_msg['metadata']['original_messages'] = chunk
 
             logger.debug(
                 f"[ContextSummarizer] Summarized chunk {chunk_num}/{total_chunks}: "
@@ -1175,7 +1245,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         summarizer_llm,
         cancellation_token,
         scope: StatusScope,
-        total_chunks: int
+        total_chunks: int,
+        heads: list[tuple[int, dict]] | None = None
     ) -> tuple[List[dict], Dict[str, Any]]:
         """Process all chunks in parallel for batch API efficiency.
         
@@ -1185,7 +1256,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             cancellation_token: Optional cancellation token
             scope: StatusScope for progress updates
             total_chunks: Total number of chunks
-            
+            heads: (index of the first chunk after it, message) of each head of the running turn, in order: put
+                back in front of that chunk
+
         Returns:
             Tuple of (summarized_messages, statistics)
         """
@@ -1211,6 +1284,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         cancelled = False
 
         for idx, result in enumerate(results):
+            # the turn's heads, between the chunks before and after them
+            summarized += [head for at, head in heads or [] if at == idx]
             if isinstance(result, Exception):
                 # Task raised an exception
                 logger.error(f"[ContextSummarizer] Chunk {idx + 1} raised exception: {result}")
@@ -1234,6 +1309,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 logger.warning(f"[ContextSummarizer] Unexpected result type for chunk {idx + 1}: {type(result)}")
                 summarized.extend(chunks[idx])
                 failed_chunks += 1
+
+        summarized += [head for at, head in heads or [] if at >= len(results)]
 
         # Send completion progress
         await scope.progress(
@@ -1278,6 +1355,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     if isinstance(item, dict) and item.get('type') == 'text':
                         text_parts.append(item.get('text', ''))
                 content = ' '.join(text_parts)
+
+            # A call's name and arguments are only in tool_calls: without them an assistant turn that only calls a
+            # tool reached the summarizer as an empty line, and the results below it answered nothing it could see.
+            for call in msg.get('tool_calls') or []:
+                function = (call.get('function') if isinstance(call, dict) else None) or {}
+                content = f"{content or ''}\n[calls {function.get('name', 'a tool')}({function.get('arguments', '')})]".strip()
 
             timestamp = msg.get('timestamp', '')
             ts_str = f" ({timestamp})" if timestamp else ""
