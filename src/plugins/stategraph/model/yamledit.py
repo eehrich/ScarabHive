@@ -287,6 +287,38 @@ def _set_initial(edit: "_Edit", op: dict[str, Any]) -> str:
     return edit.result()
 
 
+def _group_states(edit: "_Edit", op: dict[str, Any]) -> str:
+    """States side by side into a new composite ``name`` at the first one's place, in their order there. An initial
+    that named one of them names the composite, whose own initial is that state (else the first of them).
+    Transitions keep their targets: names are unique within a machine, and a transition may cross composites."""
+    names = op.get("names")
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names) \
+            or len(set(names)) != len(names):
+        raise EditError("names: the states to group, each once")
+    found = [edit.state(n) for n in names]
+    name = _new_name(edit, op.get("name"))
+    region, owner = found[0].region, found[0].owner
+    if any(state.region is not region for state in found):
+        raise EditError("the states to group sit side by side: all at the top level, or all in one composite")
+    what = f"group into {name!r}"
+    edit.untied(what, region)
+    if edit.tied(*(state.body for state in found), whole=True):
+        raise EditError(_shared(what))
+    keys = [key for key in region if key in names]
+    entered = owner.get("initial") in keys
+    if entered:  # the owner's initial follows (set_initial below): refused here, under this edit's name
+        edit.untied(what, owner)
+    first = str(owner["initial"]) if entered else str(keys[0])
+    lines = edit.regroup(region, keys, name, first)  # planned on the unedited document
+    inner = CommentedMap((key, region[key]) for key in keys)
+    at = list(region).index(keys[0])
+    for key in keys:
+        del region[key]
+    region.insert(at, name, CommentedMap([("initial", first), ("states", inner)]))
+    text = edit.result(lines=lines)
+    return apply_op(text, {"op": "set_initial", "name": name}) if entered else text
+
+
 def _update_state(edit: "_Edit", op: dict[str, Any]) -> str:
     """Keys of a state and of its activity: ``fields`` {key: value}, ``do`` {key: value}; null or "" removes one,
     ``{"$yaml": text}`` is a value typed as YAML (an object). Another activity kind is its key set and the old one's
@@ -398,6 +430,7 @@ _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
     "remove_transition": _remove_transition,
     "move_transition": _move_transition,
     "set_initial": _set_initial,
+    "group_states": _group_states,
     "update_state": _update_state,
     "update_machine": _update_machine,
 }
@@ -728,6 +761,22 @@ class _Edit:
         chunk, rest = self.lines[start:end], self.lines[:start] + self.lines[end:]
         at = target[0] if to < index else target[1] - (end - start)  # type: ignore[index]
         return rest[:at] + chunk + rest[at:]
+
+    def regroup(self, region: CommentedMap, keys: list[str], name: str, initial: str) -> Optional[list[str]]:
+        """The lines with the entries ``keys`` of ``region`` (in its order) cut out and put, two levels deeper, under
+        a new entry ``name`` -- its initial, then its states -- at the first one's place."""
+        blocks = [self.block(region, key) for key in keys]
+        if any(block is None for block in blocks):
+            return None
+        pad, step = " " * region.lc.key(keys[0])[1], " " * self.indent[0]
+        chunk = [f"{pad}{name}:\n", f"{pad}{step}initial: {initial}\n", f"{pad}{step}states:\n"]
+        for number, (start, end) in enumerate(blocks):  # type: ignore[misc]
+            if number and not self.lines[start - 1].strip():
+                chunk.append("\n")  # the blank line that parted them
+            chunk.extend(f"{step}{step}{line}" if line.strip() else line for line in self.lines[start:end])
+        start, end = blocks[0]  # type: ignore[misc]
+        lines = self._cut(blocks[1:]) if len(blocks) > 1 else list(self.lines)  # type: ignore[arg-type]
+        return lines[:start] + chunk + lines[end:]  # the cut blocks all lie below the first one
 
     def value_text(self, region: CommentedMap, name: str) -> list[str]:
         """The texts a state's value is shown as (the panel's stateFragment): the lines below its key, dedented; or

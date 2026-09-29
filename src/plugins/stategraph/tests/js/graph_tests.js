@@ -6,7 +6,7 @@
 import {
   applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
-  statesWithin, toggled,
+  groupedSpots, selectedTransitions, selectionOf, statesWithin, toggled,
 } from '../../static/graph.js';
 
 const results = [];
@@ -288,15 +288,38 @@ test('fragmentLock: a state that uses an alias is applied in its place in the fi
     [false, false, false, false], 'set_state reads the text where it stands: an alias there resolves');
 });
 
-test('toggled / statesSelection / sameSelection: Ctrl or Shift+click adds a state or takes it out', () => {
-  const two = toggled({ kind: 'state', id: 'a' }, 'b');
-  equal(two, { kind: 'states', ids: ['a', 'b'] }, 'a second state makes a selection of several');
-  equal(toggled(two, 'a'), { kind: 'state', id: 'b' }, 'taking one out of two leaves one state');
-  equal(toggled({ kind: 'state', id: 'a' }, 'a'), null, 'taking out the only one leaves none');
-  equal(toggled({ kind: 'transition', id: 'a#0' }, 'b'), { kind: 'state', id: 'b' }, 'a transition is no state to keep');
-  assert(!sameSelection(two, { kind: 'states', ids: ['a', 'c'] }), 'two selections of several differ by their states');
-  assert(sameSelection(two, { kind: 'states', ids: ['a', 'b'] }), 'the same states are the same selection');
-  equal(selectedStates(two), ['a', 'b'], 'the names of a selection of several');
+test('toggled / selectionOf / sameSelection: Ctrl or Shift+click adds a state or a transition or takes it out', () => {
+  const state = (id) => ({ kind: 'state', id });
+  const edge = (id) => ({ kind: 'transition', id });
+  const two = toggled(state('a'), state('b'));
+  equal(two, { kind: 'many', states: ['a', 'b'], transitions: [] }, 'a second state makes a selection of several');
+  equal(toggled(two, state('a')), state('b'), 'taking one out of two leaves one state');
+  equal(toggled(state('a'), state('a')), null, 'taking out the only one leaves none');
+  const mixed = toggled(edge('a#0'), state('b'));
+  equal(mixed, { kind: 'many', states: ['b'], transitions: ['a#0'] }, 'a state joins a selected transition');
+  equal(toggled(mixed, state('b')), edge('a#0'), 'the transition left is selected alone');
+  equal(toggled(state('a'), edge('a#0')), { kind: 'many', states: ['a'], transitions: ['a#0'] }, 'a transition joins a state');
+  equal(toggled(toggled(two, edge('a#1')), edge('a#1')), two, 'a transition is taken out as it came in');
+  assert(!sameSelection(two, selectionOf(['a', 'c'])), 'two selections of several differ by their states');
+  assert(!sameSelection(selectionOf(['a'], ['b']), selectionOf(['a', 'b'])), '... and by what is a state, what a transition');
+  assert(sameSelection(two, selectionOf(['a', 'b', 'a'])), 'the same states are the same selection');
+  assert(sameSelection(null, null) && !sameSelection(state('a'), edge('a')), 'none is none; a state is no transition');
+  equal([selectedStates(mixed), selectedTransitions(mixed), selectedTransitions(edge('x#0'))], [['b'], ['a#0'], ['x#0']],
+    'what a selection holds');
+});
+
+test('groupedSpots: grouped states stay where they are drawn, inside the new composite\'s box', () => {
+  const p = { x: 100, y: 100, w: 400, h: 300, parent: null };
+  const a = { x: 150, y: 180, w: 80, h: 30, parent: 's:p' };
+  const b = { x: 300, y: 200, w: 80, h: 30, parent: 's:p' };
+  const spots = groupedSpots({ 's:p': p, 's:a': a, 's:b': b }, ['a', 'b'], 'g');
+  equal(spots, { g: { x: 50 - PAD.left, y: 80 - PAD.top }, a: { x: PAD.left, y: PAD.top }, b: { x: 150 + PAD.left, y: 20 + PAD.top } },
+    'relative to their parent p, the composite around them');
+  // laid out anew (ELK puts them elsewhere): the positions draw them where they were
+  const auto = { 's:p': p, 's:g': { x: 0, y: 0, w: 10, h: 10, parent: 's:p' },
+    's:a': { ...a, x: 0, y: 0, parent: 's:g' }, 's:b': { ...b, x: 0, y: 0, parent: 's:g' } };
+  const { nodes: drawn } = applyPositions({ nodes: auto }, spots);
+  equal([drawn['s:a'].x, drawn['s:a'].y, drawn['s:b'].x, drawn['s:b'].y], [150, 180, 300, 200], 'drawn where they were');
 });
 
 test('statesWithin: only the states wholly inside the band', () => {

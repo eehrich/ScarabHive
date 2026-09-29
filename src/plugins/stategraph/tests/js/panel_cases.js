@@ -36,6 +36,7 @@ const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scen
   profiles: ['fast'] };
 let editAnswer = null;
 let reviewAnswer = MACHINE;  // GET of the review machine
+let layoutsKept = false;  // a layout PUT to review changes what its GET answers, as the server's does
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
@@ -65,7 +66,10 @@ globalThis.SERVER = (method, path, json) => {
   if (copy) return method === 'PUT' ? { machine_id: copy[1], versions: {}, problems: [], graph: MACHINE.graph } : { ...MACHINE, id: copy[1] };
   if (p === '/machines/review' && method === 'DELETE') return { deleted: 'review', files: ['review.yaml'], kept_module: null };
   if (p.endsWith('/edit')) return editAnswer || MACHINE;
-  if (p.endsWith('/layout')) return {};
+  if (p.endsWith('/layout')) {
+    if (layoutsKept && p === '/machines/review/layout') reviewAnswer = { ...reviewAnswer, layout: json.layout };
+    return {};
+  }
   if (p.startsWith('/runs?')) return runsAnswer ? runsAnswer(new URLSearchParams(p.split('?')[1]))
     : [...RUNS, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' }];
   if (p === '/runs/r1/events') return { accepted: true, frame: '' };
@@ -493,10 +497,13 @@ const CASES = {
     await boot('?machine=review');
     const node = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name);
     await choose('write');
-    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
-    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 10, clientY: 10 });
-    await settle();
-    check($('side-inspect').innerHTML.includes('2 states'), 'not two states selected');
+    const link = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#1');  // write → failed
+    for (const target of [node('failed'), link]) {
+      await $('canvas').fire('pointerdown', { button: 0, target, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target, clientX: 10, clientY: 10 });
+      await settle();
+    }
+    check($('side-inspect').innerHTML.includes('2 states, 1 transition'), 'not two states and a transition selected');
     reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' }, graph: { ...MACHINE.graph,
       states: MACHINE.graph.states.filter((s) => s.name !== 'failed'),
       transitions: MACHINE.graph.transitions.filter((t) => t.target !== 'failed') } };
@@ -595,7 +602,7 @@ const CASES = {
     await settle();
     check($('side-inspect').innerHTML.includes('Remove 2 states'), 'the button does not count what goes (read goes with review)');
     ANSWERS.confirm = true;
-    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-states' }) });
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-selection' }) });
     await settle();
     const asked = ASKED.filter(([kind]) => kind === 'confirm').pop()?.[1] || '';
     check(asked.startsWith('Remove 2 states write, review with the states inside?'), `asked: ${asked}`);
@@ -640,6 +647,144 @@ const CASES = {
       document.elementFromPoint = () => null;
     }
     check(!ASKED.some(([kind]) => kind === 'prompt'), `asked: ${JSON.stringify(ASKED)}`);
+  },
+
+  async ctrl_click_on_transitions_selects_them_with_states_and_delete_removes_them_in_one_edit() {
+    await boot('?machine=review');
+    const { node } = canvasGeometry();
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    const click = async (target) => {
+      await $('canvas').fire('pointerdown', { button: 0, target, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target, clientX: 10, clientY: 10 });
+      await settle();
+    };
+    await choose('done');
+    for (const id of ['write#0', 'write#1', 'review#0', 'write#1']) await click(link(id));  // write#1 on and off again
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">1 state, 2 transitions</h3>'),
+      'the inspector does not show 1 state and 2 transitions');
+    check(link('write#0').classList.contains('is-selected') && !link('write#1').classList.contains('is-selected')
+      && node('done').classList.contains('is-selected'), 'the selected transitions are not marked');
+    // review → done goes with done anyway: it is not counted, nor sent
+    check($('side-inspect').innerHTML.includes('Remove 1 state and 1 transition'), 'the button does not count what goes');
+    // a band around no state keeps the transitions
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas'), shiftKey: true, clientX: -9000, clientY: -9000, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: $('canvas'), clientX: -8000, clientY: -8000 });
+    await $('canvas').fire('pointerup', { target: $('canvas'), clientX: -8000, clientY: -8000 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">1 state, 2 transitions</h3>'), 'the band dropped the transitions');
+    ANSWERS.confirm = true;
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas') });
+    await settle();
+    const asked = ASKED.filter(([kind]) => kind === 'confirm').pop()?.[1] || '';
+    check(asked === 'Remove the state done and the transition write → review? 1 transition into it goes too.', `asked: ${asked}`);
+    check(JSON.stringify(lastEdit()?.ops) === JSON.stringify([{ op: 'remove_transition', source: 'write', index: 0 },
+      { op: 'remove_state', name: 'done' }]), `sent: ${JSON.stringify(lastEdit())}`);
+    await $('side-inspect').fire('click', { target: element('button', { 'data-select-transition': 'write#0' }) });
+    await settle();
+    check($('side-inspect').innerHTML.includes('<h3 class="sg-inspect-name">Transition</h3>'), 'the inspector\'s button did not open the transition');
+  },
+
+  async transitions_of_one_state_are_removed_from_its_last_one_on() {
+    await boot('?machine=review');
+    const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
+    await $('canvas').fire('pointerdown', { button: 0, target: link('write#0'), clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    for (const id of ['read#0', 'write#1']) {
+      await $('canvas').fire('pointerdown', { button: 0, target: link(id), shiftKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target: link(id), clientX: 10, clientY: 10 });
+      await settle();
+    }
+    ANSWERS.confirm = true;
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove-selection' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()?.ops) === JSON.stringify([{ op: 'remove_transition', source: 'read', index: 0 },
+      { op: 'remove_transition', source: 'write', index: 1 }, { op: 'remove_transition', source: 'write', index: 0 }]),
+    `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async group_puts_the_selected_states_into_a_composite_where_they_are_and_an_undo_puts_them_back() {
+    layoutsKept = true;
+    await boot('?machine=review');
+    const { node, boxOf } = canvasGeometry();
+    const circle = node('done').querySelector('.sg-shape');  // a final is drawn as circles in its box
+    const [cx, cy, r] = ['cx', 'cy', 'r'].map((key) => Number(circle.getAttribute(key)));
+    const drawn = { write: boxOf('write'), done: { x: cx - r, y: cy - r } };
+    await choose('write');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('done'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('done'), clientX: 10, clientY: 10 });
+    await settle();
+    ANSWERS.prompt.push('drafting');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'group_states', names: ['write', 'done'], name: 'drafting' }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout.positions);
+    const spots = layouts().pop();
+    for (const name of ['write', 'done']) {
+      const at = { x: spots.drafting.x + spots[name].x, y: spots.drafting.y + spots[name].y };
+      check(Math.abs(at.x - drawn[name].x) <= 1 && Math.abs(at.y - drawn[name].y) <= 1,
+        `${name} at ${JSON.stringify(at)} in the composite, drawn at ${JSON.stringify(drawn[name])}`);
+    }
+    // another state dragged after the group keeps its place through the undo and the redo
+    await $('canvas').fire('pointerdown', { button: 0, target: node('failed'), clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointermove', { target: node('failed'), clientX: 60, clientY: 30 });
+    await $('canvas').fire('pointerup', { target: node('failed'), clientX: 60, clientY: 30 });
+    await settle();
+    const failed = layouts().pop().failed;
+    const sorted = (spotsByName) => JSON.stringify(Object.keys(spotsByName).sort().map((key) => [key, spotsByName[key]]));
+    await $('undo').fire('click', {});
+    await settle();
+    check(sorted(layouts().pop()) === sorted({ ...MACHINE.layout.positions, failed }), `undone to ${JSON.stringify(layouts().pop())}`);
+    await $('redo').fire('click', {});
+    await settle();
+    check(sorted(layouts().pop()) === sorted({ ...spots, failed }), `redone to ${JSON.stringify(layouts().pop())}`);
+  },
+
+  async states_of_two_levels_are_not_grouped_a_composite_takes_its_own_along_and_unplaced_ones_get_no_position() {
+    await boot('?machine=review');
+    const { node } = canvasGeometry();
+    const add = async (name) => {
+      await $('canvas').fire('pointerdown', { button: 0, target: node(name), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+      await $('canvas').fire('pointerup', { target: node(name), clientX: 10, clientY: 10 });
+      await settle();
+    };
+    await choose('write');
+    await add('read');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(!ASKED.some(([kind]) => kind === 'prompt') && TOASTS.some(([, text]) => text.includes('side by side')),
+      `asked ${JSON.stringify(ASKED)}, told ${JSON.stringify(TOASTS)}`);
+    await add('read');
+    await add('failed');
+    ANSWERS.prompt.push('ends');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(lastEdit()?.op === 'group_states' && !CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/layout')),
+      'states laid out by ELK got positions');
+    await choose('review');
+    await add('read');  // inside review: it goes along, the two are one level
+    ANSWERS.prompt.push('outer');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'group' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'group_states', names: ['review'], name: 'outer' }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_renamed_states_position_goes_back_with_an_undo() {
+    await boot('?machine=review');
+    ANSWERS.prompt.push('finished');
+    document.elementFromPoint = () => canvasGeometry().node('done');
+    try {
+      await $('canvas').fire('dblclick', { target: $('canvas'), clientX: 10, clientY: 10 });
+      await settle();
+    } finally {
+      document.elementFromPoint = () => null;
+    }
+    const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout.positions);
+    check(JSON.stringify(layouts().pop()) === JSON.stringify({ finished: MACHINE.layout.positions.done }), `renamed: ${JSON.stringify(layouts())}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(JSON.stringify(layouts().pop()) === JSON.stringify(MACHINE.layout.positions), `undone: ${JSON.stringify(layouts())}`);
   },
 
   async a_click_zoomed_out_selects_and_moves_nothing() {

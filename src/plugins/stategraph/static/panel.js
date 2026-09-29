@@ -7,8 +7,8 @@ import {
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import {
-  Canvas, fragmentLock, keepingChoices, outermost, posixPath, problemIndex, putTyped, runOverlay, sameSelection, shorten,
-  stateFragment, statesSelection, typedIn,
+  Canvas, fragmentLock, groupedSpots, keepingChoices, outermost, posixPath, problemIndex, putTyped, runOverlay,
+  sameSelection, selectionOf, shorten, stateFragment, typedIn,
 } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
@@ -33,7 +33,7 @@ const S = {
   machines: [],
   machine: null,        // get_machine: id, file, writable, root_file, files, versions, problems, graph, layout
   kinds: [],
-  selection: null,      // {kind: 'state' | 'transition', id} or {kind: 'states', ids}: several states
+  selection: null,      // {kind: 'state' | 'transition', id} or {kind: 'many', states, transitions} (graph.js selectionOf)
   problems: { states: {}, transitions: {}, machine: [] },
   drafts: {},           // YAML tab: path -> unsaved text
   inspectorDrafts: new Set(),  // the inspector's forms with text typed and not applied: 'state', 'transition:<id>'
@@ -104,6 +104,9 @@ const canvas = new Canvas($('canvas'), {
 function positions() {
   return S.machine?.layout?.positions || {};
 }
+
+/** The stored positions of these states, null for one laid out by ELK. */
+const spotsOf = (names) => Object.fromEntries(names.map((name) => [name, positions()[name] ?? null]));
 
 function redrawOverlay() {
   canvas.setOverlay({
@@ -272,8 +275,11 @@ function showMachine(machine) {
   S.problems = problemIndex(machine.graph, machine.problems, machine.file || machine.root_file);
   if (S.selection?.kind === 'state' && !stateOf(S.selection.id)) S.selection = null;
   if (S.selection?.kind === 'transition' && !transitionOf(S.selection.id)) S.selection = null;
-  // states gone meanwhile (an undo, another editor) leave the selection: one left is a state of its own again
-  if (S.selection?.kind === 'states') S.selection = statesSelection(S.selection.ids.filter((name) => stateOf(name)));
+  // states and transitions gone meanwhile (an undo, another editor) leave the selection: one left is selected alone
+  if (S.selection?.kind === 'many') {
+    S.selection = selectionOf(S.selection.states.filter((name) => stateOf(name)),
+      S.selection.transitions.filter((id) => transitionOf(id)));
+  }
   $('placeholder').hidden = true;
   $('machineView').hidden = false;
   drawHead();
@@ -342,7 +348,6 @@ function drawPalette() {
 
 // ------------------------------------------------------------------ edits
 
-/** One graph edit on the saved file; the answer is the machine as it is now. */
 /** A read-only machine takes no edit: said once, before anything is asked. */
 function readOnly() {
   if (S.machine?.writable) return false;
@@ -350,7 +355,9 @@ function readOnly() {
   return true;
 }
 
-async function edit(op, { from = null } = {}) {
+/** One graph edit on the saved file; the answer is the machine as it is now. `places`: the states whose positions
+ * the caller changes after it (a rename, a group) -- an undo puts theirs back with the text, and only theirs. */
+async function edit(op, { from = null, places = null } = {}) {
   const m = S.machine;
   if (readOnly()) return null;
   if (hasDrafts() && !await confirm('The YAML tab has unsaved changes, and graph edits change the saved file. Discard the unsaved changes?',
@@ -364,14 +371,15 @@ async function edit(op, { from = null } = {}) {
     return null;
   }
   const before = m.files[m.root_file];
+  const spots = places && spotsOf(places);
   try {
     const next = await api(`${API}/machines/${enc(m.id)}/edit`, {
       method: 'POST', json: { op, expected_version: m.versions[m.root_file] }, quiet: true,
     });
     S.drafts = {};
     setDirty(false);
-    S.undo = [...S.undo.filter((step) => step.machine === m.id), { machine: m.id, text: before, version: next.versions[next.root_file] }]
-      .slice(-UNDO_DEPTH);
+    S.undo = [...S.undo.filter((step) => step.machine === m.id),
+      { machine: m.id, text: before, version: next.versions[next.root_file], ...(spots && { spots }) }].slice(-UNDO_DEPTH);
     S.redo = [];  // a new edit: what was undone before it is not redone over it
     // read now, not before the request: what was typed meanwhile counts, what was discarded meanwhile does not
     const others = new Set([...S.inspectorDrafts].filter((key) => key !== from && key !== 'state'));
@@ -458,7 +466,20 @@ async function travel(back) {
     return;
   }
   S[from] = S[from].slice(0, -1);
-  S[to] = [...S[to], { machine: m.id, text: replaced, version: saved.versions[m.root_file] }].slice(-UNDO_DEPTH);
+  S[to] = [...S[to], { machine: m.id, text: replaced, version: saved.versions[m.root_file],
+    ...(step.spots && { spots: spotsOf(Object.keys(step.spots)) }) }].slice(-UNDO_DEPTH);
+  if (step.spots) {  // the edit moved positions as well: those go back with its text, the others stay
+    const kept = { ...positions() };
+    for (const [name, spot] of Object.entries(step.spots)) {
+      if (spot) kept[name] = spot;
+      else delete kept[name];
+    }
+    try {
+      await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout: { version: 1, positions: kept } }, quiet: true });
+    } catch (error) {
+      if (!isAborted(error)) toast(`Positions not put back: ${errorText(error)}`, { kind: 'warn' });
+    }
+  }
   S.drafts = {};
   await openMachine(m.id, { keepRun: true, discard: true });
 }
@@ -523,9 +544,10 @@ async function addState({ kind = null, type = 'state' }) {
 async function renameState(old) {
   const name = await askName(`New name for ${old} (every transition to it and every initial naming it follows):`, old, old);
   if (!name) return;
-  if (!await edit({ op: 'rename_state', old, new: name })) return;
+  const placed = Object.hasOwn(positions(), old);
+  if (!await edit({ op: 'rename_state', old, new: name }, { places: placed ? [old, name] : null })) return;
   keepNextPoints((p) => (p.state === old ? { ...p, state: name } : p));  // the next run's breakpoints follow it
-  if (Object.hasOwn(positions(), old)) {
+  if (placed) {
     const moved = { ...positions(), [name]: positions()[old] };
     delete moved[old];
     S.machine.layout = { version: 1, positions: {} };
@@ -562,23 +584,58 @@ async function removeState(name) {
 /** The states a removal of these takes: those not inside another of them (that one takes them along). */
 const removedWith = (names) => outermost(names.filter((name) => stateOf(name)), (name) => stateOf(name)?.parent || null);
 
-/** Remove several states in one edit (one undo step); a state inside another of them goes with it. */
-async function removeStates(names) {
-  const outer = removedWith(names);
-  if (!outer.length || readOnly()) return;
-  if (S.machine.graph.states.every((s) => s.parent || outer.includes(s.name))) {
+/** What removing these states and transitions takes: the outermost states, and the transitions that do not go with
+ * them anyway (out of one, or into one). `within(name)`: the state goes. */
+function removal(names, ids) {
+  const states = removedWith(names);
+  const within = (name) => { for (let n = name; n; n = stateOf(n)?.parent) if (states.includes(n)) return true; return false; };
+  const transitions = ids.map((id) => transitionOf(id)).filter((t) => t && !within(t.source) && !within(t.target));
+  return { states, transitions, within };
+}
+
+const counted = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+const arrow = (t) => `${t.source} → ${t.target ?? '(internal)'}`;
+
+/** Remove states and transitions in one edit (one undo step); a state inside another of them goes with it. */
+async function removeSelection(names, ids) {
+  const { states, transitions, within } = removal(names, ids);
+  if ((!states.length && !transitions.length) || readOnly()) return;
+  if (states.length && S.machine.graph.states.every((s) => s.parent || states.includes(s.name))) {
     toast('A machine needs at least one state: keep one of the top level.', { kind: 'warn' });
     return;
   }
-  const within = (name) => { for (let n = name; n; n = stateOf(n)?.parent) if (outer.includes(n)) return true; return false; };
   const incoming = S.machine.graph.transitions.filter((t) => within(t.target) && !within(t.source)).length;
-  const nested = S.machine.graph.states.some((s) => s.parent && outer.includes(s.parent));
-  const message = [`Remove ${outer.length === 1 ? 'the state' : `${outer.length} states`} ${outer.join(', ')}`
-    + `${nested ? ' with the states inside' : ''}?`,
-  incoming ? `${incoming} transition${incoming > 1 ? 's' : ''} into ${outer.length === 1 ? 'it' : 'them'} go${incoming > 1 ? '' : 'es'} too.` : '']
+  const nested = S.machine.graph.states.some((s) => s.parent && states.includes(s.parent));
+  const parts = [
+    states.length && `${states.length === 1 ? 'the state' : `${states.length} states`} ${states.join(', ')}${nested ? ' with the states inside' : ''}`,
+    transitions.length && `${transitions.length === 1 ? 'the transition' : `${transitions.length} transitions`} ${transitions.map(arrow).join(', ')}`,
+  ];
+  const message = [`Remove ${parts.filter(Boolean).join(' and ')}?`,
+    incoming ? `${counted(incoming, 'transition')} into ${states.length === 1 ? 'it' : 'them'} go${incoming > 1 ? '' : 'es'} too.` : '']
     .filter(Boolean).join(' ');
-  if (!await confirm(message, { title: 'Remove states', danger: true, confirmLabel: 'Remove' })) return;
-  if (await edit({ op: 'batch', ops: outer.map((name) => ({ op: 'remove_state', name })) })) choose(null);
+  if (!await confirm(message, { title: 'Remove', danger: true, confirmLabel: 'Remove' })) return;
+  // the later transitions of a state first: the earlier ones keep their index
+  const ops = [...transitions].sort((a, b) => a.source.localeCompare(b.source) || b.index - a.index)
+    .map((t) => ({ op: 'remove_transition', source: t.source, index: t.index }))
+    .concat(states.map((name) => ({ op: 'remove_state', name })));
+  if (await edit({ op: 'batch', ops })) choose(null);
+}
+
+/** Group states side by side into a new composite (one edit); placed by hand, they keep their place in it. */
+async function groupStates(names) {
+  const outer = removedWith(names);
+  if (!outer.length || readOnly()) return;
+  if (new Set(outer.map((name) => stateOf(name).parent || '')).size > 1) {
+    toast('Only states side by side are grouped: all at the top level, or all in one composite.', { kind: 'warn' });
+    return;
+  }
+  const name = await askName(`Name of the composite around ${outer.join(', ')}:`, freeName('group'));
+  if (!name) return;
+  const placed = outer.some((one) => Object.hasOwn(positions(), one)) && canvas.nodes;
+  const spots = placed ? groupedSpots(canvas.nodes, outer, name) : null;
+  if (!await edit({ op: 'group_states', names: outer, name }, { places: spots ? Object.keys(spots) : null })) return;
+  if (spots) await savePositions(spots);
+  choose({ kind: 'state', id: name });
 }
 
 async function connect(source, target) {
@@ -702,16 +759,27 @@ function drawInspector() {
     </div>`);
     return;
   }
-  if (sel?.kind === 'states') {
-    const names = sel.ids.filter((name) => stateOf(name));
+  if (sel?.kind === 'many') {
+    const names = sel.states.filter((name) => stateOf(name));
+    const edges = sel.transitions.map((id) => transitionOf(id)).filter(Boolean);
+    const goes = removal(names, sel.transitions);
+    const gone = [goes.states.length && counted(goes.states.length, 'state'),
+      goes.transitions.length && counted(goes.transitions.length, 'transition')].filter(Boolean);
     render(pane, html`<div class="sg-section">
-      <div class="sg-inspect-head"><h3 class="sg-inspect-name">${names.length} states</h3></div>
+      <div class="sg-inspect-head"><h3 class="sg-inspect-name">${[names.length && counted(names.length, 'state'),
+        edges.length && counted(edges.length, 'transition')].filter(Boolean).join(', ')}</h3></div>
       <div class="pk-row">${names.map((name) => html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost"
-        data-select-state="${name}">${name}</button>`)}</div>
-      <p class="pk-help">Drag one of them to move them all; Delete removes them. Ctrl or Shift+click adds or takes out a
-        state, Ctrl or Shift+drag draws a box and adds what lies wholly inside it.</p>
-      ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-states">
-        ${icon('trash-2', { size: 'sm' })} Remove ${removedWith(names).length === 1 ? 'it' : `${removedWith(names).length} states`}</button>` : ''}
+        data-select-state="${name}">${name}</button>`)}${edges.map((t) => html`<button type="button"
+        class="pk-btn pk-btn--sm pk-btn--ghost pk-mono" data-select-transition="${t.id}">${arrow(t)}</button>`)}</div>
+      <p class="pk-help">Drag one of the states to move them all; Delete removes what is selected, Group puts the states
+        into a new composite. Ctrl or Shift+click adds or takes out a state or a transition, Ctrl or Shift+drag draws a
+        box and adds the states wholly inside it.</p>
+      ${m.writable ? html`<div class="pk-row">
+        ${goes.states.length ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="group">
+          ${icon('network', { size: 'sm' })} Group</button>` : ''}
+        <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-selection">
+          ${icon('trash-2', { size: 'sm' })} Remove ${goes.states.length + goes.transitions.length === 1 ? 'it' : gone.join(' and ')}</button>
+      </div>` : ''}
     </div>`);
     return;
   }
@@ -841,7 +909,8 @@ function machineOverview() {
       <dl class="pk-kv"><dt>initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
         <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd></dl>
       <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
-        Ctrl or Shift+click (or Enter), or a Ctrl or Shift+drag box, selects several states: drag one to move them all, Delete removes them.</p>
+        Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box the states in it: drag
+        one to move them all, Delete removes them, Group puts the states into a new composite.</p>
     </div>
     ${m.problems.length ? html`<div class="sg-section"><h4 class="sg-section-title">Problems</h4>${problemButtons(m.problems)}</div>` : ''}
     <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
@@ -1065,9 +1134,11 @@ $('side-inspect').addEventListener('click', async (event) => {
   const name = S.selection?.kind === 'state' ? S.selection.id : null;
   const act = target.dataset.act;
   if (target.dataset.selectState) return choose({ kind: 'state', id: target.dataset.selectState });
+  if (target.dataset.selectTransition) return choose({ kind: 'transition', id: target.dataset.selectTransition });
   if (target.dataset.problem !== undefined && !S.selection) return goToProblem(S.machine.problems[Number(target.dataset.problem)]);
   if (target.dataset.openMachine) return openMachine(target.dataset.openMachine);
-  if (act === 'remove-states' && S.selection?.kind === 'states') return removeStates(S.selection.ids);
+  if (act === 'remove-selection' && S.selection?.kind === 'many') return removeSelection(S.selection.states, S.selection.transitions);
+  if (act === 'group' && S.selection?.kind === 'many') return groupStates(S.selection.states);
   if (act === 'rename' && name) return renameState(name);
   if (act === 'initial' && name) {
     const state = stateOf(name);
@@ -2432,7 +2503,7 @@ $('canvas').addEventListener('keydown', (event) => {
   }
   if ((event.key === 'Delete' || event.key === 'Backspace') && S.selection) {
     event.preventDefault();
-    if (S.selection.kind === 'states') removeStates(S.selection.ids);
+    if (S.selection.kind === 'many') removeSelection(S.selection.states, S.selection.transitions);
     else if (S.selection.kind === 'state') removeState(S.selection.id);
     else removeTransition(S.selection.id);
   }

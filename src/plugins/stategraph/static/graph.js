@@ -186,29 +186,38 @@ export function applyPositions(layout, positions) {
   return { nodes, moved };
 }
 
-/** The state names a selection holds: one state ({kind: 'state'}), several ({kind: 'states'}), or none. */
-export function selectedStates(selection) {
-  if (selection?.kind === 'state') return [selection.id];
-  if (selection?.kind === 'states') return [...selection.ids];
-  return [];
+/** The selection of these state names and transition ids: null, one state {kind: 'state', id}, one transition
+ * {kind: 'transition', id}, or several of either {kind: 'many', states, transitions}. */
+export function selectionOf(states = [], transitions = []) {
+  const names = [...new Set(states)];
+  const ids = [...new Set(transitions)];
+  if (names.length + ids.length > 1) return { kind: 'many', states: names, transitions: ids };
+  if (names.length) return { kind: 'state', id: names[0] };
+  return ids.length ? { kind: 'transition', id: ids[0] } : null;
 }
 
-/** The selection of these state names: none, one state, or several. */
-export function statesSelection(names) {
-  const unique = [...new Set(names)];
-  if (!unique.length) return null;
-  return unique.length === 1 ? { kind: 'state', id: unique[0] } : { kind: 'states', ids: unique };
+export function selectedStates(selection) {
+  if (selection?.kind === 'state') return [selection.id];
+  return selection?.kind === 'many' ? [...selection.states] : [];
+}
+
+export function selectedTransitions(selection) {
+  if (selection?.kind === 'transition') return [selection.id];
+  return selection?.kind === 'many' ? [...selection.transitions] : [];
 }
 
 export function sameSelection(a, b) {
-  if (a?.kind !== b?.kind) return false;
-  return a?.kind === 'states' ? a.ids.join('\n') === b.ids.join('\n') : a?.id === b?.id;
+  const key = (s) => (s ? [s.kind, ...selectedStates(s), '', ...selectedTransitions(s)].join('\n') : '');
+  return key(a) === key(b);
 }
 
-/** Ctrl/Shift+click: the selection with `name` added, or taken out when it was in it. */
-export function toggled(selection, name) {
-  const names = selectedStates(selection);
-  return statesSelection(names.includes(name) ? names.filter((n) => n !== name) : [...names, name]);
+/** Ctrl/Shift+click: the selection with `item` ({kind: 'state' | 'transition', id}) added, or taken out when it was
+ * in it. */
+export function toggled(selection, item) {
+  const flip = (ids) => (ids.includes(item.id) ? ids.filter((id) => id !== item.id) : [...ids, item.id]);
+  const states = selectedStates(selection);
+  const transitions = selectedTransitions(selection);
+  return item.kind === 'state' ? selectionOf(flip(states), transitions) : selectionOf(states, flip(transitions));
 }
 
 /** The states whose box lies wholly inside `band` (a rubber band, canvas units). */
@@ -454,6 +463,16 @@ export function relativeSpot(nodes, id) {
   return { x: Math.round(box.x - (parent ? parent.x : 0)), y: Math.round(box.y - (parent ? parent.y : 0)) };
 }
 
+/** Positions that keep states side by side where they are drawn (`nodes`) once they are grouped into a new
+ * composite `name`: the composite's box around theirs, each of them relative to it. (Close to the top of a composite
+ * they sit in, the new one's title band pushes them down: applyPositions keeps it inside that one's padding.) */
+export function groupedSpots(nodes, names, name) {
+  const spots = names.map((one) => relativeSpot(nodes, stateId(one)));
+  const x = Math.min(...spots.map((spot) => spot.x)) - PAD.left;
+  const y = Math.min(...spots.map((spot) => spot.y)) - PAD.top;
+  return Object.fromEntries([[name, { x, y }], ...names.map((one, i) => [one, { x: spots[i].x - x, y: spots[i].y - y }])]);
+}
+
 // ---------------------------------------------------------------------------------------------------- the canvas
 
 function el(name, attrs = {}, parent = null) {
@@ -478,7 +497,7 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
 }
 
 /**
- * The canvas. Callbacks: onSelect({kind: 'state'|'transition', id} | {kind: 'states', ids} | null), onConnect(source, target),
+ * The canvas. Callbacks: onSelect(a selection, see selectionOf), onConnect(source, target),
  * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click.
  */
 export class Canvas {
@@ -670,6 +689,7 @@ export class Canvas {
     const problems = this.overlay.problems || { states: {}, transitions: {} };
     const breakpoints = this.overlay.breakpoints || new Set();
     const chosen = new Set(selectedStates(this.selected));
+    const chosenEdges = new Set(selectedTransitions(this.selected));
     for (const group of this.viewport.querySelectorAll('.sg-node')) {
       const name = group.dataset.state;
       const pinned = problems.states[name];
@@ -701,7 +721,7 @@ export class Canvas {
     for (const group of this.edgeLayer.querySelectorAll('.sg-link')) {
       const id = group.dataset.transition;
       const pinned = problems.transitions[id];
-      group.classList.toggle('is-selected', this.selected?.kind === 'transition' && this.selected.id === id);
+      group.classList.toggle('is-selected', chosenEdges.has(id));
       group.classList.toggle('is-last', run?.lastEdge === id);
       group.classList.toggle('has-error', Boolean(pinned?.errors));
       const edge = group.querySelector('.sg-edge');
@@ -789,14 +809,16 @@ export class Canvas {
       if (handle) {
         gesture = { type: 'connect', source: handle.dataset.handle, x, y };
       } else if (adding) {
-        // with Ctrl or Shift: a click toggles the state under it, a drag -- from anywhere -- draws a band
-        gesture = { type: 'band', name: node?.dataset.state || null, x, y, moved: false };
+        // with Ctrl or Shift: a click toggles the state or transition under it, a drag -- from anywhere -- draws a band
+        const item = node ? { kind: 'state', id: node.dataset.state }
+          : link ? { kind: 'transition', id: link.dataset.transition } : null;
+        gesture = { type: 'band', item, x, y, moved: false };
       } else if (node) {
         // a state of a selection of several moves them all (a composite takes the states inside it along); the
         // positions count from where they were, not step by step: a rounded step would drift, or stick when zoomed
         const name = node.dataset.state;
         const chosen = selectedStates(this.selected);
-        const names = this.selected?.kind === 'states' && chosen.includes(name)
+        const names = this.selected?.kind === 'many' && chosen.includes(name)
           ? outermost(chosen, (child) => this.nodes?.[stateId(child)]?.parent?.slice(2) || null) : [name];
         const { nodes } = applyPositions(this.auto, this.positions);
         const from = Object.fromEntries(names.map((one) => [one, relativeSpot(nodes, stateId(one))]));
@@ -859,12 +881,12 @@ export class Canvas {
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.sg-node');
         if (target && done.moved && event.type === 'pointerup') this.handlers.onConnect?.(done.source, target.dataset.state);
       } else if (done.type === 'band') {
-        // a band adds what lies wholly inside it; a click toggles its state -- on the empty canvas it keeps all
+        // a band adds the states wholly inside it; a click toggles what it is on -- on the empty canvas it keeps all
         if (done.moved && done.band) {
-          this.select(statesSelection([...selectedStates(this.selected), ...statesWithin(this.nodes, done.band)]),
-            { quiet: false });
-        } else if (!done.moved && done.name) {
-          this.select(toggled(this.selected, done.name), { quiet: false });
+          this.select(selectionOf([...selectedStates(this.selected), ...statesWithin(this.nodes, done.band)],
+            selectedTransitions(this.selected)), { quiet: false });
+        } else if (!done.moved && done.item) {
+          this.select(toggled(this.selected, done.item), { quiet: false });
         }
       } else if (done.type === 'move') {
         if (done.moved) {
@@ -893,7 +915,7 @@ export class Canvas {
         event.preventDefault();
         const name = node.dataset.state;
         const adding = event.shiftKey || event.ctrlKey || event.metaKey;
-        this.select(adding ? toggled(this.selected, name) : { kind: 'state', id: name }, { quiet: false });
+        this.select(adding ? toggled(this.selected, { kind: 'state', id: name }) : { kind: 'state', id: name }, { quiet: false });
       }
     });
   }

@@ -127,6 +127,83 @@ def test_a_batch_that_cannot_be_applied_whole_changes_nothing(ops, says):
     assert says in refused.value.message, refused.value.message
 
 
+def test_group_states_puts_them_into_a_new_composite_at_the_first_ones_place():
+    out = apply_op(MACHINE, {"op": "group_states", "names": ["review", "write"], "name": "draft"})
+
+    doc = data(out)
+    assert list(doc["states"]) == ["draft", "done", "failed"]
+    assert doc["states"]["draft"]["initial"] == "write" and list(doc["states"]["draft"]["states"]) == ["write", "review"]
+    assert doc["initial"] == "draft", "the machine's initial named one of them: it names the composite"
+    assert "  draft:\n    initial: write\n    states:\n      # the writer\n      write:\n" in out
+    assert "            target: failed\n\n      # the review phase\n      review:\n" in out, "the blank line between them"
+    assert out.endswith(MACHINE[MACHINE.index("\n  done:"):]) and kept(out) == []
+    tree = load_tree("review.yaml", SnapshotSources({"review.yaml": out}))
+    assert not [p for p in tree.problems if p.code in ("SG001", "SG002")], "the transitions reach their states"
+
+
+def test_group_states_starts_the_composite_where_the_machine_started():
+    text = MACHINE.replace("initial: write   # start here", "initial: review   # start here")
+
+    doc = data(apply_op(text, {"op": "group_states", "names": ["write", "review"], "name": "draft"}))
+
+    assert doc["initial"] == "draft" and doc["states"]["draft"]["initial"] == "review"
+
+
+def test_group_states_inside_a_composite_leaves_the_machines_initial():
+    out = apply_op(MACHINE, {"op": "group_states", "names": ["verdict"], "name": "ends"})
+
+    doc = data(out)
+    assert doc["initial"] == "write" and doc["states"]["review"]["initial"] == "read"
+    assert doc["states"]["review"]["states"]["ends"] == {"initial": "verdict", "states": {"verdict": {"type": "final"}}}
+    assert kept(out) == [] and loads_cleanly(out)
+
+
+def test_group_states_written_in_flow_style_is_rendered():
+    text = "stategraph: 1\nid: m\ninitial: a\nstates: {a: {transitions: [{target: b}]}, b: {type: final}}\n"
+
+    out = apply_op(text, {"op": "group_states", "names": ["a", "b"], "name": "all"})
+
+    assert data(out)["initial"] == "all" and data(out)["states"] == {
+        "all": {"initial": "a", "states": {"a": {"transitions": [{"target": "b"}]}, "b": {"type": "final"}}}}
+
+
+@pytest.mark.parametrize("op,says", [
+    ({"names": ["write", "read"], "name": "x"}, "side by side"),
+    ({"names": ["write"], "name": "done"}, "exists already"),
+    ({"names": ["write", "nowhere"], "name": "x"}, "no state 'nowhere'"),
+    ({"names": ["write", "write"], "name": "x"}, "each once"),
+    ({"names": [], "name": "x"}, "each once"),
+    ({"names": ["write"], "name": "Bad"}, "must match"),
+])
+def test_group_states_that_cannot_be_grouped_changes_nothing(op, says):
+    with pytest.raises(EditError) as refused:
+        apply_op(MACHINE, {"op": "group_states", **op})
+
+    assert says in refused.value.message, refused.value.message
+
+
+def test_group_states_refuses_a_state_an_alias_shares():
+    text = ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a: &base\n    transitions:\n      - target: b\n"
+            "  b:\n    type: final\n  c: *base\n")
+
+    with pytest.raises(EditError) as refused:
+        apply_op(text, {"op": "group_states", "names": ["a"], "name": "x"})
+
+    assert "shared" in refused.value.message
+
+
+def test_group_states_refuses_an_initial_that_follows_into_a_merged_composite_under_its_own_name():
+    text = ("stategraph: 1\nid: m\ninitial: a\nbase: &base\n  description: shared\nstates:\n  a:\n    <<: *base\n"
+            "    initial: x\n    states:\n      x:\n        transitions:\n          - target: y\n      y:\n        type: final\n")
+
+    with pytest.raises(EditError) as refused:
+        apply_op(text, {"op": "group_states", "names": ["x"], "name": "g"})
+    grouped = data(apply_op(text, {"op": "group_states", "names": ["y"], "name": "g"}))  # the initial stays: no change
+
+    assert refused.value.message.startswith("group into 'g': ") and "shared" in refused.value.message
+    assert grouped["states"]["a"]["initial"] == "x" and list(grouped["states"]["a"]["states"]) == ["x", "g"]
+
+
 def test_add_state_into_a_composite_lands_in_its_region():
     out = apply_op(MACHINE, {"op": "add_state", "name": "second", "parent": "review"})
 
