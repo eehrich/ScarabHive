@@ -18,7 +18,6 @@ import shutil
 import uuid
 import subprocess
 import sys
-import termios
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,11 @@ import pytest
 from agent_system.utils import process_sandbox as ps
 from agent_system.utils.process_sandbox import ProcessSandbox, SandboxUnavailable
 from seatbelt_rig import Area, on_macos, probe_scratch_in, probed_seatbelt, seatbelt_area
+
+try:
+    import termios
+except ImportError:  # Windows: the file is still collected, its pty tests run on macOS
+    termios = None
 
 #: A workspace name that rewrites the profile if spliced into its text: it
 #: closes the rule, opens "/" for writing, and swallows the rest.

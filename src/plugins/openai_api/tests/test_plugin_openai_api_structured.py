@@ -18,6 +18,11 @@ from pydantic import BaseModel
 from agent_system.llm import structured_output
 from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, close_schema_workers
 from test_plugin_openai_api import ScriptedAgent, build, client, raw
+import signal
+
+# re holds the GIL, so only a signal ends a runaway match; Windows has no SIGALRM, and there
+# the thread method still ends a hang (by ending the process) instead of the run never starting.
+TIMEOUT_METHOD = "signal" if hasattr(signal, "SIGALRM") else "thread"
 
 pytestmark = pytest.mark.filterwarnings("ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning")
 
@@ -320,7 +325,7 @@ WIDE = {"type": "object", "properties": {f"field_{i:04d}": {"type": "string", "p
                                          for i in range(1_600)}}
 
 
-@pytest.mark.timeout(20, method="signal")  # a hang ends the test, not the run
+@pytest.mark.timeout(20, method=TIMEOUT_METHOD)  # a hang ends the test, not the run
 @pytest.mark.parametrize("schema, named", [
     ({"default": {"$schema": "https://json-schema.org/draft/2020-12/schema", "pattern": "^(a|a)*$"},
       "$ref": "#/default"}, "'#/default'"),
@@ -375,7 +380,7 @@ async def test_a_schema_the_review_used_against_the_process_is_a_400_that_leaves
     assert psutil.Process().memory_info().rss - rss_before < 64 * 1024 * 1024
 
 
-@pytest.mark.timeout(20, method="signal")
+@pytest.mark.timeout(20, method=TIMEOUT_METHOD)
 async def test_a_wide_schema_is_built_off_the_event_loop(tmp_path, monkeypatch):
     """Inside the subset and some 90 000 characters: checked in the worker, while the loop goes on. The
     worker's functions are booby-trapped in this process -- a check moved back here (into a thread, say)

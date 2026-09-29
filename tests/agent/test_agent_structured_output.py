@@ -29,6 +29,11 @@ from agent_system.servers.agent.server import (
 )
 from agent_system.tools.base import ToolServerRegistry
 from test_agent_finish_reason_transport import _llm_system
+import signal
+
+# re holds the GIL, so only a signal ends a runaway match; Windows has no SIGALRM, and there
+# the thread method still ends a hang (by ending the process) instead of the run never starting.
+TIMEOUT_METHOD = "signal" if hasattr(signal, "SIGALRM") else "thread"
 
 SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}},
           "required": ["city", "days"], "additionalProperties": False}
@@ -484,7 +489,7 @@ def _chain(n: int) -> dict:
     return defs
 
 
-@pytest.mark.timeout(15, method="signal")
+@pytest.mark.timeout(15, method=TIMEOUT_METHOD)
 async def test_an_answer_that_cannot_be_checked_in_time_ends_the_run_without_a_pointless_correction(monkeypatch):
     """Inside the subset and still minutes of work: the worker is killed at its deadline, the check fails
     closed, and the model is not asked again -- no answer would be checked any faster."""
@@ -564,7 +569,7 @@ async def test_a_call_to_a_model_that_cannot_take_the_format_is_never_sent_witho
 
 
 
-@pytest.mark.timeout(10, method="signal")
+@pytest.mark.timeout(10, method=TIMEOUT_METHOD)
 async def test_a_catastrophic_pattern_leaves_the_event_loop_serving_other_work():
     """The check runs in the schema worker's process: while the run's answer (and its correction) run out of
     time against the pattern there, a ticker on this loop keeps ticking."""

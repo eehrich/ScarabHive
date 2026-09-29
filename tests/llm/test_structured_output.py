@@ -24,6 +24,11 @@ from agent_system.llm.structured_output import (
     check_answer, close_schema_workers, declared_support, instruction_text, prepare_response_format,
     require_response_format, supports_response_format, worker_pool,
 )
+import signal
+
+# re holds the GIL, so only a signal ends a runaway match; Windows has no SIGALRM, and there
+# the thread method still ends a hang (by ending the process) instead of the run never starting.
+TIMEOUT_METHOD = "signal" if hasattr(signal, "SIGALRM") else "thread"
 
 SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}},
           "required": ["city", "days"], "additionalProperties": False}
@@ -171,7 +176,7 @@ def _chain(n: int, keyword: str = "anyOf") -> dict:
     return {"$defs": defs, "$ref": f"#/$defs/a{n}"}
 
 
-@pytest.mark.timeout(5, method="signal")  # a cycle the walk does not notice never ends
+@pytest.mark.timeout(5, method=TIMEOUT_METHOD)  # a cycle the walk does not notice never ends
 def test_fan_out_and_cycles_on_one_value_are_refused_recursion_that_descends_is_not():
     started = time.monotonic()
     with pytest.raises(SchemaRefused, match="subschemas through anyOf and \\$ref"):
@@ -359,7 +364,7 @@ def test_the_answer_is_bounded_and_the_errors_reported_too():
     assert len(errors) == 9 and errors[-1] == "... and 12 more"
 
 
-@pytest.mark.timeout(10, method="signal")  # stock anyOf takes 2^depth: minutes at this depth
+@pytest.mark.timeout(10, method=TIMEOUT_METHOD)  # stock anyOf takes 2^depth: minutes at this depth
 def test_a_recursive_union_is_checked_in_linear_time_valid_or_not():
     """pydantic writes ``child: A | B | None`` into A and B; the discriminating field comes after the
     recursive one. Stock anyOf checks every failing branch to its end: 2^depth, for a valid answer too."""
@@ -402,7 +407,7 @@ def test_a_message_quotes_no_more_than_its_limit_of_the_value():
     assert errors and all(len(line) <= schema_worker.MAX_ERROR_CHARS for line in errors)
 
 
-@pytest.mark.timeout(5, method="signal")  # re holds the GIL: only a signal ends a runaway match
+@pytest.mark.timeout(5, method=TIMEOUT_METHOD)  # re holds the GIL: only a signal ends a runaway match
 def test_a_catastrophic_pattern_is_a_mismatch_within_its_time_not_a_hang():
     started = time.monotonic()
     errors = _check(json.dumps(EVIL_TEXT), {"type": "string", "pattern": CATASTROPHIC})["errors"]
@@ -410,7 +415,7 @@ def test_a_catastrophic_pattern_is_a_mismatch_within_its_time_not_a_hang():
     assert "in the time allowed" in errors[0], errors
 
 
-@pytest.mark.timeout(5, method="signal")
+@pytest.mark.timeout(5, method=TIMEOUT_METHOD)
 def test_the_time_limit_is_for_the_whole_answer_not_per_value():
     schema = {"type": "array", "items": {"type": "string", "pattern": CATASTROPHIC}}
     started = time.monotonic()
@@ -480,7 +485,7 @@ COSTLY = {"type": "array", "items": {"$ref": "#/$defs/a7"}, "$defs": _chain(7)["
 COSTLY_ANSWER = "[" + ",".join(["1"] * 200_000) + "]"
 
 
-@pytest.mark.timeout(10, method="signal")  # checked in this process instead, it would run for minutes
+@pytest.mark.timeout(10, method=TIMEOUT_METHOD)  # checked in this process instead, it would run for minutes
 async def test_a_check_past_its_deadline_is_killed_fails_closed_and_the_next_gets_a_fresh_worker(monkeypatch):
     import psutil
 
@@ -524,7 +529,7 @@ async def test_a_cancelled_check_takes_its_worker_with_it():
     assert pool.killed == 1 and not pool._all, "a worker was left behind"
 
 
-@pytest.mark.timeout(15, method="signal")
+@pytest.mark.timeout(15, method=TIMEOUT_METHOD)
 async def test_no_more_workers_run_at_once_than_the_cap(monkeypatch):
     monkeypatch.setattr(structured_output, "CHECK_DEADLINE", 1.0)
     fmt = await prepare_response_format(ResponseFormat(schema=COSTLY))
@@ -563,7 +568,7 @@ async def test_the_api_process_runs_no_schema_check_itself(monkeypatch):
     assert (await check_answer('{"any": 1}', ResponseFormat(type=JSON_OBJECT))).ok  # json only, no schema
 
 
-@pytest.mark.timeout(10, method="signal")
+@pytest.mark.timeout(10, method=TIMEOUT_METHOD)
 async def test_the_worker_applies_the_subset_to_whatever_it_is_sent():
     """A check request with a schema that never went through prepare: the worker refuses it itself, instead of
     matching its patternProperties with jsonschema's untimed re."""
@@ -657,7 +662,7 @@ async def test_a_worker_that_ended_while_idle_is_replaced_and_the_request_goes_t
     assert pool.started == 2
 
 
-@pytest.mark.timeout(15, method="signal")
+@pytest.mark.timeout(15, method=TIMEOUT_METHOD)
 async def test_a_request_that_finds_no_free_worker_in_time_is_busy_not_the_schema_s_fault(monkeypatch):
     monkeypatch.setattr(structured_output, "WORKER_COUNT", 1)
     monkeypatch.setattr(structured_output, "QUEUE_DEADLINE", 0.3)
@@ -736,7 +741,7 @@ async def test_a_fresh_worker_that_breaks_its_pipe_is_a_checker_error_not_a_cras
 
 
 
-@pytest.mark.timeout(20, method="signal")
+@pytest.mark.timeout(20, method=TIMEOUT_METHOD)
 async def test_one_user_s_flood_does_not_hold_up_another_user(monkeypatch):
     """Two workers, one user sending six costly checks at once: that user's lane runs one at a time, the other
     worker stays free, and another user's prepare goes through at once."""
