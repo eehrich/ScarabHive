@@ -452,12 +452,20 @@ async def test_stopping_the_plugin_ends_its_schema_workers(tmp_path):
                                              response_format=Trip)
 
     def workers() -> list:
-        return [child for child in psutil.Process().children()
-                if any("schema_worker.py" in part for part in child.cmdline())]
+        found = []
+        for child in psutil.Process().children():
+            try:
+                if any("schema_worker.py" in part for part in child.cmdline()):
+                    found.append(child)
+            except (psutil.ZombieProcess, psutil.NoSuchProcess):
+                pass  # another test's child, ended and not collected yet: its command line is gone
+        return found
 
-    assert workers(), "fixture: no schema worker ran"
+    running = workers()
+    assert running, "fixture: no schema worker ran"
     await plugin.stop_plugin()
     assert not workers()
+    assert not [worker.pid for worker in running if worker.is_running()], "a worker was left behind, or not collected"
 
 
 

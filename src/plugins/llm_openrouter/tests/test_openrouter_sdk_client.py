@@ -493,6 +493,7 @@ class TestThisRouteDoesNotStream:
         assert sibling.supports_streaming() is True
 
 
+@needs_the_sdk
 class TestStructuredOutputTravelsThroughTheSdk:
     """``text.format`` is built by the inherited Responses builder; the SDK's typed ``text``
     parameter has to carry it to the wire, all three of its fields intact."""
