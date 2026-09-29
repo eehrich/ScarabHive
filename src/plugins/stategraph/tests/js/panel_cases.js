@@ -787,6 +787,29 @@ const CASES = {
     check(JSON.stringify(layouts().pop()) === JSON.stringify(MACHINE.layout.positions), `undone: ${JSON.stringify(layouts())}`);
   },
 
+  async a_transition_back_between_two_states_is_drawn_beside_the_other() {
+    const there = MACHINE.graph.transitions.find((t) => t.source === 'write' && t.target === 'review');
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
+      { ...there, id: 'review#9', source: 'review', target: 'write', index: 9, path: 'states.review.transitions[9]' }] } };
+    await boot('?machine=review');
+    const middle = (id) => {
+      const d = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id).querySelector('.sg-edge').getAttribute('d');
+      const [x1, y1, x2, y2] = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      return [(x1 + x2) / 2, (y1 + y2) / 2];
+    };
+    const [a, b] = [middle(there.id), middle('review#9')];
+    const apart = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    check(Math.abs(apart - 12) < 0.5, `the two lines are ${apart} apart, not 12: ${JSON.stringify([a, b])}`);
+    // one without a transition back goes through the middles of its states: write → failed (a box, a circle)
+    const { boxOf, node } = canvasGeometry();
+    const box = boxOf('write');
+    const circle = node('failed').querySelector('.sg-shape');
+    const [p, q] = [[box.x + box.w / 2, box.y + box.h / 2], [Number(circle.getAttribute('cx')), Number(circle.getAttribute('cy'))]];
+    const m = middle('write#1');
+    const off = Math.abs((q[0] - p[0]) * (m[1] - p[1]) - (q[1] - p[1]) * (m[0] - p[0])) / Math.hypot(q[0] - p[0], q[1] - p[1]);
+    check(off < 0.5, `a transition without one back is drawn ${off} beside the middle line`);
+  },
+
   async a_click_zoomed_out_selects_and_moves_nothing() {
     await boot('?machine=review');
     for (let i = 0; i < 9; i += 1) await $('zoomOut').fire('click', {});

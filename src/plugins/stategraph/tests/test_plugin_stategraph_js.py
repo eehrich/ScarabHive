@@ -376,6 +376,7 @@ PANEL_CASES = [
     "group_puts_the_selected_states_into_a_composite_where_they_are_and_an_undo_puts_them_back",
     "states_of_two_levels_are_not_grouped_a_composite_takes_its_own_along_and_unplaced_ones_get_no_position",
     "a_renamed_states_position_goes_back_with_an_undo",
+    "a_transition_back_between_two_states_is_drawn_beside_the_other",
     "an_empty_machine_asks_for_a_first_state",
     "the_result_shows_every_activitys_answer_and_the_end_states",
     "a_live_runs_result_reads_on_from_where_it_stopped",

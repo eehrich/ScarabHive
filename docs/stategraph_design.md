@@ -1054,7 +1054,8 @@ end state of every frame, and every finished activity folded, with its full answ
 an agent's instance session and the run's own session (§5.8) open in the chat.
 
 **Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
-before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
+before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand draws its transitions
+straight: its region's start dot sits left of it, a transition back between the same two is drawn beside the other); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
 one undo step); Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
 the states in it -- dragging one moves them all, Delete removes them in one edit (a state inside a selected

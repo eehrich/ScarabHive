@@ -6,7 +6,7 @@
 import {
   applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
-  groupedSpots, selectedTransitions, selectionOf, statesWithin, toggled,
+  groupedSpots, labelSpot, selectedTransitions, selectionOf, statesWithin, toggled,
 } from '../../static/graph.js';
 
 const results = [];
@@ -98,6 +98,7 @@ test('ELK lays the graph out: children inside their composite, every edge routed
     assert(layout.edges[id] && layout.edges[id].points.length >= 2, `edge ${id} is routed`);
   }
   assert(layout.nodes['s:write'].x < layout.nodes['s:route'].x, 'left to right');
+  equal(Object.entries(layout.initials).sort(), [['i:', 's:write'], ['i:review', 's:read']], 'each initial dot knows the state it points to');
 });
 
 // ------------------------------------------------------------------ positions
@@ -125,6 +126,42 @@ test('applyPositions: a composite grows to hold a child moved to its edge, and a
   equal([clamped['s:c1'].x, clamped['s:c1'].y], [200 + PAD.left, 10 + PAD.top], 'the child stays in the content area');
   const ignored = applyPositions(AUTO, { ghost: { x: 1, y: 1 }, a: { x: 'x', y: 1 } });
   equal(ignored.moved.size, 0, 'unknown names and broken spots are ignored');
+});
+
+test('applyPositions: an initial dot sits left of its state once that one is placed, else where ELK put it', () => {
+  const auto = {
+    nodes: { 'i:': { x: 400, y: 300, w: 14, h: 14, parent: null }, ...AUTO.nodes,
+      'i:c': { x: 380, y: 100, w: 14, h: 14, parent: 's:c' } },
+    edges: {}, initials: { 'i:': 's:a', 'i:c': 's:c1' },
+  };
+  const placed = applyPositions(auto, { a: { x: 500, y: 60 }, c1: { x: 120, y: 50 } }).nodes;
+  equal([placed['i:'].x, placed['i:'].y], [500 - 40 - 14, 60 + (40 - 14) / 2], 'left of a, at its middle');
+  equal([placed['i:c'].x, placed['i:c'].y], [200 + 120 - 40 - 14, 10 + 50 + 13], 'in its composite, left of c1');
+  const unplaced = applyPositions(auto, { c: { x: 300, y: 50 } }).nodes;
+  equal([unplaced['i:'].x, unplaced['i:c'].x], [400, 300 + 180], 'the dots of states ELK placed stay where ELK put them');
+  const edge = applyPositions(auto, { c1: { x: 20, y: 50 } }).nodes;
+  equal(edge['i:c'].x, 200 + PAD.left, 'a state at its composite\'s left edge keeps the dot inside the box');
+  const foreign = applyPositions({ ...auto, initials: { 'i:c': 's:a' } }, { a: { x: 500, y: 60 } }).nodes;
+  equal([foreign['i:c'].x, foreign['i:c'].y, foreign['s:c'].w], [380, 100, 240], 'an initial outside its composite (SG002) moves no dot');
+  const grown = applyPositions({ ...auto, initials: { 'i:': 's:c' } }, { c: { x: 300, y: 50 }, c1: { x: 20, y: 300 } }).nodes;
+  equal(grown['i:'].y, 50 + (300 + 40 + PAD.bottom - 14) / 2, 'centred on the composite as it grew');
+});
+
+test('edgeRoute / labelSpot: a transition back between the same two is drawn beside the other, its label on its side', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 0, w: 100, h: 40 };
+  const there = edgeRoute(null, a, b, true, true);
+  const back = edgeRoute(null, b, a, true, true);
+  equal([there.points, back.points], [[[100, 26], [300, 26]], [[300, 14], [100, 14]]], 'each 6 to the right of its way');
+  const plain = edgeRoute(null, a, b, true);
+  equal([plain.points, plain.side], [[[100, 20], [300, 20]], undefined], 'alone: through the middle');
+  equal(labelSpot(plain, 80), [160, 14], 'alone: its label above the middle');
+  const [, below] = labelSpot(there, 80);
+  const [, above] = labelSpot(back, 80);
+  assert(below - 11 > 26 && above + 4 < 14, `the labels clear both lines: box ${below - 11}..${below + 4} and ${above - 11}..${above + 4}`);
+  const down = edgeRoute(null, a, { x: 0, y: 200, w: 100, h: 40 }, true, true);
+  const [left] = labelSpot(down, 80);
+  assert(left + 80 + 3 < down.points[0][0], `beside a vertical line, the label ends left of it: ${left + 83} ${down.points[0][0]}`);
 });
 
 test('clipToBox and edgeRoute: straight lines leave the boxes at their border', () => {

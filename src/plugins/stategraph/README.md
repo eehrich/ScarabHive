@@ -11,7 +11,8 @@ edit, run and debug it; the agent `stategraph_author` writes machines.
 - Format reference for authors: `skills/stategraph-authoring/references/format.md`
   (cheat sheet: `docs/format.md`); patterns and debugging next to it
 - New activity kinds: `docs/extending.md`
-- Examples: `machines/`; `showcase.yaml` uses every element of the format once (a test keeps it so)
+- Examples: `machines/`; `showcase.yaml` uses every element of the format once (a test keeps it so), laid out by
+  hand in `showcase.layout.json`
 
 ## Setup
 
@@ -124,7 +125,8 @@ chat. A failed poll keeps polling and says "not refreshed"; the run list follows
 an interrupted run can be terminated (its `finally` activities run).
 
 Working with it: the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
-before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand; the wheel
+before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand draws its transitions
+straight: its region's start dot sits left of it, a transition back between the same two is drawn beside the other); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
 one undo step); Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
 the states in it -- dragging one moves them all, Delete removes them in one edit (a state inside a selected

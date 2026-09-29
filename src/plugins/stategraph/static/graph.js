@@ -13,6 +13,10 @@ export const PAD = { top: 34, left: 14, bottom: 14, right: 14 };
 /** Pseudostates are small shapes of a fixed size. */
 const SHAPES = { choice: [30, 30], junction: [14, 14], final: [26, 26] };
 const INITIAL_SIZE = 14;
+/** Between an initial dot and the state placed by hand it points to. */
+const INITIAL_GAP = 40;
+/** How far a straight transition is drawn beside the centre line when another goes back between the same two. */
+const PAIR_GAP = 6;
 
 export const ROOT_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -127,10 +131,11 @@ export function elkInput(graph) {
   return { id: 'root', layoutOptions: { ...ROOT_OPTIONS }, children, edges };
 }
 
-/** ELK's answer as flat boxes (absolute, with their parent) and edge routes. */
+/** ELK's answer as flat boxes (absolute, with their parent), edge routes, and the state each initial dot points to. */
 export function layoutFrom(out) {
   const nodes = {};
   const edges = {};
+  const initials = {};
   const walk = (parent, owner) => {
     for (const child of parent.children || []) {
       nodes[child.id] = { x: child.x, y: child.y, w: child.width, h: child.height, parent: owner };
@@ -147,14 +152,16 @@ export function layoutFrom(out) {
       points,
       label: label && Number.isFinite(label.x) ? { x: label.x, y: label.y, w: label.width, h: label.height } : null,
     };
+    if (edge.id.startsWith('ie:') && edge.sources?.[0] && edge.targets?.[0]) initials[edge.sources[0]] = edge.targets[0];
   }
-  return { nodes, edges };
+  return { nodes, edges, initials };
 }
 
 /**
  * Stored positions over the automatic layout. positions: {state name: {x, y}}, relative to the parent's box (top
- * level: absolute). A composite grows to hold its children; a child stays inside its parent's content area.
- * Returns the boxes and the ids of those that differ from ELK's.
+ * level: absolute). A composite grows to hold its children; a child stays inside its parent's content area; a
+ * region's initial dot sits left of its initial state once that one is placed. Returns the boxes and the ids of
+ * those that differ from ELK's.
  */
 export function applyPositions(layout, positions) {
   const auto = layout.nodes;
@@ -164,11 +171,13 @@ export function applyPositions(layout, positions) {
     const parent = auto[id].parent ? auto[auto[id].parent] : null;
     relative[id] = { x: auto[id].x - (parent ? parent.x : 0), y: auto[id].y - (parent ? parent.y : 0) };
   }
+  const placed = new Set();
   for (const [name, spot] of Object.entries(positions || {})) {
     const id = stateId(name);
     if (!relative[id] || !Number.isFinite(spot?.x) || !Number.isFinite(spot?.y)) continue;
     const nested = Boolean(auto[id].parent);
     relative[id] = { x: nested ? Math.max(spot.x, PAD.left) : spot.x, y: nested ? Math.max(spot.y, PAD.top) : spot.y };
+    placed.add(id);
   }
   const nodes = {};
   for (const id of ids) {
@@ -181,6 +190,16 @@ export function applyPositions(layout, positions) {
     const box = nodes[id];
     box.w = Math.max(box.w, Math.max(...kids.map((k) => nodes[k].x + nodes[k].w)) + PAD.right - box.x);
     box.h = Math.max(box.h, Math.max(...kids.map((k) => nodes[k].y + nodes[k].h)) + PAD.bottom - box.y);
+  }
+  // an initial state placed by hand takes its dot along: where ELK put it would be anywhere in the region now. Set
+  // after the growth, the dot is centred on the box as drawn and lies inside its parent without growing it (left of
+  // a state the parent holds, clear of its padding). An initial outside its composite (SG002) moves no dot.
+  for (const [dot, target] of Object.entries(layout.initials || {})) {
+    if (!nodes[dot] || !placed.has(target) || auto[dot].parent !== auto[target].parent) continue;
+    const parent = auto[dot].parent ? nodes[auto[dot].parent] : null;
+    const box = nodes[target];
+    nodes[dot].x = Math.max(parent ? parent.x + PAD.left : -Infinity, box.x - INITIAL_GAP - nodes[dot].w);
+    nodes[dot].y = box.y + (box.h - nodes[dot].h) / 2;
   }
   const moved = new Set(ids.filter((id) => ['x', 'y', 'w', 'h'].some((k) => Math.abs(nodes[id][k] - auto[id][k]) > 0.5)));
   return { nodes, moved };
@@ -247,8 +266,10 @@ export function clipToBox(box, tx, ty) {
   return [cx + dx * scale, cy + dy * scale];
 }
 
-/** A drawn edge: ELK's route, or a straight line when an end was moved by hand. */
-export function edgeRoute(route, source, target, moved) {
+/** A drawn edge: ELK's route, or a straight line when an end was moved by hand. `paired`: a transition goes back
+ * between the two as well -- each straight line is drawn beside the centre line, on its right (`side`), so the two
+ * do not cover each other. */
+export function edgeRoute(route, source, target, moved, paired = false) {
   if (route && route.points.length && !moved) return { points: route.points, label: route.label, straight: false };
   if (source === target) {  // a self-transition: a loop over the top right corner
     const x = source.x + source.w * 0.75;
@@ -257,7 +278,23 @@ export function edgeRoute(route, source, target, moved) {
   }
   const from = clipToBox(source, target.x + target.w / 2, target.y + target.h / 2);
   const to = clipToBox(target, source.x + source.w / 2, source.y + source.h / 2);
-  return { points: [from, to], label: null, straight: true };
+  if (!paired) return { points: [from, to], label: null, straight: true };
+  const length = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
+  const side = [-(to[1] - from[1]) / length, (to[0] - from[0]) / length];
+  const shift = ([x, y]) => [x + side[0] * PAIR_GAP, y + side[1] * PAIR_GAP];
+  return { points: [shift(from), shift(to)], label: null, straight: true, side };
+}
+
+/** Where an edge's label text starts ([x, baseline]; its box reaches 3 beyond, 11 above and 4 below): ELK's spot,
+ * above the middle of a straight line, or beside it on its `side` -- clear of the line going back. */
+export function labelSpot(drawn, width) {
+  if (drawn.label) return [drawn.label.x + 4, drawn.label.y + 12];
+  const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];
+  const [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  if (!drawn.side) return [mx - width / 2, my - 6];
+  const [sx, sy] = drawn.side;
+  const reach = Math.abs(sx) * (width / 2 + 3) + Math.abs(sy) * 7.5 + 4;  // half the box across the line, and a gap
+  return [mx + sx * reach - width / 2, my + sy * reach + 3.5];
 }
 
 export function pathData(points) {
@@ -599,13 +636,15 @@ export class Canvas {
           this.edgeLayer);
       }
     }
+    const linked = new Set(this.graph.transitions.map((t) => `${t.source}\n${t.target}`));
     for (const transition of this.graph.transitions) {
       const source = nodes[stateId(transition.source)];
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
       const route = this.auto.edges[edgeId(transition.id)];
       const drawn = edgeRoute(route, source, target,
-        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)));
+        moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)),
+        linked.has(`${transition.target}\n${transition.source}`));
       this.drawEdge(transition, drawn);
     }
     this.decorate();
@@ -668,16 +707,7 @@ export class Canvas {
     el('path', { d, class: 'sg-edge', 'marker-end': `url(#sg-arrow-${kind === 'error' ? 'error' : 'plain'})` }, group);
     const label = edgeText(transition);
     if (!label) return;
-    let lx;
-    let ly;
-    if (drawn.label) {
-      lx = drawn.label.x + 4;
-      ly = drawn.label.y + 12;
-    } else {
-      const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];
-      lx = (a[0] + b[0]) / 2 - textWidth(label, 11, true) / 2;
-      ly = (a[1] + b[1]) / 2 - 6;
-    }
+    const [lx, ly] = labelSpot(drawn, textWidth(label, 11, true));
     el('rect', { class: 'sg-edge-label-bg', x: lx - 3, y: ly - 11, width: textWidth(label, 11, true) + 6, height: 15, rx: 3 }, group);
     text(group, label, { x: lx, y: ly, class: 'sg-edge-label' });
   }
