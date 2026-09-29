@@ -1,0 +1,236 @@
+{
+  "10": {
+    "inputs": {
+      "ckpt_name": "sd_xl_base_1.0.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Base Checkpoint"
+    }
+  },
+  "11": {
+    "inputs": {
+      "ckpt_name": "sd_xl_refiner_1.0.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Refiner Checkpoint"
+    }
+  },
+  "05": {
+    "inputs": {
+      "image": "reference.png",
+      "upload": "image"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Reference Image"
+    }
+  },
+  "12": {
+    "inputs": {
+      "ipadapter_file": "ip-adapter_sdxl.safetensors"
+    },
+    "class_type": "IPAdapterModelLoader",
+    "_meta": {
+      "title": "Load IPAdapter Model"
+    }
+  },
+  "13": {
+    "inputs": {
+      "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
+    },
+    "class_type": "CLIPVisionLoader",
+    "_meta": {
+      "title": "Load CLIP Vision"
+    }
+  },
+  "14": {
+    "inputs": {
+      "weight": 0.7,
+      "weight_type": "style transfer",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only",
+      "model": [
+        "10",
+        0
+      ],
+      "ipadapter": [
+        "12",
+        0
+      ],
+      "image": [
+        "05",
+        0
+      ],
+      "clip_vision": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "IPAdapterAdvanced",
+    "_meta": {
+      "title": "Apply IPAdapter (Style Reference)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "text": "a beautiful landscape, masterpiece, best quality, highly detailed",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Base Positive Prompt"
+    }
+  },
+  "21": {
+    "inputs": {
+      "text": "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Base Negative Prompt"
+    }
+  },
+  "22": {
+    "inputs": {
+      "text": "a beautiful landscape, masterpiece, best quality, highly detailed",
+      "clip": [
+        "11",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Refiner Positive Prompt"
+    }
+  },
+  "23": {
+    "inputs": {
+      "text": "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text",
+      "clip": [
+        "11",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Refiner Negative Prompt"
+    }
+  },
+  "30": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "40": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 0,
+      "steps": 30,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "start_at_step": 0,
+      "end_at_step": 26,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "30",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler Base (IPAdapter model, Steps 0-26)"
+    }
+  },
+  "41": {
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 30,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "start_at_step": 26,
+      "end_at_step": 30,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "11",
+        0
+      ],
+      "positive": [
+        "22",
+        0
+      ],
+      "negative": [
+        "23",
+        0
+      ],
+      "latent_image": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler Refiner (Steps 26-30)"
+    }
+  },
+  "50": {
+    "inputs": {
+      "samples": [
+        "41",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "60": {
+    "inputs": {
+      "filename_prefix": "sdxl_ipadapter",
+      "images": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}

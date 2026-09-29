@@ -1,0 +1,421 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Memory Profile panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real routes, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const stat = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const rows = (card) => all(`#${card} tbody tr`).map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()));
+  const act = (name) => $(`button[data-act="${name}"]`);
+  const question = () => $('dialog.pk-dialog[open]');
+  const answer = async (confirmed) => (await until('the question', question)).querySelector(`[data-index="${confirmed ? 1 : 0}"]`).click();
+  const toasts = (kind) => all(`.pk-toast--${kind}`).map((t) => t.textContent);
+  const clearToasts = () => all('.pk-toast').forEach((t) => t.remove());
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const cookie = (name, value) => { document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`; };
+  const post = (path) => fetch(path, { method: 'POST' });
+  const status = async (path, method = 'GET') => (await fetch(path, { method })).status;
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+    forgetRefreshChoice();  // paused for this check only -- the kit would remember it for the panel
+  };
+  const forgetRefreshChoice = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+  const loaded = () => stat('rss') && act('trace-start') || act('trace-stop');
+  // opened on a fresh seed as an administrator, the auto refresh off: what a check waits for comes from what it drives
+  const fresh = async () => {
+    cookie('mp_role', 'admin');
+    await post('/__stub/reset');
+    await go(`/ui/panels/memory_profile?t=${Date.now()}`);
+    await until('the panel', loaded);
+    await autoOff();
+  };
+  const SEEDED_OBJECTS = (51000 + 20000 + 800 + 7).toLocaleString();
+
+  await check('an administrator sees the process memory, the latest snapshot, the growth since the baseline, the trend and the collector', async () => {
+    cookie('mp_role', 'admin');
+    await post('/__stub/reset');
+    await go('/ui/panels/memory_profile');
+    await until('the stats', () => stat('rss') === '512 MB');
+    const auto = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    const objects = rows('objects');
+    const baseline = rows('baseline');
+    const leaks = rows('leaks');
+    return auto && stat('vms') === '2048 MB' && stat('percent') === '3.2 %' && stat('objects') === SEEDED_OBJECTS
+      && stat('snapshots') === '2' && /MB\/h$/.test(stat('growth'))
+      && objects[0].join('|') === `dict|${(51000).toLocaleString()}` && objects.length === 4
+      && baseline.map((r) => r.join('|')).join(';') === `dict|+${(1000).toLocaleString()};agent_system.core.Session|+500`
+      && leaks.map((r) => r[0]).join() === 'dict,agent_system.core.Session'
+      && $('#trend').textContent.includes('Time span') && $('#trend').textContent.includes('512.0 MB')
+      && /^\d+ · 1 · 0thresholds 700 · 10 · 10$/.test(stat('gc') + $('#stats [data-stat="gc"] .pk-muted').textContent)
+      && stat('garbage') === '0' && stat('traced') === '—' && !$('#gc')
+      && $('#tracing .pk-badge').textContent === 'Off' && !act('trace-stop')
+      && !act('snapshot').disabled && !act('baseline').disabled && !act('trace-start').disabled
+      && /^Updated /.test($('#updated').textContent);
+  });
+
+  await check('type names and allocation sites are drawn as text, never as markup', async () => {
+    await fresh();
+    await post('/__stub/trace');
+    await post('/debug/memory/snapshot');
+    now();
+    await until('the allocations', () => rows('tracing').length === 2);
+    const markup = rows('objects').find((r) => r[0].startsWith('<img'));
+    return markup?.[0] === '<img src=x onerror="window.parent.__xss=1">'
+      && rows('tracing')[1][0] === '<b>generated</b>:1'
+      && !$('#cards img') && !$('#cards b') && window.__xss === undefined && frame.contentWindow.__xss === undefined;
+  });
+
+  await check('loading and the auto refresh walk no heap and store nothing', async () => {
+    await fresh();
+    const before = await asked();
+    for (let i = 0; i < 3; i += 1) {
+      tick();
+      await sleep(250);
+    }
+    now();
+    await sleep(400);
+    const after = await asked();
+    return after.summary - before.summary === 4 && after.walks === 0 && before.walks === 0
+      && after.snapshots === 0 && stat('snapshots') === '2' && !after.tracing;
+  });
+
+  await check('a snapshot is taken on a click, walks the heap once and is drawn', async () => {
+    await fresh();
+    clearToasts();
+    await post('/__stub/grow?type=agent_system.core.Session&by=200');
+    act('snapshot').click();
+    await until('the new snapshot', () => stat('snapshots') === '3');
+    const done = await asked();
+    return done.walks === 1 && done.snapshots === 1 && !question()
+      && rows('baseline').find((r) => r[0] === 'agent_system.core.Session')?.[1] === '+700'
+      && toasts('ok').some((t) => t.includes('Snapshot taken')) && !act('snapshot').disabled;
+  });
+
+  await check('collecting garbage asks first, is sent once on a double click, and the figures are read anew', async () => {
+    await fresh();
+    clearToasts();
+    const getRefused = await status('/debug/memory/gc');  // a collection is a change: it takes a POST
+    // the second click of a double click, on a button no first click reached: nothing
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await sleep(300);
+    const secondIgnored = !question() && (await asked()).gcs === 0;
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    const asking = await until('the question', question);
+    await sleep(200);
+    const named = all('dialog.pk-dialog[open]').length === 1 && asking.textContent.includes('garbage collection')
+      && asking.querySelector('.pk-btn--primary')?.textContent === 'Collect garbage' && !asking.querySelector('.pk-btn--danger');
+    await answer(false);
+    await until('the button again', () => !act('gc').disabled);
+    await sleep(300);
+    const declined = (await asked()).gcs === 0 && stat('rss') === '512 MB';
+    cookie('mp_action', 'slow');
+    try {
+      act('gc').click();
+      await answer(true);
+      await sleep(300);
+      const held = act('gc').disabled === true;  // until answered and drawn
+      act('gc').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));  // a disabled button: nothing
+      // the collection frees 4 MB: the figures are read anew after it
+      await until('the memory read anew', () => stat('rss') === '508 MB');
+      await sleep(300);
+      const told = toasts('ok').some((t) => t === `Collected ${(1234).toLocaleString()} objects, freed 4.0 MB`);
+      return getRefused === 405 && secondIgnored && named && declined && held && told
+        && (await asked()).gcs === 1 && !act('gc').disabled && !$('.pk-toast--error');
+    } finally {
+      cookie('mp_action', null);
+    }
+  });
+
+  await check('setting the baseline asks first: declined nothing happens, confirmed it is replaced', async () => {
+    await fresh();
+    act('baseline').click();
+    const asking = await until('the question', question);
+    const named = asking.textContent.includes('Replace the baseline') && asking.querySelector('.pk-btn--danger')?.textContent === 'Replace baseline';
+    await answer(false);
+    await until('the button again', () => !act('baseline').disabled);
+    await sleep(300);
+    const untouched = (await asked()).walks === 0 && rows('baseline').length === 2;
+    act('baseline').click();
+    await answer(true);
+    await until('the baseline replaced', () => $('#baseline').textContent.includes('Not compared yet'));
+    return named && untouched && (await asked()).walks === 1 && !act('baseline').disabled;
+  });
+
+  await check('tracemalloc starts and stops on a confirmed click; a snapshot asked for records the allocations, which outlast later periodic snapshots', async () => {
+    await fresh();
+    act('trace-start').click();
+    const starting = await until('the start question', question);
+    const warned = starting.textContent.includes('slows the server');
+    await answer(false);
+    await until('the button again', () => act('trace-start') && !act('trace-start').disabled);
+    await sleep(300);
+    const notStarted = !(await asked()).tracing;
+    act('trace-start').click();
+    await answer(true);
+    await until('tracing', () => act('trace-stop'));
+    const started = await asked();
+    const hint = $('#tracing').textContent.includes('Take a snapshot') && stat('traced') === '3.0 MB'
+      && $('#stats [data-stat="traced"]').textContent.includes('peak 5.0 MB');
+    act('snapshot').click();
+    await until('the allocations', () => rows('tracing').length === 2);
+    const listed = rows('tracing')[0].join('|') === `src/agent_system/core/session.py:120|2048.0 KB|900`;
+    // the periodic snapshot becomes the latest and records no allocations: those of the panel's snapshot stay, with its time
+    const recordedAt = (await (await fetch('/debug/memory')).json()).allocations.recorded_at;
+    const recordedShown = $('#tracing [data-recorded]')?.dataset.recorded === recordedAt;
+    await post('/__stub/snapshot');
+    now();
+    await until('the periodic snapshot drawn', () => stat('snapshots') === '4');
+    const latest = await (await fetch('/debug/memory')).json();
+    const keptByPeriodic = rows('tracing').length === 2 && recordedShown && latest.snapshot.taken_at !== recordedAt
+      && latest.allocations.recorded_at === recordedAt && $('#tracing [data-recorded]').dataset.recorded === recordedAt
+      && $('#tracing').textContent.includes('Take a snapshot for current ones.');
+    act('trace-stop').click();
+    const stopping = await until('the stop question', question);
+    const danger = stopping.querySelector('.pk-btn--danger')?.textContent === 'Stop';
+    await answer(false);
+    await sleep(300);
+    const stillTracing = (await asked()).tracing && act('trace-stop');
+    act('trace-stop').click();
+    await answer(true);
+    await until('stopped', () => act('trace-start'));
+    // stopped, what was recorded stays readable with its time; no snapshot can bring current ones
+    const afterStop = rows('tracing').length === 2 && $('#tracing [data-recorded]')?.dataset.recorded === recordedAt
+      && !$('#tracing').textContent.includes('Take a snapshot for current ones.');
+    return afterStop && warned && notStarted && started.tracing && started.nframes === 10 && hint && listed && keptByPeriodic && danger
+      && stillTracing && !(await asked()).tracing && $('#tracing .pk-badge').textContent === 'Off';
+  });
+
+  await check('the server refuses the page and every memory route to anyone but an administrator', async () => {
+    await fresh();
+    const routes = [['/debug/memory', 'GET'], ['/debug/memory/snapshot', 'POST'], ['/debug/memory/baseline', 'POST'],
+      ['/debug/memory/tracemalloc/start', 'POST'], ['/debug/memory/tracemalloc/stop', 'POST'], ['/debug/memory/gc', 'POST']];
+    const statuses = async () => [await status('/ui/panels/memory_profile'), ...await Promise.all(routes.map(([p, m]) => status(p, m)))];
+    cookie('mp_role', 'user');
+    const asUser = await statuses();
+    cookie('mp_role', null);
+    const anonymous = await statuses();
+    const state = await asked();
+    // the panel open, the viewer's role changes: the data is refused, and nothing of before stays
+    cookie('mp_role', 'user');
+    now();
+    await until('the refusal', () => $('#cards .pk-empty-title')?.textContent === 'Administrators only');
+    const panel = !$('#cards').textContent.includes('could not be loaded') && $('#stats').textContent.trim() === '' && act('snapshot').disabled && act('baseline').disabled && !act('trace-start');
+    // signed out: said so, not taken for a missing role
+    cookie('mp_role', null);
+    now();
+    await until('the sign-in notice', () => $('#cards .pk-empty-title')?.textContent === 'Not signed in');
+    cookie('mp_role', 'admin');
+    return asUser.every((s) => s === 403) && anonymous.every((s) => s === 401)
+      && state.walks === 0 && !state.tracing && state.gcs === 0 && state.starts === 2 && panel;
+  });
+
+  await check('with memory profiling off the page and its data are not found, and a running trace can still be stopped', async () => {
+    await fresh();
+    await post('/__stub/trace');
+    await post('/__stub/flag?on=false');
+    try {
+      const page = await status('/ui/panels/memory_profile');
+      const data = [await status('/debug/memory'), await status('/debug/memory/snapshot', 'POST'),
+        await status('/debug/memory/baseline', 'POST'), await status('/debug/memory/tracemalloc/start', 'POST'),
+        await status('/debug/memory/gc', 'POST')];
+      const stop = await fetch('/debug/memory/tracemalloc/stop', { method: 'POST' });
+      const stopped = stop.status === 200 && (await stop.json()).status === 'stopped' && !(await asked()).tracing;
+      now();
+      await until('the notice', () => $('#cards').textContent.includes('Memory profiling is off'));
+      return page === 404 && data.every((s) => s === 404) && stopped && (await asked()).walks === 0
+        && (await asked()).gcs === 0 && act('snapshot').disabled;
+    } finally {
+      await post('/__stub/flag?on=true');
+    }
+  });
+
+  await check('starting tracemalloc takes only a frame count from 1 to 100', async () => {
+    await fresh();
+    const refused = [];
+    for (const value of ['0', '101', 'ten', '-1']) {
+      refused.push(await status(`/debug/memory/tracemalloc/start?nframes=${value}`, 'POST'));
+    }
+    const untouched = !(await asked()).tracing;
+    const accepted = await (await fetch('/debug/memory/tracemalloc/start?nframes=100', { method: 'POST' })).json();
+    const state = await asked();
+    return refused.every((s) => s === 422) && untouched && accepted.status === 'started' && state.tracing && state.nframes === 100;
+  });
+
+  await check('a double click acts once, and the button stays disabled until the answer is drawn', async () => {
+    await fresh();
+    // the second click of a double click, on a button no first click reached: nothing
+    act('snapshot').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await sleep(300);
+    const secondIgnored = (await asked()).snapshots === 0;
+    const button = act('trace-start');
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await until('the question', question);
+    await sleep(200);
+    const once = all('dialog.pk-dialog[open]').length === 1;
+    cookie('mp_action', 'slow');
+    try {
+      await answer(true);
+      await sleep(300);
+      const heldBefore = act('trace-start')?.disabled === true;
+      const drawn = $('#tracing');
+      await post('/__stub/snapshot');
+      now();  // drawn anew while the start is on its way
+      await until('the cards drawn anew', () => $('#tracing') !== drawn);
+      const held = act('trace-start')?.disabled === true;
+      act('trace-start').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));  // a disabled button: nothing
+      await until('tracing', () => act('trace-stop') && !act('trace-stop').disabled);
+      await sleep(300);
+      return secondIgnored && once && heldBefore && held && !question() && (await asked()).starts === 1;
+    } finally {
+      cookie('mp_action', null);
+    }
+  });
+
+  await check('the keyboard focus stays on its button when the cards are drawn anew and when a question closes', async () => {
+    await fresh();
+    frame.focus();
+    act('trace-start').focus();
+    const before = $('#tracing');
+    await post('/__stub/snapshot');
+    now();
+    await until('the cards drawn anew', () => $('#tracing') !== before);
+    const keptOnRedraw = doc().activeElement === act('trace-start');
+    act('baseline').focus();
+    act('baseline').click();
+    await answer(false);
+    await until('the button again', () => !act('baseline').disabled);
+    await sleep(200);
+    const backAfterDecline = doc().activeElement === act('baseline');
+    act('trace-start').focus();
+    act('trace-start').click();
+    await answer(true);
+    await until('tracing', () => act('trace-stop') && !act('trace-stop').disabled);
+    await sleep(200);
+    // the start button became the stop button: the focus follows it
+    return keptOnRedraw && backAfterDecline && doc().activeElement === act('trace-stop');
+  });
+
+  await check('the cards stay as drawn while only the moving figures change', async () => {
+    await fresh();
+    // every answer differs in its gc counter and process memory, as on a live server
+    const cards = all('#cards > .pk-card');
+    const counted = stat('gc');
+    for (let i = 0; i < 3; i += 1) {
+      const before = (await asked()).summary;
+      tick();
+      await until('the answer', async () => (await asked()).summary === before + 1);
+      await sleep(200);
+    }
+    const figuresMoved = stat('gc') !== counted;
+    const kept = all('#cards > .pk-card').every((card, i) => card === cards[i]) && cards.length === 5;
+    await post('/__stub/snapshot');
+    now();
+    await until('the new snapshot drawn', () => stat('snapshots') === '3');
+    await sleep(200);
+    return figuresMoved && kept && $('#objects') !== cards[1];
+  });
+
+  await check('a failed load shows the error and nothing of before', async () => {
+    await fresh();
+    cookie('mp_summary', 'fails');
+    try {
+      now();
+      await until('the error', () => $('#cards').textContent.includes('Memory profile could not be loaded'));
+      return $('#cards').textContent.includes('The profiler is stuck') && rows('objects').length === 0
+        && $('#stats').textContent.trim() === '' && $('#updated').textContent === ''
+        && act('snapshot').disabled && act('baseline').disabled && !$('.pk-toast--error');
+    } finally {
+      cookie('mp_summary', null);
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    await fresh();
+    const failed = () => $('#cards').textContent.includes('could not be loaded');
+    try {
+      // a success overtaken by an error
+      cookie('mp_summary', 'slow');
+      now();  // held 1.5 s
+      await sleep(300);
+      cookie('mp_summary', 'fails');
+      now();  // answered at once, with an error
+      await until('the later error', failed);
+      await sleep(2000);
+      const errorKept = rows('objects').length === 0 && failed();
+      // an error overtaken by a success
+      cookie('mp_summary', 'slowfail');
+      now();  // held 1.5 s, then an error
+      await sleep(300);
+      cookie('mp_summary', null);
+      now();
+      await until('the later summary', () => rows('objects').length === 4);
+      await sleep(2000);
+      return errorKept && rows('objects').length === 4 && !failed();
+    } finally {
+      cookie('mp_summary', null);
+    }
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    await fresh();
+    let ticking = null;
+    try {
+      const before = (await asked()).summary;
+      cookie('mp_summary', 'slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      cookie('mp_summary', 'slower');
+      now();  // answered after 3 s: the 1.5 s one is out of date when it ends, this one is still on its way
+      await sleep(200);
+      cookie('mp_summary', null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await until('the summary', () => rows('objects').length === 4);
+      await sleep(500);
+      // with a server slower than the tick, each tick would start one more load
+      return (await asked()).summary - before === 2;
+    } finally {
+      clearInterval(ticking);
+      cookie('mp_summary', null);
+    }
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

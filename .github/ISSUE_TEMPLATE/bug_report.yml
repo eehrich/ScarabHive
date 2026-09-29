@@ -1,0 +1,108 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security vulnerabilities do not belong here** --
+        report them privately as described in SECURITY.md.
+
+        Never paste API keys, tokens, passwords or `auth.secret_key` values.
+        Check the config and log excerpts below before you submit.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence of steps, commands or requests that shows the problem.
+      placeholder: |
+        1. Enable plugin ... in config/plugins.yaml
+        2. Start `agent-api`
+        3. Send ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ScarabHive version
+      description: >-
+        The version (`version` in pyproject.toml, or `GET /api/version`) and,
+        for a source checkout, the commit (`git rev-parse --short HEAD`).
+      placeholder: 0.7.0 / a1b2c3d
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - Source checkout, pip install -e .
+        - Docker / docker compose (this repository's Dockerfile)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 24.04 / macOS 15 / Windows 11 (Git Bash)
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "`python --version` (for Docker: the image's Python, 3.12 by default)"
+      placeholder: "3.12.9"
+    validations:
+      required: true
+
+  - type: input
+    id: component
+    attributes:
+      label: Affected component
+      description: Core API, web UI, CLI, a plugin (name it), an LLM provider and model, ...
+      placeholder: "plugin: file_ops / provider: openrouter, model ..."
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration (without secrets)
+      description: >-
+        The parts of config/*.yaml or the agent YAML involved. Replace API
+        keys, tokens, passwords, host names and IP addresses you do not want
+        to publish.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Relevant lines from logs/api.log (agent-api), logs/cli.log (agent-cli) or
+        `docker compose logs scarabhive`. Logs can contain prompts and tool
+        output: remove anything private.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: The configuration and logs above contain no secrets.
+          required: true

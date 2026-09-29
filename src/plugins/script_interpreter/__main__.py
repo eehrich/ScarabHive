@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main entry point for the Script Interpreter MCP Plugin."""
+"""Main entry point for the Script Interpreter Tool plugin."""
 
 import asyncio
 import logging

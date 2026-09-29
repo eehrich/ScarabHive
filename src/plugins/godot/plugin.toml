@@ -1,0 +1,17 @@
+# godot plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+#
+# `websockets` is already a core dependency (uvicorn brings it); it is named
+# here because the editor channel does not work without it, and a manifest
+# that hides that would be wrong the day the core drops it.
+[plugin]
+name = "godot"
+version = "1.0.0"
+description = "Control Godot 4: run and check projects headless, and drive a running editor (scene tree, nodes, frozen-time playtesting, input, screenshots, logs) through the vendored godot_mcp addon"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "development"
+tags = ["godot", "gamedev", "3d", "2d", "playtest"]
+requires = { python = ">=3.10", agent_system = ">=0.6.0" }
+dependencies = ["websockets>=15.0.0"]

@@ -1,0 +1,100 @@
+{
+  "1": {
+    "inputs": {
+      "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (1.7B)",
+      "device": "cuda"
+    },
+    "class_type": "MOSSLoadModel",
+    "_meta": {
+      "title": "MOSS-TTS Load Model"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": [
+        "3",
+        0
+      ],
+      "language": "German",
+      "instruction": "audio book narrator",
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "target_tokens": [
+        "7",
+        0
+      ],
+      "max_new_tokens": 4096,
+      "seed": [
+        "6",
+        0
+      ],
+      "moss_model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "MOSSSpeak",
+    "_meta": {
+      "title": "MOSS-TTS Speak"
+    }
+  },
+  "3": {
+    "inputs": {
+      "value": "Das ist der Input-Text."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "String (Multiline)"
+    }
+  },
+  "4": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "5": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "value": 42
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": [
+        "3",
+        0
+      ],
+      "words_per_minute": 160
+    },
+    "class_type": "MOSSEstimateTokens",
+    "_meta": {
+      "title": "MOSS-TTS Estimate Tokens"
+    }
+  }
+}

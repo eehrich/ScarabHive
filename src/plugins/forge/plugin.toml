@@ -1,0 +1,12 @@
+[plugin]
+name = "forge"
+version = "0.2.0"
+description = "GitLab and GitHub for the coder: issues, merge/pull requests, CI, push and merge under ScarabHive's policy"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server", "hooks", "web"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }
+
+# httpx is a core dependency; git must be on PATH.
+dependencies = []

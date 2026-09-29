@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Model Context Protocol (MCP) implementation in AgentSystem provides seamless integration with external MCP servers and exposes local plugins as MCP endpoints. This document covers configuration, authentication, and usage.
+This guide covers the connections to **external** MCP servers: configuration, authentication and usage. They are the `mcp_client` plugin's business; the system's own plugins are tool servers and speak no protocol (see `plugin_authoring.md`).
 
 ## Configuration Schema
 
@@ -46,305 +46,53 @@ cache:
   max_size: 1000
 ```
 
-**Note**: System-wide MCP settings (ports, security, etc.) are configured in `config/config.yaml` under the `mcp` section.
+**Note**: System-wide settings (ports, security, etc.) are configured in `config/config.yaml`.
 
 ## Transport Types
 
-AgentSystem supports multiple transport protocols for MCP communication:
+Transports are the official MCP SDK's; the `mcp_client` plugin selects one from
+the server's `transport` field. Note the field is `transport`, not
+`transport_type` — an unknown key is dropped by the config model without a
+word, so a server configured with `transport_type` silently gets the default.
 
-### HTTP Transport
-
-Standard HTTP transport for basic MCP communication:
-
-```yaml
-external_servers:
-  basic_service:
-    url: "https://api.example.com/mcp"
-    transport_type: "http"
-    enabled: true
-    timeout: 30.0
-```
-
-### HTTP Streaming Transport
-
-The `HTTPStreamingTransport` class provides an advanced HTTP-based transport layer for the Model Context Protocol (MCP) with Server-Sent Events (SSE) support. This transport enables real-time status streaming, efficient session management, and robust error handling.
-
-#### Key Features
-
-**Real-time Status Streaming**
-- Status events are pushed to clients via Server-Sent Events (SSE)
-- JSON-RPC 2.0 notifications with method `notifications/status`
-- Supports filtering by server and request_id
-- Automatic event forwarding from the status bus
-
-**Base64 Configuration Encoding**
-- Configuration data is automatically encoded in base64 for secure transmission
-- Prevents configuration exposure in URLs or logs
-- Supports complex nested configuration objects
-
-**Session Management**
-- Unique session IDs for each connection
-- Configurable session lifetime and keepalive intervals
-- Automatic session cleanup and resource management
-- Session-based event filtering and routing
-
-**Connection Lifecycle**
-- Automatic connection establishment and teardown
-- Graceful error handling and recovery
-- Support for connection pooling and reuse
-- Health checks and connection validation
-
-#### Configuration
+| `transport` | SDK client | When |
+|---|---|---|
+| `streaming`, `streamable_http`, `streamable-http`, `smithery` | `streamablehttp_client` | The usual case; what all shipped entries use |
+| `http` | `streamablehttp_client` | Historically bare JSON-RPC POSTs. No current server answers those (measured: HTTP 406), and those endpoints speak streamable HTTP today |
+| `sse`, `http_sse`, `http+sse` | `sse_client` | The older HTTP+SSE transport |
+| `stdio`, `local` | `stdio_client` | A locally launched server: needs `command` (plus optional `args`, `env`) instead of `url` |
 
 ```yaml
 external_servers:
-  streaming_service:
-    url: "https://streaming.example.com/mcp"
-    transport_type: "http"  # Use "http" for new configurations
-    enabled: true
-    description: "Streaming MCP server"
-    
-    # Transport-specific settings
-    timeout: 30.0
-    max_retries: 3
-    retry_delay: 1.0
-    ssl_verify: true
-    
-    # Streaming configuration
-    stream_status_events: true
-    session_config:
-      max_session_lifetime: 3600  # 1 hour
-      keepalive_interval: 30      # 30 seconds
-      buffer_size: 8192
-      max_event_queue_size: 1000
+  remote_servers:
+    basic_service:
+      url: "https://api.example.com/mcp"
+      transport: streaming
+      enabled: true
+
+    local_service:
+      transport: stdio
+      enabled: true
+      command: "/usr/bin/python3"
+      args: ["/opt/mcp/server.py"]
 ```
 
-**Migration Note**: The `smithery` transport type is deprecated. Update configurations to use `transport_type: "http"`. The system will automatically detect and use streaming capabilities when available.
+Connection settings come from `external_servers.connection` (timeout) and
+`network.ssl_verify`. `initialization_options` is accepted but **not sent** —
+the protocol has no such field, and connecting warns about it. Put credentials
+in `auth:` or in the URL.
 
-#### Usage Examples
-
-**Basic Connection**
-```python
-from agent_system.mcp.streaming_transport import HTTPStreamingTransport
-from agent_system.mcp.client import StandardMCPClient
-
-# Create transport
-transport = HTTPStreamingTransport(
-    url="https://api.example.com/mcp",
-    config={"api_key": "your-api-key"}
-)
-
-# Create client
-client = StandardMCPClient(transport, name="MyClient")
-
-# Connect and use
-await client.connect()
-tools = await client.list_tools()
-```
-
-**With Status Event Handling**
-```python
-import asyncio
-from agent_system.mcp.streaming_transport import HTTPStreamingTransport
-
-async def handle_status_events(transport):
-    """Example status event handler"""
-    async for event in transport.status_stream():
-        print(f"Status: {event['message']} (Phase: {event['phase']})")
-
-# Create transport with status streaming
-transport = HTTPStreamingTransport(
-    url="https://streaming.example.com/mcp",
-    config={"stream_events": True}
-)
-
-# Start status event handling
-asyncio.create_task(handle_status_events(transport))
-```
-
-#### CLI Commands
-
-**Server Management**
-```bash
-# List all configured MCP servers
-agent-cli mcp list
-
-# Show detailed server information
-agent-cli mcp list --format json
-
-# Connect to a streaming server
-agent-cli mcp connect streaming_server
-
-# Check connection status and streaming info
-agent-cli mcp status streaming_server
-
-# Test server connectivity and features
-agent-cli mcp test streaming_server
-```
-
-**Feature Management**
-```bash
-# List available features
-agent-cli mcp feature list streaming_server
-
-# Enable/disable specific features
-agent-cli mcp feature streaming_server tools on
-agent-cli mcp feature streaming_server status_stream off
-```
-
-#### Event Format
-
-**Status Notification Format**
-Status events are transmitted as JSON-RPC 2.0 notifications:
-
-```json
-{
-  "jsonrpc": "2.0", 
-  "method": "notifications/status",
-  "params": {
-    "server": "streaming_server",
-    "request_id": "req_123", 
-    "message": "Processing request",
-    "timestamp": "2025-01-15T10:30:45Z",
-    "phase": "progress",
-    "level": "info",
-    "meta": {
-      "step": 3,
-      "total": 10,
-      "percentage": 30
-    }
-  }
-}
-```
-
-**Error Event Format**
-Error events include detailed error information:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "notifications/status", 
-  "params": {
-    "server": "streaming_server",
-    "request_id": "req_123",
-    "message": "Connection failed",
-    "timestamp": "2025-01-15T10:30:45Z",
-    "phase": "error",
-    "level": "error",
-    "meta": {
-      "error_code": "CONNECTION_FAILED",
-      "retry_count": 2,
-      "next_retry": "2025-01-15T10:31:00Z"
-    }
-  }
-}
-```
-
-#### Error Handling
-
-**Connection Errors**
-The transport implements robust error handling:
-- **Automatic retries**: Configurable retry count and delay
-- **Exponential backoff**: Prevents overwhelming failed servers
-- **Circuit breaker**: Temporarily disables failed connections
-- **Graceful degradation**: Falls back to basic HTTP when streaming fails
-
-**Session Management Errors**
-- **Session expiry**: Automatic session renewal before expiration
-- **Invalid sessions**: Detection and cleanup of corrupted sessions
-- **Resource limits**: Protection against memory leaks and resource exhaustion
-
-#### Performance Considerations
-
-**Memory Usage**
-- Event queues are bounded to prevent memory growth
-- Automatic cleanup of expired sessions and connections
-- Efficient JSON parsing and serialization
-- Stream buffering to optimize network usage
-
-**Network Efficiency**
-- Keep-alive connections reduce connection overhead
-- Base64 encoding minimizes configuration exposure
-- Event batching reduces network chattiness
-- Compression support for large payloads
-
-**Scalability**
-- Support for multiple concurrent connections
-- Configurable connection pooling
-- Resource isolation between sessions
-- Monitoring and metrics integration
-
-#### Troubleshooting
-
-**Common Issues**
-1. **Connection timeouts**:
-   - Check network connectivity
-   - Verify server URL and port
-   - Increase timeout values in configuration
-
-2. **Status events not received**:
-   - Ensure `stream_status_events: true` is set
-   - Check server supports SSE streaming
-   - Verify firewall/proxy settings
-
-3. **Session expiry errors**:
-   - Increase `max_session_lifetime` setting
-   - Check server session management
-   - Monitor connection stability
-
-**Debug Configuration**
-Enable detailed logging for troubleshooting:
-
-```yaml
-logging:
-  level: DEBUG
-  modules:
-    agent_system.mcp.streaming_transport: DEBUG
-    agent_system.mcp.client: DEBUG
-```
-
-**CLI Diagnostics**
-```bash
-# Test connectivity with verbose output
-agent-cli mcp test streaming_server --verbose
-
-# Check detailed status information
-agent-cli mcp status streaming_server --format json
-
-# Monitor real-time events (if supported)
-agent-cli mcp monitor streaming_server
-```
-
-#### Best Practices
-
-**Configuration**
-- Use environment variables for sensitive data
-- Set appropriate timeouts based on expected response times
-- Configure retries and circuit breakers for reliability
-- Enable SSL verification in production environments
-
-**Error Handling**
-- Implement proper error handling for connection failures
-- Use status events to monitor long-running operations
-- Set up alerting for connection and authentication errors
-- Log transport events for debugging and monitoring
-
-**Performance**
-- Tune session lifetime based on usage patterns
-- Monitor memory usage and connection counts
-- Use connection pooling for high-throughput scenarios
-- Consider load balancing for multiple server instances
+For the transport internals, the connection lifecycle and why each connection
+owns a task, see `src/plugins/mcp_client/README.md`.
 
 ## CLI Management
 
-Use the built-in CLI commands to manage MCP servers:
+Die CLI liest nur. Jeder Aufruf verbindet die eingeschalteten Server und trennt
+danach wieder; eingeschaltet und gefiltert wird in dieser Datei.
 
 ```bash
 # List all configured servers
 agent-cli mcp list
-
-# Connect to a server
-agent-cli mcp connect weather_service
 
 # Check connection status
 agent-cli mcp status weather_service
@@ -352,8 +100,8 @@ agent-cli mcp status weather_service
 # Test server functionality
 agent-cli mcp test weather_service
 
-# Disconnect from a server
-agent-cli mcp disconnect weather_service
+# Tools, blocked ones marked
+agent-cli mcp tools weather_service
 ```
 
 ## Authentication Types
@@ -418,9 +166,12 @@ Control which tools are available from external servers:
 ```yaml
 tools:
   prefix: "external_"          # Add prefix to all tool names
-  allowed: ["search", "analyze"] # Only these tools allowed
   blocked: ["delete", "admin"]   # These tools blocked
 ```
+
+`blocked` ist die einzige Liste, die bei einem externen Server wirkt:
+`mcp_client` verweigert den Aufruf. Ein `allowed` am Server wertet niemand aus —
+welche Tools ein Agent aufrufen darf, regelt dessen `agent_config.tools.allowed`.
 
 ### Resources Filtering
 
@@ -583,10 +334,10 @@ To migrate existing deployments:
 ### Python Code Integration
 
 ```python
-from agent_system.mcp import MCPIntegration
+from agent_system.tools import ToolServerIntegration
 
 # Initialize with configuration
-mcp = MCPIntegration(config=config_dict)
+mcp = ToolServerIntegration(config=config_dict)
 await mcp.initialize()
 
 # List all available tools
@@ -700,471 +451,3 @@ mcp:
 
 This configuration provides a robust, secure, and flexible MCP integration for your AgentSystem deployment.
 
-## MCP Server Mode (Epic 0037)
-
-AgentSystem can operate as an MCP server, exposing activated plugins as remote tools to MCP clients.
-
-### Configuration
-
-Add the `server_mode` section to `config/config.yaml`:
-
-```yaml
-mcp:
-  server_mode:
-    enabled: true
-    endpoint: "/mcp"
-    
-    # Plugins to expose (wildcard or specific list)
-    expose_plugins:
-      - "*"  # Expose all plugins
-      # Or specify: ["plugin_name_1", "plugin_name_2"]
-    
-    # Authentication settings
-    authentication:
-      required: true  # Require JWT or API key
-      methods:
-        - jwt      # Accept JWT tokens
-        - api_key  # Accept API keys
-    
-    # Rate limiting (token bucket algorithm)
-    rate_limit:
-      enabled: true
-      requests_per_minute: 60    # Max requests per minute
-      requests_per_hour: 1000    # Max requests per hour
-      burst_size: 10             # Max burst requests
-    
-    # Session settings
-    session_ttl_seconds: 3600  # Session timeout (1 hour)
-```
-
-### Server Endpoints
-
-When server mode is enabled, AgentSystem exposes:
-
-#### POST /mcp
-
-Main JSON-RPC 2.0 endpoint for MCP protocol communication.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {},
-    "clientInfo": {
-      "name": "MyClient",
-      "version": "1.0.0"
-    }
-  },
-  "id": 1
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {
-      "tools": {}
-    },
-    "serverInfo": {
-      "name": "AgentSystem",
-      "version": "1.0.0"
-    }
-  },
-  "id": 1
-}
-```
-
-**Headers:**
-- `Mcp-Session-Id`: Session identifier (returned in response, use in subsequent requests)
-- `Authorization: Bearer <token>`: JWT authentication (if auth required)
-- `X-API-Key: <key>`: API key authentication (if auth required)
-
-#### GET /mcp/sse
-
-SSE stream endpoint for server-initiated messages (future implementation).
-
-#### GET /mcp/server-info
-
-REST endpoint for server metadata and statistics.
-
-**Response:**
-```json
-{
-  "name": "AgentSystem",
-  "version": "1.0.0",
-  "protocol_version": "2024-11-05",
-  "capabilities": {
-    "tools": {}
-  },
-  "active_sessions": 5,
-  "total_requests": 1234
-}
-```
-
-### Supported MCP Methods
-
-The MCP server handler supports the following JSON-RPC methods:
-
-#### initialize
-
-Initialize a new MCP session.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {},
-    "clientInfo": {
-      "name": "MyClient",
-      "version": "1.0.0"
-    }
-  },
-  "id": 1
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {
-      "tools": {}
-    },
-    "serverInfo": {
-      "name": "AgentSystem",
-      "version": "1.0.0"
-    }
-  },
-  "id": 1
-}
-```
-
-#### tools/list
-
-List all available tools from exposed plugins.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/list",
-  "params": {},
-  "id": 2
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "tools": [
-      {
-        "name": "plugin_name__tool_name",
-        "description": "Tool description",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "param1": {"type": "string"}
-          }
-        }
-      }
-    ]
-  },
-  "id": 2
-}
-```
-
-**Note:** Tool names use double underscore (`__`) to separate plugin name from tool name. This format is compatible with OpenAI's API requirements (`^[a-zA-Z0-9_-]+$`).
-
-#### tools/call
-
-Execute a tool from an exposed plugin.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "plugin_name__tool_name",
-    "arguments": {
-      "param1": "value1"
-    }
-  },
-  "id": 3
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Tool execution result"
-      }
-    ]
-  },
-  "id": 3
-}
-```
-
-### Authentication
-
-MCP server mode integrates with Epic 0038 authentication system:
-
-#### JWT Authentication
-
-Obtain a JWT token via the auth endpoints:
-
-```bash
-curl -X POST http://127.0.0.1:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "your_password"}'
-```
-
-Use the token in MCP requests:
-
-```bash
-curl -X POST http://127.0.0.1:8000/mcp \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05"},"id":1}'
-```
-
-#### API Key Authentication
-
-Generate an API key:
-
-```bash
-agent-cli users generate-api-key --username admin
-```
-
-Use the key in MCP requests:
-
-```bash
-curl -X POST http://127.0.0.1:8000/mcp \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <api_key>" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05"},"id":1}'
-```
-
-### Session Management
-
-Each MCP client connection gets a unique session ID via the `Mcp-Session-Id` header:
-
-1. **Initial Request**: Client sends request without session ID
-2. **Server Response**: Server generates session ID and returns it in `Mcp-Session-Id` header
-3. **Subsequent Requests**: Client includes session ID in all subsequent requests
-
-Sessions track:
-- Client information (name, version)
-- Rate limit counters (per minute, per hour)
-- Last request timestamp
-- Total request count
-
-Sessions expire after `session_ttl_seconds` (default: 3600s) of inactivity.
-
-### Rate Limiting
-
-MCP server mode implements token bucket rate limiting per session:
-
-**Algorithm**: Token Bucket
-- Tokens are added at a constant rate
-- Each request consumes one token
-- Burst allows temporary spikes
-
-**Configuration:**
-- `requests_per_minute`: Maximum sustained rate (tokens per minute)
-- `requests_per_hour`: Maximum hourly rate (prevents long-term abuse)
-- `burst_size`: Maximum burst requests (bucket capacity)
-
-**Example:**
-```yaml
-rate_limit:
-  enabled: true
-  requests_per_minute: 60    # 1 request/second sustained
-  requests_per_hour: 1000    # ~16.67/minute average
-  burst_size: 10             # Can burst 10 requests instantly
-```
-
-**Rate Limit Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32000,
-    "message": "Rate limit exceeded"
-  },
-  "id": null
-}
-```
-
-### Error Handling
-
-The MCP server handler returns standard JSON-RPC 2.0 errors:
-
-**Protocol Errors:**
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32600,
-    "message": "Invalid Request"
-  },
-  "id": null
-}
-```
-
-**Method Errors:**
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32601,
-    "message": "Method not found: unknown_method"
-  },
-  "id": 1
-}
-```
-
-**Server Errors:**
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32000,
-    "message": "Rate limit exceeded"
-  },
-  "id": null
-}
-```
-
-### Python Client Example
-
-Connect to AgentSystem from an MCP client using HTTP Streamable Transport:
-
-```python
-import asyncio
-from mcp.client import Client
-from agent_system.mcp.streaming_transport import HTTPStreamingTransport
-
-async def main():
-    # Create transport with authentication
-    transport = HTTPStreamingTransport(
-        endpoint="http://127.0.0.1:8000/mcp",
-        headers={"Authorization": "Bearer YOUR_JWT_TOKEN"}
-    )
-    
-    # Initialize client
-    async with Client(server_name="AgentSystem") as client:
-        # Connect to server
-        await client.connect(transport)
-        
-        # Initialize session
-        result = await client.initialize(
-            client_info={"name": "MyClient", "version": "1.0"}
-        )
-        print(f"Server: {result.serverInfo.name} v{result.serverInfo.version}")
-        
-        # List available tools
-        tools_result = await client.list_tools()
-        print(f"\nAvailable tools ({len(tools_result.tools)}):")
-        for tool in tools_result.tools:
-            print(f"  - {tool.name}: {tool.description}")
-        
-        # Call a tool
-        if tools_result.tools:
-            tool_name = tools_result.tools[0].name
-            result = await client.call_tool(
-                tool_name,
-                {"param": "value"}
-            )
-            print(f"\nTool result: {result.content}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-### Security Considerations
-
-1. **Enable Authentication**: Always require authentication in production
-   ```yaml
-   authentication:
-     required: true
-   ```
-
-2. **Use HTTPS**: Deploy behind reverse proxy with TLS
-   ```nginx
-   server {
-       listen 443 ssl;
-       ssl_certificate /path/to/cert.pem;
-       ssl_certificate_key /path/to/key.pem;
-       
-       location /mcp {
-           proxy_pass http://127.0.0.1:8000/mcp;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-       }
-   }
-   ```
-
-3. **Configure Rate Limits**: Prevent abuse
-   ```yaml
-   rate_limit:
-     enabled: true
-     requests_per_minute: 60
-     requests_per_hour: 1000
-   ```
-
-4. **Limit Exposed Plugins**: Only expose necessary plugins
-   ```yaml
-   expose_plugins:
-     - "web_scraper"
-     - "datetime"
-     # Don't expose sensitive plugins
-   ```
-
-5. **Monitor Sessions**: Track active sessions and request patterns
-   ```bash
-   curl http://127.0.0.1:8000/mcp/server-info
-   ```
-
-### Troubleshooting
-
-**"Protocol version not supported"**
-- Ensure client uses protocol version "2024-11-05"
-- Check `protocolVersion` in initialize request
-
-**"Rate limit exceeded"**
-- Reduce request frequency
-- Increase `requests_per_minute` or `burst_size` in config
-- Check session management (ensure session ID is reused)
-
-**"Unauthorized"**
-- Verify JWT token or API key is valid
-- Check authentication configuration
-- Ensure `Authorization` or `X-API-Key` header is set
-
-**"Method not found"**
-- Verify JSON-RPC method name is correct
-- Supported methods: `initialize`, `tools/list`, `tools/call`
-
-**"No tools available"**
-- Check `expose_plugins` configuration
-- Verify plugins are activated
-- Use `/mcp/server-info` to check capabilities

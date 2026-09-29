@@ -2,7 +2,9 @@
 
 **Plugin Type:** Hook-only (inherits only from `PluginHook`)
 
-Comprehensive message validation and repair before LLM calls to ensure OpenAI API compliance and proper message formatting.
+Message validation and repair before LLM calls, so a malformed history does not get the whole request rejected by the provider.
+
+It repairs STRUCTURE - tool-call pairing, tool names, message sequence. It does not inspect or rewrite content: no truncation, no sanitising, no role rewriting. Earlier revisions of this file claimed all three.
 
 ## Features
 
@@ -23,25 +25,30 @@ message_validator:
   enabled: true
   config:
     log_level: "warning"             # Logging level for validation issues
-    strict_mode: false              # Reject invalid vs auto-fix
-    max_message_length: 100000      # Maximum allowed message length
-    allow_empty_messages: false     # Allow messages with empty content
-    sanitize_content: true          # Remove potentially harmful content
-    valid_roles: ['system', 'user', 'assistant', 'function', 'tool']
-    enforce_alternating: false      # Require alternating user/assistant
+    strict_mode: false               # Reject invalid vs auto-fix
+    max_tool_response_size_kb: 50    # Tool response size that is an error
+    warn_tool_response_size_kb: 20   # Tool response size that warns
 ```
+
+
+> **Removed knobs.** `max_message_length`, `sanitize_content`,
+> `enforce_alternating`, `allowed_roles` and `validation_level` used to be
+> declared in `schema.yaml` and documented here, but no line of this plugin
+> ever read them. A knob an operator can set and that does nothing is worse
+> than an absent one — it is silently ignored configuration. They were dropped
+> rather than implemented, because nobody asked for the behaviour.
 
 ## Hook Points
 
 ### PRE_LLM_CALL
 
-Validates and sanitizes messages before sending to the LLM.
+Validates and repairs messages before sending to the LLM.
 
 **Input Context:**
 - `messages`: List of conversation messages
 
 **Output Result:**
-- `messages`: Validated and sanitized message list
+- `messages`: Validated and repaired message list
 - `metadata.validation`: Validation statistics including:
   - `status`: 'passed', 'passed_with_fixes', or 'failed'
   - `total_messages`: Number of input messages
@@ -56,27 +63,30 @@ Validates and sanitizes messages before sending to the LLM.
 - `role`: Must be present and valid
 - `content`: Must be present (string or list for multimodal)
 
-### Role Validation
-- Default valid roles: `system`, `user`, `assistant`, `function`, `tool`
-- Custom roles can be configured via `valid_roles`
-- Invalid roles are auto-fixed to `user` in non-strict mode
+### What is actually checked
 
-### Content Validation
-- **Empty Content**: Rejected unless `allow_empty_messages` is true
-- **Length Limits**: Truncated if exceeding `max_message_length`
-- **Type Checking**: Must be string or list (multimodal)
+Every entry below corresponds to a check in `hooks.py`; nothing here is
+aspirational.
 
-### Content Sanitization
-Removes potentially harmful patterns:
-- `<script>` tags and content
-- `javascript:` protocol
-- Event handlers (`onclick`, `onerror`, etc.)
+**Tool-call integrity** — the class of defect that makes a provider reject the
+whole request:
+- a tool response whose `tool_call_id` matches no assistant tool call
+- a tool message without a `tool_call_id`
+- an assistant tool call with no corresponding tool response
+- a tool name that violates the OpenAI pattern `^[a-zA-Z0-9_-]+$`
 
-### Sequence Validation
-If `enforce_alternating` is true:
-- User and assistant messages must alternate
-- System messages are ignored in alternation check
-- Non-alternating messages are flagged as issues
+**Tool response shape:**
+- malformed JSON in a tool response
+- size above `max_tool_response_size_kb` (error) or `warn_tool_response_size_kb` (warning)
+
+**Conversation shape:**
+- an assistant message with neither content nor tool calls
+- a first non-system message that is not `user`
+- two consecutive assistant messages
+
+It does NOT truncate, sanitize content, rewrite roles, or enforce a strict
+alternation. Earlier revisions of this file described all four; none of them
+existed in the code.
 
 ## Operating Modes
 
@@ -106,7 +116,7 @@ This plugin demonstrates the **hook-only** pattern:
 
 ```python
 class MessageValidatorPlugin(PluginHook):
-    """Hook-only plugin - does NOT inherit from MCPServer"""
+    """Hook-only plugin - does NOT inherit from ToolServer"""
     
     async def on_pre_llm_call(self, context: HookContext) -> HookResult:
         # Validation logic
@@ -116,7 +126,7 @@ class MessageValidatorPlugin(PluginHook):
 **Why hook-only?**
 - This plugin observes and modifies the LLM call lifecycle
 - It does NOT provide callable tools
-- Therefore it only inherits from `PluginHook`, not `MCPServer`
+- Therefore it only inherits from `PluginHook`, not `ToolServer`
 
 See `docs/plugin_architecture.md` for more details on plugin types.
 
@@ -125,28 +135,17 @@ See `docs/plugin_architecture.md` for more details on plugin types.
 Run tests for this plugin:
 
 ```bash
-pytest tests/test_message_validator_plugin.py -v
+pytest src/plugins/message_validator/tests -v
 ```
 
 ## Performance
 
 - **Overhead**: <2ms per LLM call for typical conversations
-- **Regex Operations**: Minimal - only runs on string content when sanitization is enabled
+- **Regex Operations**: Minimal - one pattern check per tool name
 - **Memory**: Minimal - operates on message copies, no persistent state
-
-## Security Considerations
-
-- **XSS Prevention**: Removes common XSS patterns
-- **Injection Prevention**: Blocks JavaScript protocol and event handlers
-- **Length Protection**: Prevents denial-of-service via oversized messages
-
-**Note**: This is a reference implementation. For production use, consider:
-- More comprehensive pattern matching
-- Integration with dedicated security libraries
-- Configurable sanitization rules per deployment
 
 ## See Also
 
 - `docs/plugin_architecture.md` - Plugin type selection guide
-- `src/plugins/context_optimizer/` - Another reference hook plugin
+- `src/plugins/markdown_formatter/` - Another reference hook plugin
 - `src/plugins/request_logger/` - Simple logging hook example

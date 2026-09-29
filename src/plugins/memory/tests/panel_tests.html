@@ -1,0 +1,463 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Memory panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const MARKUP = '<img src="x" onerror="window.parent.__xss = 1">';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const rows = () => [...doc().querySelectorAll('#memories tbody tr')];
+  const ids = () => rows().map((row) => row.dataset.memory).join();
+  const row = (id) => $(`#memories tr[data-memory="${id}"]`);
+  const cells = (name) => [...doc().querySelectorAll(`#memories [data-cell="${name}"]`)].map((cell) => cell.textContent).join();
+  const drawer = () => $('#detail');
+  const question = () => $('dialog.pk-dialog[open]:not(#detail)');
+  const refreshNow = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const stub = (path) => fetch(`/__stub/${path}`, { method: 'POST' });
+  const listed = async (session) => (await (await fetch(`/plugins/memory/memories?session_id=${session}`)).json()).memories
+    .map((memory) => memory.memory_id).join();
+  const search = (text) => {
+    $('#query').value = text;
+    $('#searchForm').requestSubmit();
+  };
+  const errorToast = (text) => [...doc().querySelectorAll('.pk-toast--error')].some((toast) => toast.textContent.includes(text));
+  // no tick: what the check waits for has to come from what it drives, not from the next auto refresh
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+    forgetRefreshChoice();  // paused for this check only -- the kit would remember it for the panel
+  };
+  const forgetRefreshChoice = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+  const noCookie = () => { document.cookie = 'mm=; path=/; max-age=0'; };
+
+  await check('opened on a session, the panel counts its memories and lists them most recently accessed first', async () => {
+    await go('/plugins/memory/?session_id=s-1');
+    await until('the memories of s-1', () => ids() === 'mem_001,mem_002,mem_003');
+    const stats = statValue('total') === '3' && statValue('importance') === '6.0' && statValue('accesses') === '4';
+    const first = row('mem_001');
+    const drawn = first.querySelector('.mm-title').textContent === 'Python type hints'
+      && first.querySelector('.mm-content').textContent === 'Always annotate function parameters in Python code'
+      && [...first.querySelectorAll('.mm-meta .pk-badge')].map((one) => one.textContent).join() === 'python,typing'
+      && first.querySelector('.pk-badge--warn')?.textContent === '9/10' && row('mem_002').querySelector('.pk-badge--info')?.textContent === '6/10'
+      && row('mem_003').textContent.includes('3/10') && !row('mem_003').querySelector('.pk-badge--warn, .pk-badge--info')
+      && row('mem_003').querySelectorAll('.mm-meta .pk-badge').length === 0
+      && cells('accesses') === '1,3,0' && $('#memories thead').textContent.includes('Last accessed');
+    return stats && drawn && $('#shown').hidden && !$('#searchForm').hidden && $('#clearSearch').hidden;
+  });
+
+  await check('of more than a hundred memories the hundred most recently accessed are listed, and the total said', async () => {
+    await go('/plugins/memory/?session_id=s-3');
+    await until('the memories of s-3', () => statValue('total') === '101' && rows().length === 100);
+    return rows()[0].dataset.memory === 'mem_101' && !row('mem_001') && !$('#shown').hidden
+      && $('#shown').textContent === 'The 100 most recently accessed of 101 memories';
+  });
+
+  await check('a session without memories says so', async () => {
+    await go('/plugins/memory/?session_id=s-9');
+    await until('the empty session', () => $('#memories').textContent.includes('No memories in this session'));
+    return statValue('total') === '0' && statValue('importance') === '–' && statValue('accesses') === '0' && rows().length === 0
+      && $('#shown').hidden && !$('#searchForm').hidden;
+  });
+
+  await check('a memory file that cannot be read is answered 503 with the reason, and shown', async () => {
+    await go('/plugins/memory/?session_id=s-8');
+    await until('the error', () => $('#stats').textContent.includes('Memories could not be loaded'));
+    const shown = $('#stats').textContent.includes('Failed to load memories') && rows().length === 0;
+    const answers = await Promise.all([
+      fetch('/plugins/memory/stats?session_id=s-8'), fetch('/plugins/memory/memories?session_id=s-8'),
+      fetch('/plugins/memory/memories/mem_001?session_id=s-8', { method: 'DELETE' })]);
+    const details = await Promise.all(answers.map(async (answer) => (await answer.json()).detail || ''));
+    return shown && answers.every((answer) => answer.status === 503) && details.every((detail) => detail.includes('Failed to load memories'));
+  });
+
+  await check('a memory opens in the drawer with its figures and content, markup as text', async () => {
+    await go('/plugins/memory/?session_id=s-2');
+    await until('the memories of s-2', () => row('mem_001'));
+    row('mem_001').click();
+    await until('the drawer', () => drawer().open);
+    const facts = Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent.trim()]));
+    const shown = $('#detailTitle').textContent === MARKUP && $('#detailBody [data-part="content"]').textContent === MARKUP
+      && row('mem_001').querySelector('.mm-title').textContent === MARKUP
+      && facts.ID === 'mem_001' && facts.Importance === '5/10' && facts.Accesses === '0' && 'Created' in facts && !('Match' in facts);
+    await sleep(200);
+    const inert = !doc().querySelector('#memories img, #detail img') && window.__xss === undefined;
+    $('#detail [data-close]').click();
+    return shown && inert && !drawer().open;
+  });
+
+  await check('a search lists the closest memories with their match, and Clear brings the list back', async () => {
+    await go('/plugins/memory/?session_id=s-1');
+    await until('the memories of s-1', () => rows().length === 3);
+    await autoOff();
+    search('python code');
+    await until('the search results', () => ids() === 'mem_001,mem_003');
+    const found = cells('match') === '100%,50%' && $('#memories thead').textContent.includes('Match')
+      && $('#shown').textContent === '2 found for “python code”' && !$('#clearSearch').hidden && statValue('total') === '3';
+    row('mem_003').click();
+    await until('the drawer', () => drawer().open);
+    const facts = $('#detailBody').textContent;
+    const content = $('#detailBody [data-part="content"]').textContent === 'Follow PEP 8 in Python';
+    drawer().close();
+    await until('the focus back on the row', () => doc().activeElement === row('mem_003'));
+    $('#clearSearch').focus();
+    $('#clearSearch').click();
+    await until('the list again', () => ids() === 'mem_001,mem_002,mem_003');
+    return found && content && facts.includes('Match') && facts.includes('50%') && !facts.includes('Created')
+      && $('#clearSearch').hidden && $('#query').value === '' && doc().activeElement === $('#query') && $('#shown').hidden;
+  });
+
+  await check('a search shows what the memory says now, and nothing of a memory that is gone', async () => {
+    await stub('retitle');
+    search('pep');
+    await until('the retitled memory', () => ids() === 'mem_003');
+    const current = row('mem_003').querySelector('.mm-title').textContent === 'Style guide, revised';
+    await go('/plugins/memory/?session_id=s-2');
+    await until('the memories of s-2', () => rows().length === 2);
+    await autoOff();
+    await stub('ghost');
+    search('second session');
+    await until('the answer', () => $('#shown').textContent === '0 found for “second session”');
+    return current && rows().length === 0 && $('#memories').textContent.includes('No memory matches the search');
+  });
+
+  await check('a search that finds nothing says so, and a failed one says why', async () => {
+    await go('/plugins/memory/?session_id=s-1');
+    await until('the memories of s-1', () => rows().length === 3);
+    await autoOff();
+    search('kubernetes');
+    await until('no match', () => $('#memories').textContent.includes('No memory matches the search'));
+    const none = rows().length === 0 && statValue('total') === '3';
+    let failed;
+    await stub('vectors/off');
+    try {
+      search('python');
+      await until('the failure', () => $('#stats').textContent.includes('The search failed'));
+      const runs = (await asked())['search:s-1'];
+      tick();  // nothing to keep: the search is run again, and fails again
+      await until('the search run again', async () => (await asked())['search:s-1'] > runs);
+      await sleep(300);
+      const answer = await fetch('/plugins/memory/memories/search?session_id=s-1', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'python' }) });
+      failed = $('#stats').textContent.includes('Semantic search failed: the embedding model is not loaded')
+        && rows().length === 0 && $('#shown').hidden && !$('#clearSearch').hidden && !errorToast('Semantic search failed')
+        && answer.status === 503 && (await answer.json()).detail.includes('the embedding model is not loaded');
+    } finally {
+      await stub('vectors/on');
+    }
+    $('#clearSearch').click();
+    await until('the list again', () => rows().length === 3);
+    return none && failed;
+  });
+
+  await check('a tick of the auto refresh keeps the results of a search and brings the figures', async () => {
+    search('python code');
+    await until('the search results', () => ids() === 'mem_001,mem_003');
+    const searches = (await asked())['search:s-1'];
+    const before = rows();
+    await stub('store');
+    tick();
+    await until('the new figure', () => statValue('total') === '4');
+    await sleep(300);
+    const kept = (await asked())['search:s-1'] === searches && rows().every((one, i) => one === before[i]) && ids() === 'mem_001,mem_003';
+    refreshNow();  // a refresh asked for runs the search again
+    await until('the search run again', async () => (await asked())['search:s-1'] === searches + 1);
+    $('#clearSearch').click();
+    await until('the list with the stored memory', () => ids() === 'mem_004,mem_001,mem_002,mem_003');
+    return kept;
+  });
+
+  await check('deleting asks once: cancelled the memory stays, confirmed it goes and the row in its place takes the focus', async () => {
+    row('mem_002').click();
+    await until('the drawer', () => drawer().open && $('#detailTitle').textContent === 'Deploy checklist');
+    $('#deleteButton').click();
+    $('#deleteButton').click();  // a double click asks once
+    let asking = await until('the question', question);
+    await sleep(200);
+    const once = doc().querySelectorAll('dialog.pk-dialog[open]:not(#detail)').length === 1
+      && asking.textContent.includes('Delete memory') && asking.textContent.includes('Deploy checklist');
+    asking.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(400);
+    const kept = drawer().open && Boolean(row('mem_002')) && (await listed('s-1')).includes('mem_002');
+    $('#deleteButton').click();
+    asking = await until('the question again', question);
+    asking.querySelector('[data-index="1"]').click();
+    await until('mem_002 gone', () => !row('mem_002') && statValue('total') === '3');
+    await sleep(100);
+    return once && kept && !drawer().open && (await listed('s-1')) === 'mem_004,mem_001,mem_003'
+      && doc().activeElement === row('mem_003') && !$('#deleteButton').disabled;
+  });
+
+  await check('a memory already gone is refused with a notice and the list loaded anew', async () => {
+    row('mem_003').click();
+    await until('the drawer', () => drawer().open);
+    await stub('forget');
+    $('#deleteButton').click();
+    (await until('the question', question)).querySelector('[data-index="1"]').click();
+    await until('the refusal', () => errorToast('404: Memory mem_003 not found'));
+    await until('the list without it', () => ids() === 'mem_004,mem_001');
+    return !drawer().open && statValue('total') === '2';
+  });
+
+  await check('a failed load shows the error and none of the memories shown before', async () => {
+    document.cookie = 'mm=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('Memories could not be loaded'));
+      const shown = $('#stats').textContent.includes('The memory store is locked') && rows().length === 0
+        && $('#memories').textContent.trim() === '' && $('#shown').hidden && !statValue('total') && !errorToast('The memory store is locked');
+      noCookie();
+      $('pk-refresh [data-act="now"]').click();
+      await until('the memories again', () => ids() === 'mem_004,mem_001');
+      return shown;
+    } finally {
+      noCookie();
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    let ticking = null;
+    document.cookie = 'mm=fails; path=/';
+    try {
+      $('pk-refresh [data-act="now"]').click();
+      await until('the error', () => $('#stats').textContent.includes('Memories could not be loaded'));
+      document.cookie = 'mm=slow; path=/';
+      $('pk-refresh [data-act="now"]').click();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('the memories while the ticks go on', () => ids() === 'mem_004,mem_001', 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookie();
+    }
+  });
+
+  await check('the panel follows the session the chat switches to, drops its search and draws no late answer of the one before', async () => {
+    await go('/plugins/memory/');  // no link: the session is the host's, and this page is the host
+    await autoOff();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    await until('the memories of s-1', () => ids() === 'mem_004,mem_001');
+    // memory ids repeat across sessions: the focus on s-1's mem_004 goes to the first row of s-3, not to its mem_004
+    row('mem_004').focus();
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the memories of s-3', () => statValue('total') === '101' && rows().length === 100);
+    const redrawFocus = doc().activeElement === rows()[0];
+    tell({ type: 'pk:session', session: { id: 's-1', title: 'First' } });
+    await until('the memories of s-1 again', () => ids() === 'mem_004,mem_001');
+    // a delete confirmed after the chat switched under the question: s-3 has a mem_004 as well
+    let hostAsked = null;  // the kit's question to its host, which this page is
+    const listen = (event) => { if (event.data?.type === 'pk:dialog') hostAsked = event.data; };
+    window.addEventListener('message', listen);
+    try {
+      row('mem_004').click();
+      await until('the drawer', () => drawer().open);
+      $('#deleteButton').click();
+      await until('the question to the host', () => hostAsked);
+    } finally {
+      window.removeEventListener('message', listen);
+    }
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the memories of s-3 under the question', () => statValue('total') === '101');
+    tell({ type: 'pk:dialog-result', id: hostAsked.id, value: true });
+    await until('the delete done', async () => (await listed('s-1')) === 'mem_001');
+    await until('the drawer closed', () => !drawer().open);
+    await sleep(300);
+    // closed on s-3: the focus to the row in the place of s-1's mem_004, not to s-3's mem_004
+    const actedOn = hostAsked.dialog.message.includes('Stored by an agent') && (await listed('s-3')).includes('mem_004')
+      && redrawFocus && doc().activeElement === rows()[0];
+    tell({ type: 'pk:session', session: { id: 's-1', title: 'First' } });
+    await until('the memories of s-1 without it', () => ids() === 'mem_001');
+    row('mem_001').click();
+    await until('the drawer', () => drawer().open);
+    const chat = document.body.appendChild(document.createElement('input'));  // the host's own field, where the switch was made
+    chat.focus();
+    tell({ type: 'pk:session', session: { id: 's-2', title: 'Second' } });
+    await until('the memories of s-2', () => ids() === 'mem_001' && row('mem_001').textContent.includes(MARKUP));
+    await sleep(100);
+    const kept = drawer().open && $('#detailTitle').textContent === 'Python type hints' && document.activeElement === chat;
+    chat.remove();
+    drawer().close();
+    tell({ type: 'pk:session', session: { id: 's-1', title: 'First' } });
+    await until('the memories of s-1 again', () => ids() === 'mem_001');
+    const before = await asked();
+    document.cookie = 'mm=slow; path=/';
+    try {
+      search('python');  // answered late
+      await until('the search asked for', async () => (await asked())['search:s-1'] > before['search:s-1']);
+      tell({ type: 'pk:session', session: { id: 's-2', title: 'Second' } });  // its list answered late as well
+      await until('the list of s-2 asked for', async () => (await asked())['list:s-2'] > before['list:s-2']);
+    } finally {
+      noCookie();
+    }
+    const dropped = $('#query').value === '' && $('#clearSearch').hidden;
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the memories of s-3', () => statValue('total') === '101' && rows().length === 100);
+    await sleep(2000);  // the answers for s-1 and s-2 are in by now
+    const late = statValue('total') === '101' && rows()[0].dataset.memory === 'mem_101'
+      && !$('#memories thead').textContent.includes('Match') && $('#shown').textContent.startsWith('The 100');
+    tell({ type: 'pk:session', session: null });  // the chat on a new session: nothing to search in
+    await until('no session', () => $('#stats').textContent.includes('No session open'));
+    return actedOn && kept && dropped && late && $('#searchForm').hidden && rows().length === 0;
+  });
+
+  await check('a link to a session keeps to it and to its search, whatever session the chat opens', async () => {
+    await go('/plugins/memory/?session_id=s-2');
+    await until('the memories of s-2', () => ids() === 'mem_001');
+    await autoOff();
+    search('img');
+    await until('the search results', () => $('#shown').textContent === '1 found for “img”');
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await sleep(500);
+    return $('#query').value === 'img' && $('#shown').textContent === '1 found for “img”' && ids() === 'mem_001'
+      && statValue('total') === '1';
+  });
+
+  await check('the way back from a link: the toolbar names the session it was sent to, and one click follows the chat again', async () => {
+    const listed = async (session) => (await asked())[`list:${session}`] || 0;
+    await go('/plugins/memory/?session_id=s-2');
+    await until('the memories of s-2', () => statValue('total'));
+    await autoOff();
+    const named = $('pk-session').hidden === false && $('pk-session .pk-badge').textContent.includes('s-2')
+      && $('pk-session [data-act="follow"]');
+    // this page stands in for the shell: the chat is on s-1, and it answers the panel the way back reloads too
+    const shell = (event) => {
+      if (event.data?.type === 'pk:ready') tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+    };
+    window.addEventListener('message', shell);
+    try {
+      const askedForS1 = await listed('s-1');
+      tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-1', title: 'First' } });
+      await sleep(300);
+      const keptToTheLink = (await listed('s-1')) === askedForS1;  // pinned: the chat's session is none of its business
+      const reloaded = new Promise((resolve) => { frame.onload = resolve; });
+      $('pk-session [data-act="follow"]').click();
+      await reloaded;
+      await autoOff();  // what comes now comes from the switch, not from the next tick
+      await until('the panel asking about the session open in the chat', async () => (await listed('s-1')) > askedForS1);
+      return Boolean(named) && keptToTheLink && frame.contentWindow.location.search === ''
+        && $('pk-session').hidden === true && !$('pk-session [data-act="follow"]');
+    } finally {
+      window.removeEventListener('message', shell);
+    }
+  });
+
+  await check('with no session open the panel says so and asks for nothing', async () => {
+    const total = async () => Object.values(await asked()).reduce((sum, count) => sum + count, 0);
+    const before = await total();
+    await go('/plugins/memory/');  // no shell, no link: no session
+    await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
+    await sleep(300);
+    return (await total()) === before && rows().length === 0 && !statValue('total') && $('#searchForm').hidden
+      && $('#memories').textContent.trim() === '';
+  });
+
+  await check('the server refuses a session id that is no session id', async () => {
+    const status = async (path, init) => (await fetch(path, init)).status;
+    const refused = await Promise.all([
+      status('/plugins/memory/stats?session_id=..%2F..%2Fescape'),
+      status('/plugins/memory/memories?session_id=a.b'),
+      status('/plugins/memory/memories/search?session_id=..%5Cx', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'python' }) }),
+      status('/plugins/memory/memories/mem_001?session_id=%2Ftmp%2Fx', { method: 'DELETE' }),
+    ]);
+    const emptyQuery = await status('/plugins/memory/memories/search?session_id=s-1', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '' }) });
+    return refused.every((code) => code === 422) && emptyQuery === 422 && (await status('/plugins/memory/stats?session_id=s-1')) === 200;
+  });
+
+  await check('rows drawn anew keep the keyboard focus, and an unchanged answer draws nothing', async () => {
+    await go('/plugins/memory/?session_id=s-1');
+    await until('the memories of s-1', () => ids() === 'mem_001');
+    await autoOff();
+    const focused = row('mem_001');
+    focused.focus();
+    await stub('store');
+    refreshNow();
+    await until('the stored memory', () => ids() === 'mem_005,mem_001');
+    const moved = doc().activeElement === row('mem_001') && row('mem_001') !== focused;
+    const drawnRows = rows();
+    const count = (await asked())['list:s-1'];
+    refreshNow();
+    await until('the unchanged answer', async () => (await asked())['list:s-1'] > count);
+    await sleep(300);
+    return moved && rows().every((one, i) => one === drawnRows[i]) && doc().activeElement === drawnRows[1];
+  });
+
+  await check('closing the drawer gives the focus back to its row, also when the list was drawn anew behind it', async () => {
+    row('mem_001').focus();
+    row('mem_001').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until('the drawer', () => drawer().open && $('#detailTitle').textContent === 'Python type hints');
+    const before = row('mem_001');
+    await stub('store');
+    refreshNow();
+    await until('the list drawn anew', () => ids() === 'mem_006,mem_005,mem_001');
+    drawer().close();
+    await sleep(100);
+    return !drawer().open && row('mem_001') !== before && doc().activeElement === row('mem_001');
+  });
+
+  await check('the auto refresh runs from the start and brings a memory an agent stores', async () => {
+    await go('/plugins/memory/?session_id=s-1');
+    await until('the memories of s-1', () => statValue('total') === '3');
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await stub('store');
+    await until('the stored memory, brought by a tick', () => statValue('total') === '4' &&rows()[0].dataset.memory === 'mem_007', 8000);
+    return running;
+  });
+
+  await check('a click on a head sorts the memories by value, and the order holds when they are drawn anew', async () => {
+    const head = (text) => [...doc().querySelectorAll('#memories thead th')].find((th) => th.textContent.trim() === text);
+    const first = (count) => rows().slice(0, count).map((one) => one.dataset.memory).join();
+    await go('/plugins/memory/?session_id=s-3');
+    await until('the memories of s-3', () => rows().length === 100);
+    await autoOff();
+    const byTime = first(2) === 'mem_101,mem_100' && head('Last accessed').getAttribute('aria-sort') === 'descending';
+    head('Accesses').click();
+    const sorted = first(3) === 'mem_100,mem_101,mem_099' && head('Accesses').getAttribute('aria-sort') === 'descending'
+      && !head('Last accessed').hasAttribute('aria-sort');
+    const table = $('#memories table');
+    await stub('store?session=s-3');  // never accessed: first of the memories that tie
+    $('pk-refresh [data-act="now"]').click();
+    await until('the memories drawn anew', () => $('#memories table') !== table && row('mem_102'));
+    const held = first(3) === 'mem_100,mem_101,mem_102' && head('Accesses').getAttribute('aria-sort') === 'descending';
+    head('Last accessed').click();  // the oldest of the hundred shown first, the one just stored last
+    const oldest = first(1) === 'mem_003' && rows().at(-1).dataset.memory === 'mem_102'
+      && head('Last accessed').getAttribute('aria-sort') === 'ascending';
+    return byTime && sorted && held && oldest;
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 This base mixin provides ONLY schema loading functionality without any
 assumptions about tools, hooks, or web UI. It's the foundation for:
-- SchemaBasedToolMixin (MCP servers & agents with tools)
+- SchemaBasedToolMixin (tool servers & agents with tools)
 - SchemaBasedHookMixin (hook plugins)
 - SchemaBasedWebMixin (web UI plugins)
 """
@@ -12,6 +12,8 @@ import logging
 import importlib.util
 from pathlib import Path
 from typing import Any
+
+from agent_system.paths import relocate_data_paths
 
 logger = logging.getLogger(__name__)
 
@@ -154,3 +156,28 @@ class SchemaBaseMixin:
         """
         self._schema_cache = None
         logger.debug(f"Cleared schema cache for {self.name}")
+
+
+def config_defaults_from_schema(schema_config: dict[str, Any] | None) -> dict[str, Any]:
+    """The values behind a schema's ``config:`` block.
+
+    A schema writes each key as ``{type, default, description}``; a plugin
+    wants ``{key: default}``. Plain values are passed through, so a schema
+    that writes the short form keeps working.
+
+    Lives here because both halves of the plugin API need it and neither may
+    depend on the other: the hook base (``hooks.schema_based``) and the base
+    for a plugin that is a tool server as well as a hook
+    (``tools.hook_tool_server``). A third copy had already grown inside the
+    todo plugin and drifted into ignoring the plugins.yaml block.
+
+    A default under ``data/`` moves with the data directory, as the same value
+    in plugins.yaml would (paths.py).
+    """
+    values: dict[str, Any] = {}
+    for key, value in (schema_config or {}).items():
+        if isinstance(value, dict) and "default" in value:
+            values[key] = value["default"]
+        else:
+            values[key] = value
+    return relocate_data_paths(values)

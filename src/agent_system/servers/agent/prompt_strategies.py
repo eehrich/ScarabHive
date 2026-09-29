@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, TYPE_CHECKING
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from jinja2 import Template
 import logging
 
@@ -32,6 +33,65 @@ class PromptContext:
     current_step: int  # Current step number (1-indexed, updated per-step)
     agent_instance: Any  # The actual agent instance for hook calls
     session_template_vars: Optional[Dict[str, Any]] = None  # Session-scoped vars (override agent_config)
+    # Plugin types with an enabled instance, and the enabled external MCP
+    # servers -- the installation, not this agent's allowlist (that is tools).
+    plugins: list[str] = field(default_factory=list)
+    mcp_servers: list[str] = field(default_factory=list)
+
+
+def build_context_values(context: PromptContext) -> Dict[str, Any]:
+    """Jinja context shared by prompt strategies and skill bodies.
+
+    Module-level (not a method) because skills are rendered by PromptRenderer,
+    which is not a PromptStrategy — and this never needed ``self``.
+
+    A prompt can branch on what is there:
+      * ``tools`` -- what THIS agent may call: server names, tool names and
+        ``server.tool`` for external MCP tools. ``has_tool(pattern)`` asks it
+        with fnmatch patterns, because tool names carry the instance name
+        (``has_tool('*_manage_sub_agent')``, ``has_tool('github.*')``).
+      * ``plugins`` -- plugin types installed and switched on, whether this
+        agent may use them or not (``'writer_pipeline_v4' in plugins``).
+      * ``mcp_servers`` -- external MCP servers switched on.
+    None of them may change between two steps: the system prompt is the
+    cached prefix. So they come from configuration, never from a live state
+    such as a connection.
+    """
+    tools = context.available_tools
+
+    def has_tool(pattern: str) -> bool:
+        return any(fnmatchcase(name, pattern) for name in tools)
+
+    context_vals = {
+        "tools": tools,
+        "has_tool": has_tool,
+        "plugins": context.plugins,
+        "mcp_servers": context.mcp_servers,
+        "max_steps": context.max_steps,
+        "current_step": context.current_step
+    }
+
+    # Add datetime context if enabled
+    if (hasattr(context.system_config, 'context') and
+            context.system_config.context.auto_datetime):
+        dt_ctx = get_datetime_context(
+            context.system_config.context.timezone,
+            context.system_config.context.location
+        )
+        context_vals.update(dt_ctx)
+
+    # Add custom template variables from agent config
+    # These override built-in variables if there's a conflict
+    if context.agent_config.template_vars:
+        context_vals.update(context.agent_config.template_vars)
+
+    # Add session-scoped template variables (highest priority)
+    # These override BOTH built-in AND agent_config template_vars
+    # CRITICAL: This ensures session isolation - each session has its own vars
+    if context.session_template_vars:
+        context_vals.update(context.session_template_vars)
+
+    return context_vals
 
 
 class PromptStrategy(ABC):
@@ -54,33 +114,7 @@ class PromptStrategy(ABC):
     
     def _get_context_values(self, context: PromptContext) -> Dict[str, Any]:
         """Build common context values for template rendering."""
-        context_vals = {
-            "tools": context.available_tools,
-            "max_steps": context.max_steps,
-            "current_step": context.current_step
-        }
-        
-        # Add datetime context if enabled
-        if (hasattr(context.system_config, 'context') and 
-            context.system_config.context.auto_datetime):
-            dt_ctx = get_datetime_context(
-                context.system_config.context.timezone,
-                context.system_config.context.location
-            )
-            context_vals.update(dt_ctx)
-        
-        # Add custom template variables from agent config
-        # These override built-in variables if there's a conflict
-        if context.agent_config.template_vars:
-            context_vals.update(context.agent_config.template_vars)
-        
-        # Add session-scoped template variables (highest priority)
-        # These override BOTH built-in AND agent_config template_vars
-        # CRITICAL: This ensures session isolation - each session has its own vars
-        if context.session_template_vars:
-            context_vals.update(context.session_template_vars)
-        
-        return context_vals
+        return build_context_values(context)
 
 
 class SubclassHookStrategy(PromptStrategy):
@@ -142,75 +176,37 @@ class RawPromptStrategy(PromptStrategy):
 
 
 class TemplateFileStrategy(PromptStrategy):
-    """Render system prompt from template file."""
-    
-    # Section ordering for merged prompt
-    SECTION_ORDER = [
-        'system_prompt',
-        'tools_prompt',
-        'general_instructions_prompt',
-    ]
-    
+    """Render system prompt from a markdown template file (whole file = prompt,
+    Jinja2-rendered)."""
+
     def can_handle(self, context: PromptContext) -> bool:
         """Check if agent has system_template path configured."""
         system_template_path = getattr(context.agent_config, 'system_template', None)
         return bool(system_template_path)
-    
+
     def render(self, context: PromptContext) -> tuple[str, Optional[str]]:
-        """Render template file with context."""
+        """Render the markdown template file with context."""
         system_template_path = context.agent_config.system_template
         context_vals = self._get_context_values(context)
-        
+
         logger.debug(
             "Agent %s rendering system_template from path: %s",
             context.agent_name, system_template_path
         )
-        
-        # Render all sections from template
-        rendered_sections = render_prompts(
-            system_template_path,
-            context_vals,
-            auto_datetime=(
-                context.system_config.context.auto_datetime 
-                if hasattr(context.system_config, 'context') else False
-            ),
-            timezone=(
-                context.system_config.context.timezone 
-                if hasattr(context.system_config, 'context') else None
-            ),
-            location=(
-                context.system_config.context.location 
-                if hasattr(context.system_config, 'context') else None
-            )
-        )
-        
-        # Merge sections with priority-based ordering
-        merged_prompt = self._merge_sections(rendered_sections)
-        return merged_prompt, None
-    
-    def _merge_sections(self, sections: Dict[str, str]) -> str:
-        """
-        Merge prompt sections in priority order.
-        
-        Matches behavior of config_agent_factory._load_system_prompt()
-        """
-        def sort_key(item):
-            section_name, _ = item
-            try:
-                return (0, self.SECTION_ORDER.index(section_name))
-            except ValueError:
-                # Unknown sections come last, sorted alphabetically
-                return (1, section_name)
-        
-        sorted_sections = sorted(sections.items(), key=sort_key)
-        
-        # Concatenate with separators (except system_prompt which has no header)
-        merged_prompt = "\n\n".join(
-            f"# {section_name}\n{content}" if section_name != "system_prompt" else content
-            for section_name, content in sorted_sections
-        )
-        
-        return merged_prompt
+
+        # The datetime values are already in context_vals, beneath the
+        # template_vars; merging them again here would override a pinned date.
+        rendered = render_prompts(system_template_path, context_vals, auto_datetime=False)
+        system_prompt = rendered.get("system_prompt", "")
+        if not system_prompt.strip():
+            # A configured template that renders empty (empty file, or a body
+            # fully gated behind a false {% if %}) would otherwise fall through
+            # to the generic default prompt silently — surface it.
+            logger.warning(
+                "Agent %s: system_template '%s' rendered to an empty prompt; "
+                "the agent will fall back to the default prompt.",
+                context.agent_name, system_template_path)
+        return system_prompt, None
 
 
 class DefaultPromptStrategy(PromptStrategy):
@@ -229,17 +225,25 @@ class DefaultPromptStrategy(PromptStrategy):
         return "You are an assistant agent.", None
 
 
+#: Missing-skill names already reported, so the error is logged once per agent
+#: instead of on every single render (prompts render on every LLM call).
+_reported_missing_skills: set[tuple[str, str]] = set()
+
+
 class PromptRenderer:
     """
     Orchestrates prompt rendering using strategy pattern.
-    
+
     Order of precedence:
       1. Subclass hook (get_custom_system_prompt)
       2. In-memory raw prompt (agent_config.system_prompt)
       3. Template file (agent_config.system_template)
       4. Default fallback
+
+    Skills configured on the agent are appended to whichever prompt won — the
+    single place where all four strategies meet.
     """
-    
+
     def __init__(self):
         """Initialize with ordered list of strategies."""
         self.strategies = [
@@ -248,20 +252,124 @@ class PromptRenderer:
             TemplateFileStrategy(),
             DefaultPromptStrategy(),
         ]
-    
+
     def render(self, context: PromptContext) -> tuple[str, Optional[str]]:
         """
-        Render prompts using first applicable strategy.
-        
+        Render prompts using first applicable strategy, then append skills.
+
         Returns:
             (system_prompt, tools_prompt_or_None)
         """
+        system_prompt, tools_prompt = "You are an assistant agent.", None
         for strategy in self.strategies:
             if strategy.can_handle(context):
                 result = strategy.render(context)
                 # If strategy returns empty string, try next one
                 if result[0]:
-                    return result
-        
-        # Should never reach here (DefaultPromptStrategy always handles)
-        return "You are an assistant agent.", None
+                    system_prompt, tools_prompt = result
+                    break
+
+        system_prompt = self._append_skills(system_prompt, context)
+        return system_prompt, tools_prompt
+
+    def _append_skills(self, system_prompt: str, context: PromptContext) -> str:
+        """Append ``always`` skill bodies plus an index of ``on_demand`` ones.
+
+        Appended at the END of the system prompt, in configured order: the
+        system prompt is the stable cache prefix, so a deterministic order keeps
+        it byte-identical between calls (see docs/prompt_cache_design.md).
+
+        Skill bodies are taken verbatim (Agent Skills standard — see
+        ``skills/registry.py``). ``on_demand`` skills contribute only their
+        one-line description: without that index the agent would never know
+        they exist and would never fetch them.
+        """
+        skills_cfg = getattr(context.agent_config, "skills", None)
+        wanted = list(getattr(skills_cfg, "always", []) or []) if skills_cfg else []
+        on_demand = list(getattr(skills_cfg, "on_demand", []) or []) if skills_cfg else []
+        if not wanted and not on_demand:
+            return system_prompt
+
+        from agent_system.skills import get_skill_registry
+        from agent_system.skills.registry import default_skill_dirs
+
+        # Roots come from config (skills.skill_dirs), falling back to the
+        # default. ensure_discovered only touches the filesystem when the roots
+        # changed — this runs on every LLM call.
+        configured = list(
+            getattr(getattr(context.system_config, "skills", None), "skill_dirs", []) or []
+        )
+        registry = get_skill_registry()
+        registry.ensure_discovered(configured or list(default_skill_dirs()))
+        parts = [system_prompt.rstrip()] if system_prompt.strip() else []
+
+        for name in wanted:
+            skill = registry.get(name)
+            if skill is None:
+                key = (context.agent_name, name)
+                if key not in _reported_missing_skills:
+                    _reported_missing_skills.add(key)
+                    logger.error(
+                        "Agent %s: skill '%s' not found — it will be MISSING from the "
+                        "prompt. Known skills: %s (scanned: %s)",
+                        context.agent_name, name, registry.names() or "none",
+                        registry.scanned_dirs or "no dirs",
+                    )
+                continue
+            try:
+                # Verbatim, never templated: the body is instructions, not a
+                # template. Rendering it would silently blank any literal
+                # {{ ... }} the author wrote, because unknown variables render
+                # empty. Shared prompt fragments belong in the prompt TEMPLATES
+                # via {% include %} (docs/skills_design.md §8), not in skills.
+                rendered = skill.body().strip()
+            except Exception as e:  # noqa: BLE001 - a broken skill must not kill the run
+                logger.error(
+                    "Agent %s: skill '%s' failed to render (%s) — skipped",
+                    context.agent_name, name, e,
+                )
+                continue
+            if rendered:
+                parts.append(rendered)
+                logger.debug(
+                    "Agent %s: appended skill '%s' v%s (%d chars)",
+                    context.agent_name, skill.name, skill.version, len(rendered),
+                )
+
+        index = self._on_demand_index(on_demand, registry, context)
+        if index:
+            parts.append(index)
+
+        return "\n\n".join(parts)
+
+    def _on_demand_index(self, names, registry, context: PromptContext) -> str:
+        """One-line-per-skill index telling the agent what it can fetch.
+
+        Only the descriptions go into the prompt; bodies and bundled files are
+        pulled with the ``skills`` plugin's tools when a task needs them.
+        """
+        lines = []
+        for name in names:
+            skill = registry.get(name)
+            if skill is None:
+                key = (context.agent_name, name)
+                if key not in _reported_missing_skills:
+                    _reported_missing_skills.add(key)
+                    logger.error(
+                        "Agent %s: on_demand skill '%s' not found — it will be MISSING "
+                        "from the index. Known skills: %s (scanned: %s)",
+                        context.agent_name, name, registry.names() or "none",
+                        registry.scanned_dirs or "no dirs",
+                    )
+                continue
+            desc = " ".join((skill.description or "").split()) or "(no description)"
+            lines.append(f"- `{skill.name}`: {desc}")
+
+        if not lines:
+            return ""
+        return (
+            "## Available skills\n\n"
+            "Reference material you can load when a task needs it. Read a skill with "
+            "the skills tools (`skills_read`); list its bundled files with `skills_list`.\n\n"
+            + "\n".join(lines)
+        )

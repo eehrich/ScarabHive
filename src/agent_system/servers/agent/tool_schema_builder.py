@@ -12,18 +12,118 @@ import logging
 import fnmatch
 
 if TYPE_CHECKING:
-    from agent_system.servers.agent.components.mcp_integration import MCPIntegrationManager
+    from agent_system.servers.agent.components.tool_integration import ToolIntegrationManager
 
 logger = logging.getLogger(__name__)
 
 
+def tool_matches_patterns(tool_name: str, server_name: str, patterns: List[str]) -> bool:
+    """Match an individual tool against allow/block patterns — THE single
+    matcher for tool authorization.
+
+    Schema build (what the LLM sees) and programmatic dispatch
+    (``Agent.dispatch_tool_call``, used by tool-scripting) MUST agree on what a
+    pattern matches, otherwise a tool hidden from the LLM could still be
+    dispatched (or a visible one rejected). Both paths therefore call this one
+    function; a parity test asserts the semantics.
+
+    Patterns (identical for allowed and blocked):
+    - ``server/tool``: exact match on the full path
+    - ``server/*``:    every tool of that server
+    - ``server``:      every tool of that server (shorthand, no slash)
+    - ``*tool*``:      fnmatch wildcard on full path or bare tool name
+    """
+    full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
+
+    for pattern in patterns:
+        # Exact match on full path
+        if pattern == full_tool_path:
+            return True
+
+        # Server/* pattern - every tool of that server
+        if pattern.endswith("/*"):
+            if server_name == pattern[:-2]:
+                return True
+
+        # Server-level pattern (no slash) - every tool of that server
+        if "/" not in pattern and pattern == server_name:
+            return True
+
+        # Wildcard matching using fnmatch
+        if "*" in pattern:
+            if fnmatch.fnmatch(full_tool_path, pattern):
+                return True
+            if fnmatch.fnmatch(tool_name, pattern):
+                return True
+
+    return False
+
+
+def server_matches_patterns(name: str, patterns: List[str]) -> bool:
+    """Match a DISCOVERY-STAGE name against allow/block patterns — THE single
+    matcher for the server-level filtering pass.
+
+    Two-stage filtering: discovery first selects which SERVERS (and external
+    dotted tool names) are considered at all; schema build then filters the
+    EXPANDED individual tools with ``tool_matches_patterns``. This function owns
+    the first stage; it deliberately lets a server PASS THROUGH when a pattern
+    targets one of its tools (``server/tool``), so the tool-level filter can
+    decide after expansion. Callers: ``ToolDiscoveryService`` (the execution
+    path), ``Agent._is_tool_allowed`` (details listing) and the
+    ``/agents/debug/*/allowed-tools`` endpoint — one semantic for all three
+    (historically two diverging copies lived in server.py and tool_discovery.py).
+
+    ``name`` is either a server name (``web_scraper``), an external dotted tool
+    name (``weather.get_forecast``) or — in diagnostics — a ``server/tool`` path.
+
+    Patterns:
+    - ``*``:            everything
+    - exact:            ``name == pattern``
+    - ``server/*``:     the server itself (pass-through; tools expand later)
+    - ``server/tool``:  the server itself (pass-through; tool filter decides)
+    - bare ``server``:  exactly that server
+    - ``ext.*``:        all dotted tools of an external server
+    - globs:            fnmatch on the full name (``*``, ``?``, ``[seq]``)
+
+    STRICT for dotted externals: ``server/*`` and bare ``server`` deliberately
+    do NOT admit ``server.tool`` names — external tools are selected with
+    the dot form (``server.*`` / exact). This keeps the discovery security
+    gate as strict as it historically was; the looser dot-prefix matching that
+    once lived in server.py's copy was never a production gate.
+
+    Empty/None patterns → deny-all (security by default; same policy as
+    ``ToolDiscoveryService.discover_allowed_tools``).
+    """
+    if not patterns:
+        return False
+    if "*" in patterns:
+        return True
+    for pat in patterns:
+        if name == pat:
+            return True
+        # "server/*" → the server itself (pass-through for later expansion)
+        if pat.endswith("/*") and name == pat[:-2]:
+            return True
+        # "ext.*" (dot wildcard) → all dotted tools of an external server
+        if pat.endswith(".*") and name.startswith(pat[:-2] + "."):
+            return True
+        # "server/tool" → let the SERVER pass through for later tool-level filtering
+        if "/" in pat and "*" not in pat and name == pat.split("/", 1)[0]:
+            return True
+        # glob metachars → fnmatch on the full name ('?' and '[seq]' included,
+        # matching the historical unconditional fnmatch in server.py's matcher)
+        if any(ch in pat for ch in "*?[") and fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
+
 class ToolSchemaBuilder:
-    """Builds OpenAI-compatible tool schemas from MCP servers."""
+    """Builds OpenAI-compatible tool schemas from tool servers."""
 
     def __init__(
         self,
         agent_name: str,
-        mcp_integration_manager: MCPIntegrationManager,
+        tool_integration_manager: ToolIntegrationManager,
         server_getter_func
     ):
         """
@@ -31,11 +131,11 @@ class ToolSchemaBuilder:
 
         Args:
             agent_name: Name of the agent
-            mcp_integration_manager: MCP integration manager
+            tool_integration_manager: tool integration manager
             server_getter_func: Function to get server by name (checks all registries)
         """
         self.agent_name = agent_name
-        self.mcp_integration_manager = mcp_integration_manager
+        self.tool_integration_manager = tool_integration_manager
         self.get_server = server_getter_func
 
     async def build_schemas(
@@ -48,7 +148,7 @@ class ToolSchemaBuilder:
         Build tool schemas for LLM and maintain name mapping.
 
         Processes:
-        1. External MCP tools (e.g., "server.tool_name")
+        1. External tools (e.g., "server.tool_name")
         2. Internal tools (plugins, agents) from available_tools list
         3. Apply allowed patterns to filter to only wanted tools (if specified)
         4. Apply blocked patterns to filter out unwanted tools
@@ -68,8 +168,8 @@ class ToolSchemaBuilder:
         tools_schema: List[Dict] = []
         tool_name_mapping: Dict[str, str] = {}
 
-        # Build schemas for external MCP tools
-        external_schemas, external_mapping = await self.mcp_integration_manager.build_tool_schemas(
+        # Build schemas for external tools
+        external_schemas, external_mapping = await self.tool_integration_manager.build_tool_schemas(
             available_tools
         )
         tools_schema.extend(external_schemas)
@@ -193,39 +293,12 @@ class ToolSchemaBuilder:
         Returns:
             True if tool should be allowed
         """
-        # Construct full tool path for matching
-        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
-
-        for pattern in allowed_patterns:
-            # Exact match on full path
-            if pattern == full_tool_path:
-                logger.debug(f"Tool '{tool_name}' allowed by exact pattern '{pattern}'")
-                return True
-
-            # Server/* pattern - allow all tools from server
-            if pattern.endswith("/*"):
-                server_pattern = pattern[:-2]
-                if server_name == server_pattern:
-                    logger.debug(f"Tool '{tool_name}' allowed by server wildcard pattern '{pattern}'")
-                    return True
-
-            # Server-level allow (no slash) - allow entire server
-            if "/" not in pattern and pattern == server_name:
-                logger.debug(f"Tool '{tool_name}' allowed by server pattern '{pattern}'")
-                return True
-
-            # Wildcard matching using fnmatch
-            if "*" in pattern:
-                # Try matching against full path
-                if fnmatch.fnmatch(full_tool_path, pattern):
-                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (full path)")
-                    return True
-                # Try matching against just tool name
-                if fnmatch.fnmatch(tool_name, pattern):
-                    logger.debug(f"Tool '{tool_name}' allowed by wildcard pattern '{pattern}' (tool name)")
-                    return True
-
-        return False
+        # Single shared matcher — MUST stay in sync with programmatic dispatch
+        # (Agent.dispatch_tool_call); see tool_matches_patterns docstring.
+        allowed = tool_matches_patterns(tool_name, server_name, allowed_patterns)
+        if allowed:
+            logger.debug(f"Tool '{tool_name}' allowed by patterns {allowed_patterns}")
+        return allowed
 
     def _apply_blocked_patterns(
         self,
@@ -314,39 +387,11 @@ class ToolSchemaBuilder:
         Returns:
             True if tool should be blocked
         """
-        # Construct full tool path for matching
-        full_tool_path = f"{server_name}/{tool_name}" if server_name else tool_name
-
-        for pattern in blocked_patterns:
-            # Exact match on full path
-            if pattern == full_tool_path:
-                logger.debug(f"Tool '{tool_name}' blocked by exact pattern '{pattern}'")
-                return True
-
-            # Server/* pattern - block all tools from server
-            if pattern.endswith("/*"):
-                server_pattern = pattern[:-2]
-                if server_name == server_pattern:
-                    logger.debug(f"Tool '{tool_name}' blocked by server wildcard pattern '{pattern}'")
-                    return True
-
-            # Server-level block (no slash) - block entire server
-            if "/" not in pattern and pattern == server_name:
-                logger.debug(f"Tool '{tool_name}' blocked by server pattern '{pattern}'")
-                return True
-
-            # Wildcard matching using fnmatch
-            if "*" in pattern:
-                # Try matching against full path
-                if fnmatch.fnmatch(full_tool_path, pattern):
-                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (full path)")
-                    return True
-                # Try matching against just tool name
-                if fnmatch.fnmatch(tool_name, pattern):
-                    logger.debug(f"Tool '{tool_name}' blocked by wildcard pattern '{pattern}' (tool name)")
-                    return True
-
-        return False
+        # Single shared matcher — same semantics as allow (see tool_matches_patterns).
+        blocked = tool_matches_patterns(tool_name, server_name, blocked_patterns)
+        if blocked:
+            logger.debug(f"Tool '{tool_name}' blocked by patterns {blocked_patterns}")
+        return blocked
 
     async def _build_internal_tool_schemas(
         self,
@@ -379,6 +424,7 @@ class ToolSchemaBuilder:
                 continue
 
             # Try modern multi-tool interface first (list_tools)
+            added_tools: List[str] = []
             if hasattr(server, 'list_tools'):
                 added_tools = await self._build_from_list_tools(
                     server,
@@ -387,8 +433,10 @@ class ToolSchemaBuilder:
                     tool_name_mapping
                 )
                 internal_tools_to_add.extend(added_tools)
-            # Fallback to get_tools()
-            elif hasattr(server, 'get_tools'):
+            # Fallback to get_tools() -- ALSO when list_tools() existed but
+            # produced nothing: a broken/raising list_tools used to lose the
+            # server from the LLM schema entirely, silently.
+            if not added_tools and hasattr(server, 'get_tools'):
                 added_tools = await self._build_from_get_tools(
                     server,
                     tool_name,
@@ -396,8 +444,13 @@ class ToolSchemaBuilder:
                     tool_name_mapping
                 )
                 internal_tools_to_add.extend(added_tools)
-            # Legacy single-tool interface
-            elif hasattr(server, 'get_schema'):
+            # Legacy single-tool interface -- LAST resort, only when neither
+            # list_tools() nor get_tools() produced anything. As an `elif` on
+            # the get_tools-if this ran exactly when list_tools() SUCCEEDED,
+            # appending a duplicate function with the server's name to the
+            # LLM schema (and never running for servers where both modern
+            # interfaces came up empty).
+            if not added_tools and hasattr(server, 'get_schema'):
                 await self._build_from_get_schema(server, tool_name, tools_schema)
 
         return internal_tools_to_add
@@ -413,7 +466,7 @@ class ToolSchemaBuilder:
         Build schemas using server.list_tools() (modern interface with custom descriptions).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
             tool_name_mapping: Mapping dict to update
@@ -422,19 +475,19 @@ class ToolSchemaBuilder:
             List of individual tool names added
         """
         try:
-            mcp_tools = await server.list_tools()
+            tool_defs = await server.list_tools()
 
-            # Convert MCPTool objects to OpenAI function format
+            # Convert ToolDef objects to OpenAI function format
             server_tools = []
-            for mcp_tool in mcp_tools:
-                # MCPTool uses snake_case (input_schema) internally
+            for tool_def in tool_defs:
+                # ToolDef uses snake_case (input_schema) internally
                 # The MCP client converts from JSON camelCase (inputSchema) to Python snake_case
-                input_schema = mcp_tool.input_schema
+                input_schema = tool_def.input_schema
                 tool_schema = {
                     "type": "function",
                     "function": {
-                        "name": mcp_tool.name,
-                        "description": mcp_tool.description,
+                        "name": tool_def.name,
+                        "description": tool_def.description,
                         "parameters": input_schema
                     }
                 }
@@ -475,7 +528,7 @@ class ToolSchemaBuilder:
         Build schemas using server.get_tools() (fallback, no custom descriptions).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
             tool_name_mapping: Mapping dict to update
@@ -526,7 +579,7 @@ class ToolSchemaBuilder:
         Build schema using server.get_schema() (legacy single-tool interface).
 
         Args:
-            server: MCP server instance
+            server: tool server instance
             server_name: Name of the server
             tools_schema: Schema list to append to
         """

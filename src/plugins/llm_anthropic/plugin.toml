@@ -1,0 +1,15 @@
+# llm_anthropic — Anthropic Claude provider for the LLM registry.
+# Loaded lazily by agent_system.llm.registry when a model config says
+# `provider: anthropic`. pip requirements live HERE, not in core.txt;
+# scripts/aggregate_plugin_deps.py folds them into requirements/all.txt.
+[plugin]
+name = "llm_anthropic"
+version = "1.0.0"
+description = "Anthropic Claude LLM provider (SDK client + message batch backend)"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["anthropic"]
+provides_batch = ["anthropic"]
+requires = { agent_system = ">=0.6.0" }
+# 0.77.0: the first SDK whose messages.create/stream take output_config (structured output, F11).
+dependencies = ["anthropic>=0.77.0"]

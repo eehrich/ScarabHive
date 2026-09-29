@@ -1,0 +1,302 @@
+"""Test event-based media compaction triggers below threshold."""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent_system.hooks import HookContext
+from plugins.context_engineer.hooks import ContextEngineerPlugin
+
+
+class TestEventBasedMediaCompaction:
+    """Test that event-based media compaction works even below token threshold."""
+    
+    @pytest.fixture
+    def plugin_dir(self, tmp_path):
+        """Create plugin directory with schema."""
+        plugin_dir = tmp_path / "context_engineer"
+        plugin_dir.mkdir()
+        
+        # Copy schema.yaml from real plugin
+        import shutil
+        src_dir = Path("src/plugins/context_engineer")
+        shutil.copy(src_dir / "schema.yaml", plugin_dir / "schema.yaml")
+        
+        return plugin_dir
+    
+    @pytest.fixture
+    def hooks_impl(self, plugin_dir, tmp_path):
+        """Create ContextEngineerPlugin instance."""
+        storage_path = tmp_path / "storage"
+        storage_path.mkdir()
+        
+        impl = ContextEngineerPlugin(plugin_dir)
+        
+        # Override storage path
+        impl._storage_base = storage_path
+        
+        # Configure for event-based media compaction
+        impl.layer1_threshold = 60000  # High threshold to ensure we're below it
+        impl.compact_media_after_user_message = True  # Enable event-based compaction
+        impl.min_tokens_between_compactions = 0  # No hysteresis in these tests
+        # Pinned at its default: above 0 this compacts media whatever the
+        # trigger says, and every assertion about the trigger goes green on its
+        # own.
+        impl.always_compact_media_keep_last = 0
+        
+        return impl
+    
+    @pytest.mark.asyncio
+    async def test_media_compaction_below_threshold_with_event(self, hooks_impl, tmp_path):
+        """Test that media compaction runs below threshold when event is triggered."""
+        # Create a test audio file
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)  # 1KB file
+        
+        # Messages with media (below threshold: ~500 tokens)
+        messages = [
+            {
+                "role": "user",
+                "content": "Previous message with media",
+                "multimodal_content": [
+                    {
+                        "type": "audio",
+                        "path": str(audio_file),
+                        "mime_type": "audio/mpeg"
+                    }
+                ]
+            },
+            {
+                "role": "assistant",
+                "content": "I processed your audio"
+            },
+            {
+                "role": "user",  # This triggers event-based media compaction
+                "content": "Thanks, what did you find?"
+            }
+        ]
+        
+        # Create mock context
+        context = HookContext(
+            hook_type="pre_llm_call",
+            request_id="test-request",
+            session_id="test-session",
+            agent=None,
+            agent_name="test_agent",
+            messages=messages,
+            llm_response=None,
+            tool_call=None,
+            tool_result=None,
+            output=None,
+            metadata={},
+            step=1,
+            llm=None,
+            cancellation_token=None
+        )
+        
+        # Run the hook
+        result = await hooks_impl.engineer_context(context)
+        
+        # Verify compaction was triggered despite being below threshold
+        assert result.success is True
+        assert result.modified is True, "Expected media compaction to modify messages"
+        
+        # Check that first message's media was compacted (removed from multimodal_content)
+        modified_messages = result.context.messages
+        first_msg = modified_messages[0]
+        
+        # First message should have compacted media - item removed from multimodal_content
+        if hasattr(first_msg, 'multimodal_content'):
+            multimodal_content = first_msg.multimodal_content
+        else:
+            multimodal_content = first_msg.get('multimodal_content')
+        
+        # multimodal_content should be empty (item removed)
+        assert not multimodal_content or len(multimodal_content) == 0, \
+            "Expected multimodal_content to be empty after compaction"
+        
+        # Hint should be added to content
+        if hasattr(first_msg, 'content'):
+            content = first_msg.content
+        else:
+            content = first_msg.get('content')
+        
+        if isinstance(content, list):
+            content_text = " ".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in content)
+        else:
+            content_text = str(content) if content else ""
+        
+        assert "removed" in content_text.lower() or "compacted" in content_text.lower(), \
+            f"Expected compaction hint in content, got: {content_text}"
+    
+    @pytest.mark.asyncio
+    async def test_a_note_does_not_hide_the_user_message_it_follows(self, hooks_impl, tmp_path):
+        """The other direction: the note is appended at the START of a step,
+        right behind the input just drained. Stopping the search at the note
+        loses the turn behind it, and nothing triggers for the rest of the run.
+
+        `developer` only, and that is the point: a note on `user` would set the
+        trigger by itself, so that case would pass with the search removed."""
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {"role": "user", "content": "an old message with media",
+             "multimodal_content": [{"type": "audio", "path": str(audio_file), "mime_type": "audio/mpeg"}]},
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "and now the next request"},
+            {"role": "developer", "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
+        ]
+        context = HookContext(hook_type="pre_llm_call", request_id="r", session_id="s", agent=None,
+                              agent_name="test_agent", messages=messages, metadata={}, step=28)
+
+        result = await hooks_impl.engineer_context(context)
+
+        # Without this, a green run says nothing: below the threshold the hook
+        # returns the list untouched, and `not media` would also hold if the
+        # message at [0] were some breadcrumb a later layer inserted.
+        assert result.modified is True, f"nothing was compacted at all: {result.metadata}"
+        first = result.context.messages[0]
+        media = first.get("multimodal_content") if isinstance(first, dict) else first.multimodal_content
+        assert not media, "the user message behind the note triggered nothing"
+
+    @pytest.mark.asyncio
+    async def test_a_loop_note_after_tool_results_is_no_new_user_message(self, hooks_impl, tmp_path):
+        """The step budget note ends the history on the last steps of a run; read
+        as a user message it evicted old media and rewrote old messages there.
+
+        On `user`, because that is the case that can fail: a hook's scripted
+        turn still rides there, and the marker is all that tells it from a
+        person. A `developer` note could not trigger this path whatever the
+        search does -- the test above is where that role is measured."""
+        note_role = "user"
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {"role": "user", "content": "an old message with media",
+             "multimodal_content": [{"type": "audio", "path": str(audio_file), "mime_type": "audio/mpeg"}]},
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "the request"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "ok"},
+            {"role": note_role, "content": "Step 29 of 30", "injected_by": "agent.step_budget"},
+        ]
+        context = HookContext(hook_type="pre_llm_call", request_id="r", session_id="s", agent=None,
+                              agent_name="test_agent", messages=messages, metadata={}, step=28)
+
+        result = await hooks_impl.engineer_context(context)
+
+        first = result.context.messages[0]
+        media = first.get("multimodal_content") if isinstance(first, dict) else first.multimodal_content
+        assert media, "the old audio was evicted on a note"
+
+    @pytest.mark.asyncio
+    async def test_no_compaction_without_event_below_threshold(self, hooks_impl, tmp_path):
+        """Test that compaction is skipped below threshold without event trigger."""
+        # Disable event-based compaction
+        hooks_impl.compact_media_after_user_message = False
+        
+        audio_file = tmp_path / "test_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        
+        # Messages ending with assistant (no event trigger)
+        messages = [
+            {
+                "role": "user",
+                "content": "Message with media",
+                "multimodal_content": [
+                    {
+                        "type": "audio",
+                        "path": str(audio_file),
+                        "mime_type": "audio/mpeg"
+                    }
+                ]
+            },
+            {
+                "role": "assistant",  # Last message is assistant, no event
+                "content": "I processed your audio"
+            }
+        ]
+        
+        context = HookContext(
+            hook_type="pre_llm_call",
+            request_id="test-request",
+            session_id="test-session",
+            agent=None,
+            agent_name="test_agent",
+            messages=messages,
+            llm_response=None,
+            tool_call=None,
+            tool_result=None,
+            output=None,
+            metadata={},
+            step=1,
+            llm=None,
+            cancellation_token=None
+        )
+        
+        result = await hooks_impl.engineer_context(context)
+        
+        # Should skip compaction (below threshold, no event)
+        assert result.success is True
+        assert result.modified is False, "Expected no compaction without event trigger"
+        assert result.metadata.get("reason") == "below_threshold"
+
+    @pytest.mark.asyncio
+    async def test_compaction_status_end_carries_the_result(
+            self, hooks_impl, tmp_path, monkeypatch):
+        """The hook's END line must say WHAT changed.
+
+        Shipped behaviour was a static 'Context engineering completed' —
+        while the CompactionResult with all the numbers sat right beside it.
+        """
+        from agent_system.tools.status import get_status_bus
+
+        published = []
+
+        async def mock_publish(event):
+            published.append(event)
+
+        monkeypatch.setattr(get_status_bus(), "publish", mock_publish)
+
+        audio_file = tmp_path / "status_audio.mp3"
+        audio_file.write_bytes(b"x" * 1024)
+        messages = [
+            {
+                "role": "user",
+                "content": "Message with media",
+                "multimodal_content": [
+                    {"type": "audio", "path": str(audio_file),
+                     "mime_type": "audio/mpeg"}
+                ],
+            },
+            {"role": "assistant", "content": "I processed your audio"},
+            {"role": "user", "content": "Thanks, what did you find?"},
+        ]
+        context = HookContext(
+            hook_type="pre_llm_call",
+            request_id="test-status-request",
+            session_id="test-status-session",
+            agent=None,
+            agent_name="test_agent",
+            messages=messages,
+            llm_response=None,
+            tool_call=None,
+            tool_result=None,
+            output=None,
+            metadata={},
+            step=1,
+            llm=None,
+            cancellation_token=None,
+        )
+
+        result = await hooks_impl.engineer_context(context)
+        assert result.modified is True, \
+            "nothing was compacted — the status assertions would be vacuous"
+
+        ends = [e for e in published
+                if e.server == "context_engineer" and e.phase.value == "end"]
+        assert len(ends) == 1, [(e.server, e.phase, e.message) for e in published]
+        assert ends[0].message.startswith("Context engineered: "), ends[0].message
+        assert "media" in ends[0].message, ends[0].message

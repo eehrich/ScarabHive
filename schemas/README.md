@@ -1,140 +1,69 @@
-# JSON Schemas for AgentSystem Configuration
+# JSON-Schemas für die AgentSystem-Konfiguration
 
-This directory contains JSON Schema definitions for validating AgentSystem configuration files.
+VS Code validiert die Config-Dateien live gegen diese Schemas
+(`.vscode/settings.json` → `yaml.schemas`): Autocomplete, Tippfehler und
+tote Keys leuchten direkt im Editor auf.
 
-## Files
+## Abgeleitete Schemas (nicht von Hand editieren)
 
-### Configuration Schemas
-- **`llm-config.schema.json`**: Schema for `config/llm.yaml` (LLM models and providers)
-- **`mcp-config.schema.json`**: Schema for `config/config.yaml` (main system configuration)
-- **`plugin-config.schema.json`**: Schema for `config/plugins.yaml` (plugin and agent instance configurations)
-- **`hooks-config.schema.json`**: Schema for hook configurations
-- **`session-schema.json`**: Schema for session data structures
+| Schema | validiert | Quelle (Pydantic) |
+|---|---|---|
+| `llm-config.schema.json` | `config/llm.yaml` | `LLMSystemConfig` |
+| `main-config.schema.json` | `config/config.yaml` (vor Include-Merge) | `AgentSystemConfig` |
+| `plugins-config.schema.json` | `config/plugins.yaml` | `PluginsConfig` + `GlobalHooksConfig` |
+| `config-part.schema.json` | jede über `includes:` gezogene Datei: `config/agents/*.yaml`, `config/mcp_servers.yaml`, die ~85 `src/plugins*/*/agents/*.yaml` | `AgentSystemConfig`, auf die vier gemergten Sektionen beschränkt |
 
-## VS Code Integration
+Warum die Agent-Dateien ein eigenes Schema bekommen: aus einer eingebundenen
+Datei hebt `settings.py` nur `llm_system`, `plugins`, `external_servers` und
+`hooks` heraus — alles andere (etwa `network:`) fällt still weg und wäre dort
+tot, obwohl das Haupt-Schema es erlaubt.
 
-### Setup (Already Configured)
+Ein leerer Schlüssel unter `hooks:` (alle Zeilen darunter auskommentiert)
+bedeutet „nichts gesetzt“; die Modelle verwerfen ihn vor der Validierung, und
+das Schema lässt `null` dort deshalb zu.
 
-The `.vscode/settings.json` file already contains schema mappings for automatic validation:
+**Grenze:** `ToolServerConfig` ist `extra="allow"` (die plugin-eigenen Keys wie
+`max_nesting_depth` oder `allowed_agents` leben dort), deshalb bleibt ein
+Tippfehler direkt unter einem Server-Eintrag unbemerkt. Innerhalb von
+`agent_config:` greift die Strictness.
 
-```json
-{
-  "yaml.schemas": {
-    "./schemas/llm-config.schema.json": [
-      "config/llm.yaml"
-    ],
-    "./schemas/mcp-config.schema.json": [
-      "config/config.yaml"
-    ],
-    "./schemas/plugin-config.schema.json": [
-      "config/plugins.yaml"
-    ]
-  },
-  "yaml.customTags": [
-    "!include"
-  ]
-}
+Diese drei werden **generiert** — die Modelle in
+`src/agent_system/config/models.py` sind die einzige Quelle. Nach jeder
+Modell-Änderung neu erzeugen:
+
+```bash
+.venv/Scripts/python.exe src/scripts/generate_config_schemas.py
 ```
 
-### What You Get
+Der Anti-Drift-Test `tests/config/test_config_schemas.py` wird rot, wenn
+eine Datei veraltet ist, die echte YAML nicht mehr validiert oder die
+Strictness verloren geht.
 
-✅ **Autocomplete**: IntelliSense for all config fields
-✅ **Validation**: Real-time error detection while typing
-✅ **Documentation**: Hover tooltips with field descriptions
-✅ **Type checking**: Enum values, patterns, min/max constraints
+**Strictness:** Jedes Objekt mit deklarierten Feldern trägt
+`additionalProperties: false`. Die Laufzeit ignoriert unbekannte Keys
+(pydantic `extra="ignore"`) — genau deshalb überlebte die Klasse stiller
+toter Config-Keys (`ollama_url`, `include_thinking`) monatelang; der Editor
+ist der Ort, an dem sie auffallen sollen. Modelle mit `extra="allow"`
+(z. B. `ToolServerConfig`: plugin-spezifische Keys) bleiben durchlässig.
 
-### How to Use
+## Handgepflegte Schemas (kein Modell dahinter)
 
-1. Open any config file (`config/llm.yaml`, `config/config.yaml`, `config/plugins.yaml`)
-2. Start typing - VS Code will suggest valid fields
-3. Hover over fields to see documentation
-4. Errors appear as red squiggles with helpful messages
+- **`plugin-config.schema.json`**: Format der Plugin-Manifeste — der
+  `[plugin]`-Tabelle in `plugin.toml` (73 im Baum). Der Legacy-`plugin.yaml`
+  ist seit `2181390d` (06.09.2026) restlos raus, auch aus
+  `plugin_manifest.py`.
+  Angewandt von `src/scripts/validate_plugin.py`; nirgends in
+  `.vscode/settings.json` gemappt, im Editor wirkt es also nicht.
+  ⚠️ `additionalProperties: false` — ein neuer Manifest-Schlüssel muss hier
+  eingetragen werden, sonst weist der Validator das Plugin ab.
+- **`session-schema.json`**: Dokumentiert das Session-JSON auf der Platte.
+  Der `SessionManager` arbeitet dict-basiert ohne Pydantic-Modell — das
+  Schema ist reine Dokumentation und kann veraltet sein.
 
-### Example: Adding a New LLM Model
+## Historie
 
-Open `config/llm.yaml` and start typing under `llm_system.models`:
-
-```yaml
-llm_system:
-  models:
-    my-new-model:  # VS Code suggests: provider, model, context_window, etc.
-      provider: |  # Autocomplete shows: openai, anthropic, deepseek, etc.
-```
-
-## Schema Details
-
-### Plugin Config Schema (`plugin-config.schema.json`)
-
-Validates plugin and agent instance configurations:
-
-- **Plugin servers**: Configuration for plugin-based servers and agent instances
-- **Agent config**: LLM profile, max steps, system prompt/template, tools, context management
-- **Tool patterns**: Format `plugin_name/tool_name` or `plugin_name/*`
-- **LLM profiles**: Must match profiles in `config/llm.yaml`
-- **Context strategies**: Valid strategy names
-- **Metadata**: Optional author, version, tags, category
-
-### LLM Config Schema (`llm-config.schema.json`)
-
-Validates LLM configuration:
-
-- **httpx_timeouts**: Connection, read, write, pool timeouts
-- **models**: Model definitions with provider, API keys, capabilities
-- **capabilities**: Tools, streaming, vision, audio, JSON mode support
-- **context_window**: Token limits (1 - 2,000,000)
-
-### Main Config Schema (`mcp-config.schema.json`)
-
-Validates main system configuration:
-
-- **name, version, description**: System metadata
-- **includes**: Config file includes
-- **context**: Auto-datetime, timezone, location
-- **network**: SSL, host, port, cache settings
-- **default_agent**: Default agent name
-- **auth**: Authentication, CORS, rate limiting, admin user
-- **logging**: Log levels, file paths, cancellation settings
-
-## Common Validation Errors
-
-### Error: Missing system_prompt or system_template
-
-```
-Validation error at my_agent -> agent_config: 
-  {'system_prompt': '...'} is not valid under any of the given schemas
-```
-
-**Fix**: Provide either `system_prompt` (inline) OR `system_template` (file path), but not both.
-
-### Error: Invalid tool pattern
-
-```
-Validation error at my_agent -> agent_config -> tools -> allowed -> 0:
-  'invalid-tool' does not match '^[a-z_][a-z0-9_]*/...'
-```
-
-**Fix**: Use format `plugin_name/tool_name` or `plugin_name/*`.
-
-### Error: Invalid LLM profile format
-
-```
-Validation error at my_agent -> agent_config -> llm_profile:
-  'GPT-4' does not match '^[a-z][a-z0-9_-]*$'
-```
-
-**Fix**: Use lowercase profile names like `turbo`, `normal`, `deepseek`.
-
-### Error: max_steps out of range
-
-```
-Validation error at my_agent -> agent_config -> max_steps:
-  150 is greater than the maximum of 100
-```
-
-**Fix**: Use a value between 1 and 100 (5-30 recommended).
-
-## See Also
-
-- [Plugin Architecture](../docs/_sad_plugin_architecture.md) - Plugin system documentation
-- [MCP Configuration](../docs/mcp_configuration.md) - Full MCP config reference
-- [JSON Schema Docs](https://json-schema.org/) - Official JSON Schema documentation
+Bis 2026-08 waren alle Schemas handgeschrieben und weit gedriftet
+(erfundene Felder, fehlende Provider). `mcp-config.schema.json` (validierte
+irreführenderweise die Haupt-Config) und `hooks-config.schema.json`
+(Teilmenge von `plugins.yaml`) sind in `main-config.schema.json` bzw. der
+`hooks:`-Sektion von `plugins-config.schema.json` aufgegangen.

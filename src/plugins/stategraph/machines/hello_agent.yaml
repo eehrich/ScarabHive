@@ -1,0 +1,41 @@
+# The smallest useful machine: one agent activity, then a final state that
+# returns the answer. Try it offline first:
+#   stategraph_run_machine(machine_id="hello_agent", mock_only=true,
+#                          mocks={"greet": "Hello, world!"})
+stategraph: 1
+id: hello_agent
+title: Hello agent
+description: >-
+  One agent activity and a final output. Live, it asks stategraph_example_agent; mock the
+  state "greet" to run it offline.
+
+params:
+  name: {type: string, default: world, description: Who to greet}
+
+context:
+  greeting: null
+  problem: null
+
+initial: greet
+
+states:
+  greet:
+    do:
+      agent: stategraph_example_agent
+      task: "Write one friendly sentence that greets {{ params.name }}."
+      timeout: 5m
+    transitions:
+      - target: done
+        effect: ctx.greeting = out
+      - trigger: error
+        target: failed
+        effect: ctx.problem = error.message
+
+  done:
+    type: final
+    output: {greeting: "{{ ctx.greeting }}"}
+
+  failed:
+    type: final
+    status: failed
+    output: {problem: "{{ ctx.problem }}"}

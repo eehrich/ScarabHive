@@ -1,129 +1,529 @@
 # =============================================================================
-# OPENROUTER LLM MODELS
+# OPENROUTER MODELS
 # =============================================================================
-# OpenRouter provides unified access to 400+ AI models with higher rate limits
-# and automatic fallback/load balancing across providers.
-#
-# Get your API key from: https://openrouter.ai/keys
-# View pricing & models: https://openrouter.ai/models
-# Docs: https://openrouter.ai/docs
-#
-# Benefits:
-# - Higher rate limits than direct API access (especially for Gemini Tier 1)
-# - Automatic fallback when providers are down
-# - Single API for multiple providers
-# - OpenAI-compatible API (use openai_httpx provider)
-#
-# Rate Limits:
-# - Free tier: 20 requests/minute
-# - With $10+ credit: 1000 free-tier requests/day
+# Entries inherit from each other via `extends:` — see
+# docs/llm_model_inheritance_konzept.md. Why a value is what it is (backend
+# pins, fp8, cache keys): docs/llm_catalog.md
 # =============================================================================
 
 llm_system:
   models:
-    # ---------------------------------------------------------------------------
-    # GOOGLE GEMINI MODELS via OpenRouter
-    # ---------------------------------------------------------------------------
-    
-    openrouter-gemini-3-flash:
-      provider: openai_httpx
-      model: google/gemini-3-flash-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
+
+    # base class for all open router models
+    openrouter-base:
+      provider: openai_responses
+      api_key: ${OPENROUTER_API_KEY}
       base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 240
-      max_tokens: 8192
+      context_window: 272000      # independend of more conext size limit by default to 272K to avoid long context costs
+      request_timeout: 600        # some models are really slow
+      stream_silence_timeout: 900 # seconds of keep-alives only, then a retry
+      max_tokens: 16384           # default limit to 16k
+      include_thoughts: true    
+      thinking_level: medium
+      service_tier: flex          # use flex as std to save money
+      
+      capabilities:
+        tools: true               # most models can handle tool calls nowadays
+        function_calling: true    
+        streaming: true           # enable streaming by default for better timeout handling
+        json_mode: true           # not used atm
+        image_input: false        # text only unless a child says otherwise
+        audio_input: false
+        video_input: false
+
+
+    #
+    # Gemini Models
+    #
+
+    openrouter-gemini:
+      extends: openrouter-base
+      tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
+      provider_routing: # make a defined order to avoid reasoning breaks
+        order:
+        - google-vertex
+        - google-ai-studio
+        # Ohne diesen Riegel darf OpenRouter ueber die Liste hinaus ausweichen
+        # — dann greift die definierte Reihenfolge nicht mehr, und der
+        # Prompt-Cache des vorherigen Anbieters ist verloren. Faellt die Liste
+        # aus, uebernimmt die llm_profile-Kette mit einem anderen Modell.
+        allow_fallbacks: false
+
+      # Kein safety_settings: OpenRouter laesst das Feld auf /responses fallen.
+      # Wer eigene Schwellen braucht, nimmt die nativen gemini-3-*-Eintraege
+      # (provider: gemini_sdk), die direkt mit Google reden. Warum das hier
+      # nichts kostet: docs/llm_catalog.md
+
+      capabilities:
+        json_mode: true
+        image_input: true
+        audio_input: true
+ 
+
+    openrouter-gemini-pro:
+      extends: openrouter-gemini
+      model: google/gemini-3.1-pro-preview
+
+    openrouter-gemini-pro-unlimited:
+      extends: openrouter-gemini-pro
+      max_tokens: 0
+
+    openrouter-gemini-flash:
+      extends: openrouter-gemini
+      model: ~google/gemini-flash-latest
+      thinking_level: medium
+
+    openrouter-gemini-flash-minimal:
+      extends: openrouter-gemini-flash
+      max_tokens: 16384
+      thinking_level: minimal
+
+    openrouter-gemini-flash-unlimited:
+      extends: openrouter-gemini-flash
+      max_tokens: 0
+
+    openrouter-gemini-flash-lite:
+      extends: openrouter-gemini
+      model: google/gemini-3.5-flash-lite
+      context_window: 400000
+      max_tokens: 0
+      thinking_level: low
+
+
+    #
+    # OpenAI Models
+    #
+    openrouter-gpt:
+      extends: openrouter-base
+      provider_routing:
+        order:
+        - openai
+        allow_fallbacks: false
+      prompt_cache_key: auto
+      capabilities:
+        image_input: true
+
+    openrouter-gpt-astra:
+      extends: openrouter-gpt
+      model: ~openai/gpt-astra-latest
+
+    openrouter-gpt-astra-unlimited:
+      extends: openrouter-gpt-astra
+      max_tokens: 0
+
+    openrouter-gpt-sol:
+      extends: openrouter-gpt
+      model: ~openai/gpt-sol-latest
+
+    openrouter-gpt-sol-unlimited:
+      extends: openrouter-gpt-sol
+      max_tokens: 0
+
+    openrouter-gpt-terra:
+      extends: openrouter-gpt
+      model: ~openai/gpt-terra-latest
+      max_tokens: 32768
+
+    openrouter-gpt-terra-unlimited:
+      extends: openrouter-gpt-terra
+      max_tokens: 0
+
+    openrouter-gpt-luna:
+      extends: openrouter-gpt
+      model: ~openai/gpt-luna-latest
+
+    openrouter-gpt-luna-unlimited:
+      extends: openrouter-gpt-luna
+      max_tokens: 0
+
+    # Non-thinking twin for mechanical text-in/text-out tasks (fallback of
+    # the writer nothink role). Same pattern as
+    # openrouter-deepseek-flash-nothinking: reasoning off, capabilities off.
+    openrouter-gpt-luna-nothinking:
+      extends: openrouter-gpt-luna
+      thinking_level: none
+      capabilities:
+        tools: false
+        function_calling: false
+        streaming: false
+        json_mode: false
+
+
+    #
+    # Anthropic models
+    #
+
+    openrouter-claude:
+      extends: openrouter-base
+      # Claude spricht cache_control, nicht die OpenAI-Breakpoints — und
+      # OpenRouter reicht die nur ueber Chat Completions durch, nicht ueber
+      # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.
+      provider: openai_httpx
+      prompt_cache_marker_style: anthropic
+      reasoning_details_mode: keep_all   # sonst bricht das Cache-Praefix jede Runde
+      include_thoughts: false     # Chat Completions liefert keine Thoughts
+      capabilities:
+        streaming: false
+        image_input: true
+
+    openrouter-claude-sonnet:
+      extends: openrouter-claude
+      model: ~anthropic/claude-sonnet-latest
+
+    openrouter-claude-sonnet-unlimited:
+      extends: openrouter-claude-sonnet
+      max_tokens: 0
+
+    openrouter-claude-opus:
+      extends: openrouter-claude
+      model: ~anthropic/claude-opus-latest
+
+    openrouter-claude-opus-unlimited:
+      extends: openrouter-claude-opus
+      max_tokens: 0
+
+    openrouter-claude-fable:
+      extends: openrouter-claude
+      model: ~anthropic/claude-fable-latest
+
+    openrouter-claude-fable-unlimited:
+      extends: openrouter-claude-fable  
+      max_tokens: 0
+      
+    #
+    # Deepseek Models
+    #
+
+    openrouter-deepseek:
+      extends: openrouter-base
+      context_window: 1000000
+      provider_routing:
+        order:
+        - deepinfra
+        - baidu
+        allow_fallbacks: false
+
+      max_tokens: null
+      service_tier: null
+
       capabilities:
         tools: true
         function_calling: true
         streaming: true
         json_mode: true
-        multimodal: true  # Native image/audio/video processing
 
-      # Notes:
-      # - Fast and cost-effective thinking model
-      # - Optimized for agentic workflows, multi-turn chat, coding
-      # - Native audio/video/PDF processing without transcription
-      # - Higher rate limits than direct Google API at Tier 1
-      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
+    openrouter-deepseek-flash:
+      extends: openrouter-deepseek
+      model: ~deepseek/deepseek-v4-flash-latest
+      provider_routing:
+        # deepinfra zuerst: bei unseren Cache-Raten rund halb so teuer wie
+        # streamlake (0,080 vs 0,220 $/M Input). streamlake als Zwilling —
+        # hoeherer Durchsatz und der guenstigste cache-read. baidu antwortet
+        # mit 429. Beide fp8.
+        order:
+        - deepinfra
+        - streamlake
+        quantizations:
+        - fp8
+        allow_fallbacks: false
 
-    openrouter-gemini-3-pro:
-      provider: openai_httpx
-      model: google/gemini-3-pro-preview
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 300
-      max_tokens: 8192
+    # simple nothinking version of deepseek-flash for easy tasks
+    openrouter-deepseek-flash-nothinking:
+      extends: openrouter-deepseek-flash        
+      thinking_level: none
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
+        tools: false
+        function_calling: false
+        streaming: false
+        json_mode: false     
 
-      # Notes:
-      # - Google's flagship frontier model
-      # - Best-in-class multimodal reasoning (text, image, video, audio, code)
-      # - Premium quality for complex reasoning tasks
-      # - Higher rate limits than direct Google API at Tier 1
-      # - Pricing: ~$2 input / ~$12 output per 1M tokens
+    openrouter-deepseek-pro:
+      extends: openrouter-deepseek
+      model: ~deepseek/deepseek-pro-latest
+      provider_routing:
+        order:
+        - alibaba
+        - deepinfra
+        allow_fallbacks: false
 
-    openrouter-gemini-2.5-flash:
-      provider: openai_httpx
-      model: google/gemini-2.5-flash
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 240
-      max_tokens: 8192
+    # V4.1 Flash (alias_target 24.09.2026: deepseek/deepseek-v4.1-flash).
+    # Teurer als V4-Flash, billiger als Pro -- und seit 24.09. laeuft keine
+    # Kette mehr auf Pro: dieses Modell traegt jetzt auch `think`,
+    # `llm_writer_thinking`, den amiga_coder und die debate_forum-Panels.
+    # Die Pro-Knoten und -Profile stehen weiter da, benutzt sie nur niemand.
+    #
+    # Gepinnt auf die zwei guenstigsten fp8-Anbieter, $/M in/out/cache-read
+    # (OpenRouter-Endpunkte 24.09.2026):
+    #   deepinfra  0.140 / 0.420 / 0.0042
+    #   streamlake 0.199 / 0.794 / 0.0040
+    # Billiger sind nur fp4 (openinference/relace 0.100/0.500) und Anbieter
+    # ohne genannte Quantisierung (morph 0.128/0.510, wafer 0.099/0.600 --
+    # dessen cache-read 0.06 frisst den Vorteil bei unserem wiederholten
+    # Kontext wieder auf). fireworks (0.220/0.660) war der alte Zwilling und
+    # ist teurer als streamlake; der quantizations-Filter, der ihn frueher
+    # herausgehalten haette, kann damit wieder stehen.
+    openrouter-deepseek-latest-flash:
+      extends: openrouter-deepseek
+      model: ~deepseek/deepseek-flash-latest
+      provider_routing:
+        order:
+        - deepinfra
+        - streamlake
+        quantizations:
+        - fp8
+        allow_fallbacks: false
+
+
+    #
+    # Misc models
+    #
+
+    openrouter-grok:
+      extends: openrouter-base
+      model: ~x-ai/grok-latest
+
+    openrouter-grok-unlimited:
+      extends: openrouter-grok
+      max_tokens: 0
+
+
+    openrouter-qwen3.8-27B:
+      extends: openrouter-base
+      model: qwen/qwen3.8-27b
+      context_window: 262144
+      max_tokens: 65535
+      provider_routing:
+        order:
+        - akashml
+        - chutes
+        quantizations:
+        - fp8
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
-
-      # Notes:
-      # - Previous generation Flash model
-      # - Still excellent for most tasks at lower cost than 3.0
-      # - Pricing: ~$0.30 input / ~$2.50 output per 1M tokens
-
-    openrouter-gemini-2.5-pro:
-      provider: openai_httpx
-      model: google/gemini-2.5-pro
-      api_key: "***REMOVED***"  # Replace with your OpenRouter API key
-      base_url: https://openrouter.ai/api/v1
-      context_window: 1000000  # 1M token context
-      request_timeout: 300
-      max_tokens: 8192
+        image_input: true
+        audio_input: true
+        video_input: true
+        
+    openrouter-minimax-m3:
+      extends: openrouter-base
+      model: minimax/minimax-m3
+      context_window: 1000000
+      provider_routing:
+        order:
+        - minimax
+        allow_fallbacks: false
       capabilities:
-        tools: true
-        function_calling: true
-        streaming: true
-        json_mode: true
-        multimodal: true  # Native image/audio/video processing
+        image_input: true
 
-      # Notes:
-      # - Previous generation Pro model
-      # - Still very capable for complex reasoning
-      # - Pricing: ~$1.25 input / ~$10 output per 1M tokens
+    openrouter-minimax-m3-unlimited:
+      extends: openrouter-minimax-m3
+      max_tokens: 0
+
+    openrouter-glm:
+      extends: openrouter-base
+      model: z-ai/glm-5.3
+      capabilities:
+        image_input: true
+
+    openrouter-glm-unlimited:
+      extends: openrouter-glm
+      max_tokens: 0
+
+    # Benchmark-Kandidaten fuer den Kapitel-Scorer (13.09.2026, siehe
+    # writer_pipeline_v4/docs/v4_issue_codes_uebersicht.md).
+    openrouter-glm-flash:
+      extends: openrouter-base
+      model: ~z-ai/glm-flash-latest
+      # openrouter-base setzt 16384 — die laengsten Scorer-Laeufe kamen auf 15.3k
+      max_tokens: 0
+
+    openrouter-kimi-k3:
+      extends: openrouter-base
+      model: moonshotai/kimi-k3
+      capabilities:
+        image_input: true
+
+    # Special Purpose Models: jev is NOT here -- it answers questions instead
+    # of chatting (POST /api/alpha/decisions, "chat completions SDKs will not
+    # work with it"), so it lives under decision_models: at the end of this
+    # file, the way tts_models: sits next to models: in llm.yaml.
 
   # =============================================================================
   # PROFILES for easy access
   # =============================================================================
   profiles:
+    or-gemini-flash-lite:
+      model_ref: openrouter-gemini-flash-lite
+      description: "OpenRouter Gemini Flash Lite"
+      max_steps: 500
+
     or-gemini-flash:
-      model_ref: openrouter-gemini-3-flash
-      description: "OpenRouter Gemini 3 Flash - Fast with audio/video support"
+      model_ref: openrouter-gemini-flash
+      description: "OpenRouter Gemini Flash"
+      max_steps: 500
+
+    or-gemini-flash-minimal:
+      model_ref: openrouter-gemini-flash-minimal
+      description: "OpenRouter Gemini Flash - Minimal thinking level"
+      max_steps: 500      
+
+    or-gemini-flash-unlimited:
+      model_ref: openrouter-gemini-flash-unlimited
+      description: "OpenRouter Gemini Flash - No output token limit"
       max_steps: 500
 
     or-gemini-pro:
-      model_ref: openrouter-gemini-3-pro
-      description: "OpenRouter Gemini 3 Pro - Best quality with audio/video support"
+      model_ref: openrouter-gemini-pro
+      description: "OpenRouter Gemini Pro"
       max_steps: 500
-    
-    or-gemini-2.5-flash:
-      model_ref: openrouter-gemini-2.5-flash
-      description: "OpenRouter Gemini 2.5 Flash - Good quality at lower cost"
+
+    or-gemini-pro-unlimited:
+      model_ref: openrouter-gemini-pro-unlimited
+      description: "OpenRouter Gemini Pro - No output token limit"
       max_steps: 500
+
+    or-claude-sonnet:
+      model_ref: openrouter-claude-sonnet
+      description: "OpenRouter Claude Sonnet"
+      max_steps: 500
+
+    or-claude-sonnet-unlimited:
+      model_ref: openrouter-claude-sonnet-unlimited
+      description: "OpenRouter Claude Sonnet - No output token limit"
+      max_steps: 500
+
+    or-claude-opus:
+      model_ref: openrouter-claude-opus
+      description: "OpenRouter Claude Opus"
+      max_steps: 500
+
+    or-claude-opus-unlimited:
+      model_ref: openrouter-claude-opus-unlimited
+      description: "OpenRouter Claude Opus - No output token limit"
+      max_steps: 500      
+
+    or-claude-fable:
+      model_ref: openrouter-claude-fable
+      description: "OpenRouter Claude Fable"
+      max_steps: 500
+
+    or-claude-fable-unlimited:
+      model_ref: openrouter-claude-fable-unlimited
+      description: "OpenRouter Claude Fable - No output token limit"
+      max_steps: 500
+
+    or-grok:
+      model_ref: openrouter-grok
+      description: "OpenRouter Grok"
+      max_steps: 500
+
+    or-grok-unlimited:
+      model_ref: openrouter-grok-unlimited
+      description: "OpenRouter Grok - No output token limit"
+      max_steps: 500
+
+    or-qwen-mini:
+      model_ref: openrouter-qwen3.8-27B
+      description: "OpenRouter Qwen3.8 27B" 
+      max_steps: 500
+
+    or-minimax-m3:
+      model_ref: openrouter-minimax-m3
+      description: "OpenRouter MiniMax M3"
+      max_steps: 500
+
+    or-minimax-m3-unlimited:
+      model_ref: openrouter-minimax-m3-unlimited
+      description: "OpenRouter MiniMax M3 - No output token limit"
+      max_steps: 500
+
+    or-gpt-pro:
+      model_ref: openrouter-gpt-astra
+      description: "OpenRouter GPT-Astra - Flagship model"
+      max_steps: 500
+
+    or-gpt-pro-unlimited:
+      model_ref: openrouter-gpt-astra-unlimited
+      description: "OpenRouter GPT-Astra - No output token limit"
+      max_steps: 500
+
+    or-gpt-full:
+      model_ref: openrouter-gpt-terra
+      description: "OpenRouter GPT Terra"
+      max_steps: 500
+
+    or-gpt-full-unlimited:
+      model_ref: openrouter-gpt-terra-unlimited
+      description: "OpenRouter GPT Terra - No output token limit"
+      max_steps: 500
+
+    or-gpt-mini:
+      model_ref: openrouter-gpt-luna
+      description: "OpenRouter GPT Luna - Fast, cheap"
+      max_steps: 500
+
+    or-gpt-mini-unlimited:
+      model_ref: openrouter-gpt-luna-unlimited
+      description: "OpenRouter GPT Luna - No output token limit"
+      max_steps: 500
+
+    or-deepseek-flash:
+      model_ref: openrouter-deepseek-flash
+      description: "OpenRouter DeepSeek V4 Flash"
+      max_steps: 500
+
+    or-deepseek-latest-flash:
+      model_ref: openrouter-deepseek-latest-flash
+      description: "OpenRouter latest DeepSeek Flash Model"
+      max_steps: 500
+
+    or-deepseek-pro:
+      model_ref: openrouter-deepseek-pro
+      description: "OpenRouter DeepSeek V4 Pro*"
+      max_steps: 500
+
+    or-glm:
+      model_ref: openrouter-glm
+      description: "OpenRouter GLM"
+      max_steps: 500
+
+    or-glm-unlimited:
+      model_ref: openrouter-glm-unlimited
+      description: "OpenRouter GLM - No output token limit"
+      max_steps: 500
+
+    or-glm-flash:
+      model_ref: openrouter-glm-flash
+      description: "OpenRouter GLM Flash (latest)"
+      max_steps: 500
+
+    or-kimi-k3:
+      model_ref: openrouter-kimi-k3
+      description: "OpenRouter Kimi K3"
+      max_steps: 500
+
+  # =============================================================================
+  # DECISION MODELS - a questionnaire, not a conversation
+  # =============================================================================
+  # Named questions in, a typed answer with a probability out. No messages, no
+  # prose, no tools. OpenRouter's answer reports its own cost; a host whose
+  # answer carries none (laya-serve, TypeSafe direct) needs a row in
+  # llm_pricing.yaml under its `model`, or its spend counts as unknown.
+  # Client: src/plugins/llm_decisions (provides_decisions).
+
+  decision_models:
+    jev:
+      provider: openrouter_decisions
+      model: ~typesafe/jev-latest   # router alias, follows the newest version;
+                                    # OpenRouter's own example pins typesafe/jev-1.13
+      # url: the WHOLE endpoint (nothing is appended), default
+      #      https://openrouter.ai/api/alpha/decisions
+      # api_key: defaults to the env var of that url's host (OPENROUTER_API_KEY)
+    # A local model (Laya) lives in llm.yaml; the two sections are merged.
+
+  decision_profiles:
+    jev:
+      model_ref: jev
+      description: "TypeSafe Jev - decides, does not write"
+
+  # Who judges when a caller names no profile.
+  default_decision_profile: jev

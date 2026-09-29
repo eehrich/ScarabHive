@@ -1,0 +1,66 @@
+ScarabHive
+Copyright 2026 Enrico Ehrich
+
+This product includes software developed by Enrico Ehrich.
+
+=========================================================================
+
+LICENSING OVERVIEW
+=========================================================================
+
+ScarabHive is an open-source AI agent framework licensed under Apache 2.0:
+
+OPEN SOURCE COMPONENTS (Apache License 2.0)
+   - Core Framework:     src/agent_system/
+   - Standard Plugins:   src/plugins/
+   - Configuration:      config/
+   - Documentation:      docs/
+   - Tests:              tests/
+   - Templates/Static:   templates/, static/ (except the bundled third-party
+                         files listed below)
+
+See LICENSE for the full Apache 2.0 license text.
+
+=========================================================================
+
+THIRD-PARTY NOTICES
+=========================================================================
+
+This software uses the following third-party libraries, each governed by
+their own respective licenses:
+
+  - FastAPI (MIT License)
+  - Pydantic (MIT License)
+  - Uvicorn (BSD License)
+  - OpenAI Python SDK (Apache 2.0)
+  - Anthropic Python SDK (MIT License)
+  - Google GenAI SDK (Apache 2.0)
+  - httpx (BSD License)
+  - aiohttp (Apache 2.0)
+  - DuckDuckGo Search (MIT License)
+  - ChromaDB (Apache 2.0)
+  - Jinja2 (BSD License)
+  - PyYAML (MIT License)
+  - Rich (MIT License)
+  - Typer (MIT License)
+  - Pillow (HPND License)
+  - asyncssh (EPL 2.0)
+  - SQLite-vec (MIT License)
+
+Bundled in static/ and served to the browser, each with its license text
+next to it:
+
+  - Chart.js 4.4.0, static/vendor/chartjs/ (MIT License)
+  - Prism 1.29.0, static/vendor/prism/ (MIT License)
+  - vis-network 10.0.2, static/vendor/vis-network/ (Apache 2.0 or MIT
+    License, at your choice)
+  - Mermaid 10.9.8, static/vendor/mermaid/ (MIT License)
+  - Lucide icons, static/kit/icons.svg (ISC License; portions from
+    Feather, MIT License)
+  - Inter and JetBrains Mono fonts, static/kit/fonts/ (SIL Open Font
+    License 1.1)
+  - elkjs 0.12.0, src/plugins/stategraph/static/vendor/elkjs/ (Eclipse
+    Public License 2.0), the layout engine of the State Graph panel
+
+For complete licensing details of each dependency, refer to their
+respective repositories and documentation.

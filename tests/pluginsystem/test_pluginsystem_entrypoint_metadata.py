@@ -1,13 +1,14 @@
 
-import yaml
 
 
 def test_entrypoint_plugin_metadata(monkeypatch, tmp_path):
-    # Create a fake package directory with plugin.yaml
+    # Create a fake package directory with plugin.toml
     pkg_dir = tmp_path / "fakepkg"
     pkg_dir.mkdir()
     meta = {"name": "fakepkg", "description": "entrypoint plugin", "version": "1.2"}
-    (pkg_dir / "plugin.yaml").write_text(yaml.safe_dump(meta), encoding="utf-8")
+    # written by hand: three flat strings need no toml-writer dependency
+    lines = "\n".join(f'{key} = "{value}"' for key, value in meta.items())
+    (pkg_dir / "plugin.toml").write_text(f"[plugin]\n{lines}\n", encoding="utf-8")
 
     # Create a fake factory callable and ensure its __module__ points to the fake package
     def factory(*a, **k):
@@ -29,7 +30,7 @@ def test_entrypoint_plugin_metadata(monkeypatch, tmp_path):
 
     ep = FakeEP("fakepkg", factory)
     # mimic metadata.entry_points() objects that include a .group attribute
-    ep.group = "agent_system.mcp_plugins"
+    ep.group = "agent_system.tool_plugins"
 
     # Monkeypatch importlib.metadata.entry_points to return our fake entrypoint
     monkeypatch.setattr("importlib.metadata.entry_points", lambda: [ep])

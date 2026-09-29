@@ -20,6 +20,25 @@ class LLMQuotaExhaustedError(LLMRateLimitError):
     pass
 
 
+class LLMServerError(Exception):
+    """Raised when LLM server returns 5xx after all retries are exhausted - triggers fallback."""
+    def __init__(self, message: str, provider: str = "", model: str = "", status_code: int = 0):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.status_code = status_code
+
+
+class LLMConnectionError(Exception):
+    """Raised when the LLM endpoint is unreachable (connect/read timeout, network
+    error) after all retries are exhausted - triggers fallback. Unlike
+    LLMServerError there is never an HTTP response, so no status code exists."""
+    def __init__(self, message: str, provider: str = "", model: str = ""):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+
+
 class ContentType(str, Enum):
     """Types of content in multimodal messages."""
     TEXT = "text"
@@ -114,6 +133,12 @@ class MultimodalToolContent(BaseModel):
 ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextFileContent, str, Dict[str, Any]]
 
 
+#: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
+#: A client that serialises the whole message pops these (a list per client drifted).
+PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
+                                    "tool_request_ids", "step"})
+
+
 class ChatMessage(BaseModel):
     """Chat message supporting both text-only and multimodal content.
 
@@ -160,6 +185,63 @@ class ChatMessage(BaseModel):
     multimodal_content: Optional[List[MultimodalToolContent]] = None
     # Reasoning/thinking content from models like DeepSeek, OpenAI o-series
     reasoning_content: Optional[str] = None
+    # Provider-side encrypted thinking blocks that MUST round-trip to upstream.
+    # Specifically: Gemini 3.x thought_signature (carried in OpenRouter's
+    # reasoning_details list with format=google-gemini-v1). Dropping it causes
+    # MALFORMED_FUNCTION_CALL on the next turn (verified 2026-05-26).
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
+    # Set by utils/reasoning_artifacts.invalidate_reasoning_artifacts when a
+    # history mutation (compaction/summarization) removed this message's
+    # reasoning-chain predecessors. Honored per reasoning_details_mode in the
+    # LLM client (keep_all strips the now-unverifiable chain remnant) and
+    # never sent to providers (client pops it before building the payload).
+    rd_orphaned: Optional[bool] = None
+    # Model that produced reasoning_details. Set by the agent loop, never sent
+    # to a provider; a call to another model strips all artifacts first
+    # (utils/reasoning_artifacts.strip_foreign_reasoning_artifacts).
+    reasoning_model: Optional[str] = None
+    # Anthropic extended/adaptive thinking blocks, verbatim as returned
+    # (thinking+signature / redacted_thinking+data) in the model's original
+    # order. Inside a tool-use turn these MUST be echoed back COMPLETE and
+    # unmodified; a PARTIAL echo is a 400 ("thinking or redacted_thinking
+    # blocks in the latest assistant message cannot be modified"), so never
+    # filter, dedupe or reorder them. Deliberately NOT reusing
+    # reasoning_details: that list is mutated whole-list by
+    # reasoning_artifacts, is whitelisted into the OpenRouter payload, and its
+    # keep_last mode prunes older entries — all three would corrupt these.
+    # Read only by anthropic_client.
+    thinking_blocks: Optional[List[Dict[str, Any]]] = None
+    # Model that produced them. Signatures are model-bound: another model
+    # ignores them silently but still bills them as input, so replay is
+    # skipped on mismatch (fallback chains DO move messages between models).
+    thinking_model: Optional[str] = None
+    # OpenRouter backend that served this turn (display name from
+    # openrouter_metadata). The next request of the
+    # run puts that backend first in provider.order: it holds the prompt cache
+    # and is the only one that can verify the replayed encrypted reasoning
+    # (llm_openai_compat.httpx_client.routing_pinned_to_last_backend). Never
+    # sent to a provider. A model switch needs no reset: the pin only reorders
+    # the NEW model's own backend list, so a stale name matches nothing or
+    # picks among backends that model may use anyway.
+    served_by: Optional[str] = None
+    # Hook injection tracking: identifies which plugin injected this message.
+    # Used by injection hooks to find and replace their previous injections
+    # instead of fragile content-based matching.
+    injected_by: Optional[str] = None
+    # The id of the run this message opened, on the first message a run stores. A
+    # session read back tells its runs apart by it. Never sent.
+    request_id: Optional[str] = None
+    # On an assistant message with tool calls: the request id each call's tool runs
+    # under, by call id, stamped as the tools start -- a run a tool starts carries
+    # that id as its prefix (<id>_async_..., <id>_sub_...), so a session read back,
+    # even while the call still waits, finds a sub-agent's run under the call that
+    # started it. Never sent.
+    tool_request_ids: Optional[Dict[str, str]] = None
+    # On an assistant message: the step of the run's loop that produced it, numbered as
+    # the run's live events number their steps. A session read back shows its steps by
+    # it -- counting the messages instead falls behind after a step that stored nothing
+    # (an empty answer is dropped). Never sent.
+    step: Optional[int] = None
 
     def is_multimodal(self) -> bool:
         """Check if message contains multimodal content."""
@@ -236,6 +318,159 @@ class ChatMessage(BaseModel):
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
+    # Optional hook callbacks — set by the hook integration layer.
+    # These are invoked at the LLM-client level to capture exact API payloads.
+    _on_pre_llm_request: Any = None   # async callable(payload_info: dict) -> None
+    _on_post_llm_response: Any = None  # async callable(response_info: dict) -> None
+
+    #: Wall-clock ms of the last SUCCESSFUL response, stashed by
+    #: _notify_post_response. Server-level post_llm_call hooks (e.g.
+    #: context_usage_tracker) read it off the client to attribute call latency.
+    _last_response_duration_ms: Any = None
+
+    #: The agent this client serves (set_app_title). Keys the backend a
+    #: gateway routed its calls to (backend_affinity); None remembers nothing.
+    served_agent: Optional[str] = None
+    #: The llm_system profile this client was built for (llm.factory), None for
+    #: one built another way. A run switched to this client hands it to the
+    #: sub-agents it starts (llm/caller_llm.py).
+    profile_name: Optional[str] = None
+    #: How long that backend stays the one a new run starts on. None = the
+    #: default of backend_affinity, 0 = off. Set from the model entry.
+    provider_affinity_minutes: Optional[float] = None
+    #: The response_format kinds this client's ROUTE has a wire field for
+    #: (structured_output.JSON_SCHEMA / JSON_OBJECT) -- a fact about the API,
+    #: not about a model. Empty for every client that has not wired the field,
+    #: so it is never handed one (structured_output.supports_response_format).
+    response_format_kinds: tuple = ()
+
+    def supports_response_format(self, response_format: Any) -> bool:
+        """Whether this client puts ``response_format`` on the wire: its route has the field
+        AND its model entry declares the capability (capabilities.structured_output, for a
+        schema and for plain JSON mode alike). A client whose route depends on more (a realtime
+        session) narrows this."""
+        from .structured_output import declared_support
+
+        kind = getattr(response_format, "type", None)
+        return (kind in self.response_format_kinds
+                and declared_support(getattr(self, "capabilities", None), kind))
+
+    def _require_response_format(self, response_format: Any) -> None:
+        """A client handed a format it cannot put on the wire refuses the call -- dropping the
+        field would return free text as if the provider had constrained it."""
+        if response_format is not None:
+            from .structured_output import require_response_format
+
+            require_response_format(self, response_format)
+
+    def set_llm_hooks(
+        self,
+        on_pre_request: Any = None,
+        on_post_response: Any = None,
+    ) -> None:
+        """Set LLM-level hook callbacks.
+        
+        Called by the hook integration layer to wire up request/response logging.
+        
+        Args:
+            on_pre_request: Async callback(info_dict) called before each API request.
+            on_post_response: Async callback(info_dict) called after each API response.
+        """
+        self._on_pre_llm_request = on_pre_request
+        self._on_post_llm_response = on_post_response
+
+    async def _notify_pre_request(self, payload_info: Dict[str, Any]) -> None:
+        """Notify pre-request hook if set. Errors are swallowed to not break LLM calls."""
+        # Clear the prior call's latency at request start: a success path that
+        # never notifies then leaves latency=None (honest) instead of inheriting
+        # the previous call's value. _notify_post_response re-sets it on success.
+        self._last_response_duration_ms = None
+        if self._on_pre_llm_request:
+            try:
+                await self._on_pre_llm_request(payload_info)
+            except Exception as e:
+                self._report_hook_failure("pre_llm_request", e)
+
+    async def _notify_post_response(self, response_info: Dict[str, Any]) -> None:
+        """Notify post-response hook if set. Errors are swallowed to not break LLM calls."""
+        # Stash the served call's latency for server-level hooks. Skip
+        # retry/error notifications (they carry an "error") so the value
+        # reflects the response actually returned. Normal use runs one
+        # chat_tools per client instance at a time → last-value is unambiguous.
+        if not response_info.get("error") and response_info.get("duration_ms") is not None:
+            self._last_response_duration_ms = response_info.get("duration_ms")
+        # Here, not in the hooks: those are wired only while hooks are on.
+        backend = (response_info.get("routing") or {}).get("selected")
+        if (backend and self.served_agent and response_info.get("model")
+                and not response_info.get("error")):
+            from .backend_affinity import remember
+            remember(self.served_agent, response_info["model"], backend)
+        if self._on_post_llm_response:
+            try:
+                await self._on_post_llm_response(response_info)
+            except Exception as e:
+                self._report_hook_failure("post_llm_response", e)
+
+    #: Hook phases already reported as broken — per class, not per instance:
+    #: clients are built per agent, and the cause is global (a signature
+    #: change, a bad consumer), so one line is the point.
+    _hook_failures_reported: set = set()
+
+    def _report_hook_failure(self, phase: str, error: Exception) -> None:
+        """Swallowing is right, staying silent is not.
+
+        The call must survive a broken hook — but at DEBUG the breakage is
+        invisible, and a dead dispatch means the message debugger (and every
+        cost/latency consumer) quietly stops seeing LLM traffic. That exact
+        silence hid a HIGH bug in the TTS client. Once per phase and error
+        type, then back to DEBUG.
+        """
+        import logging
+
+        log = logging.getLogger(__name__)
+        marker = f"{phase}:{type(error).__name__}"
+        if marker in LLMClient._hook_failures_reported:
+            log.debug("%s hook error: %s", phase, error)
+            return
+        LLMClient._hook_failures_reported.add(marker)
+        log.warning(
+            "%s hooks are NOT being dispatched (%s: %s) — the message "
+            "debugger and other hook consumers are blind to these calls. "
+            "Reported once per error type.", phase, type(error).__name__, error)
+
+    async def _notify_retry(
+        self,
+        provider: str,
+        model: str,
+        url: str,
+        is_streaming: bool,
+        error_msg: str,
+        attempt: int,
+        max_attempts: int,
+        duration_ms: Optional[float] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Notify post-response hook about a failed retry attempt.
+
+        Creates a POST_LLM_RESPONSE notification with error prefixed by retry
+        info, making intermediate failures visible in the message debugger.
+        """
+        import time as _time
+        info: Dict[str, Any] = {
+            "provider": provider,
+            "model": model,
+            "url": url,
+            "is_streaming": is_streaming,
+            "error": f"[RETRY {attempt + 1}/{max_attempts}] {error_msg}",
+            "finish_reason": "retry",
+            "timestamp_ms": _time.time() * 1000,
+        }
+        if duration_ms is not None:
+            info["duration_ms"] = duration_ms
+        if response_data is not None:
+            info["response_data"] = response_data
+        await self._notify_post_response(info)
+
     async def _cancellable_sleep(
         self,
         duration: float,
@@ -271,6 +506,29 @@ class LLMClient:
             await asyncio.sleep(sleep_time)
             elapsed += sleep_time
 
+    def set_app_title(self, title: str) -> None:
+        """Name the agent this client serves.
+
+        Providers that support it show the name (OpenRouter X-Title);
+        subclasses that do extend this and call it. It also keys the backend
+        a gateway routed the agent's calls to (``recent_backend``).
+        """
+        self.served_agent = title or None
+
+    def recent_backend(self) -> Optional[str]:
+        """The backend that answered this client's agent on its model lately.
+
+        Where a run with no history of its own starts: see backend_affinity.
+        """
+        from .backend_affinity import recent
+        return recent(self.served_agent, getattr(self, "model", None),
+                      self.provider_affinity_minutes)
+
+    def forget_backend(self) -> None:
+        """Stop starting this agent's calls on that backend -- it refused one."""
+        from .backend_affinity import forget
+        forget(self.served_agent, getattr(self, "model", None))
+
     async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
         raise NotImplementedError
 
@@ -286,7 +544,13 @@ class LLMClient:
         - {"type": "final", "assistant": {...}}
 
         Default implementation falls back to non-streaming.
-        
+
+        A client that wires structured output takes ``response_format=`` (a
+        structured_output.ResponseFormat) on ``chat_tools`` and this method, and
+        lists the kinds in ``response_format_kinds``. Callers pass it only when
+        set and only after ``supports_response_format`` said yes, so a client
+        without the keyword is never handed one.
+
         Args:
             messages: Chat messages
             tools: Tool definitions

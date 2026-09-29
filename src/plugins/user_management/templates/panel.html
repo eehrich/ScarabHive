@@ -1,0 +1,48 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Users{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}{% if auth_enabled %}
+<button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="create">{{ icon('plus', size='sm') }} New user</button>
+<pk-refresh interval="30"></pk-refresh>
+{% endif %}{% endblock %}
+{% block content %}
+{% if auth_enabled %}
+<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+<label class="pk-search um-search">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search by name or email" aria-label="Search users"></label>
+<div id="users"></div>
+
+<dialog class="pk-dialog" id="editor" aria-labelledby="editorTitle">
+  <form id="editorForm">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="editorTitle">New user</h2></div>
+    <div class="pk-dialog-body pk-form">
+      <p class="pk-error" id="editorError" hidden></p>
+      <label class="pk-field" id="usernameField"><span class="pk-label">Username</span>
+        <input class="pk-input" name="username" required minlength="3" maxlength="50" pattern="[A-Za-z0-9_\-]+" autocomplete="off"
+          title="Letters, digits, _ and -"></label>
+      <label class="pk-field"><span class="pk-label">Email</span><input class="pk-input" name="email" type="email" required autocomplete="off"></label>
+      <label class="pk-field"><span class="pk-label">Full name</span><input class="pk-input" name="full_name" autocomplete="off"></label>
+      <label class="pk-field"><span class="pk-label">Role</span>
+        <select class="pk-select" name="role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+          <option value="guest">Guest</option>
+        </select></label>
+      <label class="pk-check"><input type="checkbox" name="is_active" checked> Active</label>
+      <span class="pk-help" id="selfHelp" hidden>Your own role and active state are changed by another admin.</span>
+      <label class="pk-field"><span class="pk-label" id="passwordLabel">Password</span>
+        <input class="pk-input" name="password" type="password" minlength="8" autocomplete="new-password" aria-describedby="passwordHelp">
+        <span class="pk-help" id="passwordHelp">At least 8 characters.</span></label>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" id="cancel">Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="save">Create user</button>
+    </div>
+  </form>
+</dialog>
+{% else %}
+<div class="pk-empty">{{ icon('shield') }}<div class="pk-empty-title">Authentication is off</div>
+  <div>Accounts are managed here once <code class="pk-mono">auth.enabled</code> is true in <code class="pk-mono">config/config.yaml</code>.</div></div>
+{% endif %}
+{% endblock %}
+{% block scripts %}{% if auth_enabled %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endif %}{% endblock %}

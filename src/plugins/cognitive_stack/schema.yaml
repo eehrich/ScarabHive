@@ -1,4 +1,4 @@
-# Cognitive Stack MCP Server Schema
+# Cognitive Stack Tool Server Schema
 # Jinja2 variables: {{ name }}, {{ max_depth }}
 
 tools:
@@ -53,10 +53,9 @@ hooks:
     type: pre_llm_call
     enabled: false  # default is disabled, agents enable it explicitly
     timeout: 5.0
-    description: "Inject active cognitive stack into system prompt to provide working memory context"
+    description: "Append the active cognitive stack to the history as working memory context"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:

@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.servers.agent.server import Agent
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 class TestWebUICancellation:
@@ -21,19 +21,21 @@ class TestWebUICancellation:
         # Create proper AgentSystemConfig (not AgentConfig)
         system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(
-                models={"test-model": LLMModelConfig(provider="mock", model="test-model")},
+                # provider "ollama": needs no API key; the conftest fake intercepts the
+                # build anyway, so no socket is ever opened.
+                models={"test-model": LLMModelConfig(provider="ollama", model="test-model")},
                 profiles={"normal": LLMProfile(model_ref="test-model")},
                 default_profile="normal"
             )
         )
         
         agent_config = AgentConfig(llm_profile="normal")
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config.model_dump())
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config.model_dump())
 
         agent = Agent(
             "test_agent",
             system_config,
-            mcp_config,
+            server_config,
             registry=MagicMock(),
             llm=MagicMock()
         )

@@ -1,0 +1,55 @@
+plugins:
+  servers:
+
+    # Validated JSON working documents for the workflow agent
+    wf_json:
+      type: json_store
+      enabled: true
+      description: "workflow_agent JSON documents (validated, code-side merge)"
+      config:
+        max_docs: 100
+        max_doc_bytes: 250000
+
+    # Scripted tool chains: one Python script orchestrates tool calls
+    # server-side — intermediate results never enter the LLM context.
+    wf_pipe:
+      type: tool_script
+      enabled: true
+      description: "workflow_agent scripted tool chains"
+      config:
+        timeout: 120
+        per_call_timeout: 60
+        max_tool_calls: 20
+
+    # Workflow Agent - executes multi-step data workflows. Prefers ONE
+    # wf_pipe script over N single tool calls (fewer turns, no re-typing).
+    # Also the reference setup for tool_script adoption (e.g. v6 migration).
+    workflow_agent:
+      type: basic_agent
+      enabled: true
+      description: "Data workflow agent - chains JSON/document operations via scripted tool calls (tool_script reference agent)"
+
+      agent_config:
+        llm_profile: [or-deepseek-flash, deepseek-chat, normal]
+        llm_profile_advanced: []
+        max_steps: 40
+        system_template: "./prompts/workflow_agent_prompt.md"
+
+        tools:
+          allowed:
+            - "wf_json/*"
+            - "wf_pipe/*"
+            - "datetime/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["workflow", "tool_script", "json", "reference"]
+        category: "tools"
+        visibility: "both"

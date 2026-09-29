@@ -1,4 +1,4 @@
-"""File Ops MCP Server implementation."""
+"""File Ops Tool Server implementation."""
 
 from __future__ import annotations
 
@@ -6,33 +6,83 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from agent_system.config import AgentSystemConfig, MCPConfig
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.paths import launch_dir
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
-from .security import PathValidator, SecurityError
 from .operations import FileOperations
 from .search import FileSearchEngine
+from .security import PathValidator, SecurityError
+
+
+def _int_param(params: Dict[str, Any], key: str, default: Any) -> Any:
+    """A whole-number parameter, or a ValueError that says which and how.
+
+    The framework does not check arguments against the schema, and models send
+    numbers as text: `offset: "1480, "` reached `offset > 0` and failed with
+    "'>' not supported between 'str' and 'int'" -- an error that names neither
+    the parameter nor the fix.
+    """
+    value = params.get(key)
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{key}: a whole number, got {value!r}")
+    if isinstance(value, int):
+        return value
+    text = str(value).strip(" ,")
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        number = float(text)
+    except ValueError:
+        number = None
+    if number is not None and number.is_integer():
+        return int(number)
+    raise ValueError(f"{key}: a whole number, got {value!r}")
 
 
 logger = logging.getLogger(__name__)
 
 
-class FileOpsServer(SchemaBasedMCPServer):
-    """MCP server providing secure file operations with search capabilities."""
+async def _end_or_error(status, result: Dict[str, Any], message: str,
+                        meta: Dict[str, Any]) -> None:
+    """Close the status scope according to what `result` actually says.
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    The reading tools ended unconditionally, so a failure that operations.py
+    or search.py RETURNS (rather than raises) closed the scope with a healthy
+    line -- "Read config.yaml: 0/0 lines" for a file that could not be read.
+    Only the raising paths were reported truthfully.
+    """
+    if status is None:
+        return
+    if isinstance(result, dict) and result.get("status") == "error":
+        await status.error(
+            result.get("error", "Unknown error"),
+            meta={**meta, "error_type": result.get("error_type", "UnknownError")},
+        )
+        return
+    await status.end(message, meta=meta)
+
+
+class FileOpsServer(SchemaBasedToolServer):
+    """tool server providing secure file operations with search capabilities."""
+
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """
         Initialize file operations server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Extract configuration
-        allowed_dirs = getattr(mcp_config, "allowed_directories", [])
+        allowed_dirs = getattr(server_config, "allowed_directories", [])
         if not allowed_dirs:
             # Default to project root subdirectories
             project_root = Path.cwd()
@@ -48,8 +98,14 @@ class FileOpsServer(SchemaBasedMCPServer):
             resolved_dirs = []
             for dir_path in allowed_dirs:
                 if dir_path == ".":
-                    # Special case: "." means project root
-                    resolved_dirs.append(str(project_root))
+                    # "." is where the PERSON stands, not where the process
+                    # runs. Both CLIs enter the project at startup, so the
+                    # working directory is the checkout -- allowing "." is
+                    # how an agent is let into the directory it was started
+                    # in, which is the whole point of typing it. Started from
+                    # the project, as everything was until now, the two are
+                    # the same directory and nothing changes.
+                    resolved_dirs.append(str(launch_dir()))
                 else:
                     # Resolve relative to project root
                     resolved_path = (project_root / dir_path).resolve()
@@ -60,27 +116,42 @@ class FileOpsServer(SchemaBasedMCPServer):
         self.validator = PathValidator(allowed_dirs)
         
         # Read-only mode flag
-        self.read_only = getattr(mcp_config, "read_only", False)
+        self.read_only = getattr(server_config, "read_only", False)
         if self.read_only:
             logger.info("FileOperationsServer running in READ-ONLY mode")
         
         # Get file reading limits from config
-        max_unpaginated_kb = getattr(mcp_config, "max_unpaginated_file_size_kb", 100)
-        default_line_limit = getattr(mcp_config, "default_line_limit", 500)
+        max_unpaginated_kb = getattr(server_config, "max_unpaginated_file_size_kb", 100)
+        default_line_limit = getattr(server_config, "default_line_limit", 500)
         self.operations = FileOperations(
             max_unpaginated_kb=max_unpaginated_kb,
             default_line_limit=default_line_limit
         )
 
         # Initialize search engine with configuration
-        search_config = getattr(mcp_config, "search", {})
+        search_config = getattr(server_config, "search", {})
 
-        # Temporarily disable semantic search to avoid ChromaDB conflicts
+        # Off unless an instance asks for it: it is the only feature that
+        # builds an index and persists a vector store.
         if "enable_semantic_search" not in search_config:
             search_config["enable_semantic_search"] = False
-            logger.info("Semantic search temporarily disabled to avoid ChromaDB conflicts")
+            logger.info("Semantic search off by default (search.enable_semantic_search)")
+
+        # One collection per INSTANCE, because two instances are two trees.
+        # Sharing the default name meant the second instance's full rebuild
+        # cleared the first one's index. Instances that deliberately share a
+        # tree (a read-write and a read-only twin) can share the index by
+        # setting the same `collection_name` — then only one of them needs to
+        # build it.
+        search_config.setdefault("collection_name", f"file_ops_{name}")
 
         self.search_engine = FileSearchEngine(self.validator.allowed_dirs, search_config)
+        # NOT started here. Building the index at construction looks tempting --
+        # the instance that owns an index is not always the one that searches
+        # it -- but measured on this machine it started four background builds
+        # at once, one per instance that has semantic search configured
+        # (file_ops, amiga_fs, agent_file_ops, coder_fs), for trees nobody had
+        # asked a question about yet. The first semantic_search starts it.
 
         logger.info(f"FileOperationsServer initialized with {len(allowed_dirs)} allowed directories")
         logger.info(f"Search indexing: {search_config.get('enable_indexing', True)}")
@@ -91,6 +162,19 @@ class FileOpsServer(SchemaBasedMCPServer):
         vars['read_only'] = self.read_only
         return vars
 
+    def file_access_roots(self) -> list[Path]:
+        """The directories this instance's tools may touch, resolved.
+
+        The question "which files does this agent work on" is asked by name:
+        a tool server that answers ``file_access_roots()`` is a file tool --
+        project_instructions reads the project's AGENTS.md from here. A name
+        of its own, because ``allowed_roots`` already means something else
+        elsewhere (a property of media_ops). The answer is the sandbox the
+        tools enforce, not a second reading of the config that could drift
+        from it.
+        """
+        return self.validator.allowed_dirs
+
     async def read_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Read text file contents with pagination."""
         status = params.get("_status")
@@ -98,10 +182,10 @@ class FileOpsServer(SchemaBasedMCPServer):
         try:
             file_path = params["filePath"]
             # Copilot uses 1-indexed offset
-            offset = params.get("offset", 0)
+            offset = _int_param(params, "offset", 0)
             if offset > 0:
                 offset -= 1  # Convert 1-indexed to 0-indexed for internal use
-            limit = params.get("limit")
+            limit = _int_param(params, "limit", None)
             encoding = "utf-8"  # Always UTF-8
 
             if status:
@@ -125,16 +209,20 @@ class FileOpsServer(SchemaBasedMCPServer):
             if status:
                 lines_read = result.get("lines_read", 0)
                 total_lines = result.get("total_lines", 0)
-                await status.end(f"Read {safe_path.name}: {lines_read}/{total_lines} lines", meta={
-                    "file": str(safe_path),
-                    "lines_read": lines_read,
-                    "total_lines": total_lines
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Read {safe_path.name}: {lines_read}/{total_lines} lines", meta={
+                        "file": str(safe_path),
+                        "lines_read": lines_read,
+                        "total_lines": total_lines
+                    })
 
             return result
 
         except FileNotFoundError:
-            error_msg = f"File not found: {params.get('file_path')}"
+            # 'filePath' is the parameter name (line 99) -- 'file_path' never
+            # existed here, so this message always read "File not found: None".
+            error_msg = f"File not found: {params.get('filePath')}"
             if status:
                 await status.error(error_msg, meta={"error_type": "FileNotFoundError"})
             return {
@@ -232,9 +320,10 @@ class FileOpsServer(SchemaBasedMCPServer):
             }
 
     async def _manage_create(self, params: Dict[str, Any], status) -> Dict[str, Any]:
-        """Create operation: create new file with content."""
+        """Create operation: create a file, or replace it whole with overwrite."""
         path = params["path"]
         content = params.get("content")
+        overwrite = bool(params.get("overwrite", False))
 
         if content is None:
             return {
@@ -244,24 +333,25 @@ class FileOpsServer(SchemaBasedMCPServer):
             }
 
         if status:
-            await status.progress(f"Creating: {Path(path).name}")
+            await status.progress(f"Writing: {Path(path).name}")
 
         safe_path = self.validator.validate_path(path)
 
         result = await self.operations.create_file_safe(
             safe_path,
             content=content,
-            overwrite=False,
+            overwrite=overwrite,
             create_dirs=True,
             encoding="utf-8"
         )
 
-        if status and result.get("status") == "success":
-            bytes_written = result.get("bytes_written", 0)
-            await status.end(f"Created {safe_path.name}: {bytes_written} bytes", meta={
-                "file": str(safe_path),
-                "bytes": bytes_written
-            })
+        # Whether a file was there is what "replaced" says -- the request only
+        # says whether it was allowed; a refusal must not close with a healthy line.
+        bytes_written = result.get("bytes_written", 0)
+        await _end_or_error(
+            status, result,
+            f"{'Replaced' if result.get('replaced') else 'Created'} {safe_path.name}: {bytes_written} bytes",
+            meta={"file": str(safe_path), "bytes": bytes_written})
 
         return result
 
@@ -377,10 +467,8 @@ class FileOpsServer(SchemaBasedMCPServer):
             # Validate path
             safe_path = self.validator.validate_path(file_path, must_exist=True)
 
-            # Use edit_file's replace mode
             result = await self.operations.edit_file_safe(
                 safe_path,
-                mode="replace",
                 old_string=old_string,
                 new_string=new_string
             )
@@ -457,18 +545,23 @@ class FileOpsServer(SchemaBasedMCPServer):
                 safe_path,
                 recursive=recursive,
                 pattern=pattern,
-                include_hidden=include_hidden
+                include_hidden=include_hidden,
+                max_results=_int_param(params, "max_results", 200),
+                include_ignored=params.get("include_ignored", False),
+                excludes=self.search_engine._search_backend_options()["excludes"],
             )
 
             if status:
                 total_files = result.get("total_files", 0)
                 total_dirs = result.get("total_directories", 0)
-                await status.end(f"Listed {safe_path.name}: {total_files} files, {total_dirs} directories", meta={
-                    "directory": str(safe_path),
-                    "total_files": total_files,
-                    "total_directories": total_dirs,
-                    "recursive": recursive
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Listed {safe_path.name}: {total_files} files, {total_dirs} directories", meta={
+                        "directory": str(safe_path),
+                        "total_files": total_files,
+                        "total_directories": total_dirs,
+                        "recursive": recursive
+                    })
 
             return result
 
@@ -506,20 +599,24 @@ class FileOpsServer(SchemaBasedMCPServer):
 
         try:
             pattern = params["pattern"]
-            max_results = params.get("max_results", 50)
+            max_results = _int_param(params, "max_results", 50)
+            include_ignored = params.get("include_ignored", False)
 
             if status:
                 await status.progress(f"Searching files: {pattern}")
 
-            result = await self.search_engine.search_files(pattern, max_results)
+            result = await self.search_engine.search_files(
+                pattern, max_results, include_ignored=include_ignored)
 
             if status:
                 found = result.get("total_found", 0)
-                await status.end(f"File search '{pattern}': {found} matches", meta={
-                    "pattern": pattern,
-                    "found": found,
-                    "truncated": result.get("truncated", False)
-                })
+                await _end_or_error(
+                    status, result,
+                    f"File search '{pattern}': {found} matches", meta={
+                        "pattern": pattern,
+                        "found": found,
+                        "truncated": result.get("truncated", False)
+                    })
 
             return result
 
@@ -542,8 +639,9 @@ class FileOpsServer(SchemaBasedMCPServer):
             is_regex = params.get("is_regex", False)
             include_pattern = params.get("include_pattern")
             case_sensitive = params.get("case_sensitive", False)
-            max_results = params.get("max_results", 100)
-            context_lines = params.get("context_lines", 2)
+            max_results = _int_param(params, "max_results", 100)
+            context_lines = _int_param(params, "context_lines", 2)
+            include_ignored = params.get("include_ignored", False)
 
             if status:
                 msg = f"Searching text: '{query[:40]}...'"
@@ -557,18 +655,21 @@ class FileOpsServer(SchemaBasedMCPServer):
                 include_pattern=include_pattern,
                 case_sensitive=case_sensitive,
                 max_results=max_results,
-                context_lines=context_lines
+                context_lines=context_lines,
+                include_ignored=include_ignored
             )
 
             if status:
                 matches = result.get("total_matches", 0)
                 files = result.get("total_files", 0)
-                await status.end(f"Grep '{query[:30]}': {matches} matches in {files} files", meta={
-                    "query": query[:50],
-                    "matches": matches,
-                    "files": files,
-                    "truncated": result.get("truncated", False)
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Grep '{query[:40]}': {matches} matches in {files} files", meta={
+                        "query": query[:50],
+                        "matches": matches,
+                        "files": files,
+                        "truncated": result.get("truncated", False)
+                    })
 
             return result
 
@@ -588,7 +689,7 @@ class FileOpsServer(SchemaBasedMCPServer):
 
         try:
             query = params["query"]
-            max_results = params.get("max_results", 10)
+            max_results = _int_param(params, "max_results", 10)
             filter_pattern = params.get("filter_pattern")
 
             if status:
@@ -605,11 +706,13 @@ class FileOpsServer(SchemaBasedMCPServer):
 
             if status:
                 count = result.get("count", 0)
-                await status.end(f"Semantic search '{query[:30]}': {count} matches", meta={
-                    "query": query[:50],
-                    "count": count,
-                    "filter": filter_pattern
-                })
+                await _end_or_error(
+                    status, result,
+                    f"Semantic search '{query[:40]}': {count} matches", meta={
+                        "query": query[:50],
+                        "count": count,
+                        "filter": filter_pattern
+                    })
 
             return result
 
@@ -623,10 +726,28 @@ class FileOpsServer(SchemaBasedMCPServer):
                 "error_type": type(e).__name__
             }
 
-    async def shutdown(self):
-        """Cleanup on shutdown."""
+    async def stop_plugin(self) -> None:
+        """Release the semantic index: the framework's ONE teardown hook.
+
+        This used to be called `shutdown`, and nothing ever called it.
+        `capabilities.stop_plugin` looks up exactly one attribute and has no
+        fallback: `getattr(plugin, "stop_plugin", None)`, otherwise it
+        returns. So the ordered stop of the semantic index never happened --
+        the background indexer kept running and the vector store was never
+        released. At process exit the OS takes both back; on a plugin reload
+        inside a living process nobody does, which is the shape the FD leak
+        had.
+
+        Being unreachable, it had also rotted: it ended on
+        `super().shutdown()`, and no class in the MRO has one -- an
+        AttributeError that `capabilities.stop_plugin` swallows into a
+        warning. Renaming it is the whole fix; there is no base teardown to
+        chain to, and a second name for the same thing is what started this.
+
+        It is defined HERE, on what PLUGIN_FACTORY returns, because that is
+        what the adapter reaches: `getattr(adapter, "plugin_server", adapter)`.
+        """
         await self.search_engine.stop()
-        await super().shutdown()
 
 
 PLUGIN_FACTORY = FileOpsServer

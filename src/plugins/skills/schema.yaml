@@ -1,0 +1,35 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_list"
+      description: |
+        List the skills available to you, with their description and the files
+        each one bundles. Use this to find out WHICH skill covers a task and
+        WHAT reference material it carries, then read what you need with
+        {{ name }}_read.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Optional: only this skill (shows its files in detail)."
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_read"
+      description: |
+        Read a file from a skill bundle. Without 'path' you get the skill's
+        SKILL.md (the index / instructions); with 'path' you get a bundled
+        reference file, e.g. 'reference/clause-catalog.md'. Read a reference
+        file only when the task actually needs that depth.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Skill name (as shown by {{ name }}_list)."
+          path:
+            type: string
+            description: "Optional skill-relative file path; omit for SKILL.md."
+        required: [name]

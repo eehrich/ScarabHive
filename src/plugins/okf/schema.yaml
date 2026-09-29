@@ -1,0 +1,243 @@
+# OKF plugin — tools + consumer hook.
+# Tool name  okf_<op>  routes to server method <op> (name prefix stripped).
+# A "bundle" is a directory of markdown concept files; a concept path is
+# bundle-relative with a leading slash (e.g. /tables/orders.md).
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_validate"
+      description: |
+        Check an OKF bundle for conformance: every concept document MUST have
+        a non-empty 'type' frontmatter field. Reports type errors (breaking)
+        plus warnings for broken intra-bundle links and for a 'status' that is
+        not a lifecycle value. This is the only way to find concepts whose
+        'status' holds something foreign — list/search report those as stable.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory (inside the allowed OKF dirs)."
+        required: ["bundle"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_read_concept"
+      description: |
+        Read one concept document: returns its YAML frontmatter (all keys
+        preserved, including producer-specific extras) and its markdown body.
+        The body can be read in slices via start_line/line_count — the reply
+        always carries lines_total, and lines_remaining plus a hint whenever
+        something is left, so a partial read is never mistaken for the whole.
+        A sliced body is for READING only: writing it back would shorten the
+        page to the slice. Read the whole body before an update.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          path:
+            type: string
+            description: "Bundle-relative concept path, e.g. /tables/orders.md"
+          start_line:
+            type: integer
+            minimum: 1
+            default: 1
+            description: "First body line to return (1-based). Omit for the whole body."
+          line_count:
+            type: integer
+            minimum: 1
+            description: "How many body lines to return. Omit for everything from start_line on."
+        required: ["bundle", "path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_write_concept"
+      description: |
+        Create or overwrite a concept document. A non-empty 'type' in
+        'frontmatter' is REQUIRED (the write is rejected otherwise). On
+        overwrite, existing extra frontmatter keys are preserved and merged
+        under the supplied ones; setting a key to null removes it. The BODY
+        is not merged — it is replaced by what you send, so always send the
+        full body, even when you only change frontmatter. Writes atomically.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          path:
+            type: string
+            description: "Bundle-relative concept path, e.g. /tables/orders.md"
+          frontmatter:
+            type: object
+            description: "YAML frontmatter as an object. MUST include a non-empty 'type'. May include title, description, resource, tags, timestamp, and any producer-specific keys."
+          body:
+            type: string
+            description: "Markdown body of the concept (may use # Schema / # Examples / # Citations sections and bundle-relative links like /tables/customers.md)."
+        required: ["bundle", "path", "frontmatter"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list"
+      description: |
+        List concepts in a bundle (optionally under a subdirectory) with their
+        type, title, description and lifecycle — the progressive-disclosure
+        overview. lifecycle is draft | stable | deprecated (default stable);
+        deprecated means retired — do not treat it as current.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          dir:
+            type: string
+            description: "Optional bundle-relative subdirectory to list under (e.g. /tables). Omit for the whole bundle."
+        required: ["bundle"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_neighbors"
+      description: |
+        Return the concepts a given concept links to (its graph neighbors), plus
+        any broken links. OKF knowledge is a graph: links between concepts assert
+        relationships beyond the directory tree.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          path:
+            type: string
+            description: "Bundle-relative concept path whose outbound links to resolve."
+        required: ["bundle", "path"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_subgraph"
+      description: |
+        Breadth-first concept paths reachable from one or more seed concepts
+        within N link-hops (seeds included). Use it to pull a related cluster of
+        knowledge around a starting point.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          seeds:
+            type: array
+            items:
+              type: string
+            description: "Bundle-relative seed concept paths."
+          seed:
+            type: string
+            description: "Single seed concept path (alternative to 'seeds')."
+          depth:
+            type: integer
+            minimum: 0
+            maximum: 5
+            default: 1
+            description: "How many link-hops to expand from the seeds."
+        required: ["bundle"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_search"
+      description: |
+        Rank a bundle's concepts by lexical relevance to a query (over title,
+        description, type, tags and body). Returns the best matches with scores
+        and lifecycle; deprecated hits are retired, not current.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          query:
+            type: string
+            description: "Natural-language or keyword query."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 8
+            description: "Max number of results."
+        required: ["bundle", "query"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_append_log"
+      description: |
+        Append an entry to a directory's log.md (OKF change history: ISO date
+        headings, newest first). Supply the date explicitly as YYYY-MM-DD. The
+        entry is stamped with the current time automatically — pass 'time' only
+        to backdate an entry.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          dir:
+            type: string
+            description: "Optional bundle-relative subdirectory whose log.md to append to. Omit for the bundle root."
+          date:
+            type: string
+            description: "Entry date in ISO form YYYY-MM-DD."
+          time:
+            type: string
+            description: "Optional entry time HH:MM:SS. Omit and the server stamps the current time; it is left off entirely when 'date' is not today."
+          action:
+            type: string
+            description: "Short action word, e.g. Creation, Update, Deprecation."
+          description:
+            type: string
+            description: "What changed (may include bundle-relative links)."
+        required: ["bundle", "date", "description"]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_reindex"
+      description: |
+        (Re)generate index.md from concept frontmatter descriptions. Without
+        'dir': the whole bundle recursively — one index.md per directory,
+        each linking its child-directory indexes. With 'dir': that directory
+        only, one level.
+      parameters:
+        type: object
+        properties:
+          bundle:
+            type: string
+            description: "Path to the bundle root directory."
+          dir:
+            type: string
+            description: "Optional bundle-relative subdirectory to index. Omit for the bundle root."
+          heading:
+            type: string
+            description: "Optional heading for the index (defaults to the directory name)."
+        required: ["bundle"]
+        additionalProperties: false
+
+# Consumer hook: fold a configured bundle into agent context before each LLM
+# call ("wiki as context"). Disabled by default — enable per agent via
+# hooks.overrides and set config.hook_bundle to the bundle path.
+hooks:
+  - name: okf_context_injection
+    type: pre_llm_call
+    enabled: false
+    timeout: 5.0
+    description: "Inject relevant OKF concepts (lexical + graph-expanded) into the system prompt before LLM calls"
+    category: "prompt_injection"

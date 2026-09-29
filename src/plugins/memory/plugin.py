@@ -2,7 +2,7 @@
 Memory Management Plugin Factory
 
 Hybrid MCP+Hook+Web plugin:
-- MCP tools via MemoryServer
+- tools via MemoryServer
 - Hooks via MemoryServer.on_pre_llm_call
 - Web UI via MemoryWebFactory
 
@@ -11,6 +11,7 @@ Exports PLUGIN_FACTORY for AgentSystem plugin discovery.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter
@@ -19,15 +20,15 @@ from .server import MemoryServer
 from .web_endpoints import MemoryWebFactory
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
     from agent_system.hooks import HookContext, HookResult
 
 
 class MemoryManagementHybridPlugin:
     """
-    Hybrid plugin combining MCP tools, hooks, and web interface.
+    Hybrid plugin combining tools, hooks, and web interface.
     
-    - Delegates MCP tools to MemoryServer
+    - Delegates tools to MemoryServer
     - Delegates hooks to server.on_pre_llm_call
     - Provides web router via MemoryWebFactory
     """
@@ -36,25 +37,25 @@ class MemoryManagementHybridPlugin:
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
         
-        # Create MCP server instance (provides tools + hooks)
-        self.server = MemoryServer(name, system_config, mcp_config)
+        # Create tool server instance (provides tools + hooks)
+        self.server = MemoryServer(name, system_config, server_config)
         
         # Create web factory (provides REST API + HTML)
         self.web_factory = MemoryWebFactory(self.server)
     
     # =========================================================================
-    # MCP Interface (delegate to server)
+    # Tool interface (delegate to server)
     # =========================================================================
     
     async def call(self, tool: str | None = None, params: dict | None = None, *args, **kwargs) -> Any:
         """
-        Legacy MCP call interface (delegate to server).
+        Legacy tool call interface (delegate to server).
         
         Args:
             tool: Tool name
@@ -76,7 +77,7 @@ class MemoryManagementHybridPlugin:
         return await self.server.call_with_status(tool, params or {})
     
     def get_tools(self) -> list[dict[str, Any]]:
-        """Expose MCP tools from server"""
+        """Expose tools from server"""
         return self.server.get_tools()
     
     async def call_tool(self, tool_name: str, arguments: dict) -> Any:
@@ -99,7 +100,7 @@ class MemoryManagementHybridPlugin:
     # =========================================================================
     
     def get_schema_data(self) -> dict[str, Any]:
-        """Delegate schema loading to MCP server (SchemaBasedMCPServer)"""
+        """Delegate schema loading to tool server (SchemaBasedToolServer)"""
         return self.server.get_schema_data()
     
     # =========================================================================
@@ -110,11 +111,15 @@ class MemoryManagementHybridPlugin:
         """Return FastAPI router for web UI"""
         return self.web_factory.get_web_router()
 
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
+
 
 def PLUGIN_FACTORY(
     name: str,
     system_config: "AgentSystemConfig",
-    mcp_config: "MCPConfig"
+    server_config: "ToolServerConfig"
 ) -> MemoryManagementHybridPlugin:
     """
     Factory function for creating MemoryManagementHybridPlugin instances.
@@ -122,9 +127,9 @@ def PLUGIN_FACTORY(
     Args:
         name: Plugin name
         system_config: System-level configuration
-        mcp_config: MCP client configuration
+        server_config: MCP client configuration
         
     Returns:
         MemoryManagementHybridPlugin instance (MCP+Hook+Web)
     """
-    return MemoryManagementHybridPlugin(name, system_config, mcp_config)
+    return MemoryManagementHybridPlugin(name, system_config, server_config)

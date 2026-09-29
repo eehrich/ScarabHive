@@ -8,7 +8,6 @@ hooks:
       Modifies messages temporarily for the LLM call without persisting to session.
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
     
   - name: format_markdown_output

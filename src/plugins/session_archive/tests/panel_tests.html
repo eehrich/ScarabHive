@@ -1,0 +1,189 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Session Archive panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1100px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const BASE = '/plugins/session_archive/';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const rows = () => [...doc().querySelectorAll('#archived tbody tr')];
+  const ids = () => rows().map((row) => row.dataset.entry);
+  const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
+  const rowOf = (id) => rows().find((row) => row.dataset.entry === id);
+  const head = (label) => [...doc().querySelectorAll('#archived thead th')]
+    .find((th) => th.textContent.trim() === label);
+  const act = (id, what) => rowOf(id).querySelector(`[data-act="${what}"]`);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const question = () => $('dialog.pk-dialog[open]:not([id])');
+  const answer = async (index) => (await until('the question', question))
+    .querySelector(`[data-index="${index}"]`).click();
+  const toasts = (kind) => [...doc().querySelectorAll(kind ? `.pk-toast--${kind}` : '.pk-toast')]
+    .map((toast) => toast.textContent);
+  const said = (text, kind) => until(`the message "${text}"`, () => toasts(kind).some((t) => t.includes(text)));
+  const cookie = (value) => { doc().cookie = `sa_mode=${value}; path=/`; };
+  const stub = (path) => fetch(`/__stub/${path}`, { method: 'POST' }).then((r) => r.json());
+  const live = () => fetch('/__stub/live').then((r) => r.json());
+
+  await go(BASE);
+
+  await check('the panel lists every archived conversation with its figures', async () => {
+    await until('the archives', () => rows().length === 3);
+    // 3 + 2 + 2 sessions over the three conversations
+    const counts = statValue('trees') === '3' && statValue('sessions') === '7'
+      && statValue('retention') === '30 days';
+    // Newest archive first, and the id is shown under the title so it can be typed.
+    const first = cells(rowOf('root_one'));
+    return counts && ids().join() === 'root_three,root_two,root_one'
+      && first[0].includes('The first conversation') && first[0].includes('root_one')
+      && first[1] === 'chat_agent' && first[2] === '3';
+  });
+
+  await check('a number column sorts by its value, not by the text it rounds to', async () => {
+    // Every archive here is far under a megabyte, so all three cells read
+    // "0.0 MB": an order by this column can only come from the byte count
+    // behind the cell. root_one holds three sessions and is the biggest.
+    const shown = new Set(rows().map((row) => cells(row)[3]));
+    head('Size').click();
+    await until('the biggest first', () => ids()[0] === 'root_one');
+    return shown.size === 1;
+  });
+
+  await check('a sort holds through a redraw, and clicking again reverses it', async () => {
+    // Same trap on the dates: the three were archived seconds apart and all
+    // show today, so only the timestamp behind the cell can order them.
+    const shown = new Set(rows().map((row) => cells(row)[5]));
+    head('Archived').click();
+    await until('the oldest first', () => ids().join() === 'root_one,root_two,root_three');
+    const marked = head('Archived').getAttribute('aria-sort') === 'ascending';
+    // Waited for by the row being REPLACED, not by a timer: a fixed sleep that
+    // is shorter than the answer would compare the table to itself and pass
+    // without a redraw ever happening. This panel refreshes on a tick, so
+    // losing the sort to one is the failure that matters here.
+    const before = rowOf('root_one');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the table to be drawn again', () => rowOf('root_one') !== before);
+    const held = ids().join() === 'root_one,root_two,root_three';
+    head('Archived').click();  // back to the order the page opened with
+    await until('the newest first again', () => ids().join() === 'root_three,root_two,root_one');
+    return shown.size === 1 && marked && held;
+  });
+
+  await check('a conversation restored leaves the archive and is a session again', async () => {
+    act('root_one', 'restore').click();
+    await said('restored (3 sessions)', 'ok');
+    await until('the row to go', () => rows().length === 2);
+    const back = await live();
+    return !ids().includes('root_one') && statValue('trees') === '2'
+      && back.roots.includes('root_one') && back.children_of_root_one === 2;
+  });
+
+  await check('deleting asks first, and a cancelled question changes nothing', async () => {
+    act('root_two', 'forget').click();
+    const asked = await until('the question', question);
+    const wording = asked.textContent.includes('There is no copy after this');
+    await answer(0);  // Cancel
+    await sleep(200);
+    return wording && ids().includes('root_two') && (await stub('asked')).forgets === 0;
+  });
+
+  await check('deleting confirmed takes the archive away for good', async () => {
+    act('root_two', 'forget').click();
+    await answer(1);
+    await said('deleted', 'ok');
+    await until('the row to go', () => rows().length === 1);
+    return !ids().includes('root_two') && (await stub('asked')).forgets === 1;
+  });
+
+  await check('a refusal from the server is shown and the conversation stays', async () => {
+    cookie('refuse');
+    act('root_three', 'restore').click();
+    await said('live again');
+    await sleep(200);
+    cookie('');
+    return ids().includes('root_three') && rows().length === 1;
+  });
+
+  await check('the buttons of a row stay off until the action is answered', async () => {
+    cookie('slow');
+    act('root_three', 'restore').click();
+    await until('the buttons to go off', () => act('root_three', 'restore').disabled
+      && act('root_three', 'forget').disabled);
+    cookie('');
+    await said('restored (2 sessions)', 'ok');
+    await until('the last row to go', () => rows().length === 0);
+    return true;
+  });
+
+  await check('with nothing archived the panel says when conversations move here', async () => {
+    const empty = $('#archived .pk-empty');
+    return empty.textContent.includes('Nothing archived yet')
+      && empty.textContent.includes('older than 30 days')
+      && statValue('trees') === '0';
+  });
+
+  await check('a capped pass says how much is still waiting, and a finished one does not', async () => {
+    // Live and old enough by now: root_old (2 sessions, seeded) plus the two
+    // this page restored again, root_one (3) and root_three (2). root_new is
+    // a day old and stays. The first pass is held to ONE tree, so it ends
+    // capped -- and a toast that only counts what it did reads as "done"
+    // while the table refreshing under it looks the same way.
+    cookie('cap');
+    doc().getElementById('sweep').click();
+    await said('2 still waiting', 'ok');
+    await until('the first archive', () => rows().length === 1);
+    cookie('');
+    doc().getElementById('sweep').click();
+    await said('Archived 2 conversation(s)', 'ok');
+    await until('the rest', () => rows().length === 3);
+    const finished = !toasts('ok').some((text) =>
+      text.includes('Archived 2 conversation(s)') && text.includes('still waiting'));
+    return finished && ids().sort().join() === 'root_old,root_one,root_three'
+      && statValue('sessions') === '7';
+  });
+
+  await check('archiving by hand again finds nothing and says that too', async () => {
+    doc().getElementById('sweep').click();
+    await said('Nothing was old enough to archive', 'info');
+    await sleep(200);
+    return rows().length === 3;
+  });
+
+  await check('a failed load shows the error instead of what was there before', async () => {
+    cookie('fails');
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+    await until('the error', () => $('#archived .pk-empty-title')?.textContent
+      === 'The archive could not be read');
+    cookie('');
+    return rows().length === 0 && $('#stats').textContent === '';
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(results) });
+</script>
+</body>
+</html>

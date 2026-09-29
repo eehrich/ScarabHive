@@ -1,0 +1,75 @@
+# The research agent.
+#
+# One agent, one tool surface (execute_task), and the method in a skill. It
+# replaces web_research_agent + meta_web_research_agent, which were two
+# LLM runs stacked on top of each other for every search, wrapped in a
+# 223-line plugin that did nothing a basic_agent with a prompt file cannot.
+#
+# Search backends: tavily_search when a key is configured, otherwise
+# duckduckgo_search. The switch is not in the prompt -- tavily_search
+# renders no tools without a key, so the agent only ever sees what works.
+plugins:
+  servers:
+
+    research_agent:
+      # multi_turn_agent brings what a long read-heavy loop needs: the
+      # context_engineer tools and its trimming hook, a 200k window and
+      # multi_turn caching.
+      type: multi_turn_agent
+      enabled: true
+      description: "Web research with cited sources: searches, reads the pages that matter, cross-checks, answers with URLs"
+
+      self_tool_descriptions:
+        research_agent_execute_task: "Research a question on the web and answer it with sources: documentation lookups, facts, comparisons, 'what does X say about Y'. Give the question and what would count as an answer."
+        research_agent_list_available_tools: "List the search and reading tools the research agent has"
+
+      agent_config:
+        # DeepSeek V4 Flash: cheap, reads long pages well, and the research
+        # loop is read-heavy. Two routes to the same model family so an
+        # OpenRouter outage does not stop the chain.
+        llm_profile: [or-deepseek-flash, deepseek-chat]
+        llm_profile_advanced: []
+
+        # Search, open three pages, page one long one, cross-check, write.
+        max_steps: 40
+
+        system_template: "./prompts/research_agent.md"
+
+        template_vars:
+          # Renders the branching section of the prompt. research_worker
+          # shares this file and leaves the flag unset, so it is never told
+          # to use a tool it does not have.
+          can_fork: true
+
+        skills:
+          always: ["web-research"]
+          on_demand: []
+
+        tools:
+          # "+" on every entry = MERGE with what multi_turn_agent brings
+          # (context_engineer/*), instead of replacing it.
+          allowed:
+            - "+tavily_search/*"       # search + extract, when a key is set
+            - "+duckduckgo_search/*"   # search without an account
+            - "+web_scraper/*"         # read a page, list links, download a file
+            - "+datetime/*"            # "as of when" matters for research
+            - "+research_sam/*"        # fork itself for a WIDE question (agents/tools.yaml)
+            - "+ask_user/*"            # narrow an ambiguous question with the person in the chat
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            # Shows the running sub-researchers, so the parent continues or
+            # waits on them instead of spawning a second copy.
+            research_sam.inject_sub_agent_context:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["research", "web", "search", "citations"]
+        category: "research"
+        # UI: usable directly. Tool: other agents call it or spawn it.
+        visibility: "both"

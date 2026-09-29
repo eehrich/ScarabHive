@@ -1,0 +1,15 @@
+/* Context & Cost Usage: only what the kit has no component for -- the chart's box, wide tables, cost colours.
+   Tokens only. */
+
+.cu-filter { width: auto; max-width: 16rem; }
+.cu-sub { margin-top: 2px; font-size: var(--text-xs); }
+.cu-chart { position: relative; height: 22rem; padding: var(--space-3); }
+
+.cu-table th, .cu-table td { white-space: nowrap; }
+.cu-calls tbody tr { cursor: pointer; }
+.cu-ids { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
+
+/* a billed price, and an estimate from llm_pricing.yaml, which is none */
+.cu-cost { color: var(--ok); }
+.cu-estimate { color: var(--warn); }
+.cu-value { font-variant-numeric: tabular-nums; }

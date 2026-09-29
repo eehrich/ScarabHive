@@ -1,0 +1,290 @@
+# Jinja2 variables: {{ name }}, {{ mcp_configured }}, {{ api_configured }}
+# Without the instance MCP nothing here can work, so nothing is offered. The
+# acting tools also need the public API: the managed-tag lock reads through it.
+tools:
+{% if not mcp_configured %}  []
+{% else %}
+  - type: function
+    function:
+      name: "{{ name }}_search_nodes"
+      description: "Find n8n nodes by service, trigger or function. Returns node ids, versions and their resource/operation lists. Use one call per building block."
+      parameters:
+        type: object
+        properties:
+          queries:
+            type: array
+            items: {type: string}
+            maxItems: 2
+            description: "One or two search terms, e.g. [\"slack send message\"]"
+          usage:
+            type: string
+            enum: ["workflow", "agentTool"]
+            description: "agentTool: only nodes an AI Agent can use as a tool"
+        required: [queries]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_node_types"
+      description: "Exact parameter definitions (TypeScript) of up to 3 nodes. Always pass resource and operation when the node has them -- without, only the list of operations comes back. 'errors' names versions or types n8n does not know."
+      parameters:
+        type: object
+        properties:
+          nodes:
+            type: array
+            maxItems: 3
+            items:
+              type: object
+              properties:
+                node_id: {type: string, description: "e.g. n8n-nodes-base.slack"}
+                version: {type: string, description: "e.g. \"2.3\""}
+                resource: {type: string}
+                operation: {type: string}
+                mode: {type: string}
+              required: [node_id]
+        required: [nodes]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_explore_node_resources"
+      description: "Real values behind a dropdown or resource locator (Slack channels, Sheet tabs, models), loaded with an existing credential. Use after get_node_types names the method."
+      parameters:
+        type: object
+        properties:
+          node_type: {type: string}
+          version: {type: number}
+          method_name: {type: string, description: "The loadOptions or listSearch method get_node_types names"}
+          method_type: {type: string, enum: ["listSearch", "loadOptions"]}
+          credential_type: {type: string}
+          credential_id: {type: string, description: "From list_credentials"}
+          filter: {type: string}
+          pagination_token: {type: string}
+          current_node_parameters: {type: object}
+        required: [node_type, version, method_name, method_type, credential_type, credential_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_best_practices"
+      description: "n8n's guidance for one workflow technique: recommended nodes, patterns, pitfalls. Call once while planning; 'list' names the techniques."
+      parameters:
+        type: object
+        properties:
+          technique:
+            type: string
+            enum: ["list", "scheduling", "chatbot", "form_input", "scraping_and_research", "monitoring", "enrichment", "triage", "content_generation", "document_processing", "data_extraction", "data_analysis", "data_transformation", "data_persistence", "notification", "knowledge_base", "human_in_the_loop", "web_app"]
+        required: [technique]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_sdk_reference"
+      description: "One section of the n8n Workflow SDK reference -- workflows are written as SDK code, not JSON. Read 'import' and 'patterns' before your first workflow; the rest when you need it."
+      parameters:
+        type: object
+        properties:
+          section:
+            type: string
+            enum: ["patterns", "patterns_detailed", "expressions", "functions", "rules", "import", "guidelines", "design"]
+        required: [section]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_credentials"
+      description: "Credentials that exist in n8n: id, name, type -- never their secrets. A node may only reference a credential listed here."
+      parameters:
+        type: object
+        properties:
+          type: {type: string, description: "Only this credential type, e.g. slackApi"}
+        additionalProperties: false
+{% if api_configured %}
+  - type: function
+    function:
+      name: "{{ name }}_validate_node_config"
+      description: "Check node configs the moment you write them, before they are in a workflow. Catches wrong option values and missing parameters; plus our node-type policy."
+      parameters:
+        type: object
+        properties:
+          nodes:
+            type: array
+            maxItems: 50
+            items:
+              type: object
+              properties:
+                name: {type: string}
+                type: {type: string}
+                typeVersion: {type: number}
+                parameters: {type: object}
+                subnodes: {type: object, description: "For AI parent nodes: {model, memory, tools}"}
+                isToolNode: {type: boolean}
+              required: [type]
+        required: [nodes]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_validate_workflow"
+      description: "Check SDK code as a whole workflow. ok is false on any error -- including warnings n8n itself marks valid."
+      parameters:
+        type: object
+        properties:
+          code: {type: string, description: "n8n Workflow SDK code"}
+        required: [code]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_create_workflow"
+      description: "Validate, then create the workflow as an unpublished draft that ScarabHive manages. 'findings' are checks on what n8n really stored; errors there block testing."
+      parameters:
+        type: object
+        properties:
+          code: {type: string, description: "n8n Workflow SDK code that passed validate_workflow"}
+          name: {type: string}
+          description: {type: string}
+        required: [code, name]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_update_workflow"
+      description: "Change a managed workflow with atomic operations (updateNodeParameters, setNodeParameter, addNode, removeNode, renameNode, addConnection, removeConnection, setNodeCredential, setNodeDisabled, setNodeSettings, setWorkflowMetadata, setWorkflowSettings, addTags, removeTags). Pass expected_version_id from your last read."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          operations:
+            type: array
+            maxItems: 100
+            items: {type: object}
+            description: "e.g. [{\"type\":\"updateNodeParameters\",\"nodeName\":\"Set\",\"parameters\":{...}}]"
+          expected_version_id: {type: string, description: "versionId you last saw; the update is refused if it moved"}
+        required: [workflow_id, operations]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_workflow"
+      description: "A workflow's nodes, connections, parameters, settings and versionId. detail 'execution' gives only metadata, versionId and triggers."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          detail: {type: string, enum: ["full", "execution"], default: "full"}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_workflows"
+      description: "Workflows managed by ScarabHive, newest first."
+      parameters:
+        type: object
+        properties:
+          name: {type: string, description: "Part of the name"}
+          limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+          cursor: {type: string}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_test_workflow"
+      description: "Run the stored draft once with test data. Every node that could act outside the run (APIs, credentials, code, sub-workflows) is PINNED to the item you give in mocks unless it is local; live_nodes asks to run one for real, and the answer says per node whether it ran live, pinned or not at all. A workflow is only done after a run with execution_status success."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          trigger_node: {type: string, description: "Which trigger to start from; default the first"}
+          trigger_input:
+            type: array
+            items: {type: object}
+            description: "Items the trigger emits, e.g. [{\"json\": {\"email\": \"a@b.c\"}}]"
+          mocks:
+            type: object
+            description: "{node name: [items]} -- what a pinned node outputs. Give realistic data: downstream nodes compute on it."
+          live_nodes:
+            type: array
+            items: {type: string}
+            description: "Node names to run for real. HTTP only on a plain URL whose host is in allowed_hosts (with a credential, only if the operator approved its type too); other types only if the operator approved them; code and sub-workflows never run live."
+          timeout_s: {type: integer, minimum: 5, maximum: 300, default: 60}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_execution"
+      description: "One execution: status, error, and with include_data the output of chosen nodes."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          execution_id: {type: string}
+          nodes: {type: array, items: {type: string}, description: "Only these nodes' data"}
+          include_data: {type: boolean, default: false}
+        required: [workflow_id, execution_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_executions"
+      description: "Recent executions newest first, running and waiting ones included; optionally of one workflow or with one status."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          status: {type: string, enum: ["success", "error", "running", "waiting", "canceled", "crashed", "new", "unknown"]}
+          limit: {type: integer, minimum: 1, maximum: 20, default: 10}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_publish_workflow"
+      description: "Publish a workflow for production -- only when the user asked for it. Takes the current version only if it has no blocking finding and a successful test run; returns the production webhook URLs."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_unpublish_workflow"
+      description: "Take a published workflow offline -- only when the user asked for it."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_archive_workflow"
+      description: "Archive a workflow; a published one goes offline. Restoring is done in the n8n editor. Only when the user asked for it."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+        required: [workflow_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_trigger_workflow"
+      description: "Run a PUBLISHED workflow for real through its production webhook -- only when the user asked for it; it acts like any production run. Returns the webhook's answer and the execution. If the answer says wake: true, you are woken when the run ends: give the user the execution id and end your turn; otherwise follow wake_note."
+      parameters:
+        type: object
+        properties:
+          workflow_id: {type: string}
+          payload: {type: object, description: "JSON body; for a GET webhook flat query parameters"}
+          method: {type: string, description: "Only when the webhook takes several methods"}
+          webhook_node: {type: string, description: "Only when the workflow has several Webhook triggers"}
+          wait: {type: string, enum: ["wake", "none"], default: "wake"}
+          timeout_s: {type: integer, minimum: 5, maximum: 300, default: 60, description: "How long to wait for the webhook's answer"}
+        required: [workflow_id]
+        additionalProperties: false
+{% endif %}
+{% endif %}

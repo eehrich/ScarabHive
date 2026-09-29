@@ -20,7 +20,6 @@ includes:
   - llm.yaml
   - plugins.yaml
   - mcp_servers.yaml
-  - mcp_server_mode.yaml
   - agents/*.yaml         # Wildcard: includes ALL .yaml files in agents/ directory
 ```
 

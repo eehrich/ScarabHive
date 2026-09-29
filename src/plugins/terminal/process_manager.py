@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,9 @@ class ProcessManager:
         Args:
             max_buffer_lines: Maximum lines to keep in output buffers
         """
+        # Held, not fired and forgotten: a task nobody references can be
+        # collected mid-flight, and cleanup has to be able to wait for it.
+        self._tasks: set[asyncio.Task] = set()
         self.processes: Dict[str, Dict] = {}
         self.max_buffer_lines = max_buffer_lines
 
@@ -26,12 +29,27 @@ class ProcessManager:
         """Generate unique process ID."""
         return f"bg_proc_{uuid.uuid4().hex[:8]}"
 
+    @staticmethod
+    def _owner_mismatch(proc_info: Dict, requester_session: Optional[str]) -> bool:
+        """True if the requester is not allowed to touch this process.
+
+        Deny only when the process has a known owner AND the requester is a
+        different session. A None owner (legacy entry) or a None requester
+        (internal/CLI call, never LLM-reachable) is allowed - the framework
+        injects _session_id on every LLM tool call, so the cross-user case
+        (both present, different) is the one that matters.
+        """
+        owner = proc_info.get("owner_session")
+        return bool(owner and requester_session and owner != requester_session)
+
     async def register_process(
         self,
         process: asyncio.subprocess.Process,
         command: str,
         cwd: Optional[str] = None,
-        process_id: Optional[str] = None
+        process_id: Optional[str] = None,
+        owner_session: Optional[str] = None,
+        on_finish: Optional[Callable[[str, Dict], Awaitable[None]]] = None
     ) -> str:
         """
         Register a background process.
@@ -41,6 +59,10 @@ class ProcessManager:
             command: Command being executed
             cwd: Working directory
             process_id: Optional custom process ID
+            owner_session: Session that owns this process (for isolation)
+            on_finish: Awaited once with the process id and its entry when the process has
+                ended and its output is captured. Its failure is logged and
+                dropped: the process is over either way.
 
         Returns:
             str: Process ID
@@ -52,30 +74,34 @@ class ProcessManager:
             "process": process,
             "command": command,
             "cwd": cwd,
+            "owner_session": owner_session,
             "started_at": datetime.now().isoformat(),
             "stdout_buffer": [],
             "stderr_buffer": [],
             "finished_at": None,
-            "exit_code": None
+            "exit_code": None,
+            "read_after_finish": False,
+            "on_finish": on_finish
         }
 
         # Start output capture task
-        asyncio.create_task(self._capture_output(process_id))
+        task = asyncio.create_task(
+            self._capture_output(process_id, self.processes[process_id]))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
         logger.info(f"Registered background process {process_id}: {command}")
         return process_id
 
-    async def _capture_output(self, process_id: str):
+    async def _capture_output(self, process_id: str, proc_info: Dict):
         """
         Capture output from background process.
 
         Args:
             process_id: Process ID to capture output from
+            proc_info: Its entry -- held, not looked up: once the process is
+                over its id may be handed to a later run.
         """
-        if process_id not in self.processes:
-            return
-
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
 
         async def read_stream(stream, buffer: List[str]):
@@ -102,16 +128,32 @@ class ProcessManager:
             return_exceptions=True
         )
 
-        # Mark as finished
+        # Mark as finished. EOF on both pipes is NOT the process ending: the
+        # return code stays None until the child is reaped. Without this wait,
+        # get_output answered for a finished process with finished_at set AND
+        # is_running true, and the recorded exit_code stayed None for good --
+        # which is what a session woken by on_finish reads first.
+        await process.wait()
         proc_info["finished_at"] = datetime.now().isoformat()
         proc_info["exit_code"] = process.returncode
         logger.info(f"Background process {process_id} finished with exit code {process.returncode}")
+
+        # Whoever asked to hear about the end hears about it here -- also when
+        # the process failed: a caller waiting on it waits just the same.
+        if proc_info["on_finish"] is not None:
+            try:
+                # The entry this task holds, not a lookup by id: the id may
+                # already name a later run (a finished id can be reused).
+                await proc_info["on_finish"](process_id, proc_info)
+            except Exception as e:
+                logger.warning(f"on_finish for {process_id} failed: {e}")
 
     async def get_output(
         self,
         process_id: str,
         stream: str = "both",
-        clear_buffer: bool = False
+        clear_buffer: bool = False,
+        requester_session: Optional[str] = None
     ) -> Dict:
         """
         Get output from a background process.
@@ -120,19 +162,27 @@ class ProcessManager:
             process_id: Process ID
             stream: Which stream to get ("stdout", "stderr", "both")
             clear_buffer: Clear buffer after reading
+            requester_session: Calling session (for ownership check)
 
         Returns:
             dict: Output data with status, stdout, stderr, is_running, exit_code
         """
-        if process_id not in self.processes:
+        proc_info = self.processes.get(process_id)
+        # Treat a foreign-owned process as not-found: don't leak its existence
+        # or its captured stdout/stderr to another session.
+        if proc_info is None or self._owner_mismatch(proc_info, requester_session):
             return {
                 "status": "error",
                 "error": f"Process {process_id} not found",
                 "error_type": "ProcessNotFound"
             }
 
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
+        # Whoever asked for a wake stops being rung once the result has been
+        # read here: the session dealt with it by itself and starting a run of
+        # it would cost a turn for nothing.
+        if proc_info["finished_at"] is not None:
+            proc_info["read_after_finish"] = True
 
         # Get output based on stream parameter
         stdout = ""
@@ -162,7 +212,8 @@ class ProcessManager:
     async def kill_process(
         self,
         process_id: str,
-        force: bool = False
+        force: bool = False,
+        requester_session: Optional[str] = None
     ) -> Dict:
         """
         Kill a background process.
@@ -170,21 +221,28 @@ class ProcessManager:
         Args:
             process_id: Process ID to kill
             force: Use SIGKILL instead of SIGTERM
+            requester_session: Calling session (for ownership check)
 
         Returns:
             dict: Status with killed flag and signal used
         """
-        if process_id not in self.processes:
+        proc_info = self.processes.get(process_id)
+        # Foreign-owned process -> not-found: a session must not be able to kill
+        # another session's process (cross-user control / DoS).
+        if proc_info is None or self._owner_mismatch(proc_info, requester_session):
             return {
                 "status": "error",
                 "error": f"Process {process_id} not found",
                 "error_type": "ProcessNotFound"
             }
 
-        proc_info = self.processes[process_id]
         process = proc_info["process"]
 
         if process.returncode is not None:
+            # Dealt with all the same: the session meant to end it, and it had
+            # just ended by itself -- the usual race for a wake that is armed.
+            # Left unset, the wake rang on for a process it tried to stop.
+            proc_info["read_after_finish"] = True
             return {
                 "status": "error",
                 "error": f"Process {process_id} already terminated with exit code {process.returncode}",
@@ -211,6 +269,13 @@ class ProcessManager:
 
             logger.info(f"Killed process {process_id} with {signal_used}")
 
+            # Killing it IS dealing with it. Without this the armed wake keeps
+            # ringing for its full five minutes and eventually starts a whole
+            # agent-cli run to tell the session about a process it ended
+            # itself -- get_output was the only thing that set this flag, and
+            # nobody calls get_output on something they just killed.
+            proc_info["read_after_finish"] = True
+
             return {
                 "status": "success",
                 "process_id": process_id,
@@ -227,15 +292,22 @@ class ProcessManager:
                 "error_type": type(e).__name__
             }
 
-    def list_processes(self) -> List[Dict]:
+    def list_processes(self, requester_session: Optional[str] = None) -> List[Dict]:
         """
-        List all registered background processes.
+        List registered background processes.
+
+        Args:
+            requester_session: If given, only processes owned by this session
+                (plus legacy ownerless ones) are returned. None lists all
+                (internal/CLI use).
 
         Returns:
             list: List of process information dicts
         """
         result = []
         for process_id, proc_info in self.processes.items():
+            if self._owner_mismatch(proc_info, requester_session):
+                continue
             result.append({
                 "process_id": process_id,
                 "command": proc_info["command"],
@@ -249,6 +321,18 @@ class ProcessManager:
         return result
 
     async def cleanup(self):
-        """Clean up all background processes."""
+        """Stop the processes AND let go of the tasks watching them.
+
+        A capture task carries the wake that reports the end, and that can
+        take minutes. A server that is closing has nothing left to report
+        from, so the wait is short and what is left is cancelled.
+        """
         for process_id in list(self.processes.keys()):
             await self.kill_process(process_id, force=True)
+        if self._tasks:
+            done, pending = await asyncio.wait(set(self._tasks), timeout=5.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=5.0)
+                logger.info(f"Gave up waiting for {len(pending)} capture task(s)")

@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Dict, List
 
@@ -26,9 +27,67 @@ import yaml
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+def _forget_modules_from(workspace: Path, before: dict[str, object]) -> None:
+    """Take the modules discovery loaded from ``workspace`` out of sys.modules.
+
+    The copied plugins sit in a directory named ``plugins``, so discovery loads
+    them under the real package names (``plugins.log_viewer.plugin``) -- a new
+    module per file, by design -- and a copy took the real module's place for
+    the rest of the session. The next discovery of the real tree then loaded
+    that plugin a second time: log_viewer's discovery test found a factory that
+    was not the one it had imported. A module that was there before comes back.
+    """
+    roots = {str(workspace), str(workspace.resolve())}
+
+    def loaded_from_workspace(module: object) -> bool:
+        # A module whose __getattr__ answers every name (torch.classes) hands back an object for
+        # __file__ and __path__: only strings are places, and what is not iterable is no path.
+        # Else the teardown raised, and the copies stayed in sys.modules for the whole session.
+        file = getattr(module, "__file__", None)
+        places = [file] if isinstance(file, str) else []
+        try:
+            places += [entry for entry in getattr(module, "__path__", None) or [] if isinstance(entry, str)]
+        except TypeError:
+            pass
+        return any(place == root or place.startswith(root + os.sep)
+                   for place in places for root in roots)
+
+    # Two passes: reading a namespace package's __path__ looks its parent up in
+    # sys.modules, so no entry may go while others are still being asked.
+    loaded = [name for name, module in list(sys.modules.items())
+              if module is not None and loaded_from_workspace(module)]
+    for name in loaded:
+        if name in before:
+            sys.modules[name] = before[name]
+        else:
+            del sys.modules[name]
+
+
+class _AnswersEveryName(types.ModuleType):
+    """Like torch.classes: every attribute it lacks is a module, and a module is not iterable."""
+
+    def __getattr__(self, name: str) -> types.ModuleType:
+        return types.ModuleType(name)
+
+
+def test_forgetting_the_workspace_survives_a_module_that_answers_every_name(tmp_path, monkeypatch):
+    before = dict(sys.modules)
+    answers_everything = _AnswersEveryName("fake_answers_every_name")
+    copied = types.ModuleType("fake_copied_plugin")
+    copied.__file__ = str(tmp_path / "plugins" / "fake_copied_plugin.py")
+    monkeypatch.setitem(sys.modules, "fake_answers_every_name", answers_everything)
+    monkeypatch.setitem(sys.modules, "fake_copied_plugin", copied)
+
+    _forget_modules_from(tmp_path, before)
+
+    assert sys.modules["fake_answers_every_name"] is answers_everything
+    assert "fake_copied_plugin" not in sys.modules, "the module from the workspace was not forgotten"
+
+
 @pytest.fixture
 def temp_workspace():
     """Create a temporary workspace for integration testing."""
+    modules_before = dict(sys.modules)
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
@@ -52,7 +111,10 @@ def temp_workspace():
         # Create test configuration files
         create_test_config(temp_path)
 
-        yield temp_path
+        try:
+            yield temp_path
+        finally:
+            _forget_modules_from(temp_path, modules_before)
 
 
 def create_test_config(workspace_path: Path):
@@ -87,8 +149,8 @@ def create_test_config(workspace_path: Path):
     with open(workspace_path / "config" / "config.yaml", "w") as f:
         yaml.safe_dump(agent_config, f, allow_unicode=True, sort_keys=False)
 
-    # MCP config - use new format with plugins.servers
-    mcp_config = {
+    # tool server config - use new format with plugins.servers
+    server_config = {
         "plugins": {
             "plugin_dirs": ["plugins"],
             "servers": {
@@ -109,14 +171,17 @@ def create_test_config(workspace_path: Path):
     }
 
     with open(workspace_path / "config" / "mcp.yaml", "w") as f:
-        yaml.safe_dump(mcp_config, f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(server_config, f, allow_unicode=True, sort_keys=False)
 
 
 def run_cli_command(workspace_path: Path, command: List[str], env: Dict[str, str] = None) -> subprocess.CompletedProcess:
     """Run a CLI command in the test workspace."""
     cmd_env = os.environ.copy()
     # Include both the workspace src and the original src directory
-    original_src = Path(__file__).parent.parent / "src"
+    # parents[2] is the repo root: parent.parent was tests/, so `src` did not
+    # exist and the subprocess silently fell back to the INSTALLED package --
+    # it tested whatever was in site-packages, not this checkout.
+    original_src = Path(__file__).parents[2] / "src"
     path_sep = ";" if os.name == "nt" else ":"
     cmd_env["PYTHONPATH"] = f"{workspace_path / 'src'}{path_sep}{original_src}"
     # Ensure we're using the test workspace and not the main project
@@ -201,26 +266,27 @@ class TestPluginDiscoveryIntegration:
             assert plugins[plugin_name] is not None, f"Plugin {plugin_name} factory is None"
 
     def test_plugin_metadata_loading(self, temp_workspace):
-        """Test that plugin metadata is loaded correctly for plugins that have plugin.yaml."""
+        """Test that plugin metadata is loaded correctly for plugins that have a manifest."""
         from agent_system.plugins import discover_all_plugins
 
         plugins = discover_all_plugins([temp_workspace / "plugins"])
 
-        # Only check metadata for plugins that have plugin.yaml file
-        # Some plugins (e.g., MCP servers) may only have schema.yaml
+        # Only check metadata for plugins that carry a manifest (plugin.toml);
+        # some plugins (e.g. tool servers) may only have schema.yaml and carry
+        # no metadata.
         plugins_with_metadata = {}
         for plugin_name, factory in plugins.items():
             plugin_dir = temp_workspace / "plugins" / plugin_name
-            if (plugin_dir / "plugin.yaml").exists():
+            if (plugin_dir / "plugin.toml").exists():
                 plugins_with_metadata[plugin_name] = factory
 
         # Ensure at least some plugins have metadata
-        assert len(plugins_with_metadata) > 0, "No plugins with plugin.yaml found"
+        assert len(plugins_with_metadata) > 0, "No plugins with a plugin manifest found"
 
-        # Check that metadata is properly attached for plugins with plugin.yaml
+        # Check that metadata is properly attached for plugins with a manifest
         for plugin_name, factory in plugins_with_metadata.items():
             metadata = getattr(factory, "_plugin_metadata", None)
-            assert metadata is not None, f"Plugin {plugin_name} has plugin.yaml but metadata not loaded"
+            assert metadata is not None, f"Plugin {plugin_name} has a manifest but metadata not loaded"
 
             # Check required metadata fields
             assert "name" in metadata, f"Plugin {plugin_name} missing name in metadata"
@@ -289,7 +355,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "LLM Router MCP Server" in result.stdout, "Help text not found"
+        assert "LLM Router Tool Server" in result.stdout, "Help text not found"
 
     def test_web_scraper_cli_help(self, temp_workspace):
         """Test web_scraper plugin CLI help."""
@@ -299,7 +365,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "Web Scraper MCP Server" in result.stdout, "Help text not found"
+        assert "Web Scraper Tool Server" in result.stdout, "Help text not found"
 
     def test_http_server_cli_help(self, temp_workspace):
         """Test http_server plugin CLI help."""
@@ -309,7 +375,7 @@ class TestIndividualPluginClis:
         )
 
         assert result.returncode == 0, f"CLI help failed: {result.stderr}"
-        assert "HTTP Server MCP Plugin" in result.stdout, "Help text not found"
+        assert "HTTP Server Tool plugin" in result.stdout, "Help text not found"
 
 
         def test_plugin_server_startup_shutdown(self, temp_workspace):
@@ -317,7 +383,7 @@ class TestIndividualPluginClis:
 
             Starting plugin servers in subprocess mode is brittle across test
             environments because many plugin CLIs expect dependency injection
-            (system_config, mcp_config). Instead of launching a full server here,
+            (system_config, server_config). Instead of launching a full server here,
             assert that the plugin discovery exposes a factory callable for
             `llm_router` so higher-level integration tests can exercise startup
             paths in controlled environments.
@@ -338,8 +404,8 @@ class TestPluginConfigurationIntegration:
         config_path = temp_workspace / "config" / "config.yaml"
 
         # Modify mcp.yaml to mark only llm_router as enabled in the new servers mapping
-        mcp_config_path = temp_workspace / "config" / "mcp.yaml"
-        with open(mcp_config_path) as f:
+        server_config_path = temp_workspace / "config" / "mcp.yaml"
+        with open(server_config_path) as f:
             config = yaml.safe_load(f) or {}
 
         # Normalize to top-level mcp block if necessary
@@ -364,7 +430,7 @@ class TestPluginConfigurationIntegration:
         existing["servers"] = servers
         config["mcp"] = existing
 
-        with open(mcp_config_path, "w") as f:
+        with open(server_config_path, "w") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
         # Test that the CLI reflects the config changes using in-process invocation
@@ -400,8 +466,8 @@ class TestPluginConfigurationIntegration:
     def test_plugin_directory_configuration(self, temp_workspace):
         """Test that plugin directory configuration works."""
         # Modify config to use a different plugin directory
-        mcp_config_path = temp_workspace / "config" / "mcp.yaml"
-        with open(mcp_config_path) as f:
+        server_config_path = temp_workspace / "config" / "mcp.yaml"
+        with open(server_config_path) as f:
             config = yaml.safe_load(f)
 
         # Create a subdirectory for plugins
@@ -414,7 +480,7 @@ class TestPluginConfigurationIntegration:
 
         config["plugin_dirs"] = ["custom_plugins", "plugins"]
 
-        with open(mcp_config_path, "w") as f:
+        with open(server_config_path, "w") as f:
             yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
         # Test that plugins are still discovered

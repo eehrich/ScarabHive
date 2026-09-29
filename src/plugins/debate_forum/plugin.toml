@@ -1,0 +1,13 @@
+# debate_forum plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "debate_forum"
+version = "1.0.0"
+description = "Structured LLM debate forum with channels and Discord-style web UI"
+author = "AgentSystem"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server", "web"]
+category = "collaboration"
+requires = { agent_system = ">=0.7.0" }

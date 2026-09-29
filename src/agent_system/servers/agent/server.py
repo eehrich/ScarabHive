@@ -1,39 +1,246 @@
 """
-Enhanced Agent Core - Agent extends MCPServer for direct agent-to-agent communication
+Enhanced Agent Core - Agent extends ToolServer for direct agent-to-agent communication
 Supports multiple tool calls per conversation turn for better efficiency
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
+import errno
+import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
-from ...config.models import AgentSystemConfig, MCPConfig
-from ...core.cancellation import get_cancellation_manager, configure_cancellation_manager, CancellationToken
-from ...mcp.base import MCPRegistry, MCPServer
+if TYPE_CHECKING:
+    from ...services.session_service import SessionService
+
+from ...config.models import AgentSystemConfig, ToolServerConfig
+from ...core.cancellation import get_cancellation_manager, CancellationToken
+from ...core.session_presence import SessionBusy, presence_for
+from ...tools.base import ToolServerRegistry, ToolServer
 from ...utils.id import short_id
-from ...llm.models import ChatMessage, LLMRateLimitError, LLMQuotaExhaustedError
+from ...utils.json_utils import history_safe_tool_calls
+from ...utils.reasoning_artifacts import (
+    strip_all_reasoning_artifacts,
+    strip_foreign_reasoning_artifacts,
+)
+import httpx
+
+from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
+from ...llm.model_health import model_health
+from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from ...llm import schema_worker
+from ...llm.structured_output import (
+    JSON_OBJECT, STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
+    InvalidResponseFormat, ResponseFormat,
+    SchemaCheckerError, check_answer, instruction_text, prepare_response_format, repair_text,
+    supports_response_format, unsupported_message,
+)
 from ...llm.text_sanitizer import sanitize_for_llm
-from ...mcp.status import (
+from ...tools.status import (
     status_scope,
     StatusScope,
     status_bus,
     current_request_id
 )
-from .components.mcp_integration import MCPIntegrationManager
-from .components.tool_execution import ToolExecutionManager
-from .components.status_forwarding import StatusEventForwarder
+from .components.tool_integration import ToolIntegrationManager
+from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
+from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
+from .components.server_resolution import resolve_registry_server, resolve_longest_prefix
 from .prompt_strategies import PromptRenderer, PromptContext
 from .loop_detection import ToolCallLoopDetector
+from .reasoning_loop import ReasoningLoopError, build_detectors
+from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
-from .tool_schema_builder import ToolSchemaBuilder
+from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
 
 
 logger = logging.getLogger(__name__)
+
+#: ``error_type`` of the error a run ends with when another request of this process holds its session's lock.
+#: It ran nothing and has nothing to save -- its caller must not save the session either: what the tracker holds
+#: is the other run's live state (see REFUSED_BEFORE_THE_RUN for who asks).
+SESSION_LOCKED = "session_locked"
+#: ``error_type`` of the error a run ends with when its caller may not run this agent (metadata.min_role).
+AGENT_ROLE_GATE = "agent_role_gate"
+#: ``error_type`` of the error a run ends with when its session is held for another user (_foreign_session).
+FOREIGN_SESSION = "foreign_session"
+#: The refusals a run ends with before it has started: it ran nothing and wrote nothing, and its caller must
+#: not save the session after it either. Asked by app.py (/run, /events and their jobs), the openai_api turn
+#: (its put back, its answer), agent-cli (the one-shot run, via collect_final_result's ``refused``), its chat,
+#: agent-run and the sub-agent manager (create, continue, the background job); Agent.call answers with it.
+REFUSED_BEFORE_THE_RUN = frozenset({SESSION_LOCKED, AGENT_ROLE_GATE, FOREIGN_SESSION})
+#: ``error_type`` of the answer an agent called as a tool gives when it runs above the call already -- it
+#: would call itself, directly or through other agents called as tools (Agent._open_tool_session). Not across
+#: a sub-agent manager's or a stategraph run's hop: the chain above a call ends at such a session, and the
+#: sub-agent nesting budget bounds that (a stategraph run only by a budget a manager above it set). An answer of the tool
+#: call, not an event of a run: no run started and no session was opened, so it is none of
+#: REFUSED_BEFORE_THE_RUN. When the agent ran on its caller's session, such a call waited at that session's
+#: lock and ended with SESSION_LOCKED; on a session of its own below it, nothing is locked, and asking to
+#: wait for the other request would be wrong -- that request waits for this call.
+RECURSIVE_CALL = "recursive_call"
+#: ``error_type`` of the answer an agent called as a tool gives when its session could not be made ready with the
+#: caller's sub-agent budget (Agent._file_tool_session): the caller's budget could not be read, or the session's
+#: record could not be written with it. Nothing ran -- run without it, a manager below counted from its own
+#: maximum. An answer of the tool call as RECURSIVE_CALL is, none of REFUSED_BEFORE_THE_RUN.
+TOOL_SESSION_UNAVAILABLE = "tool_session_unavailable"
+#: The longest id tool_session_id gives. Every level below a caller adds the agent's name and a digest to
+#: the id; uncut, a few levels of long names made file names the file system refuses (``<id>.json``, and
+#: ``.subs.<id>.index.json`` with its lock and temporary files, SessionManager).
+TOOL_SESSION_ID_MAX = 128
+
+
+class _ToolSessionUnavailable(RuntimeError):
+    """The session of an agent called as a tool could not be made ready with its caller's sub-agent budget
+    (Agent._file_tool_session); answered as TOOL_SESSION_UNAVAILABLE."""
+
+
+def refused_before_the_run(event: dict[str, Any]) -> bool:
+    """Whether a run event is such a refusal (REFUSED_BEFORE_THE_RUN): the run ran and wrote nothing."""
+    return event.get("type") == "error" and event.get("error_type") in REFUSED_BEFORE_THE_RUN
+
+
+def tool_session_id(caller_session_id: str, agent_name: str) -> str:
+    """The session an agent called as a tool runs on: one of its own per caller session and agent.
+
+    It ran on its caller's session id before: it saved its own transcript into the caller's
+    session file (a new one it created, with its own agent name and a title from the
+    sub-task; a stored one it replaced until the caller's next save), and its tracker kept
+    every caller session for the life of the process. Now it keeps its own conversation
+    with that caller -- a second call in the same caller session sees the first one's turn
+    -- stored under the caller's user and below the caller's session, like a sub-agent
+    manager's sub-session.
+
+    From the framework's injected ``_session_id`` and the agent's own name only, never from
+    what a model passes. Readable -- the caller's id, then the agent's name -- and apart per
+    pair: the name is cut to what a session id may hold (``[A-Za-z0-9_-]``,
+    SessionManager._validate_session_id), and a digest of both keeps two names that cut to
+    the same text apart. It starts with the caller's id, so a throwaway caller
+    (EPHEMERAL_SESSION_PREFIX) gives a throwaway session.
+
+    At most TOOL_SESSION_ID_MAX long: where the caller's id and the name would not fit, the
+    caller's id is cut to its start (the throwaway prefix stays) and a longer digest of the
+    whole of it keeps the id apart. Only what it is called from counts -- the same caller's
+    id and name give the same id, in every process.
+    """
+    import hashlib
+    import re
+
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", agent_name)[:40] or "agent"
+    digest = hashlib.sha1(f"{caller_session_id}\0{agent_name}".encode("utf-8")).hexdigest()
+    session_id = f"{caller_session_id}--{name}-{digest[:8]}"
+    if len(session_id) <= TOOL_SESSION_ID_MAX:
+        return session_id
+    tail = f"--{name}-{digest[:16]}"
+    return caller_session_id[:TOOL_SESSION_ID_MAX - len(tail)] + tail
+
+#: STRUCTURED_OUTPUT_UNSUPPORTED and STRUCTURED_OUTPUT_INVALID (imported above) are the
+#: ``error_type``s of a structured run's error events; llm/structured_output.py says when.
+#: ``injected_by`` of the note that describes a run's structured output to the model.
+FORMAT_NOTE = "agent.structured_output"
+
+# llm_progress hooks fire every this many characters of thinking. A hook sets
+# its own, coarser interval on top; this only bounds how often the loop pays
+# for a hook dispatch while it streams.
+_REASONING_PROGRESS_TICK = 2000
+
+# Local descriptor exhaustion. httpx reports it as a ConnectError, which is
+# indistinguishable from an unreachable endpoint unless the cause chain is
+# inspected — see _is_local_resource_exhaustion.
+_LOCAL_EXHAUSTION_ERRNOS = frozenset({errno.EMFILE, errno.ENFILE})
+
+
+def _is_local_resource_exhaustion(exc: BaseException) -> bool:
+    """Is this transport failure OUR machine running out of descriptors?
+
+    A provider being unreachable and this process being unable to open a socket
+    both surface as httpx.ConnectError, but they call for opposite responses:
+    the first is what fallback profiles exist for, the second cannot be helped
+    by any profile — the next client hits the same wall. On 2026-08-30 a
+    descriptor leak made the writer host do exactly that: 52 fallback switches
+    onto pricier models, none of which could have succeeded.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, OSError) and cur.errno in _LOCAL_EXHAUSTION_ERRNOS:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _content_filter_as_error(assistant: Any, finish_reason: Optional[str], llm: Any) -> None:
+    """Mark a provider content-filter stop as an upstream error, in place.
+
+    The one rule for both paths of _call_llm_with_streaming. The filter is
+    deterministic per content: nudging the same model with "Continue" asks
+    the same question again, and a partial answer it cut is not a complete
+    one -- moving on is exactly what the fallback chain is for, and the
+    "error" key is what engages it.
+
+    Left alone: an answer that already carries an error, and one that carries
+    tool calls. Gemini reports a non-standard finish_reason while STILL
+    returning usable tool calls; httpx _format_response keeps those, and
+    erroring here would throw away a perfectly good turn.
+    """
+    if (finish_reason != "content_filter" or not isinstance(assistant, dict)
+            or "error" in assistant or assistant.get("tool_calls")):
+        return
+    assistant["error"] = {
+        "message": (f"Provider content filter blocked the response "
+                    f"(model={getattr(llm, 'model', '?')})"),
+        "type": "content_filter",
+    }
+
+
+def _name_the_model(event: dict, llm: Any) -> dict:
+    """Name on a thinking_complete the model that ran the call, in place.
+
+    A fallback or a walk around a blocked LLM runs on a client the caller never
+    handed in, and a surface pricing the call needs its model.
+    """
+    model = getattr(llm, "model", None)
+    if isinstance(model, str) and model:
+        event["model"] = model
+        batch = getattr(llm, "batch_provider", None)
+        event["batch"] = isinstance(batch, str) and bool(batch)
+    return event
+
+
+def _instruction_head(messages: list, rebuilt: list) -> list:
+    """The leading instruction block, minus whatever ``rebuilt`` already has.
+
+    Both history rebuilds below are "the head + the conversation a hook handed
+    back", and what that hook hands back differs per hook. context_engineer
+    strips the prompts and returns only its own compaction system messages
+    (the archive pointers, the prune breadcrumb); context_summarizer returns
+    the WHOLE list, prompts included, and says so in a comment. So there is no
+    fixed set to subtract -- the only rule that holds for both is: do not put
+    back what is already there.
+
+    Prepending blindly sent the breadcrumb twice on one hook and both prompts
+    twice on the other, and the persist right after wrote the copies to disk;
+    the next prune then read a doubled total. The version before that took
+    ``messages[0]`` alone, which duplicated the first prompt and dropped the
+    second one entirely.
+    """
+    def key(msg):
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        return role_of(msg), content if isinstance(content, str) else repr(content)
+
+    # id() as well as the key: a hook usually hands the SAME objects back, and
+    # two different prompts could in principle share a text.
+    seen_ids = {id(msg) for msg in rebuilt}
+    seen = {key(msg) for msg in rebuilt}
+    return [msg for msg in leading_instructions(messages)
+            if id(msg) not in seen_ids and key(msg) not in seen]
 
 
 @dataclass
@@ -48,9 +255,10 @@ class ConversationContext:
     context_reset_token: Any  # Token for resetting contextvars
     status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
     session_id: Optional[str] = None  # Session ID for session-scoped operations
+    user_reset_token: Any = None  # Token for resetting current_run_user
 
 
-class Agent(MCPServer):
+class Agent(ToolServer):
     """Enhanced Agent with dual interface: execution engine + callable tool.
 
     TOOL INTERFACE CLARITY:
@@ -58,8 +266,8 @@ class Agent(MCPServer):
     Agent has TWO distinct tool interfaces that are easily confused:
 
     1. EXTERNAL (what this agent OFFERS to others):
-       - list_tools() → List[MCPTool] - Returns this agent as a callable tool
-       - MCPServer interface: What OTHER agents see when they query our tools
+       - list_tools() → List[ToolDef] - Returns this agent as a callable tool
+       - ToolServer interface: What OTHER agents see when they query our tools
        - Used by: ToolSchemaBuilder when other agents discover available tools
 
     2. INTERNAL (what this agent CAN USE):
@@ -74,59 +282,69 @@ class Agent(MCPServer):
        - For debugging/introspection, not for execution
 
     REMEMBER:
-    - list_tools() = what I OFFER (MCPServer standard)
+    - list_tools() = what I OFFER (ToolServer standard)
     - list_usable_tools() = what I CAN USE (internal execution)
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig,
-                 registry: MCPRegistry | None = None,
-                 llm: object | None = None, llm_factory: object | None = None,
-                 session_service: object | None = None) -> None:
+    #: The lowest account role that may run this agent (``metadata.min_role``,
+    #: auth/agent_access.py), None for no gate. Set per instance in __init__
+    #: and by reload_config; the class default answers for an instance built
+    #: without __init__.
+    min_role: Optional[str] = None
+
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig,
+                 registry: ToolServerRegistry | None = None,
+                 llm: LLMClient | None = None, llm_factory: Any = None,
+                 session_service: "SessionService | None" = None) -> None:
         """
-        Initialize Agent as both an executor and an MCP Server.
+        Initialize Agent as both an executor and a Tool server.
 
         Modern signature matching plugin pattern:
         - system_config: Complete system configuration
-        - mcp_config: MCP configuration object (contains agent_config, type, enabled)
-        - registry: MCP Registry with available tools (required for agents)
+        - server_config: tool server configuration object (contains agent_config, type, enabled)
+        - registry: Tool registry with available tools (required for agents)
         - session_service: SessionService for managing agent sessions (optional, will be injected if available)
 
         Args:
-            name: Name of this agent (used when serving as MCP Server)
+            name: Name of this agent (used when serving as Tool server)
             system_config: Complete system configuration (includes llm_system, network, context, etc.)
-            mcp_config: MCP configuration object (MCPConfig with agent_config)
-            registry: MCP Registry with available tools
+            server_config: tool server configuration object (ToolServerConfig with agent_config)
+            registry: Tool registry with available tools
             llm: Optional LLM client instance (for testing)
             llm_factory: Optional LLM factory for creating client (for testing)
             session_service: Optional SessionService for session management (injected by CLI/App)
         """
-        # Initialize as MCPServer with MCPConfig object
-        super().__init__(name, system_config, mcp_config)
+        # Initialize as ToolServer with ToolServerConfig object
+        super().__init__(name, system_config, server_config)
 
-        # Extract agent_config from MCPConfig (required, no fallbacks)
-        if not mcp_config.agent_config:
-            raise ValueError(f"Agent '{name}' requires agent_config in MCPConfig")
-        self.agent_config = mcp_config.agent_config
+        # Extract agent_config from ToolServerConfig (required, no fallbacks)
+        if not server_config.agent_config:
+            raise ValueError(f"Agent '{name}' requires agent_config in ToolServerConfig")
+        self.agent_config = server_config.agent_config
 
         # Agent-specific initialization (registry required for agents)
         if registry is None:
-            raise ValueError(f"Agent '{name}' requires MCPRegistry instance")
+            raise ValueError(f"Agent '{name}' requires ToolServerRegistry instance")
         self.registry = registry
 
         # Store session_service for tools that need session access (e.g., sub-agent manager)
         # This is optional - if None, tools that need it will fail gracefully
-        self._session_service = session_service
+        self._session_service: "SessionService | None" = session_service
 
         # Visibility flags control where the agent appears
-        # _mcp_public: Show in UI agent dropdown (GET /agents endpoint)
-        # _mcp_tool_visible: Available as tool for other agents
+        # _tool_public: Show in UI agent dropdown (GET /agents endpoint)
+        # _tool_visible: Available as tool for other agents
         # Default both to False for config agents, can be overridden based on metadata
-        self._mcp_public = False
-        self._mcp_tool_visible = False
+        self._tool_public = False
+        self._tool_visible = False
+
+        # Role gate, from THIS instance's merged config: the direct `type: agent`
+        # gets no Runtime post-processing (apply_to), so the agent reads it itself.
+        self.min_role = self._declared_min_role(server_config)
 
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
-        self.llm = llm
+        self.llm: LLMClient | None = llm
         self._llm_factory = llm_factory
 
         # Initialize LLM if not provided
@@ -136,13 +354,14 @@ class Agent(MCPServer):
         # Store timeout configuration from agent_config
         self.timeouts = self.agent_config.timeouts if self.agent_config else None
         
-        # Track active fallback LLM (persistent across requests)
-        # When rate limit/quota is exhausted, we switch to fallback and stay there
-        # until fallback_recovery_seconds has elapsed, then we try original again
-        self._active_fallback_llm: Optional[Any] = None
-        self._active_fallback_profile: Optional[str] = None
-        self._fallback_activated_at: Optional[float] = None  # Timestamp when fallback was activated
-        self._jittered_recovery_seconds: Optional[float] = None  # Per-instance jittered recovery time
+        # Which LLMs are blocked (rate limit, quota, refused key) is no state of
+        # this agent: the block belongs to the LLM, for every agent
+        # (llm/model_health.py). What stays here are the clients of the
+        # fallback profiles, built once each.
+        self._fallback_clients: Dict[str, LLMClient] = {}
+        # The client answering each session's running step (fallback, escalation
+        # or override included); cleared when the request ends.
+        self._step_llms: Dict[str, LLMClient] = {}
 
         # Extract profile info even if LLM is provided externally
         if self.llm is not None and self.agent_config and system_config.llm_system:
@@ -172,19 +391,20 @@ class Agent(MCPServer):
                     from ...llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
 
                     # Use new profile-based resolution with agent config
-                    llm_kwargs = resolve_llm_config_for_agent(system_config, self.agent_config)
+                    resolved = resolve_llm_config_for_agent(system_config, self.agent_config)
 
                     # Store profile information for status display
-                    self.llm_profile_info = self._extract_profile_info(system_config, name, llm_kwargs)
-
-                    # Get SSL verify setting
-                    ssl_verify = getattr(system_config, "network").ssl_verify if getattr(system_config, "network", None) else None
+                    self.llm_profile_info = self._extract_profile_info(system_config, name, {
+                        "profile_name": resolved.profile_name,
+                        "provider": resolved.spec.provider,
+                        "model": resolved.spec.model,
+                    })
 
                     # Use factory function that properly handles batch mode
                     self.llm = create_llm_from_profile(
                         config=system_config,
                         llm_profile=self.agent_config.default_llm_profile,
-                        ssl_verify=ssl_verify,
+                        llm_params=self.agent_config.llm_params,
                     )
                 except Exception as e:
                     # Missing API key is an expected situation in test/dev
@@ -194,34 +414,58 @@ class Agent(MCPServer):
                     except Exception as e2:
                         logger.debug(f"Failed to stringify exception: {e2}")
                         msg = "<exception>"
-                    # Match the exact ValueError message emitted by make_llm
-                    if isinstance(e, ValueError) and msg == "OPENAI_API_KEY is required when provider=openai":
-                        logger.debug("LLM not initialized (no API key): %s", msg)
+                    # The provider factories raise "<VAR> is required when
+                    # provider=<name>" — since the registry split there are
+                    # two openai-family variants, so match both.
+                    if isinstance(e, ValueError) and msg in (
+                            "OPENAI_API_KEY is required when provider=openai",
+                            "OPENAI_API_KEY is required when provider=openai_httpx"):
+                        logger.debug("Agent '%s': LLM not initialized (no API key): %s",
+                                     name, msg)
                     else:
-                        logger.warning("LLM initialization failed: %s", msg)
+                        # WITH the agent name. Without it these lines are
+                        # indistinguishable: one model removed from llm.yaml
+                        # produced 50 identical warnings (measured), and the
+                        # agents kept running with llm=None until their first
+                        # request.
+                        logger.warning("Agent '%s': LLM initialization failed: %s",
+                                       name, msg)
                     self.llm = None
 
-        # Context management now handled by hook plugins (context_optimizer, context_summarizer)
+        # Set per-agent OpenRouter app identity (unique HTTP-Referer per agent)
+        if self.llm is not None and hasattr(self.llm, 'set_app_title'):
+            self.llm.set_app_title(name)
 
-        # Configure cancellation system with agent config values
-        if hasattr(system_config, 'cancellation') and system_config.cancellation:
-            configure_cancellation_manager(
-                cleanup_timeout=system_config.cancellation.cleanup_timeout,
-                monitor_interval=system_config.cancellation.monitor_interval
-            )
-        else:
-            configure_cancellation_manager()
+        # Context management now handled by hook plugins (context_engineer, context_summarizer)
+
+        # NOTE: the global cancellation manager is configured ONCE at process
+        # bootstrap (servers/bootstrap.py), not per agent — reconfiguring here
+        # replaced the manager and orphaned tokens of in-flight requests.
 
         # Centralized internal tool-call counter (used to generate per-tool suffixes)
         self._internal_tool_counter = 0
         self._internal_tool_counter_lock = asyncio.Lock()
 
-        # Cache for list_tools() to avoid creating new MCPTool objects on every call
+        # Session presence: request id -> the session it holds (_presence_step)
+        self._presence_holds: dict[str, tuple] = {}
+
+        # Cache for list_tools() to avoid creating new ToolDef objects on every call
         self._list_tools_cache: list | None = None
 
-        # Track current conversation messages for debugging
+        # Per-session live conversation state (request-scoped). This agent is a
+        # process-wide singleton shared by concurrent requests for DIFFERENT
+        # sessions, so a single shared "current messages/tools" attribute is a
+        # cross-session race: request B overwrites it while a compaction tool
+        # for session A reads it, persisting B's conversation into A. Key the
+        # live state by session_id instead. Readers (context_engineer /
+        # context_summarizer compaction tools, token-estimating hooks) resolve
+        # by their own session_id. Bounded by LRU eviction.
+        self._live_state_by_session: dict[str, dict[str, Any]] = {}
+        self._live_state_max_sessions: int = 200
+        # Deprecated shared attributes - kept as a last-resort fallback for any
+        # reader not yet migrated to get_live_messages/get_live_tools_schema.
+        # They reflect the most recent request and are NOT session-correct.
         self._current_messages: List[ChatMessage] = []
-        # Track current tool schemas for token estimation (set during conversation init)
         self._current_tools_schema: List[Dict[str, Any]] = []
 
         # Initialize component managers for better code organization
@@ -229,41 +473,650 @@ class Agent(MCPServer):
         self._request_manager = AgentRequestManager(self.name)
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
-        self._mcp_integration_manager = MCPIntegrationManager(self.system_config, self.agent_config)
-        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
-        self._tool_execution_manager = ToolExecutionManager(
-            self.registry,
-            self
-        )
+        self._session_tracker.agent_name = self.name  # the parent_agent of the sessions its tool calls run on
+        # session id -> [the lock one opening of that tool session holds, how many hold or wait] (_opening_of)
+        self._tool_session_openings: dict[str, list[Any]] = {}
+        self._tool_integration_manager = ToolIntegrationManager(self.system_config, self.agent_config)
 
         # Context management now handled by hook plugins via HookIntegrationManager
 
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
+
+        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
+        self._tool_execution_manager = ToolExecutionManager(
+            self.registry,
+            self,
+            hook_manager=self._hook_manager,
+        )
+
+        # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
+        if self.llm is not None:
+            self._hook_manager.wire_llm_hooks(self.llm)
         
-        # Initialize tool call loop detector to prevent infinite tool loops
-        # Especially important for Gemini which tends to get stuck
-        # Read config from agent_config.loop_detection
+        # Store loop detection config for per-request detector creation.
+        # Each request creates its own ToolCallLoopDetector to prevent
+        # cross-request contamination when the Agent singleton handles
+        # concurrent requests or sequential requests on the same session.
+        # Reasoning loop detection, stored the same way — but the detector is
+        # created per LLM CALL, not per request: its state is the thinking of
+        # one call, and a retry has to start from an empty window.
+        reasoning_config = self.agent_config.reasoning_loop if self.agent_config else None
+        self._reasoning_loop_config = {
+            "enabled": reasoning_config.enabled if reasoning_config else True,
+            "repetition_threshold": (reasoning_config.repetition_threshold
+                                     if reasoning_config else 0.5),
+        }
+
         loop_config = self.agent_config.loop_detection if self.agent_config else None
         if loop_config and loop_config.enabled:
-            self._loop_detector = ToolCallLoopDetector(
-                history_size=loop_config.history_size,
-                exact_match_threshold=loop_config.exact_match_threshold,
-                sequence_threshold=loop_config.sequence_threshold,
-                block_after_threshold=loop_config.block_after_threshold,
-                auto_unblock_after_steps=loop_config.auto_unblock_after_steps
-            )
+            self._loop_detection_config = {
+                "history_size": loop_config.history_size,
+                "exact_match_threshold": loop_config.exact_match_threshold,
+                "sequence_threshold": loop_config.sequence_threshold,
+                "block_after_threshold": loop_config.block_after_threshold,
+                "auto_unblock_after_steps": loop_config.auto_unblock_after_steps,
+            }
         else:
-            # Create a disabled detector (never triggers)
-            self._loop_detector = ToolCallLoopDetector(
-                exact_match_threshold=9999  # Effectively disabled
-            )
+            # Disabled config — detector will never trigger
+            self._loop_detection_config = {
+                "exact_match_threshold": 9999,
+            }
             if loop_config and not loop_config.enabled:
                 logger.debug(f"[{self.name}] Loop detection disabled via config")
 
-        # Set agent reference in MCP integration for cancellation support
+        # Set agent reference in tool integration for cancellation support
         self._set_agent_reference_in_mcp()
+
+    #: Agent-config knobs that a deliberate reload may change on a LIVE agent.
+    #: Every one of them is a plain scalar that the run loop re-reads from
+    #: ``self.agent_config`` on each request, so a change takes effect on the
+    #: NEXT run while in-flight runs keep the value they started with.
+    #:
+    #: Deliberately NOT here, because the startup wired something from them and
+    #: refreshing only the config would desync the two:
+    #:   - llm_profile / advanced_llm_profile / llm_params / fallback_chain:
+    #:     ``self.llm`` was built from these at startup.
+    #:   - tools: the tool schemas are wired into the tool integration at startup.
+    #:   - loop_detection / reasoning_loop / timeouts: read once into derived
+    #:     objects (``_loop_detection_config``, ``_reasoning_loop_config``,
+    #:     ``self.timeouts``).
+    #: Those still need a restart, and saying so beats pretending otherwise.
+    _RELOADABLE_AGENT_FIELDS = (
+        "max_steps",
+        "auto_escalate_on_stuck",
+        "escalate_rounds",
+        "escalate_max_calls",
+        "escalate_error_streak",
+        "fallback_recovery_seconds",
+        "inherit_parent_llm",
+    )
+
+    def reload_config(self, server_config: Any) -> dict:
+        """Refresh the live agent's plain config knobs from a fresh parse.
+
+        Called by the deliberate config-reload flow (POST /admin/reload-config,
+        ``agent-cli reload``). Without this the reload skipped every agent as
+        "unsupported": raising an agent's ``max_steps`` needed a full API
+        restart, which drops in-flight book runs.
+
+        Returns the fields that actually changed ({} if none), so the caller
+        can report exactly what took effect.
+
+        The role gate (``metadata.min_role``) is refreshed too, on THIS instance:
+        the entries that read it from the instance (every HTTP check, the SAM and
+        the backstop in run_events, through ``Runtime.view``) apply the new gate
+        from the next run on. Not reached by a reload, and keeping the value
+        they started with until a restart: an agent the reload does not walk to
+        (it walks the plugin registry, so a direct ``type: agent`` entry), a lazy
+        agent that is still unbuilt (its declaration answers, and it is built
+        from that later), the wake check and the start-up warning (both read the
+        process's config, not a reloaded one).
+        """
+        changes: dict[str, dict] = {}
+        new_min_role = self._declared_min_role(server_config)
+        if new_min_role != self.min_role:
+            changes["min_role"] = {"old": self.min_role, "new": new_min_role}
+            self.min_role = new_min_role
+
+        new_agent_cfg = getattr(server_config, "agent_config", None)
+        if new_agent_cfg is None or self.agent_config is None:
+            if changes:
+                logger.info("[%s] config reload applied: %s", self.name, changes)
+            return changes
+
+        for field in self._RELOADABLE_AGENT_FIELDS:
+            if not hasattr(new_agent_cfg, field):
+                continue
+            new_value = getattr(new_agent_cfg, field)
+            old_value = getattr(self.agent_config, field, None)
+            if old_value == new_value:
+                continue
+            setattr(self.agent_config, field, new_value)
+            changes[field] = {"old": old_value, "new": new_value}
+
+        if changes:
+            logger.info("[%s] config reload applied: %s", self.name, changes)
+        return changes
+
+    @staticmethod
+    def _declared_min_role(server_config: Any) -> Optional[str]:
+        """``metadata.min_role`` of a server config; None when it declares none."""
+        metadata = getattr(server_config, "metadata", None)
+        return metadata.min_role if metadata is not None else None
+
+    def _run_denial(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not start under the agent's role gate, or None.
+
+        The caller is the owner of the request id when one is registered, else
+        the user the SESSION names when it already has metadata, else "anonymous".
+
+        The request owner first: only framework code writes it -- the API for
+        its caller, tool execution and the SAM for the calling run's user, the
+        stategraph backend for the run's -- and a caller cannot pick the id it
+        runs under (tool execution strips a model's request ids). A session id,
+        in contrast, can reach a run from where the caller chose it, and this
+        agent's tracker keeps the metadata of every session it ran, other users'
+        sub-sessions included; asked first, it let a user's run pass as the
+        admin whose session it named. On every trusted path the two agree, and
+        where they do not, _foreign_session refuses the run as well -- the order
+        then only decides which reason it is refused with.
+
+        The session answers where no request is registered: agent-cli and
+        agent-run (SessionService.open_for_run), so a woken run answers to its
+        session's user, not to the local operator it runs as.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        who: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        tracker = getattr(self, "_session_tracker", None)
+        if who is None and session_id and tracker is not None:
+            stored = tracker.get_session_metadata(session_id)
+            if stored:
+                who = stored.get("user_id") or None
+        if who is None:
+            who = "anonymous"
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        logger.warning("[%s] run refused for %r (request %s, session %s): %s",
+                       self.name, who, request_id, session_id, reason)
+        return f"Agent '{self.name}' may not be run by '{who}': {reason}"
+
+    def _tool_call_denial(self, params: Dict[str, Any]) -> Optional[str]:
+        """Why the run calling one of this agent's tools may not use it under the role gate, or None.
+
+        For the tools a schema-based agent serves beside its runs
+        (SchemaBasedToolMixin.call). The caller is the one the framework names:
+        the registered owner of the call's request id, else the injected
+        ``_user_id`` -- never a session's stored user -- and without either the
+        call is unidentified and refused.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        request_id = params.get("_request_id") or params.get("request_id")
+        injected = params.get("_user_id")
+        who = ((get_request_user(str(request_id), default=None) if request_id else None)
+               or (injected.strip() if isinstance(injected, str) and injected.strip() else None))
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        caller = f"'{who}'" if who else "an unidentified caller"
+        logger.warning("[%s] tool call refused to %s: %s", self.name, caller, reason)
+        return f"Agent '{self.name}' may not be used by {caller}: {reason}"
+
+    def tool_user(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """The user this run's tool calls run for -- injected as ``_user_id``, and the
+        owner their request ids are registered under (tool_execution.py). THE one
+        answer for every way a run dispatches a tool: the LLM's calls, and calls
+        made for the run beside the model (tool_preload).
+
+        The run's registered owner first: only framework code registers it (the
+        API, tool execution, the SAM, the stategraph backend). The session's
+        stored user answers where nothing is registered (agent-cli). Where an
+        owner is registered the stored user is the same one at the start of the
+        run (_foreign_session refuses another); asked first, the owner stays the
+        tools' user whatever the session's metadata says later in the run: the
+        metadata is state of the session id, shared by every run of it, and the
+        registered owner is this run's.
+        """
+        from ...core.request_context import get_request_user
+
+        user_id: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        if user_id is not None:
+            logger.debug(f"[TOOL_EXEC] user_id='{user_id}' from the owner of request {request_id}")
+            return user_id
+        tracker = getattr(self, "_session_tracker", None)
+        if not tracker:
+            logger.warning("[TOOL_EXEC] No _session_tracker available")
+            return None
+        session_meta = tracker.get_session_metadata(session_id) if session_id else None
+        if session_meta:
+            user_id = session_meta.get("user_id")
+            logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
+        else:
+            logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
+        return user_id
+
+    def _refusal_event(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[dict[str, Any]]:
+        """The error a run refused before it starts ends with, or None: the role gate (AGENT_ROLE_GATE) or a
+        session held for another user (FOREIGN_SESSION), each with its ``error_type`` for the callers that
+        must tell a refusal from a run that failed (REFUSED_BEFORE_THE_RUN)."""
+        denial, error_type = self._run_denial(request_id, session_id), AGENT_ROLE_GATE
+        if not denial:
+            denial, error_type = self._foreign_session(request_id, session_id), FOREIGN_SESSION
+        if not denial:
+            return None
+        return {"type": "error", "message": denial, "request_id": request_id, "error_type": error_type}
+
+    async def tool_session(self, params: dict[str, Any], request_id: Optional[str] = None
+                           ) -> tuple[Optional[str], Optional[dict[str, str]]]:
+        """(the session a tool call of this agent runs on, why it may not run -- or None).
+
+        For every tool that runs this agent -- Agent.call, BasicAgent.execute_task, an
+        ``execute_task`` of your own: never the caller's session, but one of this agent's own
+        below it, from the injected ``_session_id`` (never a model's) and this agent's name
+        (tool_session_id), opened for the call (_open_tool_session). *request_id*: the id the
+        run goes under, when it is not the call's own (_request_for_injected_user). No
+        caller session: (None, None) -- the run starts a session of its own.
+
+        The refusal is ``{"error": <what to tell the caller>, "error_type": FOREIGN_SESSION,
+        RECURSIVE_CALL or TOOL_SESSION_UNAVAILABLE}``, for the tool's answer as it is: nothing ran.
+        It raises when the session cannot be read (SessionService.open_for_run) -- a failure, as
+        any other of the call.
+        """
+        caller_session_id = params.get("_session_id")
+        if not caller_session_id:
+            return None, None
+        session_id = tool_session_id(caller_session_id, self.name)
+        if request_id is None:
+            request_id = params.get("request_id") or params.get("_request_id")
+        task = params.get("task") or params.get("query") or params.get("prompt") or ""
+        return session_id, await self._open_tool_session(
+            request_id, caller_session_id, session_id, caller_agent=params.get("_agent_name"), title=str(task))
+
+    async def _open_tool_session(self, request_id: Optional[str], caller_session_id: str, session_id: str, *,
+                                 caller_agent: Optional[str] = None, title: str = "") -> Optional[dict[str, str]]:
+        """Ready the sub-session this agent runs on when called as a tool (tool_session_id); why not
+        (tool_session's refusal), or None.
+
+        Refused first when this agent runs above the call already (RECURSIVE_CALL): it would
+        call itself, directly or through other agents called as tools. On its caller's session such a call
+        waited at that session's lock; on a session of its own below it, every level gets a
+        new one, and nothing stopped it (_runs_above).
+
+        Its user is the call's registered owner (the tool user), as a sub-agent
+        manager's sub-session is its caller's. Held in this process since an earlier
+        call, it runs on what the tracker holds -- if it is that user's
+        (_foreign_session). Otherwise a stored one is read back (SessionService.open_for_run,
+        which refuses another user's), and a new one is filed right away (_file_tool_session):
+        a sub-agent manager this agent calls in its first step files its sub-agents in that
+        record, and found none, made one of its own at the top of the session list, with no
+        nesting budget. Filed with the caller's budget or not at all: failing that, the call is
+        refused (TOOL_SESSION_UNAVAILABLE), and a caller's session of another user refuses it
+        (FOREIGN_SESSION). A throwaway one (below a throwaway caller) is never saved.
+
+        One this process deleted (SessionManager.is_deleted: the person deleted it, DELETE
+        /sessions/<id>) is forgotten and made afresh -- its id is the same for every call in the
+        caller's session, and tombstoned, it was never stored again: with a caller's budget no call
+        ran any more. The copy in the tracker goes with it, and the delete's tombstone, when no run
+        has the session (while one does, the delete stands, and that run is refused its saves;
+        _forget_deleted). One opening of a session at a time (_opening_of). Either way
+        the metadata names the caller's session and agent as its parent: it leaves this
+        agent's tracker when the caller's session leaves the caller's
+        (SessionTracker.discard_session), and the calls below it find the chain above them
+        (session_chain). Held already, it is named again -- a session read back meanwhile
+        (SessionService.load_and_restore_session) got metadata without it -- and by the agent
+        that calls now.
+        """
+        above = self._runs_above(caller_session_id)
+        if above:
+            logger.warning("[%s] call from session %s refused: it runs above it, in session %s",
+                           self.name, caller_session_id, above)
+            return {"error": f"{self.name} is running above this call already (in session {above}): an agent "
+                             f"does not call itself, directly or through other agents called as tools",
+                    "error_type": RECURSIVE_CALL}
+        # One opening of the session at a time: two calls of the caller's session at once (parallel tool
+        # calls) both find it new. The second found the first's half-opened copy in the tracker -- no parent,
+        # not filed yet -- ran on it, and its save made the record without the caller's budget, before the
+        # first's filing met "already exists". Waited for, it finds the session held, filed and named.
+        async with self._opening_of(session_id):
+            return await self._ready_tool_session(request_id, caller_session_id, session_id,
+                                                  caller_agent=caller_agent, title=title)
+
+    @contextlib.asynccontextmanager
+    async def _opening_of(self, session_id: str):
+        """The lock one opening of a tool session holds (_open_tool_session); kept while anybody holds or waits
+        for it, so nothing grows with the sessions of the process."""
+        openings = self._tool_session_openings
+        entry = openings.setdefault(session_id, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if not entry[1]:
+                openings.pop(session_id, None)
+
+    async def _ready_tool_session(self, request_id: Optional[str], caller_session_id: str, session_id: str, *,
+                                  caller_agent: Optional[str], title: str) -> Optional[dict[str, str]]:
+        """_open_tool_session, one opening of the session at a time."""
+        from ...core.request_context import get_request_user
+        from ...services.session_manager import SessionPermissionError
+        from ...services.session_service import is_ephemeral_session
+
+        tracker = self._session_tracker
+        service = getattr(self, "_session_service", None)
+        sessions = getattr(service, "session_manager", None) if service is not None else None
+        if sessions is not None and sessions.is_deleted(session_id) is True:
+            await self._forget_deleted(service, sessions, session_id)
+        parent = {"parent_session_id": caller_session_id}
+        if caller_agent:
+            parent["parent_agent"] = caller_agent
+        held = tracker.get_session_metadata(session_id)
+        if held:
+            foreign = self._foreign_session(request_id, session_id)
+            if foreign:
+                return {"error": foreign, "error_type": FOREIGN_SESSION}
+            tracker.set_session_metadata(session_id, {**held, **parent})
+            return None
+        owner = (get_request_user(str(request_id), default=None) if request_id else None) or "anonymous"
+        profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
+        if sessions is not None:
+            try:
+                exists = await service.open_for_run(self, owner, session_id, profile)
+            except SessionPermissionError:
+                return {"error": f"Session {session_id} belongs to another user", "error_type": FOREIGN_SESSION}
+            if not exists and not is_ephemeral_session(session_id):
+                try:
+                    await self._file_tool_session(sessions, owner, caller_session_id, session_id, profile, title)
+                except BaseException as exc:
+                    # Opened in the tracker, it would be the next call's to run on -- unfiled, without the budget
+                    # (discard_session leaves one a run has, until it lets go)
+                    tracker.discard_session(session_id)
+                    if isinstance(exc, SessionPermissionError):
+                        return {"error": str(exc), "error_type": FOREIGN_SESSION}
+                    if isinstance(exc, _ToolSessionUnavailable):
+                        return {"error": str(exc), "error_type": TOOL_SESSION_UNAVAILABLE}
+                    raise
+        tracker.set_session_metadata(session_id, {
+            "user_id": owner, "agent_name": self.name, "llm_profile": profile,
+            "parent_session_id": caller_session_id, "parent_agent": caller_agent})
+        return None
+
+    async def _forget_deleted(self, service: Any, sessions: Any, session_id: str) -> None:
+        """A tool session this process deleted, forgotten (_open_tool_session): the tracker's copy goes, and the
+        delete's tombstone -- unless a run has it. Under the session's save lock (SessionService.save_lock), the
+        one the saves no run lock covers take -- the API's save after a run, a compaction's: one that read the
+        deleted history before the delete writes it now, into the tombstone, or after, into nothing."""
+        from .components.session_tracking import a_run_has
+
+        save_lock = getattr(service, "save_lock", None)
+        async with (save_lock(session_id) if save_lock is not None else contextlib.nullcontext()):
+            if sessions.is_deleted(session_id) is True and not a_run_has(session_id):
+                self._session_tracker.discard_session(session_id)
+                sessions.lift_tombstone(session_id)
+
+    def _runs_above(self, caller_session_id: str) -> Optional[str]:
+        """The session above a tool call from *caller_session_id* -- that one or one of the sessions it runs
+        below (session_chain) -- that a run of this agent has right now (SessionTracker.run_has), or None.
+
+        Who runs, not who called: a session's metadata names the agent that called it there last
+        (``parent_agent``), which need not run now -- nor is a caller that injects no ``_agent_name`` named at
+        all. The run's lock says who runs, and it is what refused such a call when it ran on its caller's
+        session. Not any holder of the lock: an append or an opening that writes such a session is no run of
+        this agent, and the call is none to itself."""
+        from .components.session_tracking import session_chain
+
+        tracker = self._session_tracker
+        return next((session_id for session_id in session_chain(caller_session_id)
+                     if tracker.run_has(session_id)), None)
+
+    async def _file_tool_session(self, sessions: Any, owner: str, caller_session_id: str, session_id: str,
+                                 profile: str, title: str) -> None:
+        """The record of a new tool session, before its run: below the caller's session (hidden from the
+        session list, never woken -- a sub-agent's session), and at the caller's place in a sub-agent
+        tree. Its nesting budget is the caller's own, not one level less: the agent ran on the caller's
+        session before, where a sub-agent manager it called counted from the caller -- so a strict manager
+        above keeps bounding the whole subtree across the hop (SubAgentManager._create_sub_session).
+        ``depth`` is one more, for where it is shown.
+
+        Written once, with the budget (create_session). Without it -- the caller has none (a new session,
+        one at the top) -- this is best effort: the run's first save files it below the caller as well.
+        With one it is not: a record made later (by that save, or by a sub-agent manager that finds no
+        parent) has no budget, and a manager below counted from its own maximum. So when the caller's
+        budget cannot be read, or the record cannot be written with it, this raises
+        (_ToolSessionUnavailable), and the call does not run (TOOL_SESSION_UNAVAILABLE)."""
+        from ...services.session_manager import SessionNotFoundError, SessionPermissionError
+
+        try:
+            caller = await sessions.load_session(owner, caller_session_id)
+        except SessionNotFoundError:  # no stored caller (a new one): no tree above to count from
+            caller = {}
+        except SessionPermissionError as exc:  # another user's: _open_tool_session refuses the call as such
+            raise SessionPermissionError(f"Session {caller_session_id} belongs to another user") from exc
+        except Exception as exc:
+            raise _ToolSessionUnavailable(f"the sub-agent budget of session {caller_session_id} could not be "
+                                          f"read, and {self.name} does not run without it: {exc}") from exc
+        depth, budget = caller.get("depth"), caller.get("depth_budget")
+        place: dict[str, int] = {}
+        if isinstance(depth, int) or isinstance(budget, int):
+            place["depth"] = (depth if isinstance(depth, int) else 1) + 1
+            if isinstance(budget, int):
+                place["depth_budget"] = budget
+        try:
+            await sessions.create_session(
+                user_id=owner, session_id=session_id, title=(title or self.name)[:50], agent_name=self.name,
+                llm_profile=profile, parent_session_id=caller_session_id, **place)
+            return
+        except ValueError as exc:
+            if "already exists" in str(exc):
+                # Made meanwhile -- by a run of another process, say. Without the budget it is not this
+                # call's to run on either.
+                await self._budget_on_record(sessions, owner, session_id, place)
+                return
+            failure: Exception = exc
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            failure = exc
+        if "depth_budget" in place:
+            raise _ToolSessionUnavailable(f"the session of {self.name} below {caller_session_id} could not be "
+                                          f"stored with its caller's sub-agent budget, and it does not run "
+                                          f"without it: {failure}") from failure
+        logger.warning("[%s] tool session %s could not be filed: %s", self.name, session_id, failure)
+
+    async def _budget_on_record(self, sessions: Any, owner: str, session_id: str, place: dict[str, int]) -> None:
+        """A tool session's record found made meanwhile (_file_tool_session): with the caller's budget on it.
+        Written when it lacks it -- only the two keys (SessionManager.set_session_place), in turn with the
+        session's saves (SessionService.save_lock): a whole record written back took with it what a save wrote
+        since it was read. When it cannot be read or written, the call does not run (_ToolSessionUnavailable), as
+        when the filing failed. Another user's record refuses it (SessionPermissionError)."""
+        from ...services.session_manager import SessionPermissionError
+
+        if "depth_budget" not in place:
+            return
+        service = getattr(self, "_session_service", None)
+        save_lock = getattr(service, "save_lock", None) if service is not None else None
+        async with (save_lock(session_id) if save_lock is not None else contextlib.nullcontext()):
+            try:
+                record = await sessions.load_session(owner, session_id)
+            except SessionPermissionError as exc:
+                raise SessionPermissionError(f"Session {session_id} belongs to another user") from exc
+            except Exception as exc:
+                raise _ToolSessionUnavailable(f"the session of {self.name} ({session_id}) could not be read for "
+                                              f"its caller's sub-agent budget, and it does not run without it: "
+                                              f"{exc}") from exc
+            if all(record.get(key) == value for key, value in place.items()):
+                return
+            try:
+                await sessions.set_session_place(owner, session_id, **place)
+            except Exception as exc:
+                raise _ToolSessionUnavailable(f"the session of {self.name} ({session_id}) could not be stored with "
+                                              f"its caller's sub-agent budget, and it does not run without it: "
+                                              f"{exc}") from exc
+
+    def _foreign_session(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not go on in *session_id*: this agent holds it for another user.
+
+        The metadata below is written only where none is, so a session this agent
+        already holds keeps its user -- and its conversation. An agent called as a
+        tool runs on a sub-session derived from its caller's (tool_session_id); a second
+        user's run that reaches
+        the same id would continue the first user's conversation, and its lock,
+        checkpoints and saves go to the first user's session (they read the stored
+        user, and a session already on disk is saved into the folder it is in).
+        Refused whenever the run's registered owner and the stored user differ --
+        an admin's run too, and "anonymous" as the stored user too: POST /run
+        refuses another user's session the same way, whether auth is on or off
+        (SessionManager.load_session). The API, the SAM and the stategraph
+        backend write the owner into the metadata right before the run; an agent
+        called as a tool writes it here from its request, which Agent.call
+        registers for the injected ``_user_id`` where the caller registered none
+        (a plugin command) -- without that, such a call stored
+        "anonymous" and the same user's next call was refused as another user.
+        So this refuses a session id that reached the run for somebody else.
+        """
+        if not request_id or not session_id:
+            return None
+        from ...core.request_context import get_request_user
+        owner = get_request_user(request_id, default=None)
+        tracker = getattr(self, "_session_tracker", None)
+        stored = (tracker.get_session_metadata(session_id) or {}) if tracker is not None else {}
+        holder = stored.get("user_id")
+        if not owner or not holder or holder == owner:
+            return None
+        logger.warning("[%s] run of %r refused: session %s is held for %r", self.name, owner, session_id, holder)
+        return f"Session {session_id} belongs to another user"
+
+    def _create_loop_detector(self) -> ToolCallLoopDetector:
+        """Create a fresh loop detector for a single request.
+
+        Each request gets its own detector so concurrent requests don't
+        interfere, and previous-request history doesn't leak into new requests.
+        """
+        return ToolCallLoopDetector(**self._loop_detection_config)
+
+    def _create_stuck_escalator(self, *, already_advanced: bool) -> StuckEscalator:
+        """Per-request escalator (window + budget state must not leak across
+        requests on this shared Agent singleton). Disabled — a no-op — when the
+        config flag is off, no advanced profile exists, or the run is already on
+        the advanced model (nothing to escalate to)."""
+        cfg = self.agent_config
+        # Gleichheits-Guard spiegelt _get_escalation_llm: advanced == default
+        # kann keinen anderen Client bauen — Escalator wäre ein toter Trigger.
+        has_advanced = bool(
+            cfg and cfg.advanced_llm_profile
+            and cfg.advanced_llm_profile != cfg.default_llm_profile)
+        enabled = bool(
+            cfg and getattr(cfg, "auto_escalate_on_stuck", False)
+            and has_advanced and not already_advanced)
+        return StuckEscalator(
+            enabled=enabled,
+            rounds=int(getattr(cfg, "escalate_rounds", 2)) if cfg else 0,
+            max_calls=int(getattr(cfg, "escalate_max_calls", 6)) if cfg else 0,
+        )
+
+    @staticmethod
+    def _tool_message_is_error(message: "ChatMessage") -> bool:
+        """Whether a tool-result message reports a failure. Mirrors the two
+        error shapes tools use: {"status":"error",...} and a bare {"error":...}
+        (no status). Non-JSON / non-dict content is treated as non-error."""
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not content:
+            return False
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return False
+        return tool_result_is_error(data)
+
+    def llm_for_session(self, session_id: Optional[str]) -> Optional[LLMClient]:
+        """The client answering the session's running step, else the agent's own.
+
+        For tools that size the context themselves: agent.llm is the configured
+        model, not the fallback, escalation or override that answers.
+        """
+        return self._step_llms.get(session_id) if session_id in self._step_llms else self.llm
+
+    def _get_escalation_llm(self) -> Optional[LLMClient]:
+        """The advanced-profile LLM client used for auto-escalation, built once
+        and cached (same profile use_advanced_model picks: the last, most
+        capable, of llm_profile). Hooks are wired so cost/debugger tracking
+        captures escalated calls too. Returns None if it cannot be built.
+
+        Only a SUCCESSFUL client is cached: a transient build failure is not
+        remembered on this process-wide singleton, so a later run can retry
+        (within a run, the caller disables the escalator on None to avoid
+        re-attempting every step)."""
+        cached = getattr(self, "_escalation_llm_cached", None)
+        if cached is not None:
+            return cached
+        try:
+            advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
+            if not advanced_profile or advanced_profile == self.agent_config.default_llm_profile:
+                return None
+            from ...llm.factory import override_for_profile
+            client, _ = override_for_profile(self.system_config, self.agent_config, advanced_profile)
+            if hasattr(client, "set_app_title"):
+                client.set_app_title(self.name)
+            if self._hook_manager:
+                self._hook_manager.wire_llm_hooks(client)
+            logger.info("[%s] built escalation (advanced) LLM: %s",
+                        self.name, advanced_profile)
+            self._escalation_llm_cached = client
+            return client
+        except Exception as e:
+            logger.warning("[%s] could not build escalation LLM: %s", self.name, e)
+            return None
+
+    def _llm_from_caller(self) -> Optional[tuple[LLMClient, str]]:
+        """(client, profile info) for a run on the caller's LLM, else None.
+
+        Only for an agent that asks for it (agent_config.inherit_parent_llm) and
+        only when the calling run was switched to a profile (llm/caller_llm.py).
+        Built like any override: the agent keeps its own llm_params for the
+        profile, its own chain stays the fallback. A profile this config does
+        not know leaves the agent on its own chain, with a warning -- a caller
+        on a model the sub-agent cannot run must not cost the call.
+        """
+        if not (self.agent_config and self.agent_config.inherit_parent_llm):
+            return None
+        from ...llm.caller_llm import caller_llm_profile
+        profile = caller_llm_profile()
+        if not profile:
+            return None
+        try:
+            from ...llm.factory import override_for_profile
+            client, label = override_for_profile(self.system_config, self.agent_config, profile)
+        except Exception as e:
+            logger.warning("[%s] cannot run on the caller's LLM profile %r, runs its own: %s",
+                           self.name, profile, e)
+            return None
+        logger.info("[%s] runs on the caller's LLM profile %s", self.name, profile)
+        return client, f"{label} (from caller)"
+
+    def _profile_to_hand_down(self, llm_override: Optional[LLMClient]) -> Optional[str]:
+        """The profile this run hands to the sub-agents its tools start: the one
+        it was switched to, else None. An override on the agent's own primary
+        profile (--llm-params alone, a web pick of the same profile) switched
+        nothing -- unless the run followed its caller onto it: that switch came
+        from above and goes on down.
+        """
+        from ...llm.caller_llm import caller_llm_profile
+        profile = getattr(llm_override, "profile_name", None)
+        if (profile and self.agent_config and profile == self.agent_config.default_llm_profile
+                and profile != caller_llm_profile()):
+            return None
+        return profile
 
     def _extract_profile_info(self, config, agent_name: str, llm_kwargs: dict) -> str:
         """Extract profile information for status display."""
@@ -296,7 +1149,7 @@ class Agent(MCPServer):
             return f"{profile_name}:{provider}/{model}"
         return f"{provider}/{model}"
 
-    def _create_fallback_llm(self, fallback_profile: str) -> Optional[Any]:
+    def _create_fallback_llm(self, fallback_profile: str) -> Optional[LLMClient]:
         """Create an LLM client for a fallback profile.
         
         Args:
@@ -307,19 +1160,107 @@ class Agent(MCPServer):
         """
         try:
             from ...llm.factory import create_llm_from_profile
-            
-            ssl_verify = getattr(self.system_config, "network").ssl_verify if getattr(self.system_config, "network", None) else None
-            
+
+            # Fallbacks laufen mit DERSELBEN llm_params-Semantik wie das
+            # Primaermodell — create_llm_from_profile loest die profil-
+            # gekeyten Params selbst auf ("*"/flat fuer die ganze Kette,
+            # exakter Eintrag gewinnt). Keine Sonderbehandlung hier.
             fallback_llm = create_llm_from_profile(
                 config=self.system_config,
                 llm_profile=fallback_profile,
-                ssl_verify=ssl_verify,
+                llm_params=self.agent_config.llm_params if self.agent_config else None,
             )
+            fallback_llm.set_app_title(self.name)
+            # Mirror init/llm_override: wire hooks so debugger + cost tracking
+            # capture pre_llm_request / post_llm_response on fallback calls too.
+            # Without this, every fallback round-trip is silently unrecorded.
+            if self._hook_manager:
+                self._hook_manager.wire_llm_hooks(fallback_llm)
             logger.info(f"[{self.name}] Created fallback LLM for profile: {fallback_profile}")
             return fallback_llm
         except Exception as e:
             logger.warning(f"[{self.name}] Failed to create fallback LLM for profile '{fallback_profile}': {e}")
             return None
+
+    def _fallback_client(self, profile: str) -> Optional[LLMClient]:
+        """The client of a fallback profile, built on first use and kept: a step
+        that walks around a blocked LLM would otherwise build one per step. A
+        profile that did not build is tried again next time."""
+        client = self._fallback_clients.get(profile)
+        if client is None:
+            client = self._create_fallback_llm(profile)
+            if client is not None:
+                self._fallback_clients[profile] = client
+        return client
+
+    def _strip_for_switch(self, profile: str, messages: List[ChatMessage]) -> None:
+        """Strip every provider reasoning artifact before the call goes to
+        another model: encrypted reasoning items / thought signatures are bound
+        to the model that produced them — round-tripping them into a DIFFERENT
+        model is useless at best and a hard 400 at worst. For the new model
+        this is simply a fresh start."""
+        stripped = strip_all_reasoning_artifacts(messages)
+        if stripped:
+            logger.info(
+                f"[{self.name}] Stripped reasoning artifacts from {stripped} "
+                f"message(s) on model switch to {profile}"
+            )
+
+    async def _save_session_to_disk(self, session_id: str) -> bool:
+        """Persist a session to disk via SessionService (no-op without service
+        or metadata). Shared by the turn-persistence helper and the
+        compacted-messages branch in _finalize_request. Returns whether the
+        session file was written: what a request carried only counts as
+        delivered once it is (see _finalize_request)."""
+        if not self._session_service:
+            logger.debug("No session_service available, skipping disk save")
+            return False
+        session_meta = self._session_tracker.get_session_metadata(session_id)
+        if not session_meta:
+            logger.warning(f"No session metadata found for {session_id}, skipping disk save")
+            return False
+        written = await self._session_service.save_session(
+            agent=self,
+            user_id=session_meta.get("user_id", "anonymous"),
+            session_id=session_id,
+            agent_name=session_meta.get("agent_name", self.name),
+            llm_profile=session_meta.get("llm_profile", self.agent_config.default_llm_profile),
+            was_new_session=False  # Always update for intermediate/final saves
+        )
+        logger.debug(f"Saved session {session_id} to disk")
+        return bool(written)
+
+    async def _persist_conversation(self, session_id: str, messages: List[ChatMessage],
+                                    *, to_disk: bool, note: str) -> bool:
+        """Persist the conversation (non-system messages) to the in-memory
+        tracker and optionally to disk — THE single implementation of the
+        'filter system → set_session_messages → save_session' sequence that was
+        copied at three points of the request lifecycle (after LLM response,
+        after a completed tool turn, at request finalization). Never raises:
+        persistence failures must not kill a running request -- it returns
+        whether the session file was written instead, for callers that must not
+        promise what the disk did not take."""
+        from .components.hook_integration import is_compaction_system_message
+        try:
+            # System messages are rebuilt from config each turn and must not be
+            # persisted — EXCEPT the ones that are compacted conversation
+            # (archive pointers, the prune breadcrumb). Dropping those loses
+            # conversation state for good: the content is in a store, but
+            # nothing left in the session says it exists.
+            # Volatile developer notes are dropped one level down, by
+            # set_session_messages: five places write session messages and this
+            # is only one of them.
+            conversation_msgs = [
+                msg for msg in messages
+                if msg.role != "system" or is_compaction_system_message(msg)
+            ]
+            self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
+            logger.debug(f"Persisted session {session_id} ({note}) with {len(conversation_msgs)} messages")
+            if to_disk:
+                return await self._save_session_to_disk(session_id)
+        except Exception as e:
+            logger.warning(f"Failed to persist session {session_id} ({note}): {e}", exc_info=True)
+        return False
 
     async def next_internal_tool_request_id(self, base_request_id: str) -> str:
         """Return the next internal tool request id with a 3-digit suffix.
@@ -334,7 +1275,7 @@ class Agent(MCPServer):
     # ------------------------------------------------------------------
     # Unified Server Resolution (Central Method)
     # ------------------------------------------------------------------
-    def _get_server_from_any_registry(self, server_name: str) -> Optional[MCPServer]:
+    def _get_server_from_any_registry(self, server_name: str) -> Optional[ToolServer]:
         """Get a server from either plugin_registry or self.registry.
 
         This is the CENTRAL method for resolving servers. All code that needs to
@@ -345,30 +1286,221 @@ class Agent(MCPServer):
         2. plugin_registry (fallback for plugin adapters)
 
         Args:
-            server_name: Name of the server to find (e.g., 'basic_operations', 'meta_web_research_agent')
+            server_name: Name of the server to find (e.g., 'basic_operations', 'research_agent')
 
         Returns:
             The server instance or None if not found
         """
-        # First, try local registry (contains all servers)
-        if hasattr(self, 'registry') and self.registry:
-            try:
-                server = self.registry.get(server_name)
-                if server:
-                    return server
-            except Exception as e:
-                logger.debug(f"Failed to get server '{server_name}' from local registry: {e}")
+        registry = self.registry if hasattr(self, 'registry') else None
+        return resolve_registry_server(registry, self._tool_integration_manager, server_name)
 
-        # Fallback: try plugin registry (for plugin adapters)
-        if self._mcp_integration_manager.mcp_integration and self._mcp_integration_manager.mcp_integration.initialized:
-            try:
-                plugin_adapter = self._mcp_integration_manager.mcp_integration.plugin_registry.get_server(server_name)
-                if plugin_adapter and hasattr(plugin_adapter, 'plugin_server'):
-                    return plugin_adapter.plugin_server
-            except Exception as e:
-                logger.debug(f"Failed to get server '{server_name}' from plugin registry: {e}")
+    # ------------------------------------------------------------------
+    # Programmatic tool dispatch (used by tool_script and other in-process
+    # callers that execute tools on the agent's behalf)
+    # ------------------------------------------------------------------
 
+    def _resolve_flat_tool_name(self, tool_name: str):
+        """Resolve a flat tool name (e.g. 'v6_json_manage_json') to
+        (server, server_name). Returns (None, None) if nothing matches.
+
+        Order: exact server-name match (config agents / single-name servers),
+        then longest-prefix match over '_'-joined segments (plugin tools), then
+        the agent's own-tool prefix — mirroring ToolExecutionManager's paths.
+        """
+        server = self._get_server_from_any_registry(tool_name)
+        if server:
+            return server, tool_name
+        server, candidate = resolve_longest_prefix(
+            self._get_server_from_any_registry, tool_name)
+        if server:
+            return server, candidate
+        if tool_name.startswith(f"{self.name}_"):
+            return self, self.name
+        return None, None
+
+    def tool_dispatch_denial(self, tool_name: str, server_name: str) -> Optional[str]:
+        """Why this agent may not dispatch *tool_name*, or None if it may.
+
+        ONE definition of "may call", asked by two callers: ``dispatch_tool_call``
+        raises it, and the chat's plugin commands ask it before LISTING a
+        command, so /help never offers something that can only answer with a
+        refusal. A second, drifting copy of these patterns is how a UI starts
+        promising more than the agent has.
+
+        Full fidelity to schema build: allowed first, then blocked, both matched
+        on the same server/tool path by the SAME matcher schema build uses. No
+        allowlist configured -> deny (schema build shows zero tools in that case
+        too).
+        """
+        from .tool_schema_builder import tool_matches_patterns
+
+        tools_config = getattr(self.agent_config, "tools", None) if getattr(
+            self, "agent_config", None) else None
+        allowed_patterns = list(getattr(tools_config, "allowed", None) or [])
+        blocked_patterns = list(getattr(tools_config, "blocked", None) or [])
+        if not allowed_patterns or not tool_matches_patterns(
+                tool_name, server_name, allowed_patterns):
+            return f"Tool '{tool_name}' is not in this agent's allowed tools."
+        if blocked_patterns and tool_matches_patterns(
+                tool_name, server_name, blocked_patterns):
+            return f"Tool '{tool_name}' is blocked for this agent."
         return None
+
+    async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
+                                 session_id: Optional[str] = None,
+                                 user_id: Optional[str] = None,
+                                 request_id: Optional[str] = None,
+                                 hook_source: Optional[str] = None,
+                                 cancellation_token: Optional[Any] = None,
+                                 injected_params: Optional[Dict[str, Any]] = None) -> Any:
+        """Execute one tool call programmatically with THIS agent's authorization.
+
+        The in-process counterpart of the LLM tool path: same server resolution,
+        same allowed/blocked pattern semantics as schema build (shared matcher
+        ``tool_matches_patterns`` — what the LLM cannot see cannot be dispatched,
+        in both directions), same runtime-param injection (shared
+        ``inject_runtime_params``), same call_with_status/call dispatch.
+
+        Used by the tool_script plugin ("scripted tool chains"); any future
+        in-process caller (hooks, schedulers) should go through here as well.
+
+        ``hook_source`` names a caller that acts for the model -- tool_script
+        runs a script the model wrote. Given, the pre_tool_call and
+        post_tool_call hooks fire as for the model's own calls, with
+        ``tool_call["source"] = hook_source``: a call the hooks would stop
+        must not get past them inside a script. None (the default) fires
+        none: the caller is the framework or a person (slash commands,
+        preloads, state machines), not the model. ``cancellation_token`` is
+        the caller's; the hooks get it, so one that waits stops on a cancel.
+        With a hook_source, a tool that raises is handed on the way the model's
+        own loop hands a failure on: as an error result
+        (``{"status": "error", ...}``), which passes the post_tool_call hooks
+        -- a redacting hook sees a failure's text too.
+
+        ``injected_params`` are values the caller's configuration adds
+        (tool_script's ``inject_params``: secrets the model never wrote). They
+        are merged after the pre_tool_call hooks, over what those left, and no
+        hook sees them -- a hook that logs a call or shows it to a person must
+        not expose them.
+
+        Raises ToolDispatchError with an agent-actionable message for unknown
+        tools, unsupported tool types, authorization failures and calls a
+        pre_tool_call hook blocked. Tool-level errors are returned as the tool's
+        normal result (callers interpret the status convention themselves).
+        """
+        from ...hooks.plugin_hook import HookType
+        from .components.tool_execution import (
+            ToolDispatchError, drop_runtime_params, inject_runtime_params)
+
+        # External tools (dotted names) take a different execution branch
+        # (MCP client sessions) that programmatic dispatch does not replicate.
+        if "." in tool_name:
+            raise ToolDispatchError(
+                f"Tool '{tool_name}' is an external MCP tool — not supported in "
+                f"programmatic dispatch (v1). Call it directly instead.")
+
+        server, server_name = self._resolve_flat_tool_name(tool_name)
+        if server is None:
+            raise ToolDispatchError(
+                f"Unknown tool: '{tool_name}'. Use the exact tool name from your "
+                f"tool list.")
+
+        denial = self.tool_dispatch_denial(tool_name, server_name)
+        if denial is not None:
+            raise ToolDispatchError(denial)
+
+        # SECURITY: strip caller-supplied runtime params BEFORE injecting the
+        # real ones — same guarantee the LLM tool path gives. This path is
+        # driven by tool_script, whose call_tool forwards script-authored params
+        # verbatim; a script could otherwise pass _session_id to impersonate
+        # another agent and defeat json_store's owner-based write protection.
+        # request_id/requestId likewise: status and cancellation route by them.
+        params, forged = drop_runtime_params(params)
+        if forged:
+            logger.warning(
+                "Dropping caller-supplied runtime param(s) %s from programmatic "
+                "dispatch of %s", forged, tool_name)
+
+        hooks = getattr(self, "_hook_manager", None) if hook_source else None
+        tool_call = {"id": None, "name": tool_name, "server": server_name,
+                     "arguments": params, "source": hook_source}
+        if hooks is not None and hooks.wants_hooks(HookType.PRE_TOOL_CALL):
+            params, block = await hooks.execute_pre_tool_hooks(
+                tool_call, step=0, request_id=request_id or "", session_id=session_id or "",
+                cancellation_token=cancellation_token)
+            # The loop's own calls check the run's token right before they
+            # start; a script call must too -- a hook that waited for a person
+            # returns (or fails) on the cancel, and the call must not run then.
+            if cancellation_token is not None and getattr(cancellation_token, "is_cancelled", False):
+                raise ToolDispatchError("Request cancelled — the call did not run.")
+            if block is not None:
+                raise ToolDispatchError(block)
+            tool_call = {**tool_call, "arguments": params}
+        if injected_params:
+            extra, dropped = drop_runtime_params(dict(injected_params))
+            if dropped:
+                logger.warning("Dropping runtime param(s) %s injected into programmatic "
+                               "dispatch of %s", dropped, tool_name)
+            params = {**params, **extra}
+
+        params = inject_runtime_params(
+            params, session_id=session_id, user_id=user_id,
+            request_id=request_id, agent=self)
+        if request_id:
+            params["request_id"] = params["requestId"] = request_id
+
+        logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
+                    tool_name, self.name)
+        started_at = time.time()
+        try:
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(tool_name, params)
+            else:
+                result = await server.call(tool_name, params)
+        except Exception as exc:
+            if hook_source is None:
+                raise
+            logger.exception("Tool %s failed via programmatic dispatch", tool_name)
+            result = {"status": "error", "error": f"Tool '{tool_name}' execution failed: {exc}",
+                      "type": type(exc).__name__}
+        finished_at = time.time()
+        logger.info("Tool %s returned (programmatic dispatch): %s",
+                    tool_name, str(result)[:500])
+        if hooks is not None and hooks.wants_hooks(HookType.POST_TOOL_CALL):
+            try:
+                result = await hooks.execute_post_tool_hooks(
+                    tool_call, result, step=0, request_id=request_id or "", session_id=session_id or "",
+                    cancellation_token=cancellation_token, started_at=started_at, finished_at=finished_at)
+            except Exception:
+                # The call ran; raising now would report a done job as failed.
+                logger.exception("post_tool_call hooks failed for %s; the result stays as "
+                                 "the tool returned it", tool_name)
+
+        # A tool may stage a rewritten history via set_compacted_messages
+        # (the summarizer's manual path does). During a run the request's own
+        # machinery consumes that staging (the rebuild after tool execution /
+        # _finalize_request) -- but a direct dispatch with no active request
+        # (chat slash commands, web buttons) has no finalize: the staging sat
+        # stale, /stats kept showing the old history, and the NEXT turn's
+        # selection either discarded it or rebuilt the history around it.
+        # Apply it here instead. "A request owns the session" == session lock
+        # held; in-run dispatch (tool_script) therefore never takes this
+        # branch. The live entry is refreshed too -- it outlives the previous
+        # turn and is what stats-style readers see first.
+        tracker = getattr(self, "_session_tracker", None)
+        if session_id and tracker is not None:
+            compacted = tracker.get_compacted_messages(session_id)
+            if compacted is not None and not tracker.check_session_locked(session_id)[0]:
+                tracker.set_session_messages(session_id, compacted)
+                tracker.clear_compacted_messages(session_id)
+                self._set_live_messages(session_id, compacted)
+                try:
+                    await self._save_session_to_disk(session_id)
+                except Exception:
+                    logger.warning(
+                        "Compacted history for %s applied in memory but the "
+                        "disk save failed", session_id, exc_info=True)
+        return result
 
     # ------------------------------------------------------------------
     # Prompt customization hook
@@ -388,6 +1520,133 @@ class Agent(MCPServer):
             The custom system prompt string or None to fall back to config logic.
         """
         return None
+
+    #: Agents with fewer allowed steps get no step-budget note: a judge or
+    #: extractor that answers in one call would read "finish now" as part of
+    #: its task.
+    _STEP_BUDGET_NOTE_MIN_STEPS = 5
+    #: The note rides on this many of the last steps.
+    _STEP_BUDGET_NOTE_LAST_STEPS = 2
+
+    @staticmethod
+    def _structured_output_note(text: str, marker: str) -> ChatMessage:
+        """What the run tells a model about its structured answer: the format (to a model that
+        does not get it as a field), or what is wrong with the answer it gave. The RUN speaks, as
+        for the step budget, and injected_by keeps it from counting as a turn."""
+        return ChatMessage(role=DEVELOPER, content=text, timestamp=datetime.now(timezone.utc),
+                           injected_by=marker)
+
+    @staticmethod
+    async def _check_structured_answer(content: str, response_format: ResponseFormat, request_id: str) -> Any:
+        """The answer's check, in the schema worker's process under its deadline (structured_output.
+        check_answer), in the lane of the run's user: the schema is the caller's, and this process never
+        runs jsonschema or regex on it."""
+        from ...core.request_context import get_request_user
+
+        return await check_answer(content, response_format, owner=get_request_user(request_id))
+
+    @staticmethod
+    def _structured_output_unavailable(checked: Any) -> dict:
+        """The error event of a run whose answer the checker could not look at (busy, broken): no verdict."""
+        return {"type": "error", "error_type": STRUCTURED_OUTPUT_UNAVAILABLE,
+                "message": "Structured output: the answer could not be checked, the checker is not available: "
+                           + "; ".join(checked.errors)}
+
+    @staticmethod
+    def _structured_output_failure(errors: List[str], *, corrected: bool) -> str:
+        when = " after one correction" if corrected else ""
+        return (f"Structured output: the final answer does not match the requested format{when}: "
+                + "; ".join(errors))
+
+    @staticmethod
+    def _output_cap_note(completion_tokens: Optional[int]) -> ChatMessage:
+        """What the run tells a model whose answer the output cap cut off.
+
+        The RUN speaks (developer), as for the step budget: a person did not
+        write this, and injected_by keeps it from counting as a turn.
+        """
+        at = f" ({completion_tokens} tokens)" if completion_tokens else ""
+        return ChatMessage(
+            role=DEVELOPER,
+            content=(f"Your last answer was cut off at the output limit{at}. Everything after the cut is "
+                     "lost, including any tool call you were writing -- nothing of it was executed. Do not "
+                     "send it again in one piece: write a large file in parts (create it, then add section "
+                     "by section), or keep the answer shorter."),
+            timestamp=datetime.now(timezone.utc),
+            injected_by="agent.output_cap",
+        )
+
+    @classmethod
+    def _step_budget_note(cls, step: int, max_steps: int) -> Optional[ChatMessage]:
+        """A note on the steps left, for the last steps of a run; else None.
+
+        The step count used to sit in the system prompt ("Current step: 3/30").
+        That prompt is re-rendered before every step and is the start of the
+        prefix the provider caches, so every call re-billed the conversation
+        behind it. The note goes into the history instead, like a loop
+        intervention: sent only at the tail of one call, it would be missing
+        from the next call's prefix, and a provider that caches at the last
+        message (Anthropic) would find nothing to read back.
+
+        step == max_steps is the final call after the budget, and it gets the
+        max-steps request whatever the budget: it was sent to every agent
+        before that call became a step of its own.
+        """
+        if step >= max_steps:
+            return ChatMessage(
+                role=DEVELOPER,
+                content=(
+                    f"You have reached the maximum number of steps ({max_steps}). "
+                    "Please provide your final answer NOW based on the information you have gathered. "
+                    "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
+                ),
+                timestamp=datetime.now(timezone.utc),
+                injected_by="agent.max_steps",
+            )
+        steps_left = max_steps - (step + 1)
+        if max_steps < cls._STEP_BUDGET_NOTE_MIN_STEPS or steps_left >= cls._STEP_BUDGET_NOTE_LAST_STEPS:
+            return None
+        if steps_left == 0:
+            note = (f"This is step {max_steps} of {max_steps}, the last one. Finish now with what "
+                    f"your task requires, the final answer or the closing tool call, using what "
+                    f"you have, and say what is still missing.")
+        else:
+            note = (f"Step {step + 1} of {max_steps}: {steps_left} step left after this one. "
+                    f"Start wrapping up and do not begin new lines of work.")
+        # Marked: hooks that look for the last message a person wrote (OKF seeds,
+        # scripted follow-ups, tool preloads, compaction) must not take this one.
+        return ChatMessage(role=DEVELOPER, content=note, timestamp=datetime.now(timezone.utc),
+                           injected_by="agent.step_budget")
+
+    # ------------------------------------------------------------------
+    # Pre-LLM Message Selection
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _select_llm_messages(
+        pre_hook_messages: List[ChatMessage],
+        modified_messages: Optional[List[ChatMessage]],
+    ) -> List[ChatMessage]:
+        """Pick the final message list to send to the LLM.
+
+        A hook that wants to change what the model sees returns a NEW list;
+        list identity is the whole signal, and a hook mutating in place is not
+        seen (tool_preload's own comment names this rule). The returned list
+        carries every leading system message — the agent's own plus the ones
+        hooks inject (pinned forum context, restoration hints, sub-agent
+        context) — and the conversation, compacted if a hook compacted it.
+
+        There used to be a second signal here: the ``compacted_messages``
+        marker on the session tracker, rebuilt as ``[leading systems from
+        pre-hook] + compacted``. That reconstruction is wrong whenever a hook
+        injects a system block — it is built from the messages BEFORE the
+        hooks ran, so it drops them; that is how the v5b synopsis moderator
+        once looped 100× on ``context_engineer.recall()``. It was also
+        unreachable: whoever sets that marker inside a hook returns a new list
+        in the same round, and the tool path clears it in its own step.
+        """
+        if modified_messages is not None and modified_messages is not pre_hook_messages:
+            return modified_messages
+        return pre_hook_messages
 
     # ------------------------------------------------------------------
     # Central prompt rendering utilities (using strategy pattern)
@@ -431,14 +1690,32 @@ class Agent(MCPServer):
             max_steps=max_steps,
             current_step=current_step,
             agent_instance=self,  # Pass self for hook access
-            session_template_vars=session_template_vars  # Session-scoped vars (override agent_config)
+            session_template_vars=session_template_vars,  # Session-scoped vars (override agent_config)
+            plugins=self._enabled_plugin_types(),
+            mcp_servers=self._enabled_mcp_servers(),
         )
         return renderer.render(context)
+
+    def _enabled_plugin_types(self) -> list[str]:
+        """Plugin types installed and switched on (see ToolServerRegistry)."""
+        plugin_types = getattr(getattr(self, "registry", None), "plugin_types", None)
+        return plugin_types() if callable(plugin_types) else []
+
+    def _enabled_mcp_servers(self) -> list[str]:
+        """External MCP servers switched on, sorted -- not which are connected:
+        a connection comes and goes, and the prompt must not change with it."""
+        manager = getattr(self, "_tool_integration_manager", None)
+        integration = getattr(manager, "tool_integration", None)
+        if integration is None:
+            return []
+        return sorted(integration.configured_external_servers)
 
     async def get_current_system_prompt(self) -> str:
         """Async: render current system prompt (diagnostics endpoint)."""
         try:
-            usable_tools, _, _ = await self.list_usable_tools()  # Ignore patterns for prompt display
+            # Expanded as the run expands it, or `tools` in the prompt reads
+            # server names here and tool names in every step that is sent.
+            _schemas, usable_tools = await self._schemas_for(*await self.list_usable_tools())
         except Exception as e:
             logger.warning(f"Failed to list usable tools for system prompt: {e}", exc_info=True)
             usable_tools = []
@@ -448,23 +1725,23 @@ class Agent(MCPServer):
 
 
     def _set_agent_reference_in_mcp(self) -> None:
-        """Set agent reference in MCP integration for cancellation support."""
+        """Set agent reference in tool integration for cancellation support."""
         try:
-            # Set agent reference in MCP integration manager
-            self._mcp_integration_manager._agent_ref = self
+            # Set agent reference in tool integration manager
+            self._tool_integration_manager._agent_ref = self
 
-            # Try to set agent reference in MCP integration when it's available
-            if hasattr(self._mcp_integration_manager, 'mcp_integration') and self._mcp_integration_manager.mcp_integration:
-                self._mcp_integration_manager.mcp_integration.main_agent_ref = self
+            # Try to set agent reference in tool integration when it's available
+            if hasattr(self._tool_integration_manager, 'tool_integration') and self._tool_integration_manager.tool_integration:
+                self._tool_integration_manager.tool_integration.main_agent_ref = self
         except Exception as e:
-            logger.debug("Failed to set agent reference in MCP integration: %s", e)
+            logger.debug("Failed to set agent reference in tool integration: %s", e)
 
     @property
     def description(self) -> str:
         """Get the agent description."""
-        # Try to get description from mcp_config
-        if hasattr(self, 'mcp_config') and self.mcp_config:
-            desc = getattr(self.mcp_config, 'description', None)
+        # Try to get description from server_config
+        if hasattr(self, 'server_config') and self.server_config:
+            desc = getattr(self.server_config, 'description', None)
             if desc:
                 return desc
         return f"Agent: {self.name}"
@@ -497,73 +1774,6 @@ class Agent(MCPServer):
         """
         return self._request_manager.is_cancelled(request_id)
     
-    def reset_fallback(self) -> None:
-        """Reset persistent fallback LLM to use original LLM again.
-        
-        Call this when you want to try the original (e.g., batch) LLM again
-        after rate limit/quota was exhausted and fallback was activated.
-        """
-        if self._active_fallback_llm is not None:
-            logger.info(
-                f"[{self.name}] Resetting persistent fallback {self._active_fallback_profile} "
-                f"back to original LLM"
-            )
-            self._active_fallback_llm = None
-            self._active_fallback_profile = None
-            self._fallback_activated_at = None
-            self._jittered_recovery_seconds = None  # Reset jitter for next fallback
-            # Restore original profile info
-            if self.llm_profile_info and ":fallback" in self.llm_profile_info:
-                self.llm_profile_info = self.llm_profile_info.replace(":fallback", "")
-    
-    def _check_fallback_recovery(self) -> bool:
-        """Check if fallback recovery period has elapsed and reset if so.
-        
-        Uses a per-instance jittered recovery time to prevent "thundering herd"
-        where all agents try to recover simultaneously after a shared outage.
-        
-        Returns:
-            True if fallback was reset (should try original LLM)
-            False if still in fallback mode
-        """
-        if self._active_fallback_llm is None or self._fallback_activated_at is None:
-            return False
-        
-        # Use cached jittered value, or compute it once per fallback activation
-        if self._jittered_recovery_seconds is None:
-            import random
-            base_seconds = 3600  # Default 1 hour
-            jitter_percent = 20.0  # Default ±20%
-            if self.agent_config:
-                base_seconds = self.agent_config.fallback_recovery_seconds
-                jitter_percent = self.agent_config.fallback_recovery_jitter_percent
-            
-            # Apply random jitter: base ± (base * jitter_percent/100)
-            jitter_range = base_seconds * (jitter_percent / 100.0)
-            jitter = random.uniform(-jitter_range, jitter_range)
-            self._jittered_recovery_seconds = base_seconds + jitter
-            logger.debug(
-                f"[{self.name}] Fallback recovery jitter: base={base_seconds}s, "
-                f"jitter={jitter:+.1f}s, effective={self._jittered_recovery_seconds:.1f}s"
-            )
-        
-        import time
-        elapsed = time.time() - self._fallback_activated_at
-        if elapsed >= self._jittered_recovery_seconds:
-            logger.info(
-                f"[{self.name}] Fallback recovery period ({self._jittered_recovery_seconds:.0f}s) elapsed. "
-                f"Trying original LLM again after {int(elapsed)}s in fallback mode."
-            )
-            self.reset_fallback()
-            return True
-        
-        remaining = int(self._jittered_recovery_seconds - elapsed)
-        logger.debug(
-            f"[{self.name}] Still in fallback mode. "
-            f"Recovery in {remaining}s (elapsed: {int(elapsed)}s)"
-        )
-        return False
-
     async def append_user_message(self, request_id: str, content: str) -> bool:
         """
         Append a user message to an active request's conversation.
@@ -578,6 +1788,83 @@ class Agent(MCPServer):
         """
         return await self._session_tracker.append_to_session(session_id, content)
 
+    # --- Per-session live conversation state (see __init__ for rationale) ----
+
+    def _set_live_messages(self, session_id: Optional[str], messages: List[ChatMessage]) -> None:
+        """Record the live message list for a session (request-scoped)."""
+        # Keep the deprecated shared attr in sync for any unmigrated reader.
+        self._current_messages = messages
+        if not session_id:
+            return
+        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry["messages"] = messages
+        self._evict_live_state(session_id)
+
+    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]]) -> None:
+        """Record the live tool schema for a session (request-scoped)."""
+        self._current_tools_schema = tools_schema
+        if not session_id:
+            return
+        entry = self._live_state_by_session.setdefault(session_id, {})
+        entry["tools_schema"] = tools_schema
+        self._evict_live_state(session_id)
+
+    def _evict_live_state(self, keep_session: str) -> None:
+        """Bound the per-session live-state dict (simple FIFO eviction)."""
+        if len(self._live_state_by_session) <= self._live_state_max_sessions:
+            return
+        for sid in list(self._live_state_by_session.keys()):
+            if len(self._live_state_by_session) <= self._live_state_max_sessions:
+                break
+            if sid != keep_session:
+                self._live_state_by_session.pop(sid, None)
+
+    def get_live_messages(self, session_id: Optional[str]) -> Optional[List[ChatMessage]]:
+        """Live (current-turn) messages for a session, or None if not tracked.
+
+        Session-correct replacement for reading agent._current_messages. The
+        caller should fall back to the persisted session tracker when this is
+        None (e.g. a tool invoked outside an active step loop).
+        """
+        if session_id:
+            entry = self._live_state_by_session.get(session_id)
+            if entry and entry.get("messages") is not None:
+                return entry["messages"]
+        return None
+
+    def get_live_conversation(self, session_id: Optional[str]) -> Optional[List[ChatMessage]]:
+        """The in-flight messages of a session as a READER should see them.
+
+        ``get_live_messages`` hands out the run's own working list: it opens
+        with the rendered system prompt and carries the notes the run wrote for
+        this one call. Persistence drops both -- the prompt is rebuilt per turn
+        from config, a volatile note belongs to the call it was built for -- so
+        a viewer joining a session mid-run must have them dropped too, or the
+        chat shows the agent its own system prompt as a message.
+
+        Both rules are the ones persistence uses, not copies of them: a system
+        message that IS conversation (an archived_ref, a prune breadcrumb) stays
+        by ``is_compaction_system_message``, and the volatile notes go by
+        ``is_volatile_note``.
+        """
+        live = self.get_live_messages(session_id)
+        if live is None:
+            return None
+        from .components.hook_integration import is_compaction_system_message
+        from .components.session_tracking import is_volatile_note
+        return [msg for msg in live
+                if not is_volatile_note(msg)
+                and (getattr(msg, "role", None) != "system"
+                     or is_compaction_system_message(msg))]
+
+    def get_live_tools_schema(self, session_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        """Live tool schema for a session, or None if not tracked."""
+        if session_id:
+            entry = self._live_state_by_session.get(session_id)
+            if entry and entry.get("tools_schema") is not None:
+                return entry["tools_schema"]
+        return None
+
     async def _drain_appended_messages(self, request_id: str, messages: List[ChatMessage]) -> List[ChatMessage]:
         """
         Drain any appended messages for a request and add them to the conversation.
@@ -589,69 +1876,15 @@ class Agent(MCPServer):
     # Tool filtering helpers
     # ------------------------------------------------------------------
     def _is_tool_allowed(self, tool_name: str, patterns: list[str]) -> bool:
-        """Return True if tool_name matches any allowed pattern.
+        """Return True if the discovery-stage name matches any allowed pattern.
 
-        Patterns may be:
-          plugin            -> matches exact tool/plugin name
-          plugin/*          -> matches all functions of plugin and plugin itself
-          plugin/function   -> matches one function inside multi-tool plugin (also matches plugin server name for discovery)
-          external.tool     -> exact external tool name
-          external.*        -> all tools of an external server (dot form)
-        Uses fnmatch for flexible wildcard support.
+        Thin delegate to the SINGLE shared discovery-stage matcher
+        ``tool_schema_builder.server_matches_patterns`` (see its docstring for
+        pattern semantics). Kept as a method for existing callers/tests.
+        NOTE: empty patterns now mean deny-all (security by default) — all
+        production callers guard for non-empty patterns before calling.
         """
-        if not patterns:
-            return True
-        # Fast path: global wildcard grants all
-        if '*' in patterns:
-            return True
-        from fnmatch import fnmatch
-        for pat in patterns:
-            # Normalize common shorthand
-            if pat.endswith('/*'):
-                base = pat[:-2]
-                if tool_name == base or tool_name.startswith(base + '.'):
-                    return True
-            # Allow pattern "plugin" to match plugin and any function (added later) via startswith
-            if '/' not in pat and '*' not in pat and '.' not in pat:
-                if tool_name == pat or tool_name.startswith(pat + '.'):
-                    return True
-            # Support dot wildcards: external_server.*
-            if pat.endswith('.*'):
-                base = pat[:-2]
-                if tool_name.startswith(base + '.'):
-                    return True
-            # Special case: If pattern is "server_name/tool_name" (specific tool pattern),
-            # also match the server name itself. This allows server names to pass through
-            # discovery so tools can be expanded later and filtered at the tool level.
-            if '/' in pat and '*' not in pat:
-                server_name = pat.split('/')[0]
-                if tool_name == server_name:
-                    return True
-            # Direct fnmatch (covers explicit names and wildcards)
-            if fnmatch(tool_name, pat):
-                return True
-        return False
-
-    def _filter_usable_tools(self, tools: list[str], patterns: list[str]) -> list[str]:
-        """Filter list of tools by allow patterns.
-
-        Logs any pattern that matches nothing for visibility, but continues.
-        """
-        matched = []
-        for t in tools:
-            if self._is_tool_allowed(t, patterns):
-                matched.append(t)
-        # Log patterns with zero matches (diagnostic)
-        unmatched = []
-        if patterns and patterns != ['*'] and not (len(patterns) > 1 and '*' in patterns):
-            for pat in patterns:
-                if pat == '*':
-                    continue
-                if not any(self._is_tool_allowed(t, [pat]) for t in tools):
-                    unmatched.append(pat)
-        if unmatched:
-            logger.debug("Agent %s tools.allowed patterns with no matches: %s", self.name, unmatched)
-        return matched
+        return server_matches_patterns(tool_name, patterns)
 
     async def list_usable_tools(self) -> tuple[list[str], list[str] | None, list[str] | None]:
         """Return list of tool names this agent CAN USE (filtered by agent config).
@@ -667,18 +1900,78 @@ class Agent(MCPServer):
             - List of allowed patterns (for fine-grained filtering after tool expansion)
             - List of blocked patterns (to be applied after tool expansion)
         """
-        # Initialize MCP integration (idempotent)
-        await self._mcp_integration_manager.setup_mcp_integration()
+        # Initialize tool integration (idempotent)
+        await self._tool_integration_manager.setup_tool_integration()
 
         # Use ToolDiscoveryService for clean tool filtering
         discovery_service = ToolDiscoveryService(
             agent_name=self.name,
             agent_config=self.agent_config,
-            mcp_integration_manager=self._mcp_integration_manager,
+            tool_integration_manager=self._tool_integration_manager,
             registry=self.registry if hasattr(self, 'registry') else None
         )
 
         return await discovery_service.discover_allowed_tools()
+
+    async def describe_context_inputs(
+        self, session_id: Optional[str] = None
+    ) -> tuple[str, list[Dict[str, Any]]]:
+        """(system prompt, tool schemas) as they go into a call of *session_id*.
+
+        What sits in the context window before the conversation does, and what
+        `/context` counts. Two things matter about it:
+
+        * The prompt is rendered WITH the session's template vars, because
+          that is the prompt the session really sends -- rendered without
+          them it is short by the whole var payload, on the one line the
+          command exists to show.
+        * One discovery, not two. Both halves need the list of usable tools,
+          and asking for it twice means awaiting list_tools() on every
+          registered server a second time.
+        """
+        tools_schema, usable_tools = await self._schemas_for(*await self.list_usable_tools())
+        max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
+        system_msg, _ = self._render_prompts(
+            usable_tools, max_steps, current_step=0, session_id=session_id)
+        return system_msg, tools_schema
+
+    async def _schemas_for(self, usable_tools: list[str],
+                           allowed_patterns: Optional[list[str]],
+                           blocked_patterns: Optional[list[str]]
+                           ) -> tuple[list[Dict[str, Any]], list[str]]:
+        """The LLM schemas for an ALREADY discovered set of tools, and the
+        tool names after expansion and filtering -- what a run renders as
+        ``tools``."""
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            tool_integration_manager=self._tool_integration_manager,
+            server_getter_func=self._get_server_from_any_registry,
+        )
+        tools_schema, _mapping, usable, _display = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns,
+        )
+        return list(tools_schema), usable
+
+    async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
+        """The tool schemas this agent hands the model, exactly as they go out.
+
+        EXACTLY the pipeline that builds the LLM schema -- discovery (deny-all
+        on empty allowed, _tool_visible, externals) plus ToolSchemaBuilder
+        (tool-level allow/block, both tool interfaces, every schema dialect).
+        A caller that re-implements half of it diverges on every point it
+        skips: hybrid plugins (list_tools-only) went missing entirely, an
+        empty allowlist meant allow-all in one place and deny-all in the
+        other, and blocked patterns were never applied -- an agent asking what
+        it could do got a different answer than the schema it ran with.
+
+        Whole schemas, parameters and all: what a listing needs is the name,
+        what a token count needs is the rest, and the parameters are usually
+        the larger half of both.
+        """
+        schemas, _usable = await self._schemas_for(*await self.list_usable_tools())
+        return schemas
 
     async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Return detailed info about tools this agent CAN USE (name + description).
@@ -691,56 +1984,38 @@ class Agent(MCPServer):
 
         Returns:
             List of dicts with 'name' and 'description' keys
+
+        Raises whatever the listing raises. It used to answer every failure
+        with an empty list, which every caller reads as "this agent has no
+        tools" -- the chat even named the cause: an empty allowlist.
         """
-        try:
-            status = params.get("_status")
-            all_tools: list[Dict[str, Any]] = []
+        status = params.get("_status")
+        tools_schema = await self.build_llm_tool_schemas()
 
-            # Use agent's tools.allowed configuration for filtering
-            allowed_patterns = self.agent_config.tools.allowed if self.agent_config.tools else None
+        all_tools: list[Dict[str, Any]] = []
+        for entry in tools_schema:
+            function = entry.get("function", {}) if isinstance(entry, dict) else {}
+            if not isinstance(function, dict):
+                continue
+            all_tools.append({
+                "name": function.get("name", "unknown"),
+                "description": function.get("description", "") or "",
+            })
 
-            # Guard against non-iterable / MagicMock truthy values in tests
-            if allowed_patterns and not isinstance(allowed_patterns, (list, tuple, set)):
-                allowed_patterns = None
+        if status:
+            await status.end(f"Listed available tools ({len(all_tools)} tools)")
 
-            if self.registry:
-                server_names = list(self.registry.list())
-
-                # Apply server-level filtering when allow patterns defined
-                if allowed_patterns:
-                    filtered_server_names = [s for s in server_names if self._is_tool_allowed(s, allowed_patterns)]
-                else:
-                    filtered_server_names = server_names
-
-                for server_name in filtered_server_names:
-                    try:
-                        server = self.registry.get(server_name)
-                        if not server or not hasattr(server, 'get_tools'):
-                            continue
-                        tools = server.get_tools()
-                        for tool in tools:
-                            name = tool.get("function", {}).get("name", "unknown")
-                            description = tool.get("function", {}).get("description", "")
-                            all_tools.append({"name": name, "description": description})
-                    except Exception as e:
-                        logger.debug(f"Could not get tools from server '{server_name}': {e}")
-
-            if status:
-                await status.end(f"Listed available tools ({len(all_tools)} tools)")
-
-            return all_tools
-        except Exception as e:
-            logger.error(f"Failed to list tools: {e}")
-            return []
+        return all_tools
 
     async def run_events(
         self,
         task: Union[str, ChatMessage],
         request_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
-        use_advanced_model: bool = False
+        use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Run the agent and yield structured events for UI streaming.
 
@@ -751,11 +2026,31 @@ class Agent(MCPServer):
             llm_override: Optional LLM client to use instead of self.llm (for per-request profile overrides)
             llm_profile_info_override: Optional profile info string for status display (e.g., "turbo:openai_httpx/gpt-5-nano")
             use_advanced_model: If True and llm_override not set, use best available LLM profile
+            response_format: Optional structured output for this run's FINAL answer (the step without
+                tool calls): sent as the provider's field on every step of the run where the step's
+                LLM takes it, described in the conversation where it does not and the format allows
+                the prompt fallback, refused otherwise. The final answer is validated, and sent back
+                once for correction; its ``final`` event carries it unformatted (content_format "json").
         """
+        if response_format is not None and not isinstance(response_format, ResponseFormat):
+            # A dict would pass for "no field" at every client and then fail deep in the loop.
+            raise TypeError(f"response_format must be a ResponseFormat, not {type(response_format).__name__}")
 
         # Generate request ID if not provided
         if request_id is None:
             request_id = short_id()
+
+        # Role gate (metadata.min_role) -- before anything of the run is written:
+        # the metadata below, the request registration, the session lock. The
+        # endpoints refuse earlier with a 403; this is the backstop for every
+        # path that reaches an agent without one (SAM, agent as a tool,
+        # stategraph, agent-cli woken for a session). Refused the way the lock
+        # refusal in _run_events is: an error, then the end.
+        refusal = self._refusal_event(request_id, session_id)
+        if refusal:
+            yield refusal
+            yield {"type": "end"}
+            return
 
         # Track if this is a newly generated session
         was_new_session = not session_id
@@ -769,10 +2064,10 @@ class Agent(MCPServer):
         if self._session_tracker:
             existing_metadata = self._session_tracker.get_session_metadata(session_id)
             if not existing_metadata:
-                # Extract user_id from request_user_map (populated by API/tool execution)
-                # Import at use-site to avoid circular dependency
-                from agent_system.app import _request_user_map
-                user_id = _request_user_map.get(request_id, "anonymous")
+                # Extract user_id from the request ownership map
+                # (populated by API layer / tool execution / sub_agent_manager)
+                from ...core.request_context import get_request_user
+                user_id = get_request_user(request_id)
                 
                 # Use agent's default llm_profile for metadata
                 effective_llm_profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
@@ -813,42 +2108,59 @@ class Agent(MCPServer):
 
         # Handle use_advanced_model if no llm_override provided
         if use_advanced_model and not llm_override:
-            from agent_system.llm.factory import create_llm_from_profile
+            from agent_system.llm.factory import override_for_profile
 
-            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
-            if available_profiles and len(available_profiles) > 1:
-                # Use last profile (most capable)
-                advanced_profile = available_profiles[-1]
-
+            # Ketten-Semantik: Advanced-Modell = llm_profile_advanced[0].
+            # Keine Advanced-Kette konfiguriert oder advanced == default
+            # (kein echtes Upgrade) → no-op (normale Kette läuft).
+            advanced_profile = self.agent_config.advanced_llm_profile if self.agent_config else None
+            if advanced_profile and self.agent_config and \
+                    advanced_profile == self.agent_config.default_llm_profile:
+                advanced_profile = None
+            if advanced_profile:
                 try:
-                    # Get SSL verify setting
-                    ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
-
-                    # Create LLM client override using factory
-                    llm_override = create_llm_from_profile(
-                        config=self.system_config,
-                        llm_profile=advanced_profile,
-                        ssl_verify=ssl_verify,
-                    )
-
-                    # Create profile info for logging
-                    profile = self.system_config.llm_system.profiles[advanced_profile]
-                    model_ref = profile.model_ref
-                    model_config = self.system_config.llm_system.models[model_ref]
-                    llm_profile_info_override = f"{advanced_profile}:{model_config.provider}/{model_config.model}"
-
+                    llm_override, llm_profile_info_override = override_for_profile(
+                        self.system_config, self.agent_config, advanced_profile)
                     logger.info(f"use_advanced_model=True mapped to profile: {llm_profile_info_override}")
 
                 except Exception as e:
                     logger.error(f"Failed to create LLM override for use_advanced_model: {e}")
                     # Continue with default LLM
 
+        # The caller's LLM (agent_config.inherit_parent_llm): after the choices
+        # made for this very run, which win over it -- an override passed in, or
+        # use_advanced_model where the agent has an advanced chain to go to.
+        if llm_override is None:
+            from_caller = self._llm_from_caller()
+            if from_caller is not None:
+                llm_override, llm_profile_info_override = from_caller
+
         # Create and start status forwarder BEFORE entering status_scope context managers
         # This ensures the forwarder is subscribed to status_bus before any START events are generated
         # Fixes race condition where status_scope generates events before forwarder is ready
         status_forwarder = StatusEventForwarder()
         await status_forwarder.start_forwarding(request_id)
-        
+
+        # Wire LLM hooks to llm_override if provided (per-request LLM clients
+        # won't have hooks from __init__ since they are freshly created)
+        if llm_override is not None and self._hook_manager:
+            self._hook_manager.wire_llm_hooks(llm_override)
+
+        # Set per-agent app identity on override LLMs (they bypass __init__'s
+        # set_app_title call since they are freshly created by CLI --llm or
+        # use_advanced_model).
+        if llm_override is not None and hasattr(llm_override, 'set_app_title'):
+            llm_override.set_app_title(self.name)
+
+        # The run sets its request id and its user in the context it runs in -- the
+        # caller's: this generator runs in whoever iterates it. Its cleanup resets
+        # them once a conversation context was built; a setup that failed before, or
+        # a consumer that closed the stream early, left them to the caller. What they
+        # were is what they are again when this generator ends -- and at "end", its
+        # last event: a consumer that stops there (app, agent_service) never closes
+        # it, and the garbage collector closes it in another task.
+        from ...core.request_context import current_run_user
+        request_before, user_before = current_request_id.get(), current_run_user.get()
         try:
             # Pass status_scope parameters to _run_events which will open them AFTER
             # sending the 'start' event - this ensures frontend has currentRequestId
@@ -862,12 +2174,37 @@ class Agent(MCPServer):
                 initial_message=initial_message,
                 llm_override=llm_override,
                 llm_profile_info_override=llm_profile_info_override,
-                status_forwarder=status_forwarder
+                status_forwarder=status_forwarder,
+                use_advanced_model=use_advanced_model,
+                response_format=response_format,
             ):
+                # Before the yield: the consumer of a sub-run can stop reading at its
+                # end, error or cancel (sub_agent_manager does), and the event it
+                # stops at would never be relayed.
+                relay_run_event(status_forwarder, event, self.name)
+                if event.get("type") == "end":
+                    current_request_id.set(request_before)
+                    current_run_user.set(user_before)
                 yield event
         except GeneratorExit:
             # Generator is being closed early - clean exit without error
             raise
+        finally:
+            # Always remove the status_forwarder's handler from the global
+            # status_bus. _finalize_request only does this when a context was
+            # built (context.status_forwarder), so failure paths that return
+            # before context assignment - session-lock failure, 'No LLM
+            # available', any exception in _initialize_request_and_conversation
+            # - would otherwise leak the handler permanently (it accumulates on
+            # the shared bus and every future publish() invokes the dead
+            # handler). stop_forwarding() is idempotent, so the normal-path
+            # call inside _finalize_request remains harmless.
+            try:
+                await status_forwarder.stop_forwarding()
+            except Exception as e:
+                logger.debug(f"Failed to stop status_forwarder for {request_id}: {e}")
+            current_request_id.set(request_before)
+            current_run_user.set(user_before)
 
     async def _initialize_request_and_conversation(
         self,
@@ -875,7 +2212,7 @@ class Agent(MCPServer):
         request_id: str,
         session_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         status_forwarder: Optional[StatusEventForwarder] = None
     ) -> ConversationContext:
         """Initialize request tracking and build initial conversation context.
@@ -889,12 +2226,12 @@ class Agent(MCPServer):
         4. Initialize session storage
         5. Use pre-created status event forwarder (passed from caller)
         6. Validate LLM availability
-        7. Initialize MCP integration
+        7. Initialize tool integration
         8. Discover usable tools
-        9. Render system prompts
-        10. Load session history
-        11. Execute session start hooks
-        12. Build tool schemas
+        9. Build tool schemas (the expanded tool list the prompt renders)
+        10. Render system prompts
+        11. Load session history
+        12. Execute session start hooks
 
         Args:
             task: User task description
@@ -925,6 +2262,13 @@ class Agent(MCPServer):
         except Exception as e:
             logger.debug(f"Failed to set current_request_id context var: {e}")
             context_reset_token = None
+        # Whose run this is, for the calls in it that reach the hooks without an
+        # agent (a decision, TTS: llm/hook_notify.py) -- also once the request
+        # that started a background sub-agent has ended and let go of its tree.
+        from ...core.request_context import current_run_user
+        metadata = self._session_tracker.get_session_metadata(session_id) if self._session_tracker else None
+        run_user = metadata.get("user_id") if isinstance(metadata, dict) else None
+        user_reset_token = current_run_user.set(run_user) if run_user else None
 
         # Status forwarder is passed in from caller (created before status_scope context managers)
         # This ensures forwarder is subscribed to status_bus before any START events are generated
@@ -938,12 +2282,30 @@ class Agent(MCPServer):
         if active_llm is None:
             raise RuntimeError("No LLM available; agent requires an LLM to run")
 
-        # Initialize MCP integration
-        await self._mcp_integration_manager.setup_mcp_integration()
+        # Initialize tool integration
+        await self._tool_integration_manager.setup_tool_integration()
 
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
         usable_tools, allowed_patterns, blocked_patterns = await self.list_usable_tools()
+
+        # Build tool schemas using ToolSchemaBuilder
+        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
+        # Before the first render: `tools` in the prompt is the EXPANDED list
+        # from here on, as in every step's re-render. Rendered from the
+        # server-level list, the first prompt branched differently from the
+        # ones sent (the session-start hooks saw that one).
+        schema_builder = ToolSchemaBuilder(
+            agent_name=self.name,
+            tool_integration_manager=self._tool_integration_manager,
+            server_getter_func=self._get_server_from_any_registry
+        )
+
+        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
+            usable_tools,
+            allowed_patterns=allowed_patterns,
+            blocked_patterns=blocked_patterns
+        )
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -962,14 +2324,8 @@ class Agent(MCPServer):
 
         # Execute session start hooks for new sessions AFTER creating system messages
         # This allows hooks like markdown_formatter to inject additional system prompts
-        # Check if session is empty (new session), not just if it exists (setdefault creates it above)
-        is_new_session = len(session_msgs) == 0
-        if is_new_session:
-            # Reset loop detector for new sessions to avoid false positives
-            # from previous sessions
-            self._loop_detector.reset()
-            logger.debug(f"Reset loop detector for new session {session_id}")
-            
+        # A session starts once: one taken back to no messages (/undo) is not new again
+        if self._session_tracker.start_session(session_id):
             modified_messages = await self._hook_manager.execute_session_start_hooks(
                 session_id, request_id, messages=messages
             )
@@ -979,42 +2335,39 @@ class Agent(MCPServer):
 
         # include persisted session messages
         if session_msgs:
-            # Convert dicts to ChatMessage objects if needed
+            # Convert dicts to ChatMessage objects if needed. Persisted
+            # history may predate history_safe_tool_calls (or was written by
+            # an older build) -- sanitize on load, or a session poisoned by
+            # invalid arguments JSON stays dead on every resume.
             for msg in session_msgs:
                 if isinstance(msg, dict):
+                    if msg.get("tool_calls"):
+                        msg = {**msg, "tool_calls":
+                               history_safe_tool_calls(msg["tool_calls"])}
                     messages.append(ChatMessage(**msg))
                 else:
+                    if getattr(msg, "tool_calls", None):
+                        msg.tool_calls = history_safe_tool_calls(msg.tool_calls)
                     messages.append(msg)
 
         # add the new user input as last message
         # Use initial_message if provided (for multimodal input), otherwise create from task
-        if initial_message:
-            messages.append(initial_message)
-        else:
-            messages.append(ChatMessage(role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc)))
+        opening = initial_message or ChatMessage(
+            role="user", content=sanitize_for_llm(task), timestamp=datetime.now(timezone.utc))
+        # The run's own id on the first message it stores (ChatMessage.request_id): a
+        # session read back tells its runs apart by it, and finds a sub-agent's run
+        # under the call that started it.
+        opening.request_id = request_id
+        messages.append(opening)
 
         # Also include any appended messages already queued for this request
         messages = await self._session_tracker.drain_appended_messages(request_id, messages)
 
-        # Track messages for debugging
-        self._current_messages = messages.copy()
+        # Track live messages for this session (request-scoped)
+        self._set_live_messages(session_id, messages.copy())
 
-        # Build tool schemas using ToolSchemaBuilder
-        # Pass allowed_patterns and blocked_patterns so they can be applied AFTER tools are expanded
-        schema_builder = ToolSchemaBuilder(
-            agent_name=self.name,
-            mcp_integration_manager=self._mcp_integration_manager,
-            server_getter_func=self._get_server_from_any_registry
-        )
-
-        tools_schema, tool_name_mapping, usable_tools, display_tools = await schema_builder.build_schemas(
-            usable_tools,
-            allowed_patterns=allowed_patterns,
-            blocked_patterns=blocked_patterns
-        )
-
-        # Track current tool schemas for token estimation by hooks
-        self._current_tools_schema = tools_schema
+        # Track current tool schemas per-session for token estimation by hooks
+        self._set_live_tools_schema(session_id, tools_schema)
 
         # Return initialized context
         return ConversationContext(
@@ -1026,8 +2379,92 @@ class Agent(MCPServer):
             main_token=main_token,
             context_reset_token=context_reset_token,
             status_forwarder=status_forwarder,
-            session_id=session_id
+            session_id=session_id,
+            user_reset_token=user_reset_token,
         )
+
+    def _presence_hold(self, session_id: str, request_id: str) -> None:
+        """Session presence (core/session_presence.py): the request holds its
+        session for as long as it runs -- from its start, not from its first
+        LLM call. A client that disconnects while the run is still setting
+        itself up lets go of the endpoint's hold, and the session would look
+        idle while it runs on: a direct message would wake a second run of it."""
+        presence = presence_for(self.system_config)
+        if presence is None or not session_id or request_id in self._presence_holds:
+            return
+        try:
+            metadata = self._session_tracker.get_session_metadata(session_id) or {}
+            user_id = metadata.get("user_id")
+            if not user_id:
+                from ...core.request_context import get_request_user
+                user_id = get_request_user(request_id)
+            held = None
+            try:
+                if presence.hold(session_id, user_id, self.name, run=request_id):
+                    held = (presence, session_id, user_id)
+            except SessionBusy as busy:
+                # Forced past the refusal at the entry point. The input waiting
+                # belongs to the process that holds the session.
+                logger.warning("%s; this request runs it unheld", busy)
+            self._presence_holds[request_id] = held
+        except Exception as e:
+            logger.warning("Session presence: holding %s failed: %s", session_id, e)
+
+    def _presence_step(self, session_id: str, request_id: str) -> None:
+        """Every LLM call takes the input waiting for the session -- the pre-LLM
+        hooks hand it over -- as long as this request holds the session."""
+        self._presence_hold(session_id, request_id)
+        held = self._presence_holds.get(request_id)
+        if not held:
+            return
+        presence, sid, user_id = held
+        try:
+            presence.take_pending(sid, user_id)
+        except Exception as e:
+            logger.warning("Session presence: step of %s failed: %s", session_id, e)
+
+    def _presence_release(self, request_id: str) -> None:
+        held = self._presence_holds.pop(request_id, None)
+        if held is None:
+            return
+        presence, session_id, user_id = held
+        try:
+            presence.release(session_id, user_id)
+        except Exception as e:
+            logger.warning("Session presence: releasing %s failed: %s", session_id, e)
+
+    async def _take_in_late_messages(self, request_id: str, session_id: Optional[str],
+                                     messages: List[ChatMessage]) -> List[ChatMessage]:
+        """Messages appended too late for the run to act on, into its conversation.
+
+        The live copy is refreshed with them: it was taken at the run's final, and the
+        session load serves it until the run's job has ended -- without them the chat
+        showed the turn with the message missing that its note said was kept.
+        """
+        held = len(messages)
+        messages = await self._session_tracker.drain_appended_messages(request_id, messages)
+        if len(messages) > held:
+            self._set_live_messages(session_id, messages.copy())
+        return messages
+
+    def _start_checkpoint_loop(self, session_id: str) -> Optional[asyncio.Task]:
+        """Start a background checkpoint loop so long-running tool calls don't
+        leave the session unsaved on disk. The loop persists messages up to
+        the last consistent tool_call/tool_result boundary, so the file is
+        always reload-safe (orphan-free).
+
+        The loop this run started, or None when one runs for the session already
+        (another run of this process on the same session, a nested one say):
+        _finalize_request stops this one and no other."""
+        if not (self._session_service and session_id and self._session_tracker is not None):
+            return None
+        try:
+            meta = self._session_tracker.get_session_metadata(session_id) or {}
+            return self._session_service.start_checkpoint_loop(
+                self, meta.get("user_id", "anonymous"), session_id)
+        except Exception as e:
+            logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
+            return None
 
     async def _finalize_request(
         self,
@@ -1038,7 +2475,8 @@ class Agent(MCPServer):
         context: Optional[ConversationContext],
         messages: Optional[List[ChatMessage]],
         results: Dict[str, Any],
-        step: int
+        step: int,
+        checkpoint_loop: Optional[asyncio.Task] = None,
     ) -> None:
         """Finalize request and clean up resources.
 
@@ -1049,7 +2487,7 @@ class Agent(MCPServer):
         2. Unregister cancellation token
         3. Clean up request tracking
         4. Persist session messages (conversation history only)
-        5. Shutdown MCP integration
+        5. Shutdown tool integration
         6. Reset context vars
         7. Publish final status events
         8. Stop status forwarding
@@ -1064,87 +2502,151 @@ class Agent(MCPServer):
             messages: Final conversation messages
             results: Execution results dictionary
             step: Final step number
+            checkpoint_loop: The checkpoint loop this run started (_start_checkpoint_loop)
         """
-        # Execute session end hooks
+        # First, before anything that awaits: a cancellation there would leave the
+        # finished run's model registered for the session's next /compact.
+        self._step_llms.pop(session_id, None)
+
+        # The session this run holds, looked up first.
+        sid = self._session_tracker.get_session_for_request(request_id)
+
+        # Stop the background checkpoint loop BEFORE the final save. The loop
+        # does its own load-modify-save every ~30s; if it overlaps the final
+        # save it can resume after we persist and write its older, trimmed
+        # snapshot over the newer one (silent message loss). Cancelling and
+        # awaiting the task here guarantees any in-flight checkpoint write has
+        # completed, so the final save below writes last and wins.
+        # The loop this run started and no other: a run nested in another on the
+        # same session would otherwise stop that one's. And first,
+        # before anything else awaits: stop_checkpoint_loop cancels it and takes
+        # it out of the registry before its own first await, so no cancel landing
+        # later leaves it running.
+        if checkpoint_loop is not None and self._session_service:
+            try:
+                await self._session_service.stop_checkpoint_loop(sid or session_id, started=checkpoint_loop)
+            except Exception as e:
+                logger.debug(f"Failed to stop checkpoint loop for {session_id} before final save: {e}")
+
+        # The session lock is let go of after the save below, not before it -- and
+        # in the finally, whatever cuts the steps up to it short: skipped, the
+        # session would stay owned by a run that is gone and refuse every later
+        # request on it until restart.
+        persisted = False
+        cancelled = False
+        try:
+            # Flush injected user messages that arrived too late to be processed
+            # (e.g. during the very last LLM call) into the conversation so they
+            # persist with the final save instead of being dropped with the request
+            # entry. They are answered by the next run on this session.
+            if messages is not None:
+                try:
+                    messages = await self._take_in_late_messages(request_id, session_id, messages)
+                except Exception as e:
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+            elif sid:
+                # No conversation: the run failed on its way in, after its request was registered. A
+                # message handed to it meanwhile went with the request entry -- answered "appended",
+                # and gone. Into the session as the tracker holds it, and saved with it.
+                try:
+                    held = list(self._session_tracker.get_session_messages(sid))
+                    taken = await self._take_in_late_messages(request_id, session_id, list(held))
+                    if len(taken) > len(held):
+                        messages = taken
+                except Exception as e:  # noqa: BLE001 - as the flush above: nothing here may keep the lock
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+
+            # Clean up cancellation token -- read first: the session end hooks
+            # are told whether the run was cancelled, and after this the token
+            # is gone. A crash recorded the state from before it cancelled the
+            # token itself.
+            cancellation_manager = get_cancellation_manager()
+            run_token = cancellation_manager.get_token(request_id)
+            cancelled = (bool(results["cancelled"]) if "cancelled" in results
+                         else bool(run_token is not None and run_token.is_cancelled))
+            cancellation_manager.unregister_request(request_id)
+
+            # Clean up request tracking but preserve session data
+            self._request_manager.unregister_active_request(request_id)
+            logger.debug("Cleaned up request tracking for %s", request_id)
+
+            # Persist session messages and keep the request->session mapping for a while.
+            # Under the session lock: let go of before this save, a request of this
+            # process could open the session in between -- read it from disk, where
+            # this run's last exchange was not yet -- and its run saved over it.
+            if sid and messages:
+                try:
+                    # Check if ANY tool modified the session messages during this request
+                    # Tools can call session_tracker.set_compacted_messages() to replace the history
+                    compacted_msgs = self._session_tracker.get_compacted_messages(sid)
+
+                    if compacted_msgs is not None:
+                        # A tool replaced the message history - use those messages for
+                        # persistence (already conversation-only, no filtering needed)
+                        logger.debug(
+                            f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
+                            f"(request had {len(messages)} messages)"
+                        )
+                        self._session_tracker.set_session_messages(sid, compacted_msgs)
+                        self._session_tracker.clear_compacted_messages(sid)
+                        # Save to disk even if no SSE client is connected
+                        # (e.g., browser disconnected during background job execution)
+                        persisted = await self._save_session_to_disk(sid)
+                    else:
+                        # Normal case: persist the request's conversation messages
+                        persisted = await self._persist_conversation(
+                            sid, messages, to_disk=True, note="at end of request")
+
+                    # Keep the request->session mapping (don't pop it immediately)
+                    # This allows append requests that arrive shortly after completion to find the session
+                except Exception as e:
+                    logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
+        finally:
+            # The lock goes once the conversation is on disk: a free lock then means
+            # "saved", and the next request of this session reads it whole. In a
+            # finally: a save cut short (the run cancelled) must not leave the
+            # session locked for the life of the process. The session end hooks
+            # after it only read the conversation.
+            if sid:
+                await self._session_tracker.release_session_lock(sid, request_id)
+                logger.debug("Released session lock for %s (request %s)", sid, request_id)
+
+        # Session end hooks AFTER the save, and told whether it happened. A hook
+        # that counts what the request carried as delivered -- debate_forum does
+        # that for direct messages -- would otherwise count it while the
+        # conversation is still only in memory: a save that fails or is
+        # cancelled would take the message with it and nothing would re-deliver
+        # it. They read the conversation, none of them writes it, so running
+        # them after the save changes nothing else.
+        # How the run ended goes with it: an observer (telemetry) cannot see
+        # the run's events, only the hooks.
         try:
             await self._hook_manager.execute_session_end_hooks(
-                session_id, request_id, messages=messages
+                session_id, request_id, messages=messages, persisted=persisted,
+                cancelled=cancelled, errors=list(results.get("errors") or []),
+                completed="summary" in results,
             )
         except Exception as e:
             logger.warning(f"Session end hooks failed: {e}", exc_info=True)
 
-        # Clean up cancellation token
-        cancellation_manager = get_cancellation_manager()
-        cancellation_manager.unregister_request(request_id)
-
-        # Clean up request tracking but preserve session data
-        self._request_manager.unregister_active_request(request_id)
-        logger.debug("Cleaned up request tracking for %s", request_id)
-
-        # Release session lock BEFORE persisting (allows other requests to proceed)
-        # Note: unregister_request also releases the lock, but we do it explicitly here
-        # for clarity and to ensure it happens before session persistence
-        sid = self._session_tracker.get_session_for_request(request_id)
-        if sid:
-            await self._session_tracker.release_session_lock(sid, request_id)
-            logger.debug("Released session lock for %s (request %s)", sid, request_id)
-
-        # Persist session messages and keep the request->session mapping for a while
-        if sid and messages:
-            try:
-                # Check if ANY tool modified the session messages during this request
-                # Tools can call session_tracker.set_compacted_messages() to replace the history
-                compacted_msgs = self._session_tracker.get_compacted_messages(sid)
-                
-                if compacted_msgs is not None:
-                    # A tool replaced the message history - use those messages for persistence
-                    logger.debug(
-                        f"Using {len(compacted_msgs)} tool-modified messages for session {sid} "
-                        f"(request had {len(messages)} messages)"
-                    )
-                    self._session_tracker.set_session_messages(sid, compacted_msgs)
-                    self._session_tracker.clear_compacted_messages(sid)
-                    logger.debug("Persisted session %s with %d modified messages", sid, len(compacted_msgs))
-                else:
-                    # Normal case: no tool modified messages, persist request's messages
-                    # Filter out system messages - only persist conversation history
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    # Update the persistent session with conversation state (no system messages)
-                    self._session_tracker.set_session_messages(sid, conversation_msgs.copy())
-                    logger.debug("Persisted session %s with %d conversation messages", sid, len(conversation_msgs))
-                
-                # CRITICAL: Also save to disk at end of request
-                # This ensures the session is saved even if no SSE client is connected
-                # (e.g., browser disconnected during background job execution)
-                if self._session_service:
-                    session_meta = self._session_tracker.get_session_metadata(sid)
-                    if session_meta:
-                        save_user_id = session_meta.get("user_id", "anonymous")
-                        save_agent_name = session_meta.get("agent_name", self.name)
-                        save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
-                        
-                        await self._session_service.save_session(
-                            agent=self,
-                            user_id=save_user_id,
-                            session_id=sid,
-                            agent_name=save_agent_name,
-                            llm_profile=save_llm_profile,
-                            was_new_session=False
-                        )
-                        logger.debug(f"Saved session {sid} to disk at end of request")
-                
-                # Keep the request->session mapping (don't pop it immediately)
-                # This allows append requests that arrive shortly after completion to find the session
-            except Exception as e:
-                logger.warning(f"Failed to persist session {sid}: {e}", exc_info=True)
-
-        # Clean up MCP integration if we initialized it locally
-        await self._mcp_integration_manager.shutdown()
+        # NOTE: no MCP shutdown here. The integration is process-wide state;
+        # tearing it down at the end of EVERY request broke bootstrap-only
+        # processes (writer pipelines) after their first request, because
+        # ToolServerIntegration.shutdown() stops all plugins but leaves
+        # `initialized` True -- so the next request found a half-dead
+        # integration and never re-initialized it. Shutdown belongs to the
+        # process entry point (shutdown_tools), never to an agent.
 
         # Reset the current_request_id ContextVar so it doesn't leak to other tasks
         if context and context.context_reset_token is not None:
             try:
                 current_request_id.reset(context.context_reset_token)
+            except Exception:
+                pass
+        if context and context.user_reset_token is not None:
+            from ...core.request_context import current_run_user
+            try:
+                current_run_user.reset(context.user_reset_token)
             except Exception:
                 pass
 
@@ -1169,13 +2671,16 @@ class Agent(MCPServer):
 
     async def _call_llm_with_streaming(
         self,
-        llm: Any,
+        llm: LLMClient,
         messages: List[ChatMessage],
         tools_schema: List[Dict[str, Any]],
         cancellation_token: CancellationToken,
         step: int,
         yield_pending_status_fn,
-        status_scope: Optional[StatusScope] = None
+        status_scope: Optional[StatusScope] = None,
+        watch_reasoning: bool = True,
+        on_reasoning_progress=None,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -1191,29 +2696,83 @@ class Agent(MCPServer):
             step: Current step number
             yield_pending_status_fn: Function that yields pending status events
             status_scope: Optional status scope for LLM to report progress (batch status, etc.)
+            on_reasoning_progress: Optional ``async (text, chars, previous_chars)``,
+                awaited every _REASONING_PROGRESS_TICK characters of thinking
+            response_format: The structured output to put on the wire, only ever one the LLM said it
+                takes. Handed on only when set: a call without one is the call it always was, and a
+                client that never wired the keyword is never given it.
 
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
             - {"type": "status", ...}
             - {"type": "thinking_complete", "assistant": {...}}
         """
+        wire_format = {"response_format": response_format} if response_format is not None else {}
         if llm.supports_streaming():
             # Streaming LLM: zero-overhead real-time tokens
             accumulated_content = []
             final_assistant = None
             final_usage = None  # Store usage data from final chunk
+            final_finish_reason = None  # "length", "content_filter", ...
+            # Detectors per CALL: they hold this call's thinking, and a retry
+            # must start from empty windows. Two of them — a short window for
+            # short-period loops and a long one for the periods the short
+            # window cannot span; see build_detectors.
+            reasoning_detectors = build_detectors(
+                # Off for the retry the detector itself asked for: watching
+                # the second attempt too would mean a second abort policy,
+                # and there is nothing sensible left to do after it.
+                enabled=bool(self._reasoning_loop_config["enabled"]) and watch_reasoning,
+                repetition_threshold=float(
+                    self._reasoning_loop_config["repetition_threshold"]))
+            # Thinking of THIS call, for llm_progress hooks; a retry starts empty.
+            reasoning_parts: List[str] = []
+            reasoning_chars = 0
+            reasoning_ticked_at = 0
 
             async for chunk in llm.chat_tools_streaming(
-                messages, tools_schema, 
+                messages, tools_schema,
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ):
                 chunk_type = chunk.get("type")
 
                 if chunk_type == "thinking_delta":
                     # Gemini reasoning/thinking tokens (not content)
                     yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
-                    
+
+                    # Watch the thinking for a loop. What arrives here is
+                    # whatever the client calls a thinking delta: raw
+                    # reasoning for most models, and for the OpenAI family a
+                    # SUMMARY of it — the threshold was calibrated on raw
+                    # reasoning, so for those models this guards the
+                    # degenerate case rather than measuring a known shape.
+                    for _detector in reasoning_detectors:
+                        loop_reason = _detector.record(chunk["delta"])
+                        if loop_reason:
+                            logger.warning(
+                                "[%s] Aborting the call: %s (model=%s, %d characters "
+                                "of thinking so far)",
+                                self.name, loop_reason, getattr(llm, "model", "?"),
+                                _detector.characters_seen)
+                            raise ReasoningLoopError(
+                                loop_reason,
+                                characters=_detector.characters_seen)
+
+                    if on_reasoning_progress is not None:
+                        reasoning_parts.append(chunk["delta"])
+                        reasoning_chars += len(chunk["delta"])
+                        if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
+                            try:
+                                await on_reasoning_progress(
+                                    "".join(reasoning_parts), reasoning_chars,
+                                    reasoning_ticked_at)
+                            except Exception as exc:  # an observer never breaks the call
+                                logger.warning("[%s] llm_progress hooks failed: %s",
+                                               self.name, exc)
+                            reasoning_ticked_at = reasoning_chars
+
                     # Check status events after each token (zero overhead)
                     for status_event in yield_pending_status_fn():
                         yield status_event
@@ -1239,16 +2798,45 @@ class Agent(MCPServer):
                     # Preserve usage data from final chunk
                     if "usage" in chunk:
                         final_usage = chunk["usage"]
+                    if chunk.get("finish_reason"):
+                        final_finish_reason = chunk["finish_reason"]
 
             # Yield any remaining status events after streaming completes
             for status_event in yield_pending_status_fn():
                 yield status_event
+
+            # The streaming assembler builds its assistant dict itself and
+            # never produces the "error" key that httpx _format_response sets
+            # for a content filter -- so the fallback-profile switch was
+            # unreachable while streaming. A filter is deterministic per
+            # content: asking the same model again repeats the refusal, so it is
+            # an error. A missing [DONE] (below) is a hiccup, so it is not.
+            _content_filter_as_error(final_assistant, final_finish_reason, llm)
+            if final_assistant is not None and "error" not in final_assistant:
+                _model = getattr(llm, "model", "?")
+                if final_finish_reason == "incomplete_stream":
+                    # Deliberately NOT an error, not even when empty. An error
+                    # here moves the rest of the run onto the fallback profile
+                    # -- and for an agent with no fallback chain it ends the run
+                    # outright, where the existing empty-response guard would
+                    # simply have retried. Far too heavy a hammer for what is
+                    # usually a transient network hiccup. Say it and move on.
+                    logger.warning(
+                        "[%s] Stream ended without a [DONE] marker; the answer may be "
+                        "truncated (model=%s, chars=%d, tool_calls=%d)",
+                        self.name, _model, len(final_assistant.get("content") or ""),
+                        len(final_assistant.get("tool_calls") or []),
+                    )
 
             # Yield final response with usage data
             if final_assistant:
                 result = {"type": "thinking_complete", "step": step + 1, "assistant": final_assistant}
                 if final_usage:
                     result["usage"] = final_usage
+                # Without carrying it here the truncation guard below never
+                # sees a "length" and silently accepts a cut-off answer.
+                if final_finish_reason:
+                    result["finish_reason"] = final_finish_reason
                 yield result
             else:
                 yield {"type": "thinking_complete", "step": step + 1, "assistant": {"role": "assistant", "content": "".join(accumulated_content)}}
@@ -1259,7 +2847,8 @@ class Agent(MCPServer):
             llm_task = asyncio.create_task(llm.chat_tools(
                 messages, tools_schema, 
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ))
 
             # Poll for status events while waiting
@@ -1315,6 +2904,11 @@ class Agent(MCPServer):
             # Preserve usage data if present
             if "usage" in llm_out:
                 result["usage"] = llm_out["usage"]
+            if llm_out.get("finish_reason"):
+                result["finish_reason"] = llm_out["finish_reason"]
+            # Not every blocking client turns the filter into an error itself
+            # (openai_responses only reports the reason).
+            _content_filter_as_error(result["assistant"], llm_out.get("finish_reason"), llm)
             yield result
 
     async def _execute_llm_loop(
@@ -1324,14 +2918,17 @@ class Agent(MCPServer):
         session_id: str,
         status_coordinator: StatusScope,
         status_worker: StatusScope,
-        llm_override: Optional[object] = None,
-        llm_profile_info_override: Optional[str] = None
+        llm_override: Optional[LLMClient] = None,
+        llm_profile_info_override: Optional[str] = None,
+        use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Execute the main LLM conversation loop with tool execution.
 
         Phase 2 of agent execution: Iterative LLM calls with tool execution.
 
-        Loops up to max_steps:
+        Loops up to max_steps, plus one final call that asks for the answer
+        (see _step_budget_note) and goes through the same step machinery:
         1. Check cancellation
         2. Drain appended messages
         3. Call LLM with tools
@@ -1355,8 +2952,26 @@ class Agent(MCPServer):
         Returns:
             Tuple of (messages, results, step) after loop completion
         """
-        # Determine which LLM to use
+        # Determine which LLM to use. Phase 1 already validated availability;
+        # this guard keeps the invariant explicit for direct callers (and
+        # narrows the type from LLMClient|None).
         active_llm = llm_override if llm_override is not None else self.llm
+        if active_llm is None:
+            raise RuntimeError("No LLM available; agent requires an LLM to run")
+
+        # Request-LOCAL display label: the agent's configured profile at request
+        # start, or the last in-run swap of the base -- not re-derived per step
+        # (a 5xx run keeps showing the fallback label until the request ends).
+        # A step that walks around a blocked LLM is labelled by the pick.
+        display_profile_info = self.llm_profile_info
+        # The longest block of an LLM this agent sets; a quota or a refused key
+        # blocks this long at once.
+        max_block_seconds = float(self.agent_config.fallback_recovery_seconds
+                                  if self.agent_config else 3600)
+        # The profile a request-scoped fallback swap made this run's base
+        # (active_llm): later steps leave it out of their fallback chain, or the
+        # fallback that fails next would be retried as its own fallback.
+        base_profile: Optional[str] = None
 
         # Extract from context
         messages = context.messages
@@ -1371,15 +2986,121 @@ class Agent(MCPServer):
         # Add safeguards against infinite loops
         consecutive_no_tool_calls = 0
         consecutive_empty_responses = 0
+        consecutive_tool_error_steps = 0  # steps whose tool calls ALL errored (stuck signal)
+        prev_step_all_errored = False     # was the IMMEDIATELY preceding step an all-error tool step?
         max_consecutive_no_tools = 3  # Break after 3 consecutive responses without tool calls
         max_consecutive_empty = 2    # Break after 2 consecutive empty responses
+        # Text answers cut off at the output cap in a row, each sent back with a
+        # note (see _output_cap_note) -- only where the agent opted in
+        # (agent_config.output_cap_notes): for an agent whose product is its
+        # text the cut-off text is still the reply, and a model that loops
+        # until a 120k cap must not be sent back for two more rounds of it.
+        consecutive_cut_off = 0
+        max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
+        # Structured output (response_format): a final answer that does not match is sent back
+        # once. The note that describes the format to a model without the field is looked for
+        # before every call, not remembered: a compaction may have taken it out of the history.
+        format_repaired = False
+
+        def _takes_format(client: Any) -> bool:
+            """Whether *client* may answer a step of this run. Any client, when the run has no
+            format or allows the prompt fallback; else only one that puts the field on the wire.
+            Asked where the run CHOOSES another model -- an escalation, a walk around a blocked
+            LLM, a failover: that choice must not end the run over a format the chosen model
+            cannot take while another one could."""
+            return (response_format is None or response_format.prompt_fallback
+                    or supports_response_format(client, response_format))
+
+        # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
+        # its schema goes through the worker's subset before anything runs, and the run works with
+        # what the worker made of it.
+        if response_format is not None and not response_format.checked:
+            from ...core.request_context import get_request_user
+
+            try:
+                response_format = await prepare_response_format(response_format, owner=get_request_user(request_id))
+            except (InvalidResponseFormat, SchemaCheckerError) as bad:
+                unavailable = isinstance(bad, SchemaCheckerError)  # busy or broken: no verdict on the format
+                error_msg = (f"Structured output: the format could not be checked, the checker is not available: {bad}"
+                             if unavailable else f"Structured output: the requested format cannot be used: {bad}")
+                logger.warning("[%s] %s", self.name, error_msg)
+                results.setdefault("errors", []).append(error_msg)
+                yield {"type": "error", "message": error_msg,
+                       "error_type": STRUCTURED_OUTPUT_UNAVAILABLE if unavailable else STRUCTURED_OUTPUT_INVALID}
+                return
+
+        # The run's own model decides at the start, not at the first step that lands on it: a
+        # walk around it while it is blocked would otherwise end the run mid-way, after its tool
+        # steps, once the block lifts and the next step goes back to it.
+        if not _takes_format(active_llm):
+            error_msg = unsupported_message(active_llm, response_format)
+            logger.warning("[%s] %s", self.name, error_msg)
+            results.setdefault("errors", []).append(error_msg)
+            yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+            return
+        # The description as it goes into the history: a note that is there under its marker but
+        # says something else (a compaction's placeholder) does not count as there.
+        format_note_text = instruction_text(response_format) if response_format is not None else None
+
+        # Create a request-scoped loop detector.
+        # Each request gets its own detector so concurrent requests on the
+        # same Agent singleton don't contaminate each other's history, and
+        # history from a previous request on the same session doesn't
+        # cause false positives at the start of a new request.
+        loop_detector = self._create_loop_detector()
+
+        # Per-request auto-escalation: swap in the advanced model for a few steps
+        # when the run loop observes the agent is stuck (loop detector / repeated
+        # tool errors). State is request-scoped (must not leak across requests on
+        # this shared Agent singleton). Disabled unless configured and an advanced
+        # profile exists and we're not already running advanced.
+        escalator = self._create_stuck_escalator(
+            already_advanced=(use_advanced_model or llm_override is not None))
+        escalate_error_streak = int(
+            getattr(self.agent_config, "escalate_error_streak", 2)) if self.agent_config else 2
 
         # Helper function to yield any pending status events from per-request forwarder
         def yield_pending_status_events():
             for event in context.status_forwarder.get_pending_events():
                 yield event
 
-        for step in range(max_steps):
+        async def cancelled_events(step):
+            logger.info("Request %s cancelled at step %d", request_id, step + 1)
+            # Signal cancellation using status contexts FIRST (so events are queued)
+            await status_worker.error(f"cancelled at step {step + 1}",
+                                      meta={"step": step + 1, "reason": "cancelled"})
+            await status_coordinator.error(f"cancelled at step {step + 1}",
+                                           meta={"step": step + 1, "reason": "cancelled"})
+            # Give status events a moment to be captured by forwarder
+            await asyncio.sleep(0.01)
+            # Yield all pending status events before cancelled event
+            for status_event in context.status_forwarder.get_pending_events():
+                yield status_event
+            yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+
+        # One iteration past the budget: the final call. It used to be a bare
+        # chat_tools() after the loop, and so it skipped everything a step does
+        # -- the pre-LLM hooks (message_validator dropped no orphaned tool call,
+        # context_engineer capped nothing), the fallback chain, streaming, the
+        # post-LLM hooks. As a step it has all of that; what differs is only
+        # that no step follows it (see final_call below).
+        for step in range(max_steps + 1):
+            final_call = step == max_steps
+            if final_call:
+                logger.warning(
+                    f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
+                    f"Making one final LLM call to attempt completion."
+                )
+            # Error-streak bookkeeping (auto-escalation): the streak counts
+            # CONSECUTIVE all-error tool steps. Any other step type — text-only,
+            # empty response, blocked-tools, cancelled/timeout, or a step where
+            # some tool succeeded — breaks the run. Deciding this from the
+            # previous step's flag at the top of the loop makes it robust to the
+            # many `continue`/`break` paths below (they can't skip a reset here).
+            if not prev_step_all_errored:
+                consecutive_tool_error_steps = 0
+            prev_step_all_errored = False
+
             # Drain any appended user messages before each step
             messages = await self._drain_appended_messages(request_id, messages)
             # Sync context.messages after draining
@@ -1387,24 +3108,13 @@ class Agent(MCPServer):
 
             # Check for cancellation at the start of each step
             if self._is_cancelled(request_id):
-                logger.info("Request %s cancelled at step %d", request_id, step + 1)
-                # Signal cancellation using status contexts FIRST (so events are queued)
-                await status_worker.error(f"cancelled at step {step + 1}",
-                                      meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error(f"cancelled at step {step + 1}",
-                                            meta={"step": step + 1, "reason": "cancelled"})
-                # Give status events a moment to be captured by forwarder
-                await asyncio.sleep(0.01)
-                # Yield all pending status events before cancelled event
-                for status_event in context.status_forwarder.get_pending_events():
-                    yield status_event
-                # Now yield the cancelled event
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1}
+                async for event in cancelled_events(step):
+                    yield event
                 return
 
             # Progress heartbeat using status_coordinator
             await status_coordinator.progress(
-                f"step {step + 1}/{max_steps}",
+                "final call after the step budget" if final_call else f"step {step + 1}/{max_steps}",
                 meta={"step": step + 1, "max_steps": max_steps}
             )
 
@@ -1415,15 +3125,9 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
-            # Signal LLM call start
-            if llm_profile_info_override:
-                llm_display = f" ({llm_profile_info_override})"
-            else:
-                llm_display = f" ({self.llm_profile_info})" if self.llm_profile_info else " (unknown LLM)"
-            await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
-
-            # Update system message with current step number
-            # Pass session_id to use session-scoped template vars
+            # Re-render the system message (session-scoped template vars may have
+            # changed). Keep it free of per-step values: it is the cached prefix.
+            # The step count reaches the model through _step_budget_note.
             updated_system_msg, _ = self._render_prompts(
                 context.available_tools, max_steps, current_step=step + 1, session_id=context.session_id
             )
@@ -1431,6 +3135,191 @@ class Agent(MCPServer):
 
             # Emit thinking event before LLM call (for UI step display)
             yield {"type": "thinking", "step": step + 1}
+
+            # Before the hooks: the input they hand over needs no wake at the end.
+            self._presence_step(session_id, request_id)
+
+            # Pick the model that answers this step BEFORE the hooks run: they
+            # size the context by context.llm (context_engineer's arrival cap,
+            # context_summarizer's trigger, context_usage_tracker's percentage).
+            # Picked after them, a fallback with a smaller window was sized by
+            # the original's window, and a switch back to a freed LLM stripped
+            # the history the hooks had already worked on.
+
+            # Auto-escalation: run this step on the advanced model when a window
+            # is open and its LLM is not blocked. The budget round is only spent
+            # once it is settled that the advanced client answers.
+            # Not the final call: it only asks for the answer, and the old
+            # post-loop call never escalated either.
+            escalated_this_step = escalator.active and not final_call
+
+            def _pick_step_llm(escalate: bool):
+                """(client, fallback chain, escalated, fallback profile or None)
+                for this step. Spends no budget.
+
+                The wanted client — the escalation, the override or the run's
+                base — when its LLM is not blocked (llm/model_health.py); else
+                the first unblocked profile of the chain; else the wanted one
+                all the same: a blocked LLM beats no LLM. Coming back once the
+                block is lifted is a switch like any other, stripped below.
+                """
+                llm = active_llm
+                # Profil des TATSÄCHLICH aktiven Modells, wenn es vom Config-
+                # Primär abweicht: Eskalations-Swap oder explizites Override
+                # (llm_profile_info_override = "profil:provider/model"). Wird
+                # aus der Fallback-Kette exkludiert, sonst würde das gerade
+                # fehlschlagende Modell als sein eigener Fallback erneut laufen.
+                active_profile_override = None
+                if base_profile is not None:
+                    active_profile_override = base_profile
+                elif llm_override is not None and llm_profile_info_override:
+                    active_profile_override = llm_profile_info_override.split(":", 1)[0]
+                if escalate:
+                    escalation_llm = self._get_escalation_llm()
+                    if escalation_llm is None or not _takes_format(escalation_llm):
+                        # Advanced client couldn't be built — ran on standard.
+                        # Disable escalation for this run so we don't retry the
+                        # build every step (the window would never close).
+                        # Same for one that cannot take the run's structured
+                        # output: it will not learn to within the run.
+                        escalate = False
+                        escalator.disable()
+                    elif model_health.available(escalation_llm, request_id):
+                        llm = escalation_llm
+                        active_profile_override = (
+                            self.agent_config.advanced_llm_profile
+                            if self.agent_config else None
+                        )
+                    else:
+                        # Blocked for now: this step runs on standard, the
+                        # window stays open for a step after the block.
+                        escalate = False
+                # Ketten-Semantik: llm_profile = [primär, fallback1, ...],
+                # llm_profile_advanced analog. fallback_chain() liefert die
+                # passende Reihenfolge (advanced-Kette zuerst, dann die
+                # normale Kette als letztes Sicherheitsnetz).
+                profiles = (
+                    self.agent_config.fallback_chain(
+                        use_advanced_model, exclude=active_profile_override)
+                    if self.agent_config else []
+                )
+                if base_profile is not None and llm_override is not None and llm_profile_info_override:
+                    # The override the swap replaced failed too: not a fallback.
+                    failed_override = llm_profile_info_override.split(":", 1)[0]
+                    profiles = [p for p in profiles if p != failed_override]
+                if llm_override is not None and self.agent_config:
+                    # On an override the agent's own primary is not the run's
+                    # base: fallback_chain() leaves it out as the active model,
+                    # yet it is the first fallback -- with a one-entry chain the
+                    # only one.
+                    own_primary = (self.agent_config.advanced_llm_profile
+                                   if use_advanced_model and self.agent_config.advanced_llm_profile
+                                   else self.agent_config.default_llm_profile)
+                    override_profile = (llm_profile_info_override.split(":", 1)[0]
+                                        if llm_profile_info_override
+                                        else getattr(llm_override, "profile_name", None))
+                    if own_primary and own_primary not in profiles and own_primary not in (
+                            active_profile_override, override_profile):
+                        profiles.insert(0, own_primary)
+                if use_advanced_model and profiles:
+                    logger.debug(
+                        f"[{self.name}] use_advanced_model=True — fallback "
+                        f"chain: {profiles}"
+                    )
+                if not model_health.available(llm, request_id):
+                    blocked = getattr(llm, "model", "?")
+                    for index, profile in enumerate(profiles):
+                        client = self._fallback_client(profile)
+                        # _takes_format first: asking model_health makes this
+                        # request the prober of an LLM it would then not call.
+                        if (client is not None and _takes_format(client)
+                                and model_health.available(client, request_id)):
+                            logger.info(
+                                f"[{self.name}] LLM {blocked} is blocked for "
+                                f"{model_health.remaining(llm):.0f}s more; this step runs on {profile}")
+                            # The blocked profiles walked past stay in the
+                            # chain: if this one fails, a blocked LLM beats none.
+                            return client, profiles[:index] + profiles[index + 1:], escalate, profile
+                    logger.warning(
+                        f"[{self.name}] LLM {blocked} is blocked and no fallback is free: calling it anyway")
+                return llm, profiles, escalate, None
+
+            def _base_label() -> str:
+                if base_profile is not None:
+                    return base_profile
+                if llm_override is not None and llm_profile_info_override:
+                    return llm_profile_info_override.split(":", 1)[0]
+                return (display_profile_info or "base").split(":", 1)[0]
+
+            def _take_fallback():
+                """(label, client) to retry a failed call on, each taken once
+                per step: the first unblocked one of this step's chain, with the
+                run's base LLM as a member — the first after a failed
+                escalation, the last after a failed walk around a blocked base;
+                else the first one left all the same — a blocked LLM beats
+                none. None when all are used up."""
+                candidates = [(profile, None) for profile in fallback_profiles]
+                if escalated_this_step:
+                    # A failed escalation says nothing about the base: back to it
+                    # before the chain moves the step to another model.
+                    candidates.insert(0, (_base_label(), active_llm))
+                else:
+                    candidates.append((_base_label(), active_llm))
+                first_blocked = None
+                for index, (label, client) in enumerate(candidates):
+                    if index in fallback_taken:
+                        continue
+                    if client is None:
+                        client = self._fallback_client(label)
+                    if client is None or client is current_llm or not _takes_format(client):
+                        fallback_taken.add(index)
+                        continue
+                    if model_health.available(client, request_id):
+                        fallback_taken.add(index)
+                        return label, client
+                    if first_blocked is None:
+                        first_blocked = (index, label, client)
+                if first_blocked is None:
+                    return None
+                index, label, client = first_blocked
+                fallback_taken.add(index)
+                return label, client
+
+            async def _announce_llm():
+                # Signal LLM call start — for the picked client, so an escalation
+                # whose client did not build is not announced as one.
+                if escalated_this_step:
+                    llm_display = " (advanced — escalated: stuck)"
+                elif step_profile:
+                    llm_display = f" ({step_profile}:fallback)"
+                elif llm_profile_info_override and base_profile is None:
+                    llm_display = f" ({llm_profile_info_override})"
+                else:
+                    llm_display = f" ({display_profile_info})" if display_profile_info else " (unknown LLM)"
+                await status_worker.progress(f"Calling LLM{llm_display}", meta={"step": step + 1})
+
+            health_seen = model_health.version
+            previous_step_llm = self._step_llms.get(session_id)
+            current_llm, fallback_profiles, escalated_this_step, step_profile = (
+                _pick_step_llm(escalated_this_step))
+            fallback_taken: set = set()
+            # Clients this step already asked a second time after an error in
+            # the body -- each gets that once, see the upstream-error branch.
+            # The clients themselves, not id()s: a dropped fallback client's id
+            # can come back on the next one built.
+            body_error_retried: list = []
+            if previous_step_llm is not None and current_llm is not previous_step_llm:
+                # A switch between steps: into or out of an escalation, around a
+                # blocked LLM or back to it. The history carries the previous
+                # model's reasoning.
+                strip_all_reasoning_artifacts(messages)
+            # A switch since the previous request (or restart) left no step
+            # model behind; the artifacts name the model that produced them.
+            strip_foreign_reasoning_artifacts(messages, getattr(current_llm, "model", None))
+            # Before the hooks too: tool_preload runs tools inside them, and a
+            # tool that sizes the context asks llm_for_session.
+            self._step_llms[session_id] = current_llm
+            await _announce_llm()
 
             # Execute pre-LLM hooks with real-time status streaming
             # NOTE: Hooks execute synchronously from this generator's perspective,
@@ -1447,14 +3336,17 @@ class Agent(MCPServer):
                         step=step,
                         request_id=request_id,
                         session_id=session_id,
-                        llm=active_llm,
+                        llm=current_llm,
                         cancellation_token=main_token
                     )
                 )
 
                 # Stream status events while hook is running
-                # NOTE: No hard timeout - hooks can run as long as needed (e.g., context_summarizer may take 10+ minutes)
-                # Hooks are expected to implement their own timeouts if needed
+                # NOTE: this polling loop has no deadline of its own. Each hook
+                # is bounded by its per-hook timeout (asyncio.wait_for in
+                # hooks/registry.py; a timed-out hook is logged and skipped), so
+                # a long-running hook (e.g. context_summarizer) needs a timeout
+                # configured high enough for it.
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
@@ -1467,55 +3359,120 @@ class Agent(MCPServer):
                 for status_event in yield_pending_status_events():
                     yield status_event
 
-                # Check if hook set compacted_messages (e.g., context_summarizer)
-                compacted_messages = self._session_tracker.get_compacted_messages(session_id)
-                
-                if compacted_messages is not None:
-                    # Hook used compaction mechanism - reconstruct message list
-                    logger.debug(f"Pre-LLM hook set compacted_messages with {len(compacted_messages)} messages")
-                    
-                    # Build: [system] + compacted + [current_step_messages]
-                    reconstructed = []
-                    # Check first message for system role (handle both dict and ChatMessage)
-                    if messages:
-                        first_msg = messages[0]
-                        first_role = first_msg.get("role") if isinstance(first_msg, dict) else getattr(first_msg, "role", None)
-                        if first_role == "system":
-                            reconstructed.append(first_msg)
-                    
-                    reconstructed.extend(compacted_messages)
-                    
-                    messages = reconstructed
-                    context.messages = reconstructed
-                    
-                    # Clear compacted_messages for next iteration
-                    self._session_tracker.clear_compacted_messages(session_id)
-                    
-                elif modified_messages is not None:
-                    # Hook returned modified messages directly (old mechanism)
-                    messages = modified_messages
-                    context.messages = modified_messages
+                # Select the message list that will go to the LLM. The
+                # selection logic is extracted to ``_select_llm_messages``
+                # so it can be unit-tested in isolation (the surrounding
+                # step-loop is generator-based and hard to test directly).
+                messages = self._select_llm_messages(
+                    pre_hook_messages=messages,
+                    modified_messages=modified_messages,
+                )
+                context.messages = messages
+                # Whatever a hook staged now stands in `messages`. What is left
+                # in the marker is spent, and it is poisonous from here on: the
+                # code after tool execution reads a still-set marker as "a tool
+                # rewrote the history mid-request" and rebuilds around it,
+                # dropping the assistant tool-call message just appended.
+                self._session_tracker.clear_compacted_messages(session_id)
             except Exception as e:
                 logger.warning(f"Pre-LLM hooks failed: {e}", exc_info=True)
 
+            # AFTER the hooks, so the run keeps the last word. Plugins append
+            # their blocks in pre_llm_call, and the max-steps request ("answer
+            # NOW, do NOT use any tools") only does its job as the last thing
+            # the model reads -- a todo list with open items behind it sends
+            # the model back to the tools. Outside the try on purpose: a hook
+            # chain that fell over must not also cost the run its step budget.
+            budget_note = self._step_budget_note(step, max_steps)
+            if budget_note is not None:
+                messages.append(budget_note)
+                context.messages = messages
+
+            # The blocks are shared by every agent, and the hooks can take
+            # minutes (context_summarizer): another request may have blocked
+            # this step's LLM, or an answer lifted the block this step walked
+            # around, meanwhile. Pick again rather than call an LLM known to be
+            # limited, or leave a free one unused. The hooks are not re-run —
+            # they are not idempotent (tool_preload runs tools); the next step's
+            # hooks see the new model.
+            if model_health.version != health_seen:
+                previous_llm = current_llm
+                current_llm, fallback_profiles, escalated_this_step, step_profile = (
+                    _pick_step_llm(escalated_this_step))
+                fallback_taken = set()
+                self._step_llms[session_id] = current_llm
+                if current_llm is not previous_llm:
+                    # The first pick may have made this request the prober of
+                    # the LLM it now leaves: hand the probe back.
+                    model_health.drop_probe(previous_llm, request_id)
+                    # A model switch either way: the history the hooks worked
+                    # on carries the previous model's reasoning items.
+                    strip_all_reasoning_artifacts(messages)
+                    await _announce_llm()
+
+            # Spent only now that it is settled which model answers: a re-pick
+            # onto a fallback would otherwise have spent a round on no advanced call.
+            if escalated_this_step:
+                escalator.consume()
+
             # LLM call with streaming support and fallback handling
             llm_out = None
-            
-            # Check if fallback recovery period has elapsed - try original LLM again
-            self._check_fallback_recovery()
-            
-            # Check if we have an active persistent fallback (from previous rate limit/quota exhaustion)
-            if self._active_fallback_llm is not None:
-                logger.info(f"[{self.name}] Using persistent fallback LLM: {self._active_fallback_profile}")
-                current_llm = self._active_fallback_llm
-                fallback_index = 0  # Already at fallback, no further fallbacks available
-                fallback_profiles = []  # No more fallbacks to try
-            else:
-                current_llm = active_llm
-                fallback_index = 0
-                fallback_profiles = self.agent_config.fallback_profiles if self.agent_config else []
-            
-            while True:  # Retry loop for fallbacks
+
+            # WHICH client was told to try again after its thinking looped —
+            # not merely THAT one was. A fallback switch later in this step
+            # replaces current_llm, and the new model has earned no exemption:
+            # comparing the client re-arms the watchdog by itself, where a
+            # plain flag would leave an innocent model unwatched.
+            reasoning_loop_llm = None
+
+            async def _reasoning_progress(text, chars, previous):
+                # current_llm is read at call time: after a fallback switch the
+                # hooks see the model that is actually thinking.
+                await self._hook_manager.execute_llm_progress_hooks(
+                    reasoning_text=text, reasoning_chars=chars,
+                    previous_reasoning_chars=previous, step=step,
+                    request_id=request_id, session_id=session_id, llm=current_llm)
+
+            while True:  # Retry loop for fallbacks (rate limits + upstream errors)
+                # For tools that size the context themselves (compact, summarize):
+                # the model answering this session's step, see llm_for_session.
+                self._step_llms[session_id] = current_llm
+                # Structured output, decided per CALL: a fallback within the step is another
+                # model. The field goes on every call of the run, the tool steps included --
+                # constant through the run, it keeps the cached prefix (OpenAI puts the schema
+                # into the rendered context, Anthropic invalidates the cache when it changes);
+                # a field on the last call only would miss the cache exactly there.
+                wire_format = None
+                if response_format is not None:
+                    if supports_response_format(current_llm, response_format):
+                        wire_format = response_format
+                    elif not response_format.prompt_fallback:
+                        # Unreachable while every switch of model asks _takes_format (and the run's
+                        # own model is asked at the start): the guard that keeps a switch added
+                        # later from sending the request without its field.
+                        model_health.drop_probe(current_llm, request_id)
+                        error_msg = unsupported_message(current_llm, response_format)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg,
+                               "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+                        return
+                    # A schema-less JSON mode says nothing about the shape, and a model without
+                    # the field hears of the format only here. Once, as long as it stays in the
+                    # history, and before this step's budget note, which has to stay the last
+                    # thing the model reads.
+                    if (wire_format is None or response_format.type == JSON_OBJECT) and not any(
+                            getattr(m, "injected_by", None) == FORMAT_NOTE and m.content == format_note_text
+                            for m in messages):
+                        note = self._structured_output_note(format_note_text, FORMAT_NOTE)
+                        if budget_note is not None and messages and messages[-1] is budget_note:
+                            messages.insert(len(messages) - 1, note)
+                        else:
+                            messages.append(note)
+                        context.messages = messages
+                pending_thinking_complete = None
+                _llm_call_started = asyncio.get_event_loop().time()
+                health_asked_at = model_health.now()
                 try:
                     async for event in self._call_llm_with_streaming(
                         llm=current_llm,
@@ -1524,7 +3481,12 @@ class Agent(MCPServer):
                         cancellation_token=main_token,
                         step=step,
                         yield_pending_status_fn=yield_pending_status_events,
-                        status_scope=status_worker
+                        status_scope=status_worker,
+                        watch_reasoning=current_llm is not reasoning_loop_llm,
+                        on_reasoning_progress=(_reasoning_progress
+                                               if self._hook_manager.wants_llm_progress()
+                                               else None),
+                        response_format=wire_format,
                     ):
                         event_type = event.get("type")
 
@@ -1534,77 +3496,304 @@ class Agent(MCPServer):
                         elif event_type == "thinking_delta":
                             # Yield real-time token deltas to WebUI
                             yield event
-                        elif event_type == "status":
-                            # Yield interleaved status events
+                        elif event_type in ("status", "sub_run"):
+                            # What the forwarder collected meanwhile: status lines, and
+                            # the events of sub-agents working while this call waits.
                             yield event
                         elif event_type == "thinking_complete":
                             # CRITICAL: Make a deep copy of assistant dict to prevent
                             # format_output hooks in app.py from modifying the stored message!
                             # app.py formats events for display, but we need raw Markdown in messages
-                            import copy
                             llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                             # Preserve usage data if present in event
                             if "usage" in event:
                                 llm_out["usage"] = event["usage"]
-                            # Yield thinking_complete to WebUI for final formatting
-                            yield event
-                    # Success - exit retry loop
+                            # ...and finish_reason, which the truncation guard
+                            # below reads off llm_out.
+                            if event.get("finish_reason"):
+                                llm_out["finish_reason"] = event["finish_reason"]
+                            # Store event — DON'T yield yet, check for upstream errors first
+                            pending_thinking_complete = event
+
+                    # Check for upstream error in response body BEFORE yielding to client.
+                    # Upstream errors (e.g. Qwen/Alibaba content filter) arrive as HTTP 200
+                    # with {"error": ...} in the body — not as exceptions.
+                    # Handling them here (inside the while-True retry loop) allows clean
+                    # retry with a fallback LLM without leaking the error event to the client.
+                    _assistant_check = llm_out.get("assistant", {}) if llm_out else {}
+                    if "error" in _assistant_check:
+                        error_info = _assistant_check["error"]
+                        error_msg = error_info.get("message", "Unknown LLM error")
+                        error_type = error_info.get("type", "unknown")
+                        logger.warning(f"LLM returned upstream error: {error_type} - {error_msg}")
+                        # Billed all the same: the failed call's usage still
+                        # reaches the caller's sum of the turn -- its content does not.
+                        if pending_thinking_complete and pending_thinking_complete.get("usage"):
+                            yield _name_the_model({
+                                "type": "thinking_complete",
+                                "step": pending_thinking_complete.get("step"),
+                                "assistant": {},
+                                "usage": pending_thinking_complete["usage"],
+                            }, current_llm)
+
+                        if (not str(error_type).startswith("content_filter")
+                                and not error_info.get("retried")
+                                and not any(c is current_llm for c in body_error_retried)):
+                            # Once more on the SAME model first. Measured
+                            # 22.09.2026: the same request shape went through
+                            # 405 times, and the two invalid_prompt bodies came
+                            # 3 s apart -- a gateway hiccup, not the request.
+                            # Straight to the fallback moved those runs onto
+                            # it for good. An unknown deterministic error costs
+                            # one call more, then switches. Straight on: a
+                            # content filter (content_filter, httpx's
+                            # content_filter_<native>) -- the same model blocks
+                            # the same text again -- and an error its client
+                            # marks "retried", which already went through a
+                            # whole retry cycle with backoff.
+                            body_error_retried.append(current_llm)
+                            logger.warning(
+                                f"[{self.name}] Upstream error from LLM, "
+                                f"asking {getattr(current_llm, 'model', '?')} once more")
+                            await status_worker.progress(
+                                f"LLM error ({error_type}), retrying once",
+                                meta={"step": step + 1})
+                            continue
+                        taken = _take_fallback()
+                        if taken:
+                            fallback_profile, fallback_llm = taken
+                            logger.warning(
+                                f"[{self.name}] Upstream error from LLM, "
+                                f"switching to fallback: {fallback_profile}"
+                            )
+                            await status_worker.progress(
+                                f"LLM error ({error_type}), switching to {fallback_profile}",
+                                meta={"step": step + 1, "fallback": fallback_profile}
+                            )
+                            # No block, like the 5xx path it is the twin of: an
+                            # upstream error says the gateway stumbled, not that
+                            # this LLM is gone. Rescues THIS request; the next
+                            # starts on the original again.
+                            self._strip_for_switch(fallback_profile, messages)
+                            # Also swap the run's base LLM so hooks use the
+                            # fallback too — when the BASE failed. An escalation
+                            # model that failed says nothing about the base; only
+                            # this step is rescued.
+                            if current_llm is active_llm:
+                                display_profile_info = f"{fallback_profile}:fallback"
+                                active_llm = fallback_llm
+                                base_profile = fallback_profile
+                            current_llm = fallback_llm
+                            continue  # Retry LLM call with fallback in same step
+                        # The chain is used up — hard error
+                        yield {"type": "error", "message": error_msg, "error_type": error_type}
+                        return
+
+                    # No error — yield the deferred thinking_complete and exit retry loop.
+                    # An answer lifts the LLM's block for every agent — one set
+                    # before this call went out.
+                    model_health.release(current_llm, asked_at=health_asked_at)
+                    if pending_thinking_complete:
+                        yield _name_the_model(pending_thinking_complete, current_llm)
                     break
                     
+                except ReasoningLoopError as e:
+                    # The model walked into a circle inside its own thinking.
+                    # Nothing is wrong with the provider, the model or the
+                    # request — the sampling was unlucky — so this is the one
+                    # recovery here that does NOT switch profiles: a profile
+                    # switch would punish a healthy model for one bad roll.
+                    #
+                    # The exemption belongs to the CLIENT, not to the step: the
+                    # retry runs unwatched, but a fallback switch afterwards
+                    # brings a different client, and that one is watched again
+                    # — it can abort here too, in the same step. What bounds
+                    # this is the fallback chain, which is finite and shrinks
+                    # with every switch; no client is ever watched twice.
+                    reasoning_loop_llm = current_llm
+                    logger.warning(
+                        "[%s] Reasoning loop after %d characters of thinking "
+                        "(%s) — retrying the same model once: %s",
+                        self.name, e.characters, e.reason,
+                        getattr(current_llm, "model", "?"))
+                    await status_worker.progress(
+                        "Thinking went in circles, retrying once",
+                        meta={"step": step + 1, "reasoning_characters": e.characters})
+
+                    # The aborted attempt WAS produced, so it must leave a
+                    # trace. The client's own post-response notification sits
+                    # after the stream, which this abort never reaches, so
+                    # without this the message debugger keeps a request with
+                    # no response — and every later recalibration of the
+                    # threshold reads that same database and would be blind to
+                    # exactly the calls this guard aborted.
+                    #
+                    # What it can and cannot say: the reasoning characters and
+                    # the score are known and travel in response_data, so a
+                    # later measurement can use these rows. The TOKENS are not
+                    # — usage arrives with the completed response, which this
+                    # call never produced — so the cost report still misses
+                    # what the abort spent. Naming that beats implying the
+                    # entry closes it.
+                    #
+                    # Reaching into the client's notifier is a deliberate
+                    # layer crossing: there is no public equivalent, and an
+                    # entry carrying "error" is the shape it already uses for
+                    # its own failed attempts, which is why it skips the
+                    # latency stash and leaves cost attribution untouched.
+                    notify = getattr(current_llm, "_notify_post_response", None)
+                    if notify is not None:
+                        await notify({
+                            # Most clients name themselves in their own
+                            # notifications but carry no _PROVIDER attribute;
+                            # the class name keeps the row attributable
+                            # instead of filing it under "unknown".
+                            "provider": (getattr(current_llm, "_PROVIDER", None)
+                                         or type(current_llm).__name__),
+                            "model": getattr(current_llm, "model", "?"),
+                            "url": "", "is_streaming": True,
+                            "duration_ms": (asyncio.get_event_loop().time()
+                                            - _llm_call_started) * 1000,
+                            "error": f"reasoning loop aborted: {e.reason}",
+                            "finish_reason": "reasoning_loop_aborted",
+                            "response_data": {"reasoning_loop": {
+                                "characters": e.characters,
+                                "reason": e.reason,
+                            }},
+                        })
+                    continue
+
                 except (LLMRateLimitError, LLMQuotaExhaustedError) as e:
                     is_quota_exhausted = isinstance(e, LLMQuotaExhaustedError)
-                    
-                    # Try fallback profiles
-                    if fallback_index < len(fallback_profiles):
-                        fallback_profile = fallback_profiles[fallback_index]
-                        fallback_index += 1
-                        
+                    reason = "quota exhausted" if is_quota_exhausted else "rate limit hit"
+                    # A block of the LLM, not of this agent: every agent walks
+                    # around it until it runs out or the LLM answers someone. A
+                    # rate limit starts short and grows while the LLM keeps
+                    # failing; an exhausted quota does not get better in a minute.
+                    pause = model_health.block(
+                        current_llm, max_pause=max_block_seconds,
+                        rate_limit=not is_quota_exhausted, retry_after=e.retry_after,
+                        asked_at=health_asked_at, reason=f"{reason}, seen by {self.name}")
+                    taken = _take_fallback()
+                    if taken:
+                        fallback_profile, fallback_llm = taken
                         logger.warning(
                             f"[{self.name}] {e.__class__.__name__}: {e}. "
                             f"Switching to fallback profile: {fallback_profile}"
                         )
+                        retry_in = f", retry in {pause:.0f}s" if pause and pause >= 1 else ""
                         await status_worker.progress(
-                            f"{'Quota exhausted' if is_quota_exhausted else 'Rate limit hit'}, switching to {fallback_profile}",
+                            f"{reason.capitalize()}, switching to {fallback_profile}{retry_in}",
+                            meta={"step": step + 1, "fallback": fallback_profile, "blocked_seconds": pause}
+                        )
+                        self._strip_for_switch(fallback_profile, messages)
+                        # No swap of the run's base: the next step asks the
+                        # blocks again and returns to the base once it is free.
+                        current_llm = fallback_llm
+                        continue  # Retry with fallback
+                    logger.error(f"[{self.name}] No fallback profiles available, {reason}")
+                    raise
+
+                except LLMServerError as e:
+                    # 5xx server errors (e.g. DeepSeek 504) — try fallback, but no block.
+                    # Server errors are transient outages; the primary LLM should be retried next time.
+                    taken = _take_fallback()
+                    if taken:
+                        fallback_profile, fallback_llm = taken
+                        logger.warning(
+                            f"[{self.name}] Server error {e.status_code} from {e.model}: {e}. "
+                            f"Switching to fallback profile: {fallback_profile}"
+                        )
+                        await status_worker.progress(
+                            f"Server error {e.status_code}, switching to {fallback_profile}",
                             meta={"step": step + 1, "fallback": fallback_profile}
                         )
-                        
-                        fallback_llm = self._create_fallback_llm(fallback_profile)
-                        if fallback_llm:
-                            current_llm = fallback_llm
-                            # Update profile info for status display
-                            self.llm_profile_info = f"{fallback_profile}:fallback"
-                            
-                            # Make fallback PERSISTENT for both rate limit and quota exhausted
-                            # Rate limit: temporary, will try original again after recovery period
-                            # Quota exhausted: permanent until recovery period (usually longer)
-                            import time
-                            self._active_fallback_llm = fallback_llm
-                            self._active_fallback_profile = fallback_profile
-                            self._fallback_activated_at = time.time()
-                            
-                            recovery_seconds = 3600  # Default
-                            if self.agent_config:
-                                recovery_seconds = self.agent_config.fallback_recovery_seconds
-                            
-                            reason = "quota exhausted" if is_quota_exhausted else "rate limit hit"
-                            logger.info(
-                                f"[{self.name}] {reason.title()} - fallback to {fallback_profile} "
-                                f"is now PERSISTENT. Will try original again in {recovery_seconds}s"
-                            )
-                            await status_worker.progress(
-                                f"Switched to {fallback_profile} ({reason}, retry in {recovery_seconds//60}min)",
-                                meta={"step": step + 1, "fallback": fallback_profile, "persistent": True, "recovery_seconds": recovery_seconds}
-                            )
-                            
-                            continue  # Retry with fallback
-                        else:
-                            logger.error(f"[{self.name}] Failed to create fallback LLM, giving up")
-                            raise
-                    else:
-                        # No more fallbacks available
-                        logger.error(f"[{self.name}] No fallback profiles available, rate limit exceeded")
+                        self._strip_for_switch(fallback_profile, messages)
+                        # Request-scoped swap when the BASE failed, like its
+                        # twins (upstream error, connection error): without it
+                        # every following step started on the failing base
+                        # again, its hooks sizing the context for a model the
+                        # call never reached.
+                        if current_llm is active_llm:
+                            display_profile_info = f"{fallback_profile}:fallback"
+                            active_llm = fallback_llm
+                            base_profile = fallback_profile
+                        current_llm = fallback_llm
+                        continue  # Retry with fallback (request-scoped)
+                    logger.error(f"[{self.name}] No fallback profiles available, server error unrecoverable")
+                    raise
+
+                except (LLMConnectionError, httpx.TransportError,
+                        httpx.HTTPStatusError) as e:
+                    # Transport errors (connect/read timeout, network failure) — the
+                    # endpoint is unreachable, there is no HTTP response. Try the next
+                    # profile, no block (same reasoning as LLMServerError above).
+                    # Raw httpx.TransportError covers clients that re-raise transport
+                    # failures untyped (e.g. the OpenAI responses client).
+                    #
+                    # httpx.HTTPStatusError is the 4xx case (429/5xx arrive as typed
+                    # errors before this). For a CHAIN it means: this provider refuses
+                    # this request. Since 2026-08-20 the primary of 186 chains is an
+                    # OpenRouter profile with a direct-API fallback behind it; without
+                    # this clause a 4xx killed the run without ever trying the
+                    # fallback the chain exists for.
+                    #
+                    # The status decides HOW to fall back (review finding: lumping
+                    # them made an expired key look like a network error and re-probed
+                    # it on every step):
+                    #   400/413/422  request-shaped (too long, cap exceeded) — a
+                    #                different request may pass: no block.
+                    #   401/402/403/404  key-, credit- or model-level; holds for every
+                    #                request on this endpoint. The LLM is BLOCKED for
+                    #                every agent, so the dead endpoint is not
+                    #                re-probed max_steps times. A cross-provider
+                    #                chain member has its own key and still rescues
+                    #                the run.
+                    status_code = getattr(getattr(e, "response", None), "status_code", None)
+                    endpoint_level = status_code in (401, 402, 403, 404)
+                    if status_code is None and _is_local_resource_exhaustion(e):
+                        # No profile can rescue this: the next client cannot open
+                        # a socket either. Walking the chain would only burn the
+                        # fallbacks — onto more expensive models — and hide the
+                        # real cause behind a provider-shaped error message.
+                        logger.error(
+                            f"[{self.name}] Out of file descriptors while calling "
+                            f"the LLM ({e}). This is a local resource limit, not a "
+                            f"provider failure — not switching profiles. Check the "
+                            f"process's open descriptors against LimitNOFILE."
+                        )
                         raise
-                
+                    kind = (f"HTTP {status_code}" if status_code
+                            else "Connection/transport error")
+                    if endpoint_level:
+                        model_health.block(
+                            current_llm, max_pause=max_block_seconds, rate_limit=False,
+                            asked_at=health_asked_at, reason=f"{kind}, seen by {self.name}")
+                    taken = _take_fallback()
+                    if taken:
+                        fallback_profile, fallback_llm = taken
+                        logger.warning(
+                            f"[{self.name}] {kind} from LLM: {e}. "
+                            f"Switching to fallback profile: {fallback_profile}"
+                        )
+                        await status_worker.progress(
+                            f"Connection error, switching to {fallback_profile}",
+                            meta={"step": step + 1, "fallback": fallback_profile}
+                        )
+                        self._strip_for_switch(fallback_profile, messages)
+                        # Request-scoped swap when the BASE failed (like the
+                        # upstream-error and 5xx paths): without it, EVERY
+                        # following step retries the dead endpoint first
+                        # (~connect timeout x retries per step).
+                        if current_llm is active_llm:
+                            display_profile_info = f"{fallback_profile}:fallback"
+                            active_llm = fallback_llm
+                            base_profile = fallback_profile
+                        current_llm = fallback_llm
+                        continue  # Retry with fallback
+                    logger.error(f"[{self.name}] No fallback profiles available, connection error unrecoverable")
+                    raise
+
                 except asyncio.CancelledError:
                     # Streaming was cancelled - send proper status events and cancelled event
                     logger.info(f"Request {request_id} cancelled during LLM call at step {step + 1}")
@@ -1639,24 +3828,47 @@ class Agent(MCPServer):
 
             assistant = llm_out.get("assistant", {}) if llm_out else {}
 
-            # Check if LLM returned an error response
-            if "error" in assistant:
-                error_info = assistant["error"]
-                error_msg = error_info.get("message", "Unknown LLM error")
-                error_type = error_info.get("type", "unknown")
-                logger.warning(f"LLM returned error: {error_type} - {error_msg}")
-                yield {"type": "error", "message": error_msg, "error_type": error_type}
-                return
-
             content = assistant.get("content")
             tool_calls = assistant.get("tool_calls", [])
+            # "length" = the model hit its output cap. With no content that is a
+            # TRUNCATION, not an empty answer — see the empty-response guard below.
+            finish_reason = llm_out.get("finish_reason") if llm_out else None
+            # Provider-side encrypted thinking blocks (Gemini 3.x thought_signature
+            # via OpenRouter's reasoning_details). MUST be carried through to the
+            # next request or upstream returns MALFORMED_FUNCTION_CALL.
+            reasoning_details = assistant.get("reasoning_details")
+            answering_model = getattr(current_llm, "model", None)
 
             # Create assistant message and add it BEFORE post_llm hooks
             # so message debugger can capture the complete conversation
+            # DeepSeek thinking mode: with `tools` in the request, the assistant's
+            # reasoning_content MUST be passed back on every subsequent turn
+            # (api-docs.deepseek.com/guides/thinking_mode#tool-call). Dropping it
+            # here made _postprocess_messages_for_provider send an empty string,
+            # so the model lost its chain of thought after every tool call and
+            # re-derived it from scratch — reasoning grew with the conversation
+            # until it hit the 65536-token cap (measured: 2.6s/103 reasoning
+            # tokens on turn 1, 650s/65536 once tool results had accumulated).
+            # Agents without tool calls (v4 pipeline) were never affected, which
+            # is why this only showed up on the tool-heavy coding agents.
             assistant_msg = ChatMessage(
                 role="assistant",
                 content=content or "",
-                tool_calls=tool_calls if tool_calls else None,
+                tool_calls=history_safe_tool_calls(tool_calls) if tool_calls else None,
+                reasoning_content=assistant.get("reasoning_content"),
+                reasoning_details=reasoning_details,
+                reasoning_model=(answering_model if reasoning_details
+                                 and isinstance(answering_model, str) else None),
+                # Anthropic thinking blocks (+ the model that signed them).
+                # Same contract as reasoning_content above: with tool use they
+                # must be echoed back complete and unmodified, so they have to
+                # survive on the message.
+                thinking_blocks=assistant.get("thinking_blocks"),
+                thinking_model=assistant.get("thinking_model"),
+                # OpenRouter backend of this turn: the next request pins to it.
+                served_by=assistant.get("served_by"),
+                # the step as the live events number it (ChatMessage.step)
+                step=step + 1,
                 timestamp=datetime.now(timezone.utc)
             )
             messages.append(assistant_msg)
@@ -1667,6 +3879,11 @@ class Agent(MCPServer):
             # Execute post-LLM hooks to transform the response
             # NOTE: Using same polling pattern as pre_llm_hooks to support
             # future hooks that may emit status messages during execution.
+            # Init per step: the continuation check below reads hook_metadata even
+            # when the hook block fails — without this a first-step hook failure
+            # raises NameError, and later steps would reuse the PREVIOUS step's
+            # metadata (stale continuation signal).
+            hook_metadata: Dict[str, Any] = {}
             try:
                 # Create async task for hook execution
                 hook_task = asyncio.create_task(
@@ -1676,13 +3893,15 @@ class Agent(MCPServer):
                         step=step,
                         request_id=request_id,
                         session_id=session_id,
-                        llm=active_llm
+                        # The client that produced this response — after a
+                        # fallback switch in the retry loop, not the run's base.
+                        llm=current_llm
                     )
                 )
 
                 # Stream status events while hook is running
-                # NOTE: No hard timeout - hooks can run as long as needed
-                # Hooks are expected to implement their own timeouts if needed
+                # NOTE: this polling loop has no deadline of its own; each hook
+                # is bounded by its per-hook timeout (hooks/registry.py).
                 while not hook_task.done():
                     for status_event in yield_pending_status_events():
                         yield status_event
@@ -1707,7 +3926,7 @@ class Agent(MCPServer):
                         assistant_msg.content = content or ""
                     if new_tool_calls is not None:
                         tool_calls = new_tool_calls
-                        assistant_msg.tool_calls = tool_calls if tool_calls else None
+                        assistant_msg.tool_calls = history_safe_tool_calls(tool_calls) if tool_calls else None
 
                     # Set content_format from hook metadata (e.g., 'html', 'markdown', 'text')
                     if "content_format" in hook_metadata:
@@ -1718,8 +3937,13 @@ class Agent(MCPServer):
             # Format content for display (markdown -> HTML for web UI)
             formatted_content = content
             content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
+            # A structured run's answer is JSON, not markdown: rendered to HTML it would be neither
+            # what the caller asked for nor parseable (<p>{<br>"a": 1</p>).
+            structured_answer = response_format is not None and not tool_calls
+            if structured_answer:
+                content_format = "json"
             try:
-                if content and self._hook_manager:
+                if content and self._hook_manager and not structured_answer:
                     formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
                         output=content,
                         request_id=request_id or "unknown",
@@ -1742,6 +3966,28 @@ class Agent(MCPServer):
             for status_event in yield_pending_status_events():
                 yield status_event
 
+            # Truncated but NOT empty. The guard below only covers "the model
+            # produced nothing at all", so a cut-off answer WITH content fell
+            # through as if it were complete — a scene ending mid-sentence, or
+            # a tool call whose arguments JSON is half-written (which upstream
+            # then rejects on the next turn as invalid_prompt).
+            # Deliberately a warning and not an error: an error moves the run
+            # onto the fallback profile and discards output that is
+            # usually still usable — the same trade-off the incomplete_stream
+            # branch settles the same way.
+            # "In a row" means answers: one that ended on its own -- a tool call
+            # of a model now writing in parts included -- starts the count again.
+            if finish_reason != "length":
+                consecutive_cut_off = 0
+            if finish_reason == "length" and (content or tool_calls):
+                logger.warning(
+                    "[%s] Answer truncated at the output cap (finish_reason=length, "
+                    "model=%s, chars=%d, tool_calls=%d) — it is NOT complete. "
+                    "Raise max_tokens or lower the reasoning level if this recurs.",
+                    self.name, getattr(current_llm, "model", "?"),
+                    len(content or ""), len(tool_calls or []),
+                )
+
             # Infinite loop guard: Track consecutive empty responses FIRST
             # (before checking tool calls, to catch completely empty responses)
             if not content and not tool_calls:
@@ -1755,11 +4001,49 @@ class Agent(MCPServer):
                         context.messages.pop()
                     logger.debug("Removed empty assistant message from conversation history")
                 
-                if consecutive_empty_responses >= max_consecutive_empty:
-                    logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' user message to prompt LLM")
-                    # Instead of breaking, inject a "Continue" user message to nudge the LLM
-                    # This mimics the user typing "weiter" or "continue" manually
-                    continue_message = ChatMessage(role="user", content="Continue with your task.")
+                # Output cap exhausted with nothing to show: the model spent its
+                # whole budget (typically on reasoning) and was cut off. This is
+                # NOT "the model had nothing to say", and a 'Continue' nudge just
+                # replays the same runaway — observed as 4 x ~11 min and ~260k
+                # reasoning tokens burned for zero output. Fail fast and say why.
+                if finish_reason == "length":
+                    usage = (llm_out or {}).get("usage") or {}
+                    reasoning_tokens = (
+                        (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+                    )
+                    error_msg = (
+                        "LLM hit its output token limit without producing any content "
+                        f"(finish_reason=length, completion_tokens="
+                        f"{usage.get('completion_tokens', '?')}"
+                        + (f", of which reasoning={reasoning_tokens}" if reasoning_tokens else "")
+                        + "). The model exhausted its budget before answering — lower the "
+                        "thinking/reasoning level, raise max_tokens, or use a different model."
+                    )
+                    logger.error(error_msg)
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
+
+                # Not on the final call: no step follows to read the nudge, and
+                # the session would keep it as the conversation's last word.
+                if consecutive_empty_responses >= max_consecutive_empty and not final_call:
+                    logger.warning(f"Empty response #{consecutive_empty_responses}: Injecting 'Continue' note to prompt LLM")
+                    # Instead of breaking, nudge the LLM. The RUN asks for this,
+                    # not a person -- the note used to arrive as a user message
+                    # ("mimics the user typing weiter"), and stayed in the
+                    # session afterwards as if someone had.
+                    #
+                    # The role stays `developer` although a prompt ENDING on one
+                    # cannot be answered (measured 21.09.2026: 6/6 empty, and
+                    # Google refuses such a request outright). That is a wire
+                    # problem and it is fixed on the wire -- the stored message
+                    # keeps saying who spoke, and the client lowers the LAST
+                    # developer item to the user rung. Doing it here instead
+                    # would put a user-role loop note back in the transcript,
+                    # which is what test_agent_step_budget_note forbids.
+                    continue_message = ChatMessage(role=DEVELOPER, content="Continue with your task.",
+                                                   timestamp=datetime.now(timezone.utc),
+                                                   injected_by="agent.empty_response")
                     messages.append(continue_message)
                     # Don't reset counter - if we get another empty response after this, we'll inject again
                     # But cap at a reasonable limit to prevent truly infinite loops
@@ -1776,12 +4060,9 @@ class Agent(MCPServer):
                 
                 # Persist session after each valid (non-empty) LLM response to preserve progress on cancellation
                 # NOTE: We only persist non-empty responses to avoid accumulating useless empty messages
-                try:
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} after LLM response (step {step}) with {len(conversation_msgs)} messages")
-                except Exception as e:
-                    logger.warning(f"Failed to persist session {session_id} after LLM response: {e}", exc_info=True)
+                await self._persist_conversation(
+                    session_id, messages, to_disk=False,
+                    note=f"after LLM response (step {step})")
 
             # Check if we have tool calls to execute
             if tool_calls:
@@ -1790,7 +4071,7 @@ class Agent(MCPServer):
                 
                 # ===== TOOL CALL LOOP DETECTION =====
                 # Check for repeated tool call patterns that indicate the agent is stuck
-                loop_result = self._loop_detector.record_batch_and_check(tool_calls, step)
+                loop_result = loop_detector.record_batch_and_check(tool_calls, step)
                 
                 pending_intervention_msg: Optional[ChatMessage] = None
 
@@ -1804,9 +4085,10 @@ class Agent(MCPServer):
                     
                     # Prepare intervention message to nudge the LLM
                     pending_intervention_msg = ChatMessage(
-                        role="user",
+                        role=DEVELOPER,
                         content=loop_result.intervention,
-                        timestamp=datetime.now(timezone.utc)
+                        timestamp=datetime.now(timezone.utc),
+                        injected_by="agent.loop_intervention",
                     )
                     
                     # Emit status event for visibility
@@ -1814,7 +4096,21 @@ class Agent(MCPServer):
                         f"Loop detected: {loop_result.tool_name} ({loop_result.repetition_count}x)",
                         meta={"step": step + 1, "loop_type": loop_result.loop_type}
                     )
-                    
+
+                    # Objective stuck signal → open an escalation window so the
+                    # NEXT few steps run on the advanced model (budget permitting).
+                    # No step follows the final call to run on it.
+                    esc_reason = None if final_call else escalator.trigger(
+                        f"tool-call loop ({loop_result.tool_name})")
+                    if esc_reason:
+                        logger.warning(
+                            "[%s] auto-escalating to advanced model at step %d: %s "
+                            "(budget used %d/%d)", self.name, step + 1, esc_reason,
+                            escalator.calls_used, escalator.max_calls)
+                        await status_worker.progress(
+                            f"auto-escalating to advanced model ({esc_reason})",
+                            meta={"step": step + 1})
+
                     # If tool should be blocked, filter it out
                     if loop_result.should_block_tool:
                         blocked_tools = loop_result.blocked_tools
@@ -1828,12 +4124,57 @@ class Agent(MCPServer):
                                 f"[{self.name}] Blocked {original_count - len(tool_calls)} tool calls "
                                 f"due to loop detection. Blocked tools: {blocked_tools}"
                             )
+                            if final_call:
+                                # A blocked call gets no result. After a step the
+                                # next call's message_validator drops it from the
+                                # history; after the final call no call follows,
+                                # and the session would keep it unanswered.
+                                assistant_msg.tool_calls = (
+                                    history_safe_tool_calls(tool_calls) if tool_calls else None)
+                                if (not tool_calls and not (content and content.strip())
+                                        and messages[-1] is assistant_msg):
+                                    messages.pop()
+                                    if (context.messages is not messages and context.messages
+                                            and context.messages[-1] is assistant_msg):
+                                        context.messages.pop()
                             # If all tools were blocked, continue to next iteration
                             # The intervention message will prompt the LLM to try something else
                             if not tool_calls:
                                 # No tool results will follow, so inject now to keep the loop warning.
-                                messages.append(pending_intervention_msg)
-                                context.messages = messages
+                                # Not after the final call, like the empty-response nudge.
+                                if not final_call:
+                                    messages.append(pending_intervention_msg)
+                                    context.messages = messages
+                                elif content and content.strip():
+                                    # What is left is a text answer on the final
+                                    # call: delivered like the no-tool answer below.
+                                    if response_format is not None:
+                                        # No step is left to ask for a correction in.
+                                        checked = await self._check_structured_answer(
+                                            content, response_format, request_id)
+                                        if checked.checker_failed:
+                                            event = self._structured_output_unavailable(checked)
+                                            results.setdefault("errors", []).append(event["message"])
+                                            yield event
+                                            return
+                                        if not checked.ok:
+                                            error_msg = self._structured_output_failure(
+                                                checked.errors, corrected=format_repaired)
+                                            logger.warning("[%s] %s", self.name, error_msg)
+                                            results.setdefault("errors", []).append(error_msg)
+                                            yield {"type": "error", "message": error_msg,
+                                                   "error_type": STRUCTURED_OUTPUT_INVALID}
+                                            return
+                                        content = formatted_content = assistant_msg.content = checked.text
+                                        content_format = assistant_msg.content_format = "json"
+                                    results["summary"] = content
+                                    self._set_live_messages(session_id, messages.copy())
+                                    final_event = {"type": "final", "summary": formatted_content,
+                                                   "content_format": content_format}
+                                    if llm_out and "usage" in llm_out:
+                                        final_event["usage"] = llm_out["usage"]
+                                    yield final_event
+                                    return
                                 continue
                 
                 # Signal tool execution start
@@ -1842,23 +4183,13 @@ class Agent(MCPServer):
                 # Assistant message with tool calls was already added above before post_llm hooks
 
                 # Update tracked messages
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Execute all tools using streaming to get real-time status events from sub-agents
                 tool_messages = []
                 tool_results = []
 
-                # Extract user_id from session metadata for multi-user tool isolation
-                user_id: Optional[str] = None
-                if self._session_tracker:
-                    session_meta = self._session_tracker.get_session_metadata(session_id)
-                    if session_meta:
-                        user_id = session_meta.get("user_id")
-                        logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
-                    else:
-                        logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
-                else:
-                    logger.warning("[TOOL_EXEC] No _session_tracker available")
+                user_id = self.tool_user(request_id, session_id)
 
                 # CRITICAL: Pass per-request status_forwarder as parameter to avoid race conditions
                 # when multiple requests share the same agent instance (e.g., parent + sub-agent)
@@ -1872,7 +4203,11 @@ class Agent(MCPServer):
                     request_id=request_id,
                     session_id=session_id,
                     user_id=user_id,
-                    status_forwarder=context.status_forwarder
+                    status_forwarder=context.status_forwarder,
+                    assistant_message=assistant_msg,
+                    # What this run was switched to, for the sub-agents its
+                    # tools start (agent_config.inherit_parent_llm).
+                    llm_profile=self._profile_to_hand_down(llm_override),
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -1888,6 +4223,33 @@ class Agent(MCPServer):
 
                 # Add tool results to the results dictionary
                 results["calls"].extend(tool_results)
+
+                # Stuck signal: a step whose tool calls ALL returned an error.
+                # Catches the near-loops the exact-match detector misses (same
+                # tool retried with slightly varied wrong args). N in a row →
+                # open an escalation window. Only calls that ran count: a call a
+                # hook blocked (a policy, a person saying no) is no sign that a
+                # stronger model is needed -- a step of nothing but blocked calls
+                # neither grows the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                if tool_messages and not ran_messages:
+                    prev_step_all_errored = True
+                elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):
+                    consecutive_tool_error_steps += 1
+                    prev_step_all_errored = True  # keep the streak alive next step
+                    if consecutive_tool_error_steps >= escalate_error_streak and not final_call:
+                        esc_reason = escalator.trigger(
+                            f"{consecutive_tool_error_steps} all-error tool steps")
+                        if esc_reason:
+                            logger.warning(
+                                "[%s] auto-escalating to advanced model at step %d: "
+                                "%s (budget used %d/%d)", self.name, step + 1,
+                                esc_reason, escalator.calls_used, escalator.max_calls)
+                            await status_worker.progress(
+                                f"auto-escalating to advanced model ({esc_reason})",
+                                meta={"step": step + 1})
+                # A non-all-error tool step leaves prev_step_all_errored False,
+                # so the streak resets at the top of the next iteration.
 
                 # CRITICAL: Check if ANY tool modified the session messages during execution.
                 # Tools can set modified messages via session_tracker.set_compacted_messages()
@@ -1909,12 +4271,12 @@ class Agent(MCPServer):
                         f"{len(local_conversation)} old msgs. Reconstructing conversation."
                     )
                     
-                    # Reconstruct messages: system + modified conversation + tool results
-                    system_msg = messages[0] if messages and messages[0].role == "system" else None
-                    if system_msg:
-                        messages = [system_msg] + list(compacted_messages) + tool_messages
-                    else:
-                        messages = list(compacted_messages) + tool_messages
+                    # Reconstruct: the leading instruction block + the modified
+                    # conversation + tool results. It used to be messages[0]
+                    # alone, so the tools prompt — a second system message —
+                    # and anything else standing at the head was dropped.
+                    messages = (_instruction_head(messages, compacted_messages)
+                                + list(compacted_messages) + tool_messages)
                     
                     # Clear compacted messages - they've been applied
                     self._session_tracker.clear_compacted_messages(session_id)
@@ -1925,51 +4287,54 @@ class Agent(MCPServer):
                     # Normal case: no tool modified messages, just extend with tool results
                     messages.extend(tool_messages)
 
-                if pending_intervention_msg is not None:
+                if pending_intervention_msg is not None and not final_call:
                     messages.append(pending_intervention_msg)
 
                 # Sync context.messages with the updated messages list
                 context.messages = messages
 
                 # Update tracked messages after tool execution
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
-                # Persist session after complete turn (tool calls + results processed)
-                # This avoids orphaned tool calls that would occur if we saved after each tool execution
-                try:
-                    conversation_msgs = [msg for msg in messages if msg.role != "system"]
-                    self._session_tracker.set_session_messages(session_id, conversation_msgs.copy())
-                    logger.debug(f"Persisted session {session_id} to in-memory tracker after completing turn (step {step}) with {len(conversation_msgs)} messages")
-                    
-                    # CRITICAL: Also save to disk via SessionService after complete turn
-                    # This ensures progress is preserved after all tools from one LLM request are processed
-                    # Avoids orphaned tool calls (assistant calls tool, but response not yet processed)
-                    if self._session_service:
-                        session_meta = self._session_tracker.get_session_metadata(session_id)
-                        if session_meta:
-                            save_user_id = session_meta.get("user_id", "anonymous")
-                            save_agent_name = session_meta.get("agent_name", self.name)
-                            save_llm_profile = session_meta.get("llm_profile", self.agent_config.default_llm_profile)
-                            
-                            await self._session_service.save_session(
-                                agent=self,
-                                user_id=save_user_id,
-                                session_id=session_id,
-                                agent_name=save_agent_name,
-                                llm_profile=save_llm_profile,
-                                was_new_session=False  # Always update for intermediate saves
-                            )
-                            logger.debug(f"Saved session {session_id} to disk after completing turn with all tool results")
-                        else:
-                            logger.warning(f"No session metadata found for {session_id}, skipping disk save")
-                    else:
-                        logger.debug("No session_service available, skipping disk save")
-                except Exception as e:
-                    logger.warning(f"Failed to persist session {session_id} after completing turn: {e}", exc_info=True)
+                # Persist session after complete turn (tool calls + results processed).
+                # Saving only at the turn boundary (not after each tool) avoids
+                # orphaned tool calls; the disk save preserves progress even if
+                # no SSE client is connected.
+                await self._persist_conversation(
+                    session_id, messages, to_disk=True,
+                    note=f"after completing turn (step {step})")
 
                 # Yield pending status events after tool execution
                 for status_event in yield_pending_status_events():
                     yield status_event
+
+                if final_call:
+                    # A step's cancel is reported by the check at the top of the
+                    # next iteration; after the final call there is none.
+                    if self._is_cancelled(request_id):
+                        async for event in cancelled_events(step):
+                            yield event
+                        return
+                    # Tools on the final call run once: an agent that delivers
+                    # through a tool (the v6 auditors) would otherwise lose the
+                    # delivery its whole run was for. The budget stays a cap --
+                    # no call follows to read the results -- and the run says so.
+                    ran = ", ".join(
+                        f"{m.name} ({'error' if self._tool_message_is_error(m) else 'ok'})"
+                        for m in tool_messages) or "none"
+                    logger.warning(
+                        f"[{self.name}] Agent returned tool calls after max_steps limit and they "
+                        f"ran without a further LLM call: {ran}. Increase max_steps or simplify the task."
+                    )
+                    # No final event: callers that read only final take it as
+                    # success (the writer dispatch records ok=True, the job
+                    # manager marks the run answered), whatever the tools
+                    # returned. The results stay in the session.
+                    error_msg = (f"Agent incomplete: max steps ({max_steps}) reached; "
+                                 f"the final call ran tool calls ({ran}) that no step followed.")
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
 
                 # Continue to next iteration to let LLM respond to tool results
                 continue
@@ -1977,18 +4342,30 @@ class Agent(MCPServer):
             # No tool calls - check if we should treat this as the final answer
             # Track consecutive responses without tool calls
             consecutive_no_tool_calls += 1
+            # (prev_step_all_errored stays False → the error streak resets at the
+            #  top of the next iteration; handled centrally, see loop top.)
 
             # === CONTINUATION HOOK SIGNAL ===
             # A post_llm_call hook (e.g. agent_continuation) may set
             # metadata["continue"] = True to prevent treating a text-only
             # response as the final answer.  This allows autonomous agents
             # to keep working when they emit intermediate status reports.
-            if hook_metadata.get("continue") and content and content.strip():
+            # Not on the final call: no step is left to continue in.
+            if hook_metadata.get("continue") and content and content.strip() and not final_call:
                 cont_count = hook_metadata.get("continuation_count", "?")
                 cont_reason = hook_metadata.get("continuation_reason", "hook signal")
                 logger.info(
                     f"[{self.name}] Continuation #{cont_count} at step {step}: {cont_reason}"
                 )
+                # Stays a `user` turn, unlike the four notes the loop writes
+                # itself. What a hook puts here is a SCRIPTED TURN -- the
+                # `followups:` list in an agent's YAML is written to be said to
+                # the agent, the way a person would say it -- and two readers
+                # take it as one: v4's prose recovery reads the follow-up back
+                # out of the stored transcript and matches it by its configured
+                # TEXT (the info tool hands out no injected_by), and the
+                # watchdog's judge needs it in the picture. As a volatile note
+                # it would be neither a user turn nor stored at all.
                 continuation_msg = ChatMessage(
                     role="user",
                     content=hook_metadata.get(
@@ -1996,6 +4373,11 @@ class Agent(MCPServer):
                         "Continue with your task.",
                     ),
                     timestamp=datetime.now(timezone.utc),
+                    # Marks the message as not typed by a person; a hook that
+                    # scripts several turns counts its own messages by this.
+                    # A hook that names no marker still gets one: unmarked, the
+                    # nudge would count as a human turn.
+                    injected_by=hook_metadata.get("continue_injected_by") or "post_llm_call_hook",
                 )
                 messages.append(continuation_msg)
                 context.messages = messages
@@ -2013,13 +4395,81 @@ class Agent(MCPServer):
                 }
                 consecutive_no_tool_calls = 0  # Reset — hook evaluated this
                 continue
-            
+
+            # A user message may have been injected while the LLM produced this
+            # response (mid-run append). Never finalize past fresh user input —
+            # continue the loop so the next LLM call reacts to it. The interim
+            # content was already surfaced via the thinking events above.
+            # On the final call no step is left: the message stays in the
+            # history behind the answer, persisted for the session's next run.
+            pre_drain_count = len(messages)
+            messages = await self._drain_appended_messages(request_id, messages)
+            if len(messages) > pre_drain_count and not final_call:
+                context.messages = messages
+                self._set_live_messages(session_id, messages.copy())
+                consecutive_no_tool_calls = 0
+                continue
+
+            # Cut off at the output cap with no tool call left: not an answer.
+            # The call the model was writing is lost, and the text before it --
+            # "now the engine, the big file:" -- is an announcement. Measured in a
+            # coder session: three calls in a row stopped at 16384 tokens, each
+            # ended the run as if that were its reply, and the user had to push
+            # three times. The run goes on with a note saying what happened --
+            # where the agent opted in (output_cap_notes), not on the final
+            # call, and not past that many in a row.
+            if (finish_reason == "length" and content and content.strip() and not final_call
+                    and consecutive_cut_off < max_cut_off_notes):
+                consecutive_cut_off += 1
+                usage = (llm_out or {}).get("usage") or {}
+                messages.append(self._output_cap_note(usage.get("completion_tokens")))
+                context.messages = messages
+                await status_worker.progress(
+                    "answer cut off at the output limit -- asked to continue in parts",
+                    meta={"step": step + 1, "cut_off": consecutive_cut_off})
+                consecutive_no_tool_calls = 0
+                continue
+
             # If we have content AND it's not just whitespace, treat as final answer
             if content and content.strip():
+                if response_format is not None:
+                    checked = await self._check_structured_answer(content, response_format, request_id)
+                    if checked.checker_failed:
+                        event = self._structured_output_unavailable(checked)
+                        logger.warning("[%s] %s", self.name, event["message"])
+                        results.setdefault("errors", []).append(event["message"])
+                        yield event
+                        return
+                    if not checked.ok and not checked.schema_failed and not format_repaired and not final_call:
+                        # Once: the model sees its answer and what is wrong with it, and
+                        # writes it again. Appended like every loop note, so the cached
+                        # prefix stays; its answer stays too, the note refers to it.
+                        format_repaired = True
+                        logger.warning("[%s] Final answer does not match the requested format, asking "
+                                       "once for a correction: %s", self.name, "; ".join(checked.errors))
+                        messages.append(self._structured_output_note(
+                            repair_text(checked.errors), "agent.structured_output_repair"))
+                        context.messages = messages
+                        self._set_live_messages(session_id, messages.copy())
+                        await status_worker.progress(
+                            "final answer does not match the JSON format -- asked once to correct it",
+                            meta={"step": step + 1})
+                        consecutive_no_tool_calls = 0
+                        continue
+                    if not checked.ok:
+                        error_msg = self._structured_output_failure(checked.errors, corrected=format_repaired)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                        return
+                    # Delivered as checked: a fence around the whole answer is gone, in the
+                    # session too -- the caller parses what the session keeps (openai_api).
+                    content = formatted_content = assistant_msg.content = checked.text
+                    content_format = assistant_msg.content_format = "json"
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
 
                 # Use the already formatted content from above
                 final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
@@ -2031,113 +4481,54 @@ class Agent(MCPServer):
             
             # No tool calls AND (no content OR empty content)
             # Check consecutive no-tool-calls limit to avoid infinite loop
-            if consecutive_no_tool_calls >= max_consecutive_no_tools:
+            # Not on the final call: an empty answer there is a spent budget,
+            # which the error after the loop reports, not an empty success.
+            if consecutive_no_tool_calls >= max_consecutive_no_tools and not final_call:
                 logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
+                if response_format is not None:
+                    # An empty answer is no JSON: not a final one for a structured run.
+                    error_msg = self._structured_output_failure(
+                        schema_worker.parse_answer(content)[2], corrected=format_repaired)
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                    return
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
-                self._current_messages = messages.copy()
+                self._set_live_messages(session_id, messages.copy())
                 final_event = {"type": "final", "summary": formatted_content or "", "content_format": content_format}
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
                 yield final_event
                 return
 
-            # Update tracked messages at end of each step
-            self._current_messages = messages.copy()
+            if final_call and not (content and content.strip()):
+                # A blank answer to the final call is no answer: the error after
+                # the loop reports the spent budget, and the session must not
+                # end on a blank assistant turn. Drained input may follow it.
+                for history in {id(messages): messages, id(context.messages): context.messages}.values():
+                    for i in range(len(history or []) - 1, -1, -1):
+                        if history[i] is assistant_msg:
+                            del history[i]
+                            break
+
+            # Update tracked messages at end of each step (per-session)
+            self._set_live_messages(session_id, messages.copy())
 
             # Drain any final appended messages before next step
             messages = await self._drain_appended_messages(request_id, messages)
             # Sync context.messages after draining
             context.messages = messages
 
-        # Max steps reached - warning and try to get final answer
-        logger.warning(
-            f"Max steps ({max_steps}) reached. Agent may not have completed the task. "
-            f"Making one final LLM call to attempt completion."
-        )
-
-        # Add explicit user message requesting final answer WITHOUT tools
-        final_user_message = ChatMessage(
-            role="user",
-            content=(
-                f"You have reached the maximum number of steps ({max_steps}). "
-                "Please provide your final answer NOW based on the information you have gathered. "
-                "Do NOT use any tools in this response - just give me your best answer or summary of what you've accomplished."
-            ),
-            timestamp=datetime.now(timezone.utc)
-        )
-        messages.append(final_user_message)
-
-        # Try final call with tools still available (but instructed not to use them)
-        try:
-            final_llm_out = await active_llm.chat_tools(messages, tools_schema, cancellation_token=main_token)
-            final_assistant = final_llm_out.get("assistant", {})
-            final_content = final_assistant.get("content")
-            final_tool_calls = final_assistant.get("tool_calls", [])
-
-            if final_tool_calls:
-                # Agent still wants to use tools after max_steps!
-                logger.error(
-                    f"Agent returned tool calls after max_steps limit! "
-                    f"Tools: {[tc.get('function', {}).get('name') for tc in final_tool_calls]}. "
-                    f"Increase max_steps or simplify the task."
-                )
-                results.setdefault("errors", []).append(
-                    f"Agent needs more steps to complete task (wanted to call: "
-                    f"{', '.join([tc.get('function', {}).get('name', '?') for tc in final_tool_calls])})"
-                )
-                yield {"type": "error", "message": f"Agent incomplete: max steps ({max_steps}) reached but still has work to do."}
-                return
-
-            if final_content:
-                # Append final assistant message to conversation history
-                assistant_msg = ChatMessage(role="assistant", content=final_content or "", timestamp=datetime.now(timezone.utc))
-                messages.append(assistant_msg)
-                context.messages.append(assistant_msg)  # Also append to context.messages
-                results["summary"] = final_content
-                # Update tracked messages and emit final event
-                self._current_messages = messages.copy()
-
-                # Format content for display
-                formatted_final = final_content
-                final_format = 'text'  # Default to 'text' if not set by hooks
-                try:
-                    if self._hook_manager:
-                        formatted_final, final_format = await self._hook_manager.execute_format_output_hooks(
-                            output=final_content,
-                            request_id=request_id or "unknown",
-                            session_id=session_id or "unknown",
-                            output_format='html'
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to format final content: {e}", exc_info=True)
-
-                final_event = {"type": "final", "summary": formatted_final, "content_format": final_format}
-                # Include usage data if available from final LLM call
-                if final_llm_out and "usage" in final_llm_out:
-                    final_event["usage"] = final_llm_out["usage"]
-                yield final_event
-            else:
-                results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
-                yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
-        except Exception as e:
-            # Check if this is a cancellation exception in final answer
-            final_error_str = str(e).lower()
-            if "cancelled" in final_error_str or "timeout" in final_error_str:
-                logger.info(f"Request {request_id} cancelled during final LLM call: {e}")
-                # Signal cancellation using status contexts
-                await status_worker.error(f"cancelled during final LLM call: {e}",
-                                        meta={"step": step + 1, "reason": "cancelled"})
-                await status_coordinator.error("cancelled during final LLM call",
-                                             meta={"step": step + 1, "reason": "cancelled"})
-                yield {"type": "cancelled", "request_id": request_id, "step": step + 1, "reason": str(e)}
-                return
-
-            logger.exception("Failed to get final answer: %s", e)
-            results.setdefault("errors", []).append(f"Failed to get final answer: {e}")
-            yield {"type": "error", "message": f"Failed to get final answer: {e}"}
-
-        return
+        # Reached only when the final call ended without text and without a
+        # tool call that ran: empty or blank, or its tool calls all blocked.
+        # A step's cancel is reported at the top of the next iteration; there
+        # is none after the final call.
+        if self._is_cancelled(request_id):
+            async for event in cancelled_events(max_steps):
+                yield event
+            return
+        results.setdefault("errors", []).append("LLM planner reached max steps without final answer.")
+        yield {"type": "error", "message": "LLM planner reached max steps without final answer."}
 
     async def _run_events(
         self,
@@ -2147,9 +4538,11 @@ class Agent(MCPServer):
         coordinator_request_id: str,
         worker_request_id: str,
         initial_message: Optional[ChatMessage] = None,
-        llm_override: Optional[object] = None,
+        llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
-        status_forwarder: Optional[StatusEventForwarder] = None
+        status_forwarder: Optional[StatusEventForwarder] = None,
+        use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
@@ -2179,6 +4572,7 @@ class Agent(MCPServer):
         step = 0
         context = None
         messages = None
+        checkpoint_loop: Optional[asyncio.Task] = None
         results: Dict[str, Any] = {"task": task, "calls": []}
 
         # Register this request BEFORE emitting start event so appends work immediately
@@ -2206,18 +4600,56 @@ class Agent(MCPServer):
             self._request_manager.unregister_active_request(request_id)
             self._session_tracker.unregister_request(request_id)
             
-            yield {"type": "error", "message": error_msg, "request_id": request_id}
+            yield {"type": "error", "message": error_msg, "request_id": request_id, "error_type": SESSION_LOCKED}
             yield {"type": "end"}
             return
 
         # Emit start event BEFORE opening status_scope contexts
         # This ensures frontend has currentRequestId set before any status events arrive
-        yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+        started = False
+        try:
+            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+            started = True
+        finally:
+            if not started:
+                # Closed at its first event (a client gone at once): nothing below runs, the
+                # finally that ends a run included, and the session stayed held for good by a
+                # run that never ran. Let go of it as a refused request does.
+                self._request_manager.unregister_active_request(request_id)
+                self._session_tracker.unregister_request(request_id)
 
-        # Now open status_scope contexts - their START events will arrive AFTER the start event
-        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
+        # Now open status_scope contexts - their START events will arrive AFTER the start event.
+        # Entered before the block they cover, and guarded like the start event: entering one
+        # publishes, and a cancel or an error there came before the try whose finally ends a run
+        # -- the request stayed registered and its session held for good.
+        scopes = contextlib.AsyncExitStack()
+        try:
+            status_coordinator = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id))
+            status_worker = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_worker", worker_request_id))
+        except BaseException as error:
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)  # lets go of the session's lock too
+            # A scope already open is told why it ends, as `async with` would tell it
+            await scopes.__aexit__(type(error), error, error.__traceback__)
+            raise
+        async with scopes:
             try:
+                # The checkpoint loop: started with the session held, first thing in the
+                # try whose finally (_finalize_request) stops it -- this one, the loop this
+                # run started. Started before the lock (in run_events, as it was), a
+                # request refused there registered a loop of its own between two runs,
+                # and the run after it went without one once that request cleaned up.
+                checkpoint_loop = self._start_checkpoint_loop(session_id)
+
+                # Session presence: held from here on, not from the first LLM
+                # call -- whoever lets go of the endpoint's hold meanwhile (a
+                # client that disconnects) would leave the session looking idle
+                # while this run has it, and a direct message would wake a
+                # second run of it.
+                self._presence_hold(session_id, request_id)
+
                 # Phase 1: Initialize request and build conversation context
                 try:
                     context = await self._initialize_request_and_conversation(
@@ -2230,6 +4662,7 @@ class Agent(MCPServer):
                     )
                 except RuntimeError as e:
                     # LLM not available - emit error and end stream
+                    results.setdefault("errors", []).append(str(e))
                     yield {"type": "error", "message": str(e), "request_id": request_id}
                     yield {"type": "end"}
                     return
@@ -2262,10 +4695,26 @@ class Agent(MCPServer):
                     status_coordinator=status_coordinator,
                     status_worker=status_worker,
                     llm_override=llm_override,
-                    llm_profile_info_override=llm_profile_info_override
+                    llm_profile_info_override=llm_profile_info_override,
+                    use_advanced_model=use_advanced_model,
+                    response_format=response_format,
                 )
 
                 async for event in loop_generator:
+                    # Track step from events that contain step info
+                    # This ensures we report accurate step count in completion message
+                    if "step" in event:
+                        step = event.get("step", step)
+
+                    # Capture summary and errors from events -- before the yield:
+                    # a consumer may stop reading at an error (sub_agent_manager
+                    # and stategraph do), and the finalize, its status line and
+                    # the session end hooks must still know of it.
+                    if event.get("type") == "final" and "summary" in event:
+                        results["summary"] = event["summary"]
+                    elif event.get("type") == "error":
+                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+
                     yield event
 
                     # Yield any pending status events after each main event
@@ -2277,19 +4726,19 @@ class Agent(MCPServer):
                     if context:
                         messages = context.messages
 
-                    # Track step from events that contain step info
-                    # This ensures we report accurate step count in completion message
-                    if "step" in event:
-                        step = event.get("step", step)
-                    
-                    # Capture summary and errors from events
-                    if event.get("type") == "final" and "summary" in event:
-                        results["summary"] = event["summary"]
-                    elif event.get("type") == "error":
-                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
+                # Into the results like every error event of the loop, and before
+                # the yield (a consumer may stop reading there): unrecorded, the
+                # finalize reported the crashed run "completed" and the session
+                # end hooks saw no error.
+                results.setdefault("errors", []).append(f"Agent execution failed: {e}")
+                # Whether the run had been cancelled, read before the
+                # cancel_request below: it cancels the run's own token too (its
+                # tools and background work stop on it), and the finalize would
+                # then report every crash a consumer reads past as a cancel.
+                crash_token = get_cancellation_manager().get_token(request_id)
+                results["cancelled"] = bool(crash_token is not None and crash_token.is_cancelled)
                 yield {"type": "error", "message": f"Agent execution failed: {e}"}
                 
                 # CRITICAL: Cancel all sub-requests when parent agent fails
@@ -2302,16 +4751,25 @@ class Agent(MCPServer):
             finally:
                 # Phase 3: Finalize and cleanup
                 # Note: This runs even if generator is closed early, but we can't yield in that case
-                await self._finalize_request(
-                    request_id=request_id,
-                    session_id=session_id,
-                    status_coordinator=status_coordinator,
-                    status_worker=status_worker,
-                    context=context,
-                    messages=messages if messages else (context.messages if context else None),
-                    results=results,
-                    step=step
-                )
+                try:
+                    await self._finalize_request(
+                        request_id=request_id,
+                        session_id=session_id,
+                        status_coordinator=status_coordinator,
+                        status_worker=status_worker,
+                        context=context,
+                        messages=messages if messages else (context.messages if context else None),
+                        results=results,
+                        step=step,
+                        checkpoint_loop=checkpoint_loop,
+                    )
+                finally:
+                    # Session presence: after the save, so input still waiting
+                    # wakes the session and the woken run finds the whole
+                    # conversation on disk -- and in a finally, because a
+                    # cancelled save (client gone) must not leave the session
+                    # looking like it still runs.
+                    self._presence_release(request_id)
 
             # Yield final status events and end marker
             # These won't execute if generator was closed early (GeneratorExit), which is fine
@@ -2322,28 +4780,10 @@ class Agent(MCPServer):
             yield {"type": "end"}
 
 
-    async def shutdown(self) -> None:
-        """Shutdown the agent and clean up resources"""
-        logger.info("Agent shutdown initiated")
-
-        # Shutdown MCP integration to close external server connections
-        if hasattr(self, '_mcp_integration_manager') and self._mcp_integration_manager:
-            try:
-                if self._mcp_integration_manager.mcp_integration:
-                    await self._mcp_integration_manager.mcp_integration.shutdown()
-                    logger.debug("MCP integration shutdown completed")
-            except Exception as e:
-                logger.warning(f"Error during MCP integration shutdown: {e}")
-
-        # Clear sessions and request mappings
-        self._session_tracker.clear()
-
-        logger.info("Agent shutdown completed")
-
-    # MCPServer interface implementation
+    # ToolServer interface implementation
     async def call(self, tool: str, params: dict[str, Any]) -> Any:
         """
-        MCPServer interface: Handle tool calls from other agents.
+        ToolServer interface: Handle tool calls from other agents.
 
         An agent is a tool that executes tasks. No special "actions" needed.
 
@@ -2362,11 +4802,44 @@ class Agent(MCPServer):
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
 
-        # Extract session context from injected params (populated by ToolExecutionManager)
+        # Extract session context from injected params (populated by ToolExecutionManager).
+        # The session only from the injected ``_session_id``, never a plain
+        # ``session_id``: no agent tool schema offers one, and tool execution strips
+        # a model's ``_*`` and request-id keys, not that one -- so the model could
+        # name ANY session this agent holds, another user's sub-session included,
+        # and the run would continue it with its history, its user and that
+        # session's approvals instead of its caller's. And not the caller's session
+        # itself: a sub-session of this agent's own below it (tool_session_id).
         request_id = params.get("request_id") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        caller_session_id = params.get("_session_id")
+        session_id = tool_session_id(caller_session_id, self.name) if caller_session_id else None
+
+        # A call that brings a ``_user_id`` but no request naming a user --
+        # dispatched without a request id: a plugin command (run_plugin_command)
+        # -- runs under an id of its own registered for that user, as
+        # MachineAgent.call does. Unregistered, the run stored "anonymous" as
+        # the session's user and ran its tools as anonymous, and the same user's
+        # next call in the session was refused as somebody else's. A dispatch
+        # that brings a request id and a user registered the request itself
+        # (inject_runtime_params); one that brings no user injects none.
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
 
         try:
+            # The role gate and the session's user, asked here as well as in
+            # run_events: refused there, the run's error would come back inside a
+            # "success" answer -- the calling model should read a refusal as one.
+            refusal = self._refusal_event(request_id, session_id)
+            if refusal:
+                return {"status": "error", "agent": self.name, "task": task, "error": refusal["message"],
+                        "error_type": refusal["error_type"]}
+            if session_id:
+                refusal = await self._open_tool_session(request_id, caller_session_id, session_id,
+                                                        caller_agent=params.get("_agent_name"), title=str(task))
+                if refusal:
+                    return {"status": "error", "agent": self.name, "task": task, **refusal}
+
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
             from .result_utils import collect_final_result, extract_summary
@@ -2376,6 +4849,13 @@ class Agent(MCPServer):
                 request_id=request_id,
                 session_id=session_id
             )
+            if result.get("refused"):
+                # Refused at its start -- another call of the same caller session has the session (its lock):
+                # the calling model reads a refusal as one, not a "success" with the error inside.
+                errors = result.get("errors") or []
+                return {"status": "error", "agent": self.name, "task": task,
+                        "error": errors[-1] if errors else "the run was refused before it started",
+                        "error_type": result["refused"]}
 
             # Wrap result with agent metadata
             return {
@@ -2394,18 +4874,44 @@ class Agent(MCPServer):
                 "task": task,
                 "error": str(e)
             }
+        finally:
+            if own_request_id:
+                # What this call registered goes with it, as the API lets go of
+                # its request tree when the request ends.
+                from ...core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
+
+    @staticmethod
+    def _request_for_injected_user(request_id: Optional[str], injected_user: Any) -> Optional[str]:
+        """A request id registered for *injected_user*, or None when none is needed.
+
+        None where the call's request id already names a user (the owner wins) or
+        no user is injected. Otherwise an id of its own: derived from the caller's
+        (so cancel and status stay under its prefix) or new, registered for the
+        user -- the framework's injected ``_user_id``, which a model cannot set
+        (tool execution strips ``_*`` keys from its arguments).
+        """
+        from ...core.request_context import get_request_user, register_request_user
+
+        if not isinstance(injected_user, str) or not injected_user.strip():
+            return None
+        if request_id and get_request_user(str(request_id), default=None) is not None:
+            return None
+        own = f"{request_id}_{short_id(6)}" if request_id else short_id()
+        register_request_user(own, injected_user.strip())
+        return own
 
     def get_schema(self) -> dict[str, Any]:
         """
-        MCPServer interface: Return the OpenAI function schema for this agent.
+        ToolServer interface: Return the OpenAI function schema for this agent.
 
         Returns:
             OpenAI function schema dict
         """
-        # Try to get description from: mcp_config.description -> fallback to agent name
+        # Try to get description from: server_config.description -> fallback to agent name
         description = None
-        if hasattr(self, 'mcp_config') and self.mcp_config:
-            description = getattr(self.mcp_config, 'description', None)
+        if hasattr(self, 'server_config') and self.server_config:
+            description = getattr(self.server_config, 'description', None)
         if not description:
             description = getattr(self, '_agent_description', f"Agent: {self.name}")
 
@@ -2428,7 +4934,7 @@ class Agent(MCPServer):
         }
 
     async def list_tools(self) -> List:
-        """Return tools this agent OFFERS to other agents (MCPServer interface).
+        """Return tools this agent OFFERS to other agents (ToolServer interface).
 
         EXTERNAL INTERFACE - What this agent exposes as callable tools.
         When other agents query available tools, they get this agent's schema.
@@ -2436,20 +4942,20 @@ class Agent(MCPServer):
         Contrast with list_usable_tools() which returns tools this agent CAN USE.
 
         Returns:
-            List[MCPTool] - Single MCPTool representing this agent
+            List[ToolDef] - Single ToolDef representing this agent
         """
         # Return cached tools to avoid creating new objects on every call
         if self._list_tools_cache is not None:
             return self._list_tools_cache
 
-        from agent_system.mcp.core import MCPTool
+        from agent_system.tools.base import ToolDef
 
         # Get the agent's schema (what it offers as a callable tool)
         schema = self.get_schema()
         func = schema.get("function", {})
 
-        # Convert to MCPTool format
-        tool = MCPTool(
+        # Convert to ToolDef format
+        tool = ToolDef(
             name=func.get("name", self.name),
             description=func.get("description", f"Agent: {self.name}"),
             input_schema=func.get("parameters", {})

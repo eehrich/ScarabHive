@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinescript-validator"
+version = "0.1.0"
+description = "Static validator, audit CLI, and agent-debugging toolkit for TradingView Pine Script v6."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+authors = [
+    { name = "Abolfazl Poryaei", email = "poryaeiabolfazl@gmail.com" }
+]
+license = "MIT"
+keywords = ["pine-script", "tradingview", "validator", "parser", "lint", "agents", "debugging"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/Poryaei/pine-script-validator"
+Repository = "https://github.com/Poryaei/pine-script-validator"
+Issues = "https://github.com/Poryaei/pine-script-validator/issues"
+
+[project.scripts]
+pine-validator = "pinescript_validator.cli:main"
+pine-validator-audit = "pinescript_validator.audit:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pinescript_validator = ["data/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,87 @@
+# Tool Script Plugin - scripted tool chains without LLM round-trips.
+# Single tool; the script orchestrates other tools server-side.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_run_script"
+      description: |
+        Run a small Python script that chains YOUR OTHER TOOLS server-side via
+        call_tool(name, **params) — intermediate results never enter your
+        context, you only see the script's `result`. Use for chains of >= 2
+        dependent tool calls; for a single call, call the tool directly.
+
+        RULES:
+        - call_tool uses EXACTLY the tool names and parameters from your tool
+          list (params are schema-validated; wrong names fail immediately).
+        - Assign your return value to `result` (JSON-serializable, keep it
+          small — store big payloads via a tool and return the reference).
+        - A tool result {"status":"error"} raises ToolCallError (catchable
+          with try/except ToolCallError). Other results are returned as data.
+        - Tools returning JSON as TEXT (e.g. a store's read -> {"json": "..."}):
+          use parse_json(text) to get data — there is no json module.
+        - log("...") reports progress.
+        - On failure you get: failing line, every executed call (ok/error),
+          and small variables. Send a NEW script that continues AFTER the
+          last committed call — never repeat calls marked ok:true.
+
+        SANDBOX (Python subset — no imports, no file/network access):
+        - Works: if/for/while, try/except, def, lambda, f-strings, slicing
+          x[1:3], dicts/lists/sets + their common methods, str + - in
+          comparisons, list comprehensions, print(), parse_json().
+        - NOT available: import (also no json module — use parse_json),
+          str.format (use f-strings), variables starting with "_",
+          open()/eval()/exec(), attribute tricks.
+
+        Example:
+          delta = call_tool("my_json_manage_json", operation="read", doc="d1")
+          call_tool("forum_post_message", channel_id=5,
+                    content="```json\n" + delta["json"] + "\n```")
+          result = {"posted_chars": delta["chars"]}
+      parameters:
+        type: object
+        properties:
+          script:
+            type: string
+            description: "The Python script (sandbox subset, see tool description)."
+          timeout:
+            type: number
+            description: "Optional overall seconds for this run (capped by config)."
+          dry_run:
+            type: boolean
+            description: "Only check syntax and list call_tool targets — nothing is executed."
+        required: [script]
+
+config:
+  timeout:
+    type: number
+    default: 120
+    description: "Overall script budget in seconds. Enforced between tool calls (an in-flight call finishes or hits per_call_timeout first)."
+  per_call_timeout:
+    type: number
+    default: 60
+    description: "Seconds one inner tool call may take."
+  max_tool_calls:
+    type: integer
+    default: 20
+    description: "Maximum call_tool() invocations per script."
+  max_call_result_bytes:
+    type: integer
+    default: 524288
+    description: "Maximum serialized size of one inner tool result held in the script."
+  max_result_chars:
+    type: integer
+    default: 20000
+    description: "Maximum serialized size of the script's `result` value."
+  max_output_length:
+    type: integer
+    default: 4000
+    description: "print()/log() buffer cap."
+  allowed_tools:
+    type: array
+    default: []
+    description: "Optional extra narrowing: fnmatch patterns on flat tool names a script may call. Never widens the agent's own allowlist (that is always enforced). Empty = agent allowlist only."
+  blocked_tools:
+    type: array
+    default: []
+    description: "Optional extra blocks (fnmatch on flat tool names). tool_script tools themselves are always blocked (no recursion)."

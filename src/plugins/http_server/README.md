@@ -1,16 +1,16 @@
 # HTTP Server Plugin
 
-The HTTP Server plugin provides HTTP adapter capabilities for MCP servers, exposing wrapped MCP servers via REST API endpoints. It enables HTTP-based access to MCP functionality for web applications and external integrations.
+The HTTP Server plugin provides HTTP adapter capabilities for tool servers, exposing wrapped tool servers via REST API endpoints. It enables HTTP-based access to tool functionality for web applications and external integrations.
 
 ## Overview
 
-This plugin acts as an HTTP bridge for Model Context Protocol (MCP) servers, allowing web applications, mobile apps, and other HTTP clients to interact with MCP tools and resources through standard REST API endpoints.
+This plugin acts as an HTTP bridge for the tool servers, allowing web applications, mobile apps, and other HTTP clients to interact with their tools through standard REST API endpoints.
 
 ## Features
 
 ### Core Operations
-- **Health Checks**: Monitor MCP server status and connectivity
-- **Tool Invocation**: Call MCP tools via HTTP POST requests
+- **Health Checks**: Monitor tool server status and connectivity
+- **Tool Invocation**: Call tools via HTTP POST requests
 - **REST API Interface**: Standard HTTP methods and response formats
 - **Error Handling**: Comprehensive error responses and status codes
 - **Request Validation**: Input parameter validation and sanitization
@@ -64,7 +64,7 @@ curl http://localhost:8080/health
 
 ### Tool Invocation
 ```python
-# Call MCP tool via HTTP adapter
+# Call tool via HTTP adapter
 {
   "action": "call",
   "tool": "weather_forecast",
@@ -87,7 +87,7 @@ curl -X POST http://localhost:8080/tools/weather_forecast \
 ### Tools
 
 #### health
-Performs health check on the MCP server and HTTP adapter.
+Performs health check on the tool server and HTTP adapter.
 
 **Parameters:** None
 
@@ -105,10 +105,10 @@ Performs health check on the MCP server and HTTP adapter.
 ```
 
 #### call
-Invokes an MCP tool through the HTTP adapter.
+Invokes a tool through the HTTP adapter.
 
 **Parameters:**
-- **tool** (required): MCP tool name to invoke
+- **tool** (required): tool name to invoke
 - **params**: Parameters object to pass to the tool
 
 **Response:**
@@ -144,7 +144,7 @@ Server health check endpoint.
 ```
 
 #### GET /tools
-List available MCP tools.
+List available tools.
 
 **Response:**
 ```json
@@ -161,7 +161,7 @@ List available MCP tools.
 ```
 
 #### POST /tools/{tool_name}
-Invoke specific MCP tool.
+Invoke specific tool.
 
 **Request Body:**
 ```json
@@ -183,10 +183,10 @@ Invoke specific MCP tool.
 ### Resource Endpoints
 
 #### GET /resources
-List available MCP resources.
+List available resources.
 
 #### GET /resources/{resource_id}
-Get specific MCP resource content.
+Get specific resource content.
 
 ### Utility Endpoints
 
@@ -256,12 +256,14 @@ Validate tool parameters without execution.
 - **422 Unprocessable Entity**: Invalid parameter values
 
 ### Server Error Codes
-- **500 Internal Server Error**: MCP server error
-- **502 Bad Gateway**: MCP server unavailable
+- **500 Internal Server Error**: tool server error
+- **502 Bad Gateway**: tool server unavailable
 - **503 Service Unavailable**: Server overloaded
-- **504 Gateway Timeout**: MCP tool execution timeout
+- **504 Gateway Timeout**: tool execution timeout
 
 ## Authentication
+
+> **Implementation status (2026-06-14):** The server implements **API-key auth on `POST /call`** — send the key via `X-API-Key: <key>` or `Authorization: Bearer <key>`. The key is read from the `HTTP_SERVER_AUTH_KEY` env var (or `server_config.auth_key`). `GET /health` is intentionally unauthenticated (liveness). When **no** key is configured the server **refuses to bind a non-loopback host** (e.g. `0.0.0.0`) and only serves on `127.0.0.1`. The Basic-auth, CORS, rate-limiting, `/validate`, `/tools/*`, `/metrics`, and WebSocket sections below are **not yet implemented** (roadmap, not current behavior); the only real endpoints are `/health` and `/call`.
 
 ### API Key Authentication
 ```bash
@@ -445,11 +447,11 @@ curl http://localhost:8080/health?detailed=true
 - **Missing Headers**: Ensure required headers are included
 
 #### Performance Issues
-- **High Latency**: Check MCP server performance and network
+- **High Latency**: Check tool server performance and network
 - **Rate Limiting**: Verify rate limits and adjust if necessary
 - **Memory Usage**: Monitor memory consumption and limits
 
-#### MCP Integration Issues
-- **Tool Not Found**: Verify MCP tool is properly registered
+#### Tool integration Issues
+- **Tool Not Found**: Verify tool is properly registered
 - **Parameter Errors**: Check parameter names and types
 - **Timeout Errors**: Adjust timeout settings for slow tools

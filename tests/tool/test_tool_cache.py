@@ -1,10 +1,10 @@
 """
-Tests for MCP tool caching system.
+Tests for tool caching system.
 """
 
 import asyncio
 import pytest
-from agent_system.mcp.tool_cache import ToolCache, CacheStatistics
+from agent_system.tools.tool_cache import ToolCache, CacheStatistics
 
 
 class TestCacheStatistics:

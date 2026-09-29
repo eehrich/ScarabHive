@@ -1,0 +1,20 @@
+<!doctype html>
+<html class="pk-root">
+<head><meta charset="utf-8"><title>Probe</title><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<p id="location"></p>
+<script type="module">
+  // A panel inside the real shell: records every host message and exposes the
+  // kit, so the test page can drive the calls that travel the other way.
+  import * as pk from '/static/kit/panel-kit.js';
+
+  const received = [];
+  window.addEventListener('message', (event) => {
+    if (event.source === window.parent && typeof event.data?.type === 'string') received.push(event.data);
+  });
+  window.probe = { pk, received, sessions: [] };
+  pk.session.onChange((session) => window.probe.sessions.push(session));
+  document.getElementById('location').textContent = location.pathname + location.search;
+</script>
+</body>
+</html>

@@ -3,17 +3,16 @@ hooks:
     type: pre_llm_call
     enabled: false # default is disabled
     timeout: 5.0
-    description: "Inject active sessions into system prompt"
+    description: "Append the active sessions to the history"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:
   max_thoughts_in_prompt:
     type: integer
     default: 5
-    description: "Recent thoughts per session in system prompt"
+    description: "Recent thoughts per session in the injected block"
     minimum: 1
     maximum: 20
   
@@ -28,11 +27,6 @@ config:
     type: boolean
     default: true
     description: "Show branch information"
-  
-  show_relative_timestamps:
-    type: boolean
-    default: true
-    description: "Relative timestamps ('2m ago' vs absolute)"
   
   show_quick_actions:
     type: boolean

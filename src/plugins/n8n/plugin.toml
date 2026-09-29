@@ -1,0 +1,12 @@
+[plugin]
+name = "n8n"
+version = "0.1.0"
+description = "Build, validate and test n8n workflows through n8n's own instance MCP, under ScarabHive's policy"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }
+
+# httpx is a core dependency.
+dependencies = []

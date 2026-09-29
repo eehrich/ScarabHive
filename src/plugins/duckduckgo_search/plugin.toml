@@ -1,0 +1,18 @@
+# duckduckgo_search plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements go in the
+# `dependencies = [...]` line and are aggregated into requirements/all.txt by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "duckduckgo_search"
+version = "0.2.0"
+description = "DuckDuckGo web search (ddgs package) -- search without an account"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }
+
+# `ddgs` is the renamed successor of `duckduckgo-search` (same author). The
+# old package returns zero results without an error against today's
+# DuckDuckGo -- do not pin it back.
+dependencies = ["ddgs>=9.16"]

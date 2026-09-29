@@ -12,7 +12,7 @@ class SubAgentMetadata(BaseModel):
     """Metadata stored in parent session for each sub-agent."""
     
     instance_id: str = Field(description="Unique sub-agent instance ID")
-    agent_type: str = Field(description="Agent type (e.g., 'web_research_agent')")
+    agent_type: str = Field(description="Agent type (e.g., 'research_agent')")
     created_at: datetime = Field(description="Creation timestamp")
     last_used: datetime = Field(description="Last accessed timestamp")
     status: Literal["active", "archived"] = Field(description="Current status")

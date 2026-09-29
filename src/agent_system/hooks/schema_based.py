@@ -2,24 +2,21 @@
 Schema-based hook plugin base class.
 
 Provides a base class for hook plugins that define their hooks declaratively
-in a schema.yaml file, analogous to SchemaBasedMCPServer for MCP tools.
+in a schema.yaml file, analogous to SchemaBasedToolServer for tools.
 
 Example schema.yaml:
 ```yaml
 hooks:
-  - name: optimize_context
+  - name: optimize_context  # also the handler method name on the plugin class
     type: PRE_LLM_CALL
     description: Optimize context before LLM call
     enabled: true
-    priority: 10
-    handler: optimize_context  # Method name on plugin class
+    timeout: 60             # optional; order: {before: [...], after: [...]}
 
-  - name: log_stats
+  - name: log_context_stats
     type: POST_LLM_CALL
     description: Log context statistics
     enabled: true
-    priority: 5
-    handler: log_context_stats
 
 config:
   max_total_tokens: 100000
@@ -45,7 +42,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import yaml
+from agent_system.core.schema_base_mixin import config_defaults_from_schema
+from agent_system.utils import yaml_io
 
 from .plugin_hook import PluginHook, HookContext, HookResult
 
@@ -90,21 +88,18 @@ class SchemaBasedPluginHook(PluginHook):
     def _extract_config_defaults(self, schema_config: dict[str, Any]) -> dict[str, Any]:
         """Extract default values from schema config structure.
 
+        The same rule applies to a plugin that is a tool server as well as a
+        hook, so the two share one implementation -- a second copy of it had
+        already grown in the todo plugin and drifted into ignoring the
+        plugins.yaml block entirely.
+
         Args:
             schema_config: Config section from schema.yaml with type/default/description
 
         Returns:
             Dict with just the config values (defaults)
         """
-        config_values = {}
-        for key, value in schema_config.items():
-            if isinstance(value, dict) and 'default' in value:
-                # Schema format: {key: {type: ..., default: value}}
-                config_values[key] = value['default']
-            else:
-                # Already a simple value
-                config_values[key] = value
-        return config_values
+        return config_defaults_from_schema(schema_config)
 
     def _load_schema(self) -> dict[str, Any]:
         """Load schema.yaml from plugin directory.
@@ -124,7 +119,7 @@ class SchemaBasedPluginHook(PluginHook):
             )
 
         with open(schema_path, encoding="utf-8") as f:
-            schema = yaml.safe_load(f)
+            schema = yaml_io.safe_load(f)
 
         if not isinstance(schema, dict):
             raise ValueError(f"schema.yaml must contain a dict, got {type(schema)}")
@@ -316,6 +311,39 @@ class SchemaBasedPluginHook(PluginHook):
         results = []
         for hook in self._hooks:
             if self._should_dispatch(hook, "SESSION_END", context):
+                result = await self._dispatch_hook(hook["name"], context)
+                results.append(result)
+                if result.modified and result.context:
+                    context = result.context
+
+        return self._merge_results(results, context)
+
+    async def on_llm_progress(self, context: HookContext) -> HookResult:
+        results = []
+        for hook in self._hooks:
+            if self._should_dispatch(hook, "LLM_PROGRESS", context):
+                result = await self._dispatch_hook(hook["name"], context)
+                results.append(result)
+                if result.modified and result.context:
+                    context = result.context
+
+        return self._merge_results(results, context)
+
+    async def on_pre_llm_request(self, context: HookContext) -> HookResult:
+        results = []
+        for hook in self._hooks:
+            if self._should_dispatch(hook, "PRE_LLM_REQUEST", context):
+                result = await self._dispatch_hook(hook["name"], context)
+                results.append(result)
+                if result.modified and result.context:
+                    context = result.context
+
+        return self._merge_results(results, context)
+
+    async def on_post_llm_response(self, context: HookContext) -> HookResult:
+        results = []
+        for hook in self._hooks:
+            if self._should_dispatch(hook, "POST_LLM_RESPONSE", context):
                 result = await self._dispatch_hook(hook["name"], context)
                 results.append(result)
                 if result.modified and result.context:

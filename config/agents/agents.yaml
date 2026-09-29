@@ -1,0 +1,145 @@
+# simple chat agent
+plugins:
+  servers:
+
+    # base class agent for multipl uses
+    multi_turn_agent:
+      type: basic_agent
+      enabled: true
+      description: "Agent for tool usage"
+      
+      agent_config:
+        max_steps: 100
+
+        llm_params:
+          "*":
+            context_window: 200000
+            prompt_cache_mode: multi_turn
+
+        tools:
+          allowed:
+            - "+context_engineer/*"
+            
+        hooks:
+          enabled: true
+          overrides:
+            context_engineer.engineer_context:
+              enabled: true      
+
+      metadata:
+        visibility: "tool"
+        tags:
+          - multi_turn
+
+
+    # generic agent that use skills
+
+    skills_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "Sub-Agent-Manager for skills agent"
+      max_nesting_depth: 5
+      max_sub_agents_per_type: 5
+      max_sub_agents_per_session: 20
+      default_wait_timeout: 7200
+      auto_archive_on_limit: true
+      allowed_agents:
+        - "skills_agent"    # fork self
+        - "skills_agent_multimodal"
+
+    skills_agent:
+      type: multi_turn_agent
+      enabled: true
+      description: "Agent that uses skills"
+
+      agent_config:
+        # A fork of itself does the caller's work: it runs on whatever LLM the
+        # calling run was switched to (/model, --llm, llm_profile), not on the
+        # default below.
+        inherit_parent_llm: true
+        tools:
+          allowed:
+            - "+skills/*"
+            - "+skills_sam/*"
+            - "+terminal/*"
+            - "+datetime/*"
+            - "+basic_operations/*"
+            - "+todo/*"
+            - "+tavily_search/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+        system_prompt: |
+          You are a skills agent. You have access to a set of skills that you can use to answer questions and solve problems. You can use the skills to read reference material. 
+
+          Make tool calls parallelly if possible. You can also use the skills_sam agent to manage sub-agents that can use skills for parallel processing. Make tool calls parallelly if possible. 
+          {% if not multimodal %}
+          If you need to handle multimodal input, you can use the skills_agent_multimodal agent.
+          {% endif %}
+
+          - You have a terminal tool that you can use to run commands on the system. Be careful when execute command to avoid any destructive operations. Make backup before executing any command. 
+          - You can also use the basic_operations tool to perform basic operations.
+          - You can also use the todo tool to manage your tasks. 
+          - You can also use the tavily_search tool to search for information.
+
+          Do not:
+          - find / .. this take forever
+          - rm -rf or chmod 777 .. this is destructive
+
+          You cannot excute /commands directly. You can load the skill with the name-of-the-skill and then use the skill to perform the operation.
+          
+      metadata:
+        visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal)
+        tags:
+          - skills
+
+    skills_agent_multimodal:
+      type: skills_agent
+      enabled: true
+      description: "Agent that uses skills and can handle multimodal input"
+
+      agent_config:
+        llm_profile: [or-gemini-flash, or-gemini-flash-lite, or-claude-sonnet]
+        # Needs a model that reads media: not the caller's, whatever it runs
+        # (skills_agent, which this inherits from, follows its caller).
+        inherit_parent_llm: false
+        tools:
+          allowed:
+
+            - "+media_ops/*"
+
+        template_vars:
+          multimodal: true           
+
+      metadata:
+        visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal), inherited from skills_agent
+
+    # simple chat agent
+    chat_agent:
+      type: basic_agent
+      enabled: true
+      description: "Simple chat agent"
+      
+      agent_config:
+        llm_profile: [chat, or-gemini-flash-lite]
+        llm_profile_advanced: []
+        max_steps: 30
+                
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+      
+      metadata:
+        visibility: "both"
+        tags:
+          - chat
+          - simple
+          - assistant

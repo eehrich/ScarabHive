@@ -1,0 +1,34 @@
+# image_compose plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "image_compose"
+version = "1.0.0"
+description = "Compose images from layered primitives (backgrounds, text, shapes, gradients, SVG)"
+author = "Enrico Ehrich"
+entrypoint = "server:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "media"
+requires = { agent_system = ">=0.6.0" }
+# svglib/reportlab: the SVG layer renderer (compositor.py, lazy import) —
+# undeclared, they were only ever installed transitively; a fresh server
+# venv lacked them and every SVG layer failed at render time (2026-08-20).
+# rlPyCairo: reportlab 4 rasterises through it — without it renderPM fails
+# with "cannot import desired renderPM backend rlPyCairo" AFTER the two
+# imports above succeed. Its pycairo build needs system headers on hosts
+# without a wheel (Python 3.13: apt install libcairo2-dev pkg-config).
+# freetype-py: dritte Schicht derselben Zwiebel — Text->Pfad (text2Path in
+# svglib) braucht reportlabs PYCAIRO-Extra. Der Fehler kam erst zur
+# Laufzeit mit einem SVG, das TEXT enthaelt; ein Kreis rendert auch ohne.
+# Verifiziert auf dem Server mit einem Text-SVG, nicht nur Importen.
+# Das [pycairo]-Extra traegt BEIDE Backends selbst (rlPyCairo>=0.2,<1 und
+# freetype-py>=2.3,<2.4) — eigene Pins daneben kollidierten prompt: mein
+# freetype-py>=2.4 stand gegen reportlabs <2.4. Das Extra ist die Quelle.
+# rembg: the `cutout` option on image layers (compositor.py, lazy import).
+# It raises three floors the whole install shares — onnxruntime>=1.23.2
+# (core.txt asks only for >=1.20), numpy>=2.3 and Pillow>=12.1 — and pulls
+# scikit-image, scipy, pymatting and pooch. Resolved on the server
+# (Python 3.13.7) and locally; measured 2026-09-04. The model file
+# (~170 MB) is downloaded once per host into ~/.rembg on first use.
+dependencies = ["svglib>=1.5", "reportlab[pycairo]>=4.0", "numpy>=1.26", "rembg[cpu]>=2.0.60"]

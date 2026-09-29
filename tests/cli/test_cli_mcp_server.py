@@ -1,4 +1,4 @@
-"""Tests for MCP server CLI interfaces."""
+"""Tests for tool server CLI interfaces."""
 
 import subprocess
 import sys
@@ -7,8 +7,8 @@ from pathlib import Path
 # Add the src directory to the Python path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-class TestMCPServerCLI:
-    """Test CLI interfaces for all MCP servers."""
+class TestToolServerCLI:
+    """Test CLI interfaces for all tool servers."""
     
     def test_weather_cli_help(self):
         """Test weather server CLI help."""
@@ -18,7 +18,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "Weather MCP Server" in result.stdout
+        assert "Weather Tool Server" in result.stdout
         assert "--location" in result.stdout
         assert "--source" in result.stdout
         assert "--days" in result.stdout
@@ -31,7 +31,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "DuckDuckGo Search MCP Server" in result.stdout
+        assert "DuckDuckGo Search Tool Server" in result.stdout
         assert "--query" in result.stdout
         assert "--max-results" in result.stdout
     
@@ -43,7 +43,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "Yahoo Finance MCP Server" in result.stdout
+        assert "Yahoo Finance Tool Server" in result.stdout
         assert "--symbol" in result.stdout
         assert "--period" in result.stdout
         assert "--interval" in result.stdout
@@ -56,7 +56,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "Twitter Search MCP Server" in result.stdout
+        assert "Twitter Search Tool Server" in result.stdout
         assert "--query" in result.stdout
         assert "--max-results" in result.stdout
         assert "--lang" in result.stdout
@@ -69,7 +69,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "LLM Router MCP Server" in result.stdout
+        assert "LLM Router Tool Server" in result.stdout
         assert "--prompt" in result.stdout
         assert "--provider" in result.stdout
         assert "--model" in result.stdout
@@ -86,7 +86,7 @@ class TestMCPServerCLI:
     ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
         
         assert result.returncode == 0
-        assert "DateTime MCP Server" in result.stdout
+        assert "DateTime Tool Server" in result.stdout
         assert "--timezone" in result.stdout
         assert "--format" in result.stdout
 

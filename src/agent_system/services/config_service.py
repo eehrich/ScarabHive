@@ -12,7 +12,7 @@ from typing import Optional
 from pathlib import Path
 
 from agent_system.config.settings import load_settings
-from agent_system.config.models import AgentSystemConfig, MCPConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
 logger = logging.getLogger(__name__)
@@ -129,19 +129,19 @@ class ConfigService:
         
         logger.info(f"Logging configured: level={logging.getLevelName(level)}, verbose={verbose}")
 
-    def get_mcp_server_config(
+    def get_tool_server_config(
         self,
         server_name: str,
         config: Optional[AgentSystemConfig] = None
-    ) -> Optional[MCPConfig]:
-        """Get MCP server configuration by name.
+    ) -> Optional[ToolServerConfig]:
+        """Get tool server configuration by name.
         
         Args:
-            server_name: Name of the MCP server.
+            server_name: Name of the tool server.
             config: Optional config instance. If None, uses cached config.
         
         Returns:
-            MCPConfig if found, None otherwise.
+            ToolServerConfig if found, None otherwise.
         """
         cfg = config or self._config
         if not cfg:
@@ -153,27 +153,27 @@ class ConfigService:
             return cfg.plugins.servers[server_name]
         
         if cfg.external_servers and server_name in cfg.external_servers.remote_servers:
-            # remote_servers are RemoteMCPConfig, not MCPConfig
+            # remote_servers are RemoteMCPConfig, not ToolServerConfig
             # For now, return None - this needs proper handling
             logger.warning(f"Server '{server_name}' found in remote_servers, not local plugins")
             return None
         
-        logger.warning(f"MCP server '{server_name}' not found in configuration")
+        logger.warning(f"tool server '{server_name}' not found in configuration")
         return None
 
-    def list_mcp_servers(
+    def list_tool_servers(
         self,
         config: Optional[AgentSystemConfig] = None,
         enabled_only: bool = False
-    ) -> dict[str, MCPConfig]:
-        """List all configured MCP servers (local plugins only).
+    ) -> dict[str, ToolServerConfig]:
+        """List all configured tool servers (local plugins only).
         
         Args:
             config: Optional config instance. If None, uses cached config.
             enabled_only: If True, return only enabled servers.
         
         Returns:
-            Dictionary mapping server names to MCPConfig instances.
+            Dictionary mapping server names to ToolServerConfig instances.
         """
         cfg = config or self._config
         if not cfg:
@@ -181,7 +181,7 @@ class ConfigService:
             return {}
         
         # Only return local plugin servers
-        servers: dict[str, MCPConfig] = {}
+        servers: dict[str, ToolServerConfig] = {}
         
         if cfg.plugins:
             servers.update(cfg.plugins.servers)
@@ -236,17 +236,17 @@ class ConfigService:
         
         return dict(cfg.agents)
 
-    def get_default_mcp_config(
+    def get_default_server_config(
         self,
         config: Optional[AgentSystemConfig] = None
-    ) -> Optional[MCPConfig]:
-        """Get default MCP configuration for agents.
+    ) -> Optional[ToolServerConfig]:
+        """Get default tool server configuration for agents.
         
         Args:
             config: Optional config instance. If None, uses cached config.
         
         Returns:
-            Default MCPConfig if found, None otherwise.
+            Default ToolServerConfig if found, None otherwise.
         """
         cfg = config or self._config
         if not cfg:

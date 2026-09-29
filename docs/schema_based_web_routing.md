@@ -59,10 +59,11 @@ schema.yaml
 ```yaml
 # schema.yaml
 web_ui:
-  panel:
-    enabled: true
+  panel:                              # catalogue entry, see plugin_authoring.md
     title: "My Plugin"
     endpoint: "/plugins/{{ name }}/"
+    icon: puzzle
+    category: agents
   
   endpoints:
     - path: "/"
@@ -533,7 +534,7 @@ async def get_user(self, request: Request, user_id: str) -> JSONResponse:
 
 ## See Also
 
-- [Schema-Based MCP Server](../mcp_streamable_http_transport.md)
+- [MCP Client Plugin](../src/plugins/mcp_client/README.md)
 - [Plugin Authoring Guide](plugin_authoring.md)
 - [API Reference](../README.md)
 - Tests: `tests/test_schema_router.py`

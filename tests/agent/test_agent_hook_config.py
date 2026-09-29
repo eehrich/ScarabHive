@@ -54,15 +54,15 @@ def test_hooks_config_overrides():
                     'enable_code_highlighting': True
                 }
             },
-            'context_optimizer.optimize_context': {
+            'request_logger.log_pre_llm': {
                 'enabled': False
             }
         }
     )
-    
+
     assert 'markdown_formatter.format_markdown_output' in config.overrides
     assert config.overrides['markdown_formatter.format_markdown_output']['timeout'] == 5.0
-    assert config.overrides['context_optimizer.optimize_context']['enabled'] is False
+    assert config.overrides['request_logger.log_pre_llm']['enabled'] is False
 
 
 def test_agent_config_with_hooks():

@@ -18,11 +18,11 @@ Available for all commands:
 agent-cli [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  --config PATH              Path to config file (default: config/config.yaml)
+  --config PATH              Path to config file (default: AGENT_CONFIG_PATH, else config/config.yaml)
   -v, --verbose             Enable verbose logging
   --color {auto,always,never}  Color output mode (default: auto)
   --no-color                Disable colored output
-  --show-mcp                Show MCP communication details
+  --show-tools                Show tool calls and their results
   --no-status               Disable status event output
   --raw                     Output raw JSON (machine-readable)
   -h, --help                Show help message
@@ -33,10 +33,12 @@ Options:
 | Command | Description |
 |---------|-------------|
 | `run` | Execute an agent task (default command) |
-| `plugins` | Manage plugin servers |
-| `mcp` | Manage external MCP servers |
-| `users` | User management (requires auth) |
-| `config-agents` | Manage configuration-based agents |
+| `chat` | Interactive chat with an agent (stays in the session) |
+| `plugins` | Inspect discovered plugins (read-only) |
+| `mcp` | Inspect external MCP servers (read-only) |
+| `hooks` | Inspect registered hooks |
+| `users` | User management (direct database access) |
+| `reload` | Reload the running server's config |
 
 ---
 
@@ -47,34 +49,70 @@ Run an agent with a given prompt.
 ### Usage
 
 ```bash
-agent-cli run [OPTIONS] [AGENT] PROMPT
+agent-cli run [OPTIONS] PROMPT
+agent-cli PROMPT                     # `run` may be left out
 
-# Default agent (from config)
+# Default agent (default_agent in config.yaml)
 agent-cli run "What is the weather in Berlin?"
 
 # Specify agent by name
-agent-cli run sysadmin_agent "Check system status"
-
-# Use config-based agent
-agent-cli run financial_analyst "Analyze AAPL stock"
+agent-cli run "Check system status" --agent sysadmin_agent
 
 # Override LLM profile
 agent-cli run --llm turbo "Fast question about Python"
 
-# Multimodal with image
-agent-cli run --image screenshot.png "What's in this image?"
+# Multimodal: the task comes FIRST -- --attach takes every path that
+# follows it, so a task behind the flag is read as a file name
+agent-cli run "What's in this image?" --attach screenshot.png
 ```
 
 ### Options
 
 ```bash
---agent TEXT               Agent name to use (plugin or config-based)
---llm TEXT                LLM profile to use (overrides agent's default)
---image PATH              Path to image file for vision models
---max-steps INTEGER       Maximum reasoning steps (overrides agent config)
---no-status               Disable status event streaming
---raw                     Output raw JSON instead of human-readable
+--agent TEXT                    Agent name to use (plugin or config-based)
+--llm TEXT                      LLM profile to use (overrides agent's default)
+--llm-params KEY=VALUE ...      Override LLM parameters for this run, e.g.
+                                thinking_level=max max_tokens=16384
+--attach PATH ...               File(s) to attach -- images, audio or text;
+                                the kind is read from the file, like /attach
+                                in the chat (--images/--audio/--text still
+                                work and are sorted the same way). Put the
+                                request FIRST (see above); behind the flag it
+                                is read as one more path, and the CLI says so
+                                instead of reporting a missing request
+--max-steps N                   Step budget for this run (overrides the
+                                agent's max_steps; this process only)
+--session ID|TITEL              Continue an existing session -- ihre ID oder der
+                                Titel, den ihr `/title` gegeben hat (unbekannt:
+                                legt eine Session mit dieser ID an)
+--session-title TEXT            Title for the new session
+--list-sessions [COUNT|all]     List this user's sessions, one line each
+                                (default 20, 0 = no limit; no sub-agent sessions).
+                                Nur Agenten, die für den Chat gedacht sind
+                                (visibility ui/both) -- dazu immer der Agent
+                                dieses Aufrufs und die mit --session genannte
+                                Session. Was Pipelines unter demselben User
+                                gestartet haben, zählt eine Fußzeile; `all`
+                                listet alles. `agent-run --list-sessions` liest
+                                keine Config und listet deshalb immer alles.
+                                A task that follows the flag is ignored, as
+                                before -- the listing runs and nothing else
+--vars KEY=VALUE ...            Template variables for the agent's prompt
 ```
+
+These are global and come BEFORE the subcommand:
+
+```bash
+--no-status                     Disable status event streaming
+--raw                           Output raw JSON instead of human-readable
+--color auto|always|never|ansi|html|text
+--config PATH                   Path to config
+```
+
+`--max-steps` changes the budget for THIS process only — nothing is written to
+the YAML, and the agent keeps its configured value everywhere else. Without
+the flag the budget comes from `max_steps` in the agent's YAML, as before.
+It works on `chat` too, which shares the resolved agent.
 
 ### Examples
 
@@ -82,659 +120,469 @@ agent-cli run --image screenshot.png "What's in this image?"
 # Quick query with default agent
 agent-cli run "What time is it in Tokyo?"
 
-# Use specialized config agent
-agent-cli run code_reviewer "Review this PR: https://github.com/..."
+# Use a specialized agent
+agent-cli run "Review this PR: https://github.com/..." --agent coder_reviewer
 
-# Override settings for specific task
-agent-cli run --agent web_research_agent --llm think --max-steps 30 \
-  "Research the latest AI developments in 2025"
+# Override the agent and its model for one task
+agent-cli run --agent research_agent --llm or-gpt-full \
+  "Research the latest AI developments in 2026"
 
-# Vision task with image
-agent-cli run --image diagram.png "Explain this architecture diagram"
+# Vision task with image (task first -- see above)
+agent-cli run "Explain this architecture diagram" --attach diagram.png
 
 # Machine-readable output for scripting
-agent-cli run --raw "List top 3 tech stocks" | jq '.result'
+agent-cli run --raw "List top 3 tech stocks" | jq '.summary'
 ```
 
 ---
 
-## `agent-cli config-agents` - Configuration-Based Agents
+## `agent-cli chat` - Interactive Chat
 
-Manage agents defined in `config/agents.yaml`.
-
-### Subcommands
-
-#### `list` - List All Config Agents
+REPL mode: stay in the session and keep talking to the agent, like `ollama run`.
+The session is saved after every turn and can be resumed later (`--session`).
 
 ```bash
-agent-cli config-agents list [--format {table,json}]
+# Chat with the default agent
+agent-cli chat
 
-# Pretty table (default)
-agent-cli config-agents list
+# Chat with a specific agent and LLM profile
+agent-cli chat --agent amiga_coder --llm deepseek-chat
 
-# JSON output
-agent-cli config-agents list --format json
+# Send a first message immediately
+agent-cli chat "Wie ist der Stand?" --agent sysadmin_agent
+
+# Resume an earlier session (/sessions and /session print this line for you)
+agent-cli chat --session a1b2c3d4 --agent amiga_coder
+
+# List sessions without entering the chat
+agent-cli chat --list-sessions
 ```
 
-**Example Output:**
+Nimmt dieselben Optionen wie `run`: `--agent`, `--llm`, `--llm-params`,
+`--attach`, `--max-steps`, `--session`, `--session-user`, `--session-title`,
+`--force`, `--list-sessions` und `--vars`, dazu die globalen `--color` und
+`--no-status`. Im Chat heißt das:
+
+- `--attach` hängt die Dateien an die erste Nachricht, wie `/attach` es tut,
+  samt Prüfung, ob das Modell sie lesen kann. Ohne mitgegebene erste
+  Nachricht warten sie auf die erste getippte.
+- `--llm-params` gelten auch für jedes Profil, auf das `/model` wechselt.
+- `--session-title` benennt nur die Session, mit der der Chat startet —
+  nicht die nach `/new` oder `/resume`.
+- `--raw` und `--show-tools` wirken im Chat nicht; den Tool-Verkehr zeigt
+  `/last`.
+
+**In-chat commands:**
+
+| Command | Effect |
+|---------|--------|
+| `/exit`, `/quit`, `/q`, `/bye` | End the chat (Ctrl-D / Ctrl-Z+Enter work too) |
+| `/new` | Start a fresh session (the current one stays saved) |
+| `/session` | Show the current session and the command that resumes it |
+| `/sessions [count\|all]` | List this user's sessions, one line each (default 20, `0` = no limit). Sub-agent sessions are left out — they outnumber the real ones ten to one. Ebenso die Läufe von Agenten, die nicht für den Chat gedacht sind (visibility weder `ui` noch `both`; gemessen 25.09.: 4562 von 5054, fast alles Pipeline-Bewerter) — der Agent dieses Chats und die laufende Session bleiben immer drin. Eine Fußzeile zählt den Rest, `/sessions all` zeigt ihn. Der Browser-Chat liest dieselbe Liste über `GET /api/sessions/listing?count=&agent=&current=` — Zählung, `all`, Filter und Fußzeile rechnet der Server mit denselben Funktionen wie das Terminal |
+| `/resume [id\|titel]` | Continue an earlier session without leaving the chat; ohne Argument die letzte, die dieser Nutzer verlassen hat (im Browser die jüngste aus `/sessions` außer der offenen, von jedem Chat-Agenten: der Browser wechselt den Agenten mit der Session, das Terminal bleibt bei seinem). Statt der ID geht auch der Titel: IDs sind maschinell (`2332j2kj22k`) und lassen sich **nicht** umbenennen — sie sind der Schlüssel, unter dem Usage-Tracker, Message-Debugger, Kontext-Speicher, Sub-Session-Indizes und Presence-Locks ihre Zeilen führen. Mehrere Sessions mit demselben Titel: die zuletzt benutzte; ein Präfix reicht. Wie `--session <id>`: die Session läuft auf ihrem eigenen LLM weiter. Im Terminal wird eine Session eines anderen Agenten abgelehnt, mit dem Befehl, der sie fortsetzt (der Browser wechselt stattdessen den Agenten) — in diesem Chat liefe sie mit fremden Tools und fremdem Prompt, und das nächste Speichern schriebe diesen Agenten in ihren Datensatz. Dasselbe, wenn sich ihr LLM hier nicht starten lässt (fehlender Schlüssel): sonst liefe sie auf dem Profil dieses Chats, und das Speichern überschriebe ihre eigene Wahl |
+| `/title [text]` | Der Session einen Namen geben — den, den `/sessions` zeigt, und unter dem `/resume` und `--session` sie wiederfinden; ohne Text zeigt es den aktuellen. Titel werden nur unter den Top-Level-Sessions gesucht (Sub-Agent-Titel sind ihr Auftragstext); eine ID erreicht jede Session. Tragen mehrere Sessions denselben Titel, nimmt `/resume` die jüngste und sagt, dass es noch andere gibt. Eine Session ohne ersten Turn hat noch keinen Datensatz; dort geht der Titel mit dem ersten Speichern mit. Im Browser genauso: dort gibt es vor der ersten Nachricht noch nicht einmal eine Session-ID, der Titel geht mit der ersten Nachricht als `session_title` an `/run` bzw. `/events` (nur für eine Session, die der Lauf anlegt), eine abgewiesene erste Nachricht gibt ihn an die nächste zurück, und ein Wechsel der Session vorher lässt ihn mit Hinweis fallen. Ein `/title` während des ersten Laufs, bevor dieser gespeichert hat, merkt sich der Server für dessen erstes Speichern (wie im Terminal, das ihn nach dem Turn schreibt) |
+| `/agent [name]` | Agent dieses Chats — ohne Argument listet es die Agenten der Konfiguration, mit Argument wird gewechselt. Der Wechsel startet **immer eine neue Session**: eine Session trägt den Agenten, mit dem sie lief, und unter einem anderen liefe sie mit fremden Tools und fremdem Prompt. Der neue Agent läuft auf seinem eigenen LLM, ein `/model` davor gilt für ihn nicht |
+| `/vars [KEY=VALUE ...]` | Template variables of this session — bare lists them, `unset KEY` removes one, `clear` empties. The same variables `--vars` fills. A change reaches the agent on its next step and is written to the session file at once, so a removal survives `/resume` |
+| `/model [profile]`, `/llm` | LLM dieser Session — ohne Argument listet es die Profile und markiert das laufende, mit Argument wird gewechselt. Gilt ab der nächsten Nachricht und wird sofort in die Session geschrieben, ein späteres `--session <id>` startet also darauf — auch wenn der Chat gleich danach endet. Eine Session ohne erste Nachricht hat noch keinen Datensatz; dort landet die Wahl mit dem ersten Speichern. `--llm-params` gehen mit |
+| `/tools [filter]` | Tools the agent really has, grouped by server (optionally filtered) |
+| `/skills` | Skill bundles it loads, `always` vs `on_demand` |
+| `/costs` | Session cost so far **including sub-agents** (needs `context_usage_tracker`) |
+| `/context`, `/ctx` | Was das Kontextfenster füllt. Zwei Blöcke, die nie vermischt werden: was der Anbieter beim **letzten Call gezählt** hat (aus `context_usage_tracker`, mit dem Fenster, gegen das er gezählt wurde — und dem Hinweis „stale", wenn seither kompaktiert wurde), und was das Gespräch **jetzt** enthält, geschätzt und nach Art aufgeschlüsselt: Tool-Ergebnisse, Antworten, deine Nachrichten, System-Prompt, Tool-Schemas. Größtes zuerst, denn das ist die Antwort auf „warum ist mein Fenster voll" — in einer langen Session sind es fast immer die Tool-Ergebnisse. Keine Kategorie wird als „Messung minus Schätzung" gerechnet: das sähe exakt aus und trüge den Fehler von beidem |
+| `/history [n]` | Last `n` exchanges (default 6); tool traffic condensed to one line each |
+| `/last` | The last turn's tool calls and results in full, formatted |
+| `/attach [<path> \| clear]` | Eine Datei an die **nächste** Nachricht hängen (für mehrere wiederholen); ohne Argument die Liste, `clear` leert sie. Der Rest der Zeile ist EIN Pfad — Windows-Pfade enthalten Leerzeichen. Die Art (Bild, Audio, Text) wird aus der Datei gelesen, wie bei `--attach`; eine Datei, die nicht mitgehen kann, wird gleich abgewiesen. Gesendet wird die Liste mit der nächsten Nachricht und dann geleert |
+| `/copy` | Die letzte Antwort in die Zwischenablage — den **Text**, wie das Modell ihn geschrieben hat, nicht das, was das Terminal daraus gemacht hat (die Live-Region bricht auf die Fensterbreite um und kürzt Tool-Zeilen). Unter Windows über `clip` in UTF-16LE, sonst `wl-copy`, `xclip`, `xsel` in dieser Reihenfolge; eines, das installiert ist und trotzdem scheitert, hält das nächste nicht auf |
+| `/undo [files]` | Die letzte Frage und alles, was sie beantwortet hat, aus der Session nehmen. Der Datensatz wird sofort mitgeschnitten, sonst holt `--session <id>` den Turn zurück — auch dann, wenn die Session danach leer ist. Lässt sich der gekürzte Stand nicht schreiben, sagt der Chat es, statt den Turn als weg auszugeben. Die **Dateien**, die der Turn geändert hat, bleiben dabei, wie sie sind; `/undo files` legt sie **vorher** zurück (Plugin `file_checkpoints`, siehe unten) und nimmt den Turn erst danach heraus. Wurde eine davon seither außerhalb des Agenten geändert, wird nichts angefasst und der Turn bleibt stehen — `/undo files overwrite` legt sie trotzdem zurück |
+| `/retry [files]` | Dasselbe, und die Frage gleich noch einmal stellen — mit den Anhängen, mit denen sie gestellt wurde. Das Modell sieht seinen ersten Versuch dabei **nicht** mehr, genau darum wird geschnitten statt angehängt. `files` wie bei `/undo` |
+| `/rewind [n]` | Nur die Dateien, das Gespräch bleibt: ohne Argument die **Checkpoints** dieser Session (einer pro Turn, der über die Datei-Tools etwas geändert hat, mit den Dateien; die Nummer ist die feste Folgenummer des Eintrags, sie verschiebt sich nicht, wenn alte Checkpoints wegfallen, und hat deshalb Lücken), `/rewind <n>` legt jede Datei, die der Agent seit Checkpoint n geändert hat, so zurück, wie sie davor war — Angelegtes wird gelöscht, Gelöschtes und Verschobenes kommt wieder. Ein Turn, den `/undo` ohne `files` herausgenommen hat, steht als „dropped turn" zwischen seinen Nachbarn und wird mit einem Checkpoint davor zurückgenommen. `/rewind <n> overwrite` auch für Dateien, die seither außerhalb des Agenten geändert wurden. Shell-Befehle werden **nicht** aufgezeichnet, nur mit Anzahl genannt |
+| `/export [path]` | Das Gespräch als Markdown schreiben: Fragen, Antworten, die Tool-Aufrufe und ihre Ergebnisse gekürzt (`/last` zeigt sie ganz). Ohne Pfad `chat-<session>.md` im aktuellen Verzeichnis; eine vorhandene Datei wird nie überschrieben |
+| `/edit [text]` | Die nächste Nachricht in `$VISUAL`/`$EDITOR` schreiben (ohne beides: `notepad` bzw. `vi`), das Argument steht schon drin. Für das, wofür eine Prompt-Zeile die falsche Form hat — eine Spezifikation, ein eingefügter Diff mit einem Absatz drumherum. Eine leere Datei schickt nichts, und ein Editor, der mit einem Fehler endet, auch nicht: wer abbricht, will den Turn nicht bezahlen |
+| `/help`, `/h`, `/?` | List the commands |
+| ↑ / ↓ | Walk the input history; Ctrl-R searches it |
+| Tab | Vervollständigt, was zur Zeile passt: am `/` die Kommandos, Plugin-Kommandos und Skills, hinter `/model` die Profile, hinter `/agent` die Agenten, hinter `/vars` die Variablen dieser Session, hinter `/attach` Pfade (auch mit Backslash). Hinter `/resume` die Sessions, die der Prozess schon gesehen hat — `/sessions` oder ein leeres `/resume` füllen die Liste. In einer Nachricht wird nichts angeboten |
+| Ctrl-C | Cancel the **running turn**; twice at the prompt exits. Bricht auch ein laufendes Kommando ab (`/sessions`, `/resume`, `/vars`, `/tools`, ein Plugin-Kommando), ohne den Chat zu beenden; ein laufendes Speichern wird erst zu Ende gebracht, ein zweites Ctrl-C lässt es fallen. Nach Ctrl-C laufen vorgemerkte Zeilen nie als neue Turns — auch dann nicht, wenn die Antwort schneller war |
+
+**Der Chat wacht von selbst auf.** Während er am Prompt wartet, läuft sein
+Event-Loop weiter — ein im Hintergrund gestarteter Sub-Agent (`blocking=false`)
+arbeitet also auch dann, wenn gerade niemand tippt. Trifft Eingabe für
+seine Session ein — ein Sub-Agent, der mit `wake_when_done` fertig geworden ist —,
+dann bricht er das Warten ab und startet den Zug selbst, statt darauf zu warten,
+dass jemand zufällig etwas tippt. Was schon getippt ist, bleibt unangetastet;
+der Weckruf wartet dann auf die nächste halbe Sekunde, und bis dahin hat die
+eigene Zeile ohnehin einen Zug gestartet. Anhänge aus `/attach` gehen mit einem
+geweckten Zug **nicht** mit: sie gehören der Nachricht, die gerade geschrieben
+wird. Umgeleitete Eingabe (`… | agent-cli chat`) weckt nicht — dort gibt es
+keinen Zeileneditor, den man unterbrechen könnte, und niemanden, der wartet.
+
+Plugins add their own, listed under *Plugin commands* in `/help` — but only
+those whose tool this agent may call, so the list differs per agent. They run
+the plugin directly, without an LLM turn: `/compact` (context_engineer) shrinks
+the conversation on the spot. Two plugins claiming the same name are both
+reachable as `/<plugin>:<command>`. See `docs/plugin_commands_design.md`.
+
+**In the browser** the same commands run, from the same catalogue and the same
+parser — `/sessions`, `/resume`, `/tools`, `/costs`, `/history`, `/last`,
+`/vars`, `/title`, `/agent`, `/undo`, `/retry`, `/rewind`, `/export`, `/copy` und
+`/context` answer from the API (`/agents/<name>/tools`, `/api/sessions`,
+`/chat/vars`, `/chat/undo`, `/chat/checkpoints`, `/chat/rewind`,
+`/chat/transcript`, `/chat/last_answer`, `/chat/context`) instead of from the
+local agent. `/vars`
+sends the line as typed, so the grammar is read by the same parser the
+terminal uses; it needs a session, which in the browser exists from the first
+message on. It reads the persisted variables merged with the live ones — the
+browser can open a session the running process has never loaded, and listing
+only the live half would report "none" for a session whose file is full, then
+overwrite it.
+
+Nur `/exit` ist terminal-eigen: ein Browser-Tab hat kein Terminal zum
+Verlassen. Getippt sagt der Browser das, statt es abzuweisen. Alles andere gibt
+es in **beiden** Oberflächen — ein Kommando, das der Nutzer im Terminal findet
+und im Browser nicht, liest sich wie ein Defekt. Vier tun dort das
+Entsprechende:
+
+- `/model` geht durch den Profil-Selektor, wie `/agent` durch den
+  Agenten-Selektor, und gilt ab dem nächsten Lauf, der es in die Session
+  schreibt — eine Nachricht an einen laufenden Lauf bleibt auf dessen Modell.
+  Anders als im Terminal nicht sofort: wer vorher neu lädt, ist wieder auf dem
+  Profil der Session — wie beim Knopf daneben. `/undo` und `/retry` laden auch
+  neu, behalten die Wahl aber.
+- `/copy` holt den Text der letzten Antwort vom Server (`GET /chat/last_answer`,
+  dieselbe Lesung wie im Terminal: `chat_actions.last_answer`) und legt ihn in
+  die Zwischenablage. Die gibt der Browser einer Seite nur über https oder auf
+  localhost — über http auf einem anderen Rechner nimmt `/copy` den alten
+  Kopierbefehl des Browsers, und scheitert auch der, sagt es das. Während ein
+  Lauf dieses Tabs antwortet, lehnt es selbst ab; arbeitet ein anderer Lauf an
+  der Session, lehnt der Server ab (409): im Datensatz kann dann ein
+  Zwischenstand stehen. Mit Session-Presence (in `config.yaml` an) sieht er
+  dabei jeden Prozess, kann einen Lauf aber nicht von einem `agent-cli chat`
+  unterscheiden, der die Session bloß offen hat — die Meldung nennt beides.
+  Ohne Presence kennt er nur die Läufe dieses Servers.
+- `/attach` listet und leert wie im Terminal. Einen Pfad kann die Seite nicht
+  lesen — sie öffnet stattdessen die Dateiauswahl der Büroklammer; ist der
+  Tastendruck dafür schon zu lange her, verweist sie auf die Büroklammer.
+- `/edit [text]` legt den Text ins Eingabefeld, ohne zu senden: das Feld ist
+  dort schon der Editor, den das Terminal über `$EDITOR` erst holen muss.
+
+Wo beide dasselbe tun, tun sie es auch durch dieselbe Stelle: der Schnitt von
+`/undo` und `/retry` ist `chat_actions.split_off_last_exchange`, das Markdown
+von `/export` ist `chat_actions.transcript_markdown`. Was sich unterscheidet,
+ist nur, worauf sie angewandt werden: das Terminal kürzt die Nachrichtenliste
+des Agenten und lässt das nächste Speichern folgen, der Browser lässt den
+Server den **Datensatz** kürzen (`POST /chat/undo`) und lädt ihn neu — er zeigt
+ja den Datensatz. Eine Session, in der gerade ein Lauf arbeitet, wird dabei
+abgelehnt (409), nicht unter ihm weggeschnitten — im Browser `/undo force`,
+für den Fall, dass das Schloss die Leiche eines abgestürzten Prozesses ist.
+
+**Dateien zurücklegen** (`/undo files`, `/rewind`) kann nur, wer sie vorher
+aufgezeichnet hat: das Plugin `file_checkpoints` merkt sich pro Turn, wie jede
+Datei aussah, bevor der Agent sie über `file_ops` oder `media_ops` geändert hat
+— für Agenten, die seine beiden Hooks einschalten (der Coder-Harness tut es).
+Die Wörter liest `chat_commands.parse_undo` für beide Oberflächen, die Zeilen
+schreibt das Plugin für beide. Der Browser geht über `POST /chat/undo` mit
+`"files": true`, `GET /chat/checkpoints` und `POST /chat/rewind`; eine Ablehnung
+(Dateien außerhalb des Agenten geändert) ist ein 409 mit der Liste, und
+`/undo files` lässt den Turn dann stehen. Ohne das Plugin sagen beide
+Oberflächen, dass Datei-Checkpoints aus sind. Einzelheiten:
+`src/plugins/file_checkpoints/README.md`.
+
+`/title` und `/agent` gehen im Browser durch die Widgets, die es schon hat —
+die Session-Liste und den Agenten-Selektor —, damit das Kommando und der
+Knopf daneben nicht auseinanderlaufen. `/export` lädt dort herunter statt zu
+schreiben: einen Pfad auf der Platte des Servers kann der Browser nicht
+meinen, und er sagt das, statt ihn still zu ignorieren. `/retry` legt die
+Frage zurück ins Eingabefeld, statt sie sofort zu senden — eine Datei, die
+mitging, liegt auf der Platte des Betrachters, und nur der kann sie erneut
+anhängen.
+
+Plugin commands work there as well, and stay per-agent: the browser asks
+`/chat/commands?agent=<name>` for the list and `POST /chat/command` runs one.
+Both resolve the command against what THAT agent may dispatch, so the browser
+names a command and never a tool — a command whose tool the agent may not call
+does not exist for it, exactly as in the terminal. Switching the agent in the
+selector re-fetches the list.
+
+**Eine Session bringt ihren Agenten und ihr LLM mit.** Beides steht in ihrem
+Datensatz, und ein blankes `--session <id>` liest es zurück — die gleiche
+Unterhaltung läuft also mit dem Agenten und dem Modell weiter, mit dem sie
+begonnen wurde, statt mit den Config-Defaults. `--agent` und `--llm` schlagen
+das weiterhin. **`agent-run` verhält sich identisch**, und das ist kein
+Komfort, sondern Notwendigkeit: beide Einstiegspunkte *schreiben* denselben
+Datensatz, und solange sie die Frage verschieden beantwortet haben, hat jeder
+`agent-run`-Aufruf gelöscht, was `agent-cli` dort hinterlegt hatte. Die
+Entscheidung liegt deshalb an genau einer Stelle
+(`cli_utils/session_defaults.py`). Zwei Einschränkungen mit Grund: ein gespeichertes Profil wird
+nur übernommen, wenn auch der Agent der gespeicherte ist (ein Profil, das für
+einen anderen Agenten gewählt wurde, gehört nicht in dessen Kette), und wenn
+es ohnehin der Default des Agenten ist, passiert nichts — ein zweiter Client
+für denselben Wert wäre reine Arbeit.
+
+**Eingabe-History.** Pfeil hoch holt zurück, was in *dieser Session* gefragt
+wurde. Sie wird nirgends zusätzlich gespeichert: die Session selbst ist das
+Protokoll, ihre User-Nachrichten sind die History. `/resume` und `/new`
+tauschen sie deshalb mit aus, und beide Oberflächen zeigen dieselbe.
+
+Zwei Dinge stehen bewusst nicht drin. **Slash-Kommandos** laufen im REPL und
+erreichen die Session nie — sie sind bis zum Prozessende abrufbar, auch über
+`/new` und `/resume` hinweg, danach
+weg. Und **sehr lange Nachrichten** (über 2000 Zeichen) werden übersprungen:
+ein `/skill`-Aufruf landet als vollständig *ausgepackter* Skill-Text in der
+Session, und niemand will 30 kB SKILL.md über seinem Prompt haben. Eine
+Nachricht, die mit `//` abgeschickt wurde, kommt auch wieder mit `//` zurück
+— sonst würde Enter darauf das Kommando *ausführen* statt es zu senden.
+
+Im Browser ist das Eingabefeld mehrzeilig, dort gehören die Pfeiltasten
+zuerst dem Cursor: sie greifen erst dann auf die History zu, wenn der Cursor
+sich nicht mehr bewegen *kann* — also am obersten bzw. untersten Rand des
+Textes. Nach einem Rückruf steht der Cursor am **Anfang**, damit weiteres
+Zurückblättern einen Tastendruck pro Schritt kostet; der erste Pfeil runter
+gehört deshalb noch dem Cursor, erst der zweite geht wieder vorwärts. Nichts
+geht dabei verloren: ein angefangener Entwurf kommt zurück, und was man in
+einen zurückgeholten Eintrag hineinschreibt, bleibt beim Weiterblättern
+erhalten. Escape bricht ab und stellt den Entwurf wieder her.
+
+**Multi-line input.** A plain Enter sends the message, so pasting a block
+needs one of:
 
 ```
-Config-Based Agents:
-╭────────────────────┬──────────┬────────┬──────────┬────────────────────────╮
-│ NAME               │ LLM      │ STEPS  │ STATUS   │ DESCRIPTION            │
-├────────────────────┼──────────┼────────┼──────────┼────────────────────────┤
-│ financial_analyst  │ turbo    │ 20     │ Enabled  │ Financial analyst...   │
-│ code_reviewer      │ deepseek │ 15     │ Enabled  │ Code review expert...  │
-│ research_assistant │ think    │ 25     │ Disabled │ Research specialist... │
-╰────────────────────┴──────────┴────────┴──────────┴────────────────────────╯
+"""
+move.w  d0,d1
+rts
+"""
 ```
 
-#### `show` - Display Agent Details
+or a trailing backslash to continue on the next line. A message that has to
+*start* with a command word is escaped with a doubled slash — `//new ...`
+reaches the agent as `/new ...`; anything else beginning with `/` that is not
+a known command — a path like `/etc/nginx/nginx.conf`, for instance — is sent
+as an ordinary message. The escape only fires where it is needed: a pasted
+`// TODO: fix` or `//192.168.1.1/share` keeps both slashes.
 
-```bash
-agent-cli config-agents show AGENT_NAME [--format {table,json}]
+Während ein Turn läuft, geht eine getippte Zeile beim nächsten Schritt an den
+Agenten. Es gilt dieselbe Regel wie am Prompt, aus derselben Funktion: eine
+**einzelne** Zeile, die ein bekanntes Kommandowort ist, wird abgewiesen
+(Kommandos gibt es nur am Prompt), alles andere ist eine Nachricht — ein
+eingefügter Block also **eine** Nachricht, mit Einrückung und Leerzeilen, und
+ein Pfad wie `/etc/nginx/nginx.conf` geht durch. In `/history` und `/last`
+steht jede Nachricht, die der Agent bekommen hat, auch eine mit `//`
+abgeschickte.
 
-# View specific agent configuration
-agent-cli config-agents show financial_analyst
-```
-
-**Example Output:**
-
-```
-Agent: financial_analyst
-Status: Enabled
-Description: Professional financial analyst for market analysis
-
-Configuration:
-  LLM Profile:    turbo
-  Max Steps:      20
-  System Prompt:  config/prompts/financial_analyst_prompt.yaml
-
-Tools:
-  Allowed:
-    - yahoo_finance/*
-    - web_scraper/*
-    - duckduckgo_search/*
-  Blocked:
-    - ssh_control/*
-    - script_interpreter/*
-
-Context Management:
-  Enabled:   true
-  Strategy:  SUMMARIZE_OLDEST
-  Preserve:  8 recent messages
-
-Metadata:
-  Author:   YourName
-  Version:  1.0.0
-  Tags:     finance, analysis
-```
-
-#### `validate` - Validate Agent Configuration
-
-```bash
-agent-cli config-agents validate [AGENT_NAME]
-
-# Validate all agents
-agent-cli config-agents validate
-
-# Validate specific agent
-agent-cli config-agents validate financial_analyst
-```
-
-**Example Output:**
-
-```
-Validating config agents...
-✓ financial_analyst - OK
-✓ code_reviewer - OK
-✗ research_assistant - ERROR: Missing required field 'llm_profile'
-
-Summary: 2 valid, 1 invalid
-```
-
-#### `enabled` - List Only Enabled Agents
-
-```bash
-agent-cli config-agents enabled
-
-# JSON format
-agent-cli config-agents enabled --format json
-```
+**Display:** tool activity is rendered like the WebUI front panel -- one line
+per operation that updates in place and collapses into its `✓`/`✗` end state,
+instead of a chronological log. Thinking tokens appear as a live counter
+(`✻ Thinking… (~120 tokens · 4s)`), intermediate agent narration between tool
+calls is shown dimmed, and the final answer is rendered as markdown. Each turn
+ends with a dim usage footer (`↑1.2k ↓830 · $0.0213 · 3m41s`) and the session
+total is printed on exit. On a non-ANSI terminal (or when piped) the display
+falls back to plain chronological lines.
 
 ---
 
-## `agent-cli plugins` - Plugin Management
+## `agent-cli plugins` — Plugins ansehen
 
-Manage local plugin servers. The command displays plugin types and their configured instances.
-
-### Subcommands
-
-#### `list` - List Available Plugins
+Nur lesend. Ein Plugin wird in `config/plugins.yaml` eingeschaltet, nicht per
+Befehl: `enabled: true` am Server-Eintrag, und damit ein Agent die Tools auch
+bekommt, gehören sie in dessen Allowlist (`agent_config.tools.allowed`). Die
+früheren Befehle `enable`/`disable`/`status` gibt es nicht mehr.
 
 ```bash
-agent-cli plugins list [--format {table,json}]
-
-# Table view (default) - shows plugin types and instances
-agent-cli plugins list
-
-# JSON for scripting
-agent-cli plugins list --format json | jq '.[] | select(.enabled)'
+agent-cli plugins list [--format table|json] [--show-metadata]
+agent-cli plugins info NAME [--format table|json]
+agent-cli plugins search BEGRIFF
+agent-cli --raw plugins info NAME --format json    # zusätzlich Factory-Details
 ```
 
-**Example Output:**
+`list` zeigt jeden Plugin-**Typ** und darunter seine Instanzen, sobald es mehr
+als eine gibt. ENABLED heißt beim Typ: mindestens eine Instanz ist
+eingeschaltet. Dieselbe Regel gilt für `info` — `writer_audio_ops` ist eine
+Instanz vom Typ `audio_ops`, nicht ein eigener Typ. Nennt `type:` einen anderen
+Server (`child: {type: base}`), zählt die Instanz zum Plugin am Ende dieser
+Kette.
 
 ```
-| NAME                       | ENABLED | DESCRIPTION                                                              | VERSION |
-|----------------------------|---------|--------------------------------------------------------------------------|---------|
-| basic_agent                | YES     | Basic agent plugin providing agent execution capabilities as MCP tools   | 1.0.0   |
-| ├─ basic_agent             | YES     |                                                                          |         |
-| ├─ meta_agent              | YES     | Meta Agent for orchestrating other agents and managing complex tasks     |         |
-| ├─ financial_analyst_agent | YES     | Professional financial analyst for stock market analysis, fundamental... |         |
-| ├─ sysadmin_agent          | YES     | System Administrator who has ssh access to different servers             |         |
-| web_research_agent         | YES     | Specialized web research agent combining DuckDuckGo search with web s... | 0.1.0   |
-| ├─ web_research_agent      | YES     |                                                                          |         |
-| ├─ meta_web_research_agent | YES     | Meta Web Research Agent for advanced web scraping and research tasks     |         |
-| llm_router                 | YES     | Route requests to different LLM providers for specialized tasks or al... | 1.0.0   |
-| web_scraper                | YES     | Fetch and extract readable text and structured data (tables/forms/li... | 0.1.0   |
+| NAME                              | ENABLED   | DESCRIPTION                                          | VERSION   |
+|-----------------------------------|-----------|------------------------------------------------------|-----------|
+| audio_ops                         | YES       | Audio file manipulation - cut, merge, mix, and co... | 1.1.0     |
+| ├─ audio_ops                      | YES       | Audio file manipulation - cut segments from FLAC/... |           |
+| ├─ writer_audio_ops               | YES       | Audio-Manipulation für Writer-System                 |           |
 ```
 
-**Features:**
-- **Plugin types** shown as main rows with version numbers
-- **Multiple instances** grouped under their type with tree characters (`├─`)
-- **Individual enabled status** for each instance
-- **Descriptions truncated** to 80 characters for readability
-- **Full descriptions** available in JSON output
+JSON-Form eines Eintrags (`instances` bleibt leer, solange es nur eine gibt):
 
-**JSON Output Structure:**
 ```json
-[
-  {
-    "name": "basic_agent",
-    "description": "Basic agent plugin providing agent execution capabilities...",
-    "version": "1.0.0",
-    "enabled": true,
-    "instances": [
-      {
-        "instance_name": "basic_agent",
-        "enabled": true,
-        "description": ""
-      },
-      {
-        "instance_name": "meta_agent",
-        "enabled": true,
-        "description": "Meta Agent for orchestrating other agents..."
-      }
-    ]
-  }
-]
+{"name": "audio_ops", "description": "...", "version": "1.1.0", "enabled": true,
+ "instances": [{"instance_name": "audio_ops", "enabled": true, "description": "..."},
+               {"instance_name": "writer_audio_ops", "enabled": true, "description": "..."}]}
 ```
 
-#### `info` - Show Plugin Details
-
-```bash
-agent-cli plugins info PLUGIN_NAME [--raw]
-
-# Human-readable info
-agent-cli plugins info llm_router
-
-# Raw metadata
-agent-cli plugins info llm_router --raw
-```
-
-#### `search` - Search Plugins
-
-```bash
-agent-cli plugins search TERM
-
-# Search by name or description
-agent-cli plugins search "web"
-```
-
-#### `status` - Show Plugin Status
-
-```bash
-agent-cli plugins status
-
-# JSON output with enabled/disabled status for all plugins
-```
-
-**Note:** To enable/disable plugins, modify the `plugins:` configuration section in any included config file. Set `enabled: true/false` under `plugins.servers.<plugin_name>`. The system automatically merges all plugin configurations from included YAML files.
+`--show-metadata` hängt bei `--format json` die rohen Plugin-Metadaten an.
 
 ---
 
-## `agent-cli mcp` - External MCP Server Management
+## `agent-cli mcp` — Externe MCP-Server ansehen
 
-Manage connections to external MCP servers.
-
-### Subcommands
-
-#### `list` - List Configured MCP Servers
-
-```bash
-agent-cli mcp list [--format {table,json}]
-
-# Show all configured servers
-agent-cli mcp list
-```
-
-**Example Output:**
-
-```
-╭──────────────┬─────────────────────────┬──────────┬────────────╮
-│ NAME         │ URL                     │ STATUS   │ TOOLS      │
-├──────────────┼─────────────────────────┼──────────┼────────────┤
-│ remote_ai    │ http://ai-server:3000   │ Connected│ 12 tools   │
-│ data_service │ http://data.api.com     │ Offline  │ -          │
-╰──────────────┴─────────────────────────┴──────────┴────────────╯
-```
-
-#### `connect` - Connect to Server
+Nur lesend. Jeder Aufruf verbindet die in `config/mcp_servers.yaml`
+eingeschalteten Server, erledigt die Aktion und trennt wieder — eine Verbindung
+überlebt den Prozess nicht. Deshalb gibt es kein `connect`/`disconnect`; ob ein
+Server erreichbar ist, beantwortet `test`. Gesperrte Tools stehen in
+`mcp_servers.yaml` unter `tools.blocked` — nur diese Liste wirkt bei einem
+externen Server; welche Tools ein Agent aufrufen darf, regelt seine Allowlist.
+`tool allow/block`,
+`enable`/`disable` und `feature` sind entfallen (`allow/block` hatte die Datei
+neu geschrieben und dabei alle Kommentare gelöscht).
 
 ```bash
-agent-cli mcp connect SERVER_NAME
-
-# Establish connection
-agent-cli mcp connect remote_ai
+agent-cli mcp                                 # Hilfe
+agent-cli mcp list [--format table|json]      # konfigurierte Server
+agent-cli mcp status [SERVER] [--format ...]  # ohne SERVER wie list
+agent-cli mcp test SERVER                     # Verbindung + Grundfunktion, JSON
+agent-cli mcp tools SERVER [--format ...]     # Tools, gesperrte markiert
 ```
 
-#### `disconnect` - Disconnect from Server
-
-```bash
-agent-cli mcp disconnect SERVER_NAME
-
-# Close connection
-agent-cli mcp disconnect remote_ai
-```
-
-#### `status` - Check Server Status
-
-```bash
-agent-cli mcp status [SERVER_NAME]
-
-# All servers
-agent-cli mcp status
-
-# Specific server with details
-agent-cli mcp status remote_ai
-```
-
-#### `test` - Test Server Connection
-
-```bash
-agent-cli mcp test SERVER_NAME
-
-# Verify connectivity and list available tools
-agent-cli mcp test remote_ai
-```
-
-**Example Output:**
-
-```
-Testing MCP server: remote_ai
-✓ Connection successful
-✓ Server version: 1.2.0
-✓ Available tools: 12
-  - analyze_sentiment
-  - summarize_text
-  - translate
-  ...
-```
+`--format` steht **hinter** der Aktion (`mcp list --format json`).
 
 ---
 
-## `agent-cli users` - User Management
+## `agent-cli hooks` — Hooks ansehen
 
-Manage user accounts and authentication (requires `auth.enabled: true`).
-
-### Subcommands
-
-#### `list` - List All Users
-
-```bash
-agent-cli users list
-
-# Requires admin privileges
-```
-
-**Example Output:**
-
-```
-╭────┬──────────┬───────────────────────┬────────┬────────╮
-│ ID │ USERNAME │ EMAIL                 │ ROLE   │ ACTIVE │
-├────┼──────────┼───────────────────────┼────────┼────────┤
-│ 1  │ admin    │ admin@example.com     │ ADMIN  │ Yes    │
-│ 2  │ john     │ john@example.com      │ USER   │ Yes    │
-│ 3  │ guest    │ guest@example.com     │ GUEST  │ No     │
-╰────┴──────────┴───────────────────────┴────────┴────────╯
-```
-
-#### `create` - Create New User
+Lädt die Plugins, damit sich ihre Hooks registrieren (etwa zwei Sekunden, dazu
+der Verbindungsaufbau zu eingeschalteten externen MCP-Servern), und zeigt dann
+die Registry. Scheitert das Laden als Ganzes, endet der Befehl mit Exit-Code
+1. Ein einzelnes Plugin, das nicht lädt, fehlt in der Liste — wie im Server —
+und steht als Fehler auf stderr.
 
 ```bash
-agent-cli users create USERNAME EMAIL [--role {ADMIN,USER,GUEST}]
-
-# Interactive password prompt
-agent-cli users create alice alice@example.com --role USER
-
-# Programmatic (not recommended for security)
-agent-cli users create alice alice@example.com --password secret123
+agent-cli hooks list [--type pre_llm_call] [--format table|json]
+agent-cli hooks inspect PLUGIN.HOOK                # alle Angaben als JSON
 ```
 
-#### `update` - Update User Details
-
-```bash
-agent-cli users update USER_ID [OPTIONS]
-
-# Update email
-agent-cli users update 2 --email newemail@example.com
-
-# Change role
-agent-cli users update 2 --role ADMIN
-
-# Update multiple fields
-agent-cli users update 2 --email new@example.com --role ADMIN
-```
-
-#### `delete` - Delete User
-
-```bash
-agent-cli users delete USER_ID [--yes]
-
-# Prompts for confirmation
-agent-cli users delete 3
-
-# Skip confirmation
-agent-cli users delete 3 --yes
-```
-
-#### `activate` / `deactivate` - Toggle User Status
-
-```bash
-# Activate inactive user
-agent-cli users activate USER_ID
-
-# Deactivate user (prevents login)
-agent-cli users deactivate USER_ID
-```
-
-#### `generate-api-key` - Create API Key
-
-```bash
-agent-cli users generate-api-key USER_ID
-
-# Generate long-lived API key for a user
-agent-cli users generate-api-key 2
-```
-
-**Example Output:**
-
-```
-API Key generated for user 'john':
-  Key: ak_1234567890abcdef1234567890abcdef
-  
-⚠ WARNING: Save this key securely. It cannot be retrieved again.
-```
+ENABLED ist der Stand der Registry nach `schema.yaml`, `hooks.overrides` und
+dem `hook_config` der Instanz — nicht die Überschreibung einzelner Agenten.
+`hooks.overrides` kommt aus der geladenen Config (`--config`).
+Ausführungsstatistiken gibt es hier nicht: sie liegen im Speicher des
+Prozesses, der die Hooks ausführt (API-Server), den ein CLI-Aufruf nie sieht.
 
 ---
 
-## Environment Variables
+## `agent-cli users` — Benutzer verwalten
 
-AgentSystem respects the following environment variables:
+Arbeitet direkt auf der Benutzer-Datenbank (`auth.database_path`, Default
+`data/users.db`) und braucht deshalb kein Login. Hilfe mit
+`agent-cli users -h` bzw. `agent-cli users BEFEHL -h`. Ohne Befehl läuft
+`list` (auch `users --limit 5`). Fehler enden mit Exit-Code 1. Globale Optionen
+wie `--config` stehen **vor** `users`.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGENT_CONFIG_PATH` | Path to config file | `config/config.yaml` |
-| `AGENT_LOG_LEVEL` | Logging level | `INFO` |
-| `OPENAI_API_KEY` | OpenAI API key | - |
-| `ANTHROPIC_API_KEY` | Anthropic API key | - |
-| `DEEPSEEK_API_KEY` | DeepSeek API key | - |
-| `NO_COLOR` | Disable color output | - |
+```bash
+agent-cli users list [--limit 100] [--skip 0]
+agent-cli users info USERNAME
+agent-cli users create USERNAME EMAIL [-p PASSWORT] [-n "Voller Name"] [-r user|admin|guest] [--admin] [--inactive]
+agent-cli users update USERNAME [-e EMAIL] [-n NAME] [-p PASSWORT] [-r ROLLE] [--activate | --deactivate]
+agent-cli users delete USERNAME [-f]
+agent-cli users generate-api-key USERNAME
+agent-cli users revoke-api-key USERNAME [-f]
+```
+
+Ohne `-p` fragt `create` das Passwort ab; `-f` überspringt die Rückfrage.
 
 ---
 
-## Exit Codes
+## `agent-cli reload` — Config des laufenden Servers neu laden
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error (configuration, runtime) |
-| 2 | Command-line argument error |
-| 3 | Authentication/authorization error |
-| 130 | Interrupted by user (Ctrl+C) |
+```bash
+agent-cli reload [--url http://127.0.0.1:8000] [--api-key KEY] [--format table|json] [--timeout 30]
+```
+
+Ruft `POST /admin/reload-config` am laufenden Server auf (kein Neustart). URL
+und Schlüssel kommen sonst aus `AGENT_SERVER_URL` bzw. `AGENT_ADMIN_API_KEY` /
+`AGENT_API_KEY`; der Schlüssel muss einem Admin gehören. Ein Passwortwechsel
+widerruft ihn — danach einen neuen erzeugen.
+
+Der `auth`-Abschnitt wirkt erst nach einem Neustart: der Server behält den, mit
+dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
+(`report.auth`: „changed on disk: takes effect on a restart").
 
 ---
 
-## Configuration Files
+## Umgebungsvariablen
 
-CLI behavior can be customized through configuration files:
+| Variable | Wirkung |
+|----------|---------|
+| `AGENT_CONFIG_PATH` | Config-Datei, wenn `--config` fehlt (sonst `config/config.yaml`) |
+| `AGENT_SERVER_URL` | Server für `reload` |
+| `AGENT_ADMIN_API_KEY`, `AGENT_API_KEY` | Schlüssel für `reload` |
+| `NO_COLOR` | keine Farben |
 
-### Main Configuration
+API-Schlüssel der LLM-Anbieter stehen in `config/secrets.env` neben der Config.
 
-**File:** `config/config.yaml`
-
-```yaml
-# Entry agent (used when no --agent specified)
-entry_agent: "default_agent"
-
-# Default LLM profile
-default_llm_profile: "normal"
-
-# Logging
-logging:
-  level: INFO
-  file_cli: logs/cli.log
-
-# Network
-network:
-  host: 127.0.0.1
-  port: 8000
-```
-
-### Config-Based Agents
-
-**File:** `config/agents.yaml`
-
-```yaml
-agents:
-  my_agent:
-    enabled: true
-    description: "My custom agent"
-    base_type: "agent"
-    agent_config:
-      llm_profile: "turbo"
-      max_steps: 20
-      system_template: "config/prompts/my_agent.yaml"
-      tools:
-        allowed: ["*"]
-```
-
-See [Configuration-Based Agents Guide](config_based_agents.md) for complete reference.
-
-### Plugin Configuration
-
-**File:** `config/plugins.yaml`
-
-```yaml
-plugins:
-  plugin_dirs:
-    - "src/plugins"
-  
-  servers:
-    llm_router:
-      type: llm_router
-      enabled: true
-    
-    web_scraper:
-      type: web_scraper
-      enabled: true
-```
+Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung), steht in `config/local.yaml` daneben: nie im Repo, das letzte Include der `config.yaml` — es gewinnt über alle anderen Dateien. Nur `paths` liest der Loader allein aus der `config.yaml`.
 
 ---
 
-## Tips and Best Practices
+## Exit-Codes
 
-### 1. Use Config Agents for Specialization
+| Code | Bedeutung |
+|------|-----------|
+| 0 | Erfolg |
+| 1 | Fehler: unbekanntes Plugin/Hook/Server, `mcp test` gescheitert, `reload` ohne Erfolg (auch ein einzelner Server), LLM-Profil unbekannt, Anhang unlesbar, Session belegt oder nicht ladbar, `users`-Befehl gescheitert |
+| 2 | Aufruf falsch: unbekannter Befehl oder Parameter, ungültige `--llm-params` |
 
-Instead of creating multiple prompt variations, use config-based agents:
-
-```bash
-# Bad: manual prompting
-agent-cli run "Act as a financial analyst and analyze..."
-
-# Good: dedicated config agent
-agent-cli run financial_analyst "Analyze AAPL stock"
-```
-
-### 2. Override Settings Per Task
-
-Use command-line options to adjust behavior without changing config:
-
-```bash
-# Quick task with faster model
-agent-cli run --llm turbo "Quick summary of..."
-
-# Complex task with more steps
-agent-cli run --max-steps 50 "Comprehensive research on..."
-```
-
-### 3. Script with JSON Output
-
-Use `--raw` for machine-readable output:
-
-```bash
-# Process results with jq
-agent-cli run --raw "Top 5 tech stocks" | \
-  jq -r '.result.summary' | \
-  mail -s "Daily Report" user@example.com
-```
-
-### 4. Check Agent Capabilities
-
-Before running a task, verify what tools an agent has access to:
-
-```bash
-# View agent configuration
-agent-cli config-agents show financial_analyst
-
-# List available plugins
-agent-cli plugins list
-```
-
-### 5. Test MCP Connectivity
-
-Before relying on external MCP servers, test them:
-
-```bash
-# Verify server is reachable
-agent-cli mcp test remote_ai
-
-# Check current status
-agent-cli mcp status
-```
+Fehler, die der **Agent** während eines Laufs meldet (`ERROR:`-Zeilen), ändern
+den Exit-Code nicht.
 
 ---
 
-## Troubleshooting
+## Konfiguration
 
-### Common Issues
+- `config/config.yaml` — u.a. `default_agent` (Agent ohne `--agent`),
+  `logging.file_cli` (Logdatei der CLI; ohne den Schlüssel `<logging.file>-cli.log`,
+  also `logs/agent-cli.log`).
+- `config/plugins.yaml` und die per `includes` geladenen Dateien — Plugins und
+  Agenten unter `plugins.servers`; ein Agent ist ein Server-Eintrag mit
+  `agent_config`. Siehe [Configuration-Based Agents](config_based_agents.md).
+- `config/mcp_servers.yaml` — externe MCP-Server unter
+  `external_servers.remote_servers`. Siehe [Tool server configuration](server_configuration.md).
 
-#### 1. "Agent not found"
+---
 
-```bash
-agent-cli run unknown_agent "task"
-# Error: Agent 'unknown_agent' not found
-```
+## Fehlersuche
 
-**Solution:** List available agents:
+**„Agent not found“** — die Fehlermeldung listet die verfügbaren Agenten; der
+Name gehört hinter `--agent`, nicht als erstes Wort des Tasks.
 
-```bash
-# Check plugins
-agent-cli plugins list
+**ANSI-Codes in umgeleiteter Ausgabe** — `--no-color` bzw. `NO_COLOR=1`. Bei
+`--color auto` (Default) entstehen in Pipes keine Escape-Sequenzen.
 
-# Check config agents
-agent-cli config-agents list
-```
-
-#### 2. "Configuration file not found"
-
-```bash
-agent-cli run "task"
-# Error: Could not load config from config/config.yaml
-```
-
-**Solution:** Specify config path or create default:
-
-```bash
-# Use custom config
-agent-cli --config /path/to/config.yaml run "task"
-
-# Or create default config
-cp config/config.yaml.example config/config.yaml
-```
-
-#### 3. "Permission denied" for user management
-
-```bash
-agent-cli users list
-# Error: Insufficient permissions
-```
-
-**Solution:** Ensure you're logged in as admin or auth is disabled.
-
-#### 4. Color output issues in scripts
-
-If you're piping output and see ANSI codes:
-
-```bash
-# Disable colors explicitly
-agent-cli --no-color run "task" > output.txt
-
-# Or use environment variable
-NO_COLOR=1 agent-cli run "task"
-```
+**Ein Tool fehlt dem Agenten** — Plugin in `plugins.yaml` eingeschaltet
+(`plugins list`)? Tool in der Allowlist des Agenten? Bei externen Servern:
+`mcp test SERVER` und `mcp tools SERVER`.
 
 ---
 
 ## Further Reading
 
 - [Configuration-Based Agents](config_based_agents.md) - Deep dive into agent definitions
-- [MCP Configuration](mcp_configuration.md) - External server setup
+- [Tool server configuration](server_configuration.md) - External server setup
 - [Plugin Authoring](plugin_authoring.md) - Create custom plugins
 - [Authentication Guide](multi_user_authentication.md) - Security and user management
 - [Context Management](context_management.md) - Token budget strategies
 
 ---
 
-## Quick Reference Card
+## Kurzreferenz
 
 ```bash
-# Core Operations
-agent-cli run "prompt"                          # Execute with default agent
-agent-cli run agent_name "prompt"               # Execute with specific agent
-agent-cli run --llm profile "prompt"            # Override LLM
+agent-cli "Aufgabe"                             # run mit dem Default-Agenten
+agent-cli run "Aufgabe" --agent NAME --llm PROFIL
+agent-cli chat --agent NAME                     # interaktiv
+agent-cli run --list-sessions                   # Sessions dieses Users
 
-# Config Agents
-agent-cli config-agents list                    # List all config agents
-agent-cli config-agents show NAME               # View details
-agent-cli config-agents validate                # Check configuration
+agent-cli plugins list | info NAME | search BEGRIFF
+agent-cli mcp list | status [SERVER] | test SERVER | tools SERVER
+agent-cli hooks list | inspect NAME
+agent-cli users list | info | create | update | delete | generate-api-key | revoke-api-key
+agent-cli reload
 
-# Plugins
-agent-cli plugins list                          # List plugins
-agent-cli plugins info NAME                     # Plugin details
-
-# MCP Servers
-agent-cli mcp list                              # List MCP servers
-agent-cli mcp test NAME                         # Test connection
-agent-cli mcp status                            # Check all statuses
-
-# Users (requires auth)
-agent-cli users list                            # List users
-agent-cli users create USER EMAIL               # Create user
-agent-cli users generate-api-key ID             # Generate API key
-
-# Debugging
-agent-cli --verbose run "prompt"                # Detailed logs
-agent-cli --show-mcp run "prompt"               # Show MCP communication
-agent-cli --raw run "prompt"                    # JSON output
+agent-cli --verbose run "Aufgabe"               # Fortschritt
+agent-cli --show-tools run "Aufgabe"              # Tool-Aufrufe im Detail
+agent-cli --raw run "Aufgabe"                   # Ergebnis als JSON
 ```

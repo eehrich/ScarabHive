@@ -64,6 +64,20 @@ class TestCancellationToken:
         # Manual cleanup should call callback
         asyncio.run(token.cleanup())
         assert callback_called
+
+    def test_a_cleanup_callback_whose_call_is_async_is_awaited(self):
+        # An object with an async __call__: no coroutine-function check sees it,
+        # and the cleanup used to call it and drop the coroutine unawaited.
+        token = CancellationToken("test-request")
+        ran = []
+
+        class Cleanup:
+            async def __call__(self):
+                ran.append(True)
+
+        token.add_cleanup_callback(Cleanup())
+        asyncio.run(token.cleanup())
+        assert ran == [True]
     
     def test_should_force_timeout(self):
         """Test timeout logic for forced cancellation."""
@@ -231,14 +245,14 @@ class TestBasicOperationsCancellation:
     @pytest.fixture
     def server(self):
         """Create a BasicOperations server for testing."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, LLMSystemConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, LLMSystemConfig
         
         system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(models={}, profiles={})
         )
-        mcp_config = MCPConfig(type="basic_operations", enabled=True)
+        server_config = ToolServerConfig(type="basic_operations", enabled=True)
         
-        return BasicOperationsServer("test-server", system_config, mcp_config)
+        return BasicOperationsServer("test-server", system_config, server_config)
     
     @pytest.fixture
     def mock_status(self):

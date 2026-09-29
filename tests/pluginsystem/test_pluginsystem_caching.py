@@ -201,56 +201,48 @@ class TestWebScraperCaching:
     def mock_scraper(self, tmp_path):
         """Create a mock web scraper with cache enabled."""
         from unittest.mock import Mock
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.web_scraper.server import WebScraperServer
         
         system_config = Mock(spec=AgentSystemConfig)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="web_scraper",
             enabled=True,
             cache_enabled=True,
             cache_ttl=60
         )
         
-        server = WebScraperServer("test_scraper", system_config, mcp_config)
+        server = WebScraperServer("test_scraper", system_config, server_config)
         # Override cache to use temp directory
         server.cache = PluginCache("test_scraper", tmp_path, default_ttl=60)
         
         return server
 
     def test_cache_key_creation(self, mock_scraper):
-        """Test web scraper cache key creation."""
+        """The key is (session, url). It deliberately does NOT carry the
+        response-shaping parameters: one fetch is parsed once, and text,
+        links, tables and lists are all served from that entry."""
         url = "https://example.com/test"
-        
-        key1 = mock_scraper._create_cache_key(
-            url, "content", 8000, True, False, False, False
-        )
-        
-        key2 = mock_scraper._create_cache_key(
-            url, "content", 8000, True, False, False, False
-        )
-        
-        # Same parameters should create same key
-        assert key1 == key2
-        
-        # Different parameters should create different key
-        key3 = mock_scraper._create_cache_key(
-            url, "links", 8000, True, False, False, False
-        )
-        
-        assert key1 != key3
+
+        assert mock_scraper._create_cache_key(url) == mock_scraper._create_cache_key(url)
+        assert mock_scraper._create_cache_key(url) != mock_scraper._create_cache_key(url + "/other")
+
+    def test_a_cached_page_is_never_served_across_sessions(self, mock_scraper):
+        """The entry holds the fetched body, which may have been retrieved
+        with one user's cookies."""
+        url = "https://example.com/dashboard"
+        key_a = mock_scraper._create_cache_key(url, session_id="a")
+        assert key_a == mock_scraper._create_cache_key(url, session_id="a")
+        assert key_a != mock_scraper._create_cache_key(url, session_id="b")
+        assert key_a != mock_scraper._create_cache_key(url)
 
     def test_url_normalization_in_cache_key(self, mock_scraper):
-        """Test URL normalization for consistent cache keys."""
-        # URLs with same content but different order of query params
-        url1 = "https://example.com?param1=value1&param2=value2"
-        url2 = "https://example.com?param2=value2&param1=value1"
-        
-        key1 = mock_scraper._create_cache_key(url1, "content", 8000, False, False, False, False)
-        key2 = mock_scraper._create_cache_key(url2, "content", 8000, False, False, False, False)
-        
-        # Should create the same cache key due to normalization
-        assert key1 == key2
+        """Query-parameter order and the fragment must not split the entry."""
+        key1 = mock_scraper._create_cache_key("https://example.com?param1=value1&param2=value2")
+        key2 = mock_scraper._create_cache_key("https://example.com?param2=value2&param1=value1")
+        key3 = mock_scraper._create_cache_key("https://example.com?param1=value1&param2=value2#section")
+
+        assert key1 == key2 == key3
 
 
 class TestDuckDuckGoSearchCaching:
@@ -260,18 +252,18 @@ class TestDuckDuckGoSearchCaching:
     def mock_ddg_search(self, tmp_path):
         """Create a mock DuckDuckGo search server with cache enabled."""
         from unittest.mock import Mock
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
         from plugins.duckduckgo_search.server import DuckDuckGoSearchServer
         
         system_config = Mock(spec=AgentSystemConfig)
-        mcp_config = MCPConfig(
+        server_config = ToolServerConfig(
             type="duckduckgo_search",
             enabled=True,
             cache_enabled=True,
             cache_ttl=900
         )
         
-        server = DuckDuckGoSearchServer("test_ddg", system_config, mcp_config)
+        server = DuckDuckGoSearchServer("test_ddg", system_config, server_config)
         # Override cache to use temp directory
         server.cache = PluginCache("test_ddg", tmp_path, default_ttl=900)
         
@@ -282,30 +274,30 @@ class TestDuckDuckGoSearchCaching:
         query = "artificial intelligence"
         max_results = 10
         
-        key1 = mock_ddg_search._create_cache_key(query, max_results)
-        key2 = mock_ddg_search._create_cache_key(query, max_results)
+        key1 = mock_ddg_search._cache_key(query, max_results)
+        key2 = mock_ddg_search._cache_key(query, max_results)
         
         # Same parameters should create same key
         assert key1 == key2
         
         # Different parameters should create different key
-        key3 = mock_ddg_search._create_cache_key("different query", max_results)
+        key3 = mock_ddg_search._cache_key("different query", max_results)
         assert key1 != key3
         
-        key4 = mock_ddg_search._create_cache_key(query, 5)
+        key4 = mock_ddg_search._cache_key(query, 5)
         assert key1 != key4
 
     def test_query_normalization(self, mock_ddg_search):
         """Test query normalization for consistent cache keys."""
         # Queries with different case should normalize to same cache key
-        key1 = mock_ddg_search._create_cache_key("AI Machine Learning", 5)
-        key2 = mock_ddg_search._create_cache_key("ai machine learning", 5)
+        key1 = mock_ddg_search._cache_key("AI Machine Learning", 5)
+        key2 = mock_ddg_search._cache_key("ai machine learning", 5)
         
         # Should be the same due to lowercase normalization
         assert key1 == key2
         
         # Test whitespace normalization
-        key3 = mock_ddg_search._create_cache_key("  ai machine learning  ", 5)
+        key3 = mock_ddg_search._cache_key("  ai machine learning  ", 5)
         assert key1 == key3
 
 
@@ -362,3 +354,46 @@ class TestCacheIntegration:
         assert len(results) == 10
         for i, result in enumerate(results):
             assert result["operation_id"] == i
+
+# --- several processes on one cache --------------------------------------
+# Production runs many agent-cli processes, and a plugin's cache directory is
+# shared by all of them. Two things broke there, both about files another
+# process is writing at that very moment.
+
+@pytest.mark.asyncio
+async def test_an_entry_being_replaced_is_a_miss_not_deleted(tmp_path, monkeypatch):
+    """Windows refuses to open a file another process is replacing.
+
+    That PermissionError was read as corruption, and the entry the other
+    process had just written -- a paid search result -- was deleted.
+    """
+    cache = PluginCache(plugin_name="p", cache_dir=tmp_path, default_ttl=60)
+    await cache.set("k", {"answer": 42})
+    entry = cache._get_cache_file("k")
+    real_open = open
+
+    def being_replaced(file, *args, **kwargs):
+        if str(file) == str(entry):
+            raise PermissionError(13, "being replaced by another process")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", being_replaced)
+    assert await cache.get("k") is None
+    monkeypatch.undo()
+
+    assert entry.exists(), "a file another process was writing got deleted as corrupt"
+    assert await cache.get("k") == {"answer": 42}
+
+
+@pytest.mark.asyncio
+async def test_two_writers_of_one_key_do_not_share_a_temp_file(tmp_path):
+    """Every write used "<key>.tmp" -- two processes caching the same key wrote
+    into one file and replaced each other's half-written copy.
+
+    Pinned by occupying that shared name: a writer that still uses it fails.
+    """
+    cache = PluginCache(plugin_name="p", cache_dir=tmp_path, default_ttl=60)
+    cache._get_cache_file("k").with_suffix(".tmp").mkdir(parents=True)
+
+    assert await cache.set("k", {"answer": 42}) is True
+    assert await cache.get("k") == {"answer": 42}

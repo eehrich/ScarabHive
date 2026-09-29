@@ -8,13 +8,12 @@ These tests verify that:
 
 Background: Bug 2025-11-09 - Writer plugins not discovered because:
 - PLUGIN_FACTORY was in server.py instead of plugin.py
-- MCPIntegration used hardcoded plugin_dirs instead of config
+- ToolServerIntegration used hardcoded plugin_dirs instead of config
 """
 
 import pytest
 from pathlib import Path
 import importlib.util
-import sys
 
 from agent_system.plugins import discover_plugins, discover_all_plugins
 from agent_system.config.models import AgentSystemConfig, PluginsConfig
@@ -25,7 +24,7 @@ class TestPluginFactoryRequirement:
     
     def test_all_plugins_have_plugin_factory_in_plugin_py(self):
         """CRITICAL: plugin.py MUST export PLUGIN_FACTORY for discovery."""
-        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
+        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer'), Path('src/plugins_trading')]
         missing = []
         
         for plugin_dir in plugin_dirs:
@@ -110,12 +109,9 @@ class TestPluginDirsConfiguration:
     
     def test_all_configured_plugin_dirs_are_discovered(self):
         """Verify plugins from ALL configured directories are found."""
-        # Clear any stale module state that might interfere with discovery
-        # (other tests may have loaded modules in a way that breaks relative imports)
-        stale_modules = [k for k in sys.modules.keys() if k.startswith('plugins_writer.')]
-        for mod_name in stale_modules:
-            del sys.modules[mod_name]
-        
+        # No clearing of plugins_writer.* from sys.modules here: a later test that
+        # imported a function before this ran would then patch a fresh module
+        # object while its function reads the old one.
         # Simulate config with multiple plugin_dirs
         plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
         
@@ -135,13 +131,13 @@ class TestPluginDirsConfiguration:
             f"No writer plugins found - src/plugins_writer not discovered? Found: {list(all_plugins.keys())}"
 
 
-class TestMCPIntegrationPluginDirs:
-    """Verify MCPIntegration reads plugin_dirs from config."""
+class TestToolServerIntegrationPluginDirs:
+    """Verify ToolServerIntegration reads plugin_dirs from config."""
     
     @pytest.mark.asyncio
-    async def test_mcp_integration_uses_config_plugin_dirs(self):
-        """CRITICAL: MCPIntegration must use config.plugins.plugin_dirs."""
-        from agent_system.mcp.integration import MCPIntegration
+    async def test_tool_integration_uses_config_plugin_dirs(self):
+        """CRITICAL: ToolServerIntegration must use config.plugins.plugin_dirs."""
+        from agent_system.tools.integration import ToolServerIntegration
         
         # Create config with custom plugin_dirs
         config = AgentSystemConfig(
@@ -151,9 +147,9 @@ class TestMCPIntegrationPluginDirs:
             )
         )
         
-        # Create MCPIntegration with config (not mock_registry)
-        # MCPIntegration requires AgentSystemConfig as parameter
-        MCPIntegration(app=None, config=config)
+        # Create ToolServerIntegration with config (not mock_registry)
+        # ToolServerIntegration requires AgentSystemConfig as parameter
+        ToolServerIntegration(app=None, config=config)
         
         # The _discover_and_register_plugins method should use config.plugins.plugin_dirs
         # We can't easily test the private method, but we can verify the config is accessible

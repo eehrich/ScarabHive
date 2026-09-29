@@ -1,0 +1,69 @@
+# Godot without the harness: one agent, the godot tools, a screenshot loader.
+#
+# For "look at this scene and tell me why the player falls through the
+# floor", or "set the enemy's speed to 300 and play 2 seconds" -- interactive
+# work in a project that is open in the editor. The full loop with reviewer,
+# tester and asset sub-agents is the `gamedev` agent beside this one.
+plugins:
+  servers:
+
+    godot_agent:
+      type: multi_turn_agent
+      enabled: true
+      description: "Work in a Godot 4 project: inspect and edit the scene in the running editor, check and run scripts headless, playtest with a frozen clock, read the error log"
+
+      self_tool_descriptions:
+        godot_agent_execute_task: "Inspect, edit, run or debug a Godot project -- in the running editor or headless -- and report what happened"
+        godot_agent_list_available_tools: "List the Godot tools available (scene, node, play, observe, check, run, script)"
+
+      agent_config:
+        # GDScript is code: Sonnet leads. Gemini Pro and GPT are other
+        # families, so one provider's bad day does not stop the chain; all
+        # three can look at a screenshot.
+        llm_profile: [or-claude-sonnet, or-gemini-pro, or-gpt-full]
+        llm_profile_advanced: []
+        llm_params:
+          "*":
+            prompt_cache_mode: multi_turn
+        max_steps: 80
+        system_template: "./prompts/godot_agent.md"
+
+        skills:
+          always: []
+          on_demand: ["godot-conventions"]
+
+        tools:
+          # "+" on every entry = MERGE with what multi_turn_agent brings; a
+          # bare list would replace it and drop context_engineer/*, which the
+          # hook below relies on.
+          allowed:
+            - "+godot/*"
+            - "+media_ops/*"       # LOOK at a screenshot it just took
+            # The coder's read/write sandbox: it is rooted at data/workspace,
+            # which is exactly projects_root. Without it the agent can read
+            # a scene but not edit the .tscn -- and the addon cannot create
+            # nodes, so files are the only way to add one.
+            - "+coder_fs/*"
+            - "+skills/*"
+            - "+datetime/*"
+          # semantic_search used to be blocked here because embeddings
+          # were off and every call answered with an error. They are on
+          # since 18.09.2026 and the index holds one document per symbol,
+          # so this agent gets the same file:line hits as the coder --
+          # same instance, same tree, same index.
+
+        hooks:
+          enabled: true
+          overrides:
+            # Scene trees and log dumps are large; a long session dies at the
+            # context limit without this.
+            context_engineer.engineer_context:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["godot", "gamedev", "editor", "playtest"]
+        category: "development"
+        visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): write access to the whole checkout

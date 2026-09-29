@@ -1,7 +1,7 @@
 """Tests for StatusEventForwarder cleanup and memory leak prevention."""
 import pytest
 from agent_system.servers.agent.components.status_forwarding import StatusEventForwarder
-from agent_system.mcp.status import status_bus, StatusEvent, StatusPhase
+from agent_system.tools.status import status_bus, StatusEvent, StatusPhase
 
 
 @pytest.mark.asyncio
@@ -142,6 +142,40 @@ async def test_direct_handler_no_background_task():
     assert len(pending) == 1, "Events should be immediately available"
     
     await forwarder.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_a_forwarded_event_carries_the_tree_that_says_what_ran_under_what():
+    """The run's own stream is the one the chat reads, and it left the tree out.
+
+    SSEStatusHandler has always sent it; this handler did not, so parent_id and
+    depth_level never reached the page and the whole nesting half of the status
+    display -- indentation, connectors, collapsing a sub-tree -- was inert on the
+    path that actually feeds it. A sub-agent's lines sat flat between the parent's
+    own with nothing saying they belonged to a run of their own.
+    """
+    forwarder = StatusEventForwarder()
+    await forwarder.start_forwarding("root_req")
+    try:
+        # `_sub_001_001` is how a sub-agent's own coordinator is named; the hierarchy
+        # is computed from the id by publish_status, not passed in here.
+        await status_bus.publish(StatusEvent(
+            server="sub_agent.coordinator",
+            request_id="root_req_sub_001_001",
+            message="working",
+            phase=StatusPhase.START,
+            parent_id="root_req_sub_001",
+            depth_level=2,
+        ))
+        forwarded = forwarder.get_pending_events()
+    finally:
+        await forwarder.stop_forwarding()
+
+    assert len(forwarded) == 1, forwarded
+    tree = forwarded[0].get("tree")
+    assert tree is not None, "the chat cannot nest what it is never told about"
+    assert tree["parent_id"] == "root_req_sub_001"
+    assert tree["depth_level"] == 2
 
 
 if __name__ == "__main__":

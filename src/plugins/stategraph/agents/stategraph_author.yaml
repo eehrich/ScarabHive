@@ -1,0 +1,57 @@
+# stategraph_author: writes a state machine for a workflow request, validates
+# it, saves it and proves it with a mocked test run. Its test runs are
+# mock_only, so nothing it builds reaches an agent or a tool while it works.
+# To delegate to it from another agent, add "stategraph_author" to that
+# agent's SAM allowed_agents.
+plugins:
+  servers:
+
+    stategraph_author:
+      type: multi_turn_agent
+      enabled: true
+      description: "Build a stategraph state machine for an agent workflow: validates it, saves it and proves it with a mocked test run"
+
+      self_tool_descriptions:
+        stategraph_author_execute_task: "Build a stategraph state machine for a workflow request; returns the machine id, its files, the validation result, and the id and final state of a mocked test run"
+
+      agent_config:
+        llm_profile: [structured, structured_fallback]
+        llm_profile_advanced: []
+        max_steps: 60
+        system_template: "./prompts/stategraph_author.md"
+
+        skills:
+          # The method and a cheat sheet, in every prompt; the full format,
+          # the patterns and debugging are its references (skills_read).
+          always: ["stategraph-authoring"]
+          on_demand: []
+
+        tools:
+          # "+" merges with what multi_turn_agent brings (context_engineer).
+          allowed:
+            - "+stategraph/stategraph_catalog"
+            - "+stategraph/stategraph_list_machines"
+            - "+stategraph/stategraph_get_machine"
+            - "+stategraph/stategraph_validate_machine"
+            - "+stategraph/stategraph_save_machine"
+            - "+stategraph/stategraph_run_machine"
+            - "+stategraph/stategraph_get_run"
+            - "+stategraph/stategraph_list_runs"   # read-only: a run whose id got lost
+            - "+stategraph/stategraph_control_run"
+            - "+stategraph/stategraph_send_event"   # a test run of a wait state reaches a final only by an event
+            - "+skills/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            context_engineer.engineer_context:
+              enabled: true
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "0.1.0"
+        tags: ["stategraph", "workflow", "state-machine", "authoring"]
+        category: "automation"
+        visibility: "both"

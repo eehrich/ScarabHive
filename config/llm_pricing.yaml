@@ -1,0 +1,539 @@
+# LLM Pricing Configuration (per 1M tokens)
+# Used by writer-costs.exe / analyze_costs.py for cost calculation.
+#
+# For OpenRouter models: actual billed cost comes from usage_json.cost in the
+# response — these values are only used as fallback when that field is missing.
+#
+# For direct API models (DeepSeek, Google Gemini SDK, Anthropic, OpenAI):
+# these prices are used directly since the API response doesn't include a cost field.
+#
+# Fields:
+#   input:        cost per 1M input tokens
+#   output:       cost per 1M output tokens
+#   cached_input: cost per 1M cached input tokens (optional, defaults to input price)
+#   cache_write:  EXTRA cost per 1M cache-write tokens on top of input (optional,
+#                 default 0). Anthropic 5-minute cache: writes cost 1.25x input,
+#                 so the premium is 0.25x input.
+#   batch_discount: multiplier for batch API pricing (e.g. 0.5 = 50% off). Optional.
+#                   Applied when provider in DB starts with "batch_" (e.g. batch_gemini).
+#
+# Last updated: 2026-09-16
+
+# =============================================================================
+# DeepSeek — Direct API (api.deepseek.com)
+# Pricing: https://api-docs.deepseek.com/quick_start/pricing
+# Tageszeit-Tarif: Mo-Fr 01:00-04:00 und 06:00-10:00 UTC kostet alles das
+# Doppelte; hier steht der Grundpreis ausserhalb dieser Zeiten.
+# deepseek-chat/-reasoner: bis 2026-04 V3.2, danach Alias auf v4-flash,
+# abgekuendigt zum 2026-07-24. Die Zeilen bleiben fuer alte DB-Eintraege.
+# =============================================================================
+deepseek-chat:
+  input: 0.28
+  output: 0.42
+  cached_input: 0.028
+
+deepseek-reasoner:
+  input: 0.28
+  output: 0.42
+  cached_input: 0.028
+
+# Der Direct-Account ist fast leer; Primaernutzung laeuft seit 2026-08-20
+# ueber OpenRouter (or-deepseek-flash/-pro), Direct ist nur noch Fallback.
+# Seit 2026-09-10 beantwortet `deepseek-v4-flash` V4.1-Flash zum Preis von
+# `deepseek-flash` (bis dahin 0.22/0.66/0.007). Stand Preisseite 2026-09-16.
+deepseek-flash:
+  input: 0.15
+  output: 0.60
+  cached_input: 0.003
+
+deepseek-v4-flash:
+  input: 0.15
+  output: 0.60
+  cached_input: 0.003
+
+deepseek-v4-pro:
+  input: 0.66
+  output: 1.98
+  cached_input: 0.022
+
+# =============================================================================
+# Google Gemini — Direct SDK (generativelanguage.googleapis.com)
+# Cache read = 0.1x of input price (implicit caching, no storage fee)
+# Batch API = 50% discount (https://ai.google.dev/gemini-api/docs/batch)
+# Pricing: https://ai.google.dev/gemini-api/docs/pricing
+# =============================================================================
+gemini-3-flash-preview:
+  input: 0.50
+  output: 3.00
+  cached_input: 0.05
+  batch_discount: 0.5
+
+gemini-3.1-pro-preview:
+  input: 2.00
+  output: 12.00
+  cached_input: 0.20
+  batch_discount: 0.5
+
+# =============================================================================
+# Anthropic Claude — Direct API (api.anthropic.com)
+# Cache read = 0.1x of input price (Fable 5.1: $0.25/M flat), cache write premium = 0.25x (5-minute cache)
+# Batch API = 50% discount (https://docs.anthropic.com/en/docs/build-with-claude/batch-processing)
+# Pricing: https://platform.claude.com/docs/en/about-claude/pricing
+# =============================================================================
+claude-opus-5:
+  input: 5.00
+  output: 25.00
+  cached_input: 0.50
+  cache_write: 1.25
+  batch_discount: 0.5
+
+# Fable 5.1 — Anthropic's most capable model ($10/$50). Keyed by the API model
+# id: costs are looked up by the model the call reports, not the profile name.
+# Cache reads are $0.25/M, not 0.1x input (matches OpenRouter billing).
+claude-fable-5-1:
+  input: 10.00
+  output: 50.00
+  cached_input: 0.25
+  cache_write: 2.50
+  batch_discount: 0.5
+
+# Sonnet 5 — $2/$10 (OpenRouter billed these rates through 2026-09-14)
+claude-sonnet-5:
+  input: 2.00
+  output: 10.00
+  cached_input: 0.20
+  cache_write: 0.50
+  batch_discount: 0.5
+
+claude-sonnet-4-5-20250929:
+  input: 3.00
+  output: 15.00
+  cached_input: 0.30
+  cache_write: 0.75
+  batch_discount: 0.5
+
+claude-opus-4-5-20251101:
+  input: 5.00
+  output: 25.00
+  cached_input: 0.50
+  cache_write: 1.25
+  batch_discount: 0.5
+
+claude-haiku-4-5-20251001:
+  input: 1.00
+  output: 5.00
+  cached_input: 0.10
+  cache_write: 0.25
+  batch_discount: 0.5
+
+# =============================================================================
+# OpenAI — Direct API (api.openai.com)
+# Cache read = 0.1x of input price
+# Batch API = 50% discount (https://platform.openai.com/docs/guides/batch)
+# Pricing: https://openai.com/api/pricing/
+# =============================================================================
+# Realtime und Audio: die Tabelle kennt nur EINEN Satz je Modell, die
+# Clients liefern Audio-Tokens nicht getrennt. Eingetragen ist der Text-Satz;
+# Audio kostet pro 1M: gpt-realtime(-2.1) 32 in / 0.40 cached / 64 out,
+# gpt-realtime(-2.1)-mini 10 / 0.30 / 20, gpt-audio(-1.5) 32 / 64 — ein
+# Audio-Aufruf wird also deutlich zu niedrig geschaetzt. Bilder bei 2.1:
+# 5 / 0.50 cached, bei 2.1-mini 0.80 / 0.08. Stand developers.openai.com
+# 2026-09-17. gpt-realtime(-mini) werden am 2027-01-20 abgeschaltet.
+gpt-realtime-2.1:
+  input: 4.00
+  output: 24.00
+  cached_input: 0.40
+
+gpt-realtime-2.1-mini:
+  input: 0.60
+  output: 2.40
+  cached_input: 0.06
+
+gpt-audio-1.5:
+  input: 2.50
+  output: 10.00
+
+gpt-realtime:
+  input: 4.00
+  output: 16.00
+  cached_input: 0.40
+
+gpt-realtime-mini:
+  input: 0.60
+  output: 2.40
+  cached_input: 0.06
+
+gpt-audio:
+  input: 2.50
+  output: 10.00
+
+gpt-4.1:
+  input: 2.00
+  output: 8.00
+  cached_input: 0.50
+  batch_discount: 0.5
+
+gpt-5.4:
+  input: 2.50
+  output: 15.00
+  cached_input: 0.25
+  batch_discount: 0.5
+
+gpt-5.4-mini:
+  input: 0.75
+  output: 4.50
+  cached_input: 0.075
+  batch_discount: 0.5
+
+gpt-5.4-nano:
+  input: 0.20
+  output: 1.25
+  cached_input: 0.02
+  batch_discount: 0.5
+
+# Codex models — not yet on official pricing page, estimated same as gpt-5.4 base
+gpt-5.4-codex:
+  input: 2.50
+  output: 15.00
+  cached_input: 0.25
+  batch_discount: 0.5
+
+gpt-5.4-codex-mini:
+  input: 0.75
+  output: 4.50
+  cached_input: 0.075
+  batch_discount: 0.5
+
+# =============================================================================
+# OpenRouter — Fallback prices (prefer usage_json.cost from API response)
+# These are only used when the response doesn't include actual billed cost.
+# =============================================================================
+
+# Gemini via OpenRouter — cache read = 0.1x of input price
+google/gemini-3-flash-preview:
+  input: 0.50
+  output: 3.00
+  cached_input: 0.05
+
+# Standard tier; Flex tier (service_tier: flex) is typically ~50% off but
+# OpenRouter returns the actually-billed cost in usage_json.cost — these
+# values are only the fallback when no API cost comes back.
+google/gemini-3.5-flash:
+  input: 1.50
+  output: 9.00
+  cached_input: 0.15
+
+google/gemini-3.5-flash-lite:
+  input: 0.30
+  output: 2.50
+  cached_input: 0.03
+
+google/gemini-3.6-flash:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
+
+# 3.7, 3.8 und der latest-Alias (Ziel 2026-09-16: 3.8): regulaer 1.50/7.50,
+# Google gibt bis 2026-12-31 50 % Rabatt (OpenRouter: `discount: 0.5`),
+# abgerechnet wird also 0.75/3.75. Hier steht der regulaere Preis. 3.6
+# (Aktion identisch) steht schon auf 1.50.
+google/gemini-3.7-flash:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
+
+google/gemini-3.8-flash:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
+
+"~google/gemini-flash-latest":
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
+
+google/gemini-3.1-pro-preview:
+  input: 2.00
+  output: 12.00
+  cached_input: 0.20
+
+# OpenAI via OpenRouter — Standard-Tier (Endpunkt-Tag `openai`), ≤272K Kontext.
+# Routing in llm_openrouter.yaml: order: [openai], allow_fallbacks: false.
+#
+# Wir fahren service_tier: flex, und das kostet die HÄLFTE dieser Werte
+# (gemessen 07.09.2026 an gpt-6-astra: 9 in / 5 out = $0.000170 = 5/25 statt
+# 10/50). Hier steht trotzdem Standard: die Zahlen greifen nur, wenn
+# usage_json.cost fehlt, und ein Fallback soll eher zu hoch als zu niedrig
+# schätzen. Die dritte Stufe `openai/fast` kostet das Doppelte von Standard.
+#
+# GPT-5.6 und GPT-6: Cache-Writes kosten das 1,25-fache des Inputs
+# (cache_write = der Aufschlag 0.25x). Ueber 272K Prompt-Tokens verdoppelt
+# sich der Input und der Output steigt um die Haelfte — nicht abbildbar.
+# Quelle: developers.openai.com/api/docs/pricing, Stand 2026-09-16.
+#
+# Konfiguriert sind die latest-Aliase weiter unten; die vier Einträge
+# gpt-5.6-*/gpt-6-astra sind ihre Ziele. Was darüber steht
+# (gpt-5.4, gpt-5.4-mini, gpt-5, gpt-oss-120b) läuft nicht mehr, bleibt aber:
+# die Kostenauswertung rechnet auch über alte DB-Zeilen.
+#
+# Quelle: GET /api/v1/models/<slug>/endpoints, Tag `openai`. Die Preise dort
+# sind NACH Rabatt; der Rabatt steht im Feld `pricing.discount` (sol: 0.5).
+# Regulaer = Preis / (1 - discount) — das steht hier. /api/v1/models zeigt
+# das Feld nicht.
+openai/gpt-5.4:
+  input: 2.50
+  output: 15.00
+  cached_input: 0.25
+
+openai/gpt-5.4-mini:
+  input: 0.75
+  output: 4.50
+  cached_input: 0.075
+
+openai/gpt-5:
+  input: 1.25
+  output: 10.00
+  cached_input: 0.125
+
+openai/gpt-oss-120b:
+  input: 0.039
+  output: 0.19
+
+openai/gpt-5.6-luna:
+  input: 0.20
+  output: 1.20
+  cached_input: 0.02
+  cache_write: 0.05
+
+openai/gpt-5.6-terra:
+  input: 2.00
+  output: 12.00
+  cached_input: 0.20
+  cache_write: 0.50
+
+# ⚠️ Regulärer Preis. OpenRouter rechnet sol mit „50% off" ab (2.00/10.00),
+# laut OpenAI „at least through November 21, 2026". /api/v1/models zeigt nur den
+# ermäßigten Wert, /endpoints nennt den Rabatt (`discount: 0.5`).
+openai/gpt-5.6-sol:
+  input: 4.00
+  output: 20.00
+  cached_input: 0.40
+  cache_write: 1.00
+
+openai/gpt-6-astra:
+  input: 10.00
+  output: 50.00
+  cached_input: 1.00
+  cache_write: 2.50
+
+# latest-Aliase (llm_openrouter.yaml), gleiche Saetze wie ihr Ziel am
+# 2026-09-16: luna/terra/sol -> gpt-5.6-*, astra -> gpt-6-astra. sol wieder
+# mit dem REGULAEREN Preis, siehe oben.
+"~openai/gpt-luna-latest":
+  input: 0.20
+  output: 1.20
+  cached_input: 0.02
+  cache_write: 0.05
+
+"~openai/gpt-terra-latest":
+  input: 2.00
+  output: 12.00
+  cached_input: 0.20
+  cache_write: 0.50
+
+"~openai/gpt-sol-latest":
+  input: 4.00
+  output: 20.00
+  cached_input: 0.40
+  cache_write: 1.00
+
+"~openai/gpt-astra-latest":
+  input: 10.00
+  output: 50.00
+  cached_input: 1.00
+  cache_write: 2.50
+
+# Anthropic via OpenRouter — cache read = 0.1x, cache write premium = 0.25x of input
+anthropic/claude-sonnet-4-6:
+  input: 3.00
+  output: 15.00
+  cached_input: 0.30
+  cache_write: 0.75
+
+anthropic/claude-sonnet-5:
+  input: 2.00
+  output: 10.00
+  cached_input: 0.20
+  cache_write: 0.50
+
+# latest-Aliase, Ziel am 2026-09-16: sonnet-5, opus-5, fable-5.1. Saetze wie
+# die Direkt-Eintraege oben (OpenRouter-Standardanbieter identisch).
+"~anthropic/claude-sonnet-latest":
+  input: 2.00
+  output: 10.00
+  cached_input: 0.20
+  cache_write: 0.50
+
+"~anthropic/claude-opus-latest":
+  input: 5.00
+  output: 25.00
+  cached_input: 0.50
+  cache_write: 1.25
+
+"~anthropic/claude-fable-latest":
+  input: 10.00
+  output: 50.00
+  cached_input: 0.25
+  cache_write: 2.50
+
+# DeepSeek via OpenRouter (DeepInfra primary provider)
+deepseek/deepseek-v3.2:
+  input: 0.26
+  output: 0.38
+  cached_input: 0.13
+
+# DeepSeek V4 Flash via OpenRouter — chat (non-thinking) and reasoner (thinking)
+# share the same model ID; thinking is toggled per request
+deepseek/deepseek-v4-flash:
+  input: 0.14
+  output: 0.28
+  cached_input: 0.028
+
+# DeepSeek V4 Flash via OpenRouter, latest-Alias (Ziel 2026-09-16:
+# deepseek-v4-flash-0731). Werte = DeepInfra fp8, der erste Anbieter in
+# order; streamlake als zweiter. Stand OpenRouter-Endpunkte 2026-09-16.
+"~deepseek/deepseek-v4-flash-latest":
+  input: 0.06
+  output: 0.18
+  cached_input: 0.015
+
+# DeepSeek Flash via OpenRouter, latest-Alias der ganzen Flash-Familie
+# (alias_target 2026-09-24: deepseek/deepseek-v4.1-flash). Werte = DeepInfra
+# fp8, der erste Anbieter in unserem provider_routing; StreamLake als Zwilling
+# liegt bei 0.199/0.794/0.004. Stand OpenRouter-Endpunkte 2026-09-24 -- die
+# alten 0.20/0.60/0.006 waren der Listenpreis des Alias, nicht der des
+# Anbieters, auf den wir pinnen.
+"~deepseek/deepseek-flash-latest":
+  input: 0.14
+  output: 0.42
+  cached_input: 0.0042
+
+# DeepSeek V4 Pro 0813 via OpenRouter (kein latest-Alias). Durchschnitt der
+# 12 Endpunkte; order pinnt deepseek/alibaba (0.66-0.73 in, 1.98-2.18 out).
+deepseek/deepseek-v4-pro-0813:
+  input: 1.205
+  output: 3.614
+  cached_input: 0.099
+
+# DeepSeek Pro via OpenRouter, latest-Alias (Ziel 2026-09-16: v4-pro-0813).
+# Werte = Anbieter `deepseek`, der erste in order; alibaba 0.58/1.74/0.058.
+# Beide haben tageszeitabhaengige Rabatte, hier steht der Grundpreis.
+"~deepseek/deepseek-pro-latest":
+  input: 0.66
+  output: 1.98
+  cached_input: 0.022
+
+# DeepSeek V4 Pro via OpenRouter — flagship variant
+deepseek/deepseek-v4-pro:
+  input: 1.74
+  output: 3.48
+  cached_input: 0.145
+
+# xAI Grok via OpenRouter — cache read = 0.25x of input price
+x-ai/grok-4.1-fast:
+  input: 0.20
+  output: 0.50
+  cached_input: 0.05
+
+# latest-Alias, Ziel 2026-09-16: grok-4.6. Anbieter xai (Standard, ohne priority).
+"~x-ai/grok-latest":
+  input: 2.00
+  output: 6.00
+  cached_input: 0.50
+
+# Qwen via OpenRouter
+qwen/qwen3.7-flash:
+  input: 0.03
+  output: 0.13
+  cached_input: 0.006
+
+# Werte = akashml fp8, der erste in order; chutes 0.24/2.20/0.024. Stand 2026-09-16.
+qwen/qwen3.8-27b:
+  input: 0.25
+  output: 2.20
+  cached_input: 0.05
+
+# MiniMax via OpenRouter — cache read = 0.2x of input price. Werte = Anbieter
+# minimax (einziger in order), ohne Rabatt. Stand 2026-09-16; vorher 0.60/2.40.
+minimax/minimax-m3:
+  input: 0.30
+  output: 1.20
+  cached_input: 0.06
+
+# GLM Flash via OpenRouter, latest-Alias. Ohne provider_routing haengt der Satz
+# am Anbieter: abgerechnet meist 0.15/0.50/0.03 (eingetragen) oder
+# 0.1124/0.3745/0.0225, vereinzelt hoeher; der Listenpreis 0.075/0.25 wurde
+# nie berechnet (66 Aufrufe, Stand 2026-09-13). 0.15/0.50/0.03 ist der
+# regulaere Preis fast aller Anbieter; 0.075/0.25 ist DeepInfras 50-%-Rabatt
+# (Ziel am 2026-09-16: glm-5.3-flash).
+"~z-ai/glm-flash-latest":
+  input: 0.15
+  output: 0.50
+  cached_input: 0.03
+
+# DeepSeek V4.1 Flash via OpenRouter, Preis von DeepInfra (erster Anbieter in
+# order; Fireworks 0.22/0.66/0.007). Stand 2026-09-13.
+deepseek/deepseek-v4.1-flash:
+  input: 0.20
+  output: 0.60
+  cached_input: 0.006
+
+# Zhipu GLM via OpenRouter
+# Source: https://openrouter.ai/z-ai/glm-5.2
+z-ai/glm-5.2:
+  input: 0.93
+  output: 3.00
+  cached_input: 0.182
+
+# Ohne provider_routing; die meisten Anbieter nehmen den Listenpreis, fp4-
+# Endpunkte ab 0.90/3.00/0.15. Stand OpenRouter 2026-09-16.
+z-ai/glm-5.3:
+  input: 1.40
+  output: 4.40
+  cached_input: 0.26
+
+# Source: https://openrouter.ai/moonshotai/kimi-k3
+moonshotai/kimi-k3:
+  input: 3.00
+  cached_input: 0.30
+  output: 15.00
+
+# Decision-Modell Jev (decision_models in llm_openrouter.yaml) — die Antwort
+# traegt usage.cost selbst, das hier ist nur der Fallback. Alias -> Preis des
+# Ziels typesafe/jev-1.13, Endpunkt TypeSafe: nur Eingabe-Tokens kosten
+# (GET /api/v1/models/typesafe/jev-1.13/endpoints, 2026-09-26; 367 Tokens =
+# 1.5414e-05 $, wie gemessen).
+"~typesafe/jev-latest":
+  input: 0.042
+  output: 0.00
+
+# =============================================================================
+# Lokal (Ollama) — keine Kosten. Eingetragen, damit die Schaetzung 0 sagt
+# statt "unbekannt".
+# =============================================================================
+"gemma4:12b":
+  input: 0.00
+  output: 0.00
+
+"gpt-oss:20b":
+  input: 0.00
+  output: 0.00
+
+# =============================================================================
+# Lokal (laya-serve, Decision-Modell) — keine Kosten. Die Antwort nennt keine
+# Kosten; ohne Zeile waere der Aufruf im Tracker "unbekannt" statt 0.
+# Schluessel = `model` des Eintrags in decision_models (llm.yaml).
+# =============================================================================
+laya-multilingual:
+  input: 0.00
+  output: 0.00

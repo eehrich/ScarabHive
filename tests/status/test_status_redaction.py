@@ -1,23 +1,12 @@
 import httpx
 import pytest
-from agent_system.mcp.status import StatusPhase, publish_status
+from agent_system.tools.status import StatusPhase, publish_status
 
 pytestmark = pytest.mark.anyio
 
 
 def _build_app_with_auth_disabled():
-    """Build app with auth disabled for testing."""
-    # Patch AuthConfig.enabled to return False
-    from agent_system.config.models import AuthConfig
-    
-    class DisabledAuth:
-        def __get__(self, obj, objtype=None):
-            return False
-        def __set__(self, obj, value):
-            pass
-    
-    AuthConfig.enabled = DisabledAuth()
-    
+    """Build app (endpoint auth disabled by the autouse fixture in conftest.py)."""
     from agent_system.app import build_app
     return build_app()
 

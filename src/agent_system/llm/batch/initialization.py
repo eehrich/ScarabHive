@@ -18,12 +18,12 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
 
-from .job_tracker import BatchJobTracker, set_job_tracker
+from .job_tracker import BatchJobTracker, get_job_tracker, set_job_tracker
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig
@@ -84,11 +84,7 @@ def setup_batch_queue_manager_sync(
     
     # Check if any provider is enabled
     providers_config = batch_system_config.providers
-    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
-    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
-    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
-    
-    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
+    if not any(p.enabled for p in providers_config.values()):
         log.debug("No batch providers enabled, skipping batch queue manager")
         return None
     
@@ -184,7 +180,7 @@ async def start_batch_queue_manager(
                 if batch_provider not in providers_needing_clients:
                     providers_needing_clients[batch_provider] = model_config
                 # Check cancel_on_startup from global provider config
-                provider_config = getattr(batch_system_config.providers, batch_provider, None)
+                provider_config = batch_system_config.providers.get(batch_provider)
                 if provider_config and provider_config.cancel_on_startup:
                     providers_cancel_on_startup.add(batch_provider)
         
@@ -267,11 +263,7 @@ async def init_batch_system(
     
     # Check if any provider is enabled
     providers_config = batch_system_config.providers
-    gemini_enabled = providers_config.gemini.enabled if providers_config.gemini else False
-    openai_enabled = providers_config.openai.enabled if providers_config.openai else False
-    anthropic_enabled = providers_config.anthropic.enabled if providers_config.anthropic else False
-    
-    if not gemini_enabled and not openai_enabled and not anthropic_enabled:
+    if not any(p.enabled for p in providers_config.values()):
         log.debug("No batch providers enabled, skipping batch initialization")
         return None
     
@@ -290,7 +282,7 @@ async def init_batch_system(
             if batch_provider not in providers_needing_clients:
                 providers_needing_clients[batch_provider] = model_config
             # Check cancel_on_startup from global provider config
-            provider_config = getattr(providers_config, batch_provider, None)
+            provider_config = providers_config.get(batch_provider)
             if provider_config and provider_config.cancel_on_startup:
                 providers_cancel_on_startup.add(batch_provider)
     
@@ -375,65 +367,22 @@ async def _register_batch_clients(
         batch_system_config: Global BatchSystemConfig
         log: Logger instance
     """
+    # Backends live in the LLM provider plugins (declared via provides_batch
+    # in their plugin.toml); env-key fallback is provider knowledge and
+    # happens inside each plugin's factory, which returns None to skip.
+    from agent_system.llm import registry
+
     for batch_provider, model_config in providers_needing_clients.items():
         try:
-            if batch_provider == "openai":
-                from .openai_batch import OpenAIBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("OPENAI_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No OpenAI API key found, skipping OpenAI batch client")
-                    continue
-                    
-                client = OpenAIBatchClient(api_key=api_key)
-                queue_manager.register_batch_client("openai", client)
-                log.info("Registered OpenAI batch client")
-                
-            elif batch_provider == "gemini":
-                from .gemini_batch import GeminiBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("GOOGLE_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No Gemini API key found, skipping Gemini batch client")
-                    continue
-                    
-                client = GeminiBatchClient(api_key=api_key)
-                queue_manager.register_batch_client("gemini", client)
-                log.info("Registered Gemini batch client")
-                
-            elif batch_provider == "anthropic":
-                from .anthropic_batch import AnthropicBatchClient
-                
-                # Get API key from model config or environment
-                api_key = model_config.api_key
-                if not api_key:
-                    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-                
-                if not api_key:
-                    log.info("No Anthropic API key found, skipping Anthropic batch client")
-                    continue
-                
-                # Get default model from config if available
-                default_model = model_config.model or "claude-sonnet-4-20250514"
-                
-                client = AnthropicBatchClient(
-                    api_key=api_key,
-                    default_model=default_model,
-                )
-                queue_manager.register_batch_client("anthropic", client)
-                log.info("Registered Anthropic batch client")
-                
-            else:
+            backend_factory = registry.get_batch_backend(batch_provider)
+            if backend_factory is None:
                 log.warning(f"Unknown batch provider: {batch_provider}")
-                
+                continue
+            # The plugin is resolved (manifest scan, import) HERE, so an
+            # unknown or broken provider still shows up at startup; only the
+            # client -- SDK import, HTTP client, API key -- waits for first use.
+            queue_manager.register_batch_client_factory(
+                batch_provider, functools.partial(backend_factory, model_config))
         except Exception as e:
             log.error(f"Failed to register batch client for {batch_provider}: {e}")
 
@@ -454,15 +403,25 @@ async def _cancel_provider_batches(
         Total number of batches cancelled
     """
     total_cancelled = 0
-    
-    for provider, client in queue_manager._batch_clients.items():
+    tracker = get_job_tracker()
+
+    for provider in queue_manager.batch_providers():
         # Only cancel for providers in the cancel set
         if provider not in providers_to_cancel:
             log.debug(f"Skipping cancel for provider {provider} (cancel_on_startup=false)")
             continue
-            
+
+        # Ask the tracker BEFORE building the client: cancel_all_pending_batches
+        # only ever cancels tracked jobs, so with nothing tracked there is
+        # nothing to do -- and no reason to import an SDK for it.
+        tracked = await tracker.get_tracked_jobs(provider) if tracker else set()
+        if not tracked:
+            log.debug(f"No tracked {provider} batch jobs to cancel")
+            continue
+
         try:
-            if hasattr(client, 'cancel_all_pending_batches'):
+            client = queue_manager._client_for(provider)
+            if client is not None and hasattr(client, 'cancel_all_pending_batches'):
                 cancelled = await client.cancel_all_pending_batches()
                 total_cancelled += cancelled
                 if cancelled > 0:

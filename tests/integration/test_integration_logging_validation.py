@@ -19,14 +19,14 @@ import logging
 from agent_system.config.models import (
     AgentSystemConfig,
     AgentConfig,
-    MCPConfig,
+    ToolServerConfig,
     ToolConfig,
     LLMSystemConfig,
     LLMModelConfig,
     LLMProfile
 )
 from agent_system.servers.agent.server import Agent
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ def agent_config():
 @pytest.fixture
 def mock_registry():
     """Simple mock registry"""
-    return MCPRegistry()
+    return ToolServerRegistry()
 
 
 @pytest.mark.asyncio
@@ -91,12 +91,12 @@ async def test_no_unexpected_errors_during_normal_execution(
     caplog.set_level(logging.ERROR)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="error_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -130,12 +130,12 @@ async def test_no_unexpected_warnings_during_normal_execution(
     caplog.set_level(logging.WARNING)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="warning_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -172,12 +172,12 @@ async def test_logging_includes_request_id(
     caplog.set_level(logging.DEBUG)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="request_id_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -217,12 +217,12 @@ async def test_logging_has_proper_levels(
     caplog.set_level(logging.DEBUG)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="level_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -275,12 +275,12 @@ async def test_component_logging_is_scoped(
     caplog.set_level(logging.DEBUG)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="scope_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -325,12 +325,12 @@ async def test_exception_logging_includes_traceback(
             raise ValueError("Simulated LLM error")
     
     failing_llm = FailingLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="exception_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=failing_llm
     )
@@ -369,12 +369,12 @@ async def test_no_duplicate_log_messages(
     caplog.set_level(logging.INFO)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="duplicate_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -413,12 +413,12 @@ async def test_logging_performance_overhead(
     caplog.set_level(logging.DEBUG)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="perf_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -466,7 +466,7 @@ async def test_sensitive_data_not_logged(
                     provider="openai",  # Use valid provider
                     model="test",
                     context_window=4096,
-                    openai_api_key="sk-test-api-key-12345"  # Sensitive
+                    api_key="sk-test-api-key-12345"  # Sensitive
                 )
             },
             profiles={
@@ -476,12 +476,12 @@ async def test_sensitive_data_not_logged(
     )
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="sensitive_test",
         system_config=sensitive_test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )
@@ -529,12 +529,12 @@ async def test_structured_logging_format(
     caplog.set_level(logging.INFO)
     
     mock_llm = MockLLMClient()
-    mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
+    server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
     
     agent = Agent(
         name="structure_test",
         system_config=test_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=mock_registry,
         llm=mock_llm
     )

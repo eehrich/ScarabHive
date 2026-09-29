@@ -32,9 +32,61 @@ tools:
           check_exit_code:
             type: boolean
             description: "Fail if exit code is not 0 (default: true)"
+          background:
+            type: boolean
+            default: false
+            description: "Run the command in the background and return at once with a process_id. Read it with get_output, stop it with kill_process. Holds one connection of the machine's pool for the whole run."
+          wake:
+            type: boolean
+            default: false
+            description: "Only with background=true: wake this session when the command ends, so you can end your turn instead of polling. When woken, call get_output with the process_id. The answer says whether the wake is armed; if it is not, poll instead. A wake is best effort even when armed - if you are not woken, fall back to polling."
+          process_id:
+            type: string
+            description: "Custom id for a background command (auto-generated if omitted, only used when background=true)"
         required:
           - machine
           - command
+
+  - type: function
+    function:
+      name: "{{ name }}_get_output"
+      description: "Read what a background SSH command has written so far, and whether it still runs."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID from execute with background=true"
+          stream:
+            type: string
+            enum: ["stdout", "stderr", "both"]
+            default: "both"
+            description: "Which output stream to read"
+          clear_buffer:
+            type: boolean
+            default: false
+            description: "Drop what was read from the buffer (default: false)"
+        required:
+          - process_id
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_kill_process"
+      description: "Stop a background SSH command."
+      parameters:
+        type: object
+        properties:
+          process_id:
+            type: string
+            description: "Process ID from execute with background=true"
+          force:
+            type: boolean
+            default: false
+            description: "Send SIGKILL instead of SIGTERM (default: false)"
+        required:
+          - process_id
+        additionalProperties: false
 
   - type: function
     function:
@@ -129,7 +181,7 @@ tools:
             description: "Optional tags for filtering (default: [])"
           persistent:
             type: boolean
-            description: "Save to config/mcp.yaml for persistence (default: false). Note: passwords are never saved."
+            description: "Keep the machine across restarts by storing it in data/ssh_control/machines.<instance>.yaml (default: false). Passwords and passphrases are never stored, only a key path."
           max_connections:
             type: integer
             description: "Max parallel connections (default: 3)"
@@ -172,7 +224,7 @@ tools:
             description: "Machine name to remove"
           remove_from_config:
             type: boolean
-            description: "Also remove from config/mcp.yaml if present (default: false)"
+            description: "Also delete it from data/ssh_control/machines.<instance>.yaml (default: false). Machines that come from the YAML configuration are not in that store and cannot be removed this way."
         required:
           - name
       cleanup_notes:
@@ -191,106 +243,47 @@ tools:
 
 # Web UI Configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "SSH Control"
-    icon: "🖥️"
-    tooltip: "SSH Machine Control Panel"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "SSH Machine Control"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
+    title: "SSH Machines"
     description: "Control and monitor SSH-connected machines"
+    icon: server
+    category: system
+    keywords: [ssh, machines, remote]
+    window: {width: 900, height: 640}
 
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "SSH control dashboard panel"
     - path: "/api/machines"
       method: "GET"
       handler: "list_machines"
       response_type: "json"
-      description: "List all configured machines with connection status"
-    - path: "/api/machines/{machine_name}/status"
-      method: "GET"
-      handler: "get_machine_status"
-      response_type: "json"
-      description: "Get detailed status for specific machine"
-    - path: "/api/machines/add"
+      description: "The machines with their connection state (active=true pings the ones connected to before)"
+    - path: "/api/machines"
       method: "POST"
       handler: "add_machine"
       response_type: "json"
-      description: "Dynamically add a new SSH machine (calls {{ name }}_add_machine tool)"
-      body_schema:
-        type: object
-        properties:
-          name:
-            type: string
-            description: "Unique machine name"
-          host:
-            type: string
-            description: "Hostname or IP"
-          port:
-            type: integer
-            description: "SSH port (default: 22)"
-          username:
-            type: string
-            description: "SSH username"
-          auth_method:
-            type: string
-            enum: ["key", "password", "agent"]
-          password:
-            type: string
-            description: "Password (not saved to config)"
-          key_path:
-            type: string
-            description: "Path to SSH key file"
-          tags:
-            type: array
-            items:
-              type: string
-          persistent:
-            type: boolean
-            description: "Save to config file (default: false)"
-          max_connections:
-            type: integer
-        required: ["name", "host", "username"]
-    - path: "/api/machines/{name}"
+      description: "Add a machine through {{ name }}_add_machine, into the store too if it is to be kept"
+    - path: "/api/machines/{name:path}"
       method: "DELETE"
       handler: "remove_machine"
       response_type: "json"
-      description: "Remove an SSH machine (calls {{ name }}_remove_machine tool)"
-      query_parameters:
-        remove_from_config:
-          type: boolean
-          description: "Also remove from config file (default: false)"
-    - path: "/api/history"
+      description: "Remove a machine through {{ name }}_remove_machine, from the store too"
+    - path: "/api/machines/{machine_name:path}/history"
       method: "GET"
-      handler: "get_command_history"
+      handler: "machine_history"
       response_type: "json"
-      description: "Get recent command execution history"
-    - path: "/api/machines/{machine_name}/history"
-      method: "GET"
-      handler: "get_machine_history"
-      response_type: "json"
-      description: "Get command execution history for a specific machine"
+      description: "The last commands run on a machine, oldest first"
     - path: "/api/execute"
       method: "POST"
-      handler: "execute_command"
+      handler: "run_command"
       response_type: "json"
-      description: "Execute command on remote machine"
-    - path: "/api/execute/stream"
-      method: "GET"
-      handler: "execute_command_stream"
-      response_type: "response"
-      description: "Execute command with streaming SSE output"
+      description: "Run a command on a machine"
 
 config:
   machines:

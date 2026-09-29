@@ -1,0 +1,20 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Memory Profile{% endblock %}
+{% block toolbar %}
+<span class="pk-muted" id="updated"></span>
+<button type="button" class="pk-btn pk-btn--sm" data-act="snapshot" data-key="snapshot" disabled
+  title="Count all objects by type -- walks the whole heap">{{ icon('hard-drive', size='sm') }} Take snapshot</button>
+<button type="button" class="pk-btn pk-btn--sm" data-act="gc" data-key="gc" disabled
+  title="Run a full garbage collection now">{{ icon('trash-2', size='sm') }} Collect garbage</button>
+<button type="button" class="pk-btn pk-btn--sm" data-act="baseline" data-key="baseline" disabled
+  title="Measure growth from now on">{{ icon('rotate-ccw', size='sm') }} Set baseline</button>
+<pk-refresh interval="10" auto></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="pk-stack">
+  <div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+  <div class="pk-stack" id="cards"></div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/memory_profile.js"></script>{% endblock %}

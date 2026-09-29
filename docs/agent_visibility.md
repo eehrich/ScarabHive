@@ -13,9 +13,77 @@ The `metadata.visibility` field controls agent exposure:
 | `ui` | ✅ Yes | ❌ No | User-facing agents (chat interface only) |
 | `tool` | ❌ No | ✅ Yes | Backend services for other agents |
 | `both` | ✅ Yes | ✅ Yes | Dual-purpose agents |
-| `private` | ❌ No | ❌ No | Testing/experimental agents (default - secure by default) |
+| `private` | ❌ No | ❌ No | Testing/experimental agents (default) |
 
-**Default:** `private` (secure by default - agents must explicitly opt-in to visibility)
+**Default:** `private` — an agent has to opt in to being listed.
+
+> ⚠️ **Sichtbarkeit ist Anzeige, keine Zugriffskontrolle.** `visibility` bestimmt nur,
+> wo ein Agent *auftaucht* (UI-Liste, Tool-Liste anderer Agents). Wer seinen Namen kennt,
+> konnte ihn trotzdem starten: `POST /run` und `/events` mit `agent_name`, `/chat/command`,
+> ein SAM mit `allowed_agents: ["*"]`. Auch `private` schützt nichts. Wer einen Agent
+> **ausführen** darf, regelt `metadata.min_role` (siehe unten).
+
+## Wer darf einen Agent ausführen: `metadata.min_role`
+
+```yaml
+metadata:
+  visibility: both
+  min_role: admin        # guest | user | admin; weglassen = kein Gate
+```
+
+`min_role` ist die niedrigste Konto-Rolle, die den Agent **laufen lassen** darf. Gefragt
+wird bei jedem Weg, auf dem ein Lauf beginnt (`src/agent_system/auth/agent_access.py`):
+
+- **HTTP:** `POST /run`, neue `/events`-Läufe, `/chat/command`, `POST /api/sessions`
+  (eine Session, deren Agent der Besitzer nicht ausführen darf, wird nicht angelegt).
+  `GET /agents` listet den Agent nur, wem er erlaubt ist; `default` ist `null`, wenn der
+  Einstiegs-Agent es nicht ist. `/agents/{name}/tools` und `/allowed-tools` sowie
+  `/chat/commands` zeigen ihn nur dann. Eine Ablehnung antwortet genau wie ein Agent,
+  den es nicht gibt (404 bzw. dieselbe Antwort; `/chat/command` auch für den
+  Einstiegs-Agent, wenn kein Name mitkommt); der Grund steht nur im Server-Log.
+  Ausnahmen: `/run` und `/events` ohne `agent_name` für den Einstiegs-Agent (403
+  „Permission denied“) und `POST /api/sessions` (403 mit dem Grund -- dort werden auch
+  Namen angenommen, die es nicht gibt, eine Antwort „unbekannt“ gibt es also nicht).
+- **OpenAI-API (`openai_api`):** ein Agent, den der Aufrufer nicht ausführen darf, ist
+  kein Modell für ihn -- `GET /models` listet ihn nicht, und `/models/{id}`,
+  `/responses` und `/chat/completions` antworten 404 `model_not_found` wie für ein
+  unbekanntes Modell.
+- **Ohne Endpoint:** der Lauf selbst (`Agent.run_events`, auch stategraph `MachineAgent`)
+  fragt vor allem anderen -- Sub-Agents über den SAM, Agents als Tool, stategraph,
+  geweckte agent-cli-Läufe. Jedes Tool eines gegateten Agents (`<name>_*`) ebenso. Seine
+  Ablehnung trägt `error_type` `agent_role_gate` (bzw. `foreign_session`, wenn die Session
+  einem anderen Nutzer gehört): nichts davon wird gespeichert, die OpenAI-API antwortet
+  404 bzw. 403, und SAM-`create` und -`continue` melden sie als Fehler statt als beendete
+  Instanz. Ein abgelehntes `create` hinterlässt keine Instanz; eine fortgesetzte bleibt, mit
+  `failed` und diesem `error_type`, und ein Hintergrund-Job endet ebenso -- auch im
+  gespeicherten Stand, den ein späteres `poll` oder `wait` liest.
+- **SAM:** `create` und `continue` lehnen vorher ab, als Tool-Fehler mit
+  `error_type: "agent_role_gate"`, bevor eine Sub-Session entsteht.
+- **Wecken:** eine Session, deren Agent ihr Besitzer nicht ausführen darf, wird nicht
+  geweckt; die wartende Eingabe bleibt liegen.
+
+Wer ist der Aufrufer? Der vom Framework registrierte Besitzer der Request-ID (API,
+Tool-Ausführung, SAM, stategraph), sonst der Benutzer der Session (agent-cli), sonst
+`anonymous`. **Ein Lauf ohne jede Identität zählt als `anonymous`: abgelehnt, außer
+anonymer Zugang ist aktiv und seine Rolle reicht.** Der SAM und die Tools eines
+gegateten Agents lehnen einen Aufrufer ohne Identität ohne diese Ausnahme ab.
+Abgelehnt werden ebenso ein unbekanntes oder inaktives Konto, eine unbekannte Rolle
+und ein nicht lesbarer User-Store. Die Rolle wird bei jedem Lauf
+frisch aus dem User-Store gelesen.
+
+`cli_user` (der Standard-Benutzer von `agent-cli`/`agent-run`) gilt **nur in diesen
+lokalen Prozessen** als lokaler Betreiber und passiert jedes Gate -- und auch dort nur,
+solange kein Konto dieses Namens existiert. Im API-Prozess ist `cli_user` ein Name ohne
+Konto und wird abgelehnt.
+
+Ohne `auth.enabled` gibt es keine Rollen: das Gate greift nicht, und der Server warnt beim
+Start, welche Agents ein Gate tragen, das er nicht durchsetzen kann.
+
+⚠️ **Vererbung:** `metadata` wird über die `type:`-Kette tief gemergt. Ein Agent, dessen
+`type:` auf einen gegateten Agent zeigt, erbt dessen `min_role`, auch wenn er selbst
+nichts setzt, und **`min_role: null` hebt einen geerbten Wert nicht auf** (null wird beim
+Mergen übergangen). Wer einen niedrigeren Wert will, setzt ihn ausdrücklich (`guest` oder
+`user`); gemessen mit `load_settings` + `get_tool_server_config`.
 
 ## Configuration
 
@@ -31,7 +99,7 @@ agents:
     agent_config:
       llm_profile: turbo
       max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       tools:
         allowed:
           - "yahoo_finance/*"
@@ -56,7 +124,7 @@ agents:
       category: "support"
 
   # Dual-purpose agent
-  web_research_agent:
+  research_agent:
     enabled: true
     description: "Web research agent with search capabilities"
     base_type: agent
@@ -84,27 +152,38 @@ agents:
       category: "development"
 ```
 
-### Plugin Agents (plugin.yaml)
+### Plugin-Agents (plugin.toml)
 
-For plugin-based agents, add `visibility` as a top-level field in `plugin.yaml`:
+Bei einem Plugin steht `visibility` in der `[plugin]`-Tabelle seines
+Manifests — das ist die Tabelle, die `load_plugin_metadata` liefert und aus
+der `ServerDecl.visibility` liest ([runtime.py:129](../src/agent_system/runtime.py#L129)):
 
-```yaml
-# src/plugins/web_research_agent/plugin.yaml
-name: web_research_agent
-author: "Enrico Ehrich"
-version: 0.1.0
-description: "Specialized web research agent"
-entrypoint: plugin:PLUGIN_FACTORY
-type:
-  - mcp-server
-category: tools
-visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
+```toml
+# src/plugins/<name>/plugin.toml
+[plugin]
+name = "my_agent_plugin"
+author = "Enrico Ehrich"
+version = "0.1.0"
+description = "Specialized web research agent"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "tools"
+visibility = "both"  # "ui", "tool", "both" oder "private"
 ```
 
-**Behavior:**
-- If `visibility` is specified in `plugin.yaml`, it will be used
-- If omitted, defaults to `"both"` (backward compatible)
-- Works exactly like config-based agents
+**Reihenfolge** ([runtime.py:120-132](../src/agent_system/runtime.py#L120-L132)) —
+die erste Quelle, die etwas sagt, gewinnt:
+
+1. die Instanz-Metadaten (`metadata.visibility` beim Eintrag in
+   `config/plugins.yaml`),
+2. das Manifest,
+3. sonst **`private`** — nicht sichtbar, sicher per Default. Ein
+   Plugin-Agent, der nirgends eine Sichtbarkeit deklariert, taucht also
+   weder in der UI noch als Tool auf.
+
+⚠️ Gemessen am 06.09.2026: **kein** ausgeliefertes `plugin.toml` deklariert
+eine Sichtbarkeit, und in `config/plugins.yaml` tut es genau ein Eintrag. Wer
+sich auf einen großzügigen Default verlässt, verlässt sich auf nichts.
 
 ## Internal Implementation
 
@@ -113,15 +192,15 @@ visibility: both  # Optional: "ui", "tool", "both" (default), or "private"
 Each agent has two internal flags set based on `metadata.visibility`:
 
 ```python
-agent._mcp_public: bool         # Show in UI dropdown (GET /agents)
-agent._mcp_tool_visible: bool   # Available in tool discovery
+agent._tool_public: bool         # Show in UI dropdown (GET /agents)
+agent._tool_visible: bool   # Available in tool discovery
 ```
 
 **Flag Mapping:**
-- `visibility: "ui"` → `_mcp_public=True, _mcp_tool_visible=False`
-- `visibility: "tool"` → `_mcp_public=False, _mcp_tool_visible=True`
-- `visibility: "both"` → `_mcp_public=True, _mcp_tool_visible=True`
-- `visibility: "private"` → `_mcp_public=False, _mcp_tool_visible=False`
+- `visibility: "ui"` → `_tool_public=True, _tool_visible=False`
+- `visibility: "tool"` → `_tool_public=False, _tool_visible=True`
+- `visibility: "both"` → `_tool_public=True, _tool_visible=True`
+- `visibility: "private"` → `_tool_public=False, _tool_visible=False`
 
 ### Tool Discovery Filtering
 
@@ -131,8 +210,8 @@ When an agent queries `list_usable_tools()`, the registry is filtered:
 # In Agent.list_usable_tools()
 for tool_name in self.registry.list():
     server = self.registry.get(tool_name)
-    if hasattr(server, '_mcp_tool_visible'):
-        if not server._mcp_tool_visible:
+    if hasattr(server, '_tool_visible'):
+        if not server._tool_visible:
             continue  # Skip agents with tool_visible=False
     available_tools.append(tool_name)
 ```
@@ -182,7 +261,7 @@ system_admin:
 
 ### 3. Dual-Purpose Agents (Both)
 
-**Example:** `web_research_agent`, `basic_agent`
+**Example:** `research_agent`, `basic_agent`
 
 These agents serve both purposes:
 - Visible in UI dropdown (users can chat)
@@ -308,10 +387,10 @@ financial_analyst:
 
 ### Default Behavior
 
-If `metadata.visibility` is **not specified**, the default is `"ui"`:
-- Agent appears in UI dropdown
-- Agent is NOT available as tool
-- Backward compatible with existing configs
+If `metadata.visibility` is **not specified**, the default is `"private"` (see
+the order above: instance metadata, then the plugin manifest, else private):
+- Agent does NOT appear in the UI dropdown
+- Agent is NOT available as a tool
 
 ## Schema Validation
 
@@ -330,10 +409,10 @@ Invalid values will be rejected during config validation.
 ## API Endpoints
 
 ### GET /agents
-Returns list of agents with `_mcp_public=True` (visibility: "ui" or "both")
+Returns list of agents with `_tool_public=True` (visibility: "ui" or "both")
 
 ### Tool Discovery (Internal)
-`list_usable_tools()` returns agents with `_mcp_tool_visible=True` (visibility: "tool" or "both")
+`list_usable_tools()` returns agents with `_tool_visible=True` (visibility: "tool" or "both")
 
 ## Future Enhancements
 

@@ -49,7 +49,6 @@ Senior Python/YAML architect for the **AgentSystem Core Framework** – a modula
 | `basic_agent/` | Core agent orchestration |
 | `basic_operations/` | Basic tool operations |
 | `cognitive_stack/` | Multi-step reasoning |
-| `context_optimizer/` | Context window optimization |
 | `context_summarizer/` | Conversation summarization |
 | `file_ops/` | File system operations |
 | `memory/` | Persistent memory storage |

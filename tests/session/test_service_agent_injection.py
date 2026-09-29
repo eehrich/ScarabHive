@@ -16,7 +16,7 @@ from agent_system.services.agent_injection import (
 
 @pytest.fixture
 def mock_registry():
-    """Create mock MCPRegistry."""
+    """Create mock ToolServerRegistry."""
     registry = MagicMock()
     registry.list.return_value = []
     return registry
@@ -86,21 +86,21 @@ class TestInjectSessionServiceIntoAgents:
         assert agent2._session_service == mock_session_service
     
     def test_skip_non_agent_servers(self, mock_registry, mock_session_service):
-        """Test that non-Agent MCP servers are skipped."""
+        """Test that non-Agent tool servers are skipped."""
         from agent_system.servers.agent.server import Agent
         
         agent = MagicMock(spec=Agent)
         agent.name = "real_agent"
         agent._session_service = None
         
-        # Create a non-Agent MCP server (no spec, different type)
-        mcp_server = MagicMock()
-        mcp_server.name = "web_scraper"
+        # Create a non-Agent tool server (no spec, different type)
+        tool_server = MagicMock()
+        tool_server.name = "web_scraper"
         # Make isinstance check fail by setting __class__ explicitly
-        type(mcp_server).__name__ = "MCPServer"
+        type(tool_server).__name__ = "ToolServer"
         
         mock_registry.list.return_value = ["real_agent", "web_scraper"]
-        mock_registry.get.side_effect = lambda name: agent if name == "real_agent" else mcp_server
+        mock_registry.get.side_effect = lambda name: agent if name == "real_agent" else tool_server
         
         count = inject_session_service_into_agents(mock_registry, mock_session_service)
         

@@ -1,19 +1,16 @@
 """Web UI endpoints for context usage tracker plugin."""
 
-import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional
 
-if TYPE_CHECKING:
-    pass
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-
+from agent_system.auth.dependencies import get_optional_user
+from agent_system.auth.models import User
+from agent_system.auth.session_access import may_see_session, require_everything
 from agent_system.plugins.schema_router import create_schema_router
-
-logger = logging.getLogger(__name__)
+from agent_system.ui.resources import ui_templates
 
 
 class ContextUsageWebFactory:
@@ -28,9 +25,7 @@ class ContextUsageWebFactory:
         """
         self.server = server
         self.tracker = server.tracker
-        self.plugin_dir = Path(__file__).parent
-        self.templates_dir = self.plugin_dir / "templates"
-        self.templates = Jinja2Templates(directory=str(self.templates_dir))
+        self.templates = ui_templates(Path(__file__).parent / "templates")
 
     def get_web_router(self) -> APIRouter:
         """Get the FastAPI router for this plugin's web endpoints."""
@@ -46,15 +41,15 @@ class ContextUsageWebFactory:
     
     # Handler methods (called by schema router)
     
-    async def get_panel(self, request: Request) -> HTMLResponse:
-        """Render the context usage debug panel."""
-        return self.templates.TemplateResponse(
-            "panel.html",
-            {"request": request}
-        )
+    async def get_panel(self, request: Request):
+        """Render the panel; its script and stylesheet are the plugin's static assets."""
+        return self.templates.TemplateResponse(request, "panel.html", {"plugin": self.server.name})
     
-    async def get_usage(self, request: Request, session_id: str | None = None) -> JSONResponse:
+    async def get_usage(self, request: Request, session_id: str | None = None,
+                        current_user: Optional[User] = Depends(get_optional_user)) -> JSONResponse:
         """Get current usage statistics."""
+        if not await may_see_session(request, current_user, session_id):
+            return JSONResponse({"latest": {}, "agents": {}, "statistics": {}})
         latest = self.tracker.get_latest(session_id=session_id)
         agent_stats = self.tracker.get_agent_stats(session_id=session_id)
         statistics = self.tracker.get_statistics(session_id=session_id)
@@ -65,12 +60,19 @@ class ContextUsageWebFactory:
             "statistics": statistics,
         })
     
-    async def get_history(self, request: Request, last_n: int = 100, session_id: str | None = None) -> JSONResponse:
-        """Get usage history."""
-        history = self.tracker.get_history(last_n=last_n, session_id=session_id)
+    async def get_history(self, request: Request, last_n: int | None = None, session_id: str | None = None,
+                          agent_id: str | None = None,
+                          current_user: Optional[User] = Depends(get_optional_user)) -> JSONResponse:
+        """Get usage history (optionally filtered by session and/or agent): the newest ``last_n`` calls of the
+        tracker's window, the whole window without it -- the calls the statistics are computed over."""
+        if not await may_see_session(request, current_user, session_id):
+            return JSONResponse({"history": []})
+        history = self.tracker.get_history(last_n=last_n, session_id=session_id, agent_id=agent_id)
         return JSONResponse({"history": history})
     
-    async def clear_history(self, request: Request) -> JSONResponse:
-        """Clear usage history."""
+    async def clear_history(self, request: Request,
+                            current_user: Optional[User] = Depends(get_optional_user)) -> JSONResponse:
+        """Clear usage history -- every session's, so only an admin may."""
+        require_everything(request, current_user, "Clearing the figures of every session")
         self.tracker.clear_history()
         return JSONResponse({"status": "cleared"})

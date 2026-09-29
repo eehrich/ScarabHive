@@ -1,4 +1,4 @@
-# MCP tool definition for Sub-Agent Manager (unified tool approach).
+# tool definition for Sub-Agent Manager (unified tool approach).
 
 tools:
   - type: function
@@ -7,17 +7,23 @@ tools:
       description: |
         Manage persistent sub-agents. They maintain history and can be continued.
 
-        Operations:
+        Operations (required):
         - create: Spawn+execute (blocking=true default, false=async)
-        - continue: Send new message to existing agent (blocking=true default, false=async)
+        - continue: Send new message to an existing agent, with its history (always blocking)
         - poll: Check async status (NON-BLOCKING) -> Do not poll too frequently!
         - wait/wait_all: Wait for completion (BLOCKING)
         - cancel: Stop running agent
-        - list: Active sub-agents
-        - info: Detailed status
+        - list: Your sub-agents and their status -- running (working now), idle (its
+          last run is done), or interrupted/failed/cancelled
+        - info: Read a sub-agent's transcript (see 'messages' + 'window' in the
+          response). Default (no 'offset') returns the TAIL -- the most recent
+          messages, which is what you want right after a run. To read the full
+          transcript from the start, page with offset=0, then offset=<limit>,
+          etc. until window.has_more_after is false.
         - delete: Archive instance
 
-        Async: create(blocking=false) + wait_all for parallel execution.
+        Async: create(blocking=false) + wait_all for parallel execution, or
+        create(blocking=false, wake_when_done=true) and end your turn.
         Same instance_id cannot run concurrently.
 
         Important!: Do **not** recreate agents (delete+create) - use existing ones via continue. They have the useful history. Recreate only on Major-Errors.
@@ -51,6 +57,19 @@ tools:
             description: "Wait for completion (create, default=true). false=async"
             default: true
 
+          wake_when_done:
+            type: boolean
+            description: |
+              Only with create(blocking=false): you may end your turn after
+              starting the sub-agent -- this session is woken when it finishes,
+              however it ends, and you poll the instance then. The one ending
+              that does not wake you is a cancel or delete of your own: that
+              says you are not waiting for it. Read the create answer before you
+              sleep: it says whether the wake is armed for THIS session, and
+              when it says it is not, stay awake and poll.
+              Without the flag you stay awake and poll or wait yourself.
+            default: false
+
           use_advanced_model:
             type: boolean
             description: "Use better LLM (create/continue, default=false)"
@@ -76,74 +95,84 @@ tools:
               Include archived sub-agents in list (list only, default: false).
             default: false
 
+          limit:
+            type: integer
+            description: |
+              Max messages to return (info only). Default 20, hard cap ~200 per
+              call -- page with 'offset' rather than raising this for more.
+
+          offset:
+            type: integer
+            description: |
+              0-based message index to start from (info only). Omit for the
+              TAIL (most recent 'limit' messages, the common case). Set to
+              page through the full transcript from the start: 0, then
+              'limit', then 2*'limit', ... until window.has_more_after is false.
+
+          max_chars:
+            type: integer
+            description: |
+              Max characters per message/tool-call-argument before truncation
+              (info only). Default 4000. 0 or negative = no truncation.
+
         required: [operation]
+
+# Slash commands. Both run the tool above with a fixed operation -- the same
+# call the agent makes, through the same authorization, so a chat can only
+# reach what this agent is already allowed to do.
+commands:
+  - name: subagents
+    description: "sub-agents of this session: what runs, what is done"
+    tool: "{{ name }}_manage_sub_agent"
+    params: {operation: list}
+  - name: cancel
+    description: "stop a running sub-agent"
+    tool: "{{ name }}_manage_sub_agent"
+    params: {operation: cancel}
+    argument: instance_id
+    argument_hint: "<instance-id>"
 
 # Web UI configuration
 web_ui:
-  button:
-    enabled: true
-    text: "Sub-Agent Manager"
-    icon: "🤖"
-
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "sub_agents"
-        menu_id: "user"
-        section: "Tools"
-        label: "Sub-Agent Manager"
-        action: "openPanel"
-        icon: "🤖"
-        requires_admin: false
-        order: 100
-        tooltip: "Sub-Agent Manager"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Sub-Agent Manager"  # Shared title for grouped panel
-    panel_id: "sub_agent_manager"  # Shared ID for all instances
-    panel_group: "sub_agent_manager"  # Enables tab grouping
-    endpoint: "/plugins/{{ name }}/"  # Instance-specific endpoint
-    type: "iframe"
-    width: "1000px"
-    height: "800px"
-
-  # Access control
-  requires_auth: true
-  requires_role: null  # No role restriction - all authenticated users
+    endpoint: "/plugins/{{ name }}/"
+    title: "Sub-Agents"
+    description: "Running and finished sub-agent tasks"
+    icon: workflow
+    category: agents
+    keywords: [sub-agents, tasks, spawn]
+    window: {width: 1000, height: 760}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "get_panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "Sub-agent manager web UI panel"
+      description: "The Sub-Agents panel"
     - path: "/sub-agents"
       method: "GET"
-      handler: "get_sub_agents_json"
+      handler: "get_sub_agents"
       response_type: "json"
-      description: "List all sub-agents for current session"
+      description: "Every sub-agent of a session, archived ones included, and its workflow phase"
+    - path: "/agent-map"
+      method: "GET"
+      handler: "get_agent_map"
+      response_type: "json"
+      description: "The session and the sub-agents below it, nested, whichever manager instance spawned them"
     - path: "/sub-agents/{agent_id}"
       method: "GET"
-      handler: "get_sub_agent_detail"
+      handler: "get_sub_agent"
       response_type: "json"
-      description: "Get details of specific sub-agent"
+      description: "A sub-agent's transcript, paged"
     - path: "/sub-agents/{agent_id}"
       method: "DELETE"
-      handler: "delete_sub_agent"
+      handler: "archive_sub_agent"
       response_type: "json"
-      description: "Delete/archive sub-agent instance"
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get statistics for current session (total, active, archived)"
-    - path: "/phase-info"
-      method: "GET"
-      handler: "get_phase_info"
-      response_type: "json"
-      description: "Get phase filtering info (current phase, allowed agents per phase)"
+      description: "Archive a sub-agent"
 
 # Hook configuration
 hooks:
@@ -151,8 +180,8 @@ hooks:
     type: pre_llm_call
     enabled: false # by default false, must be activate if sub agents are used
     description: |
-      Injects active sub-agent information into system prompt before LLM calls.
-      Provides coordinator agent with awareness of available sub-agents.
+      Appends this session's sub-agents and their status (running, idle, or how
+      the last run ended) as a turn at the end of the history, when it changed.
     timeout: 5.0
     order:
       after: ["begin"]  # Run after initialization hooks
@@ -160,42 +189,40 @@ hooks:
 
 config:
   max_sub_agents_per_session: 10
-  max_nesting_depth: 5
+  max_nesting_depth: 5  # levels below the calling session; sub-sessions inherit the rest of the budget
   max_message_history: 100
   max_sub_agents_per_type: 3
   default_wait_timeout: 3600  # Default timeout in seconds for wait/wait_all operations (1 hour)
+  auto_archive_on_limit: false  # If true, auto-archive oldest sub-agent when limit is reached
+  allow_advanced_model: true  # false = the caller's use_advanced_model is ignored (logged) for every spawn/continue
+  advanced_create_only_agents: []  # agent types whose use_advanced_model counts on `create` only; a continue on them runs the normal chain
   allowed_agents:
     - basic_agent
-    - web_research_agent
+    - research_agent
     - financial_analyst_agent
-    - code_reviewer_agent
-    - meta_web_research_agent
-    - parallel_thinking_agent
-    - thinking_agent
   blocked_agents:
   hook_config:
     enabled: true
     inject_sub_agent_context:
-      # Injects active sub-agent list into coordinator's system prompt
+      # Appends the coordinator's sub-agents and their status to its history
       # Gives coordinator agent visibility into available sub-agents for follow-up tasks
       enabled: true
       # Limits number of sub-agents shown to prevent system prompt bloat
-      # Only shows N most recently active sub-agents
+      # Shows N: the open ones first, then the most recently created
       max_sub_agents_shown: 5
-      show_completed: false
-      show_tool_state: true
+      show_completed: false  # true = archived ones too (failed and cancelled are always shown)
       format: markdown
-      # Phase-based agent filtering (optional)
-      # Filters the "Available agents" list based on a session template variable
-      # Example: Show only planning agents when workflow_phase="planning"
-      phase_filtering:
-        enabled: false
-        phase_variable: "workflow_phase"  # Name of the template variable to read
-        phase_agents:  # Map of phase -> allowed agents for that phase
-          # planning:
-          #   - story_designer
-          #   - story_reviewer
-          # characters:
-          #   - character_designer
-          #   - character_reviewer
-          _default: []  # Fallback if phase not in map (empty = show all allowed_agents)
+  # Phase-based agent filtering (optional, top-level key of the server entry)
+  # Filters the "Available agents" list based on a session template variable
+  # Example: Show only planning agents when workflow_phase="planning"
+  phase_filtering:
+    enabled: false
+    phase_variable: "workflow_phase"  # Name of the template variable to read
+    phase_agents:  # Map of phase -> allowed agents for that phase
+      # planning:
+      #   - story_designer
+      #   - story_reviewer
+      # characters:
+      #   - character_designer
+      #   - character_reviewer
+      _default: []  # Fallback if phase not in map (empty = show all allowed_agents)

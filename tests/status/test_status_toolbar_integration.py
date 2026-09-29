@@ -15,19 +15,8 @@ def clean_status_env(monkeypatch):
     yield
 
 
-async def test_main_page_has_toolbar():
-    """Main page contains toolbar and status toggle."""
-    app = build_app()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.get('/')
-        assert r.status_code == 200
-        assert 'statusToggleBtn' in r.text
-        # Button now shows emoji + System text
-        assert 'System' in r.text
-
-
 async def test_status_meta_endpoint_provides_metrics():
-    """/status/meta returns expected metric keys for the toolbar."""
+    """/status/meta returns the metric keys the System panel shows."""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get('/status/meta')

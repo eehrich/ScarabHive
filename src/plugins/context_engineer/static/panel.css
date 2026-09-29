@@ -1,0 +1,10 @@
+/* Context Engineer: only what the kit has no component for -- the headings, the compaction table and the facts.
+   Tokens only. */
+
+.ce-heading { margin: var(--space-5) 0 var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.ce-heading .pk-muted { font-weight: 400; }
+.ce-sub { margin-top: var(--space-1); font-size: var(--text-xs); }
+.ce-table th, .ce-table td { white-space: nowrap; }
+.ce-clip { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
+.ce-layers { gap: var(--space-1); flex-wrap: nowrap; }
+.ce-fact { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 12rem; }

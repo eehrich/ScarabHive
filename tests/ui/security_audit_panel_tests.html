@@ -1,0 +1,325 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Security Audit panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1100px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real routes and audit, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  // true, or an error naming what is not so
+  const all = (facts) => {
+    const wrong = Object.keys(facts).filter((key) => facts[key] !== true);
+    if (wrong.length) throw new Error(`not so: ${wrong.join(', ')}`);
+    return true;
+  };
+
+  const PAGE = '/ui/panels/security_audit';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const rows = () => [...doc().querySelectorAll('#entries tbody tr')];
+  const cells = (row) => [...row.children].map((cell) => cell.textContent.trim());
+  const paths = () => rows().map((row) => cells(row)[3]);
+  const stats = () => [...doc().querySelectorAll('#stats .pk-stat')].map((one) => `${one.dataset.stat}=${one.querySelector('.pk-stat-value').textContent}`).join();
+  const entriesText = () => $('#entries').textContent;
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const setCookie = (name, value) => { document.cookie = value ? `${name}=${value}; path=/` : `${name}=; path=/; max-age=0`; };
+  const get = async (path) => (await fetch(path)).json();
+  const asked = () => get('/__stub/asked');
+  const signIn = async (user) => setCookie('access_token', await get(`/__stub/token?user=${user}`));
+  const status = (name) => $(`#statuses [data-status="${name}"]`);
+  const pressed = (button) => button.getAttribute('aria-pressed') === 'true';
+  const enabled = () => [...doc().querySelectorAll('#statuses [data-status]')].every((button) => !button.disabled);
+  const clicks = (element) => [1, 2].forEach((detail) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+  const choose = (id, value) => {
+    $(id).value = value;
+    $(id).dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const toggle = async (name) => {
+    status(name).click();
+    await until(`the ${name} answer drawn`, enabled);
+  };
+  /** A request the audit keeps: made by this page, as root (the cookie), bob, a forged token or nobody. */
+  async function probe(path, code, { method = 'GET', as = 'root' } = {}) {
+    const init = { method, headers: {}, credentials: as === 'nobody' ? 'omit' : 'same-origin' };
+    if (as === 'bob') init.headers.Authorization = `Bearer ${await get('/__stub/token?user=bob')}`;
+    if (as === 'forged') init.headers.Authorization = `Bearer ${await get('/__stub/forged')}`;
+    await fetch(`/tools/probe/${path}?status=${code}`, init);
+  }
+  const XSS = '<img src=x onerror=parent.__xss=1>';
+  const SEEDED = ['/tools/probe/broken', `/tools/probe/${XSS}`, '/tools/probe/refused', '/tools/probe/moved', '/tools/probe/created', '/tools/probe/ok'];
+
+  await signIn('root');
+  await probe('ok', 200);
+  await probe('created', 201, { method: 'POST' });
+  await probe('moved', 302, { as: 'nobody' });
+  await probe('refused', 403, { as: 'bob' });
+  await probe(XSS, 404, { as: 'forged' });
+  await probe('broken', 503, { method: 'DELETE' });
+
+  await check('opened by an admin, the panel shows the newest requests first with method, path, user and status, and counts them', async () => {
+    await go(PAGE);
+    await until('the requests', () => rows().length);
+    const auto = $('pk-refresh [data-act="auto"]');
+    const autoOn = pressed(auto);
+    auto.click();  // the checks below count loads: no tick in between
+    // paused for these checks only -- the kit would remember it for the panel
+    Object.keys(localStorage).filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+    choose('#category', 'tools');
+    await until('the probes', () => rows().length === 6);
+    const [broken, xss, refused, moved, created, ok] = rows().map(cells);
+    const badges = (index, cell) => rows()[index].children[cell].querySelector('.pk-badge').className;
+    return all({
+      autoOn, off: !pressed(auto),
+      order: paths().join('|') === SEEDED.join('|'),
+      methods: [broken[2], created[2], ok[2]].join() === 'DELETE,POST,GET',
+      users: [broken[4], xss[4], refused[4], moved[4], created[4], ok[4]].join() === 'root,anonymous,bob,anonymous,root,root',
+      codes: [broken[5], xss[5], refused[5], moved[5], created[5], ok[5]].join() === '503,404,403,302,201,200',
+      kinds: [0, 1, 3, 5].map((index) => badges(index, 5)).join('|') === 'pk-badge pk-badge--danger|pk-badge pk-badge--warn|pk-badge pk-badge--info|pk-badge pk-badge--ok',
+      category: rows().every((row) => cells(row)[1] === 'tools'),
+      stats: stats() === 'shown=6,refused=1,errors=1,users=3',
+      asked: (await asked()).last === 'limit=100&category=tools',
+    });
+  });
+
+  await check('server strings are drawn as text, never as markup', async () => {
+    return paths()[1] === `/tools/probe/${XSS}` && !$('#entries img') && frame.contentWindow.__xss === undefined
+      && window.__xss === undefined;
+  });
+
+  await check('the filters ask the server for a category, the chosen status classes and a count', async () => {
+    try {
+      await toggle('2xx');
+      await toggle('3xx');
+      await toggle('5xx');
+      await until('the client errors', () => rows().length === 2);
+      const errors = paths().join('|') === SEEDED.slice(1, 3).join('|') && (await asked()).last === 'limit=100&category=tools&status=4xx'
+        && stats() === 'shown=2,refused=1,errors=0,users=2';
+      await toggle('5xx');
+      await until('with the server errors', () => rows().length === 3);
+      const two = (await asked()).last === 'limit=100&category=tools&status=4xx&status=5xx';
+      choose('#limit', '250');
+      await until('the count asked', async () => (await asked()).last === 'limit=250&category=tools&status=4xx&status=5xx');
+      choose('#category', 'debug');
+      await until('no debug request', () => entriesText().includes('No requests'));
+      return all({ errors, two, debug: stats() === 'shown=0,refused=0,errors=0,users=0' && entriesText().includes('Nothing kept matches the filters.') });
+    } finally {
+      for (const name of ['2xx', '3xx']) if (!pressed(status(name))) await toggle(name);
+      choose('#limit', '100');
+      choose('#category', 'tools');
+      await until('the probes again', async () => rows().length === 6 && (await asked()).last === 'limit=100&category=tools');
+    }
+  });
+
+  await check('no status chosen asks nothing and says so', async () => {
+    try {
+      for (const name of ['2xx', '3xx', '4xx', '5xx']) await toggle(name);
+      await until('the notice', () => entriesText().includes('No status chosen'));
+      await sleep(300);
+      const before = (await asked()).loads;
+      now();
+      await sleep(500);
+      return all({ nothing: (await asked()).loads === before, noRows: rows().length === 0, noStats: stats() === '' });
+    } finally {
+      for (const name of ['2xx', '3xx', '4xx', '5xx']) if (!pressed(status(name))) await toggle(name);
+      await until('the probes again', () => rows().length === 6);
+    }
+  });
+
+  await check('a double click toggles once, the buttons stay off until the answer is drawn, and the keyboard stays on the button', async () => {
+    const button = status('2xx');
+    try {
+      await sleep(300);
+      const before = (await asked()).loads;
+      setCookie('sa', 'slow');
+      button.focus();
+      clicks(button);  // the second click of a double click
+      const off = pressed(button) === false && [...doc().querySelectorAll('#statuses [data-status]')].every((one) => one.disabled);
+      button.click();  // on the disabled button: nothing
+      await sleep(300);
+      const stillOff = !enabled() && pressed(button) === false && rows().length === 6;
+      await until('the answer drawn', () => enabled() && rows().length === 4, 8000);
+      await sleep(300);
+      const once = (await asked()).loads === before + 1;
+      const focused = doc().activeElement === button;
+      setCookie('sa', null);
+      // a server quicker than the double click: the buttons are back on before its second click
+      const quick = (await asked()).loads;
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      await until('the quick answer drawn', () => enabled() && rows().length === 6);
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+      await sleep(500);
+      return all({ off, stillOff, once, focused, quickOnce: pressed(button) && rows().length === 6 && (await asked()).loads === quick + 1 });
+    } finally {
+      setCookie('sa', null);
+      if (!pressed(button)) await toggle('2xx');
+      await until('the probes again', () => rows().length === 6);
+    }
+  });
+
+  await check('an unchanged answer draws nothing, a new request is drawn', async () => {
+    const table = $('#entries table');
+    const statBox = $('#stats .pk-stat');
+    await sleep(300);
+    const before = (await asked()).loads;
+    now();
+    await until('the load answered', async () => (await asked()).loads === before + 1);
+    await sleep(500);
+    const kept = $('#entries table') === table && $('#stats .pk-stat') === statBox;
+    await probe('later', 200);
+    now();
+    await until('the new request', () => paths()[0] === '/tools/probe/later');
+    return all({ kept, redrawn: $('#entries table') !== table && stats() === 'shown=7,refused=1,errors=1,users=3' });
+  });
+
+  await check("the panel's own reads are not listed among the requests", async () => {
+    try {
+      choose('#limit', '1000');  // this page's own stub requests are many
+      choose('#category', 'other');
+      await until('the other requests', () => paths().includes(PAGE));
+      for (let n = 0; n < 3; n += 1) {
+        const before = (await asked()).loads;
+        now();
+        await until('the load answered', async () => (await asked()).loads === before + 1);
+      }
+      await sleep(300);
+      now();
+      await sleep(500);
+      return all({ page: paths().includes(PAGE), noReads: !paths().some((path) => path.startsWith('/admin/security/audit')) });
+    } finally {
+      choose('#limit', '100');
+      choose('#category', 'tools');
+      await until('the probes again', async () => rows().length === 7 && (await asked()).last === 'limit=100&category=tools');
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    try {
+      setCookie('sa', 'slow');
+      choose('#category', 'other');  // held 1.5 s
+      await sleep(300);
+      setCookie('sa', null);
+      choose('#category', 'tools');  // answered at once
+      await until('the later answer', () => rows().length === 7);
+      await sleep(2000);
+      const toolsKept = rows().length === 7 && rows().every((row) => cells(row)[1] === 'tools');
+      setCookie('sa', 'slow');
+      choose('#category', 'agent');  // held, and nothing in it
+      await sleep(300);
+      setCookie('sa', 'fails');
+      now();  // fails at once
+      await until('the later error', () => entriesText().includes('could not be loaded'));
+      await sleep(2000);
+      const errorKept = entriesText().includes('could not be loaded') && !entriesText().includes('No requests');
+      setCookie('sa', 'slowfail');
+      now();  // fails after 1.5 s
+      await sleep(300);
+      setCookie('sa', null);
+      choose('#category', 'tools');  // answered at once
+      await until('the requests again', () => rows().length === 7);
+      await sleep(2000);
+      return all({ toolsKept, errorKept, requestsKept: rows().length === 7 && !entriesText().includes('could not be loaded') });
+    } finally {
+      setCookie('sa', null);
+      choose('#category', 'tools');
+      await until('the probes again', () => rows().length === 7);
+    }
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    let ticking = null;
+    try {
+      await sleep(500);
+      const before = (await asked()).loads;
+      setCookie('sa', 'slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      setCookie('sa', 'slower');
+      now();  // answered after 3 s: the 1.5 s one is out of date when it ends, this one still on its way
+      await sleep(200);
+      setCookie('sa', null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await sleep(2000);
+      const loads = (await asked()).loads - before;
+      return all({ [`two loads, not ${loads}`]: loads === 2, drawn: rows().length === 7 });
+    } finally {
+      clearInterval(ticking);
+      setCookie('sa', null);
+    }
+  });
+
+  await check('a failed load shows the error and nothing of before', async () => {
+    try {
+      setCookie('sa', 'fails');
+      now();
+      await until('the error', () => entriesText().includes('The audit log could not be loaded'));
+      return all({
+        detail: entriesText().includes('The audit buffer is locked'), noRows: rows().length === 0, noStats: stats() === '',
+        noToast: !$('.pk-toast--error'),
+      });
+    } finally {
+      setCookie('sa', null);
+      now();
+      await until('the probes again', () => rows().length === 7);
+    }
+  });
+
+  await check('an account that is no admin is refused the page and the data, and an open panel says so', async () => {
+    try {
+      await signIn('bob');
+      const page = (await fetch(PAGE)).status;
+      const data = (await fetch('/admin/security/audit')).status;
+      const nobodyPage = (await fetch(PAGE, { credentials: 'omit' })).status;
+      const nobodyData = (await fetch('/admin/security/audit', { credentials: 'omit' })).status;
+      now();  // the panel open since root signed in
+      await until('the refusal', () => entriesText().includes('Administrators only'));
+      return all({
+        page: page === 403, data: data === 403, nobodyPage: nobodyPage === 401, nobodyData: nobodyData === 401,
+        nothingShown: rows().length === 0 && stats() === '',
+      });
+    } finally {
+      await signIn('root');
+      now();
+      await until('the probes again', () => rows().length === 7);
+    }
+  });
+
+  await check('the auto refresh is on from the start and brings new requests', async () => {
+    await go(PAGE);
+    await until('the requests', () => rows().length);
+    const on = pressed($('pk-refresh [data-act="auto"]'));
+    choose('#category', 'tools');
+    await until('the probes', () => rows().length === 7);
+    await probe('ticked', 200);
+    // 5 s interval, and a tick can be held back while the browser runs other pages: the same wait the other panels take
+    await until('the new request, brought by a tick', () => paths()[0] === '/tools/probe/ticked', 15000);
+    return on;
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

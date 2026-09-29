@@ -1,0 +1,76 @@
+# Live-Testagent für Pre-Layer P — die Schicht, die im Betrieb tatsächlich
+# arbeitet (476 von 1000 Kompaktierungen, gegen 115 für Schicht 2 und 0 für
+# Schicht 3) und die früher als einzige Inhalt vernichtet hat.
+#
+# Die Token-Schwellen stehen absichtlich unerreichbar hoch: damit laufen die
+# Schichten 1-3 NIE, und alles, was aus dem Gespräch verschwindet, verschwindet
+# durch Pre-Layer P. Genau die Lage, in der eine Information nur dann wieder
+# auftauchen kann, wenn P sie vorher archiviert hat.
+#
+# Nicht produktiv nutzen: max_messages=24 bricht den Prompt-Cache-Präfix
+# alle ~12 Nachrichten (docs/prompt_cache_design.md §3.5).
+plugins:
+  servers:
+    context_prune_test_agent:
+      type: basic_agent
+      # Aus, damit er nicht in der Agentenliste steht. Zum Nachfahren des
+      # Live-Tests auf true setzen und die API neu starten; Rezept in
+      # .claude/skills/verify.
+      enabled: false
+      description: "Test agent: recovering context that Pre-Layer P pruned"
+
+      agent_config:
+        llm_profile: [or-deepseek-flash, chat-nostream, gemini-flash]
+        llm_profile_advanced: []
+        max_steps: 12
+
+        tools:
+          allowed:
+            # Nur die beiden Verben — store_fact würde die gesuchte Information
+            # in den System-Prompt legen, und der Test prüfte etwas anderes als
+            # gemeint. recall ist ebenfalls draußen, damit list/read allein
+            # tragen müssen.
+            - "context_engineer/context_engineer_list"
+            - "context_engineer/context_engineer_read"
+            - "datetime/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            context_engineer.engineer_context:
+              enabled: true
+              # Unerreichbar hoch: keine der drei Schichten darf laufen.
+              layer1_threshold: 9000000
+              layer2_threshold: 9000001
+              layer3_threshold: 9000002
+              target_tokens: 8000000
+              # Der einzige Weg in compact() hinein — derselbe wie im Betrieb.
+              compact_media_after_user_message: true
+              min_tokens_between_compactions: 0
+              # Und der einzige Mechanismus, der dort etwas tut.
+              #
+              # NICHT kleiner setzen: Pre-Layer P sucht seine Kandidaten unter
+              # den aeltesten max(2*excess, 20) Nachrichten, hoechstens bis zur
+              # neueren Haelfte dessen, was bleibt — damit der aktuelle Schwanz,
+              # die Arbeitsmenge des Agenten, unberuehrt bleibt. Bei einem sehr
+              # kleinen Limit ist diese Haelfte nur ein paar Nachrichten lang,
+              # und dann verdraengt der Agent im selben Turn die Abruf-Antwort,
+              # die er gerade geholt hat. Ohne max_messages_prune_to kuerzt P
+              # auf die Haelfte (12).
+              max_messages: 24
+              keep_system_messages: true
+
+        system_prompt: |
+          Du bist ein Testagent. Dein Kontext wird sehr aggressiv gekürzt:
+          ältere Nachrichten verschwinden aus dem Gespräch und liegen dann nur
+          noch im Archiv.
+
+          Wenn du etwas aus dem früheren Gesprächsverlauf brauchst, das nicht
+          mehr sichtbar ist, hol es dir mit deinen context_engineer-Tools.
+          Erfinde nichts und rate nicht — sag lieber, dass du es nicht findest.
+
+      metadata:
+        visibility: "both"
+        tags:
+          - test
+          - context

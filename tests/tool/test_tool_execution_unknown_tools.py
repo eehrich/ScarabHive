@@ -4,14 +4,12 @@ Tests for handling unknown/hallucinated tool calls.
 When an LLM hallucinates a tool name, the agent should return an error message
 instead of crashing with a RuntimeError.
 """
-import asyncio
 import json
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-from agent_system.llm.models import ChatMessage
+from tool_execution_test_helpers import execute_tools_collect
 
 
 @pytest.fixture
@@ -35,9 +33,9 @@ def mock_agent():
     # Mock _get_server_from_any_registry to return None (tool not found)
     agent._get_server_from_any_registry = MagicMock(return_value=None)
     
-    # Mock MCP integration manager
-    agent._mcp_integration_manager = MagicMock()
-    agent._mcp_integration_manager.mcp_integration = None
+    # Mock tool integration manager
+    agent._tool_integration_manager = MagicMock()
+    agent._tool_integration_manager.tool_integration = None
     
     # Mock registry (empty)
     agent.registry = MagicMock()
@@ -74,7 +72,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_123"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -136,7 +134,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_multi"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -172,7 +170,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_not_available"
         
         # Execute tools - should NOT raise exception
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -228,7 +226,7 @@ class TestUnknownToolHandling:
         request_id = "test_request_mixed"
         
         # Execute tools
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         
@@ -296,7 +294,7 @@ class TestUnknownToolHandling:
         step = 1
         request_id = "test_request_format"
         
-        tool_messages, events, results = await tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step, request_id
         )
         

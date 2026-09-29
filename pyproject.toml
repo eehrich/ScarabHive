@@ -1,96 +1,62 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-system-mcp"
-version = "0.5.3"
-description = "Flexible AI Agent System using MCP with pluggable servers and FastAPI UI"
+version = "0.7.0"
+description = "ScarabHive - Flexible AI Agent Framework with pluggable tool servers and FastAPI UI"
 authors = [{ name = "Enrico Ehrich" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "pydantic>=2.11,<3.0",  # chromadb 0.6.3 is compatible with pydantic 2.11+
-    "pyyaml>=6.0",
-    "fastapi==0.115.6",  # Pin exact version
-    "uvicorn[standard]>=0.30",
-    "httpx>=0.27",
-    "aiohttp>=3.12",
-    "requests>=2.28",
-    "urllib3>=1.24.2,<2.4.0",  # <2.4.0 needed for kubernetes compatibility
-    "duckduckgo-search>=6.1.6,<9.0",  # Note: ddgs package was hijacked by another project at v9.x
-    "tavily-python>=0.5.0",  # Tavily AI-powered web search
-    "yfinance>=0.2.52",
-    "curl-cffi>=0.5.0",
-    "snscrape>=0.7.0",
-    "tweepy>=4.14.0",
-    "openai>=1.37.0",
-    "anthropic>=0.40.0",  # Anthropic Claude SDK
-    "ollama>=0.3.0",
-    "google-genai>=1.50.0",  # Gemini SDK - need recent version for batch API
-    "jinja2>=3.1",
-    "pytz>=2024.1",
-    "pytest>=8.4",
-    "pytest-asyncio>=1.1.0",
-    "tabulate>=0.9",
-    "ib_async>=0.9.86",
-    "nest_asyncio>=1.5.0",
-    "brotli>=1.1.0",
-    "Pillow>=10.0.0",
-    "asyncssh>=2.13.0",
-    "aiofiles>=24.1.0",
-    "python-jose[cryptography]>=3.3.0",
-    "bcrypt>=5.0.0",
-    "python-multipart>=0.0.9",
-    "email-validator>=2.0.0",
-    "typer>=0.9.0",
-    "markdown>=3.5.0",
-    "rich>=13.0.0",
-    "markdownify>=0.11.0",
-    "pygments>=2.15.0",
-    "websockets>=15.0.0",
-    "chromadb>=1.4.0,<2.0",  # Update to fix Pydantic 2.11 compatibility
-    "posthog>=3.0.0,<3.2.0",  # Pin compatible version - 7.x has breaking changes
-    "chroma-hnswlib>=0.7.6",  # ChromaDB's compatible fork (NOT hnswlib!)
-    "sqlite-vec>=0.1.0",
-    "onnxruntime>=1.20.0",
-    "psutil>=5.9.0",  # For performance profiling
-    "pydub>=0.25.0",  # Audio manipulation (requires ffmpeg)
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
 ]
+dynamic = ["dependencies"]
 
 [project.urls]
-Homepage = "http://127.0.0.1:8000"
+Homepage = "https://github.com/eehrich/ScarabHive"
+Repository = "https://github.com/eehrich/ScarabHive"
+Documentation = "https://github.com/eehrich/ScarabHive/tree/main/docs"
 
 [project.scripts]
-backlog = "scripts.backlog:main"
 agent-cli = "agent_system.agent_cli:main"
 agent-run = "agent_system.agent_run:main"
 agent-api = "agent_system.app:run"
 validate-agents = "scripts.validate_agent_configs:main"
-mcp-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"
-mcp-yahoo-finance = "plugins.yahoo_finance.__main__:cli_main"
-mcp-twitter-search = "plugins.twitter_search.__main__:cli_main"
-mcp-llm-router = "plugins.llm_router.__main__:cli_main"
-mcp-weather = "plugins.weather.__main__:cli_main"
-mcp-datetime = "plugins.datetime.__main__:cli_main"
-mcp-web-research-agent = "plugins.web_research_agent.__main__:cli_main"
-mcp-web-scraper = "plugins.web_scraper.__main__:cli_main"
-mcp-http-server = "plugins.http_server.__main__:cli_main"
-mcp-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
-mcp-basic-operations = "plugins.basic_operations.__main__:cli_main"
-mcp-todo-management = "plugins.todo_management.__main__:cli_main"
-mcp-file-ops = "plugins.file_ops.__main__:main"
-mcp-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
-comfyui = "scripts.comfyui:main"
+tool-duckduckgo-search = "plugins.duckduckgo_search.__main__:cli_main"
+tool-twitter-search = "plugins.twitter_search.__main__:cli_main"
+tool-llm-router = "plugins.llm_router.__main__:cli_main"
+tool-weather = "plugins.weather.__main__:cli_main"
+tool-datetime = "plugins.datetime.__main__:cli_main"
+tool-web-scraper = "plugins.web_scraper.__main__:cli_main"
+tool-http-server = "plugins.http_server.__main__:cli_main"
+tool-script-interpreter = "plugins.script_interpreter.__main__:cli_main"
+tool-basic-operations = "plugins.basic_operations.__main__:cli_main"
+tool-file-ops = "plugins.file_ops.__main__:main"
+tool-sqlite-query = "plugins.sqlite_query.__main__:cli_main"
 audio-ops = "plugins.audio_ops.__main__:main"
+
+# Dependencies are aggregated per-plugin: each plugin declares its pip
+# requirements in its own plugin.toml; scripts/aggregate_plugin_deps.py
+# merges them with requirements/core.txt into requirements/all.txt, which
+# setuptools reads here. Keeps plugin-owned deps out of this file.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements/all.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Note: templates/ and static/ are outside src/ so they're included via MANIFEST.in
-# The app.py _find_resource_dir() function handles multiple install scenarios
+# Note: templates/, static/ and docs/guides/ (the Help manual) are outside src/ so they're included via MANIFEST.in
+# agent_system.ui.resources.find_resource_dir() handles multiple install scenarios
 [tool.setuptools.package-data]
-"*" = ["*.yaml", "*.json"]
+"*" = ["*.yaml", "*.json", "*.toml"]
 
 [project.optional-dependencies]
 dev = [
@@ -123,6 +89,23 @@ gpu = [
 [tool.ruff]
 line-length = 100
 exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pycache__", "src/plugins_writer_OLD"]
+
+[tool.ruff.lint]
+# Ruff's default set before 0.16 (which widened it to ~400 rules). Named here so
+# that a newer ruff's default does not apply; CI pins the ruff version as well.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files commonly re-use pytest fixture names both at module level
+# (re-import for visibility) and in test signatures — F811 is a false
+# positive in that pattern. Also relax test-idiomatic style: imports placed
+# after a sys.path bootstrap (E402) and setup statements joined with ';'
+# (E702). Matched by filename so it applies wherever tests live (root tests/
+# AND colocated src/plugins*/*/tests/).
+# E731 (lambda assigned to a name) and E741 (ambiguous single-letter var like
+# `l`) are low-signal in test setup — relaxed for tests only.
+"**/test_*.py" = ["F811", "E402", "E702", "E731", "E741"]
+"tests/**/*.py" = ["F811", "E402", "E702", "E731", "E741"]
 
 [tool.mypy]
 python_version = "3.12"

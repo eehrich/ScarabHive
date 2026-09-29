@@ -1,0 +1,17 @@
+# coder plugin manifest — a CONFIG-ONLY plugin: no plugin.py, no tools of its
+# own. It ships agent configs (agents/*.yaml), their prompts and its skill
+# bundles, and the core picks all three up by convention:
+#   agents  <- config/config.yaml includes ../src/plugins*/*/agents/*.yaml
+#   prompts <- system_template "./prompts/x.md" resolves next to the YAML
+#   skills  <- config/config.yaml skills.skill_dirs has src/plugins*/*/skills
+# Plugin discovery skips a directory without an entrypoint file, so the absence
+# of plugin.py is the design, not an omission. Same shape as writer_publish.
+[plugin]
+name = "coder"
+version = "1.0.0"
+description = "Coding agent harness: a coder agent with read-only explorer, adversarial reviewer and test-runner sub-agents, plus the skills that carry the working discipline"
+author = "Enrico Ehrich"
+type = ["library"]
+category = "development"
+tags = ["coding", "review", "skills", "sub-agents", "harness"]
+requires = { agent_system = ">=0.6.0" }

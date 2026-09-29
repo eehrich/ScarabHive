@@ -1,0 +1,11 @@
+# tool_preload plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "tool_preload"
+version = "1.0.0"
+description = "Executes configured tool calls after a user turn, before the first LLM call — the predictable opening move (load the document, set the context var) without paying an LLM round trip for it"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+category = "optimization"
+requires = { agent_system = ">=0.6.0" }

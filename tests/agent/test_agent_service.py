@@ -14,9 +14,6 @@ from agent_system.config.models import AgentSystemConfig, AgentConfig
 def agent_config():
     """Provide test agent config."""
     return AgentConfig(
-        model="gpt-4",
-        temperature=0.7,
-        max_tokens=1000,
         system_prompt="Test system prompt"
     )
 
@@ -34,19 +31,18 @@ def config(agent_config):
 def mock_agent():
     """Provide a mock agent with common methods."""
     agent = MagicMock()
-    
+
     # Create real SessionTracker and AgentRequestManager for proper behavior
     from agent_system.servers.agent.components.session_tracking import SessionTracker
     from agent_system.servers.agent.components.request_manager import AgentRequestManager
-    
+
     request_manager = AgentRequestManager("test_agent")
     agent._request_manager = request_manager
     agent._session_tracker = SessionTracker(request_manager._active_requests)
-    
+
     # Mock other methods
     agent.run_events = AsyncMock()
     agent.append_to_session = AsyncMock()
-    agent.optimize_context = AsyncMock()
     agent.cancel_request = AsyncMock()
     return agent
 
@@ -62,7 +58,7 @@ def agent_service(mock_agent, config):
 def test_init_success(mock_agent, config):
     """Test AgentService initialization."""
     service = AgentService(mock_agent, config)
-    
+
     assert service._agent is mock_agent
     assert service._config is config
 
@@ -79,18 +75,18 @@ async def test_execute_task_success_streaming(agent_service, mock_agent):
         {"type": "result", "data": {"result": "Final answer"}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     # Execute task
     result_events = []
     async for event in agent_service.execute_task("Test task"):
         result_events.append(event)
-    
+
     assert len(result_events) == 4
     assert result_events[0]["type"] == "step"
     assert result_events[2]["type"] == "result"
@@ -104,17 +100,17 @@ async def test_execute_task_with_session_id(agent_service, mock_agent):
         {"type": "result", "data": {"result": "Answer"}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     result_events = []
     async for event in agent_service.execute_task("Task", session_id="session123"):
         result_events.append(event)
-    
+
     assert len(result_events) == 2
 
 
@@ -124,7 +120,7 @@ async def test_execute_task_empty_raises_error(agent_service):
     result_events = []
     async for event in agent_service.execute_task(""):
         result_events.append(event)
-    
+
     assert len(result_events) == 1
     assert result_events[0]["type"] == "error"
     assert "cannot be empty" in result_events[0]["message"].lower()
@@ -136,13 +132,13 @@ async def test_execute_task_exception_handling(agent_service, mock_agent):
     async def mock_run_events_error(*args, **kwargs):
         raise RuntimeError("Test error")
         yield  # Make it a generator
-    
+
     mock_agent.run_events = mock_run_events_error
-    
+
     result_events = []
     async for event in agent_service.execute_task("Task"):
         result_events.append(event)
-    
+
     assert len(result_events) == 1
     assert result_events[0]["type"] == "error"
     assert "Test error" in result_events[0]["message"]
@@ -155,22 +151,22 @@ async def test_execute_task_with_images(agent_service, mock_agent):
         {"type": "result", "data": {"result": "Image processed"}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     # Mock create_multimodal_message
     with patch.object(agent_service, '_create_multimodal_message', new_callable=AsyncMock) as mock_create:
         mock_create.return_value = "multimodal_message"
-        
+
         images = [b"fake_image_bytes"]
         result_events = []
         async for event in agent_service.execute_task("Describe image", images=images):
             result_events.append(event)
-        
+
         # Verify multimodal message creation was called
         mock_create.assert_called_once()
         assert len(result_events) == 2
@@ -186,15 +182,15 @@ async def test_execute_task_collect_result_success(agent_service, mock_agent):
         {"type": "result", "data": {"result": "Final answer"}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     result = await agent_service.execute_task_collect_result("Task")
-    
+
     assert result["status"] == "success"
     assert result["result"] == "Final answer"
     assert "request_id" in result
@@ -207,15 +203,15 @@ async def test_execute_task_collect_result_error(agent_service, mock_agent):
     events = [
         {"type": "error", "message": "Task failed"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     result = await agent_service.execute_task_collect_result("Task")
-    
+
     assert result["status"] == "error"
     assert "Task failed" in result["error"]
 
@@ -227,15 +223,15 @@ async def test_execute_task_collect_result_no_result(agent_service, mock_agent):
         {"type": "step", "data": {"step": 1}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     result = await agent_service.execute_task_collect_result("Task")
-    
+
     assert result["status"] == "no_result"
     assert result["result"] == ""
 
@@ -246,7 +242,7 @@ async def test_execute_task_collect_result_no_result(agent_service, mock_agent):
 async def test_create_session_success(agent_service, mock_agent):
     """Test creating a new session."""
     session_id = await agent_service.create_session()
-    
+
     assert isinstance(session_id, str)
     assert len(session_id) == 8  # short UUID
     # Verify session was created using component API
@@ -259,7 +255,7 @@ async def test_create_session_generates_unique_ids(agent_service):
     """Test that multiple sessions get unique IDs."""
     session_id1 = await agent_service.create_session()
     session_id2 = await agent_service.create_session()
-    
+
     assert session_id1 != session_id2
 
 
@@ -270,9 +266,9 @@ async def test_get_session_success(agent_service, mock_agent):
     session_id = "test123"
     messages = [{"role": "user", "content": "Hello"}]
     mock_agent._session_tracker.set_session_messages(session_id, messages)
-    
+
     result = await agent_service.get_session(session_id)
-    
+
     assert result == messages
 
 
@@ -280,7 +276,7 @@ async def test_get_session_success(agent_service, mock_agent):
 async def test_get_session_not_found(agent_service):
     """Test retrieving non-existent session returns None."""
     result = await agent_service.get_session("nonexistent")
-    
+
     # Empty list is returned for non-existent sessions now
     assert result == []
 
@@ -291,9 +287,9 @@ async def test_delete_session_success(agent_service, mock_agent):
     # Create session manually using component API
     session_id = "test123"
     mock_agent._session_tracker.set_session_messages(session_id, [])
-    
+
     success = await agent_service.delete_session(session_id)
-    
+
     assert success is True
     # Verify session is completely removed
     assert not mock_agent._session_tracker.has_session(session_id)
@@ -303,7 +299,7 @@ async def test_delete_session_success(agent_service, mock_agent):
 async def test_delete_session_not_found(agent_service):
     """Test deleting non-existent session returns False."""
     success = await agent_service.delete_session("nonexistent")
-    
+
     assert success is False
 
 
@@ -311,9 +307,9 @@ async def test_delete_session_not_found(agent_service):
 async def test_append_to_session_success(agent_service, mock_agent):
     """Test appending a message to session."""
     mock_agent.append_to_session.return_value = True
-    
+
     success = await agent_service.append_to_session("session123", "Hello", role="user")
-    
+
     assert success is True
     mock_agent.append_to_session.assert_called_once_with("session123", "Hello")
 
@@ -322,9 +318,9 @@ async def test_append_to_session_success(agent_service, mock_agent):
 async def test_append_to_session_not_found(agent_service, mock_agent):
     """Test appending to non-existent session fails."""
     mock_agent.append_to_session.return_value = False
-    
+
     success = await agent_service.append_to_session("nonexistent", "Hello")
-    
+
     assert success is False
 
 
@@ -332,7 +328,7 @@ async def test_append_to_session_not_found(agent_service, mock_agent):
 async def test_list_sessions_empty(agent_service):
     """Test listing sessions when none exist."""
     sessions = await agent_service.list_sessions()
-    
+
     assert sessions == []
 
 
@@ -342,71 +338,12 @@ async def test_list_sessions_multiple(agent_service, mock_agent):
     # Setup sessions using component API
     mock_agent._session_tracker.set_session_messages("session1", [{"content": "msg1"}])
     mock_agent._session_tracker.set_session_messages("session2", [{"content": "msg2"}, {"content": "msg3"}])
-    
+
     sessions = await agent_service.list_sessions()
-    
+
     assert len(sessions) == 2
     assert {"session_id": "session1", "message_count": 1} in sessions
     assert {"session_id": "session2", "message_count": 2} in sessions
-
-
-# ===== Session Optimization Tests =====
-
-@pytest.mark.asyncio
-async def test_optimize_session_success(agent_service, mock_agent):
-    """Test successful session optimization."""
-    # Setup session with messages using component API
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [{"content": f"msg{i}"} for i in range(10)])
-    
-    # Mock optimization to reduce messages
-    async def mock_optimize(*args):
-        mock_agent._session_tracker.set_session_messages(session_id, 
-            mock_agent._session_tracker.get_session_messages(session_id)[:5])
-    
-    mock_agent.optimize_context = mock_optimize
-    
-    result = await agent_service.optimize_session(session_id)
-    
-    assert result["success"] is True
-    assert result["original_messages"] == 10
-    assert result["optimized_messages"] == 5
-    assert result["reduction_percent"] == 50.0
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_not_found(agent_service):
-    """Test optimizing non-existent session."""
-    result = await agent_service.optimize_session("nonexistent")
-    
-    assert result["success"] is False
-    assert "not found" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_not_supported(agent_service, mock_agent):
-    """Test optimization when agent doesn't support it."""
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [])
-    delattr(mock_agent, 'optimize_context')
-    
-    result = await agent_service.optimize_session(session_id)
-    
-    assert result["success"] is False
-    assert "not supported" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_optimize_session_exception(agent_service, mock_agent):
-    """Test optimization exception handling."""
-    session_id = "test123"
-    mock_agent._session_tracker.set_session_messages(session_id, [])
-    mock_agent.optimize_context.side_effect = RuntimeError("Optimization failed")
-    
-    result = await agent_service.optimize_session(session_id)
-    
-    assert result["success"] is False
-    assert "Optimization failed" in result["error"]
 
 
 # ===== Request Cancellation Tests =====
@@ -415,9 +352,9 @@ async def test_optimize_session_exception(agent_service, mock_agent):
 async def test_cancel_request_success(agent_service, mock_agent):
     """Test cancelling an ongoing request."""
     mock_agent.cancel_request.return_value = True
-    
+
     success = await agent_service.cancel_request("req123")
-    
+
     assert success is True
     mock_agent.cancel_request.assert_called_once_with("req123")
 
@@ -426,9 +363,9 @@ async def test_cancel_request_success(agent_service, mock_agent):
 async def test_cancel_request_not_found(agent_service, mock_agent):
     """Test cancelling non-existent request."""
     mock_agent.cancel_request.return_value = False
-    
+
     success = await agent_service.cancel_request("nonexistent")
-    
+
     assert success is False
 
 
@@ -436,9 +373,9 @@ async def test_cancel_request_not_found(agent_service, mock_agent):
 async def test_cancel_request_not_supported(agent_service, mock_agent):
     """Test cancellation when agent doesn't support it."""
     delattr(mock_agent, 'cancel_request')
-    
+
     success = await agent_service.cancel_request("req123")
-    
+
     assert success is False
 
 
@@ -447,7 +384,7 @@ async def test_cancel_request_not_supported(agent_service, mock_agent):
 def test_generate_request_id():
     """Test request ID generation."""
     request_id = AgentService._generate_request_id()
-    
+
     assert isinstance(request_id, str)
     assert len(request_id) == 8
 
@@ -455,7 +392,7 @@ def test_generate_request_id():
 def test_generate_session_id():
     """Test session ID generation."""
     session_id = AgentService._generate_session_id()
-    
+
     assert isinstance(session_id, str)
     assert len(session_id) == 8
 
@@ -475,10 +412,10 @@ async def test_concurrent_session_access(agent_service, mock_agent):
         session_id = await agent_service.create_session()
         await agent_service.get_session(session_id)
         await agent_service.delete_session(session_id)
-    
+
     # Run concurrently
     await asyncio.gather(*[create_and_access() for _ in range(10)])
-    
+
     # All should complete without errors - check using component API
     all_sessions = mock_agent._session_tracker.get_all_session_ids()
     assert len(all_sessions) == 0  # All cleaned up
@@ -491,57 +428,57 @@ async def test_execute_task_with_request_id(agent_service, mock_agent):
         {"type": "result", "data": {"result": "Answer"}},
         {"type": "end"}
     ]
-    
+
     async def mock_run_events(*args, **kwargs):
         # Verify request_id passed
         assert kwargs.get("request_id") == "custom_req_id"
         for event in events:
             yield event
-    
+
     mock_agent.run_events = mock_run_events
-    
+
     result_events = []
     async for event in agent_service.execute_task("Task", request_id="custom_req_id"):
         result_events.append(event)
-    
+
     assert len(result_events) == 2
 
 
 @pytest.mark.asyncio
 async def test_exception_cancels_sub_requests():
     """Test that exceptions during agent execution cancel sub-request tokens.
-    
+
     This is critical for sub-agents: when parent agent fails with an exception,
     sub-agents should also be cancelled to prevent them from continuing to run.
     """
     from agent_system.core.cancellation import get_cancellation_manager
-    
+
     # Get the global cancellation manager
     cancellation_manager = get_cancellation_manager()
-    
+
     # Create tokens simulating parent and sub-agent scenario
     parent_request_id = "test_parent_exception"
     parent_token = cancellation_manager.create_token(parent_request_id)
     sub_token_1 = cancellation_manager.create_token(f"{parent_request_id}_sub_abc")
     sub_token_2 = cancellation_manager.create_token(f"{parent_request_id}_sub_def")
     unrelated_token = cancellation_manager.create_token("other_request_xyz")
-    
+
     try:
         # Simulate what happens in Agent._run_events when an exception occurs:
         # The exception handler calls cancel_request() with prefix matching
         cancelled_count = cancellation_manager.cancel_request(parent_request_id)
-        
+
         # Should have cancelled parent + 2 sub-requests = 3
         assert cancelled_count > 0, "Should have cancelled at least the parent token"
-        
+
         # Verify all parent-related tokens are cancelled
         assert parent_token.is_cancelled, "Parent token should be cancelled"
         assert sub_token_1.is_cancelled, "Sub-request token 1 should be cancelled"
         assert sub_token_2.is_cancelled, "Sub-request token 2 should be cancelled"
-        
+
         # Unrelated token should NOT be cancelled
         assert not unrelated_token.is_cancelled, "Unrelated token should NOT be cancelled"
-        
+
     finally:
         # Cleanup
         cancellation_manager.unregister_request(parent_request_id)

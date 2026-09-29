@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Batch Queues panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const stat = (key) => $(`#stats [data-stat="${key}"]`);
+  const statValue = (key) => stat(key)?.querySelector('.pk-stat-value').textContent;
+  const rows = () => [...doc().querySelectorAll('#queues tbody tr')];
+  const rowKeys = () => rows().map((row) => row.dataset.job || `pending:${row.dataset.pending}`).join();
+  const cells = (row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim());
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+    forgetRefreshChoice();  // paused for this check only -- the kit would remember it for the panel
+  };
+  const forgetRefreshChoice = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (value) => { document.cookie = value ? `bm=${value}; path=/` : 'bm=; path=/; max-age=0'; };
+  const post = (path) => fetch(path, { method: 'POST' });
+  const SEEDED = 'job-rec,pending:anthropic:claude-x,job-done,pending:mistral:large,job-run,job-new,pending:openai:gpt-4o';
+
+  await check('the panel counts queues, running jobs, finished jobs and requests, and the processing times', async () => {
+    await go('/plugins/batch_monitor/');
+    await until('the stats', () => statValue('queues') === '4');
+    const more = (key) => stat(key).querySelector('.bm-more')?.textContent;
+    // job-new is not submitted yet and job-rec was recovered, but neither is finished: both count as running
+    return statValue('running') === '3' && statValue('jobs') === '3' && more('jobs') === '1 failed'
+      && statValue('requests') === (1200).toLocaleString() && more('requests') === '7 failed'
+      && statValue('time') === '20m 30s' && more('time') === 'min 0s · max 1h 0m'
+      && /^Updated /.test($('#updated').textContent);
+  });
+
+  await check('each job and each queue with requests waiting gets a row with status, progress, tokens and time', async () => {
+    const byKey = Object.fromEntries(rows().map((row) => [row.dataset.job || row.dataset.pending, row]));
+    const run = cells(byKey['job-run']);
+    const ran = run[0] === 'openai:gpt-4o' && run[1] === 'job-run' && run[2] === 'in progress' && run[3] === '3 / 5 1 failed'
+      && run[4] === '625' && /^2m \d+s$/.test(run[5]) && byKey['job-run'].children[1].title === 'batch_abc'
+      && byKey['job-run'].querySelector('.pk-badge--info') !== null;
+    const done = cells(byKey['job-done']);
+    const finished = done.join('|') === 'gemini:flash|job-done|completed|40 / 40|1.21M|1m 40s'
+      && byKey['job-done'].querySelector('.pk-badge--ok') !== null;
+    const unsubmitted = cells(byKey['job-new']).join('|') === 'openai:gpt-4o|job-new|pending|0 / 1|125|—';
+    const waiting = cells(byKey['openai:gpt-4o']).join('|') === 'openai:gpt-4o|—|pending|2 waiting|250|~30s'
+      && cells(byKey['anthropic:claude-x']).join('|') === 'anthropic:claude-x|—|pending|1 waiting|1.2K|~30s'
+      && cells(byKey['mistral:large']).join('|') === 'mistral:large|—|pending|1 waiting|1.00M|~30s';
+    // recovered after a restart: no requests known, so neither progress nor tokens
+    const recovered = cells(byKey['job-rec']).join('|') === 'anthropic:claude-x|job-rec|submitted|—|—|—'
+      && byKey['job-rec'].children[1].title === 'batches/rec-1';
+    // job-old finished ten minutes ago and openai:empty has nothing: neither is listed
+    return rowKeys() === SEEDED && ran && finished && unsubmitted && waiting && recovered;
+  });
+
+  await check('with batch processing off the panel says so and shows nothing of before', async () => {
+    await autoOff();
+    await post('/__stub/off');
+    try {
+      now();
+      await until('the notice', () => $('#queues').textContent.includes('Batch processing is off'));
+      const said = $('#queues').textContent.includes('No batch queue manager is running') && rows().length === 0
+        && $('#stats').textContent.trim() === '' && $('#updated').textContent === '' && !$('.pk-toast--error');
+      await post('/__stub/on');
+      now();
+      await until('the queues again', () => rowKeys() === SEEDED);
+      return said;
+    } finally {
+      await post('/__stub/on');
+    }
+  });
+
+  await check('with nothing waiting, running or just finished the panel says so', async () => {
+    await post('/__stub/idle');
+    try {
+      now();
+      await until('the notice', () => $('#queues').textContent.includes('No batch jobs'));
+      return rows().length === 0 && statValue('queues') === '0' && statValue('running') === '0' && statValue('jobs') === '0'
+        && statValue('time') === '—' && !stat('time').querySelector('.bm-more');
+    } finally {
+      await post('/__stub/on');
+      now();
+      await until('the queues again', () => rowKeys() === SEEDED);
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped', async () => {
+    const failed = () => $('#queues').textContent.includes('Batch queues could not be loaded');
+    try {
+      // a success overtaken by an error
+      cookie('slow');
+      now();  // queues held 1.5 s
+      await sleep(300);
+      cookie('fails');
+      now();  // answered at once, with an error
+      await until('the later error', failed);
+      await sleep(2000);
+      const errorKept = rows().length === 0 && failed();
+      // an error overtaken by a success
+      cookie('slowfail');
+      now();  // held 1.5 s, then an error
+      await sleep(300);
+      cookie(null);
+      now();
+      await until('the later queues', () => rowKeys() === SEEDED);
+      await sleep(2000);
+      return errorKept && rowKeys() === SEEDED && !failed();
+    } finally {
+      cookie(null);
+      now();
+      await until('the queues again', () => rowKeys() === SEEDED);
+    }
+  });
+
+  await check('a failed load shows the error and nothing of before, also when only the totals fail', async () => {
+    const failing = async (mode) => {
+      cookie(mode);
+      try {
+        now();
+        await until(`the error (${mode})`, () => $('#queues').textContent.includes('Batch queues could not be loaded'));
+        return $('#queues').textContent.includes('The manager lock timed out') && rows().length === 0
+          && $('#stats').textContent.trim() === '' && $('#updated').textContent === '';
+      } finally {
+        cookie(null);
+        now();
+        await until('the queues again', () => rowKeys() === SEEDED);
+      }
+    };
+    return (await failing('fails')) && (await failing('metrics'));
+  });
+
+  await check('ticks of the auto refresh ask nothing more while a load is on its way', async () => {
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    const asked = async () => (await (await fetch('/__stub/asked')).json()).queues;
+    let ticking = null;
+    try {
+      const before = await asked();
+      cookie('slow');
+      now();  // answered after 1.5 s
+      ticking = setInterval(tick, 150);
+      await sleep(300);
+      cookie('slower');
+      now();  // answered after 3 s: the load of the 1.5 s one is out of date when it ends, this one is still on its way
+      await sleep(200);
+      cookie(null);  // a load a tick would start is answered at once
+      await sleep(2000);
+      clearInterval(ticking);
+      await until('the queues', () => rowKeys() === SEEDED);
+      await sleep(500);
+      // with a server slower than the tick, each tick would start one more load
+      return (await asked()) - before === 2;
+    } finally {
+      clearInterval(ticking);
+      cookie(null);
+    }
+  });
+
+  await check('a click on a column head sorts the jobs by value, and the order holds when they are drawn anew', async () => {
+    const head = (label) => [...doc().querySelectorAll('#queues th')].find((th) => th.textContent.trim() === label);
+    const drawn = $('#queues table');
+    const byQueue = rowKeys() === SEEDED && head('Queue').getAttribute('aria-sort') === 'ascending';
+    head('Input tokens').click();
+    // 1.21M, 1.00M, 1.2K, 625, 250, 125, none: as text, 1.2K would come after 625
+    const BY_TOKENS = 'job-done,pending:mistral:large,pending:anthropic:claude-x,job-run,pending:openai:gpt-4o,job-new,job-rec';
+    const sorted = rowKeys() === BY_TOKENS && head('Input tokens').getAttribute('aria-sort') === 'descending'
+      && !head('Queue').hasAttribute('aria-sort');
+    now();
+    await until('the jobs drawn anew', () => $('#queues table') !== drawn);
+    const held = rowKeys() === BY_TOKENS;
+    head('Queue').click();  // back to the order the server lists
+    return byQueue && sorted && held && rowKeys() === SEEDED;
+  });
+
+  await check('the auto refresh runs from the start and brings what changed', async () => {
+    await go('/plugins/batch_monitor/');
+    await until('the queues', () => rowKeys() === SEEDED);
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await post('/__stub/advance');
+    await until('job-run completed, brought by a tick', () => statValue('running') === '2', 8000);
+    const run = cells($('#queues tr[data-job="job-run"]'));
+    return running && run[2] === 'completed' && run[3] === '4 / 5 1 failed'
+      && cells($('#queues tr[data-pending="openai:gpt-4o"]'))[3] === '3 waiting';
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

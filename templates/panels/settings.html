@@ -1,0 +1,65 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="pk-card pk-stack">
+  <div class="pk-card-head"><h3 class="pk-card-title">Appearance</h3></div>
+  <div class="pk-row" role="radiogroup" aria-label="Theme">
+    <label class="pk-radio"><input type="radio" name="theme" value="system"> {{ icon('monitor') }} System</label>
+    <label class="pk-radio"><input type="radio" name="theme" value="light"> {{ icon('sun') }} Light</label>
+    <label class="pk-radio"><input type="radio" name="theme" value="dark"> {{ icon('moon') }} Dark</label>
+  </div>
+</section>
+
+<div id="noAccounts" class="pk-empty" hidden>{{ icon('user') }}<div class="pk-empty-title">No accounts</div>
+  <div>This server runs without authentication, so there is no profile or password to change.</div></div>
+
+<div id="account" class="pk-stack">
+<section class="pk-card pk-stack" id="chatPreferences">
+  <div class="pk-card-head"><h3 class="pk-card-title">Chat</h3></div>
+  <div class="pk-field"><span class="pk-label">Fold a run's steps</span>
+    <div class="pk-row" role="radiogroup" aria-label="Fold a run's steps">
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="at_end"> When it has answered</label>
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="at_next_step"> When the next step starts</label>
+      <label class="pk-radio"><input type="radio" name="fold_steps" value="never"> Never</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Thinking</span>
+    <div class="pk-row" role="radiogroup" aria-label="Thinking">
+      <label class="pk-radio"><input type="radio" name="thinking" value="collapsed"> Folded</label>
+      <label class="pk-radio"><input type="radio" name="thinking" value="expanded"> Open</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Sub-agents</span>
+    <div class="pk-row" role="radiogroup" aria-label="Sub-agents">
+      <label class="pk-radio"><input type="radio" name="sub_agents" value="expanded"> Open</label>
+      <label class="pk-radio"><input type="radio" name="sub_agents" value="collapsed"> Folded</label>
+    </div></div>
+  <div class="pk-field"><span class="pk-label">Sub-agent answers</span>
+    <div class="pk-row" role="radiogroup" aria-label="Sub-agent answers">
+      <label class="pk-radio"><input type="radio" name="sub_agent_output" value="collapsed"> Folded</label>
+      <label class="pk-radio"><input type="radio" name="sub_agent_output" value="expanded"> Open</label>
+    </div></div>
+</section>
+
+<section class="pk-card">
+  <div class="pk-card-head"><h3 class="pk-card-title">Profile</h3><span class="pk-grow"></span><span id="role" class="pk-badge"></span></div>
+  <form id="profileForm" class="pk-form">
+    <label class="pk-field"><span class="pk-label">Username</span><input id="username" class="pk-input" disabled></label>
+    <label class="pk-field"><span class="pk-label">Email</span><input id="email" name="email" class="pk-input" type="email" required></label>
+    <label class="pk-field"><span class="pk-label">Full name</span><input id="fullName" name="full_name" class="pk-input"></label>
+    <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary">Save profile</button></div>
+  </form>
+</section>
+
+<section class="pk-card">
+  <div class="pk-card-head"><h3 class="pk-card-title">Password</h3></div>
+  <form id="passwordForm" class="pk-form">
+    <label class="pk-field"><span class="pk-label">Current password</span><input name="current_password" class="pk-input" type="password" autocomplete="current-password" required></label>
+    <label class="pk-field"><span class="pk-label">New password</span><input name="password" class="pk-input" type="password" autocomplete="new-password" minlength="8" required>
+      <span class="pk-help">At least 8 characters.</span></label>
+    <label class="pk-field"><span class="pk-label">Repeat new password</span><input name="repeat" class="pk-input" type="password" autocomplete="new-password" minlength="8" required></label>
+    <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--primary">Change password</button></div>
+  </form>
+</section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/settings.js"></script>{% endblock %}

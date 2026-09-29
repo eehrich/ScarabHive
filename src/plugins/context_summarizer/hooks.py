@@ -6,16 +6,18 @@ reducing context size while preserving key information and decisions.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import status_bus, StatusScope
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
+from agent_system.tools.status import status_bus, StatusScope
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +47,48 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Session tracking for rate limiting (with LRU eviction)
         self._last_summarization_time: Dict[str, float] = {}  # session_id -> timestamp
 
-        # Load config - for hooks, config is a raw dict from YAML
-        config = self.get_config()
-        
-        # Memory management settings
+        self._event_ids = itertools.count(1)
+
+        self.apply_config(None)
+
+        # Store system_config for later LLM instantiation
+        self._system_config = None
+        self._summarizer_llm = None
+
+        logger.info(
+            f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
+            f"max_messages={self.max_messages or 'disabled'}, "
+            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
+            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
+        )
+
+    def apply_config(self, values: Optional[Dict[str, Any]] = None) -> None:
+        """Take the plugin's configuration as ONE mapping.
+
+        ``values`` comes from config/plugins.yaml and wins over the defaults
+        schema.yaml declares. One place reads a key, so there is no second copy
+        that can drift.
+
+        What this replaced: server.py kept its OWN default table and then
+        copied every value onto this object. Two of its fallbacks were wrong
+        and nothing said so.
+
+        - ``llm_profile`` fell back to 'fast', a profile config/llm.yaml does
+          not define at all.
+        - ``summary_prompt_template`` fell back to '' — and since the prompt is
+          built as ``template.replace('{messages}', …)``, an empty template
+          yields an EMPTY prompt: the messages are never substituted in,
+          because the replace runs on the template. Measured on the production
+          path (server + the shipped plugins.yaml): len 0. The summarizer was
+          calling the LLM with an empty user message and putting whatever came
+          back in place of real conversation.
+
+        Both went unnoticed because plugins.yaml sets neither key, so the
+        fallback was always the effective value, and because the copy happened
+        AFTER the schema had resolved the correct default — overwriting it.
+        """
+        config = {**(self.get_config() or {}), **(values or {})}
+
         self._max_tracked_sessions = int(config.get('max_tracked_sessions', 200))
         self.trigger_percentage = float(config.get('summarization_trigger_percentage', 0.60))
         self.chunk_size = int(config.get('summarization_chunk_size', 10))
@@ -64,17 +104,25 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         self.max_preview_length = int(config.get('max_message_preview_length', 5000))
         self.min_time_between = float(config.get('min_time_between_summarizations', 200.0))
         self.max_messages = int(config.get('max_messages', 0))  # 0 = disabled
-        
-        # Store system_config for later LLM instantiation
-        self._system_config = None
-        self._summarizer_llm = None
 
-        logger.info(
-            f"ContextSummarizerPlugin initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"max_messages={self.max_messages or 'disabled'}, "
-            f"chunk_size={self.chunk_size}, max_chunks={self.max_chunks}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}, min_time_between={self.min_time_between}s"
-        )
+        if not self.prompt_template.strip():
+            # Never summarise with an empty instruction. Refusing loudly beats
+            # sending an empty prompt and storing the answer as a summary.
+            raise ValueError(
+                "context_summarizer: summary_prompt_template is empty — the "
+                "summarisation prompt would be empty and the result would "
+                "replace real conversation. Check schema.yaml's default."
+            )
+
+    MAX_HISTORY = 1000
+
+    def _record(self, event: Dict[str, Any]) -> None:
+        """Add an event to the panel's history, newest last, bounded: skipped runs repeat on every call above the
+        threshold."""
+        event['id'] = next(self._event_ids)
+        event['timestamp'] = datetime.now(timezone.utc).isoformat()
+        self.summarization_history.append(event)
+        del self.summarization_history[:-self.MAX_HISTORY]
 
     async def summarize_context(self, context: HookContext) -> HookResult:
         """Summarize older messages when context exceeds token limit.
@@ -225,7 +273,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 # Record in history even when not applied
                 if self.summarization_history is not None:
                     event = {
-                        'timestamp': datetime.now().isoformat(),
                         'session_id': context.session_id,
                         'request_id': context.request_id,
                         'strategy': 'summarize',
@@ -243,7 +290,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         'after_messages': [],
                         'summary_stats': {'summary_count': 0}
                     }
-                    self.summarization_history.append(event)
+                    self._record(event)
                 
                 return HookResult(
                     success=True,
@@ -255,6 +302,68 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     }
                 )
 
+            # Pre-check: estimate if summarization can even achieve min_reduction
+            # Best case = old messages shrink to zero → max_possible_reduction = old_tokens / total_tokens
+            # If that's already below min_reduction, no LLM call can help → skip early
+            old_tokens = self._estimate_tokens(old_msgs)
+            max_possible_reduction = old_tokens / max(total_tokens, 1)
+            if max_possible_reduction < self.min_reduction:
+                logger.info(
+                    f"[ContextSummarizer] Session {context.session_id}: Skipping - even removing all "
+                    f"{len(old_msgs)} old messages ({old_tokens} tokens) would only reduce by "
+                    f"{max_possible_reduction:.1%}, below minimum {self.min_reduction:.0%}. "
+                    f"Total: {total_tokens} tokens, recent: {len(recent_msgs)} msgs, system: {len(system_msgs)} msgs"
+                )
+
+                if self.summarization_history is not None:
+                    event = {
+                        'session_id': context.session_id,
+                        'request_id': context.request_id,
+                        'strategy': 'summarize',
+                        'original_message_count': len(messages),
+                        'summarized_message_count': len(messages),
+                        'messages_summarized': 0,
+                        'summary_count': 0,
+                        'original_tokens': total_tokens,
+                        'new_tokens': total_tokens,
+                        'tokens_saved': 0,
+                        'reduction_ratio': 0,
+                        'status': 'skipped',
+                        'reason': 'insufficient_potential_reduction',
+                        'before_messages': [],
+                        'after_messages': [],
+                        'summary_stats': {
+                            'summary_count': 0,
+                            'old_tokens': old_tokens,
+                            'max_possible_reduction': max_possible_reduction,
+                        }
+                    }
+                    self._record(event)
+
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={
+                        'reason': 'insufficient_potential_reduction',
+                        'old_tokens': old_tokens,
+                        'total_tokens': total_tokens,
+                        'max_possible_reduction': max_possible_reduction,
+                        'min_reduction': self.min_reduction,
+                        'old_message_count': len(old_msgs),
+                    }
+                )
+
+            # The pause starts as soon as LLM calls are about to be spent: a
+            # rejected or failed run would otherwise redo them on every call.
+            # Stamped here, with no await since the check, so two calls of one
+            # session cannot both pass; given back below if no call went out.
+            previous_stamp = self._last_summarization_time.get(session_id)
+            self._last_summarization_time[session_id] = current_time
+            if len(self._last_summarization_time) > self._max_tracked_sessions:
+                oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
+                del self._last_summarization_time[oldest]
+
             # Use StatusScope to ensure START/END pairing even on errors
             result = None
             async with StatusScope(
@@ -262,7 +371,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 "context_summarizer",
                 summarizer_request_id,
                 start_msg=f"Summarizing {len(old_msgs)} older messages using LLM (preserving {len(recent_msgs)} recent messages)",
-                end_msg="Context summarization completed"
             ) as scope:
                 # Small sleep to allow START message to be delivered
                 await asyncio.sleep(0.01)
@@ -273,6 +381,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     context,
                     scope
                 )
+                # Only its own stamp: a manual run may have stamped this session meanwhile.
+                if summary_stats['llm_calls'] == 0 and self._last_summarization_time.get(session_id) == current_time:
+                    if previous_stamp is None:
+                        self._last_summarization_time.pop(session_id, None)
+                    else:
+                        self._last_summarization_time[session_id] = previous_stamp
 
                 # Reconstruct message list: system + summarized + recent
                 new_messages_dicts = system_msgs + summarized_msgs + recent_msgs
@@ -292,7 +406,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Record in history even when not applied
                     if self.summarization_history is not None:
                         event = {
-                            'timestamp': datetime.now().isoformat(),
                             'session_id': context.session_id,
                             'request_id': context.request_id,
                             'strategy': 'summarize',
@@ -310,7 +423,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'after_messages': [],
                             'summary_stats': {'summary_count': 0}
                         }
-                        self.summarization_history.append(event)
+                        self._record(event)
                     
                     # Store result instead of returning directly
                     result = HookResult(
@@ -323,6 +436,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'min_reduction': self.min_reduction
                         }
                     )
+                    # A run that changed nothing must not end as 'completed'.
+                    await scope.end(
+                        f"Not applied: {reduction_ratio:.1%} reduction is "
+                        f"below the {self.min_reduction:.1%} minimum"
+                    )
                 else:
                     # Convert dicts back to ChatMessage objects
                     new_messages = []
@@ -331,6 +449,19 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             new_messages.append(ChatMessage(**msg_dict))
                         else:
                             new_messages.append(msg_dict)
+
+                    # THE INVARIANT (utils/reasoning_artifacts.py): summarization
+                    # replaced a span of real messages with summaries — provider
+                    # reasoning artifacts (OpenAI encrypted reasoning chains,
+                    # Gemini thought signatures) over the removed span are now
+                    # unverifiable and would 400 on a later turn. Invalidate them
+                    # here so the chain resets deterministically.
+                    invalidated = invalidate_reasoning_artifacts(new_messages)
+                    if invalidated:
+                        logger.info(
+                            f"[ContextSummarizer] History mutated -> invalidated "
+                            f"reasoning artifacts on {invalidated} message(s)"
+                        )
 
                     # Create modified context
                     modified_context = HookContext(
@@ -358,7 +489,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Record summarization event in history
                     if self.summarization_history is not None:
                         event = {
-                            'timestamp': datetime.now().isoformat(),
                             'session_id': context.session_id,
                             'request_id': context.request_id,
                             'strategy': 'summarize',  # context_summarizer uses LLM summarization
@@ -375,32 +505,15 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                             'after_messages': [self._serialize_message(m) for m in summarized_msgs],  # Summary messages created from old_msgs
                             'summary_stats': summary_stats
                         }
-                        self.summarization_history.append(event)
+                        self._record(event)
 
-                        # Keep only last 1000 events
-                        if len(self.summarization_history) > 1000:
-                            self.summarization_history.pop(0)
-
-                    # Update last summarization time for rate limiting
-                    self._last_summarization_time[session_id] = current_time
-                    
-                    # Evict old entries if over limit (LRU by timestamp)
-                    if len(self._last_summarization_time) > self._max_tracked_sessions:
-                        oldest = min(self._last_summarization_time, key=self._last_summarization_time.get)
-                        del self._last_summarization_time[oldest]
-
-                    # NOTE: Session persistence is now handled automatically by HookIntegrationManager
-                    # when we return HookResult with modified=True. The explicit set_compacted_messages()
-                    # call below is kept for backwards compatibility but is no longer strictly required.
-                    conversation_msgs = [msg for msg in new_messages if msg.role != "system"]
-                    if context.agent and hasattr(context.agent, '_session_tracker'):
-                        context.agent._session_tracker.set_compacted_messages(
-                            session_id, conversation_msgs
-                        )
-                        logger.debug(
-                            f"[ContextSummarizer] Persisted {len(conversation_msgs)} compacted messages "
-                            f"for session {session_id}"
-                        )
+                    # Session persistence is handled automatically by
+                    # HookIntegrationManager when we return HookResult(modified=True)
+                    # below (hook path), and by the summarize tool wrapper via its
+                    # own set_compacted_messages() call (direct-tool path). No
+                    # explicit persist here: it double-persisted the session (once
+                    # explicitly, once automatically) — the tool path even wrote a
+                    # different message set (non-system here vs full context there).
 
                     # Store result instead of returning directly
                     result = HookResult(
@@ -425,6 +538,12 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                     # Invalidate usage tracker data for this session after successful summarization
                     # This prevents subsequent hooks from using stale token counts
                     self._invalidate_usage_tracker_session(context, session_id, "context_summarizer")
+
+                    # End line survives alone in the WebUI -- carry the numbers.
+                    await scope.end(
+                        f"Summarized {len(old_msgs)} messages: {original_tokens} -> "
+                        f"{new_tokens} tokens ({reduction_ratio:.1%} reduction)"
+                    )
             
             # Return after StatusScope is properly closed
             return result
@@ -458,13 +577,13 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             try:
                 from agent_system.llm.factory import resolve_llm_config_for_agent
 
-                llm_config = resolve_llm_config_for_agent(
+                resolved = resolve_llm_config_for_agent(
                     context.agent.system_config,
                     context.agent.agent_config
                 )
 
-                if 'context_window' in llm_config and llm_config['context_window']:
-                    return llm_config['context_window']
+                if resolved.spec.context_window:
+                    return resolved.spec.context_window
             except Exception as e:
                 logger.warning(f"[ContextSummarizer] Error resolving LLM config: {e}")
 
@@ -490,17 +609,20 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         """
         estimated_tokens = self._estimate_tokens(messages)
 
-        # Include tool definition tokens in estimation (they consume context window)
-        if context.agent and hasattr(context.agent, '_current_tools_schema'):
-            tools_schema = context.agent._current_tools_schema
-            if tools_schema and isinstance(tools_schema, list):
-                from agent_system.llm.token_utils import estimate_tools_token_count
-                tool_tokens = estimate_tools_token_count(tools_schema)
-                estimated_tokens += tool_tokens
-                logger.debug(
-                    f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
-                    f"({len(tools_schema)} tools)"
-                )
+        # Include tool definition tokens in estimation (they consume context window).
+        # Prefer the per-request context.tools_schema (session-correct); fall back
+        # to the agent's deprecated shared attr only if the context lacks it.
+        tools_schema = getattr(context, 'tools_schema', None)
+        if tools_schema is None and context.agent:
+            tools_schema = getattr(context.agent, '_current_tools_schema', None)
+        if tools_schema and isinstance(tools_schema, list):
+            from agent_system.llm.token_utils import estimate_tools_token_count
+            tool_tokens = estimate_tools_token_count(tools_schema)
+            estimated_tokens += tool_tokens
+            logger.debug(
+                f"[ContextSummarizer] Added {tool_tokens} tool definition tokens "
+                f"({len(tools_schema)} tools)"
+            )
 
         actual_tokens = 0
 
@@ -511,8 +633,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             # Access the plugin registry via agent's system_config
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
 
                     # Get context_usage_tracker plugin
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
@@ -569,8 +691,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         try:
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
                     if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
                         usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
@@ -846,40 +968,16 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         # Create LLM instance with configured profile
         try:
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            from agent_system.llm.clients import make_llm
-            from agent_system.config.models import AgentConfig
-            
-            # Create a temporary agent config with our llm_profile
-            temp_agent_config = AgentConfig(
-                default_llm_profile=self.llm_profile,
-                max_steps=1  # Dummy value, not used for LLM creation
-            )
-            
-            # Resolve LLM config using the profile
-            llm_kwargs = resolve_llm_config_for_agent(system_config, temp_agent_config)
-            
-            # Get SSL verify setting
-            ssl_verify = None
-            try:
-                ssl_verify = system_config.network.ssl_verify
-            except Exception:
-                pass
-            
-            # Create LLM instance
-            self._summarizer_llm = make_llm(
-                llm_kwargs["provider"],
-                llm_kwargs["model"],
-                llm_kwargs["api_key"],
-                llm_kwargs["base_url"],
-                llm_kwargs["context_window"],
-                llm_kwargs["ollama_mode"],
-                llm_kwargs["request_timeout"],
-                ssl_verify=ssl_verify,
-                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-                capabilities=llm_kwargs.get("capabilities"),
-            )
-            
+            # create_llm_from_profile forwards EVERY resolved field. Listing the
+            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
+            # safety_settings, service_tier and provider_routing - harmless for
+            # the profile configured today, silently wrong the moment this points
+            # at an OpenRouter profile. It also gets batch wrapping right, which
+            # the hand-rolled call never did.
+            from agent_system.llm.factory import create_llm_from_profile
+
+            self._summarizer_llm = create_llm_from_profile(system_config, self.llm_profile)
+
             logger.info(
                 f"[ContextSummarizer] Created LLM instance with profile '{self.llm_profile}' "
                 f"(model: {self._summarizer_llm.model_name if hasattr(self._summarizer_llm, 'model_name') else 'unknown'})"
@@ -918,7 +1016,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         
         if not summarizer_llm:
             logger.warning("[ContextSummarizer] No LLM available, skipping summarization")
-            return messages, {'summary_count': 0, 'reason': 'no_llm'}
+            return messages, {'summary_count': 0, 'reason': 'no_llm', 'llm_calls': 0}
 
         # Calculate effective chunk_size to respect max_chunks limit
         effective_chunk_size = self.chunk_size
@@ -951,7 +1049,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         # Check for cancellation before starting
         if cancellation_token and cancellation_token.is_cancelled:
             logger.info("[ContextSummarizer] Cancellation requested before starting")
-            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0}
+            return messages, {'summary_count': 0, 'cancelled': True, 'cancelled_at_chunk': 0, 'llm_calls': 0}
 
         # Send progress update
         await scope.progress(
@@ -994,9 +1092,11 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'success': True,
                 'result': chunk,
                 'is_summary': False,
-                'chunk_idx': chunk_idx
+                'chunk_idx': chunk_idx,
+                'llm_called': False
             }
-        
+
+        llm_called = False
         try:
             # Format messages for prompt
             formatted_msgs = self._format_messages_for_summary(chunk)
@@ -1006,6 +1106,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
 
             # Call LLM for summarization using chat() method with cancellation support
             from agent_system.llm.models import ChatMessage
+            llm_called = True
             summary_response = await summarizer_llm.chat(
                 messages=[ChatMessage(role='user', content=prompt, timestamp=datetime.now())],
                 cancellation_token=cancellation_token
@@ -1042,7 +1143,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'success': True,
                 'result': [summary_msg],
                 'is_summary': True,
-                'chunk_idx': chunk_idx
+                'chunk_idx': chunk_idx,
+                'llm_called': True
             }
 
         except asyncio.CancelledError:
@@ -1052,7 +1154,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'result': chunk,
                 'is_summary': False,
                 'chunk_idx': chunk_idx,
-                'error': 'cancelled'
+                'error': 'cancelled',
+                'llm_called': llm_called
             }
         except Exception as e:
             logger.error(f"[ContextSummarizer] Error summarizing chunk {chunk_num}: {e}", exc_info=True)
@@ -1062,7 +1165,8 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 'result': chunk,
                 'is_summary': False,
                 'chunk_idx': chunk_idx,
-                'error': str(e)
+                'error': str(e),
+                'llm_called': llm_called
             }
 
     async def _summarize_chunks_parallel(
@@ -1103,6 +1207,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
         summarized = []
         summary_count = 0
         failed_chunks = 0
+        llm_calls = 0
         cancelled = False
 
         for idx, result in enumerate(results):
@@ -1111,7 +1216,9 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                 logger.error(f"[ContextSummarizer] Chunk {idx + 1} raised exception: {result}")
                 summarized.extend(chunks[idx])  # Keep original
                 failed_chunks += 1
+                llm_calls += 1  # unknown whether the call went out; count it so the pause holds
             elif isinstance(result, dict):
+                llm_calls += result['llm_called']
                 if result.get('error') == 'cancelled':
                     cancelled = True
                 
@@ -1138,6 +1245,7 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
             'total_chunks': total_chunks,
             'successful_chunks': summary_count,
             'failed_chunks': failed_chunks,
+            'llm_calls': llm_calls,
             'parallel': True,
             'cancelled': cancelled
         }

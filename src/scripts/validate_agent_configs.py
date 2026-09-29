@@ -5,7 +5,7 @@ Validate agent YAML configuration files for syntax and schema errors.
 This script validates agent configuration files against:
 1. YAML syntax (proper formatting)
 2. Schema structure (plugins.servers hierarchy)
-3. Pydantic models (MCPConfig from agent_system.config.models)
+3. Pydantic models (ToolServerConfig from agent_system.config.models)
 
 Usage:
     python src/scripts/validate_agent_configs.py <yaml_file1> [yaml_file2] ...
@@ -15,13 +15,13 @@ Arguments:
 
 Examples:
     # Validate all agent configs (using shell glob)
-    python src/scripts/validate_agent_configs.py config/agents_writer/*.yaml
+    python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml
 
     # Validate specific files
-    python src/scripts/validate_agent_configs.py config/agents_writer/book_architect.yaml config/agents_writer/scene_writer.yaml
+    python src/scripts/validate_agent_configs.py src/plugins_writer/writer_core/agents/book_launcher.yaml
 
     # Use in CI/CD
-    python src/scripts/validate_agent_configs.py config/agents_writer/*.yaml || exit 1
+    python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml || exit 1
 """
 
 import sys
@@ -34,7 +34,7 @@ from pydantic import ValidationError
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_system.config.models import MCPConfig
+from agent_system.config.models import ToolServerConfig
 
 
 def validate_yaml_file(file_path: Path) -> Tuple[bool, str]:
@@ -69,7 +69,7 @@ def validate_yaml_file(file_path: Path) -> Tuple[bool, str]:
         # Step 3: Validate each server config against Pydantic model
         for server_name, server_config in servers.items():
             try:
-                MCPConfig(**server_config)
+                ToolServerConfig(**server_config)
             except ValidationError as e:
                 error_lines = []
                 for error in e.errors():
@@ -105,8 +105,8 @@ def main() -> int:
         print("\nUsage:")
         print("  validate-agents <yaml_file1> [yaml_file2] ...")
         print("\nExamples:")
-        print("  validate-agents config/agents_writer/*.yaml")
-        print("  validate-agents config/agents_writer/book_architect.yaml")
+        print("  validate-agents src/plugins_writer/*/agents/*.yaml")
+        print("  validate-agents src/plugins_writer/writer_core/agents/book_launcher.yaml")
         return 1
 
     # Get all YAML files from arguments

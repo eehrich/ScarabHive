@@ -24,6 +24,7 @@ tools:
               - server_status
               - queue
               - cancel
+              - upload_image
             description: >
               The operation to perform:
               - list: List available workflows (filterable by category)
@@ -35,6 +36,7 @@ tools:
               - server_status: Check ComfyUI server connectivity
               - queue: View pending and running jobs
               - cancel: Cancel a job by prompt_id
+              - upload_image: Upload a local image file to ComfyUI's input folder for use as reference in img2img/IPAdapter workflows. Returns filename to use as workflow parameter.
           
           workflow_id:
             type: string
@@ -44,12 +46,12 @@ tools:
               Use operation='list' to see available workflow IDs.
           
           parameters:
-            type: object
+            type: string
             description: >
-              Parameters to pass to the workflow.
-              Each workflow has different parameters.
-              Use operation='list' to see required parameters for each workflow.
-            additionalProperties: true
+              JSON-encoded parameters for the workflow (e.g.
+              '{"prompt":"a forest","negative_prompt":"blurry","width":1024,"height":1536,"seed":42}').
+              Each workflow has its own parameter names — call operation='list'
+              first if unsure which fields are required. Required for operation='execute'.
           
           prompt_id:
             type: string
@@ -99,6 +101,8 @@ tools:
             description: >
               For operation='load': Path to a specific file to load (absolute or relative to output directory).
               Use this to load a file you already know the path to.
+              For operation='upload_image': Path to the local image file to upload to ComfyUI's input
+              folder. Returns a filename usable as reference_image in img2img/IPAdapter workflows.
           
           filename:
             type: string
@@ -165,76 +169,32 @@ config:
         type: object
 
 
-# Web UI configuration for ComfyUI Monitor
+# Web UI
 web_ui:
-  # Button in plugin bar
-  button:
-    enabled: true
-    text: "ComfyUI"
-    icon: "🎨"
-  
-  # Dropdown menu integration
-  menu:
-    enabled: true
-    items:
-      - id: "comfyui_monitor"
-        menu_id: "user"
-        section: "Tools"
-        label: "ComfyUI Monitor"
-        action: "openPanel"
-        panel_id: "{{ name }}"
-        icon: "🎨"
-        requires_admin: false
-        order: 150
-        tooltip: "Monitor ComfyUI workflow jobs"
-
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    panel_id: "{{ name }}"
-    panel_group: "comfyui"
-    title: "ComfyUI Monitor"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    icon: "🎨"
-    position: "right"
-    width: "700px"
-    height: "550px"
-    description: "Monitor and manage ComfyUI workflow jobs"
+    title: "ComfyUI"
+    description: "Workflow jobs on the ComfyUI server"
+    icon: image
+    category: agents
+    keywords: [images, workflows, jobs]
+    window: {width: 760, height: 560}
 
-  # Access control
-  requires_auth: false
-  requires_role: null
-
-  # Web endpoints documentation
   endpoints:
     - path: "/"
       method: "GET"
-      handler: "monitor_panel"
+      handler: "render_panel"
       response_type: "html"
-      description: "ComfyUI job monitoring panel"
+      description: "The ComfyUI panel"
     - path: "/jobs"
       method: "GET"
       handler: "list_jobs"
       response_type: "json"
-      description: "List all jobs with optional filters"
-    - path: "/jobs/{prompt_id}"
-      method: "GET"
-      handler: "get_job_detail"
-      response_type: "json"
-      description: "Get details for a specific job"
+      description: "Each server's state, the jobs still to finish, the last ones finished and the counts by status"
     - path: "/jobs/{prompt_id}/cancel"
       method: "POST"
       handler: "cancel_job"
       response_type: "json"
-      description: "Cancel a running or queued job"
-    - path: "/workflows"
-      method: "GET"
-      handler: "list_workflows"
-      response_type: "json"
-      description: "List configured workflows"
-    - path: "/stats"
-      method: "GET"
-      handler: "get_stats"
-      response_type: "json"
-      description: "Get server and job statistics"
+      description: "Cancel a queued or running job on the server that runs it"

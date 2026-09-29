@@ -7,7 +7,7 @@
 ## Design Pattern
 
 Follows the same pattern as other schema-based components:
-- `SchemaBasedMCPServer` - For MCP servers
+- `SchemaBasedToolServer` - For tool servers
 - `SchemaBasedAgent` - For agents
 - `SchemaBasedPluginHook` - For hook plugins
 - **`SchemaBasedPluginWebInterface`** - For web-only and hook+web plugins
@@ -17,7 +17,7 @@ Follows the same pattern as other schema-based components:
 ```
 SchemaBasedMixin (schema_mixin.py)
     │
-    ├─> SchemaBasedMCPServer (mcp/schema_based.py)
+    ├─> SchemaBasedToolServer (tools/schema_based.py)
     ├─> SchemaBasedAgent (agents/schema_based.py)
     ├─> SchemaBasedPluginHook (hooks/schema_based.py)
     └─> SchemaBasedPluginWebInterface (plugins/web_base.py) ← NEW
@@ -27,15 +27,15 @@ SchemaBasedMixin (schema_mixin.py)
 
 ### Web-Only Plugins
 
-For plugins that **only** provide web UI (no MCP tools, no hooks):
+For plugins that **only** provide web UI (no tools, no hooks):
 
 ```python
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
 class MyWebPlugin(SchemaBasedPluginWebInterface):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         # Initialize base class (loads schema automatically)
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Plugin-specific initialization
         self.web_endpoints = MyWebEndpoints(...)
@@ -43,7 +43,7 @@ class MyWebPlugin(SchemaBasedPluginWebInterface):
     # get_schema_data() inherited - no need to implement!
     
     def get_tools(self):
-        """No MCP tools - web UI only"""
+        """No tools - web UI only"""
         return []
     
     def get_web_router(self):
@@ -65,9 +65,9 @@ class MyHooks(SchemaBasedPluginHook):
         pass
 
 class MyHybridPlugin(SchemaBasedPluginWebInterface):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         # Initialize base class (loads schema automatically)
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         plugin_dir = Path(__file__).parent
         
@@ -130,10 +130,10 @@ Located in: `src/agent_system/plugins/web_base.py`
 class SchemaBasedPluginWebInterface(SchemaBasedMixin):
     """Base class for plugins with web interfaces."""
     
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
         
         # Initialize schema mixin
         self._init_schema_mixin()
@@ -157,7 +157,7 @@ Uses `SchemaBasedMixin._load_schema()` which:
 The plugin registry calls `get_schema_data()` when registering plugins:
 
 ```python
-# In PluginMCPRegistry.register_existing_plugin_instance()
+# In PluginToolRegistry.register_existing_plugin_instance()
 if hasattr(plugin_instance, 'get_schema_data'):
     schema = plugin_instance.get_schema_data()
     # Use schema for web UI configuration
@@ -165,27 +165,27 @@ if hasattr(plugin_instance, 'get_schema_data'):
 
 ## Plugin Types Comparison
 
-| Plugin Type | MCP Tools | Hooks | Web UI | Base Class |
+| Plugin Type | Tools | Hooks | Web UI | Base Class |
 |-------------|-----------|-------|--------|------------|
-| **MCP+Web** | ✅ Delegate to mcp_server | ❌ | ✅ | Hybrid (custom) |
+| **MCP+Web** | ✅ Delegate to tool_server | ❌ | ✅ | Hybrid (custom) |
 | **Web-Only** | ❌ | ❌ | ✅ | SchemaBasedPluginWebInterface |
 | **Hook+Web** | ❌ | ✅ | ✅ | SchemaBasedPluginWebInterface |
 
 ### MCP+Web Plugins (ssh_control, log_viewer)
 
-**Pattern**: Delegate `get_schema_data()` to MCP server component
+**Pattern**: Delegate `get_schema_data()` to tool server component
 
 ```python
 class SSHControlHybridPlugin:
-    def __init__(self, name, system_config, mcp_config):
-        self.mcp_server = SSHControlServer(...)  # SchemaBasedMCPServer
+    def __init__(self, name, system_config, server_config):
+        self.tool_server = SSHControlServer(...)  # SchemaBasedToolServer
     
     def get_schema_data(self):
-        """Delegate to MCP server"""
-        return self.mcp_server.get_schema_data()
+        """Delegate to tool server"""
+        return self.tool_server.get_schema_data()
 ```
 
-**Reason**: MCP server component already has schema loaded via `SchemaBasedMCPServer`, so just delegate to it.
+**Reason**: tool server component already has schema loaded via `SchemaBasedToolServer`, so just delegate to it.
 
 ### Web-Only Plugins (user_management)
 
@@ -193,13 +193,13 @@ class SSHControlHybridPlugin:
 
 ```python
 class UserManagementPlugin(SchemaBasedPluginWebInterface):
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
     
     # get_schema_data() inherited
 ```
 
-**Reason**: No MCP server component, need schema for web_ui configuration only.
+**Reason**: No tool server component, need schema for web_ui configuration only.
 
 ### Hook+Web Plugins (message_debugger, context_summarizer, context_usage_tracker)
 
@@ -207,8 +207,8 @@ class UserManagementPlugin(SchemaBasedPluginWebInterface):
 
 ```python
 class MessageDebuggerHybridPlugin(SchemaBasedPluginWebInterface):
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
         self.hooks_plugin = MessageDebuggerHooks(...)
     
     # get_schema_data() inherited
@@ -225,20 +225,20 @@ name: my_plugin
 description: My plugin description
 
 web_ui:
-  button:
-    enabled: true  # REQUIRED: Defaults to false! Button is hidden unless explicitly enabled
-    text: "My Plugin"
-    icon: "🔧"
-  
   panel:
-    title: "My Plugin Panel"
-    endpoint: "/plugins/my_plugin/panel"
-    type: "iframe"
-    width: "800px"
-    height: "600px"
+    endpoint: "/plugins/{{ name }}/"
+    title: "My Plugin"
+    icon: puzzle
+    category: agents
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
 
 tools:
-  # MCP tools (optional)
+  # tools (optional)
   
 hooks:
   # Hook definitions (optional)
@@ -247,7 +247,7 @@ config:
   # Plugin configuration (optional)
 ```
 
-**Important**: The `web_ui.button.enabled` field defaults to `false`. Your plugin button will **not appear** in the UI unless you explicitly set `enabled: true`.
+**Important**: `web_ui` has exactly two keys, `panel` and `endpoints`; any other key is an error. The panel appears in the launcher and the command palette when the `panel` block is valid and the plugin is registered as a web plugin. The catalogue (`GET /api/ui/catalog`) reads the block from the schema the registry got from `get_schema_data()`, which this base class provides. Field reference: [Plugin Authoring Guide](plugin_authoring.md#web-ui-fields-reference).
 
 ## Migration Guide
 
@@ -256,10 +256,10 @@ config:
 **Before**:
 ```python
 class MyPlugin:
-    def __init__(self, name, system_config, mcp_config):
+    def __init__(self, name, system_config, server_config):
         self.name = name
         self.system_config = system_config
-        self.mcp_config = mcp_config
+        self.server_config = server_config
     
     def get_schema_data(self):
         from agent_system.plugins.schema_loader import load_schema_from_dir
@@ -273,8 +273,8 @@ class MyPlugin:
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
 class MyPlugin(SchemaBasedPluginWebInterface):
-    def __init__(self, name, system_config, mcp_config):
-        super().__init__(name, system_config, mcp_config)
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
     
     # get_schema_data() inherited - remove manual implementation!
 ```
@@ -293,8 +293,8 @@ class MyPlugin(SchemaBasedPluginWebInterface):
 
 3. Call `super().__init__()` in constructor:
    ```python
-   def __init__(self, name, system_config, mcp_config):
-       super().__init__(name, system_config, mcp_config)
+   def __init__(self, name, system_config, server_config):
+       super().__init__(name, system_config, server_config)
    ```
 
 4. Remove manual `get_schema_data()` implementation:
@@ -316,31 +316,30 @@ class MyPlugin(SchemaBasedPluginWebInterface):
 
 All plugins using `SchemaBasedPluginWebInterface` should:
 
-1. **Appear in `/api/plugins/ui`** endpoint
-2. **Have correct `web_ui` configuration** from schema.yaml
-3. **Load panels correctly** when button clicked
+1. **Pass the validator**: `python src/scripts/validate_plugin.py src/plugins/my_plugin` (the `web_ui.panel` block goes through the catalogue's parser)
+2. **Appear in `GET /api/ui/catalog`** with the values from `web_ui.panel`
+3. **Load the panel page** at its `endpoint`
 4. **Pass existing tests** without modifications
 
 Example test:
 ```python
-async def test_plugin_appears_in_ui():
-    response = await client.get("/api/plugins/ui")
-    plugins = response.json()
-    
-    # Find our plugin
-    plugin = next(p for p in plugins if p["id"] == "my_plugin")
-    
-    assert plugin["enabled"] is True
-    assert plugin["button_text"] == "My Plugin"
-    assert plugin["panel_endpoint"] == "/plugins/my_plugin/panel"
+async def test_plugin_appears_in_catalog():
+    response = await client.get("/api/ui/catalog")
+    panels = response.json()["panels"]
+
+    # The panel id is the plugin instance name
+    panel = next(p for p in panels if p["id"] == "my_plugin")
+
+    assert panel["title"] == "My Plugin"
+    assert panel["url"] == "/plugins/my_plugin/"
 ```
 
 ## Related Components
 
-- **SchemaBasedMixin** (`agent_system/mcp/schema_mixin.py`) - Core schema loading logic
-- **SchemaBasedMCPServer** (`agent_system/mcp/schema_based.py`) - For MCP servers
+- **SchemaBasedMixin** (`agent_system/tools/schema_mixin.py`) - Core schema loading logic
+- **SchemaBasedToolServer** (`agent_system/tools/schema_based.py`) - For tool servers
 - **SchemaBasedPluginHook** (`agent_system/hooks/schema_based.py`) - For hook plugins
-- **PluginMCPRegistry** (`agent_system/plugins/mcp_adapter.py`) - Uses `get_schema_data()`
+- **PluginToolRegistry** (`agent_system/plugins/tool_adapter.py`) - Uses `get_schema_data()`
 - **load_schema_from_dir** (`agent_system/plugins/schema_loader.py`) - Schema loading utility
 
 ## See Also

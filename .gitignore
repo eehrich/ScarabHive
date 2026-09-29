@@ -1,4 +1,49 @@
 *.log
+# Operator-Secrets des Servers (Tokens, Deploy-Keys) + die Backups,
+# die das writer-admin-Panel bei jeder Aenderung anlegt. Kommt nie
+# ins Repo. `envrc.example` (ohne Punkt) bleibt getrackt.
+.envrc
+.envrc.*
+# config/secrets.env ist BEWUSST NICHT ignoriert. Die Keys liegen ohnehin in
+# der Historie, und gebuendelt in EINER Datei sind sie ein Ziel statt 73
+# Fundstellen in drei YAMLs — beim Rotieren wie beim spaeteren Consolidate.
+# Vor einer Veroeffentlichung: Keys rotieren, History bereinigen, DANN hier
+# `secrets.env` eintragen (die .example bleibt in jedem Fall getrackt).
+# Was nur auf EINER Maschine gilt (Netz, Log-Aufbewahrung):
+# letztes Include in config/config.yaml, gewinnt also ueber alles.
+config/local.yaml
+# Sicherheitsnetz fuer Zugangsdaten, die nie ins Repo gehoeren -- bewusst
+# konkrete Namen: ein Muster wie `credentials.*` versteckte auch ein Modul
+# credentials.py still. Die .example-Vorlagen bleiben getrackt.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+credentials.json
+client_secret*.json
+service-account*.json
+# Lokale, private Konfiguration (Release-Plan #021, #030)
+config.local.yaml
+*.local.yaml
+config/agents_priv/
+# Weitere Backup- und SQLite-Reste neben *.bak/*.old/*.db
+*.orig
+*.backup
+*.bak.*
+*~
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 *.db
 *.7z
 *.zip
@@ -9,13 +54,14 @@
 *.old
 *.swp
 *.swo
-*.wav
+#*.wav
 *.flac
 *.mp3
 *.m4a
 *.ogg
 *.aac
 *.pyc
+*.lock
 
 *_bak*
 *.egg-info/
@@ -24,6 +70,7 @@
 .tmp/
 .journal
 .coverage
+htmlcov/
 .cache/
 .venv/
 .*_cache/
@@ -39,19 +86,14 @@ nul
 
 tmp_backlog.md
 
-data/users.db
-data/cache/
-data/sessions/
-data/todos/
-data/memories/
-data/workspace/
-data/writer/
-data/context_engineer/
-data/batch_jobs/
-data/batch/
-data/comfyui/
-data/audio_ops/
-data/context_usage_tracker.json
-data/writer_books.db
+# v5b/v4 batch test outputs (per-run logs + scene-draft JSON dumps)
+src/plugins_writer/**/batch_logs/
+
+# ignore all data files -- the top-level folder only. Unanchored, `data/`
+# matched at any depth and hid new files in package data folders
+# (writer_core/data/, pinescript_validator/data/).
+/data/
 tests/data/
 
+# #673 Blind-Reader Test-Driver Scratch
+src/plugins_writer/writer_pipeline_v4/test_suite/_blind_task.md

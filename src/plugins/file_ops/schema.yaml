@@ -30,6 +30,7 @@ tools:
       description: |
         File and directory management operations: create, delete, move, rename.
         All paths must be within allowed directories. Parent directories are auto-created for create operation.
+        To replace a file completely, use create with overwrite: true -- never delete and create again.
       parameters:
         type: object
         properties:
@@ -38,7 +39,7 @@ tools:
             enum: ["create", "delete", "move", "rename"]
             description: |
               Operation to perform:
-              - create: Create new file with content (fails if exists)
+              - create: Create file with content. Fails if it exists, unless overwrite is true -- that replaces the whole content in one call, no delete first.
               - delete: Delete file or empty directory
               - move: Move file/directory to new location
               - rename: Rename file/directory (same directory)
@@ -54,6 +55,10 @@ tools:
           new_name:
             type: string
             description: "New name without path (required for rename operation)"
+          overwrite:
+            type: boolean
+            default: false
+            description: "Replace the file if it exists, content and all (for create operation). Editing a part of a file is what replace_string_in_file is for."
           recursive:
             type: boolean
             default: false
@@ -87,7 +92,11 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list_directory"
-      description: "List directory contents with optional filtering and recursion."
+      description: |
+        List directory contents with optional filtering and recursion.
+        Capped at max_results entries; a cut-off listing says so (truncated).
+        A recursive listing skips .gitignored and excluded directories and
+        reports that in skipped — use search_files to look for a file by name.
       parameters:
         type: object
         properties:
@@ -100,11 +109,21 @@ tools:
             description: "Recursively list subdirectories"
           pattern:
             type: string
-            description: "Glob pattern to filter files (e.g., '*.py')"
+            description: "Glob pattern to filter entries (e.g., '*.py')"
           include_hidden:
             type: boolean
             default: false
             description: "Include hidden files (starting with .)"
+          max_results:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+            description: "Maximum number of entries (files + directories) to return"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also list ignored, excluded and hidden entries"
         required: ["dir_path"]
         additionalProperties: false
 
@@ -112,8 +131,14 @@ tools:
     function:
       name: "{{ name }}_search_files"
       description: |
-        Search for files by name pattern using glob syntax. Fast indexed search.
+        Search for files by name pattern using glob syntax.
         Examples: "*.py", "**/*.test.ts", "src/**/models/*.py"
+
+        Files hidden by .gitignore, by the configured exclude patterns and
+        dotfiles are skipped by default — that is what keeps the search fast on a large
+        tree. The answer always reports which filters were active, so an empty
+        result can be told apart from "it is there, behind a filter". Set
+        include_ignored when you need to be sure.
       parameters:
         type: object
         properties:
@@ -126,6 +151,10 @@ tools:
             maximum: 500
             default: 50
             description: "Maximum number of files to return"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also search ignored, excluded and hidden files. A full walk: minutes on a large tree, so keep the pattern narrow"
         required: ["pattern"]
         additionalProperties: false
 
@@ -134,7 +163,12 @@ tools:
       name: "{{ name }}_grep_search"
       description: |
         Search for text patterns across files. Supports literal strings and regex.
-        Similar to GitHub Copilot's grep_search tool - fast indexed search with context.
+        Returns matching lines with surrounding context.
+
+        Files hidden by .gitignore, by the configured exclude patterns and
+        dotfiles are skipped by default. The answer reports which filters were active, so
+        "no matches" does not have to mean "not in the codebase" — set
+        include_ignored to search those as well.
       parameters:
         type: object
         properties:
@@ -164,6 +198,10 @@ tools:
             maximum: 10
             default: 2
             description: "Number of context lines before/after match"
+          include_ignored:
+            type: boolean
+            default: false
+            description: "Also search ignored, excluded and hidden files. A full walk: minutes on a large tree, so keep the pattern narrow"
         required: ["query"]
         additionalProperties: false
 
@@ -171,15 +209,18 @@ tools:
     function:
       name: "{{ name }}_semantic_search"
       description: |
-        Semantic/AI-powered code search using embeddings. Finds files by meaning, not just keywords.
-        Uses ChromaDB for intelligent similarity search.
+        Find code by meaning instead of by wording. Each hit is a SYMBOL — a
+        function, a class, a heading section — with its file, its line and its
+        signature, so you can read straight to it.
 
         Examples:
-          - "find authentication logic" → matches verify_credentials(), login(), auth functions
+          - "how a run is cancelled" → _handle_cancel() in the sub-agent manager
           - "database connection code" → finds DB setup, connection pools, ORM configs
           - "error handling patterns" → locates try/except blocks, error classes
 
-        Better than grep for conceptual searches where exact keywords vary.
+        Use it when you do NOT know the word the code uses; grep_search is
+        better whenever you do. Off unless configured, and while the index is
+        still building the answer says so instead of returning nothing.
       parameters:
         type: object
         properties:
@@ -191,7 +232,7 @@ tools:
             minimum: 1
             maximum: 50
             default: 10
-            description: "Maximum number of files to return"
+            description: "Maximum number of symbols to return"
           filter_pattern:
             type: string
             description: "Optional glob pattern to filter results by file type (e.g., '*.py')"
@@ -226,13 +267,31 @@ config:
     maximum: 10000
   
   search:
+    # DOCUMENTATION, not defaults: nothing reads this block for a tool
+    # server (only hook plugins read `config:`), so an instance that leaves
+    # a key out gets the fallback in search.py -- which is what the values
+    # below repeat. These govern the SEMANTIC index only. It is built in the BACKGROUND,
+    # started by the first semantic_search call; that call itself never waits
+    # for it. search_files and grep_search walk the disk and need no index at
+    # all — that wait was the reason a glob over a large tree did not return
+    # within 150 seconds.
     enable_indexing: true
     index_on_startup: true
-    # Requires ChromaDB Python package for vector embeddings and similarity search
-    enable_semantic_search: true
-    auto_reindex_interval: 3600
-    # Exclude patterns optimize indexing performance by skipping large binary/generated files
-    # Also reduces memory usage and search noise
+    # The vector collection. Defaults to file_ops_<instance>: two instances are
+    # two trees, and one shared name let the second one's rebuild clear the
+    # first one's index. Set the same name on two instances that share a tree,
+    # and switch enable_indexing off on all but one of them.
+    # collection_name: file_ops_coder_fs_ro
+    # Requires ChromaDB Python package for vector embeddings and similarity search.
+    # Off unless configured — the server defaults it to false.
+    enable_semantic_search: false
+    auto_reindex_interval: 300
+
+    # Search dotfiles and dot-directories as well.
+    search_hidden: false
+
+    # Skipped by BOTH the index and the text search, and reported as skipped
+    # rather than silently dropped. Matched relative to each allowed directory.
     exclude_patterns:
       - '**/.git/**'
       - '**/__pycache__/**'

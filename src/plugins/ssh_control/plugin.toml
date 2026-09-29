@@ -1,0 +1,17 @@
+# ssh_control plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "ssh_control"
+version = "1.0.0"
+description = "SSH-based control for multiple remote Linux machines with command execution, file transfers, and system monitoring"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "infrastructure"
+tags = ["ssh", "remote", "linux", "automation", "devops"]
+requires = { python = ">=3.11", agent_system = ">=0.7.0" }
+
+# Python package requirements owned by this plugin.
+dependencies = ["asyncssh>=2.13.0"]

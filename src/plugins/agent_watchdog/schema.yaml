@@ -1,0 +1,97 @@
+# Hook definitions for the agent_watchdog plugin.
+# Convention: hook name must match method name exactly.
+
+hooks:
+  - name: observe_step
+    type: post_llm_call
+    # Off everywhere; an agent opts in through
+    # hooks.overrides: agent_watchdog.observe_step: {enabled: true}
+    enabled: false
+    # The hook only snapshots the excerpt; the judge runs in the background.
+    timeout: 5.0
+    description: >
+      Every n steps, a separate model judges from a bounded excerpt whether the
+      run is still making progress. Stage 1: the verdict is logged and shown as
+      a status line, never acted on.
+    category: "agent_watchdog"
+    order:
+      before: ["message_debugging"]
+
+  - name: remember_task
+    type: pre_llm_call
+    # Needed by observe_reasoning: inside the stream the context has no messages.
+    enabled: false
+    timeout: 5.0
+    description: >
+      Builds the excerpt of the call about to stream, so a check during the
+      call sees the assignment. Keeps only the excerpt, for the last runs.
+    category: "agent_watchdog"
+
+  - name: observe_reasoning
+    type: llm_progress
+    # Off everywhere; an agent opts in together with remember_task.
+    enabled: false
+    timeout: 5.0
+    description: >
+      Every n characters of thinking inside one streaming call, the judge
+      checks whether the call still decides things. Same log, same stage 1.
+      Blind on clients that stream no thinking deltas (Gemini, batch).
+    category: "agent_watchdog"
+
+# Defaults — overridable in plugins.yaml (config:) and per agent in
+# hooks.overrides (every key except llm_profile and log_path).
+config:
+  llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile of the judge"
+
+  judge_prompt:
+    type: string
+    default: ""
+    description: "Prompt file of the judge, relative to the project root; empty = prompts/judge.md"
+
+  first_check_step:
+    type: integer
+    default: 10
+    description: "Step of the first check"
+
+  every_n_steps:
+    type: integer
+    default: 10
+    description: "Steps between checks after the first one"
+
+  every_n_reasoning_chars:
+    type: integer
+    default: 20000
+    description: "observe_reasoning: characters of thinking in one call between checks"
+
+  task_chars:
+    type: integer
+    default: 4000
+    description: "Characters of user messages the judge sees, newest first"
+
+  spec_chars:
+    type: integer
+    default: 3000
+    description: "Characters from the end of the system prompt (the deliverable)"
+
+  reasoning_chars:
+    type: integer
+    default: 8000
+    description: "Characters of the most recent thinking"
+
+  max_tool_calls:
+    type: integer
+    default: 20
+    description: "Most recent tool calls, as status only"
+
+  judge_timeout_seconds:
+    type: integer
+    default: 120
+    description: "A judge slower than this counts as continue"
+
+  log_path:
+    type: string
+    default: "data/agent_watchdog/verdicts.jsonl"
+    description: "JSONL log of every check, with the judge's usage; relative to the project root"

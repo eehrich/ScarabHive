@@ -16,7 +16,6 @@ Usage:
         create_injection_message_content,
         create_multimodal_injection,
         create_anthropic_multimodal_injection,
-        should_inject_multimodal,
         check_vision_support
     )
     
@@ -34,8 +33,11 @@ import base64
 import io
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+# A stored data/... path (session history, a media store's index) lands in
+# the data directory, wherever it is configured.
+from agent_system.paths import resolve_data_path
 
 if TYPE_CHECKING:
     from ..llm.models import MultimodalToolContent
@@ -123,6 +125,88 @@ class MultimodalError:
     error: str  # Human-readable error message
 
 
+def extract_inline_media(item: Any) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """Pull the payload back out of a message content item — the inverse of the
+    injection builders in this module.
+
+    Media sits in a conversation in one of five shapes, all written by the
+    functions below (or by multimodal_processor.encode_*_to_data_url):
+
+    1. ``{"source": {"data": <base64 str|bytes>, "media_type": ...}}``  Anthropic
+    2. ``{"image_url": {"url": "data:<mime>;base64,..."}}``             OpenAI
+    3. ``{"inline_data": {"data": ..., "mime_type": ...}}``             Gemini
+    4. ``{"audio_url": "data:<mime>;base64,..."}``                      OpenAI audio
+    5. ``{"video_url": "data:<mime>;base64,..."}``
+
+    Items that carry only a file path (MultimodalToolContent) or a remote URL
+    have no inline payload and yield ``(None, mime, name)``.
+
+    Args:
+        item: Content item — dict or pydantic model (ImageContent, AudioContent, …).
+
+    Returns:
+        (raw bytes or None, mime type or None, original filename or None)
+
+    Raises:
+        ValueError: a base64 payload is present but cannot be decoded.
+    """
+    if isinstance(item, dict):
+        d: Any = item
+    elif hasattr(item, "model_dump"):
+        d = item.model_dump()
+    else:
+        return None, None, None
+    if not isinstance(d, dict):
+        return None, None, None
+
+    name = d.get("name")
+    mime = d.get("media_type") or d.get("mime_type")
+
+    def _from_data_url(url: Any) -> Tuple[Optional[str], Optional[str]]:
+        if isinstance(url, str) and ";base64," in url:
+            head, payload = url.split(";base64,", 1)
+            return payload, (head[5:] if head.startswith("data:") else None)
+        return None, None
+
+    b64: Optional[str] = None
+
+    for container, mime_key in ((d.get("source"), "media_type"),
+                                (d.get("inline_data"), "mime_type")):
+        if isinstance(container, dict) and container.get("data"):
+            data = container["data"]
+            mime = container.get(mime_key) or mime
+            if isinstance(data, bytes):
+                return data, mime, name
+            b64 = data
+            break
+
+    if b64 is None:
+        image_url = d.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        for candidate in (url, d.get("audio_url"), d.get("video_url")):
+            payload, url_mime = _from_data_url(candidate)
+            if payload:
+                b64, mime = payload, (url_mime or mime)
+                break
+
+    if b64 is None:
+        # Last resort: payload directly on the item. Not written by any builder
+        # in this module, but older conversation entries and hand-built items
+        # carry it, and dropping the shape here silently disables both
+        # deduplication and pre-compaction storage for them.
+        loose = d.get("data")
+        if isinstance(loose, bytes):
+            return loose, mime, name
+        if isinstance(loose, str) and loose:
+            b64 = loose
+
+    if b64 is None:
+        return None, mime, name
+    # binascii.Error is a ValueError subclass — a corrupt payload surfaces
+    # instead of silently becoming "no media here".
+    return base64.b64decode(b64), mime, name
+
+
 def encode_multimodal_item(
     item: "MultimodalToolContent | Dict[str, Any]",
     max_size_mb: Optional[float] = None
@@ -138,12 +222,12 @@ def encode_multimodal_item(
     """
     # Handle both Pydantic model and dict
     if hasattr(item, "path"):
-        path = Path(item.path)
+        path = resolve_data_path(item.path)
         content_type = item.type
         mime_type = item.mime_type
         description = getattr(item, "description", None)
     else:
-        path = Path(item.get("path", ""))
+        path = resolve_data_path(item.get("path", ""))
         content_type = item.get("type", "image")
         mime_type = item.get("mime_type", "application/octet-stream")
         description = item.get("description")
@@ -197,7 +281,7 @@ def encode_multimodal_item(
 
 
 def create_injection_message_content(
-    tool_name: str,
+    tool_name: Optional[str],
     tool_call_id: Optional[str],
     encoded_items: List[EncodedMultimodalContent],
     supports_audio: bool = False
@@ -217,11 +301,18 @@ def create_injection_message_content(
     Returns:
         List of content items for ChatMessage.content
     """
-    # Build prefix text
-    prefix = f"📎 [TOOL OUTPUT: {tool_name}"
-    if tool_call_id:
-        prefix += f", call_id={tool_call_id}"
-    prefix += "]"
+    # Build prefix text. tool_name is None when the caller already printed
+    # it in a preceding note block -- interpolating None showed the model a
+    # literal "TOOL OUTPUT: None".
+    if tool_name:
+        prefix = f"📎 [TOOL OUTPUT: {tool_name}"
+        if tool_call_id:
+            prefix += f", call_id={tool_call_id}"
+        prefix += "]"
+    elif tool_call_id:
+        prefix = f"📎 [TOOL OUTPUT, call_id={tool_call_id}]"
+    else:
+        prefix = "📎 [TOOL OUTPUT]"
     
     # Add descriptions
     descriptions = [e.description for e in encoded_items if e.description]
@@ -313,18 +404,12 @@ def _get_audio_format(mime_type: str) -> str:
     return mime_to_format.get(mime_type.lower(), "wav")
 
 
-def should_inject_multimodal(provider: str) -> bool:
-    """Check if a provider needs user message injection for multimodal tool content.
-    
-    Args:
-        provider: LLM provider name (e.g., "openai", "anthropic", "gemini")
-    
-    Returns:
-        True if provider needs injection, False if native support
-    """
-    # Gemini supports native multimodal in tool responses
-    native_providers = {"gemini", "google"}
-    return provider.lower() not in native_providers
+# `should_inject_multimodal(provider)` lived here and hardcoded
+# `native_providers = {"gemini", "google"}` — provider dispatch in core code,
+# and it had ZERO production callers (only its own tests): every client
+# already decides for itself, by calling the injection helper that fits its
+# wire format. Removed 2026-08-26 rather than kept as a name for a later
+# caller to trust; the list was already stale (`gemini_sdk` was missing).
 
 
 def create_multimodal_injection(
@@ -367,7 +452,7 @@ def create_multimodal_injection(
         desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
         
-        if path and not Path(path).exists():
+        if path and not resolve_data_path(path).exists():
             # File doesn't exist - this is an error!
             error_items.append({
                 'type': item_type,
@@ -412,7 +497,7 @@ def create_multimodal_injection(
         for item in multimodal_content:
             path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
             
-            if path and not Path(path).exists():
+            if path and not resolve_data_path(path).exists():
                 # File doesn't exist - add error note
                 item_type = item.get('type') if isinstance(item, dict) else getattr(item, 'type', 'unknown')
                 text_notes.append(f"⚠️ {item_type} file not found: {path}")

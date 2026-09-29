@@ -1,0 +1,20 @@
+# otel plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; the pip requirements are
+# aggregated into requirements/all.txt by scripts/aggregate_plugin_deps.py.
+# The OTLP/HTTP exporter (opentelemetry-exporter-otlp-proto-http) is optional:
+# only `protocol: http/protobuf` needs it, and the plugin says so when missing.
+[plugin]
+name = "otel"
+version = "0.1.0"
+description = "OpenTelemetry traces (and optional GenAI metrics) for agent runs, LLM calls and tool calls, from hooks. Off by default."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+category = "monitoring"
+tags = ["hooks", "telemetry", "opentelemetry", "tracing", "monitoring"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = [
+    "opentelemetry-api>=1.30",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.30",
+]

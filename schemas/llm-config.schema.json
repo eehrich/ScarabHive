@@ -1,191 +1,1093 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/yourusername/AgentSystem/schemas/llm-config.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LLM Configuration Schema",
-  "description": "JSON Schema for AgentSystem LLM configuration (config/llm.yaml)",
+  "description": "JSON Schema for AgentSystem LLM configuration (config/llm.yaml). GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
   "type": "object",
-  "required": ["llm_system"],
+  "required": [
+    "llm_system"
+  ],
+  "additionalProperties": false,
   "properties": {
     "llm_system": {
-      "type": "object",
-      "description": "LLM system configuration with models and timeouts",
+      "description": "Complete LLM system configuration",
       "properties": {
         "httpx_timeouts": {
-          "type": "object",
-          "description": "Default HTTPX timeout configuration for all models",
-          "properties": {
-            "connect": {
-              "type": "number",
-              "description": "Connection establishment timeout (seconds)",
-              "minimum": 0,
-              "default": 10.0
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HTTPXTimeoutConfig"
             },
-            "read": {
-              "type": "number",
-              "description": "Read timeout - waiting for response data (seconds)",
-              "minimum": 0,
-              "default": 180.0
-            },
-            "write": {
-              "type": "number",
-              "description": "Write timeout - sending request data (seconds)",
-              "minimum": 0,
-              "default": 10.0
-            },
-            "pool": {
-              "type": "number",
-              "description": "Pool timeout - getting connection from pool (seconds)",
-              "minimum": 0,
-              "default": 5.0
+            {
+              "type": "null"
             }
-          }
+          ],
+          "default": null
+        },
+        "openrouter_routing": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Openrouter Routing"
+        },
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchSystemConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "models": {
-          "type": "object",
-          "description": "LLM model definitions",
-          "patternProperties": {
-            "^[a-zA-Z0-9_-]+$": {
-              "type": "object",
-              "required": ["provider", "model"],
-              "properties": {
-                "provider": {
-                  "type": "string",
-                  "description": "LLM provider name",
-                  "enum": ["openai", "openai_httpx", "anthropic", "deepseek", "custom"]
-                },
-                "model": {
-                  "type": "string",
-                  "description": "Model identifier (e.g., gpt-4, claude-3-opus)"
-                },
-                "openai_api_key": {
-                  "type": "string",
-                  "description": "OpenAI API key (can use env var)"
-                },
-                "anthropic_api_key": {
-                  "type": "string",
-                  "description": "Anthropic API key (can use env var)"
-                },
-                "deepseek_api_key": {
-                  "type": "string",
-                  "description": "DeepSeek API key (can use env var)"
-                },
-                "context_window": {
-                  "type": "integer",
-                  "description": "Maximum context window size in tokens",
-                  "minimum": 1,
-                  "maximum": 2000000
-                },
-                "request_timeout": {
-                  "type": "number",
-                  "description": "Request timeout in seconds",
-                  "minimum": 0
-                },
-                "httpx_timeouts": {
-                  "type": "object",
-                  "description": "Per-model HTTPX timeout overrides",
-                  "properties": {
-                    "connect": {
-                      "type": "number",
-                      "minimum": 0
-                    },
-                    "read": {
-                      "type": "number",
-                      "minimum": 0
-                    },
-                    "write": {
-                      "type": "number",
-                      "minimum": 0
-                    },
-                    "pool": {
-                      "type": "number",
-                      "minimum": 0
-                    }
-                  }
-                },
-                "capabilities": {
-                  "type": "object",
-                  "description": "Model capabilities",
-                  "properties": {
-                    "tools": {
-                      "type": "boolean",
-                      "description": "Supports tool/function calling"
-                    },
-                    "function_calling": {
-                      "type": "boolean",
-                      "description": "Supports function calling"
-                    },
-                    "image_input": {
-                      "type": "boolean",
-                      "description": "Supports image input (vision)"
-                    },
-                    "audio_input": {
-                      "type": "boolean",
-                      "description": "Supports audio input"
-                    },
-                    "video_input": {
-                      "type": "boolean",
-                      "description": "Supports video input"
-                    },
-                    "streaming": {
-                      "type": "boolean",
-                      "description": "Supports streaming responses"
-                    },
-                    "json_mode": {
-                      "type": "boolean",
-                      "description": "Supports structured JSON output"
-                    },
-                    "max_image_size": {
-                      "type": "integer",
-                      "description": "Maximum image size in bytes",
-                      "minimum": 0
-                    },
-                    "supported_image_formats": {
-                      "type": "array",
-                      "description": "Supported image MIME types or formats",
-                      "items": {
-                        "type": "string",
-                        "enum": ["jpeg", "jpg", "png", "gif", "webp", "bmp", "svg"]
-                      }
-                    },
-                    "image_detail_control": {
-                      "type": "boolean",
-                      "description": "Supports image detail level control (low/high/auto)"
-                    }
-                  }
-                }
-              }
+          "additionalProperties": {
+            "$ref": "#/$defs/LLMModelConfig"
+          },
+          "default": {},
+          "title": "Models",
+          "type": "object"
+        },
+        "profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LLMProfile"
+          },
+          "default": {},
+          "title": "Profiles",
+          "type": "object"
+        },
+        "default_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
             }
-          }
+          ],
+          "default": "normal",
+          "title": "Default Profile"
+        },
+        "tts_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TTSModelConfig"
+          },
+          "default": {},
+          "title": "Tts Models",
+          "type": "object"
+        },
+        "tts_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TTSProfile"
+          },
+          "default": {},
+          "title": "Tts Profiles",
+          "type": "object"
+        },
+        "decision_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionModelConfig"
+          },
+          "default": {},
+          "title": "Decision Models",
+          "type": "object"
+        },
+        "decision_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionProfile"
+          },
+          "default": {},
+          "title": "Decision Profiles",
+          "type": "object"
+        },
+        "default_decision_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Decision Profile"
         }
-      }
+      },
+      "title": "LLMSystemConfig",
+      "type": "object",
+      "additionalProperties": false
     }
   },
-  "examples": [
-    {
-      "llm_system": {
-        "httpx_timeouts": {
-          "connect": 10.0,
-          "read": 180.0,
-          "write": 10.0,
-          "pool": 5.0
+  "$defs": {
+    "BatchProviderConfig": {
+      "description": "Configuration for a specific batch provider (Gemini/OpenAI).\n\nBatch APIs provide 50% cost reduction and separate rate limits\nfor non-time-critical workloads. Requests are collected, submitted\nas batch jobs, and results are polled asynchronously.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
         },
-        "models": {
-          "gpt-4": {
-            "provider": "openai_httpx",
-            "model": "gpt-4",
-            "openai_api_key": "${OPENAI_API_KEY}",
-            "context_window": 128000,
-            "request_timeout": 60,
-            "capabilities": {
-              "tools": true,
-              "function_calling": true,
-              "image_input": true,
-              "streaming": true,
-              "json_mode": true
-            }
-          }
+        "collection_window_seconds": {
+          "default": 10.0,
+          "title": "Collection Window Seconds",
+          "type": "number"
+        },
+        "max_requests_per_batch": {
+          "default": 100,
+          "title": "Max Requests Per Batch",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "default": 10.0,
+          "title": "Poll Interval Seconds",
+          "type": "number"
+        },
+        "max_wait_hours": {
+          "default": 24.0,
+          "title": "Max Wait Hours",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 3,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "cancel_on_startup": {
+          "default": true,
+          "title": "Cancel On Startup",
+          "type": "boolean"
+        },
+        "fallback_to_sync": {
+          "default": false,
+          "title": "Fallback To Sync",
+          "type": "boolean"
         }
-      }
+      },
+      "title": "BatchProviderConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "BatchSystemConfig": {
+      "description": "Global batch system configuration.\n\nCentralized configuration for batch processing. Models with\nprovider='batch' reference this config via their batch_provider field.",
+      "properties": {
+        "storage_path": {
+          "default": "data/batch_jobs",
+          "title": "Storage Path",
+          "type": "string"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BatchProviderConfig"
+          },
+          "title": "Providers",
+          "type": "object"
+        }
+      },
+      "title": "BatchSystemConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "DecisionModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual decision model configuration.\n\nA decision model answers NAMED QUESTIONS about a piece of content with a\ntyped value and a probability — no message list, no prose, no tool calls\n(TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).\nIt therefore does not belong in ``models``: nothing here can serve\n``chat()``, and an entry there would be offered to every agent as a chat\nmodel and checked for a per-token price it does not have. OpenRouter's\nanswer carries its cost; one that carries none (a local Laya, TypeSafe\ndirect) is priced by the usage tracker from llm_pricing.yaml, by model.\n\nThe shape of ``TTSModelConfig`` minus its voice, for the same reason: a\nnon-chat client needs a connection and nothing from the chat knobs.",
+      "properties": {
+        "provider": {
+          "default": "openrouter_decisions",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "request_timeout": {
+          "default": 60,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "DecisionModelConfig",
+      "type": "object"
+    },
+    "DecisionProfile": {
+      "additionalProperties": false,
+      "description": "Named decision profile that references a decision model.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "DecisionProfile",
+      "type": "object"
+    },
+    "HTTPXTimeoutConfig": {
+      "description": "HTTPX timeout configuration",
+      "properties": {
+        "connect": {
+          "default": 10.0,
+          "title": "Connect",
+          "type": "number"
+        },
+        "read": {
+          "default": 180.0,
+          "title": "Read",
+          "type": "number"
+        },
+        "write": {
+          "default": 10.0,
+          "title": "Write",
+          "type": "number"
+        },
+        "pool": {
+          "default": 5.0,
+          "title": "Pool",
+          "type": "number"
+        }
+      },
+      "title": "HTTPXTimeoutConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LLMModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual LLM model configuration",
+      "properties": {
+        "provider": {
+          "default": "ollama",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "context_window": {
+          "default": 32768,
+          "title": "Context Window",
+          "type": "integer"
+        },
+        "ollama_mode": {
+          "default": "openai_compat",
+          "enum": [
+            "openai_compat",
+            "native"
+          ],
+          "title": "Ollama Mode",
+          "type": "string"
+        },
+        "request_timeout": {
+          "default": 120,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "stream_silence_timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stream Silence Timeout"
+        },
+        "parallel_tool_calls": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": true,
+          "title": "Parallel Tool Calls"
+        },
+        "httpx_timeouts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HTTPXTimeoutConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCapabilitiesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "include_thoughts": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Thoughts"
+        },
+        "enable_prompt_caching": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enable Prompt Caching"
+        },
+        "thinking_budget": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Budget"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
+        },
+        "modalities": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modalities"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "safety_settings": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Settings"
+        },
+        "tool_schema_dialect": {
+          "anyOf": [
+            {
+              "enum": [
+                "json_schema",
+                "gemini_function_declarations"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Schema Dialect"
+        },
+        "assistant_reasoning_field": {
+          "anyOf": [
+            {
+              "enum": [
+                "omit",
+                "reasoning_content"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assistant Reasoning Field"
+        },
+        "thinking_request_shape": {
+          "anyOf": [
+            {
+              "enum": [
+                "budget",
+                "adaptive"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Request Shape"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "prompt_cache_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Key"
+        },
+        "prompt_cache_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "multi_turn",
+                "task_sequence",
+                "one_shot",
+                "off"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Mode"
+        },
+        "prompt_cache_marker_style": {
+          "anyOf": [
+            {
+              "enum": [
+                "openai",
+                "anthropic",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Marker Style"
+        },
+        "provider_routing": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Routing"
+        },
+        "provider_affinity_minutes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Affinity Minutes"
+        },
+        "reasoning_details_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "keep_last",
+                "keep_all",
+                "strip"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Details Mode"
+        },
+        "plugins": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugins"
+        },
+        "prompt_cache_options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Options"
+        },
+        "safety_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Identifier"
+        },
+        "batch_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Batch Provider"
+        },
+        "extends": {
+          "type": "string",
+          "title": "Extends",
+          "description": "Name of another model entry to inherit from. Merged field-wise; lists follow the +item/!pattern syntax of the agent type: chains."
+        }
+      },
+      "title": "LLMModelConfig",
+      "type": "object"
+    },
+    "LLMProfile": {
+      "description": "LLM usage profile that references a model",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Steps"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "LLMProfile",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ModelCapabilitiesConfig": {
+      "additionalProperties": false,
+      "description": "What a model can take and produce.\n\nTHE definition — llm.capabilities.ModelCapabilities derives from this\nclass instead of repeating it. It used to be a second copy, field for\nfield, and a new capability had to be added twice.",
+      "properties": {
+        "tools": {
+          "default": true,
+          "title": "Tools",
+          "type": "boolean"
+        },
+        "function_calling": {
+          "default": true,
+          "title": "Function Calling",
+          "type": "boolean"
+        },
+        "image_input": {
+          "default": false,
+          "title": "Image Input",
+          "type": "boolean"
+        },
+        "audio_input": {
+          "default": false,
+          "title": "Audio Input",
+          "type": "boolean"
+        },
+        "video_input": {
+          "default": false,
+          "title": "Video Input",
+          "type": "boolean"
+        },
+        "streaming": {
+          "default": true,
+          "title": "Streaming",
+          "type": "boolean"
+        },
+        "json_mode": {
+          "default": false,
+          "title": "Json Mode",
+          "type": "boolean"
+        },
+        "structured_output": {
+          "default": false,
+          "title": "Structured Output",
+          "type": "boolean"
+        },
+        "supported_api_types": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supported Api Types"
+        },
+        "default_api_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Api Type"
+        },
+        "max_image_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Image Size"
+        },
+        "max_image_resolution": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Image Resolution"
+        },
+        "min_image_resolution": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Image Resolution"
+        },
+        "supported_image_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Image Formats",
+          "type": "array"
+        },
+        "image_detail_control": {
+          "default": false,
+          "title": "Image Detail Control",
+          "type": "boolean"
+        },
+        "max_audio_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Audio Size"
+        },
+        "max_audio_duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Audio Duration"
+        },
+        "supported_audio_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Audio Formats",
+          "type": "array"
+        },
+        "max_video_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Video Size"
+        },
+        "max_video_duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Video Duration"
+        },
+        "supported_video_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Video Formats",
+          "type": "array"
+        },
+        "supports_files_api": {
+          "default": false,
+          "title": "Supports Files Api",
+          "type": "boolean"
+        },
+        "supports_file_uploads": {
+          "default": false,
+          "title": "Supports File Uploads",
+          "type": "boolean"
+        },
+        "developer_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "developer",
+                "system",
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Developer Role"
+        }
+      },
+      "title": "ModelCapabilitiesConfig",
+      "type": "object"
+    },
+    "TTSModelConfig": {
+      "description": "Individual TTS model configuration.\n\nDefines a TTS backend (e.g. Gemini TTS) with its connection and\ngeneration parameters.",
+      "properties": {
+        "provider": {
+          "default": "gemini_tts",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Voice"
+        },
+        "request_timeout": {
+          "default": 300,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "TTSModelConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "TTSProfile": {
+      "description": "Named TTS profile that references a TTS model.\n\nNo voice here: the default voice lives on the MODEL entry\n(TTSModelConfig.voice) — a profile-level default_voice existed once,\nwas read by nobody, and only looked like configuration.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "TTSProfile",
+      "type": "object",
+      "additionalProperties": false
     }
-  ]
+  }
 }

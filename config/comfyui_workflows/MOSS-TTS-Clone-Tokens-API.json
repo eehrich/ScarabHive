@@ -1,0 +1,106 @@
+{
+  "1": {
+    "inputs": {
+      "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (1.7B)",
+      "device": "cuda"
+    },
+    "class_type": "MOSSLoadModel",
+    "_meta": {
+      "title": "MOSS-TTS Load Model"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "language": "German",
+      "instruction": "audio book narrator",
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "target_tokens": [
+        "10",
+        0
+      ],
+      "max_new_tokens": 4096,
+      "seed": [
+        "5",
+        0
+      ],
+      "moss_model": [
+        "1",
+        0
+      ],
+      "reference_tokens": [
+        "20",
+        0
+      ],
+      "target_overshoot_frames": 50,
+      "audio_repetition_penalty": 1.0,
+      "text_temperature": 1.0,
+      "text_top_p": 1.0,
+      "text_top_k": 50
+    },
+    "class_type": "MOSSVoiceClone",
+    "_meta": {
+      "title": "MOSS-TTS Voice Clone"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": "test"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "InputText"
+    }
+  },
+  "5": {
+    "inputs": {
+      "value": 43
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "10": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "words_per_minute": 160
+    },
+    "class_type": "MOSSEstimateTokens",
+    "_meta": {
+      "title": "MOSS-TTS Estimate Tokens"
+    }
+  },
+  "20": {
+    "inputs": {
+      "path": "",
+      "path_override": ""
+    },
+    "class_type": "MOSSLoadTokens",
+    "_meta": {
+      "title": "MOSS-TTS Load Tokens (base anchor)"
+    }
+  }
+}

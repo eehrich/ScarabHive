@@ -1,0 +1,400 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Users panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1000px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const all = (selector) => [...doc().querySelectorAll(selector)];
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const text = (selector) => $(selector)?.textContent.trim() ?? '';
+  const names = () => all('#users tbody tr .um-name').map((cell) => cell.firstChild.textContent.trim()).join();
+  const row = (name) => all('#users tbody tr').find((one) => one.querySelector('.um-name').firstChild.textContent.trim() === name);
+  const button = (name, act) => row(name)?.querySelector(`[data-act="${act}"]`);
+  const stats = () => all('#stats .pk-stat').map((one) => `${one.dataset.stat}=${one.querySelector('.pk-stat-value').textContent}`).join();
+  const question = () => $('dialog.pk-dialog[open]:not(#editor)');
+  const toasts = (kind) => all(`.pk-toast--${kind}`).map((toast) => toast.textContent);
+  const toasted = (kind, part) => until(`the ${kind} toast "${part}"`, () => toasts(kind).some((one) => one.includes(part)));
+  const clearToasts = () => all('.pk-toast').forEach((toast) => toast.remove());
+  const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+  const now = () => $('pk-refresh [data-act="now"]').click();
+  const cookie = (name, value) => { document.cookie = `${name}=${value}; path=/`; };
+  const uncookie = (name) => { document.cookie = `${name}=; path=/; max-age=0`; };
+  const get = async (path) => (await fetch(path)).json();
+  const post = (path) => fetch(path, { method: 'POST' });
+  const signIn = async (user) => cookie('access_token', await get(`/__stub/token?user=${user}`));
+  const field = (name) => $('#editorForm').elements[name];
+  const fill = (fields) => {
+    for (const [name, value] of Object.entries(fields)) {
+      if (field(name).type === 'checkbox') field(name).checked = value;
+      else field(name).value = value;
+    }
+  };
+  const editor = () => $('#editor');
+  const closed = () => until('the editor closed', () => !editor().open);
+  const loaded = () => until('the accounts', () => $('#users tbody tr'));
+  const clicks = (element) => [1, 2].forEach((detail) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+  let ids = {};
+
+  await check('opened by an admin, the panel lists every account with its role and state and counts them, without a credential', async () => {
+    await signIn('root');
+    await go('/plugins/user_management/');
+    await loaded();
+    const listed = await get('/plugins/user_management/users');
+    ids = Object.fromEntries(listed.users.map((user) => [user.username, user.id]));
+    const keys = listed.users.map((user) => Object.keys(user).sort().join()).join('|');
+    const expected = 'created_at,email,full_name,has_api_key,id,is_active,last_login,role,username';
+    const root = row('root');
+    const drawn = names() === 'mallory,bob,ada,root' && stats() === 'total=4,active=3,admins=2'
+      && root.querySelector('.um-name').textContent.includes('(you)') && root.querySelector('.um-key')
+      && !row('ada').querySelector('.um-key') && !row('ada').textContent.includes('(you)')
+      && row('bob').textContent.includes('Never') && !row('ada').textContent.includes('Never')
+      && row('mallory').classList.contains('um-inactive') && row('mallory').querySelector('.pk-badge').textContent === 'guest'
+      && [...row('mallory').querySelectorAll('.pk-badge')].map((one) => one.textContent).join() === 'guest,Inactive'
+      && [...row('ada').querySelectorAll('.pk-badge')].map((one) => one.textContent).join() === 'admin,Active'
+      && row('ada').querySelector('.pk-badge--accent') && row('bob').querySelector('.pk-badge--ok')
+      && row('ada').textContent.includes('Ada Lovelace') && row('bob').textContent.includes('bob@example.com');
+    const quiet = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'false';
+    return Boolean(drawn && quiet) && listed.me === ids.root && keys === Array(4).fill(expected).join('|');
+  });
+
+  await check('names are drawn as text, never as markup', async () => {
+    return row('mallory').querySelector('.pk-muted').textContent === '<img src=x onerror=parent.__xss=1>'
+      && !$('#users img') && frame.contentWindow.__xss === undefined && window.__xss === undefined;
+  });
+
+  await check('the search filters by name and email and says when nothing matches', async () => {
+    const search = (value) => { $('#search').value = value; $('#search').dispatchEvent(new Event('input')); return names(); };
+    const found = search('ada') === 'ada' && search('LOVELACE') === 'ada' && search('bob@') === 'bob' && search('example.com') === 'mallory,bob,ada,root';
+    const none = search('zzz') === '' && text('#users').includes('No user matches “zzz”') && stats() === 'total=4,active=3,admins=2';
+    search('');
+    return found && none && names() === 'mallory,bob,ada,root';
+  });
+
+  await check('a click on a column head sorts the accounts by value, and the order holds when they are drawn anew', async () => {
+    const head = (label) => all('#users th').find((th) => th.textContent.trim() === label);
+    const byCreated = head('Created').getAttribute('aria-sort') === 'descending' && names() === 'mallory,bob,ada,root';
+    head('Created').click();
+    // created a moment apart: the dates read the same, the times tell the accounts apart
+    const oldest = names() === 'root,ada,bob,mallory' && head('Created').getAttribute('aria-sort') === 'ascending';
+    const drawn = $('#users table');
+    now();
+    await until('the accounts drawn anew', () => $('#users table') !== drawn);
+    const held = names() === 'root,ada,bob,mallory';
+    head('Created').click();  // newest first again, as the checks after this one expect
+    return byCreated && oldest && held && names() === 'mallory,bob,ada,root';
+  });
+
+  await check('creating shows a refusal in the dialog, adds the account once on a double click and leaves no password in the page', async () => {
+    clearToasts();
+    $('#create').click();
+    const opened = editor().open && text('#editorTitle') === 'New user' && !$('#usernameField').hidden && field('password').required
+      && $('#editorError').hidden && field('is_active').checked && !field('role').disabled;
+    const before = (await get('/__stub/asked')).created;
+    fill({ username: 'carol', email: 'carol@example.com' });
+    $('#save').click();  // no password: not sent
+    await sleep(300);
+    const blank = (await get('/__stub/asked')).created === before && editor().open && $('#editorError').hidden;
+    fill({ password: 'carol-secret', email: 'carol@localhost' });
+    $('#save').click();
+    const badEmail = await until('the email refusal', () => text('#editorError').includes('not a valid email address') && !$('#save').disabled);
+    fill({ username: 'bob', email: 'bob2@example.com', password: 'carol-secret' });
+    $('#save').click();
+    await until('the refusal', () => text('#editorError') === "Username 'bob' already exists");
+    const duplicate = editor().open && !$('#save').disabled && !toasts('error').length;
+    fill({ username: 'carol', email: 'carol@example.com', password: '€'.repeat(25) });
+    $('#save').click();
+    await until('the second refusal', () => text('#editorError') === 'The password is longer than 72 bytes');
+    const created = (await get('/__stub/asked')).created;
+    fill({ password: 'carol-secret', full_name: 'Carol', role: 'guest' });
+    $('#save').click();
+    $('#save').click();  // on the disabled button: nothing
+    await closed();
+    await until('carol drawn', () => row('carol'));
+    await sleep(300);
+    const once = (await get('/__stub/asked')).created === created + 1 && !toasts('error').length;
+    const stored = JSON.stringify((await get('/__stub/users')).carol) === '["carol@example.com","Carol","guest",true]'
+      && await get('/__stub/verify?user=carol&password=carol-secret') === true;
+    const cleared = !field('password').value && !field('username').value;
+    $('#create').click();
+    const fresh = editor().open && !field('username').value && !field('email').value && $('#editorError').hidden;
+    $('#cancel').click();
+    await closed();
+    return Boolean(opened && blank && badEmail && duplicate && once && stored && cleared && fresh);
+  });
+
+  await check('editing sends only what was changed and sets a password only when one is typed', async () => {
+    ids = Object.fromEntries((await get('/plugins/user_management/users')).users.map((user) => [user.username, user.id]));
+    button('bob', 'edit').click();
+    const opened = editor().open && text('#editorTitle') === 'Edit bob' && $('#usernameField').hidden && !field('password').required
+      && field('email').value === 'bob@example.com' && field('role').value === 'user' && field('is_active').checked
+      && text('#passwordLabel') === 'New password' && $('#selfHelp').hidden && !field('role').disabled;
+    await post('/__stub/email?user=bob&address=bobby@example.com');  // behind the panel's back: not to be overwritten
+    fill({ full_name: 'Bob Builder' });
+    $('#save').click();
+    await closed();
+    await until('bob drawn anew', () => row('bob').textContent.includes('Bob Builder'));
+    const onlyName = JSON.stringify((await get('/__stub/users')).bob) === '["bobby@example.com","Bob Builder","user",true]'
+      && await get('/__stub/verify?user=bob&password=correct-horse') === true;
+    button('carol', 'edit').click();
+    fill({ password: 'carol-changed', role: 'user' });
+    $('#save').click();
+    await closed();
+    await until('carol drawn anew', () => row('carol').querySelector('.pk-badge').textContent === 'user');
+    const changed = await get('/__stub/verify?user=carol&password=carol-changed') === true
+      && JSON.stringify((await get('/__stub/users')).carol) === '["carol@example.com","Carol","user",true]';
+    button('bob', 'edit').click();
+    fill({ email: 'ada@example.com' });
+    $('#save').click();
+    await until('the refusal', () => !$('#editorError').hidden);
+    const refused = editor().open && text('#editorError') === "Email 'ada@example.com' already exists"
+      && (await get('/__stub/users')).bob[0] === 'bobby@example.com';
+    $('#cancel').click();
+    await closed();
+    button('ada', 'edit').click();
+    const reopened = $('#editorError').hidden && field('email').value === 'ada@example.com' && !field('password').value;
+    $('#cancel').click();
+    await closed();
+    return Boolean(opened && onlyName && changed && refused && reopened);
+  });
+
+  await check('a late answer to a closed editor leaves a new one alone', async () => {
+    clearToasts();
+    cookie('um_save', 'slow');
+    try {
+      button('bob', 'edit').click();
+      fill({ full_name: 'Late Bob' });
+      $('#save').click();
+      fill({ password: 'left-behind' });
+      $('#cancel').click();
+      await closed();
+      button('ada', 'edit').click();
+      const emptied = !field('password').value;
+      fill({ full_name: 'typed' });
+      const freed = !$('#save').disabled;
+      await toasted('ok', 'bob is saved');
+      await sleep(100);
+      const lateSave = editor().open && field('full_name').value === 'typed' && !$('#save').disabled && $('#editorError').hidden;
+      $('#cancel').click();
+      await closed();
+      button('bob', 'edit').click();
+      fill({ email: 'ada@example.com' });
+      $('#save').click();
+      $('#cancel').click();
+      await closed();
+      $('#create').click();
+      fill({ username: 'typed' });
+      await toasted('error', "bob could not be saved: Email 'ada@example.com' already exists");
+      await sleep(100);
+      const lateRefusal = editor().open && field('username').value === 'typed' && $('#editorError').hidden;
+      $('#cancel').click();
+      await closed();
+      await until('bob drawn anew', () => row('bob').textContent.includes('Late Bob'));
+      button('bob', 'edit').click();
+      fill({ full_name: 'Bob' });
+      $('#save').click();
+      $('#cancel').click();
+      await closed();
+      clearToasts();
+      $('#create').click();
+      fill({ username: 'dave', email: 'dave@example.com', password: 'dave-secret' });
+      $('#save').click();  // on its way when bob's answer comes in
+      await toasted('ok', 'bob is saved');
+      const lateOverOwn = editor().open && $('#save').disabled;
+      await closed();
+      await until('dave drawn', () => row('dave'));
+      const noName = (await get('/__stub/users')).dave[1] === null;
+      return emptied && freed && lateSave && lateRefusal && lateOverOwn && noName;
+    } finally {
+      uncookie('um_save');
+    }
+  });
+
+  await check('your own account cannot be deactivated, deleted or demoted from the panel', async () => {
+    const buttons = button('root', 'deactivate').disabled && button('root', 'delete').disabled && !button('root', 'edit').disabled
+      && !button('ada', 'deactivate').disabled && !button('ada', 'delete').disabled;
+    button('root', 'edit').click();
+    const locked = field('role').disabled && field('is_active').disabled && !$('#selfHelp').hidden;
+    fill({ full_name: 'Root' });
+    $('#save').click();
+    await closed();
+    await until('root drawn anew', () => row('root').textContent.includes('Root') && !row('root').textContent.includes('Root Admin'));
+    const stored = JSON.stringify((await get('/__stub/users')).root) === '["root@example.com","Root","admin",true]';
+    button('bob', 'edit').click();
+    const unlocked = !field('role').disabled && !field('is_active').disabled && $('#selfHelp').hidden;
+    $('#cancel').click();
+    await closed();
+    return Boolean(buttons && locked && stored && unlocked);
+  });
+
+  await check('deactivating and deleting ask first, once on a double click, and the keyboard stays on the row', async () => {
+    clearToasts();
+    button('bob', 'edit').focus();
+    tick();
+    await sleep(400);
+    const keptOnRedraw = doc().activeElement === button('bob', 'edit');
+    const toggleKey = `${ids.ada}:toggle`;
+    button('ada', 'deactivate').focus();
+    clicks(button('ada', 'deactivate'));
+    const asked = await until('the question', question);
+    await sleep(200);
+    const once = all('dialog.pk-dialog[open]:not(#editor)').length === 1 && asked.textContent.includes('Deactivate “ada”');
+    tick();
+    await sleep(400);
+    const heldOff = button('ada', 'deactivate').disabled && !button('bob', 'deactivate').disabled;
+    asked.querySelector('[data-index="0"]').click();  // Cancel
+    await until('the question gone', () => !question());
+    await sleep(400);
+    const kept = (await get('/__stub/users')).ada[3] === true && !button('ada', 'deactivate').disabled
+      && doc().activeElement?.dataset.key === toggleKey;
+    button('ada', 'deactivate').focus();
+    button('ada', 'deactivate').click();
+    (await until('the question again', question)).querySelector('[data-index="1"]').click();
+    await until('ada inactive', () => button('ada', 'activate'));
+    await sleep(300);
+    const deactivated = (await get('/__stub/users')).ada[3] === false && doc().activeElement === button('ada', 'activate')
+      && stats() === 'total=6,active=4,admins=1';
+    const changed = (await get('/__stub/asked')).changed;
+    cookie('um_save', 'slow');
+    button('ada', 'activate').focus();
+    button('ada', 'activate').click();
+    button('ada', 'activate').click();  // while the change is on its way: nothing
+    await until('ada active', () => button('ada', 'deactivate'));
+    uncookie('um_save');
+    await sleep(300);
+    const changedOnce = (await get('/__stub/asked')).changed === changed + 1;
+    const activated = !question() && (await get('/__stub/users')).ada[3] === true && doc().activeElement === button('ada', 'deactivate');
+    button('ada', 'delete').focus();
+    clicks(button('ada', 'delete'));
+    const deleting = await until('the delete question', question);
+    await sleep(200);
+    const deleteOnce = all('dialog.pk-dialog[open]:not(#editor)').length === 1 && deleting.textContent.includes('Delete the account “ada”');
+    deleting.querySelector('[data-index="1"]').click();
+    await until('ada gone', () => !row('ada'));
+    await sleep(300);
+    const gone = !('ada' in await get('/__stub/users')) && doc().activeElement === $('#create') && !toasts('error').length;
+    await post('/__stub/remove?user=mallory');  // behind the panel's back
+    button('mallory', 'delete').click();
+    (await until('the question for mallory', question)).querySelector('[data-index="1"]').click();
+    await toasted('error', '404: User not found');
+    await until('mallory gone', () => !row('mallory'));
+    return keptOnRedraw && once && heldOff && kept && deactivated && changedOnce && activated && deleteOnce && gone;
+  });
+
+  await check('a failed load shows the error and nothing of the accounts shown before', async () => {
+    cookie('um_users', 'fails');
+    try {
+      now();
+      await until('the error', () => text('#users').includes('Users could not be loaded'));
+      const shown = text('#users').includes('The users table is locked') && !$('#users table') && stats() === '';
+      uncookie('um_users');
+      now();
+      await until('the accounts again', () => row('root') && stats().startsWith('total='));
+      return shown;
+    } finally {
+      uncookie('um_users');
+    }
+  });
+
+  await check('an answer overtaken by a later load is dropped, and a tick leaves a load on its way alone', async () => {
+    try {
+      cookie('um_users', 'slow');
+      now();  // answered after 1.5 s, without late
+      await sleep(200);
+      uncookie('um_users');
+      await post('/__stub/add?user=late');
+      now();
+      await until('late drawn', () => row('late'));
+      await sleep(1800);
+      const answerDropped = Boolean(row('late'));
+      cookie('um_users', 'slowfail');
+      now();
+      await sleep(200);
+      uncookie('um_users');
+      now();
+      await until('the accounts', () => row('late'));
+      await sleep(1800);
+      const failureDropped = Boolean(row('late')) && !text('#users').includes('could not be loaded');
+      cookie('um_users', 'slow');
+      const before = (await get('/__stub/asked')).lists;
+      now();
+      await sleep(200);
+      tick();
+      tick();
+      await sleep(1800);
+      const ticksSkipped = (await get('/__stub/asked')).lists === before + 1 && Boolean(row('late'));
+      // a load overtaken while a later one is on its way leaves that one busy: the ticks still wait for it
+      const again = (await get('/__stub/asked')).lists;
+      now();
+      await sleep(700);
+      now();
+      const ticking = setInterval(tick, 100);
+      await sleep(1200);  // the first answer is in by 1.5 s, the second by 2.2 s
+      clearInterval(ticking);
+      await sleep(1500);
+      const stillBusy = (await get('/__stub/asked')).lists === again + 2;
+      return answerDropped && failureDropped && ticksSkipped && stillBusy;
+    } finally {
+      uncookie('um_users');
+    }
+  });
+
+  await check('a user who is no admin is shown the refusal, and the server refuses every change they send', async () => {
+    const before = JSON.stringify(await get('/__stub/users'));
+    await signIn('bob');
+    try {
+      await go('/plugins/user_management/');
+      await until('the refusal', () => text('#users').includes('Users could not be loaded'));
+      const shown = text('#users').includes('Admin privileges required') && !$('#users table') && stats() === '';
+      const json = (method, path, body) => fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const statuses = [
+        (await fetch('/plugins/user_management/users')).status,
+        (await json('POST', '/plugins/user_management/users', { username: 'mallet', email: 'mallet@example.com', password: 'correct-horse', role: 'admin' })).status,
+        (await json('PUT', `/plugins/user_management/users/${ids.bob}`, { role: 'admin' })).status,
+        (await json('PUT', `/plugins/user_management/users/${ids.root}`, { password: 'taken-over' })).status,
+        (await fetch(`/plugins/user_management/users/${ids.root}`, { method: 'DELETE' })).status,
+      ];
+      return shown && statuses.join() === '403,403,403,403,403' && JSON.stringify(await get('/__stub/users')) === before
+        && await get('/__stub/verify?user=root&password=correct-horse') === true;
+    } finally {
+      await signIn('root');
+    }
+  });
+
+  await check('with authentication off the panel says so and the API refuses', async () => {
+    await go('/plugins/um_off/');
+    const said = text('.pk-empty-title') === 'Authentication is off' && !$('#users') && !$('#create') && !$('pk-refresh')
+      && !$('script[src$="panel.js"]');
+    const answer = await fetch('/plugins/um_off/users');
+    return said && answer.status === 403 && (await answer.json()).detail === 'User management needs authentication to be enabled';
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

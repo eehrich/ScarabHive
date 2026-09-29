@@ -1,0 +1,77 @@
+# The example of docs/stategraph_design.md §2.1. One change: the writer is
+# stategraph_example_agent, the plain agent this plugin ships -- the validator refuses an agent
+# that is not configured (SG007).
+#
+# Offline test (every agent and decision state mocked, the loop via $visits):
+#   mocks:
+#     write: {"$visits": ["draft one", "draft two"]}
+#     review: {"notes": "tighten the ending", "blocking": true}
+#     judge: {"$visits": [{"value": 0.4, "confidence": null, "probabilities": null},
+#                         {"value": 0.9, "confidence": null, "probabilities": null}]}
+stategraph: 1
+id: scene_review
+title: Scene review loop
+description: Write a scene, critique it, let the decision model judge readiness, revise until ready.
+python: scene_review.py          # companion module: its public names are in scope
+imports:
+  critique_round: ./critique_round.yaml
+
+params:                          # bound by whoever starts the machine
+  premise:    {type: string, required: true}
+  max_rounds: {type: integer, default: 3}
+
+context:                         # the machine's variables, with initial values (JSON)
+  draft: null
+  critique: null
+  round: 0
+
+vars:                            # template vars every spawned agent inherits
+  genre: thriller
+
+initial: write
+
+states:
+  write:
+    entry: ctx["round"] += 1
+    max_visits: 5                # the 6th entry raises loop_limit in this state
+    do:
+      agent: stategraph_example_agent
+      task: "{{ writer_task(ctx, params) }}"
+      retry: {attempts: 2, backoff: 5s}
+    transitions:
+      - target: review
+        effect: ctx.draft = out
+      - trigger: error
+        target: failed
+
+  review:                        # a submachine state: parametrised, reusable
+    do:
+      machine: critique_round
+      params: {text: "{{ ctx.draft }}", strict: true}
+    transitions:
+      - target: judge
+        effect: ctx.critique = out["notes"]
+
+  judge:
+    do:
+      decide: noul
+      question: Is this scene ready to publish without another revision?
+      input: "{{ {'scene': ctx.draft, 'critique': ctx.critique} }}"
+    transitions:
+      - target: done
+        guard: out["value"] >= 0.7
+      - target: write
+        guard: ctx.round < params.max_rounds
+      - target: give_up
+        guard: else
+
+  done:
+    type: final
+    output: {draft: "{{ ctx.draft }}", rounds: "{{ ctx.round }}"}
+  give_up:
+    type: final
+    status: failed
+    output: {reason: "not ready after {{ ctx.round }} rounds"}
+  failed:
+    type: final
+    status: failed

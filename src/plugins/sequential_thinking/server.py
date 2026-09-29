@@ -1,4 +1,4 @@
-"""Sequential Thinking MCP Server implementation.
+"""Sequential Thinking Tool Server implementation.
 
 This module provides step-by-step reasoning tools for LLMs to break down
 complex problems dynamically with support for branching and revision.
@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ class SessionState:
             )
 
 
-class SequentialThinkingServer(SchemaBasedMCPServer):
-    """Sequential Thinking MCP server for step-by-step reasoning.
+class SequentialThinkingServer(SchemaBasedToolServer):
+    """Sequential Thinking tool server for step-by-step reasoning.
 
     This server provides:
     - sequentialthinking: Main reasoning tool with branching/revision support
@@ -89,23 +89,23 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
     - Memory limit enforcement
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Initialize Sequential Thinking server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Configuration
-        self.max_history_size = int(getattr(mcp_config, 'max_history_size', 100))
-        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
-        self.enable_branching = bool(getattr(mcp_config, 'enable_branching', True))
-        self.enable_revisions = bool(getattr(mcp_config, 'enable_revisions', True))
-        self.max_summary_thoughts = int(getattr(mcp_config, 'max_summary_thoughts', 10))
+        self.max_history_size = int(getattr(server_config, 'max_history_size', 100))
+        self.session_ttl_seconds = int(getattr(server_config, 'session_ttl_seconds', 3600))
+        self.enable_branching = bool(getattr(server_config, 'enable_branching', True))
+        self.enable_revisions = bool(getattr(server_config, 'enable_revisions', True))
+        self.max_summary_thoughts = int(getattr(server_config, 'max_summary_thoughts', 10))
 
         # Session storage (in-memory)
         self._sessions: dict[str, SessionState] = {}
@@ -355,21 +355,6 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 f"removed {excess} oldest thoughts"
             )
 
-    def _relative_time(self, dt: datetime) -> str:
-        """Format datetime as relative time (e.g., '2m ago', '1h ago')."""
-        now = datetime.now()
-        delta = now - dt
-
-        seconds = int(delta.total_seconds())
-        if seconds < 60:
-            return f"{seconds}s ago"
-        elif seconds < 3600:
-            return f"{seconds // 60}m ago"
-        elif seconds < 86400:
-            return f"{seconds // 3600}h ago"
-        else:
-            return f"{seconds // 86400}d ago"
-
     def _get_branch_tree(self, session: SessionState) -> dict[str, Any]:
         """Get branch tree visualization."""
         tree = {}
@@ -431,11 +416,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             # Check idempotency: return cached result if key exists
             if idempotency_key and idempotency_key in self._idempotency_cache:
                 cached_event_id = self._idempotency_cache[idempotency_key]
-                await safe_status_call("end", f"Idempotent request (key={idempotency_key[:8]}..., event_id={cached_event_id[:8]}...)")
+                # The end fired here before, i.e. BEFORE the cached thought was
+                # found. On a miss the code falls through and writes a NEW
+                # thought whose real end is then dropped (StatusScope.ended).
                 # Find the cached thought and return its response
                 for s in self._sessions.values():
                     for t in s.thoughts:
                         if t.event_id == cached_event_id:
+                            await safe_status_call(
+                                "end",
+                                f"Idempotent hit: thought #{t.number} in session "
+                                f"{s.session_id} ({len(s.thoughts)} thoughts, "
+                                f"key={idempotency_key[:8]}...)")
                             return {
                                 "status": "success",
                                 "session_id": s.session_id,
@@ -499,14 +491,18 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
             if branch_from_thought is not None and branch_id:
                 # Creating new branch - must not exist
                 if branch_id in session.branches:
-                    await safe_status_call("error", f"Branch '{branch_id}' already exists")
-                    return {"status": "error", "error": f"Branch '{branch_id}' already exists"}
-
-                await safe_status_call(
-                    "progress",
-                    f"Creating branch '{branch_id}' from thought {branch_from_thought}"
-                )
-                self._create_branch(session, branch_id, branch_from_thought)
+                    # Silently switch to existing branch instead of erroring
+                    logger.debug(
+                        "Branch '%s' already exists in session %s — switching to it",
+                        branch_id, session_id,
+                    )
+                    session.current_branch = branch_id
+                else:
+                    await safe_status_call(
+                        "progress",
+                        f"Creating branch '{branch_id}' from thought {branch_from_thought}"
+                    )
+                    self._create_branch(session, branch_id, branch_from_thought)
             elif branch_id:
                 # Switching to existing branch (no branch_from_thought specified)
                 if branch_id not in session.branches:
@@ -541,8 +537,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         f"({session.actual_thoughts}), adjusted to {session.actual_thoughts}"
                     )
                     total_thoughts = session.actual_thoughts
-                    logger.warning(
-                        f"Auto-clamped total_thoughts from {params['total_thoughts']} "
+                    # Use the already-parsed local (old_estimate), NOT
+                    # params['total_thoughts']: callers may send camelCase
+                    # 'totalThoughts', so the subscript raised KeyError here -
+                    # AFTER the thought was already persisted and the counter
+                    # advanced, leaving the caller told 'error' while the state
+                    # had actually changed.
+                    logger.info(
+                        f"Auto-clamped total_thoughts from {old_estimate} "
                         f"to {total_thoughts} for session {session.session_id}"
                     )
 
@@ -571,11 +573,14 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                     f"Memory usage: {usage_pct:.0f}% "
                     f"({len(session.thoughts)}/{session.max_history_size})"
                 )
+                # No level= here: StatusScope.progress() takes (message, meta)
+                # only, and the extra kwarg raised TypeError -- so from thought
+                # 81 on, every call to this tool reported a failure although
+                # the thought had already been persisted.
                 await safe_status_call(
                     "progress",
                     f"Memory usage: {len(session.thoughts)}/{session.max_history_size} "
-                    f"thoughts ({usage_pct:.0f}%)",
-                    level="warning"
+                    f"thoughts ({usage_pct:.0f}%)"
                 )
 
             # Consistent progress display: never show X/Y with X > Y
@@ -679,7 +684,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
 
                 del self._sessions[session_id]
 
-                await safe_status_call("end", "Cleared 1 session")
+                await safe_status_call(
+                    "end", f"Cleared session {session_id} ({thought_count} thoughts)")
 
                 return {
                     "status": "success",
@@ -715,17 +721,24 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
         Tool name: {{ name }}_get_summary → e.g., 'sequential_thinking_get_summary'
         Method called after dispatcher strips prefix → 'get_summary'
         """
+        status = params.get("_status")
+
+        # Helper to safely call status methods when status is available
+        async def safe_status_call(method_name: str, *args, **kwargs):
+            if status:
+                method = getattr(status, method_name)
+                await method(*args, **kwargs)
+
         try:
-            session_id = params["session_id"]
+            # Read AFTER status, and explicitly: params["session_id"] raised
+            # KeyError while `status` was still unbound, so the except block
+            # below reported an UnboundLocalError instead of the real reason.
+            session_id = params.get("session_id")
+            if not session_id:
+                await safe_status_call("error", "session_id is required")
+                return {"status": "error", "error": "session_id is required"}
             max_thoughts = params.get("max_thoughts", self.max_summary_thoughts)
             include_branches = params.get("include_branches", True)
-            status = params.get("_status")
-
-            # Helper to safely call status methods when status is available
-            async def safe_status_call(method_name: str, *args, **kwargs):
-                if status:
-                    method = getattr(status, method_name)
-                    await method(*args, **kwargs)
 
             if session_id not in self._sessions:
                 await safe_status_call("error", f"Session {session_id} not found")
@@ -819,10 +832,10 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
 
         try:
             # Get hook config from schema.yaml
-            max_thoughts = getattr(self.mcp_config, "max_thoughts_in_prompt", 5)
-            show_branch_info = getattr(self.mcp_config, "show_branch_info", True)
-            format_type = getattr(self.mcp_config, "format", "markdown")
-            max_sessions_in_prompt = getattr(self.mcp_config, "max_sessions_in_prompt", 1)
+            max_thoughts = getattr(self.server_config, "max_thoughts_in_prompt", 5)
+            show_branch_info = getattr(self.server_config, "show_branch_info", True)
+            format_type = getattr(self.server_config, "format", "markdown")
+            max_sessions_in_prompt = getattr(self.server_config, "max_sessions_in_prompt", 1)
 
             # Find active sequential thinking sessions for this agent session
             agent_session_id = context.session_id
@@ -845,17 +858,8 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                         f"showing {len(active_sessions)} most recent"
                     )
 
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-
-            # Check if already injected and REMOVE old injection to replace it
-            # Search backwards to avoid index shifting issues
-            for i in range(len(context.messages) - 1, -1, -1):
-                msg = context.messages[i]
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("## Sequential Thinking Tool Available" in msg_content or "## Active Sequential Thinking Session" in msg_content):
-                    # Remove old injection
-                    context.messages.pop(i)
-                    logger.debug(f"Removed old Sequential Thinking injection at position {i}")
 
             if active_sessions:
                 # Format active sessions (one or multiple)
@@ -879,11 +883,22 @@ class SequentialThinkingServer(SchemaBasedMCPServer):
                 session_prompt = self._format_thinking_reminder()
                 logger.info("[SequentialThinkingHook] No active session - injecting tool reminder")
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
-                content=session_prompt
+            # Append-only: the block is a turn in the history, not a text
+            # at the head rebuilt on every call. At the head it changed the
+            # prompt prefix every step, so the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is, and one
+            # that compaction took away simply comes back.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "sequential_thinking"), None)
+            if previous is not None and previous.content == session_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
+                content=session_prompt,
+                injected_by="sequential_thinking",
             ))
 
             return HookResult(success=True, modified=True, context=context)
@@ -923,21 +938,20 @@ sequential_thinking(
         show_branch_info: bool,
         format_type: str = "markdown"
     ) -> str:
-        """Format active session for injection into prompt."""
-        # Get config options for UX improvements
-        show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
-        show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+        """Format active session for injection into prompt.
+
+        Nothing here may change unless the session does. The message sits right
+        behind the system prompt and is rebuilt before every step; it used to
+        carry "Started: 19s ago" and "(8s ago)" per thought, so every call of a
+        run changed the front of the prompt and re-billed the whole
+        conversation behind it, on steps that never touched this tool.
+        """
+        show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
 
         if format_type == "markdown":
             lines = []
             lines.append("## Active Sequential Thinking Session\n")
             lines.append(f"**Session ID**: `{session.session_id}`")
-
-            # Add relative timestamp for session age if enabled
-            if show_relative_timestamps:
-                session_age = self._relative_time(session.created_at)
-                lines.append(f"**Started**: {session_age}")
-
             lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
 
             # Show recent thoughts
@@ -949,16 +963,11 @@ sequential_thinking(
                     branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
                     revision_tag = f" (revises #{thought.revises_thought})" if thought.is_revision else ""
 
-                    # Add relative timestamp if enabled
-                    time_tag = ""
-                    if show_relative_timestamps:
-                        time_tag = f" *({self._relative_time(thought.timestamp)})*"
-
                     # Truncate long thoughts
                     content = thought.content[:150] + "..." if len(thought.content) > 150 else thought.content
 
                     lines.append(
-                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}{time_tag}: {content}"
+                        f"- **Thought #{thought.number}**{branch_tag}{revision_tag}: {content}"
                     )
 
             # Show branch info if enabled
@@ -1011,13 +1020,6 @@ sequential_thinking(
             for i, session in enumerate(sessions, 1):
                 # Session header
                 lines.append(f"### Session {i}: `{session.session_id}`")
-
-                # Add relative timestamp if enabled
-                show_relative_timestamps = getattr(self.mcp_config, "show_relative_timestamps", True)
-                if show_relative_timestamps:
-                    session_age = self._relative_time(session.created_at)
-                    lines.append(f"**Started**: {session_age}")
-
                 lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
 
                 # Show recent thoughts (reduced for multi-session view)
@@ -1029,21 +1031,16 @@ sequential_thinking(
                     for thought in recent_thoughts:
                         branch_tag = f" [{thought.branch_id}]" if show_branch_info and thought.branch_id != "main" else ""
 
-                        # Add relative timestamp if enabled
-                        time_tag = ""
-                        if show_relative_timestamps:
-                            time_tag = f" *({self._relative_time(thought.timestamp)})*"
-
                         # Truncate for compactness
                         content = thought.content[:100] + "..." if len(thought.content) > 100 else thought.content
-                        lines.append(f"- **#{thought.number}**{branch_tag}{time_tag}: {content}")
+                        lines.append(f"- **#{thought.number}**{branch_tag}: {content}")
 
                 # Add divider between sessions (except after last)
                 if i < len(sessions):
                     lines.append("")
 
             # Add quick actions for all sessions
-            show_quick_actions = getattr(self.mcp_config, "show_quick_actions", True)
+            show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
             if show_quick_actions:
                 lines.append("\n**Quick actions:**")
                 lines.append("- Continue session: `sequential_thinking(thought='...', session_id='<session_id>', ...)`")
@@ -1072,15 +1069,3 @@ sequential_thinking(
                     lines.append("")
 
             return "\n".join(lines)
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

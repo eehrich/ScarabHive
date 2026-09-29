@@ -2,7 +2,7 @@ import asyncio
 import os
 import pytest
 
-from agent_system.mcp import status
+from agent_system.tools import status
 
 
 async def _collect_events(queue, timeout=2):

@@ -1,0 +1,258 @@
+# Lessons Learned Plugin - Schema (Tools, Hooks, Config, Web UI)
+
+web_ui:
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Lessons Learned"
+    description: "Lessons the agents recorded and where they apply"
+    icon: graduation-cap
+    category: context
+    keywords: [lessons, learning]
+    window: {width: 1100, height: 820}
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "get_panel"
+      response_type: "html"
+      description: "The Lessons Learned panel"
+
+    - path: "/lessons"
+      method: "GET"
+      handler: "get_lessons"
+      response_type: "json"
+      description: "A page of lessons (agent_name, status, category, sort_by, limit, offset)"
+
+    - path: "/lessons/search"
+      method: "POST"
+      handler: "search_lessons"
+      response_type: "json"
+      description: "Semantic search, every status unless one is asked for"
+
+    - path: "/lessons/{lesson_id}"
+      method: "GET"
+      handler: "get_lesson_detail"
+      response_type: "json"
+      description: "A lesson with its evidence summary"
+
+    - path: "/lessons"
+      method: "POST"
+      handler: "create_lesson"
+      response_type: "json"
+      description: "Create a lesson"
+
+    - path: "/lessons/{lesson_id}"
+      method: "PUT"
+      handler: "update_lesson"
+      response_type: "json"
+      description: "Replace a lesson's fields"
+
+    - path: "/lessons/{lesson_id}"
+      method: "DELETE"
+      handler: "delete_lesson"
+      response_type: "json"
+      description: "Delete a lesson"
+
+    - path: "/lessons/{lesson_id}/activate"
+      method: "POST"
+      handler: "activate_lesson"
+      response_type: "json"
+      description: "Activate a draft"
+
+    - path: "/stats"
+      method: "GET"
+      handler: "get_stats"
+      response_type: "json"
+      description: "Counts by status and category (agent_name), and the agents"
+
+    - path: "/categories"
+      method: "GET"
+      handler: "get_categories"
+      response_type: "json"
+      description: "The known categories"
+
+    - path: "/consolidate"
+      method: "POST"
+      handler: "consolidate"
+      response_type: "response"
+      description: "Merge similar lessons by LLM evaluation, progress streamed as NDJSON"
+
+    - path: "/cleanup"
+      method: "POST"
+      handler: "cleanup"
+      response_type: "json"
+      description: "Preview or delete the lessons matching at least one filter"
+
+hooks:
+  - name: inject_lessons
+    type: pre_llm_call
+    enabled: false  # Default disabled - enable per-agent in config
+    timeout: 5.0
+    description: "Append the active lessons to the history before an LLM call"
+    category: "prompt_injection"
+    order:
+      before: ["message_validation"]
+
+  - name: extract_lessons
+    type: session_end
+    enabled: false  # Default disabled - enable per-agent in config
+    timeout: 30.0
+    description: "Extract potential lessons from conversation at session end"
+    category: "analysis"
+
+config:
+  database_path:
+    type: string
+    default: "data/lessons_learned/lessons.db"
+    description: "Path to SQLite database file"
+
+  max_lessons_per_agent:
+    type: integer
+    default: 200
+    description: "Maximum number of non-archived lessons per agent"
+    minimum: 10
+    maximum: 1000
+
+  dedup_similarity_threshold:
+    type: number
+    default: 0.82
+    description: "Vector similarity threshold to consider lessons as potential duplicates"
+    minimum: 0.5
+    maximum: 1.0
+
+  exact_duplicate_threshold:
+    type: number
+    default: 0.95
+    description: "Similarity threshold to treat as exact duplicate (add evidence instead of creating new)"
+    minimum: 0.8
+    maximum: 1.0
+
+  llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile to use for lesson extraction"
+
+  consolidation_llm_profile:
+    type: string
+    default: "turbo"
+    description: "LLM profile to use for consolidation (merge decisions). Recommended: think or normal."
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}"
+      description: |
+        Manage persistent lessons learned across sessions.
+        Store insights, search by topic, teach other agents, and confirm lesson effectiveness.
+        Active lessons are added to the conversation automatically when the inject_lessons hook is enabled.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: ["store", "search", "list", "update", "confirm", "teach", "delete"]
+            description: |
+              Operations:
+              - store: Save a new lesson (title + content required). Automatically deduplicates.
+              - search: Semantic search for lessons by query string.
+              - list: List lessons with filters (agent_name, status, category).
+              - update: Edit an existing lesson (lesson_id required).
+              - confirm: Add evidence that a lesson is correct/incorrect (lesson_id + evidence_type).
+              - teach: Share a lesson with another agent (target_agent + title + content).
+              - delete: Permanently delete a trivial, nonsensical, or outdated lesson (lesson_id required).
+
+          # For store / teach operations
+          title:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: "Lesson title (required for store/teach)"
+
+          content:
+            type: string
+            minLength: 1
+            maxLength: 2000
+            description: "Detailed lesson content - what to do/avoid and why (required for store/teach)"
+
+          category:
+            type: string
+            enum: ["style", "workflow", "error_pattern", "domain_knowledge", "tool_usage", "communication", "performance", "quality", "general"]
+            description: "Lesson category (default: general)"
+
+          priority:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+            description: "Priority level 1-10 (higher = more important, default: 5)"
+
+          tags:
+            type: array
+            items:
+              type: string
+              maxLength: 50
+            maxItems: 10
+            description: "Tags for categorization"
+
+          # For search operation
+          query:
+            type: string
+            minLength: 1
+            maxLength: 500
+            description: "Search query for semantic search (required for search)"
+
+          # For update / confirm operations
+          lesson_id:
+            type: string
+            description: "Lesson ID (required for update/confirm, format: les_NNN)"
+
+          # For update operation
+          status:
+            type: string
+            enum: ["draft", "active", "inactive", "archived"]
+            description: "Lesson status (for update operation)"
+
+          confidence:
+            type: number
+            minimum: 0.0
+            maximum: 1.0
+            description: "Manual confidence override (for update)"
+
+          # For confirm operation
+          evidence_type:
+            type: string
+            enum: ["confirm", "contradict", "neutral"]
+            default: "confirm"
+            description: "Type of evidence (for confirm operation)"
+
+          description:
+            type: string
+            maxLength: 500
+            description: "Evidence description (for confirm operation)"
+
+          # For teach operation
+          target_agent:
+            type: string
+            description: "Target agent name to teach a lesson to (required for teach)"
+
+          # For list/search
+          agent_name:
+            type: string
+            description: "Filter by agent name (for list/search; defaults to calling agent)"
+
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+            description: "Maximum results to return"
+
+          sort_by:
+            type: string
+            enum: ["priority", "confidence", "created", "updated", "applied"]
+            default: "priority"
+            description: "Sort field for list operation"
+
+        required: ["operation"]

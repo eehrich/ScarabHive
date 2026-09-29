@@ -21,7 +21,7 @@ Components:
 """
 
 from agent_system.auth.models import User, UserRole, UserInDB
-from agent_system.auth.database import get_db, create_user, get_user_by_username, get_user_by_email
+from agent_system.auth.database import get_db, get_user_by_username, get_user_by_email
 from agent_system.auth.security import verify_password, get_password_hash, create_access_token, decode_access_token
 from agent_system.auth.dependencies import get_current_user, get_current_active_user, require_admin
 from agent_system.auth.enforcement import (
@@ -37,7 +37,6 @@ __all__ = [
     "UserRole",
     "UserInDB",
     "get_db",
-    "create_user",
     "get_user_by_username",
     "get_user_by_email",
     "verify_password",

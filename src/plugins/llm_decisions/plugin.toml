@@ -1,0 +1,19 @@
+# llm_decisions — clients for decision models: a questionnaire in, typed
+# answers with probabilities out, no messages and no prose. An llm-provider
+# for the registry's sake, but it serves no provider name: no `provides`, so
+# nothing here can ever be reached through `chat()`. A config entry under
+# `llm_system.decision_models` names `provides_decisions` below, and the
+# registry imports provider.py for it — the same seam the TTS clients use.
+#
+# Deliberately not inside llm_openrouter: that package declares the OpenRouter
+# SDK (`openrouter>=1.1.108`), which pins pydantic<2.13 for the whole
+# application. These clients speak plain httpx and must not inherit that.
+[plugin]
+name = "llm_decisions"
+version = "0.1.0"
+description = "Clients for decision models over the System One wire (TypeSafe Jev via OpenRouter or TypeSafe, a local Laya)"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides_decisions = ["openrouter_decisions", "systemone_decisions"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

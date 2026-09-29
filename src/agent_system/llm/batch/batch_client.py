@@ -11,12 +11,12 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError
 
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
     from agent_system.config.models import BatchProviderConfig
-    from agent_system.mcp.status import StatusScope
+    from agent_system.tools.status import StatusScope
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,12 @@ class BatchLLMClient(LLMClient):
             self.context_window = underlying_client.context_window
         if hasattr(underlying_client, 'model'):
             self.model = underlying_client.model
+
+    def set_app_title(self, title: str) -> None:
+        """Pass through to underlying client (if it supports it)."""
+        super().set_app_title(title)
+        if hasattr(self.underlying_client, "set_app_title"):
+            self.underlying_client.set_app_title(title)
     
     async def _report_status(
         self,
@@ -192,6 +198,9 @@ class BatchLLMClient(LLMClient):
         if choices and isinstance(choices, list) and len(choices) > 0:
             message = choices[0].get("message", {})
             native = {"assistant": message}
+            # the loop's guards read it: a cut answer (length), a content filter
+            if choices[0].get("finish_reason"):
+                native["finish_reason"] = choices[0]["finish_reason"]
             # Preserve usage data if present
             if "usage" in result:
                 native["usage"] = result["usage"]
@@ -228,6 +237,18 @@ class BatchLLMClient(LLMClient):
         """
         self._last_status_message = None  # Reset for new request
         
+        # Notify pre-request hook (LLM-client level)
+        import time as _time
+        _batch_start = _time.time()
+        await self._notify_pre_request({
+            "provider": f"batch_{self.batch_provider}",
+            "model": self.model_name,
+            "url": "batch_queue",
+            "payload": {"message_count": len(messages), "tool_count": len(tools)},
+            "is_streaming": False,
+            "timestamp_ms": _time.time() * 1000,
+        })
+        
         result = await self._submit_batch_request(
             messages=messages,
             tools=tools,
@@ -236,6 +257,14 @@ class BatchLLMClient(LLMClient):
         )
         
         if result is None:
+            # Notify post-response hook on failure
+            _duration_ms = (_time.time() - _batch_start) * 1000
+            await self._notify_post_response({
+                "provider": f"batch_{self.batch_provider}", "model": self.model_name,
+                "url": "batch_queue", "is_streaming": False,
+                "duration_ms": _duration_ms, "error": "Batch request failed",
+                "timestamp_ms": _time.time() * 1000,
+            })
             # Fallback to sync if batch failed
             if self.batch_provider_config.fallback_to_sync:
                 await self._report_status(status_scope, f"Fallback to sync: {self.model_name}")
@@ -243,6 +272,15 @@ class BatchLLMClient(LLMClient):
                     messages, tools, cancellation_token
                 )
             raise RuntimeError("Batch request failed and fallback is disabled")
+        
+        # Notify post-response hook on success
+        _duration_ms = (_time.time() - _batch_start) * 1000
+        await self._notify_post_response({
+            "provider": f"batch_{self.batch_provider}", "model": self.model_name,
+            "url": "batch_queue", "is_streaming": False,
+            "duration_ms": _duration_ms,
+            "timestamp_ms": _time.time() * 1000,
+        })
         
         # Convert from OpenAI batch format to native format
         # Note: Status "Batch completed" already reported by queue_manager
@@ -313,6 +351,7 @@ class BatchLLMClient(LLMClient):
             if hasattr(msg, 'model_dump'):
                 # Use mode='json' to convert datetime to ISO strings
                 msg_dict = msg.model_dump(mode='json')
+                msg_dict.pop('injected_by', None)  # Internal hook metadata
                 messages_data.append(msg_dict)
             elif hasattr(msg, 'dict'):
                 messages_data.append(msg.dict())
@@ -330,6 +369,7 @@ class BatchLLMClient(LLMClient):
         extra_params = getattr(self.underlying_client, 'extra_params', {})
         thinking_budget = extra_params.get('thinking_budget')
         thinking_level = extra_params.get('thinking_level')
+        safety_settings = getattr(self.underlying_client, 'safety_settings', None)
         
         try:
             # Submit to queue and get future with cancellation support
@@ -342,6 +382,7 @@ class BatchLLMClient(LLMClient):
                 max_tokens=max_tokens,
                 thinking_budget=thinking_budget,
                 thinking_level=thinking_level,
+                safety_settings=safety_settings,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
             )
@@ -350,9 +391,15 @@ class BatchLLMClient(LLMClient):
         except asyncio.CancelledError:
             logger.info("Batch request cancelled")
             raise
-        except (LLMRateLimitError, LLMQuotaExhaustedError):
-            # Propagate rate limit errors for fallback handling
-            await self._report_status(status_scope, f"Rate limited: {self.model_name}")
+        except (LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError):
+            # Typisierte Fallback-Fehler durchreichen — der Agent-Server
+            # schaltet darauf die Profil-Kette. Der Generic-Handler unten
+            # (return None) wuerde LLMConnectionError schlucken und in
+            # fallback_to_sync degradieren — gegen einen toten Endpoint hilft
+            # der Sync-Weg desselben Providers nicht. LLMServerError (5xx)
+            # bleibt BEWUSST beim Sync-Fallback: der Batch-Weg kann kaputt
+            # sein, waehrend der Sync-Weg antwortet.
+            await self._report_status(status_scope, f"LLM error: {self.model_name}")
             raise
         except Exception as e:
             logger.error("Batch request failed: %s", e)

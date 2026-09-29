@@ -1,0 +1,10 @@
+{% extends "kit/panel_base.html" %}
+{% block title %}ComfyUI{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}<span class="pk-muted cu-updated" id="updated"></span><pk-refresh interval="5" auto></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-stack cu-servers" id="servers"><span class="pk-skeleton"></span></div>
+<div class="pk-stats" id="stats"></div>
+<div id="jobs"></div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

@@ -1,396 +1,98 @@
-<!DOCTYPE html>
-<html lang="en">
+{% from "kit/macros.html" import icon, logo %}
+<!doctype html>
+<html lang="en" class="pk-root" data-theme="{{ ui_theme(request) }}">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - AgentSystem</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background: #0d1117;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        
-        .login-container {
-            background: #161b22;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-            width: 100%;
-            max-width: 420px;
-            padding: 40px;
-            animation: slideIn 0.4s ease-out;
-        }
-        
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .logo-icon {
-            font-size: 64px;
-            margin-bottom: 10px;
-        }
-        
-        h1 {
-            text-align: center;
-            color: #f0f6fc;
-            font-size: 28px;
-            margin-bottom: 10px;
-        }
-        
-        .subtitle {
-            text-align: center;
-            color: #8b949e;
-            font-size: 14px;
-            margin-bottom: 30px;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        label {
-            display: block;
-            color: #8b949e;
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-        
-        input {
-            width: 100%;
-            padding: 12px 16px;
-            background: #1e242d;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
-            color: #e6edf3;
-            font-size: 15px;
-            transition: all 0.3s;
-            font-family: inherit;
-        }
-        
-        input:focus {
-            outline: none;
-            border-color: #58a6ff;
-            background: #1a2129;
-        }
-        
-        input::placeholder {
-            color: #6e7681;
-        }
-        
-        /* Fix autofill background */
-        input:-webkit-autofill,
-        input:-webkit-autofill:hover,
-        input:-webkit-autofill:focus,
-        input:-webkit-autofill:active {
-            -webkit-box-shadow: 0 0 0 30px #1e242d inset !important;
-            -webkit-text-fill-color: #e6edf3 !important;
-            transition: background-color 5000s ease-in-out 0s;
-        }
-        
-        .btn {
-            width: 100%;
-            padding: 14px;
-            background: #238636;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-top: 10px;
-        }
-        
-        .btn:hover:not(:disabled) {
-            background: #2ea043;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(35, 134, 54, 0.4);
-        }
-        
-        .btn:active:not(:disabled) {
-            transform: translateY(0);
-        }
-        
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        
-        .error-message {
-            background: rgba(219, 40, 40, 0.15);
-            border: 1px solid rgba(219, 40, 40, 0.3);
-            color: #ff7b72;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-bottom: 20px;
-            display: none;
-            animation: shake 0.5s;
-        }
-        
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
-            20%, 40%, 60%, 80% { transform: translateX(5px); }
-        }
-        
-        .success-message {
-            background: rgba(46, 160, 67, 0.15);
-            border: 1px solid rgba(46, 160, 67, 0.3);
-            color: #7ee787;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-bottom: 20px;
-            display: none;
-        }
-        
-        .info-message {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            color: #8b949e;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 13px;
-            margin-top: 20px;
-            text-align: center;
-        }
-        
-        .info-message a {
-            color: #58a6ff;
-            text-decoration: none;
-            font-weight: 600;
-        }
-        
-        .info-message a:hover {
-            text-decoration: underline;
-        }
-        
-        .remember-me {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 10px;
-        }
-        
-        .remember-me input[type="checkbox"] {
-            width: auto;
-            margin: 0;
-        }
-        
-        .remember-me label {
-            margin: 0;
-            font-weight: normal;
-            font-size: 14px;
-            cursor: pointer;
-        }
-        
-        .loading-spinner {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-top-color: white;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · ScarabHive</title>
+  <link rel="icon" href="/static/kit/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/kit/kit.css">
+  <style>
+    body { min-height: 100vh; display: grid; place-items: center; padding: var(--space-4); }
+    .login { width: min(380px, 100%); display: flex; flex-direction: column; gap: var(--space-5); }
+    .login-brand { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); color: var(--brand); text-align: center; }
+    .login-brand h1 { color: var(--text-primary); font-size: 22px; }
+    .login-brand p { margin: 0; color: var(--text-secondary); }
+    .login .pk-card { padding: var(--space-5); }
+    .login .pk-form { max-width: none; }
+    .login-error { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2) var(--space-3);
+      font-size: var(--text-sm); color: var(--danger); background: var(--danger-subtle); border-radius: var(--radius-md); }
+    .login button[type="submit"] { width: 100%; }
+  </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="logo">
-            <div class="logo-icon">🤖</div>
-            <h1>Scarab Agent System</h1>
-            <div class="subtitle">Sign in to continue</div>
-        </div>
-        
-        <div id="errorMessage" class="error-message"></div>
-        <div id="successMessage" class="success-message"></div>
-        
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="username">Username or Email</label>
-                <input 
-                    type="text" 
-                    id="username" 
-                    name="username" 
-                    placeholder="Enter your username or email"
-                    required
-                    autocomplete="username"
-                    autofocus
-                />
-            </div>
-            
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input 
-                    type="password" 
-                    id="password" 
-                    name="password" 
-                    placeholder="Enter your password"
-                    required
-                    autocomplete="current-password"
-                />
-            </div>
-            
-            <div class="remember-me">
-                <input type="checkbox" id="rememberMe" name="rememberMe">
-                <label for="rememberMe">Remember me for 30 days</label>
-            </div>
-            
-            <button type="submit" class="btn" id="loginBtn">
-                Sign In
-            </button>
-        </form>
-        
-        <div class="info-message">
-            Authentication disabled? <a href="/">Continue without login</a>
-        </div>
+  <main class="login">
+    <div class="login-brand">
+      {{ logo(52) }}
+      <h1>ScarabHive</h1>
+      <p>Sign in to continue</p>
     </div>
-    
-    <script>
-        const form = document.getElementById('loginForm');
-        const loginBtn = document.getElementById('loginBtn');
-        const errorMessage = document.getElementById('errorMessage');
-        const successMessage = document.getElementById('successMessage');
-        const usernameInput = document.getElementById('username');
-        const passwordInput = document.getElementById('password');
-        const rememberMeCheckbox = document.getElementById('rememberMe');
-        
-        // Check if already logged in via cookie
-        fetch('/auth/me', {
-            credentials: 'include'  // Include cookies
-        })
-        .then(response => {
-            if (response.ok) {
-                // Already logged in, redirect
-                const returnUrl = new URLSearchParams(window.location.search).get('return') || '/';
-                window.location.href = returnUrl;
-            }
-        })
-        .catch(() => {
-            // Not logged in, that's fine
+    <div class="pk-card">
+      <form id="loginForm" class="pk-form">
+        <div id="loginError" class="login-error" role="alert" hidden>{{ icon('circle-alert') }}<span></span></div>
+        <label class="pk-field"><span class="pk-label">Username or email</span>
+          <input id="username" name="username" class="pk-input" required autocomplete="username" autofocus></label>
+        <label class="pk-field"><span class="pk-label">Password</span>
+          <input id="password" name="password" class="pk-input" type="password" required autocomplete="current-password"></label>
+        <button id="loginButton" type="submit" class="pk-btn pk-btn--primary pk-btn--lg">Sign in</button>
+      </form>
+    </div>
+  </main>
+  <script type="module">
+    const form = document.getElementById('loginForm');
+    const button = document.getElementById('loginButton');
+    const error = document.getElementById('loginError');
+
+    // Only this site: an absolute or protocol-relative ?return= would send a
+    // freshly signed-in user to someone else's. Resolved by the URL parser the
+    // browser navigates with, so tabs, newlines and backslashes cannot slip past.
+    function returnTarget() {
+      let target;
+      try {
+        target = new URL(new URLSearchParams(window.location.search).get('return') || '/', window.location.origin);
+      } catch {
+        return '/';  // not a URL at all
+      }
+      // the whole URL, never the path alone: "/..//evil.example" resolves to the path "//evil.example"
+      return target.origin === window.location.origin ? target.href : '/';
+    }
+
+    // Signed in already -- or 404: authentication is off and there is nothing to sign in to.
+    fetch('/auth/me', { credentials: 'same-origin' }).then((response) => {
+      if (response.ok || response.status === 404) window.location.replace(returnTarget());
+    });
+
+    function showError(message) {
+      error.querySelector('span').textContent = message;
+      error.hidden = false;
+    }
+
+    form.addEventListener('input', () => { error.hidden = true; });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = 'Signing in…';
+      try {
+        const response = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ username: form.username.value.trim(), password: form.password.value }),
         });
-        
-        function showError(message) {
-            errorMessage.textContent = message;
-            errorMessage.style.display = 'block';
-            successMessage.style.display = 'none';
+        if (response.ok) {
+          window.location.replace(returnTarget());
+          return;
         }
-        
-        function showSuccess(message) {
-            successMessage.textContent = message;
-            successMessage.style.display = 'block';
-            errorMessage.style.display = 'none';
-        }
-        
-        function hideMessages() {
-            errorMessage.style.display = 'none';
-            successMessage.style.display = 'none';
-        }
-        
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            hideMessages();
-            
-            const username = usernameInput.value.trim();
-            const password = passwordInput.value;
-            const rememberMe = rememberMeCheckbox.checked;
-            
-            if (!username || !password) {
-                showError('Please enter both username and password');
-                return;
-            }
-            
-            // Disable form
-            loginBtn.disabled = true;
-            loginBtn.innerHTML = '<span class="loading-spinner"></span>Signing in...';
-            usernameInput.disabled = true;
-            passwordInput.disabled = true;
-            
-            try {
-                const response = await fetch('/auth/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    credentials: 'include',  // Important: include cookies
-                    body: JSON.stringify({ username, password })
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    // Login successful - cookie is set automatically by server
-                    // Optionally store username for display
-                    const storage = rememberMe ? localStorage : sessionStorage;
-                    storage.setItem('auth_username', username);
-                    
-                    showSuccess('Login successful! Redirecting...');
-                    
-                    // Redirect after short delay
-                    setTimeout(() => {
-                        const returnUrl = new URLSearchParams(window.location.search).get('return') || '/';
-                        window.location.href = returnUrl;
-                    }, 500);
-                } else {
-                    // Login failed
-                    showError(data.detail || 'Invalid username or password');
-                    
-                    // Re-enable form
-                    loginBtn.disabled = false;
-                    loginBtn.textContent = 'Sign In';
-                    usernameInput.disabled = false;
-                    passwordInput.disabled = false;
-                    passwordInput.value = '';
-                    passwordInput.focus();
-                }
-            } catch (error) {
-                showError('Network error. Please check your connection and try again.');
-                console.error('Login error:', error);
-                
-                // Re-enable form
-                loginBtn.disabled = false;
-                loginBtn.textContent = 'Sign In';
-                usernameInput.disabled = false;
-                passwordInput.disabled = false;
-            }
-        });
-        
-        // Clear error on input
-        usernameInput.addEventListener('input', hideMessages);
-        passwordInput.addEventListener('input', hideMessages);
-    </script>
+        const data = await response.json().catch(() => ({}));
+        showError(typeof data.detail === 'string' ? data.detail : 'Incorrect username or password');
+        form.password.value = '';
+        form.password.focus();
+      } catch {
+        showError('The server is not reachable. Check the connection and try again.');
+      }
+      button.disabled = false;
+      button.textContent = 'Sign in';
+    });
+  </script>
 </body>
 </html>

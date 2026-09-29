@@ -1,0 +1,13 @@
+# llm_ollama — local Ollama provider for the LLM registry.
+# native mode talks to the Ollama HTTP API directly (httpx, no SDK);
+# openai_compat mode delegates through the registry to the "openai"
+# provider (llm_openai plugin must be present for that mode).
+[plugin]
+name = "llm_ollama"
+version = "1.0.0"
+description = "Ollama LLM provider (native API, or OpenAI-compat via delegation)"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["ollama"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

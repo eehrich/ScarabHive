@@ -24,6 +24,7 @@ Execute a shell command either synchronously (wait for completion) or as a backg
 - `cwd` (string, optional): Working directory for command execution
 - `env_vars` (object, optional): Additional environment variables (key-value pairs)
 - `process_id` (string, optional): Custom process ID for background processes (auto-generated if not provided)
+- `wake` (boolean, optional): Only with `background=true` — wake this session when the process ends, so the turn can be ended instead of polling (default: false)
 
 **Returns (foreground execution, background=false):**
 ```json
@@ -48,6 +49,9 @@ Execute a shell command either synchronously (wait for completion) or as a backg
   "command": "python server.py"
 }
 ```
+
+With `wake: true` the answer carries one more field, `"wake"`, and a
+`"wake_note"` whenever it is `false`. See **Waking instead of polling**.
 
 **Examples:**
 
@@ -137,6 +141,69 @@ Terminate a background process.
 }
 ```
 
+## Waking instead of polling
+
+`execute(background=true, wake=true)` lets the caller end its turn over a long
+command. When the process ends — finished or failed, there is no second ending —
+the plugin tells the core that input is waiting for the calling session
+(`core/session_presence.py`, `wake_session`): a session another process holds
+reads that at its next step, a session nobody holds is continued in a run of its
+own. The woken run is told that input waits; it reads the result with
+`get_output` on the `process_id` from its own history.
+
+**The answer says whether the wake is armed**, because a caller that asked for one
+and silently did not get it would end its turn over work it never hears about
+again. Both reasons are known before the process starts:
+
+| `wake` | `wake_note` | What to do |
+|---|---|---|
+| `true` | — | End the turn. `get_output` when woken. |
+| `false` | `session presence is off (config: session_presence.enabled)` | Poll `get_output`. |
+| `false` | `this call belongs to no session, so there is nobody to wake` | Poll `get_output`. |
+
+A `process_id` you choose yourself must not belong to a RUNNING process:
+reusing one returns `ProcessIdInUse` rather than replacing the entry, which
+would leave the process behind it running with no way to read or kill it.
+Once that process is over the id is free again: the next run takes the name,
+and anything recorded under it is dropped with it.
+
+A call that did not ask is told nothing about a wake — the two fields are absent.
+
+**An armed wake is best effort, not a promise.** What cannot be checked up front
+is whether the process holding the work is still there when the work ends —
+nothing marks which kind of process this is. A caller that is not woken should
+poll `get_output`.
+
+**A woken run is a different process, so the outcome is recorded.** Waking a
+session nobody holds starts a fresh `agent-cli run`, which builds its own tool
+servers — its process registry is empty, and `get_output` on an id from the old
+process would find nothing. When a wake is armed, the outcome (exit code and
+the tail of both streams) is therefore written to the plugin's cache
+(`data/cache/<instance>/`, one hour, at most 30 000 characters per stream).
+`get_output` answers from it when the process is not in this process's memory,
+marks the answer `"source": "recorded"`, and drops the record — it is handed
+over, not kept. A call without `wake` writes nothing: its caller polls from the
+process that holds the result anyway.
+
+**A wake is rung more than once.** The core only leaves a marker, and a session
+that is in the middle of a turn takes that marker at its next step expecting a
+hook to hand the waiting input over — nothing hands over "your command
+finished". So the ringing repeats while the session stays busy (10 s apart, up
+to five minutes) and stops early once the session has dealt with the process
+itself — `get_output` on the finished result, or `kill_process`. Either way it
+is not started again for something it already handled.
+
+Three further cases end with no wake, and only the first is refused up front:
+
+| Case | What happens |
+|---|---|
+| `session_presence.max_wake_depth` reached, or `0` | refused before the start, with the setting named |
+| A sub-agent's session | armed, but never woken — the run that spawned it hands its result over. Reading this up front means parsing the whole session file on the event loop for every armed wake, so it is not checked |
+| A one-shot `agent-cli run` | armed, but the run ends and takes the work with it |
+
+`wake: true` without `background: true` is answered too: the result is already
+in that answer, so there is nothing to wake for.
+
 ## Configuration
 
 The Terminal plugin is configured in `config/plugins.yaml`:
@@ -152,7 +219,7 @@ terminal:
         - "^rm\\s+-rf\\s+/"
         - "^dd\\s+"
       
-      # Allow command chains (&&, ||, ;)
+      # More than one command per call (&&, ||, ;, |, &, line breaks, substitutions)
       allow_command_chains: true
     
     limits:
@@ -178,13 +245,54 @@ terminal:
 - `mkfs.*` - Filesystem creation
 - `chmod -R 777` - Unsafe permission changes
 - `wget|sh`, `curl.*|.*bash` - Piped execution from web
-- Command substitution: `` `...` ``, `$(...)` (when not properly escaped)
+
+Command substitution (`` `...` ``, `$(...)`) is not on this list; it is
+refused with chains off and on every whitelisted instance (see Command Chains).
 
 **Blacklist:** Add custom regex patterns to block specific commands.
 
-**Whitelist:** If configured, only commands matching whitelist patterns are allowed.
+**Whitelist:** If configured, only commands matching whitelist patterns are allowed --
+and every command runs in the instance's configured working directory and
+environment: the tool neither offers nor accepts `cwd` and `env_vars` then
+(`error_type: "ConfiguredOnly"`), and no entry into the server gets past that --
+the check sits where every process is spawned (`CommandExecutor.refusal`). A
+whitelist checks the command string only; the directory decides which files the
+allowed command touches, the environment how it runs (`PYTHONPATH`,
+`PYTHONSTARTUP`, `PATH`, `LD_PRELOAD`), so taken from the model they would undo
+it. Set `platform.initial_cwd` on such an instance when its commands name paths
+relative to a directory: without it, commands start where the process was
+started from. A relative `initial_cwd` such as `.` is the directory the server
+runs from -- the checkout, as every relative path of the configuration assumes;
+agent-cli and agent-run enter it at startup, the API has to be started there
+(started elsewhere, a command that names a relative path fails). A whitelisted
+instance also refuses every control character (below 0x20 except tab, and DEL)
+before it asks a pattern, and keeps the shell line to one command whatever
+`allow_command_chains` says (see Command Chains).
 
-**Command Chains:** Control whether `&&`, `||`, and `;` are permitted.
+Writing the patterns:
+
+- Anchor every pattern at both ends: `^...\Z`. `$` also matches before a final
+  line break.
+- Name the program exactly -- `^python ...`, not `^.*python ...` or
+  `^[\w/.-]*python ...`: a free prefix lets any program whose name ends in those
+  letters through. A path to the program is named in full and relative to
+  `initial_cwd`, with nothing in front of it and with forward slashes: bash
+  drops unquoted backslashes, so a backslash form only looks allowed.
+- Separate words with literal spaces (` +`), not `\s`: `\s` also matches a line
+  break, and `bash -c` runs every line as a command of its own.
+- Name a program that does not run other commands from its arguments: the
+  terminal keeps the shell line to one command, but what that command does
+  with its arguments is up to the command.
+
+**Command Chains:** With `allow_command_chains: false`, and on every instance
+with a whitelist, the shell line holds one command. A command is refused when it
+contains a line break, `;`, `&&`, `||`, `|`, `&`, a backtick, `$(`, `<(` or `>(`
+anywhere -- also inside quotes: telling a quoted `;` from a live one takes a
+shell parser, and a mistake there would let a second command through. The check
+is lexical: a command that evaluates its own arguments (an evaluating builtin, a
+nested shell) or an evaluating expansion can still run another, so the command
+is exactly one only together with a whitelist that names the program. An
+instance without a whitelist that needs such a character turns chains on.
 
 ### Platform Detection
 
@@ -273,14 +381,214 @@ except asyncio.CancelledError:
     print("Command cancelled")
 ```
 
+## Confinement (`sandbox:`)
+
+The pattern list in `security.py` is a hand-brake against slips, **not** a
+security boundary — it says so itself, and it is right: everything it blocks
+is reachable through `sh -c`, a pipe, `xargs` or `python -c`. Filtering
+command *text* buys nothing.
+
+Confinement works the other way round: the process is handed to the kernel
+already unable to reach outside its workspace, whatever it then runs.
+
+```yaml
+terminal:
+  type: terminal
+  sandbox:
+    mode: workspace-write      # read-only | workspace-write | danger-full-access
+    workspace_root: .          # optional; defaults to initial_cwd
+```
+
+| Mode | File effects |
+|---|---|
+| `read-only` | the process may not modify files |
+| `workspace-write` | it may modify files under `workspace_root` |
+| `danger-full-access` | no restriction — **the default** |
+
+The default is `danger-full-access`, which behaves exactly as this plugin did
+before confinement existed. Confinement is opt-in because no backend covers
+every platform we run on yet — Linux and macOS do, Windows does not.
+
+**Backends**, chosen by platform, never by config:
+
+| Platform | Backend | Enforcement |
+|---|---|---|
+| Linux | bubblewrap (`apt install bubblewrap`), verified live against 0.9.0 — except `--new-session`, `--die-with-parent`, `--unshare-pid` and the git binds, added 2026-09-28 and not yet run live | `full` |
+| macOS | Seatbelt (`/usr/bin/sandbox-exec`, part of macOS), verified live on macOS 27 | `partial` |
+| Windows | none — a confining mode refuses every command rather than running it unconfined | — |
+
+Modes describe **file effects only**; no network, syscall or device
+restriction is claimed, because none is enforced. Reads stay allowed
+everywhere. What a confined process may still write in either mode: the
+harmless devices (`/dev/null`, its terminal, pseudo-terminals it opens itself)
+and a temp directory — under bubblewrap a private `/tmp` that vanishes with
+the process, under Seatbelt the user's own temp directory (`$TMPDIR`), which is
+shared with the user's other processes. That shared directory is why Seatbelt
+reports `partial`. Every other difference is listed in the `_Seatbelt`
+docstring in `src/agent_system/utils/process_sandbox.py`.
+
+**Fail-closed.** If the requested mode cannot be enforced, the command does
+not run, and the message names the cause the probe found:
+
+```text
+sandbox mode "workspace-write" is requested but no sandbox backend is usable
+on this host (there is no sandbox backend for Windows); refusing to run the
+command unconfined. Linux needs bubblewrap, macOS a working
+/usr/bin/sandbox-exec, Windows has none — otherwise switch the consumer to
+danger-full-access.
+```
+
+On macOS the same refusal comes when ScarabHive itself already runs inside a
+sandbox (a Seatbelt profile cannot be applied from within one), and when the
+workspace lies below a case-sensitive volume: Seatbelt compares paths without
+regard to case, so there a case variant of the workspace would be writable
+too.
+
+## Model Experience
+
+### What the model sees
+
+Normal results are unchanged: `{"status": "success", "exit_code": ..., "stdout": ...}`.
+
+With a sandbox mode set, the `execute` description gains one sentence, e.g.
+on macOS:
+
+```text
+Commands run sandboxed (workspace-write): they can modify files only under
+/path/to/workspace and in $TMPDIR, which is shared with the user's other
+programs (partial confinement); other writes fail with a permission error,
+and so do writes to the git hooks and config of the workspace's repository.
+```
+
+Linux says "a private /tmp" instead and nothing about partial; Windows says
+that commands are refused. Without a sandbox the description is unchanged.
+
+A command refused by the pattern list returns `error_type: "SecurityError"`
+naming the pattern. A command that cannot be confined returns
+`error_type: "SandboxUnavailable"` with the text above — the model can tell
+"your command was rejected" from "this host cannot confine me" and does not
+retry the latter with a reworded command.
+
+On an instance with a whitelist, the `execute` tool has no `cwd` and no
+`env_vars` parameter, and its description says the terminal runs only the
+commands its configuration allows, in its configured directory and environment.
+A call that sends either anyway -- to `execute` in the foreground or in the
+background -- gets `error_type: "ConfiguredOnly"` with a message saying to send
+the command without them; nothing is started, and a finished background
+process whose `process_id` the call names keeps its recorded result. With chains
+off or a whitelist, a second command in the same call is refused with a message
+saying the terminal runs one command per call.
+
+With `wake: true` the model gets back `"wake": true` or `"wake": false` with a
+`wake_note` naming the reason. That one field decides whether it may end its turn
+or has to poll `get_output`, so it is never omitted when it was asked for.
+
+Under confinement, a denied write is **not** a plugin error: the command runs
+and fails on its own, so the model sees the ordinary non-zero exit code and
+the shell's own error on stdout (under Seatbelt: `Operation not permitted`).
+That is deliberate — it is what the
+same command does against an unwritable directory anywhere else.
+
+On macOS, `/bin/bash` (3.2, used unless another bash comes first on `PATH`)
+writes a here-document to `/var/tmp` or `/tmp` first and to the working
+directory last. Seatbelt keeps the first two
+read-only, so `cat > f <<'EOF'` works under `workspace-write` from the default
+directory (the workspace) but fails in `read-only` mode, or after a `cd`
+outside the workspace, with `cannot create temp file for here document:
+Operation not permitted`.
+
+### Token and cache effect
+
+Append-only. The plugin contributes nothing to the system prompt or the tool
+list beyond its three tool definitions -- static per instance: a whitelisted
+instance renders `execute` without `cwd` and `env_vars` and with one sentence
+more in its description, and confinement adds one sentence to the `execute`
+description as well. Both are rendered once, when the schema is built: the
+same text on every request, so the prompt cache holds; the wrapping itself
+happens below the model. The operator reads the confinement once in the log,
+at the first confined command (a WARNING when the enforcement is partial).
+Output is capped at
+`max_output_size_kb` (60 KB default).
+
+### Known gaps
+
+- **Windows has no backend.** Confinement there is refusal, not enforcement.
+  That is also why the default stays `danger-full-access`.
+- **Seatbelt shares the user's temp directory.** A confined process can write,
+  and delete, what the user's other processes keep in `$TMPDIR` — ScarabHive's
+  own API included, which stages multipart uploads there, so a confined command
+  can alter another request's upload in flight. bubblewrap's `/tmp` is
+  private. `/tmp` and `/var/tmp` stay read-only on macOS, with the
+  here-document cost described above.
+- **The terminal the command was started from.** A confined command cannot
+  type into it (the TIOCSTI ioctl): bubblewrap takes it off that terminal
+  (`--new-session`), Seatbelt forbids the ioctl and leaves the command in the
+  session, so `/dev/tty` still reaches the terminal there. Under bubblewrap a
+  Ctrl+C then reaches bwrap and, through `--die-with-parent`, the command —
+  not what the command started, which lives on, confined, as it does after a
+  timeout's kill -- unless bwrap's private pid namespace (`--unshare-pid`)
+  takes the whole tree along, which it does. Other terminals' ptys are closed
+  to it on macOS; `tty` then answers "not a tty".
+- **Git hooks and config of the workspace repository are read-only** in
+  `workspace-write`, on both backends: the next unconfined `git` would run
+  them. Commits, branches and checkouts work; `git config`, `git remote add`,
+  `git push -u` (which writes the upstream) and `git init` at the root do not.
+  Not covered: nested repositories in the workspace (covering them would
+  forbid `git clone` there), a bare repository planted in it, and — under
+  bubblewrap only — a `.git` or config created after the command started.
+  Nor a config that already points hooks or fsmonitor into the workspace
+  (`core.hooksPath = scripts/hooks`): those files are as writable as any code
+  there, and everything in the workspace is code someone may run unconfined
+  later (a Makefile, package.json scripts, direnv's `.envrc`).
+- **Signals stay inside the sandbox.** A confined command can signal its own
+  children, but not the user's other processes — nor a background process an
+  earlier confined command started (use `kill_process`). On Linux the private
+  pid namespace hides them; on macOS a profile rule refuses them. Measured on
+  macOS: without it, a confined process resumed an application LaunchServices
+  had started suspended, and that application ran unconfined.
+- **No sandbox inside a Seatbelt sandbox.** A tool that sandboxes its own
+  children (Claude Code's shell sandbox, SwiftPM) fails under confinement on
+  macOS.
+- **Asking an unconfined process is not bound in general.** A confined command
+  can still talk to a tmux server, an ssh agent or an editor over its socket,
+  and have them act outside the workspace — on either backend. On macOS the
+  profile closes the channels it can name: preferences (cfprefsd),
+  LaunchServices and RunningBoard (starting applications), AppleEvents, and
+  the data-protection class of a file (an fcntl that would lock the user out
+  of it). launchd refuses jobs from sandboxed clients on its own. Not shown to
+  be closed: opening a document in an application that is already running —
+  measuring it would have meant sending events to the user's applications.
+- **Unconfined tools that write into the same workspace.** A confined command
+  may leave symlinks in the workspace. A tool that writes there unconfined and
+  follows them writes outside — measured with `godot_setup`, which created a
+  file outside the workspace and deleted another through links a confined
+  command had planted. Confining the shell holds only as far as the other
+  tools in its workspace refuse to follow links.
+- **File effects only.** A confined process still has the network.
+- **The workspace is one directory.** No multi-root policy; a job needing two
+  trees has to be given a common parent.
+- **Confinement is decided at spawn.** A mode change takes effect on the next
+  command, never on one already running.
+- **A recorded result lives one hour and is read once.** It is dropped as soon
+  as anybody reads the finished process — by the woken run that recalls it, by
+  a `get_output` in the process that still holds the result, or by handing its
+  `process_id` to a new run. A woken run that never calls `get_output` at all
+  leaves it to expire; a second reader finds nothing.
+- **A wake needs the process that started the work.** Background processes live
+  in the tool server's memory, so the API and `agent-cli chat` (whose prompt waits
+  on the same loop) can wake; a one-shot `agent-cli run` ends its turn and takes
+  its background processes with it. `wake: true` is still reported as armed there
+  — the session exists, and nothing in this process knows it is about to end.
+
 ## Security Best Practices
 
-1. **Never execute untrusted user input directly** - Always validate and sanitize commands
-2. **Use whitelist when possible** - Restrict to known-safe commands
-3. **Limit timeouts** - Prevent resource exhaustion with reasonable timeout values
-4. **Monitor background processes** - Track and clean up background processes
-5. **Review blacklist** - Customize blocked patterns for your environment
-6. **Disable command chains if not needed** - Reduces attack surface
+1. **Prefer confinement over pattern lists** - `sandbox.mode` is a boundary, the blacklist is a hand-brake
+2. **Never execute untrusted user input directly** - Always validate and sanitize commands
+3. **Use whitelist when possible** - Restrict to known-safe commands
+4. **Limit timeouts** - Prevent resource exhaustion with reasonable timeout values
+5. **Monitor background processes** - Track and clean up background processes
+6. **Review blacklist** - Customize blocked patterns for your environment
+7. **Disable command chains if not needed** - Reduces attack surface
 
 ## Architecture
 
@@ -289,7 +597,7 @@ terminal/
 ├── __init__.py          # Package initialization
 ├── plugin.yaml          # Plugin metadata
 ├── schema.yaml          # Tool definitions
-├── server.py            # TerminalServer (MCP interface)
+├── server.py            # TerminalServer (tool interface)
 ├── executor.py          # CommandExecutor (subprocess management)
 ├── process_manager.py   # ProcessManager (background processes)
 ├── security.py          # CommandSecurityValidator
@@ -299,7 +607,7 @@ terminal/
 
 **Key Components:**
 
-- **TerminalServer**: MCP server implementing tool handlers
+- **TerminalServer**: tool server implementing tool handlers
 - **CommandExecutor**: Executes commands via subprocess, handles timeouts/truncation
 - **ProcessManager**: Manages background processes, captures output
 - **CommandSecurityValidator**: Validates commands against security rules
@@ -331,7 +639,8 @@ pytest tests/test_plugin_terminal_integration.py -v
 - **No persistent session state**: Each command runs in a separate subprocess
   - Environment variables set with `export` do not persist
   - Directory changes with `cd` do not persist
-  - Use `cwd` and `env` parameters instead
+  - Use `cwd` and `env_vars` parameters instead -- not on a whitelisted
+    instance, which refuses both (`ConfiguredOnly`)
 - **Output buffering**: Python scripts should use `-u` flag for unbuffered output
 - **Windows limitations**: Git Bash is preferred; WSL may have encoding issues
 - **Resource limits**: Maximum output size configurable to prevent memory exhaustion
@@ -351,7 +660,8 @@ pytest tests/test_plugin_terminal_integration.py -v
 - **Solution:** Install Git Bash or specify bash_path in config
 
 **Issue:** Environment variable not available
-- **Solution:** Pass env variables explicitly, they don't persist between commands
+- **Solution:** Pass env variables explicitly, they don't persist between commands --
+  not on a whitelisted instance, which refuses both `cwd` and `env_vars` (`ConfiguredOnly`)
 
 ## Version History
 

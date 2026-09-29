@@ -1,0 +1,16 @@
+# llm_gemini — Google Gemini providers for the LLM registry.
+# Owns the google-genai SDK dependency. Also serves TTS: gemini_tts is
+# dispatched through the same registry seam (provides_tts below); core
+# agent_system/llm/tts.py is service definition only since 2026-08-26.
+[plugin]
+name = "llm_gemini"
+version = "1.0.0"
+description = "Google Gemini LLM providers (HTTP + official SDK) and batch backend"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["gemini", "gemini_sdk"]
+provides_batch = ["gemini"]
+provides_tts = ["gemini_tts"]
+
+requires = { agent_system = ">=0.6.0" }
+dependencies = ["google-genai>=1.50.0"]

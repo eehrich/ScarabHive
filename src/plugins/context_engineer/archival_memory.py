@@ -13,17 +13,124 @@ Key features:
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from agent_system.llm.token_utils import estimate_content_tokens
 
+# The one collection every session's vectors live in. Sessions are told apart
+# by the session_id metadata on each entry, not by collection or directory —
+# which is what lets all of them share a single VectorStore (see hooks.py).
+ARCHIVAL_COLLECTION = "archival_memory"
+
 logger = logging.getLogger(__name__)
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    """Everything of a message that can be stored as text — what read(arch_…) returns.
+
+    The archive keeps only this text, and a message that leaves the conversation
+    through Layer 3 or Pre-Layer P exists nowhere else. Reading only the "text"
+    of list parts lost attached files (a text_file part carries "content") and
+    plain string parts; keeping only the tool NAMES lost the arguments — for a
+    write_file call, the whole file.
+    """
+    content = message.get("content")
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text_file":
+                    parts.append(f"[File: {part.get('name') or 'file'}]\n{part.get('content') or ''}")
+                elif isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+        text = " ".join(parts)
+    else:
+        text = content if isinstance(content, str) else ""
+    calls = []
+    for call in message.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or ""
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False, default=str)
+        calls.append(f"[Tool call {function.get('name') or 'unknown'}] {arguments}".rstrip())
+    return "\n".join(filter(None, [text, *calls]))
+
+
+def _entry_id(session_id: str, message: dict[str, Any], occurrence: int = 0) -> str:
+    """The archive id OF a message: the same message archived twice is one row.
+
+    A compaction whose hook times out inside the write loses its placeholders,
+    while the worker thread still commits the rows; the messages stay in the
+    conversation and the next pass archives them again. With a random id that
+    was a second copy of each, in the archive and in every search. Derived from
+    the message, the retry lands on the rows the lost pass wrote (INSERT OR
+    IGNORE) and its placeholders point at them.
+
+    Only what the row keeps is hashed. The rest of a message is the
+    provider's and changes between two passes: a model switch strips
+    ``reasoning_details`` from the whole session before the hooks run, and the
+    retry would have come back under new ids.
+
+    ``occurrence`` keeps identical messages of ONE batch apart -- the vector
+    store refuses a batch that names an id twice. Identical messages of two
+    different batches share a row: the same text, so every placeholder still
+    reads back what it replaced.
+    """
+    key = json.dumps([session_id, occurrence, message.get("role", "unknown"),
+                      _message_text(message), message.get("tool_call_id"),
+                      message.get("name")], default=str, ensure_ascii=False)
+    return f"arch_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _synchronized(method):
+    """Serialize a store method on the instance's reentrant lock.
+
+    ArchivalMemory's single sqlite3.Connection (check_same_thread=False) is hit
+    both synchronously from the event loop (handler search/get_stats) and from
+    worker threads via asyncio.to_thread (compaction store), so concurrent
+    access must be serialized to avoid recursive-cursor errors / corruption.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
+#: Reciprocal rank fusion constant. 60 is the value from the original paper
+#: (Cormack et al. 2009) and the usual default: large enough that rank 1 and
+#: rank 2 of one list do not outweigh agreement between the two lists.
+_RRF_K = 60
+
+
+def _fused(*rankings: list["ArchivedMessage"], limit: int) -> list["ArchivedMessage"]:
+    """Merge ranked result lists by reciprocal rank fusion.
+
+    A message found by both lists rises above one found by either alone; one
+    found by only ONE list still gets the place its rank earns there, instead of
+    being cut because the other list already filled the limit. Ties keep the
+    order of the lists as given (sorted is stable).
+    """
+    score: dict[str, float] = {}
+    first: dict[str, ArchivedMessage] = {}
+    for ranking in rankings:
+        for rank, message in enumerate(ranking):
+            score[message.id] = score.get(message.id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+            first.setdefault(message.id, message)
+    return sorted(first.values(), key=lambda m: -score[m.id])[:limit]
 
 
 @dataclass
@@ -101,27 +208,43 @@ class ArchivalMemory:
         storage_path: Path,
         session_id: str | None = None,
         enable_semantic_search: bool = False,
-        vector_store_path: Path | None = None
+        vector_store_path: Path | None = None,
+        vector_store: Any | None = None,
     ):
         """Initialize archival memory.
-        
+
         Args:
             storage_path: Path to SQLite database file
             session_id: Default session ID
             enable_semantic_search: Enable VectorStore semantic search
-            vector_store_path: Path for VectorStore storage (if enabled)
+            vector_store_path: Path for VectorStore storage (if enabled and
+                no store is injected). The store built from it belongs to
+                this instance and is closed with it.
+            vector_store: A VectorStore SHARED with other sessions. Every
+                vector this instance writes carries its session_id, and
+                every query filters on it, so one store serves all sessions
+                — that is what keeps the process at one Chroma runtime
+                instead of one per session. An injected store is never
+                closed here; it belongs to whoever handed it in.
         """
         self.storage_path = storage_path
         self.session_id = session_id
         self.enable_semantic_search = enable_semantic_search
         self._db: sqlite3.Connection | None = None
         self._vector_store = None
-        self._vector_collection = "archival_memory"
-        
+        self._owns_vector_store = False
+        self._vector_collection = ARCHIVAL_COLLECTION
+        # Serializes connection access across event-loop + to_thread threads
+        # (see _synchronized). Reentrant for nested synchronized calls.
+        self._lock = threading.RLock()
+
         self._init_db()
-        
+
         if enable_semantic_search:
-            self._init_vector_store(vector_store_path or storage_path.parent / "vectors")
+            if vector_store is not None:
+                self._vector_store = vector_store
+            else:
+                self._init_vector_store(vector_store_path or storage_path.parent / "vectors")
     
     def _init_db(self) -> None:
         """Initialize SQLite database."""
@@ -163,6 +286,22 @@ class ArchivalMemory:
                 content_rowid='rowid'
             )
         """)
+        # Rows archived before the store knew its session_id are tagged "default",
+        # and list/search/read query the real id: they were in the prompt's count
+        # but out of the agent's reach. The file is per session, so every row is
+        # this session's (as ToolResultStore._init_db re-tags). Looked for first:
+        # an UPDATE takes the write lock even when it matches nothing, and this
+        # runs on every open, on the event loop, behind any other writer.
+        # archived_fts indexes session_id from the rows: rebuilt, or it no
+        # longer matches its content table. A session named "default" writes
+        # "default" itself: nothing to re-tag, and it would match on every open.
+        if self.session_id not in (None, "", "default") and self._db.execute(
+                "SELECT 1 FROM archived_messages WHERE session_id = 'default' LIMIT 1").fetchone():
+            self._db.execute(
+                "UPDATE archived_messages SET session_id = ? WHERE session_id = 'default'",
+                (self.session_id,),
+            )
+            self._db.execute("INSERT INTO archived_fts(archived_fts) VALUES('rebuild')")
         self._db.commit()
     
     def _init_vector_store(self, vector_path: Path) -> None:
@@ -171,6 +310,7 @@ class ArchivalMemory:
             from agent_system.utils.vector_store import VectorStore
             
             self._vector_store = VectorStore(persist_path=vector_path)
+            self._owns_vector_store = True
             # Ensure collection is created
             self._vector_store.get_or_create_collection(self._vector_collection)
             
@@ -200,22 +340,38 @@ class ArchivalMemory:
         Returns:
             The archive entry ID
         """
-        import uuid
-        
+        entry_id, document, vector_meta = self._store_row(message, summary, session_id)
+        # Indexed OUTSIDE this instance's lock, as store_many already does. The
+        # vector store is shared by every session, so its lock can be held for
+        # seconds by another session's batch embedding; waiting for it while
+        # holding the archive lock would stall every loop-synchronous reader of
+        # this archive (stats, counts, reads) — and with them the event loop.
+        if self.enable_semantic_search and self._vector_store:
+            self._index_semantic([entry_id], [document], [vector_meta])
+        return entry_id
+
+    @_synchronized
+    def _store_row(
+        self,
+        message: dict[str, Any],
+        summary: str | None,
+        session_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Write the row and its FTS entry under the lock.
+
+        Returns (entry_id, document to embed, vector metadata) for the caller
+        to index once the lock is released.
+        """
         session_id = session_id or self.session_id or "default"
-        
-        # Generate ID
-        entry_id = f"arch_{uuid.uuid4().hex[:12]}"
+        entry_id = _entry_id(session_id, message)
         
         # Extract message fields
         role = message.get("role", "unknown")
-        content = message.get("content", "")
-        if isinstance(content, list):
-            # Handle multi-part content
-            content = " ".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        
+        # Never None: the column is NOT NULL, and an assistant message that only
+        # makes tool calls carries content=None — that used to raise
+        # IntegrityError and take Layer 2's whole archiving loop with it.
+        content = _message_text(message)
+
         # Generate summary if not provided
         if not summary:
             summary = self._generate_summary(message)
@@ -227,84 +383,255 @@ class ArchivalMemory:
         tool_call_id = message.get("tool_call_id")
         tool_name = message.get("name")
         
-        # Store metadata
+        # Store metadata. ``tool_calls`` is routinely present WITH VALUE None:
+        # measured over the 40 largest sessions, 5838 messages carry None
+        # against 709 carrying a list. An ``in`` test says yes for those and the
+        # iteration below then raises TypeError, killing the whole Layer-2
+        # archival. Truthiness is the only safe test on this field.
         metadata = {}
-        if "tool_calls" in message:
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
             metadata["tool_calls"] = [
                 {"name": tc.get("function", {}).get("name")}
-                for tc in message.get("tool_calls", [])
+                for tc in tool_calls
             ]
         
-        # Insert into SQLite
-        self._db.execute("""
-            INSERT INTO archived_messages 
-            (id, role, content, summary, timestamp, session_id, token_count, 
-             metadata, tool_call_id, tool_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            entry_id,
-            role,
-            content,
-            summary,
-            datetime.now().isoformat(),
-            session_id,
-            token_count,
-            json.dumps(metadata) if metadata else None,
-            tool_call_id,
-            tool_name
-        ))
-        
-        # Update FTS index
-        self._db.execute("""
-            INSERT INTO archived_fts (id, summary, content, session_id)
-            VALUES (?, ?, ?, ?)
-        """, (entry_id, summary, content, session_id))
-        
-        self._db.commit()
-        
-        # Add to VectorStore if enabled
-        if self.enable_semantic_search and self._vector_store:
-            try:
-                self._vector_store.add(
-                    collection=self._vector_collection,
-                    ids=[entry_id],
-                    documents=[f"{summary}\n{content[:1000]}"],
-                    metadatas=[{
-                        "session_id": session_id,
-                        "role": role,
-                        "timestamp": datetime.now().isoformat()
-                    }]
-                )
-            except Exception as e:
-                logger.error(f"Failed to add to VectorStore: {e}")
-        
+        # Insert into SQLite -- rolled back on failure for the reason
+        # _store_many_rows gives: a row left pending is saved by the next commit.
+        try:
+            inserted = self._db.execute("""
+                INSERT OR IGNORE INTO archived_messages
+                (id, role, content, summary, timestamp, session_id, token_count,
+                 metadata, tool_call_id, tool_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                entry_id,
+                role,
+                content,
+                summary,
+                datetime.now().isoformat(),
+                session_id,
+                token_count,
+                json.dumps(metadata) if metadata else None,
+                tool_call_id,
+                tool_name
+            )).rowcount
+
+            # Update FTS index -- not for a row that was already there (see
+            # _entry_id), or search finds it twice.
+            if inserted:
+                self._db.execute("""
+                    INSERT INTO archived_fts (id, summary, content, session_id)
+                    VALUES (?, ?, ?, ?)
+                """, (entry_id, summary, content, session_id))
+
+            self._db.commit()
+        except BaseException:
+            if self._db is not None:
+                self._db.rollback()
+            raise
+
         logger.debug(
             f"Archived message: id={entry_id}, role={role}, "
             f"tokens={token_count}, summary='{summary[:50]}...'"
         )
-        
-        return entry_id
-    
-    def store_batch(
+
+        return entry_id, f"{summary}\n{content[:1000]}", {
+            "session_id": session_id,
+            "role": role,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def store_many(
         self,
-        messages: Sequence[dict[str, Any]],
+        messages: list[dict[str, Any]],
         session_id: str | None = None
     ) -> list[str]:
-        """Store multiple messages efficiently.
-        
-        Args:
-            messages: List of message dicts
-            session_id: Session ID for isolation
-            
-        Returns:
-            List of archive entry IDs
+        """Store many messages in ONE transaction. Returns ids, input order.
+
+        ``store`` commits per message, which is the entire cost of archiving in
+        bulk: measured on 4682 messages, 16.1 s of commits versus 0.08 s for the
+        same rows written in a single transaction. Pre-Layer P archives whole
+        blocks at once and cannot pay per-message commits.
+
+        Embeds the batch before returning, so it costs its embedding
+        (~17 ms/message). A caller that cannot pay that inside a request takes
+        ``store_many_unindexed`` and schedules ``index_batch`` itself.
+
+        NOT synchronized itself: the connection work is, the embedding must not
+        be (see ``_index_semantic``).
         """
-        ids = []
-        for msg in messages:
-            entry_id = self.store(msg, session_id=session_id)
-            ids.append(entry_id)
+        if not messages:
+            return []
+
+        ids, documents, metadatas = self.store_many_unindexed(messages, session_id)
+        self.index_batch(ids, documents, metadatas)
         return ids
-    
+
+    def store_many_unindexed(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None = None
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """The rows of ``store_many``, with the embedding left to the caller.
+
+        For a batch too large to embed inside a request: the content is durable
+        and readable by ref the moment this returns, and the caller hands
+        ``index_batch`` the triple whenever it can afford the seconds. Skipping
+        the embedding instead would leave the archive half indexed, and a
+        similarity search over half an archive answers without saying so.
+
+        Until the embedding lands -- or for good, if it never does -- ``search``
+        still finds these rows through the text index. Where the vector index
+        answers, the text half is fused in and demands every word of the
+        filter; where it has nothing, the broad text search (any word) is the
+        whole answer. Not by meaning.
+        """
+        return self._store_many_rows(messages, session_id)
+
+    def index_batch(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]]
+    ) -> bool:
+        """Embed an already stored batch. True when it is in the index.
+
+        Reports instead of raising, because the rows are committed before this
+        runs: a failed embedding costs similarity search on those entries, never
+        the content, and must not propagate into a caller that would then keep
+        an over-long conversation. A background caller that logs "indexed" on a
+        swallowed failure is the reason this returns anything at all.
+
+        False also means "nothing to index" -- no vector store, semantic search
+        off, no ids. Neither is an error, and neither is "indexed" either.
+        """
+        if not (ids and self.enable_semantic_search and self._vector_store):
+            return False
+        return self._index_semantic(ids, documents, metadatas)
+
+    @_synchronized
+    def _store_many_rows(
+        self,
+        messages: list[dict[str, Any]],
+        session_id: str | None
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """The connection half of ``store_many``: rows + FTS in one transaction."""
+
+        session_id = session_id or self.session_id or "default"
+
+        # One timestamp per ROW, not one per batch. get_session_messages orders
+        # by `timestamp ASC, id ASC` and the id is a hash — with a shared
+        # timestamp the whole batch comes back in random order, and the prune
+        # breadcrumb points the agent straight at that listing. The offsets keep
+        # the conversation order of the input.
+        base = datetime.now()
+        stamps = [(base + timedelta(microseconds=i)).isoformat()
+                  for i in range(len(messages))]
+
+        rows: list[tuple] = []
+        fts_rows: list[tuple] = []
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        occurrences: dict[str, int] = {}
+
+        for position, message in enumerate(messages):
+            now = stamps[position]
+            entry_id = _entry_id(session_id, message)
+            occurrence = occurrences.get(entry_id, 0)
+            occurrences[entry_id] = occurrence + 1
+            if occurrence:
+                entry_id = _entry_id(session_id, message, occurrence)
+            role = message.get("role", "unknown")
+            content = _message_text(message)
+            summary = self._generate_summary(message)
+
+            metadata: dict[str, Any] = {}
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                metadata["tool_calls"] = [
+                    {"name": tc.get("function", {}).get("name")}
+                    for tc in tool_calls
+                ]
+
+            rows.append((
+                entry_id, role, content, summary, now, session_id,
+                estimate_content_tokens(content),
+                json.dumps(metadata) if metadata else None,
+                message.get("tool_call_id"), message.get("name"),
+            ))
+            fts_rows.append((entry_id, summary, content, session_id))
+            ids.append(entry_id)
+            documents.append(f"{summary}\n{content[:1000]}")
+            metadatas.append({"session_id": session_id, "role": role,
+                              "timestamp": now})
+
+        # Row by row inside the one transaction: only a row that is really new
+        # gets its FTS entry (see _entry_id). The cost of the batch was the
+        # commits, never the statements.
+        inserted = 0
+        try:
+            for row, fts_row in zip(rows, fts_rows):
+                if self._db.execute("""
+                    INSERT OR IGNORE INTO archived_messages
+                    (id, role, content, summary, timestamp, session_id, token_count,
+                     metadata, tool_call_id, tool_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, row).rowcount:
+                    inserted += 1
+                    self._db.execute("""
+                        INSERT INTO archived_fts (id, summary, content, session_id)
+                        VALUES (?, ?, ?, ?)
+                    """, fts_row)
+            self._db.commit()
+        except BaseException:
+            # sqlite3 opens a transaction implicitly and never closes it on an
+            # error. What the first insert wrote would stay PENDING on this
+            # shared connection -- visible to every reader of it, and saved by
+            # the next commit, which is the retry compaction archiving the very
+            # same messages again. One batch is only atomic with this line.
+            # (No connection: the archive was closed under the call. Rolling
+            # back None would raise over the real error and bury it.)
+            if self._db is not None:
+                self._db.rollback()
+            raise
+
+        logger.debug(f"Archived {len(ids)} messages in one transaction, {inserted} new")
+        # All of them to embed, the ones already there too: a pass lost past the
+        # cap wrote its rows but never scheduled their embedding. The vector
+        # store upserts, so a row embedded before is only embedded again.
+        return ids, documents, metadatas
+
+    def _index_semantic(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]]
+    ) -> bool:
+        """Feed a stored batch to the VectorStore. NOT synchronized, on purpose.
+
+        Embedding a full batch costs ~17 ms per message — up to several seconds
+        — and this instance's lock is taken synchronously on the event loop by
+        recall, context_list, context_read and stats. Holding it across the
+        embedding freezes the loop for every concurrent request. The rows are
+        already committed, the VectorStore has its own lock, and it never calls
+        back into this object, so nothing here needs the connection.
+        """
+        try:
+            self._vector_store.add(
+                collection=self._vector_collection,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas
+            )
+            return True
+        except Exception as e:
+            # The rows are already committed — a failed index costs similarity
+            # search on these entries, not the content.
+            logger.error(f"Failed to add batch of {len(ids)} to VectorStore: {e}")
+            return False
+
     def search(
         self,
         query: str,
@@ -313,13 +640,20 @@ class ArchivalMemory:
         use_semantic: bool | None = None
     ) -> list[ArchivedMessage]:
         """Search archived messages.
-        
+
+        Not synchronized as a whole, on purpose — the same split as store():
+        the vector query runs against the store shared by every session and
+        can wait seconds for another session's batch embedding. Only the
+        SQLite parts (_search_text, the row fetch in _search_semantic) take
+        this instance's lock, so loop-synchronous readers never wait on
+        another session's work.
+
         Args:
             query: Search query
             session_id: Optional session filter
             limit: Maximum results
             use_semantic: Use semantic search (default: auto-detect)
-            
+
         Returns:
             List of matching archived messages
         """
@@ -329,12 +663,34 @@ class ArchivalMemory:
         if use_semantic is None:
             use_semantic = self.enable_semantic_search
         
-        if use_semantic and self._vector_store:
-            return self._search_semantic(query, session_id, limit)
-        else:
+        if not (use_semantic and self._vector_store):
             return self._search_text(query, session_id, limit)
+        semantic = self._search_semantic(query, session_id, limit)
+        if not semantic:
+            # Nothing indexed is not nothing archived: the shared store starts
+            # empty for a session archived before semantic search was on. The
+            # broad text search, exactly as without semantic search.
+            return self._search_text(query, session_id, limit)
+        # Both. The vector index is not the archive: a row is in it only once
+        # its embedding landed, and a large prune embeds in the background, a
+        # refused or cancelled batch never does. Asked alone, the index answers
+        # over the part it holds and never says which part that was -- an exact
+        # identifier from an unembedded message is then simply not there.
+        #
+        # The text half demands EVERY word. Its broad form ORs them, and fusion
+        # weighs by rank alone: a row that matched nothing but "die" would take
+        # a slot at the same weight as a strong vector hit. Demanding all of
+        # them, it can only add what really contains everything asked for --
+        # which is what the vector index may be missing.
+        #
+        # Text first: fusion breaks ties by list order, and the top of each list
+        # scores the same. With the vector list first, limit=1 returned the
+        # nearest neighbour and never the row that holds every word asked for.
+        return _fused(self._search_text(query, session_id, limit, every_word=True),
+                      semantic,
+                      limit=limit)
     
-    def _escape_fts5_query(self, query: str) -> str:
+    def _escape_fts5_query(self, query: str, every_word: bool = False) -> str:
         """Escape special characters for FTS5 MATCH syntax.
         
         FTS5 has special characters that need escaping:
@@ -342,39 +698,75 @@ class ArchivalMemory:
         - Special operators: AND, OR, NOT, NEAR, *
         - Punctuation: . - : @ # etc.
         
-        Strategy: Wrap each word in double quotes to treat as literal.
+        Strategy: Wrap each word in double quotes to treat as literal --
+        except AND and OR written in capitals, which stay operators. NOT is not
+        offered: the vector half of a search cannot exclude anything, so it
+        would promise what half the answer does not keep. The word after it is
+        left out instead -- looked for, it would find exactly what was meant
+        to be excluded.
         """
         import re
         
+        # OR for broader matching; AND where a row must hold all of them.
+        default = ' AND ' if every_word else ' OR '
         # Split on whitespace, wrap each token in quotes
         # This makes FTS5 treat each word as a literal phrase
         tokens = query.split()
-        
-        # Escape any double quotes within tokens
-        escaped_tokens = []
+        # A filter made of nothing but operators is looked for as its words.
+        operators = any(t not in ("AND", "OR", "NOT") for t in tokens)
+        parts: list[str] = []
+        operator = default
+        leave_out = False
         for token in tokens:
+            # An operator the filter spells out is one (FTS5 counts only the
+            # capitals). Quoted like a word, "QS-4711 OR QS-4712" asked the
+            # every-word search for rows holding "or" too, and found nothing.
+            # One with no term before or after it has nothing to join.
+            if operators and token in ("AND", "OR"):
+                operator = f" {token} "
+                continue
+            if operators and token == "NOT":
+                leave_out = True
+                continue
             # Remove/escape problematic chars
             # FTS5 doesn't like bare punctuation
             cleaned = re.sub(r'[^\w\s]', ' ', token).strip()
-            if cleaned:
-                escaped_tokens.append(f'"{cleaned}"')
-        
-        if not escaped_tokens:
+            if cleaned and leave_out:
+                leave_out = False
+            elif cleaned:
+                if parts:
+                    parts.append(operator)
+                parts.append(f'"{cleaned}"')
+                operator = default
+
+        if not parts:
             # Fallback: just return original with dangerous chars removed
             return re.sub(r'[^\w\s]', ' ', query).strip()
-        
-        # Join with OR for broader matching
-        return ' OR '.join(escaped_tokens)
+
+        return ''.join(parts)
     
+    @_synchronized
     def _search_text(
         self,
         query: str,
         session_id: str | None,
-        limit: int
+        limit: int,
+        every_word: bool = False
     ) -> list[ArchivedMessage]:
-        """Full-text search using SQLite FTS5."""
+        """Full-text search using SQLite FTS5.
+
+        Broad by default (any word). ``every_word`` demands all of them -- the
+        form search() fuses with the vector index, where a row matching one
+        common word would otherwise take a slot.
+
+        FTS5 here matches whole words, without stemming; only when it finds
+        nothing at all does the LIKE below look for the query as a substring
+        (so "Pruefstueck" finds "Pruefstuecks" then, and not while any row
+        holds the exact word). AND and OR in capitals are operators; see
+        _escape_fts5_query for NOT.
+        """
         # Escape query for FTS5 syntax safety
-        fts_query = self._escape_fts5_query(query)
+        fts_query = self._escape_fts5_query(query, every_word)
         
         try:
             # Build query
@@ -440,36 +832,66 @@ class ArchivalMemory:
         session_id: str | None,
         limit: int
     ) -> list[ArchivedMessage]:
-        """Semantic search using VectorStore."""
+        """Semantic search using VectorStore; [] when the index has nothing.
+
+        [] and not the text search: search() decides what an empty answer
+        means, and falling back HERE ran the text search twice on every query
+        of a session whose index is empty -- once inside, once for the fusion.
+        """
         if not self._vector_store:
-            return self._search_text(query, session_id, limit)
-        
+            return []
+        # The store is shared between sessions and only the session_id filter
+        # keeps them apart. A query without one would rank OTHER sessions'
+        # messages — in the per-session layout that was merely an empty
+        # directory, here it would be a leak. Unreachable from the plugin
+        # (hooks always set the id), guarded anyway.
+        if not session_id:
+            return []
+
         try:
-            # Build where filter (only supported by ChromaDB backend)
-            where = {"session_id": session_id} if session_id else None
-            
+            where = {"session_id": session_id}
+
             results = self._vector_store.query(
                 collection=self._vector_collection,
                 query_text=query,
                 n_results=limit,
                 where=where
             )
-            
+
             if not results or not results.get("ids") or not results["ids"]:
                 return []
             
-            # Fetch full messages from SQLite
+            # Fetch full messages from SQLite.
+            #
+            # ChromaDB answers PER QUERY: {"ids": [[id, id, ...]]}. Binding that
+            # nested form gives "Error binding parameter 1: type 'list' is not
+            # supported", which the except below turned into a text-search
+            # fallback — so semantic search never actually ran, while every
+            # archive write still paid ~78 ms of embedding for an index nothing
+            # read. Invisible for months because the config key that switches
+            # this on was misspelled and the feature was simply never exercised.
+            # sqlite-vec answers flat, so accept both shapes.
             ids = results["ids"]
+            if ids and isinstance(ids[0], list):
+                ids = ids[0]
+            if not ids:
+                # ChromaDB's empty answer is [[]] — truthy, so it passes the
+                # check above and only shows here.
+                return []
             placeholders = ",".join("?" * len(ids))
-            cursor = self._db.execute(f"""
-                SELECT id, role, content, summary, timestamp, session_id,
-                       token_count, metadata, tool_call_id, tool_name
-                FROM archived_messages
-                WHERE id IN ({placeholders})
-            """, ids)
-            
+            # Only the row fetch needs this instance's lock; the vector query
+            # above deliberately ran without it (see search()).
+            with self._lock:
+                cursor = self._db.execute(f"""
+                    SELECT id, role, content, summary, timestamp, session_id,
+                           token_count, metadata, tool_call_id, tool_name
+                    FROM archived_messages
+                    WHERE id IN ({placeholders})
+                """, ids)
+                rows = cursor.fetchall()
+
             # Maintain order from VectorStore results
-            rows_by_id = {row[0]: row for row in cursor.fetchall()}
+            rows_by_id = {row[0]: row for row in rows}
             return [
                 ArchivedMessage.from_row(rows_by_id[id_])
                 for id_ in ids if id_ in rows_by_id
@@ -477,47 +899,93 @@ class ArchivalMemory:
             
         except Exception as e:
             logger.error(f"Semantic search failed, falling back to text: {e}")
-            return self._search_text(query, session_id, limit)
+            return []
     
+    @_synchronized
     def get_session_messages(
         self,
         session_id: str | None = None,
         limit: int | None = None,
-        role: str | None = None
+        role: str | None = None,
+        offset: int = 0
     ) -> list[ArchivedMessage]:
-        """Get all archived messages for a session.
-        
+        """Get archived messages for a session, oldest first.
+
         Args:
             session_id: Session ID
             limit: Optional limit
             role: Optional role filter
-            
+            offset: Skip this many entries — the other half of paging. Without
+                it a caller can only ever see the first page, which is why the
+                agent-facing tools could not walk the history at all.
+
         Returns:
             List of archived messages
         """
         session_id = session_id or self.session_id or "default"
-        
+
         query = """
             SELECT id, role, content, summary, timestamp, session_id,
                    token_count, metadata, tool_call_id, tool_name
             FROM archived_messages
             WHERE session_id = ?
         """
-        params = [session_id]
-        
+        params: list[Any] = [session_id]
+
         if role:
             query += " AND role = ?"
             params.append(role)
-        
-        query += " ORDER BY timestamp ASC"
-        
+
+        # id as tiebreaker: same-second timestamps are common (a tool call and
+        # its result), and an unstable order would make paging skip or repeat.
+        query += " ORDER BY timestamp ASC, id ASC"
+
         if limit:
             query += " LIMIT ?"
             params.append(limit)
-        
+        elif offset:
+            query += " LIMIT -1"  # SQLite requires a LIMIT before OFFSET
+        if offset:
+            query += " OFFSET ?"
+            params.append(offset)
+
         cursor = self._db.execute(query, params)
         return [ArchivedMessage.from_row(row) for row in cursor.fetchall()]
+
+    @_synchronized
+    def get(self, entry_id: str) -> ArchivedMessage | None:
+        """One archived message by its id — a primary-key lookup.
+
+        The context leaves ``{"type":"archived_ref","ref_id":"arch_…"}`` exactly
+        where the message stood, so reading by that address is the shortest path
+        back to the content. Going through the full-text index for it happens to
+        work but is a coincidence of the id being indexed, not a contract.
+        """
+        row = self._db.execute(
+            """
+            SELECT id, role, content, summary, timestamp, session_id,
+                   token_count, metadata, tool_call_id, tool_name
+            FROM archived_messages WHERE id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        return ArchivedMessage.from_row(row) if row else None
+
+    @_synchronized
+    def count_session_messages(self, session_id: str | None = None,
+                               role: str | None = None) -> int:
+        """How many archived messages a session has — the total a pager needs
+        to tell the agent whether more pages exist."""
+        session_id = session_id or self.session_id or "default"
+        query = "SELECT COUNT(*) FROM archived_messages WHERE session_id = ?"
+        params: list[Any] = [session_id]
+        if role:
+            query += " AND role = ?"
+            params.append(role)
+        row = self._db.execute(query, params).fetchone()
+        return int(row[0]) if row else 0
     
+    @_synchronized
     def get_stats(self, session_id: str | None = None) -> dict[str, Any]:
         """Get statistics about archived messages.
         
@@ -571,18 +1039,17 @@ class ArchivalMemory:
             Brief summary string
         """
         role = message.get("role", "unknown")
-        content = message.get("content", "")
-        
-        if isinstance(content, list):
-            content = " ".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
-        
-        # Handle tool calls
-        if role == "assistant" and "tool_calls" in message:
+        content = _message_text(message)
+
+        # Handle tool calls. Same shape trap as in store(): the key is present
+        # with value None far more often than it holds a list, so an ``in`` test
+        # both raises here AND used to produce the empty "called tools: ".
+        # Falling through to the content summary is the better answer anyway.
+        tool_calls = message.get("tool_calls") or []
+        if role == "assistant" and tool_calls:
             tools = [
                 tc.get("function", {}).get("name", "unknown")
-                for tc in message.get("tool_calls", [])
+                for tc in tool_calls
             ]
             return f"Assistant called tools: {', '.join(tools)}"
         
@@ -600,70 +1067,38 @@ class ArchivalMemory:
         
         return f"{role.title()} message (empty)"
     
-    def cleanup_old(
-        self,
-        max_age_days: int = 7,
-        session_id: str | None = None
-    ) -> int:
-        """Remove old archived messages.
-        
-        Args:
-            max_age_days: Remove entries older than this
-            session_id: Optional session filter
-            
-        Returns:
-            Number of entries removed
+    @property
+    def is_open(self) -> bool:
+        """Whether this archive still has its connections.
+
+        Asked by work that outlives the request that started it: a background
+        embedding runs for up to a minute, and a session evicted meanwhile
+        closes the stores under it. Without this the next chunk would report a
+        refused batch, and the log would blame the vector store.
+
+        Deliberately NOT ``@_synchronized``: it is read from the event loop, and
+        this lock is held across seconds of another session's embedding.
         """
-        from datetime import timedelta
-        cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
-        
-        # Get IDs to delete (for ChromaDB cleanup)
-        if session_id:
-            cursor = self._db.execute(
-                "SELECT id FROM archived_messages WHERE session_id = ? AND timestamp < ?",
-                (session_id, cutoff)
-            )
-        else:
-            cursor = self._db.execute(
-                "SELECT id FROM archived_messages WHERE timestamp < ?",
-                (cutoff,)
-            )
-        
-        ids_to_delete = [row[0] for row in cursor.fetchall()]
-        
-        if not ids_to_delete:
-            return 0
-        
-        # Delete from SQLite
-        placeholders = ",".join("?" * len(ids_to_delete))
-        self._db.execute(
-            f"DELETE FROM archived_messages WHERE id IN ({placeholders})",
-            ids_to_delete
-        )
-        self._db.execute(
-            f"DELETE FROM archived_fts WHERE id IN ({placeholders})",
-            ids_to_delete
-        )
-        self._db.commit()
-        
-        # Delete from VectorStore
-        if self.enable_semantic_search and self._vector_store:
-            try:
-                self._vector_store.delete(
-                    collection=self._vector_collection,
-                    ids=ids_to_delete
-                )
-            except Exception as e:
-                logger.error(f"Failed to delete from VectorStore: {e}")
-        
-        logger.info(f"Cleaned up {len(ids_to_delete)} old archived messages")
-        return len(ids_to_delete)
-    
+        return self._db is not None
+
+    @_synchronized
     def close(self) -> None:
         """Close database connections."""
         if self._db:
             self._db.close()
             self._db = None
         if self._vector_store:
-            self._vector_store.close()
+            if self._owns_vector_store:
+                self._vector_store.close()
+            else:
+                # Shared store: closing it here would stop the ONE Chroma
+                # runtime every other session is using at that moment — a
+                # process-wide interruption every time a session ends. (It
+                # does heal: chromadb >= 1.5 drops the stopped System from its
+                # registry on close, so the next access rebuilds it.) Only the
+                # owner, the plugin, closes it.
+                logger.debug(
+                    "ArchivalMemory %s released its shared VectorStore without closing it",
+                    self.session_id,
+                )
             self._vector_store = None

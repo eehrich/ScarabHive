@@ -3,7 +3,7 @@
 Plugin Validation Script
 
 Validates plugin conformity by checking:
-- plugin.yaml structure and required fields
+- plugin.toml structure and required fields
 - schema.yaml structure and tool definitions
 - File structure and required files
 - Schema compliance with JSON schemas
@@ -15,7 +15,7 @@ Usage:
     python src/scripts/validate_plugin.py <plugin_path>
     python src/scripts/validate_plugin.py --all
     python src/scripts/validate_plugin.py --plugin basic_operations
-    python src/scripts/validate_plugin.py --all --fix
+    python src/scripts/validate_plugin.py --all --merge-config
 """
 
 import argparse
@@ -27,7 +27,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from jsonschema import ValidationError, validate as json_validate
+# jsonschema is imported where it is used (_validate_manifest_schema), not here:
+# it is not in requirements/core.txt -- it arrives with a plugin's own deps --
+# and validate_all_tool_schemas.py imports this module only for PLUGIN_ROOTS.
+# A module-level import would make that script need a package it never calls.
 
 # Import config analyzer (only used with --extract-config)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -43,6 +46,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#: A plugin is a directory carrying this. ONE definition, because the last
+#: time the two places disagreed, ``_check_file_structure`` was fixed and
+#: ``find_plugin_directories`` was not: ``--all`` then found 0 of 64 plugins
+#: and exited 0, so the pre-commit hook, the CI step and the make target all
+#: passed on an empty list.
+MANIFEST_NAME = "plugin.toml"
+
+#: Every root that actually holds plugins. Measured 2026-09-20: 62 + 12 + 2
+#: manifests. ``--all`` and ``--plugin`` used to name only the first two, so
+#: plugins_trading was unreachable by either; the LLM providers had their own
+#: root as well until they moved into ``plugins``.
+PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading")
+
+
+def has_manifest(path: Path) -> bool:
+    """Does this directory look like a plugin?"""
+    return (path / MANIFEST_NAME).exists()
+
+
+def plugin_roots(project_root: Path) -> list[Path]:
+    """The plugin roots under a checkout, in a fixed order."""
+    return [project_root / "src" / name for name in PLUGIN_ROOTS]
+
 
 class PluginValidator:
     """Validates plugin conformity against system requirements."""
@@ -52,7 +78,7 @@ class PluginValidator:
         self.schemas_dir = schemas_dir
         self.errors: list[str] = []
         self.warnings: list[str] = []
-        self.plugin_yaml: dict[str, Any] | None = None
+        self.manifest: dict[str, Any] | None = None
         self.schema_yaml: dict[str, Any] | None = None
 
     def validate(self) -> bool:
@@ -64,16 +90,15 @@ class PluginValidator:
         """
         logger.info(f"Validating plugin: {self.plugin_path.name}")
 
-        # Check basic file structure
-        if not self._check_file_structure():
+        # Check basic file structure, then load the configuration files. Either
+        # failing ends the run -- but with the report: the errors are already
+        # collected, and an exit 1 with nothing printed tells nobody why.
+        if not self._check_file_structure() or not self._load_configs():
+            self._report_results()
             return False
 
-        # Load configuration files
-        if not self._load_configs():
-            return False
-
-        # Validate plugin.yaml against JSON schema
-        self._validate_plugin_yaml_schema()
+        # Validate the manifest against its JSON schema
+        self._validate_manifest_schema()
 
         # Validate schema.yaml structure
         self._validate_schema_yaml_structure()
@@ -93,61 +118,79 @@ class PluginValidator:
         # Report results
         return self._report_results()
 
+    #: Types that ship no plugin-registry entrypoint module. A "library"
+    #: plugin (amiga, coder, research, writer_publish) is agents, skills and
+    #: prompts -- config, no code; an "llm-provider" is found by the LLM
+    #: registry through provider.py, not through PLUGIN_FACTORY. Demanding
+    #: plugin.py or an `entrypoint` from either was this validator refusing a
+    #: shape the runtime supports.
+    CODELESS_TYPES = frozenset({"library", "llm-provider"})
+
+    #: The type was called "tool-server" until 17.09.2026. A plugin from outside
+    #: this repo still says so, and its meaning has not changed.
+    LEGACY_TYPES = {"tool-server": "tool-server"}
+
+    def declared_types(self) -> list[str]:
+        """The manifest's `type` list, old string form and old names converted."""
+        declared = (self.manifest or {}).get("type", ["tool-server"])
+        if isinstance(declared, str):
+            declared = self._convert_old_type_format(declared)
+        return [self.LEGACY_TYPES.get(name, name) for name in (declared or [])]
+
+    def _is_codeless(self) -> bool:
+        return bool(self.CODELESS_TYPES & set(self.declared_types()))
+
     def _check_file_structure(self) -> bool:
         """Check that required files exist."""
-        required_files = ["plugin.yaml"]
+        # Demanding plugin.yaml here made this validator refuse EVERY plugin
+        # in the tree at its first check: measured 2026-09-05, 73 plugin.toml
+        # and 0 plugin.yaml, so nothing behind this line had run in a long
+        # time. plugin.yaml is gone, not deprecated -- there is no fallback.
+        if not has_manifest(self.plugin_path):
+            self.errors.append(f"Missing required file: {MANIFEST_NAME}")
+            return False
 
-        for filename in required_files:
-            file_path = self.plugin_path / filename
-            if not file_path.exists():
-                self.errors.append(f"Missing required file: {filename}")
-                return False
+        # The manifest decides what else has to be there -- so read it first.
+        # (_load_configs runs after this method and does it again; here we only
+        # need the type, and a manifest that cannot be read is reported there.)
+        from agent_system.plugins.plugin_manifest import load_plugin_metadata
+        self.manifest = load_plugin_metadata(self.plugin_path)
 
-        # Check for either schema.yaml or plugin.py (entrypoint)
-        has_schema = (self.plugin_path / "schema.yaml").exists()
-        has_plugin_py = (self.plugin_path / "plugin.py").exists()
-        has_server_py = (self.plugin_path / "server.py").exists()
-
-        if not has_schema:
+        if not (self.plugin_path / "schema.yaml").exists() and not self._is_codeless():
             self.warnings.append(
                 "No schema.yaml found - plugin may be config-only or have programmatic tools"
             )
 
-        if not has_plugin_py and not has_server_py:
-            self.errors.append(
-                "Missing plugin.py or server.py - no entrypoint module found"
-            )
-            return False
-
+        # No entrypoint check here on purpose: _validate_entrypoint does it
+        # properly, against the module the manifest actually NAMES, and it
+        # runs to the end instead of aborting the whole validation at the
+        # first finding. Measured: with this block gone, a plugin whose
+        # plugin.py is missing is still refused -- by that check.
         return True
 
     def _load_configs(self) -> bool:
-        """Load and parse YAML configuration files."""
+        """Load and parse the plugin manifest + schema."""
         try:
-            # Load plugin.yaml
-            plugin_yaml_path = self.plugin_path / "plugin.yaml"
-            with open(plugin_yaml_path, "r", encoding="utf-8") as f:
-                self.plugin_yaml = yaml.safe_load(f)
+            # Load the plugin manifest through the shared loader, which
+            # returns the [plugin] table of plugin.toml.
+            from agent_system.plugins.plugin_manifest import load_plugin_metadata
+            self.manifest = load_plugin_metadata(self.plugin_path)
 
-            # Load schema.yaml (optional) - handle Jinja2 templates
+            # Render schema.yaml through the RUNTIME's loader, not through a
+            # regex. Stripping `{% ... %}` leaves BOTH branches of a
+            # conditional standing: tavily_search declares `tools: []` without
+            # an API key and a block sequence with one, and the stripped result
+            # was neither -- "expected <block end>" for a file the runtime
+            # renders fine. Measured 2026-09-05: 8 of the 62 schemas carry
+            # Jinja logic, and the real loader parses all 62.
             schema_yaml_path = self.plugin_path / "schema.yaml"
             if schema_yaml_path.exists():
-                with open(schema_yaml_path, "r", encoding="utf-8") as f:
-                    schema_content = f.read()
-
-                # Replace template variables with placeholder values for validation
-                import re
-                # Replace {{ name }} with placeholder
-                schema_content = re.sub(r'\{\{\s*name\s*\}\}', 'plugin_name', schema_content)
-                # Remove Jinja2 control structures {% ... %}
-                schema_content = re.sub(r'\{%.*?%\}', '', schema_content, flags=re.DOTALL)
-                # Replace other {{ var | filter }} or {{ var }} with simple placeholder (no quotes)
-                schema_content = re.sub(r'\{\{[^}]+\}\}', 'TEMPLATE_VALUE', schema_content)
-
+                from agent_system.plugins.schema_loader import load_schema_from_dir
                 try:
-                    self.schema_yaml = yaml.safe_load(schema_content)
-                except yaml.YAMLError as e:
-                    self.errors.append(f"YAML parsing error in schema.yaml: {e}")
+                    self.schema_yaml = load_schema_from_dir(
+                        self.plugin_path, {"name": self.plugin_path.name})
+                except Exception as e:
+                    self.errors.append(f"schema.yaml does not render or parse: {e}")
                     return False
 
             return True
@@ -159,8 +202,10 @@ class PluginValidator:
             self.errors.append(f"Error loading configs: {e}")
             return False
 
-    def _validate_plugin_yaml_schema(self) -> None:
-        """Validate plugin.yaml against JSON schema."""
+    def _validate_manifest_schema(self) -> None:
+        """Validate the manifest against its JSON schema."""
+        from jsonschema import ValidationError, validate as json_validate
+
         schema_path = self.schemas_dir / "plugin-config.schema.json"
 
         if not schema_path.exists():
@@ -180,37 +225,36 @@ class PluginValidator:
                 # Ensure it's just a string type
                 schema["properties"]["category"]["type"] = "string"
 
-            json_validate(instance=self.plugin_yaml, schema=schema)
-            logger.debug("plugin.yaml passed JSON schema validation")
+            json_validate(instance=self.manifest, schema=schema)
+            logger.debug("plugin.toml passed JSON schema validation")
 
         except ValidationError as e:
             self.errors.append(
-                f"plugin.yaml schema validation failed: {e.message} at {list(e.path)}"
+                f"plugin.toml schema validation failed: {e.message} at {list(e.path)}"
             )
         except Exception as e:
-            self.errors.append(f"Error validating plugin.yaml schema: {e}")
+            self.errors.append(f"Error validating plugin.toml schema: {e}")
 
     def _validate_schema_yaml_structure(self) -> None:
         """Validate schema.yaml structure and required fields."""
         if not self.schema_yaml:
             return  # schema.yaml is optional
 
-        # Check for tools section (if MCP plugin)
-        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
+        # Check for tools section (if plugin)
+        raw_types = self.manifest.get("type", ["tool-server"])
 
         # Handle both old string format and new list format for backward compatibility
-        if isinstance(plugin_types, str):
+        if isinstance(raw_types, str):
             self.warnings.append(
-                f"Plugin type is using deprecated string format: '{plugin_types}'. "
-                "Please update to list format (e.g., ['mcp-server'], ['web'], ['mcp-server', 'web'])"
+                f"Plugin type is using deprecated string format: '{raw_types}'. "
+                "Please update to list format (e.g., ['tool-server'], ['web'], ['tool-server', 'web'])"
             )
-            # Convert old string format to list for validation
-            plugin_types = self._convert_old_type_format(plugin_types)
+        plugin_types = self.declared_types()
 
-        if "mcp-server" in plugin_types:
+        if "tool-server" in plugin_types:
             if "tools" not in self.schema_yaml:
                 self.errors.append(
-                    f"MCP plugin type {plugin_types} requires 'tools' section in schema.yaml"
+                    f"plugin type {plugin_types} requires 'tools' section in schema.yaml"
                 )
             else:
                 self._validate_tools_section()
@@ -224,14 +268,14 @@ class PluginValidator:
             else:
                 self._validate_hooks_section()
 
-        # Check for web_ui section (if web plugin)
-        if "web" in plugin_types:
-            if "web_ui" in self.schema_yaml:
-                self._validate_web_ui_section()
-            else:
-                self.warnings.append(
-                    f"Web plugin type {plugin_types} should have 'web_ui' section in schema.yaml"
-                )
+        # A web_ui section is checked wherever it is: plugins typed tool-server
+        # (comfyui, ssh_control) serve panels too.
+        if "web_ui" in self.schema_yaml:
+            self._validate_web_ui_section()
+        elif "web" in plugin_types:
+            self.warnings.append(
+                f"Web plugin type {plugin_types} should have 'web_ui' section in schema.yaml"
+            )
 
     def _validate_tools_section(self) -> None:
         """Validate tools section in schema.yaml."""
@@ -326,12 +370,12 @@ class PluginValidator:
 
         if "description" not in tool:
             self.warnings.append(
-                f"MCP tool '{tool_name}' missing description - highly recommended"
+                f"tool '{tool_name}' missing description - highly recommended"
             )
 
         if "inputSchema" not in tool:
             self.warnings.append(
-                f"MCP tool '{tool_name}' missing inputSchema - tools should define parameters"
+                f"tool '{tool_name}' missing inputSchema - tools should define parameters"
             )
         else:
             # Validate inputSchema as parameters
@@ -399,15 +443,12 @@ class PluginValidator:
             self.warnings.append("'hooks' list is empty")
 
         seen_hook_names: set[str] = set()
-        valid_hook_types = [
-            "pre_llm_call",
-            "post_llm_call",
-            "pre_tool_call",
-            "post_tool_call",
-            "format_output",
-            "session_start",
-            "session_end"
-        ]
+        # From the enum, not from a copy: this list was missing
+        # pre_llm_request and post_llm_response (HookType has had them since
+        # the LLM-client-level hooks landed), so message_debugger -- a shipped,
+        # working plugin -- was reported as broken.
+        from agent_system.hooks.plugin_hook import HookType
+        valid_hook_types = [h.value for h in HookType]
 
         for idx, hook in enumerate(hooks):
             if not isinstance(hook, dict):
@@ -429,7 +470,10 @@ class PluginValidator:
                 self.errors.append(f"Hook '{hook_name}' missing 'type' field")
                 continue
 
-            hook_type = hook["type"]
+            # SchemaBasedHookPlugin does `hook.get("type", "").upper()`, so
+            # `PRE_LLM_CALL` and `pre_llm_call` are the same hook to the
+            # runtime -- and the docstring of that class writes it upper case.
+            hook_type = str(hook["type"]).lower()
             if hook_type not in valid_hook_types:
                 self.errors.append(
                     f"Hook '{hook_name}' has invalid type: {hook_type}. "
@@ -444,6 +488,12 @@ class PluginValidator:
             if "description" not in hook:
                 self.warnings.append(
                     f"Hook '{hook_name}' missing description - highly recommended"
+                )
+
+            if "on_error" in hook and (hook["on_error"] != "block" or hook_type != "pre_tool_call"):
+                self.errors.append(
+                    f"Hook '{hook_name}' on_error must be 'block', and only on a pre_tool_call "
+                    f"hook -- anything else lets a failing hook's call run"
                 )
 
             # Validate order if present
@@ -478,77 +528,44 @@ class PluginValidator:
                         )
 
     def _validate_web_ui_section(self) -> None:
-        """Validate web_ui section in schema.yaml."""
-        web_ui = self.schema_yaml.get("web_ui", {})
+        """Validate web_ui: the panel's catalogue entry and the schema-routed endpoints.
 
+        The panel goes through the catalogue's own parser, so a panel this
+        accepts is one the launcher shows.
+        """
+        from agent_system.ui.catalog import PanelSpecError, plugin_panel
+        from agent_system.ui.resources import sprite_icons
+
+        web_ui = self.schema_yaml.get("web_ui", {})
         if not isinstance(web_ui, dict):
             self.errors.append("'web_ui' must be an object")
             return
-
-        # Check recommended fields
-        recommended_fields = [
-            "enabled",
-            "button_text",
-            "button_icon",
-            "panel_title",
-            "panel_endpoint",
-            "panel_type"
-        ]
-
-        for field in recommended_fields:
-            if field not in web_ui:
-                self.warnings.append(
-                    f"web_ui missing recommended field: {field}"
-                )
-
-        # Validate panel_type if present
-        if "panel_type" in web_ui:
-            panel_type = web_ui["panel_type"]
-            if panel_type not in ["fetch", "iframe"]:
-                self.errors.append(
-                    f"web_ui.panel_type must be 'fetch' or 'iframe', got: {panel_type}"
-                )
-
-        # Validate panels section if present
-        if "panels" in web_ui:
-            panels = web_ui["panels"]
-            if not isinstance(panels, list):
-                self.errors.append("web_ui.panels must be a list")
-            else:
-                self._validate_panels(panels)
-
-    def _validate_panels(self, panels: list[dict[str, Any]]) -> None:
-        """Validate panel definitions."""
-        for idx, panel in enumerate(panels):
-            if not isinstance(panel, dict):
-                self.errors.append(f"Panel at index {idx} must be an object")
-                continue
-
-            required_fields = ["id", "title", "url"]
-            for field in required_fields:
-                if field not in panel:
-                    self.errors.append(
-                        f"Panel at index {idx} missing required field: {field}"
-                    )
+        # YAML reads keys like `on:` as booleans: named as text, so they sort with the rest
+        unknown = sorted(str(key) for key in set(web_ui) - {"panel", "endpoints"})
+        if unknown:
+            self.errors.append(f"web_ui has unknown keys {unknown}; known: endpoints, panel")
+        if not isinstance(web_ui.get("endpoints", []), list):
+            self.errors.append("web_ui.endpoints must be a list")
+        if "panel" in web_ui:
+            try:
+                plugin_panel(self.plugin_path.name, web_ui["panel"], sprite_icons())
+            except PanelSpecError as error:
+                self.errors.append(str(error))
 
     def _cross_validate_configs(self) -> None:
-        """Cross-validate plugin.yaml and schema.yaml."""
-        if not self.plugin_yaml or not self.schema_yaml:
+        """Cross-validate plugin.toml and schema.yaml."""
+        if not self.manifest or not self.schema_yaml:
             return
 
-        plugin_types = self.plugin_yaml.get("type", ["mcp-server"])
-
-        # Handle both old string format and new list format
-        if isinstance(plugin_types, str):
-            plugin_types = self._convert_old_type_format(plugin_types)
+        plugin_types = self.declared_types()
 
         # Check consistency between plugin type and schema content
         has_tools = "tools" in self.schema_yaml
         has_hooks = "hooks" in self.schema_yaml
 
-        if "mcp-server" in plugin_types and not has_tools:
+        if "tool-server" in plugin_types and not has_tools:
             self.warnings.append(
-                f"Plugin type {plugin_types} suggests MCP tools but schema.yaml has no 'tools' section"
+                f"Plugin type {plugin_types} suggests tools but schema.yaml has no 'tools' section"
             )
 
         if plugin_types == ["hooks"] and has_tools:
@@ -565,24 +582,24 @@ class PluginValidator:
         """Convert old string type format to new list format.
 
         Mapping:
-        - mcp_only -> ["mcp-server"]
+        - mcp_only -> ["tool-server"]
         - web_only -> ["web"]
         - hooks_only -> ["hooks"]
-        - hybrid -> ["mcp-server", "web"]
-        - mcp_with_hooks -> ["mcp-server", "hooks"]
+        - hybrid -> ["tool-server", "web"]
+        - mcp_with_hooks -> ["tool-server", "hooks"]
         - web_with_hooks -> ["web", "hooks"]
-        - hybrid_with_hooks -> ["mcp-server", "web", "hooks"]
+        - hybrid_with_hooks -> ["tool-server", "web", "hooks"]
         """
         mapping = {
-            "mcp_only": ["mcp-server"],
+            "mcp_only": ["tool-server"],
             "web_only": ["web"],
             "hooks_only": ["hooks"],
-            "hybrid": ["mcp-server", "web"],
-            "mcp_with_hooks": ["mcp-server", "hooks"],
+            "hybrid": ["tool-server", "web"],
+            "mcp_with_hooks": ["tool-server", "hooks"],
             "web_with_hooks": ["web", "hooks"],
-            "hybrid_with_hooks": ["mcp-server", "web", "hooks"],
+            "hybrid_with_hooks": ["tool-server", "web", "hooks"],
         }
-        return mapping.get(old_type, ["mcp-server"])
+        return mapping.get(old_type, ["tool-server"])
 
     def _validate_template_variables(self) -> None:
         """Validate template variable usage in schema.yaml."""
@@ -605,25 +622,26 @@ class PluginValidator:
 
     def _validate_hooks(self) -> None:
         """Validate hook configuration consistency."""
-        if not self.plugin_yaml:
+        if not self.manifest:
             return
 
-        # Check if plugin.yaml declares hooks
-        plugin_hooks = self.plugin_yaml.get("hooks", [])
+        # Check if the manifest declares hooks
+        plugin_hooks = self.manifest.get("hooks", [])
 
         if plugin_hooks:
             self.warnings.append(
-                "plugin.yaml contains 'hooks' section - hooks should be defined in schema.yaml"
+                "plugin.toml contains a hooks section - hooks belong in schema.yaml"
             )
 
     def _validate_entrypoint(self) -> None:
         """Validate entrypoint module and factory."""
-        if not self.plugin_yaml:
+        if not self.manifest:
             return
 
-        entrypoint = self.plugin_yaml.get("entrypoint")
+        entrypoint = self.manifest.get("entrypoint")
         if not entrypoint:
-            self.errors.append("Missing 'entrypoint' in plugin.yaml")
+            if not self._is_codeless():
+                self.errors.append("Missing 'entrypoint' in the manifest")
             return
 
         # Parse entrypoint format: "module:FACTORY"
@@ -688,122 +706,6 @@ class PluginValidator:
         print()
         return False
 
-    def apply_fixes(self) -> bool:
-        """
-        Apply automatic fixes to plugin.yaml based on code analysis.
-
-        Returns:
-            True if fixes were applied successfully
-        """
-        if not self.auto_fix:
-            return False
-
-        plugin_name = self.plugin_path.name
-        plugin_yaml_path = self.plugin_path / "plugin.yaml"
-
-        try:
-            # Analyze plugin code to extract config parameters
-            logger.debug(f"Analyzing {plugin_name} for config parameters...")
-            discovered_config = analyze_plugin(self.plugin_path)
-
-            if not discovered_config:
-                logger.debug(f"No config parameters found for {plugin_name}")
-                return False
-
-            # Convert flat keys with dots to nested structure
-            structured_config = self._structure_config(discovered_config)
-
-            # Reload current plugin.yaml
-            with open(plugin_yaml_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-
-            # Check if config needs updating
-            current_config = data.get("config", {})
-
-            # Only update if config is empty or missing parameters
-            needs_update = False
-            if not current_config or current_config == {}:
-                needs_update = True
-            else:
-                # Check if any discovered params are missing
-                for key in discovered_config.keys():
-                    if key not in current_config:
-                        needs_update = True
-                        break
-
-            if needs_update:
-                data["config"] = structured_config
-
-                # Write back
-                with open(plugin_yaml_path, "w", encoding="utf-8") as f:
-                    yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-                param_count = self._count_params(structured_config)
-                self.fixes_applied.append(
-                    f"Updated config with {param_count} parameter(s) from code analysis"
-                )
-                logger.info(f"Applied config fix for {plugin_name}")
-                return True
-
-        except Exception as e:
-            logger.error(f"Failed to apply fixes: {e}")
-            return False
-
-        return False
-
-    def _structure_config(self, flat_config: dict) -> dict:
-        """
-        Convert flat config with dot-notation keys to nested structure.
-
-        Example:
-            {'security.audit_log': True, 'machines': []}
-            -> {'security': {'audit_log': True}, 'machines': []}
-
-        If both 'security.audit_log' and 'audit_log' exist, prefer the nested version.
-        """
-        structured = {}
-        nested_keys = set()  # Track which keys have nested versions (e.g., 'audit_log' has 'security.audit_log')
-
-        # First pass: identify which keys have nested versions
-        for key in flat_config.keys():
-            if '.' in key:
-                # e.g., 'security.audit_log' -> add 'audit_log' to nested_keys
-                parts = key.split('.')
-                for i in range(1, len(parts) + 1):
-                    child_key = '.'.join(parts[i:])
-                    if child_key:  # Don't add empty string
-                        nested_keys.add(child_key)
-
-        # Second pass: build structure
-        for key, value in flat_config.items():
-            if '.' in key:
-                # Nested key like 'security.audit_log'
-                parts = key.split('.')
-                parent = parts[0]
-                child = '.'.join(parts[1:])
-
-                if parent not in structured:
-                    structured[parent] = {}
-
-                # Recursively handle deeper nesting
-                if '.' in child:
-                    # e.g., 'a.b.c' -> structured['a']['b']['c']
-                    current = structured[parent]
-                    child_parts = child.split('.')
-                    for part in child_parts[:-1]:
-                        if part not in current:
-                            current[part] = {}
-                        current = current[part]
-                    current[child_parts[-1]] = value
-                else:
-                    structured[parent][child] = value
-            else:
-                # Flat key - only add if there's no nested version of this key
-                if key not in nested_keys:
-                    structured[key] = value
-
-        return structured
-
     def _count_params(self, config: dict) -> int:
         """Count total parameters in config."""
         count = 0
@@ -825,7 +727,7 @@ def find_plugin_directories(base_dirs: list[Path]) -> list[Path]:
             continue
 
         for item in base_dir.iterdir():
-            if item.is_dir() and (item / "plugin.yaml").exists():
+            if item.is_dir() and has_manifest(item):
                 plugin_dirs.append(item)
 
     return plugin_dirs
@@ -844,7 +746,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Validate all plugins in src/plugins/ and src/plugins_writer/"
+        help="Validate every plugin under the roots in PLUGIN_ROOTS"
     )
     parser.add_argument(
         "--plugin",
@@ -887,19 +789,12 @@ def main():
 
     if args.all:
         # Validate all plugins
-        base_dirs = [
-            project_root / "src" / "plugins",
-            project_root / "src" / "plugins_writer"
-        ]
-        plugins_to_validate = find_plugin_directories(base_dirs)
+        plugins_to_validate = find_plugin_directories(plugin_roots(project_root))
 
     elif args.plugin:
         # Validate specific plugin by name
         plugin_name = args.plugin
-        possible_locations = [
-            project_root / "src" / "plugins" / plugin_name,
-            project_root / "src" / "plugins_writer" / plugin_name
-        ]
+        possible_locations = [root / plugin_name for root in plugin_roots(project_root)]
 
         for location in possible_locations:
             if location.exists():

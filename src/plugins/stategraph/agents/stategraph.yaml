@@ -1,0 +1,95 @@
+# stategraph: the tool instance (tools + panel), the runner agent whose tool
+# allowlist is everything a machine may call directly, and the JSON store
+# those tool activities use.
+#
+# Authorization boundaries (docs/stategraph_design.md §8.3):
+#   agent activities -> the agents the machine file names (any configured
+#                       agent; machines are admin work), run directly
+#   tool activities  -> stategraph_runner's tools.allowed
+# Both are checked when a machine is validated (SG007) and again at run time.
+plugins:
+  servers:
+
+    stategraph:
+      type: stategraph
+      enabled: true
+      description: "State machines for agent workflows: model, validate, run and debug them"
+      # Machine roots in search order; the first root that has an id wins.
+      machine_dirs:
+        - data/stategraph/machines        # machines made in the panel; /data is not versioned
+        - "src/plugins*/*/machines"        # shipped next to their plugin, versioned
+      writable_machine_dirs:
+        - data/stategraph/machines
+      runs_db: data/stategraph/runs.db
+      runner_agent: stategraph_runner      # hosts runs; its allowlist bounds tool activities
+      # Besides admins (always allowed): users who may validate, save, run and
+      # control machines. Machines contain Python -- list only people you would
+      # let change plugin code.
+      allowed_users: []
+      # Params added to tool activities after rendering, by fnmatch pattern on
+      # the flat tool name (as in tool_script), so secrets never live in machine
+      # files. The config value wins over a value the machine passes. Example
+      # for a writer machine:
+      #   inject_params:
+      #     "writer_content_*": {write_key: "${WRITER_WRITE_KEY}"}
+      inject_params: {}
+      default_max_wait: 600                # seconds run_machine waits with wait: finish
+
+    # Host of machine runs and the boundary for tool activities: a tool
+    # activity is dispatched through this agent's dispatch_tool_call, so only
+    # tools in its allowlist can be called from a machine. Never add a
+    # stategraph tool here (SG007 refuses them): a machine must not save,
+    # start or control machines. Nobody chats with this agent.
+    stategraph_runner:
+      type: basic_agent
+      enabled: true
+      description: "Hosts stategraph machine runs; its tool allowlist is what machines may call directly"
+      agent_config:
+        llm_profile: [structured, structured_fallback]
+        llm_profile_advanced: []
+        max_steps: 5
+        system_template: "./prompts/stategraph_runner.md"
+        tools:
+          allowed:
+            - "stategraph_json/*"           # the machines' own JSON documents
+            - "debate_forum/*"              # the coordination log
+      metadata:
+        visibility: private                # not a chat partner
+
+    # The agent of the example machines (machines/*.yaml): plain text in, plain
+    # text out, no tools. Shipped with the plugin so the examples validate on
+    # every installation. Not chat_agent: its markdown formatter turns answers
+    # into HTML, and a machine reads the answer as data.
+    stategraph_example_agent:
+      type: basic_agent
+      enabled: true
+      description: "Plain agent for the stategraph example machines; answers in plain text"
+      agent_config:
+        llm_profile: [chat, or-gemini-flash-lite]
+        llm_profile_advanced: []
+        max_steps: 10
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: false
+            markdown_formatter.inject_markdown_system_prompt:
+              enabled: false
+      metadata:
+        visibility: private                # runs from machines, not a chat partner
+
+    # JSON working documents for machines' tool activities
+    # (tool stategraph_json_manage_json). Documents are scoped to the run's
+    # session unless a call passes a namespace. Files under
+    # data/json_store/stategraph_json/.
+    stategraph_json:
+      type: json_store
+      enabled: true
+      description: "stategraph: JSON working documents of machine runs"
+      config:
+        # Kept as long as the runs that name them: runs.db keeps every run,
+        # and an interrupted run resumes whenever someone resumes it -- its
+        # journal still names these documents then. json_store's default
+        # (336 h) would delete an idle namespace, and the resume would fail
+        # in its store steps.
+        file_retention_hours: 0

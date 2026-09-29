@@ -1,0 +1,21 @@
+<!doctype html>
+<html class="pk-root">
+<head><meta charset="utf-8"><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<script type="module">
+  // Framed by a page that is not the shell: no pk:init ever arrives, so the
+  // kit must answer dialogs itself instead of waiting for a host.
+  import { confirm } from '/static/kit/panel-kit.js';
+
+  const answer = confirm('Framed without a shell?');
+  await new Promise((r) => setTimeout(r, 0));
+  const opened = Boolean(document.querySelector('dialog.pk-dialog[open]'));
+  if (!opened) {
+    window.parent.postMessage({ probe: 'frame', ok: false }, '*');  // fail now, don't wait forever
+  } else {
+    document.querySelector('dialog.pk-dialog[open] .pk-btn--primary').click();
+    window.parent.postMessage({ probe: 'frame', ok: (await answer) === true }, '*');
+  }
+</script>
+</body>
+</html>

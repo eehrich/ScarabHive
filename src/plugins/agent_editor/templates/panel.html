@@ -1,0 +1,105 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Agent Editor{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}{% if auth_enabled %}
+<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" id="reloadConfig" title="Apply what needs no restart to the active agents">{{ icon('rotate-ccw', size='sm') }} Reload config</button>
+<pk-refresh interval="30"></pk-refresh>
+{% endif %}{% endblock %}
+{% block content %}
+{% if auth_enabled %}
+<div class="ae-layout pk-sidebar-layout">
+  <nav class="ae-side pk-sidebar" aria-label="Agents">
+    <div class="pk-row ae-side-top">
+      <label class="pk-search pk-grow">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search agents" aria-label="Search agents"></label>
+      <button type="button" class="pk-btn pk-btn--sm pk-btn--primary" id="create" title="New agent">{{ icon('plus', size='sm') }} New</button>
+    </div>
+    <select id="filter" class="pk-select pk-select--sm" aria-label="Show">
+      <option value="all">All agents</option>
+      <option value="enabled">Enabled</option>
+      <option value="disabled">Disabled</option>
+      <option value="problems">Has problems</option>
+      <option value="restart">Needs restart</option>
+      <option value="readonly">Read-only</option>
+    </select>
+    <div id="list" class="ae-list"><span class="pk-skeleton"></span></div>
+  </nav>
+
+  <section class="ae-main" aria-label="Agent">
+    <div id="placeholder"><div class="pk-empty">{{ icon('cpu') }}<div class="pk-empty-title">No agent selected</div>
+      <div>Pick an agent on the left, or create a new one.</div></div></div>
+    <div id="editor" class="pk-stack" hidden>
+      <header id="head" class="ae-head"></header>
+      <div id="banners" class="pk-stack"></div>
+      <fieldset id="formLock" class="ae-plain" aria-label="Agent settings">
+        <div id="tabArea">
+          <div id="tabs" class="pk-tabs" role="tablist" data-pk-tabs aria-label="Agent settings">
+            <button type="button" class="pk-tab" role="tab" id="tabButton-general" aria-selected="true" aria-controls="tab-general" data-tab="general">General</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-model" aria-selected="false" aria-controls="tab-model" data-tab="model">Model</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-run" aria-selected="false" aria-controls="tab-run" data-tab="run">Run</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-tools" aria-selected="false" aria-controls="tab-tools" data-tab="tools">Tools <span class="pk-tab-count" id="toolTabCount"></span></button>
+            <button type="button" class="pk-tab" id="tabButton-subagents" aria-selected="false" aria-controls="tab-subagents" data-tab="subagents" hidden>Sub-agents</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-prompt" aria-selected="false" aria-controls="tab-prompt" data-tab="prompt">Prompt</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-hooks" aria-selected="false" aria-controls="tab-hooks" data-tab="hooks">Hooks</button>
+            <button type="button" class="pk-tab" role="tab" id="tabButton-yaml" aria-selected="false" aria-controls="tab-yaml" data-tab="yaml">YAML</button>
+          </div>
+          <section id="tab-general" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-general"></section>
+          <section id="tab-model" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-model" hidden></section>
+          <section id="tab-run" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-run" hidden></section>
+          <section id="tab-tools" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-tools" hidden></section>
+          <section id="tab-subagents" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-subagents" hidden></section>
+          <section id="tab-prompt" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-prompt" hidden></section>
+          <section id="tab-hooks" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-hooks" hidden></section>
+          <section id="tab-yaml" class="ae-tab" role="tabpanel" aria-labelledby="tabButton-yaml" hidden></section>
+        </div>
+      </fieldset>
+    </div>
+  </section>
+</div>
+
+<dialog class="pk-dialog pk-dialog--wide" id="diffDialog" aria-labelledby="diffTitle">
+  <form method="dialog">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="diffTitle">Save</h2></div>
+    <div class="pk-dialog-body pk-stack">
+      <ul class="ae-notes" id="diffNotes" hidden></ul>
+      <p class="pk-help">Only these lines change; comments and formatting elsewhere stay as they are.</p>
+      <pre class="pk-code ae-diff" id="diffBody" aria-label="Changes to the file"></pre>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="submit" class="pk-btn" value="cancel" id="diffCancel">Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" value="write" id="diffWrite">Write file</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="pk-dialog" id="createDialog" aria-labelledby="createTitle">
+  <form id="createForm">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="createTitle">New agent</h2></div>
+    <div class="pk-dialog-body pk-form">
+      <p class="pk-error" id="createError" hidden></p>
+      <label class="pk-field"><span class="pk-label">Name</span>
+        <input class="pk-input pk-input--mono" name="name" required pattern="[a-z][a-z0-9_]{1,63}" autocomplete="off"
+          aria-describedby="createNameHelp" title="Lower case letters, digits and _, starting with a letter">
+        <span class="pk-help" id="createNameHelp">Lower case letters, digits and _, starting with a letter. Saved as agents/&lt;name&gt;.yaml beside the config.</span></label>
+      <fieldset class="ae-plain">
+        <legend class="pk-label">Start from</legend>
+        <label class="pk-radio"><input type="radio" name="start" value="blank" checked> Blank basic_agent</label>
+        <label class="pk-radio"><input type="radio" name="start" value="inherit"> Inherit from an agent</label>
+        <label class="pk-radio"><input type="radio" name="start" value="copy"> Copy of an agent</label>
+      </fieldset>
+      <label class="pk-field"><span class="pk-label">Agent</span><select class="pk-select" name="source" disabled></select></label>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" id="createCancel">Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="createSubmit">Create</button>
+    </div>
+  </form>
+</dialog>
+{% else %}
+<div class="pk-empty">{{ icon('shield') }}<div class="pk-empty-title">Authentication is off</div>
+  <div>Agents are edited here once <code class="pk-mono">auth.enabled</code> is true in <code class="pk-mono">config/config.yaml</code>.</div></div>
+{% endif %}
+{% endblock %}
+{% block scripts %}{% if auth_enabled %}
+<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>
+{% endif %}{% endblock %}

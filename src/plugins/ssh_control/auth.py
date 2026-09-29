@@ -43,16 +43,25 @@ class SSHAuthenticator:
             'connect_timeout': machine_config.connection_timeout,
         }
         
-        # Handle known_hosts
+        # Handle known_hosts.
+        # SECURITY: in asyncssh, known_hosts=None DISABLES host key
+        # verification entirely. When strict checking is requested but the
+        # known_hosts file is missing (common on fresh hosts/containers/CI),
+        # the previous code silently downgraded to "accept any key" - a silent
+        # MITM exposure while the operator believes strict checking is on.
+        # Fail closed instead: only disable verification when strict checking
+        # is explicitly False.
         if strict_host_key_checking and known_hosts_file:
-            if os.path.exists(os.path.expanduser(known_hosts_file)):
-                connect_kwargs['known_hosts'] = known_hosts_file
+            expanded_known_hosts = os.path.expanduser(known_hosts_file)
+            if os.path.exists(expanded_known_hosts):
+                connect_kwargs['known_hosts'] = expanded_known_hosts
             else:
-                logger.warning(
-                    f"Known hosts file not found: {known_hosts_file}. "
-                    "Proceeding without host key verification."
+                raise FileNotFoundError(
+                    f"strict_host_key_checking is enabled but known_hosts file "
+                    f"was not found: {known_hosts_file}. Refusing to connect "
+                    "without host key verification (set strict_host_key_checking "
+                    "to false to explicitly opt out)."
                 )
-                connect_kwargs['known_hosts'] = None
         else:
             connect_kwargs['known_hosts'] = None
         

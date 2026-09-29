@@ -1,0 +1,51 @@
+# Debate Panel Participant Agent
+# Sub-agent for multi-participant debates — flexible role assigned via task message
+
+plugins:
+  servers:
+    debate_panel_participant_flash:
+      type: basic_agent
+      enabled: true
+      description: "Panel debate participant with flexible role — context injected via hook"
+
+      agent_config:
+        llm_profile: [or-gemini-flash, gemini-flash]
+        llm_profile_advanced: []
+        max_steps: 30
+
+        system_template: "./debate_panel_participant_prompt.md"
+        tools:
+          allowed:
+            # active for all writer agents, derived agents needs to add own tools it with +
+            - "context_engineer/*"
+            - "tavily_search/*"
+            #- "sequential_thinking/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            debate_forum.inject_debate_context:
+              enabled: true
+            context_engineer.engineer_context:
+              enabled: true              
+
+      metadata:
+        visibility: "tool"
+        tags:
+          - debate
+          - panel
+          - sub-agent
+
+    debate_panel_participant_gpt:
+      type: debate_panel_participant_flash
+      enabled: true
+      agent_config:
+        llm_profile: [gpt-mini]
+        llm_profile_advanced: []
+
+    debate_panel_participant_chat:
+      type: debate_panel_participant_flash
+      enabled: true
+      agent_config:
+        llm_profile: [or-deepseek-flash, chat]
+        llm_profile_advanced: []

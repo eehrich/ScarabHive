@@ -1,0 +1,647 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Lessons Learned panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1200px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const BASE = '/plugins/lessons_learned/';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const rows = () => [...doc().querySelectorAll('#lessons tbody tr')];
+  const ids = () => rows().map((row) => row.dataset.lesson);
+  const row = (id) => $(`#lessons tr[data-lesson="${id}"]`);
+  const acts = (id) => [...row(id).querySelectorAll('button[data-act]')].map((button) => button.dataset.act).join();
+  const cell = (id, index) => row(id).children[index].textContent.trim();
+  const options = (id) => [...$(`#${id}`).options].map((option) => option.value).join();
+  const range = () => ($('#pager').hidden ? null : $('#range').textContent);
+  const setFilter = (id, value) => {
+    const select = $(`#${id}`);
+    select.value = value;
+    select.dispatchEvent(new Event('change'));
+  };
+  const field = (form, name) => $(`#${form}`).elements[name];
+  const type = (form, name, value) => {
+    const input = field(form, name);
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const question = () => $('dialog.pk-dialog[open]:not([id])');
+  const answer = async (index) => (await until('the question', question)).querySelector(`[data-index="${index}"]`).click();
+  const errorToasts = () => [...doc().querySelectorAll('.pk-toast--error')].map((toast) => toast.textContent);
+  const refusal = (text) => until(`the refusal "${text}"`, () => errorToasts().some((toast) => toast.includes(text)));
+  const stub = (path, json) => fetch(`/__stub/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(json || {}) });
+  const server = async (path, init) => {
+    const response = await fetch(`${BASE}${path}`, init);
+    return { status: response.status, body: await response.json() };
+  };
+  const post = (path, json, method = 'POST') => server(path, { method, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(json) });
+  const lesson = async (id) => (await server(`lessons/${id}`)).body;
+  const refreshNow = () => $('pk-refresh [data-act="now"]').click();
+  const noCookie = () => { document.cookie = 'll_lessons=; path=/; max-age=0'; };
+  const listsAsked = async () => (await (await fetch('/__stub/asked')).json()).lists;
+  const listedAgain = async (predicate, what) => { refreshNow(); return until(what, predicate); };
+
+  await check('the panel counts the lessons by status and draws each with its figures and what can be done to it', async () => {
+    await go(BASE);
+    await until('the lessons', () => statValue('total') === '61' && rows().length === 50);
+    const counts = statValue('active') === '57' && statValue('draft') === '2' && statValue('inactive') === '1'
+      && statValue('archived') === '1' && statValue('agents') === '3';
+    const first = ids().slice(0, 3).join() === 'writer_les_001,coder_les_001,writer_les_002';
+    const dates = row('writer_les_001');
+    const tags = [...dates.querySelectorAll('.ll-meta .pk-badge')].map((tag) => tag.textContent).join() === 'continuity,dates';
+    const confidence = (id) => row(id).querySelector('[data-cell="confidence"]');
+    const figures = cell('writer_les_001', 1) === 'writer' && cell('writer_les_001', 2) === 'domain_knowledge'
+      && cell('writer_les_001', 3) === '8' && confidence('writer_les_001').classList.contains('ll-high')
+      && confidence('writer_les_001').textContent === '0.93' && cell('writer_les_001', 6) === '1'
+      && cell('writer_les_001', 8) === 'Manual' && dates.querySelector('.pk-badge--ok').textContent === 'active'
+      && dates.querySelector('.ll-content').textContent.startsWith('Dates drift')
+      && confidence('writer_les_002').textContent === '0.40' && !confidence('writer_les_002').className.includes('ll-')
+      && row('writer_les_002').querySelector('.pk-badge--warn').textContent === 'draft'
+      && cell('coder_les_001', 8) === 'Reflection' && cell('writer_les_002', 8) === 'Auto';
+    const actions = acts('writer_les_001') === 'edit,delete' && acts('writer_les_002') === 'activate,edit,delete';
+    const offered = options('agentFilter') === ',bulk,coder,writer'
+      && options('categoryFilter') === ',domain_knowledge,general,quality,style,workflow'
+      && [...doc().querySelectorAll('#agents option')].map((option) => option.value).join() === 'bulk,coder,writer';
+    await until('the categories', () => doc().querySelectorAll('#categories option').length === 9);
+    const categories = [...doc().querySelectorAll('#categories option')].map((option) => option.value);
+    const pager = range() === '1–50 of 61' && $('#previous').disabled && !$('#next').disabled && !$('#next').hidden
+      && !$('[data-cell="similarity"]');
+    return counts && first && tags && figures && actions && offered && pager
+      && categories.includes('style') && categories.at(-1) === 'general';
+  });
+
+  await check('the pages are walked, and a filter, a sort or a search starts on the first', async () => {
+    $('#next').click();
+    await until('the second page', () => range() === '51–61 of 61');
+    const second = rows().length === 11 && ids().slice(-3).join() === 'writer_les_003,coder_les_002,coder_les_003'
+      && $('#next').disabled && !$('#previous').disabled;
+    const listsBefore = await listsAsked();
+    $('#previous').click();
+    await until('the first page', () => range() === '1–50 of 61');
+    await sleep(300);
+    const straight = (await listsAsked()) === listsBefore + 1;  // the page before, not one past the last and back
+    $('#next').click();
+    await until('the second page again', () => range() === '51–61 of 61');
+    setFilter('sortFilter', 'created');
+    await until('the newest first', () => range() === '1–50 of 61' && ids()[0] === 'coder_les_003');
+    setFilter('sortFilter', 'priority');
+    await until('by priority', () => ids()[0] === 'writer_les_001');
+    $('#next').click();
+    await until('the second page once more', () => range() === '51–61 of 61');
+    $('#query').value = 'timeline';
+    $('#searchForm [type="submit"]').click();
+    await until('the search', () => $('[data-cell="similarity"]'));
+    $('#clearSearch').click();
+    await until('the list', () => !$('[data-cell="similarity"]') && range());
+    return second && straight && range() === '1–50 of 61';
+  });
+
+  await check('the filters narrow the lessons and the figures, and what is filtered for stays offered', async () => {
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => statValue('total') === '3' && ids().join() === 'coder_les_001,coder_les_002,coder_les_003');
+    const coder = range() === null && options('categoryFilter') === ',general,quality,workflow'
+      && statValue('inactive') === '1' && statValue('agents') === '3';
+    const markup = row('coder_les_002').querySelector('.ll-title');
+    const escaped = markup.textContent === 'Escape <b>markup</b> in titles' && !doc().querySelector('#lessons b');
+    setFilter('statusFilter', 'inactive');
+    await until('the inactive one', () => ids().join() === 'coder_les_002');
+    setFilter('statusFilter', 'archived');
+    await until('the archived one', () => ids().join() === 'coder_les_003');
+    setFilter('statusFilter', '');
+    setFilter('categoryFilter', 'workflow');
+    await until('the workflow one', () => ids().join() === 'coder_les_001');
+    setFilter('categoryFilter', '');
+    setFilter('agentFilter', '');
+    await until('every agent', () => statValue('total') === '61');
+    setFilter('categoryFilter', 'style');
+    await until('the style one', () => ids().join() === 'writer_les_003');
+    const low = row('writer_les_003').querySelector('[data-cell="confidence"]').classList.contains('ll-low');
+    setFilter('agentFilter', 'coder');  // coder has no style lesson: still offered, and nothing found
+    await until('nothing found', () => statValue('total') === '3' && $('#lessons').textContent.includes('No lessons found'));
+    const kept = $('#categoryFilter').value === 'style' && options('categoryFilter') === ',general,quality,style,workflow';
+    setFilter('categoryFilter', '');
+    await until('the lessons of coder again', () => ids().join() === 'coder_les_001,coder_les_002,coder_les_003');
+    document.cookie = 'll_lessons=slow; path=/';
+    try {
+      setFilter('agentFilter', 'writer');  // answered after 1.5 s, when coder is asked for again
+      await sleep(300);
+    } finally {
+      noCookie();
+    }
+    setFilter('agentFilter', 'coder');
+    await sleep(2500);
+    const latest = ids().join() === 'coder_les_001,coder_les_002,coder_les_003' && $('#agentFilter').value === 'coder';
+    setFilter('agentFilter', '');
+    await until('everything again', () => range() === '1–50 of 61');
+    return coder && escaped && low && kept && latest;
+  });
+
+  await check('a search finds lessons by meaning in every status, narrowed by the filters, and Clear goes back to the list', async () => {
+    $('#query').value = 'dates in the timeline';
+    $('#searchForm [type="submit"]').click();
+    await until('the found lessons', () => $('[data-cell="similarity"]'));
+    const found = ids().slice(0, 2).sort().join() === 'writer_les_001,writer_les_002' && !$('#clearSearch').hidden
+      && range() === `${rows().length} found for “dates in the timeline”` && $('#previous').hidden && $('#next').hidden
+      && Number(row('writer_les_001').querySelector('[data-cell="similarity"]').textContent) > 0.5;
+    setFilter('statusFilter', 'draft');
+    const drafts = await until('the drafts found', () => ids().sort().join() === 'writer_les_002,writer_les_003'
+      && rows().every((one) => one.dataset.status === 'draft'));
+    setFilter('agentFilter', 'coder');
+    await until('none found', () => $('#lessons').textContent.includes('No lesson matches the search'));
+    setFilter('agentFilter', '');
+    setFilter('statusFilter', '');
+    await until('all found again', () => ids().length === 50);
+    $('#clearSearch').click();
+    await until('the list', () => !$('[data-cell="similarity"]') && range() === '1–50 of 61');
+    return found && drafts && $('#clearSearch').hidden && $('#query').value === '';
+  });
+
+  await check('a new lesson is created from the editor, which sends nothing the form does not accept', async () => {
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => statValue('total') === '3' && rows().length === 3);
+    $('#create').click();
+    const values = (names) => names.map((name) => field('editorForm', name).value).join('|');
+    const defaults = $('#editor').open && $('#editorTitle').textContent === 'New lesson'
+      && values(['agent_name', 'category', 'title', 'content', 'status', 'source_type', 'priority', 'confidence', 'tags'])
+        === 'coder|general|||active|manual|5|0.8|';
+    type('editorForm', 'content', 'Short and plain.');
+    $('#save').click();  // no title
+    await sleep(500);
+    const held = $('#editor').open && errorToasts().length === 0 && (await server('stats?agent_name=coder')).body.total === 3;
+    type('editorForm', 'title', 'Name the <i>files</i> plainly');
+    type('editorForm', 'category', 'workflow');
+    type('editorForm', 'priority', '11');
+    $('#save').click();  // a priority out of range
+    await sleep(500);
+    const range11 = $('#editor').open && errorToasts().length === 0 && (await server('stats?agent_name=coder')).body.total === 3;
+    type('editorForm', 'priority', '9');
+    type('editorForm', 'tags', ' naming, files ,, ');
+    $('#save').click();
+    $('#save').click();  // before the answer: once
+    await until('the editor closed and the lesson listed', () => !$('#editor').open && row('coder_les_004'));
+    const saved = await lesson('coder_les_004');
+    return defaults && held && range11 && saved.title === 'Name the <i>files</i> plainly' && saved.tags.join() === 'naming,files'
+      && saved.priority === 9 && saved.category === 'workflow' && saved.status === 'active' && saved.source_type === 'manual'
+      && saved.confidence === 0.8 && saved.agent_name === 'coder' && statValue('total') === '4'
+      && row('coder_les_004').querySelector('.ll-title').textContent === 'Name the <i>files</i> plainly'
+      && (await server('stats?agent_name=coder')).body.total === 4 && errorToasts().length === 0;
+  });
+
+  await check('the server refuses a lesson the form would not have sent', async () => {
+    const good = { agent_name: 'coder', title: 'T', content: 'C', category: 'general', priority: 5, status: 'active',
+      source_type: 'manual', confidence: 0.5, tags: [] };
+    const bad = [{ title: '   ' }, { agent_name: '' }, { content: '' }, { category: '' }, { priority: 0 }, { priority: 11 },
+      { confidence: 1.5 }, { confidence: -0.1 }, { status: 'retired' }, { source_type: 'rumour' }];  // no length limit: the store cuts what an agent stored beyond it
+    const refused = [];
+    for (const change of bad) {
+      refused.push((await post('lessons', { ...good, ...change })).status);
+      refused.push((await post('lessons/coder_les_001', { ...good, ...change }, 'PUT')).status);
+    }
+    const { title, ...partial } = good;
+    refused.push((await post('lessons/coder_les_001', partial, 'PUT')).status);
+    const full = await post('lessons', { ...good, agent_name: 'bulk' });
+    const limited = full.status === 400 && full.body.detail.includes('Lesson limit (55)');
+    const untouched = limited && (await lesson('coder_les_001')).title === 'Run the targeted tests before a commit'
+      && (await server('stats?agent_name=coder')).body.total === 4;
+    return refused.every((status) => status === 422) && untouched;
+  });
+
+  await check('editing loads the lesson afresh and saves every field', async () => {
+    setFilter('agentFilter', 'writer');
+    await until('the lessons of writer', () => ids().join() === 'writer_les_001,writer_les_002,writer_les_003');
+    await stub('update/writer_les_001', { title: 'Check every date twice' });  // the row still shows the old title
+    row('writer_les_001').querySelector('[data-act="edit"]').click();
+    await until('the editor', () => $('#editor').open);
+    const stored = await lesson('writer_les_001');
+    const values = (names) => names.map((name) => field('editorForm', name).value).join('|');
+    const loaded = $('#editorTitle').textContent === 'Edit writer_les_001'
+      && values(['agent_name', 'category', 'title', 'status', 'source_type', 'priority', 'tags'])
+        === 'writer|domain_knowledge|Check every date twice|active|manual|8|continuity, dates'
+      && field('editorForm', 'content').value === stored.content && Number(field('editorForm', 'confidence').value) === stored.confidence
+      && stored.confidence.toFixed(2) === '0.93';
+    type('editorForm', 'content', 'Dates drift between chapters; check each one against the timeline, twice.');
+    field('editorForm', 'status').value = 'inactive';
+    field('editorForm', 'source_type').value = 'reflection';
+    type('editorForm', 'priority', '7');
+    type('editorForm', 'tags', 'dates');
+    $('#save').click();
+    await until('the editor closed', () => !$('#editor').open && row('writer_les_001')?.dataset.status === 'inactive');
+    const saved = await lesson('writer_les_001');
+    return loaded && saved.title === 'Check every date twice' && saved.content === 'Dates drift between chapters; check each one against the timeline, twice.'
+      && saved.status === 'inactive' && saved.source_type === 'reflection' && saved.priority === 7
+      && saved.tags.join() === 'dates' && saved.confidence === stored.confidence && saved.category === 'domain_knowledge'
+      && row('writer_les_001').querySelector('.ll-title').textContent === 'Check every date twice'
+      && await createdAfterEdit();
+  });
+
+  async function createdAfterEdit() {
+    $('#create').click();
+    type('editorForm', 'title', 'Name scenes by their place');
+    type('editorForm', 'content', 'A place is easier to find than a number.');
+    $('#save').click();
+    await until('the editor closed', () => !$('#editor').open);
+    const created = await until('the lesson created', async () =>
+      (await server('lessons?agent_name=writer')).body.lessons.find((one) => one.title === 'Name scenes by their place'));
+    const untouched = (await lesson('writer_les_001')).content.endsWith('twice.');
+    await stub(`delete/${created.lesson_id}`);
+    await listedAgain(() => ids().join() === 'writer_les_001,writer_les_002,writer_les_003', 'the list without it');
+    return untouched;
+  }
+
+  await check('activating and deleting change the server, and deleting asks first', async () => {
+    const activate = row('writer_les_002').querySelector('[data-act="activate"]');
+    activate.click();
+    activate.click();  // before the row is drawn anew: once
+    await until('activated', () => row('writer_les_002')?.dataset.status === 'active');
+    await sleep(300);
+    // the second click of a double click, landing on the row drawn anew: on Edit, now where Activate was
+    row('writer_les_002').querySelector('.ll-actions button').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    await sleep(500);
+    const activated = !$('#editor').open && errorToasts().length === 0 && (await lesson('writer_les_002')).status === 'active'
+      && acts('writer_les_002') === 'edit,delete';
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => row('coder_les_001'));
+    row('coder_les_001').querySelector('[data-act="delete"]').click();
+    const named = (await until('the question', question)).textContent.includes('Run the targeted tests before a commit');
+    await answer(0);  // Cancel
+    await sleep(500);
+    const kept = Boolean(row('coder_les_001')) && (await server('lessons/coder_les_001')).status === 200;
+    row('coder_les_001').querySelector('[data-act="delete"]').click();
+    await answer(1);
+    await until('deleted', () => !row('coder_les_001'));
+    return activated && named && kept && (await server('lessons/coder_les_001')).status === 404 && statValue('total') === '3';
+  });
+
+  await check('a consolidation shows its progress, and only one that is not a dry run changes the lessons', async () => {
+    setFilter('agentFilter', 'writer');
+    await until('the lessons of writer', () => ids().join() === 'writer_les_001,writer_les_002,writer_les_003');
+    $('#consolidate').click();
+    const opened = $('#consolidator').open && field('consolidateForm', 'agent_name').value === 'writer'
+      && field('consolidateForm', 'dry_run').checked && field('consolidateForm', 'similarity_threshold').value === '';
+    $('#runConsolidate').click();
+    await until('the progress', () => !$('#consolidateProgress').hidden && $('#consolidatePhase').textContent.includes('evaluating cluster')
+      && $('#runConsolidate').disabled);
+    await until('the dry run done', () => $('#consolidateResult [data-cell="merged"]'));
+    const result = $('#consolidateResult').textContent;
+    const dry = $('#consolidateResult [data-cell="merged"]').textContent === '1' && result.includes('Would merge')
+      && result.includes('Merged: Check every date twice') && result.includes('writer_les_001') && result.includes('writer_les_002')
+      && result.includes('Dry run') && $('#consolidateProgress').hidden && !$('#runConsolidate').disabled
+      && (await server('lessons/writer_les_002')).status === 200;
+    field('consolidateForm', 'dry_run').checked = false;
+    const listsBefore = (await (await fetch('/__stub/asked')).json()).lists;
+    $('#runConsolidate').click();
+    await until('the merge done', () => $('#consolidateResult').textContent.includes('Merged away')
+      || $('#consolidateResult').textContent.includes('merged away'));
+    const merged = $('#consolidateResult').textContent.includes('deleted') && $('#consolidateResult [data-cell="merged"]').textContent === '1';
+    await until('the list loaded anew', () => !row('writer_les_002'));
+    const onServer = (await server('lessons/writer_les_002')).status === 404
+      && (await lesson('writer_les_001')).title === 'Merged: Check every date twice'
+      && (await (await fetch('/__stub/asked')).json()).lists > listsBefore;
+    $('#consolidator [data-close]').click();
+    $('#consolidate').click();
+    const reset = $('#consolidateResult').textContent === '' && field('consolidateForm', 'dry_run').checked;
+    $('#consolidator [data-close]').click();
+    return opened && dry && merged && onServer && reset && !$('#consolidator').open;
+  });
+
+  await check('a failed consolidation says so, and the server refuses a threshold out of range', async () => {
+    const listsAtStart = await listsAsked();
+    await stub('llm-fails');
+    $('#consolidate').click();
+    type('consolidateForm', 'agent_name', 'bulk');  // writer has nothing similar left to judge
+    $('#runConsolidate').click();
+    await until('the error', () => $('#consolidateResult .pk-error'));
+    const failed = $('#consolidateResult .pk-error').textContent === 'The judge is unreachable' && !$('#runConsolidate').disabled
+      && $('#consolidateProgress').hidden;
+    field('consolidateForm', 'similarity_threshold').removeAttribute('min');  // what the form would not send
+    field('consolidateForm', 'similarity_threshold').value = '0.3';
+    $('#runConsolidate').click();
+    await until('the refusal', () => $('#consolidateResult .pk-error')?.textContent === 'HTTP 422');
+    const refused = !$('#runConsolidate').disabled && $('#consolidateProgress').hidden;
+    const dryNotReloaded = (await listsAsked()) === listsAtStart;
+    field('consolidateForm', 'similarity_threshold').value = '';
+    field('consolidateForm', 'dry_run').checked = false;  // a merge that fails may have merged groups before
+    $('#runConsolidate').click();
+    await until('the merge failed', () => !$('#runConsolidate').disabled
+      && $('#consolidateResult .pk-error')?.textContent === 'The judge is unreachable');
+    await until('the list loaded anew', async () => (await listsAsked()) > listsAtStart);
+    $('#consolidator [data-close]').click();
+    const threshold = (await fetch(`${BASE}consolidate`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_name: 'writer', similarity_threshold: 1.2, dry_run: true }) })).status;
+    const unsaid = (await fetch(`${BASE}consolidate`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_name: 'writer' }) })).status;
+    return failed && refused && dryNotReloaded && threshold === 422 && unsaid === 422;
+  });
+
+  await check('a refusal of the server is shown and the list loaded anew, and a failed save keeps the editor open', async () => {
+    await until('the lessons of writer', () => ids().join() === 'writer_les_001,writer_les_003');
+    await stub('update/writer_les_003', { status: 'inactive' });
+    row('writer_les_003').querySelector('[data-act="activate"]').click();
+    await refusal("409: Lesson 'writer_les_003' is inactive now.");
+    await until('the list with it inactive', () => row('writer_les_003')?.dataset.status === 'inactive');
+    const notRevived = (await lesson('writer_les_003')).status === 'inactive';
+    const draft = (await (await stub('draft')).json()).lesson_id;
+    await listedAgain(() => row(draft), 'the draft');
+    await stub(`delete/${draft}`);
+    row(draft).querySelector('[data-act="activate"]').click();
+    await refusal(`404: Lesson '${draft}' not found.`);
+    await until('the list without the draft', () => !row(draft));
+    await stub('delete/writer_les_003');
+    row('writer_les_003').querySelector('[data-act="edit"]').click();
+    await refusal("404: Lesson 'writer_les_003' not found.");
+    await until('the list without it', () => !row('writer_les_003'));
+    const noEditor = !$('#editor').open;
+    row('writer_les_001').querySelector('[data-act="edit"]').click();
+    await until('the editor', () => $('#editor').open);
+    await stub('delete/writer_les_001');
+    $('#save').click();
+    await refusal("404: Lesson 'writer_les_001' not found.");
+    await sleep(300);
+    const editorKept = $('#editor').open && !$('#save').disabled && field('editorForm', 'title').value.startsWith('Merged');
+    $('#editor [data-close]').click();
+    const recreated = (await server('lessons/writer_les_001')).status === 404;
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => row('coder_les_002'));
+    await stub('delete/coder_les_002');
+    row('coder_les_002').querySelector('[data-act="delete"]').click();
+    await answer(1);
+    await refusal("404: Lesson 'coder_les_002' not found.");
+    await until('the list without it', () => !row('coder_les_002'));
+    return notRevived && noEditor && editorKept && recreated;
+  });
+
+  await check('the cleanup deletes only what its preview showed, and a changed filter drops the preview', async () => {
+    const first = (await (await stub('draft')).json()).lesson_id;  // writer has no lesson left before it
+    await listedAgain(() => options('agentFilter').includes('writer'), 'writer offered');
+    setFilter('agentFilter', 'writer');
+    await until('the draft', () => ids().join() === first);
+    $('#cleanup').click();
+    const opened = $('#cleaner').open && field('cleanupForm', 'agent_name').value === 'writer'
+      && field('cleanupForm', 'status').value === '' && $('#deleteMatched').disabled && $('#cleanupResult').textContent.trim() === '';
+    const count = () => $('#cleanupResult [data-cell="count"]')?.textContent;
+    type('cleanupForm', 'status', 'archived');
+    $('#preview').click();
+    await until('the empty preview', () => count() === '0 lessons match');
+    const none = $('#deleteMatched').disabled;
+    type('cleanupForm', 'status', 'draft');
+    $('#preview').click();
+    await until('the preview', () => count() === '1 lesson match');
+    const previewed = Boolean($(`#cleanupResult [data-lesson="${first}"]`)) && !$('#deleteMatched').disabled;
+    type('cleanupForm', 'max_confidence', '0.5');  // the draft has 0.8
+    $('#preview').click();
+    await until('the preview by confidence', () => count() === '0 lessons match');
+    type('cleanupForm', 'max_confidence', '');
+    $('#preview').click();
+    await until('the preview once more', () => count() === '1 lesson match');
+    type('cleanupForm', 'max_confidence', '0.9');
+    const dropped = $('#deleteMatched').disabled && $('#cleanupResult').textContent.trim() === '';
+    document.cookie = 'll_lessons=slow; path=/';
+    try {
+      $('#preview').click();
+      await sleep(300);
+      type('cleanupForm', 'max_confidence', '');  // changed while the preview is on its way
+      await until('the preview answered', () => !$('#preview').disabled, 5000);
+    } finally {
+      noCookie();
+    }
+    const staleIgnored = $('#deleteMatched').disabled && $('#cleanupResult').textContent.trim() === '';
+    $('#preview').click();
+    await until('the preview again', () => !$('#deleteMatched').disabled);
+    const later = (await (await stub('draft')).json()).lesson_id;  // matches now, never previewed
+    $('#deleteMatched').click();
+    const asked = (await until('the question', question)).textContent.includes('Delete the lesson previewed?');
+    await answer(0);  // Cancel
+    await sleep(300);
+    const kept = (await server(`lessons/${first}`)).status === 200 && !$('#deleteMatched').disabled;
+    const listsBefore = (await (await fetch('/__stub/asked')).json()).lists;
+    $('#deleteMatched').click();
+    await answer(1);
+    await until('deleted', () => count() === '1 lesson deleted');
+    const deleted = (await server(`lessons/${first}`)).status === 404 && (await lesson(later)).status === 'draft'
+      && $('#deleteMatched').disabled && Boolean($(`#cleanupResult [data-lesson="${first}"]`));
+    await until('the list loaded anew', async () => (await (await fetch('/__stub/asked')).json()).lists > listsBefore);
+    $('#cleaner [data-close]').click();
+    $('#cleanup').click();
+    const reset = $('#cleanupResult').textContent.trim() === '' && field('cleanupForm', 'status').value === ''
+      && $('#deleteMatched').disabled;
+    $('#cleaner [data-close]').click();
+    return opened && none && previewed && dropped && staleIgnored && asked && kept && deleted && reset;
+  });
+
+  await check('the server refuses a cleanup without a filter', async () => {
+    const before = (await server('stats')).body.total;
+    const none = await post('cleanup', { dry_run: false });
+    const blank = await post('cleanup', { dry_run: false, agent_name: '', status: '' });
+    return none.status === 400 && none.body.detail === 'Set at least one filter.' && blank.status === 400
+      && (await server('stats')).body.total === before && before > 50;
+  });
+
+  await check('a failed load shows the error and none of the lessons shown before', async () => {
+    setFilter('agentFilter', '');
+    await until('every agent', () => range()?.startsWith('1–50 of'));
+    document.cookie = 'll_lessons=fails; path=/';
+    try {
+      refreshNow();
+      await until('the error', () => $('#stats').textContent.includes('Lessons could not be loaded'));
+      const shown = $('#stats').textContent.includes('The lesson store is locked') && rows().length === 0
+        && $('#lessons').textContent.trim() === '' && $('#pager').hidden;
+      noCookie();
+      refreshNow();
+      await until('the lessons again', () => rows().length > 0 && statValue('total'));
+      document.cookie = 'll_lessons=slowfails; path=/';
+      refreshNow();  // fails after 1.5 s, when another list is asked for
+      await sleep(300);
+      noCookie();
+      setFilter('sortFilter', 'created');
+      await sleep(2500);
+      const latest = rows().length === 50 && !$('#stats').textContent.includes('could not be loaded') && !$('#pager').hidden;
+      setFilter('sortFilter', 'priority');
+      await until('by priority', () => rows().length === 50);
+      return shown && latest;
+    } finally {
+      noCookie();
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    document.cookie = 'll_lessons=fails; path=/';
+    try {
+      refreshNow();
+      await until('the error', () => $('#stats').textContent.includes('Lessons could not be loaded'));
+      document.cookie = 'll_lessons=slow; path=/';
+      refreshNow();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('the lessons while the ticks go on', () => rows().length > 0, 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookie();
+    }
+  });
+
+  await check('a tick of the auto refresh brings a lesson an agent added', async () => {
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => row('coder_les_004'));
+    await sleep(1000);  // a load a last tick of a check before may have started
+    await stub('add');
+    await sleep(300);
+    const notYet = !rows().some((one) => one.textContent.includes('Added by an agent'));
+    doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    await until('the added lesson', () => rows().some((one) => one.textContent.includes('Added by an agent')));
+    return notYet;
+  });
+
+  await check('a lesson an agent wrote beyond the form is drawn and saved back unchanged', async () => {
+    // as stores before the limits could leave them: raw text for tags, a tag holding a comma
+    await stub('raw/coder_les_004', { title: 'T'.repeat(250), content: 'C'.repeat(2100), priority: 7.5, tags: '["x,y", "z"]' });
+    await stub('raw/coder_les_003', { tags: 'q, r' });
+    setFilter('agentFilter', 'coder');
+    await until('the lesson drawn', () => row('coder_les_004')?.querySelector('.ll-title').textContent.length === 250);
+    const badges = (id) => [...row(id).querySelectorAll('.ll-meta .pk-badge')].map((tag) => tag.textContent).join('|');
+    const drawn = badges('coder_les_004') === 'x,y|z' && badges('coder_les_003') === 'q|r' && cell('coder_les_004', 3) === '7.5';
+    row('coder_les_004').querySelector('[data-act="edit"]').click();
+    await until('the editor', () => $('#editor').open);
+    const loaded = field('editorForm', 'title').value.length === 250 && field('editorForm', 'priority').value === '7.5'
+      && field('editorForm', 'tags').value === 'x,y, z';
+    $('#save').click();
+    await until('saved', () => !$('#editor').open);
+    const saved = await lesson('coder_les_004');
+    return drawn && loaded && errorToasts().length === 0 && saved.title.length === 250 && saved.content.length === 2100
+      && saved.priority === 8 && saved.tags.join('|') === 'x,y|z';
+  });
+
+  await check('the pager turns one page a click and stays within the pages', async () => {
+    setFilter('agentFilter', '');
+    await until('every agent', () => range()?.startsWith('1–50 of'));
+    await stub('fill', { count: 105 - Number(statValue('total')) });
+    await listedAgain(() => range() === '1–50 of 105', 'three pages');
+    const click = (id, detail) => $(`#${id}`).dispatchEvent(new MouseEvent('click', { bubbles: true, detail }));
+    let lists = await listsAsked();
+    click('next', 1);
+    click('next', 2);  // the second click of a double click
+    await until('the second page', () => range() === '51–100 of 105');
+    await sleep(500);
+    const once = range() === '51–100 of 105' && (await listsAsked()) === lists + 1;
+    lists = await listsAsked();
+    click('next', 1);
+    click('next', 1);  // before the pager is drawn anew: held at the last page
+    await until('the last page', () => range() === '101–105 of 105');
+    await sleep(500);
+    const held = range() === '101–105 of 105' && (await listsAsked()) === lists + 2;
+    click('previous', 1);
+    click('previous', 1);
+    click('previous', 1);  // held at the first
+    await until('the first page', () => range() === '1–50 of 105');
+    await sleep(500);
+    return once && held && range() === '1–50 of 105' && !$('#stats').textContent.includes('could not be loaded');
+  });
+
+  await check('a page emptied behind the panel falls back to the last page left', async () => {
+    $('#next').click();
+    await until('the second page', () => range() === '51–100 of 105');
+    $('#next').click();
+    await until('the third page', () => range() === '101–105 of 105');
+    await stub('shrink');  // 90 left: the third page is gone
+    refreshNow();
+    await until('the last page left', () => range() === '51–90 of 90' && rows().length === 40);
+    return true;
+  });
+
+  await check('a click on a head sorts the lessons found, the paged list stays in the order of the server', async () => {
+    const head = (text) => [...doc().querySelectorAll('#lessons thead th')].find((th) => th.textContent.trim() === text);
+    const priorities = () => rows().map((one) => one.cells[3].textContent.trim()).join('|');
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => rows().length === 3 && !$('[data-cell="similarity"]'));
+    const listUnsorted = !$('#lessons .pk-sort');
+    $('#query').value = 'build';
+    $('#searchForm [type="submit"]').click();
+    await until('the three found', () => $('[data-cell="similarity"]') && rows().length === 3);
+    const bySimilarity = head('Similarity').getAttribute('aria-sort') === 'descending';
+    head('Prio.').click();
+    const descending = priorities() === '8|5|2' && head('Prio.').getAttribute('aria-sort') === 'descending'
+      && !head('Similarity').hasAttribute('aria-sort');
+    head('Prio.').click();
+    const ascending = priorities() === '2|5|8';
+    const table = $('#lessons table');
+    refreshNow();
+    await until('the lessons found drawn anew', () => $('#lessons table') !== table && rows().length === 3);
+    return listUnsorted && bySimilarity && descending && ascending && priorities() === '2|5|8'
+      && head('Prio.').getAttribute('aria-sort') === 'ascending';
+  });
+
+  await check('without the embedding model a save warns that search will miss the lesson, and a consolidation names what it could not scan', async () => {
+    const warnings = () => [...doc().querySelectorAll('.pk-toast--warn')].map((toast) => toast.textContent);
+    if (!$('#clearSearch').hidden) $('#clearSearch').click();
+    setFilter('agentFilter', 'coder');
+    await until('the lessons of coder', () => rows().length && ids().every((id) => id.startsWith('coder_')));
+    await stub('no-model');
+    try {
+      $('#create').click();
+      type('editorForm', 'title', 'Stored without the model');
+      type('editorForm', 'content', 'Out of the search index.');
+      $('#save').click();
+      await until('the editor closed', () => !$('#editor').open);
+      const warned = await until('the warning', () => warnings().some((text) => text.includes('No embedding model installed')));
+      $('#consolidate').click();
+      $('#runConsolidate').click();
+      await until('the consolidation done', () => $('#consolidateResult [data-cell="merged"]'));
+      const result = $('#consolidateResult').textContent;
+      $('#consolidator [data-close]').click();
+      return warned && result.includes('Not scanned') && result.includes('No embedding model installed')
+        && !result.includes('No similar lessons found');
+    } finally {
+      await stub('model');
+    }
+  });
+
+  await check('a merge the search index could not take says so under the merge', async () => {
+    await stub('llm-works');
+    await stub('no-add');
+    try {
+      $('#consolidate').click();
+      type('consolidateForm', 'agent_name', 'bulk');
+      field('consolidateForm', 'dry_run').checked = false;
+      $('#runConsolidate').click();
+      await until('the merge done', () => $('#consolidateResult [data-cell="merged"]'));
+      const result = $('#consolidateResult').textContent;
+      $('#consolidator [data-close]').click();
+      return result.includes('Merged:') && result.includes('Not re-indexed') && result.includes('No embedding model installed');
+    } finally {
+      await stub('model');
+    }
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

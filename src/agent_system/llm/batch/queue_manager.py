@@ -12,10 +12,12 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 import uuid
 
+from agent_system.paths import data_path, resolve_data_path
 from agent_system.utils.id import short_id
+from .base import BatchProviderClient
 from .models import BatchJob, BatchRequest, BatchStatus, BatchMetrics
 from .job_tracker import get_job_tracker
 from ..models import LLMQuotaExhaustedError, LLMRateLimitError
@@ -69,22 +71,24 @@ class BatchQueueManager:
         self.batch_system_config = batch_system_config
         
         # Determine storage path
+        # Resolved either way: the callers pass Path(config.storage_path), and
+        # the model's own default ("data/batch_jobs") never passed the loader
+        # that moves configured paths.
         if storage_path:
-            self.storage_path = storage_path
+            self.storage_path = resolve_data_path(storage_path)
         elif batch_system_config:
-            self.storage_path = Path(batch_system_config.storage_path)
+            self.storage_path = resolve_data_path(batch_system_config.storage_path)
         else:
-            self.storage_path = Path("data/batch_jobs")
+            self.storage_path = data_path("batch_jobs")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        # Per-provider configurations
-        self._provider_configs: Dict[str, "BatchProviderConfig"] = {}
-        if batch_system_config and batch_system_config.providers:
-            if batch_system_config.providers.gemini:
-                self._provider_configs["gemini"] = batch_system_config.providers.gemini
-            if batch_system_config.providers.openai:
-                self._provider_configs["openai"] = batch_system_config.providers.openai
-        
+        # Per-provider configurations — every configured provider, whatever
+        # it is called. This used to copy `gemini` and `openai` by name, so
+        # `anthropic` (added later) never arrived here at all: the exact cost
+        # of naming providers in core code.
+        self._provider_configs: Dict[str, "BatchProviderConfig"] = dict(
+            (batch_system_config.providers if batch_system_config else None) or {})
+
         # Default configuration values (can be overridden per-provider)
         # These are used for queue management and polling
         self._collection_window = 10.0  # seconds
@@ -92,8 +96,14 @@ class BatchQueueManager:
         self._poll_interval = 10.0  # seconds
         self._max_wait_hours = 24.0
         self._max_retries = 3
-        
-        # Use first available provider config for defaults
+
+        # KNOWN GAP, not an oversight: these knobs are configured PER PROVIDER
+        # but applied GLOBALLY — one polling loop serves all providers, so the
+        # first entry's values win for everyone (anthropic's poll_interval of
+        # 30s never applies while gemini is configured). Closing it means
+        # per-provider timing in the polling loop, i.e. a change in production
+        # batch behaviour, not a rename. Left as it always was; the config
+        # comment says which entry decides.
         for provider_config in self._provider_configs.values():
             self._collection_window = provider_config.collection_window_seconds
             self._max_requests = provider_config.max_requests_per_batch
@@ -130,6 +140,7 @@ class BatchQueueManager:
         
         # Batch client callbacks (set by register_batch_client)
         self._batch_clients: Dict[str, Any] = {}  # provider -> client
+        self._batch_client_factories: Dict[str, Callable[[], Any]] = {}  # provider -> builder
         
         # Metrics
         self._metrics = BatchMetrics()
@@ -169,15 +180,71 @@ class BatchQueueManager:
                     pass  # Never let status reporting break batch processing
     
     def register_batch_client(self, provider: str, client: Any) -> None:
-        """Register a batch client for a provider.
-        
+        """Register a batch client for a batch provider name.
+
         Args:
-            provider: Provider name ("openai" or "gemini")
-            client: Batch client instance (OpenAIBatchClient or GeminiBatchClient)
+            provider: Batch provider name as configured (`batch_provider:`)
+            client: Batch client instance from that provider's plugin
         """
         self._batch_clients[provider] = client
+        # The tracker is keyed by THIS name (add_job below), so the client
+        # must not carry its own idea of what it is called — startup
+        # cancellation looks its jobs up by exactly this key.
+        client.provider_name = provider
         logger.info(f"Registered batch client for provider: {provider}")
-    
+
+    def register_batch_client_factory(self, provider: str, factory: Callable[[], Any]) -> None:
+        """Register a batch provider whose client is built on first use.
+
+        Building a backend imports its SDK (google.genai: ~1.1 s, 88 MB) and
+        opens an HTTP client; done eagerly for every configured provider that
+        was paid at EVERY process start -- each ``agent-cli run`` included --
+        whether or not a batch request ever followed. ``factory`` returns the
+        client, or None when the provider cannot come up (no API key); the
+        first ``_client_for`` resolves it and registers it like
+        ``register_batch_client`` would.
+        """
+        self._batch_client_factories[provider] = factory
+        logger.info(f"Registered batch backend for provider {provider} (built on first use)")
+
+    def has_batch_client(self, provider: str) -> bool:
+        """Whether a request for ``provider`` can be served. Resolves the
+        client: a submit IS first use, and a provider whose factory declines
+        (no key) must be refused here, before the request is queued and sits
+        out the collection window."""
+        return self._client_for(provider) is not None
+
+    def batch_providers(self) -> list[str]:
+        """Every provider name that has a client or can still build one."""
+        return list(dict.fromkeys([*self._batch_clients, *self._batch_client_factories]))
+
+    def _client_for(self, provider: str) -> Any:
+        """The provider's client, building it on first use; None if unknown,
+        if its factory declined (no API key) or if building it failed. Either
+        outcome is logged once and the factory is forgotten, so neither the
+        poll loop nor the next submit repeats the attempt every time.
+
+        Never raises: this runs inside _submit_batch, after the job is in
+        _active_jobs -- an exception there is swallowed by the collection
+        task and leaves the caller waiting for its full timeout."""
+        client = self._batch_clients.get(provider)
+        if client is not None:
+            return client
+        factory = self._batch_client_factories.pop(provider, None)
+        if factory is None:
+            return None
+        try:
+            client = factory()
+        except Exception as e:
+            logger.error("Failed to build %s batch client: %s", provider, e, exc_info=True)
+            return None
+        if client is None:
+            logger.info("No API key found, skipping %s batch client", provider)
+            return None
+        client.provider_name = provider
+        self._batch_clients[provider] = client
+        return client
+
     def _ensure_polling_started(self) -> None:
         """Ensure polling task is started and running in the current event loop.
         
@@ -251,52 +318,56 @@ class BatchQueueManager:
         recovered_count = 0
         
         # Determine which providers to recover from
-        providers_to_check: list[tuple[str, Any]] = list(self._batch_clients.items())
-        if providers:
-            providers_to_check = [
-                (p, c) for p, c in self._batch_clients.items() 
-                if p in providers
-            ]
-        
-        provider_names = [p for p, _ in providers_to_check]
+        provider_names = [p for p in self.batch_providers() if not providers or p in providers]
         logger.info(f"Starting job recovery, checking {len(provider_names)} providers: {provider_names}")
-        
-        for provider, client in providers_to_check:
+
+        for provider in provider_names:
+            client = self._client_for(provider)
+            if client is None:
+                continue
             try:
                 if not hasattr(client, 'list_batches'):
                     logger.debug(f"Provider {provider} doesn't support list_batches")
                     continue
                 
+                # The provider's own client knows its listing shape — this used
+                # to switch on the provider NAME here, with an `else` that read
+                # OpenAI's keys out of whatever came in. The base
+                # implementation always returns None, so a provider that never
+                # overrode it would silently recover nothing — a different
+                # problem from "this batch is finished", and worth saying once
+                # per provider rather than per entry.
+                #
+                # `is` holds here because both sides read a plain `def` off a
+                # CLASS, which hands out the same function object every time --
+                # a staticmethod does too. Make it a classmethod and each access
+                # builds a fresh binding: this would be False for everyone, the
+                # warning would stop, and a provider that never overrode it would
+                # go back to recovering nothing in silence. Measured on 3.12.5:
+                # def True, staticmethod True, classmethod False.
+                if getattr(type(client), "describe_listed_batch", None) is (
+                        BatchProviderClient.describe_listed_batch):
+                    logger.warning(
+                        "Batch provider %s lists batches but does not "
+                        "implement describe_listed_batch — no jobs can be "
+                        "recovered for it", provider)
+                    continue
+
                 logger.debug(f"Listing batches from {provider}...")
                 batches = await client.list_batches(limit=50)
                 logger.info(f"Found {len(batches)} batches from {provider}")
-                
+
                 for batch_info in batches:
                     logger.debug(f"Processing batch: {batch_info}")
-                    
-                    # Extract job info based on provider format
-                    if provider == "gemini":
-                        job_id = batch_info.get("name", "")
-                        state = batch_info.get("state", "")
-                        logger.debug(f"Gemini batch: {job_id}, state={state}")
-                        # Map Gemini states to our BatchStatus
-                        if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
-                            logger.debug(f"Skipping completed Gemini job: {job_id}")
-                            continue  # Skip completed jobs
-                        status = self._map_gemini_state(state)
-                        model = "gemini-2.5-flash"  # Default, can't determine from list
-                    else:  # openai
-                        job_id = batch_info.get("id", "")
-                        status_str = batch_info.get("status", "")
-                        logger.debug(f"OpenAI batch: {job_id}, status={status_str}")
-                        if status_str in ("completed", "failed", "expired", "cancelled"):
-                            logger.debug(f"Skipping completed OpenAI job: {job_id}")
-                            continue  # Skip completed jobs
-                        status = self._map_openai_status(status_str)
-                        # Try to extract model from metadata (metadata can be None)
-                        metadata = batch_info.get("metadata") or {}
-                        model = metadata.get("model", "gpt-4o")
-                    
+                    described = client.describe_listed_batch(batch_info)
+                    if not described:
+                        logger.debug(
+                            "Skipping finished %s batch: %s", provider, batch_info)
+                        continue
+                    job_id = described["job_id"]
+                    status = described["status"]
+                    model = described["model"]
+
                     # Check if we're already tracking this job
                     already_tracked = any(
                         job.provider_job_id == job_id 
@@ -335,33 +406,6 @@ class BatchQueueManager:
         
         return recovered_count
     
-    def _map_gemini_state(self, state: str) -> "BatchStatus":
-        """Map Gemini job state to BatchStatus."""
-        from .models import BatchStatus
-        mapping = {
-            "JOB_STATE_PENDING": BatchStatus.SUBMITTED,  # Waiting at provider
-            "JOB_STATE_RUNNING": BatchStatus.IN_PROGRESS,
-            "JOB_STATE_SUCCEEDED": BatchStatus.COMPLETED,
-            "JOB_STATE_FAILED": BatchStatus.FAILED,
-            "JOB_STATE_CANCELLED": BatchStatus.CANCELLED,
-        }
-        return mapping.get(state, BatchStatus.SUBMITTED)
-    
-    def _map_openai_status(self, status: str) -> "BatchStatus":
-        """Map OpenAI batch status to BatchStatus."""
-        from .models import BatchStatus
-        mapping = {
-            "validating": BatchStatus.VALIDATING,
-            "in_progress": BatchStatus.IN_PROGRESS,
-            "finalizing": BatchStatus.FINALIZING,
-            "completed": BatchStatus.COMPLETED,
-            "failed": BatchStatus.FAILED,
-            "expired": BatchStatus.EXPIRED,
-            "cancelled": BatchStatus.CANCELLED,
-            "cancelling": BatchStatus.CANCELLING,
-        }
-        return mapping.get(status, BatchStatus.PENDING)
-    
     async def stop(self) -> None:
         """Stop the batch queue manager and cleanup."""
         self._running = False
@@ -395,6 +439,7 @@ class BatchQueueManager:
         max_tokens: Optional[int] = None,
         thinking_budget: Optional[int] = None,
         thinking_level: Optional[str] = None,
+        safety_settings: Optional[dict[str, str]] = None,
         session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         custom_id: Optional[str] = None,
@@ -415,6 +460,7 @@ class BatchQueueManager:
             max_tokens: Optional max output tokens limit
             thinking_budget: Token budget for thinking (Gemini 2.5 models)
             thinking_level: Thinking intensity level (Gemini 3 models)
+            safety_settings: Optional Gemini safety settings
             session_id: Optional session ID
             agent_name: Optional agent name
             custom_id: Optional custom ID for correlation
@@ -435,10 +481,10 @@ class BatchQueueManager:
         self._ensure_polling_started()
         
         # Validate provider early (fail fast before queuing)
-        if provider not in self._batch_clients:
+        if not self.has_batch_client(provider):
             raise ValueError(
                 f"No batch client registered for provider: {provider}. "
-                f"Available providers: {list(self._batch_clients.keys())}"
+                f"Available providers: {self.batch_providers()}"
             )
         
         # Create request
@@ -451,6 +497,7 @@ class BatchQueueManager:
             max_tokens=max_tokens,
             thinking_budget=thinking_budget,
             thinking_level=thinking_level,
+            safety_settings=safety_settings,
             session_id=session_id,
             agent_name=agent_name,
             metadata={"provider": provider},
@@ -664,7 +711,7 @@ class BatchQueueManager:
         self._metrics.total_requests += len(batch_requests)
         
         # Get batch client
-        client = self._batch_clients.get(provider)
+        client = self._client_for(provider)
         if not client:
             logger.error(f"No batch client registered for provider: {provider}")
             job.status = BatchStatus.FAILED
@@ -821,7 +868,7 @@ class BatchQueueManager:
     async def _poll_job(self, job: BatchJob) -> None:
         """Poll a single batch job for status updates."""
         logger.debug("Polling batch job %s (provider: %s)", job.job_id[:8], job.provider)
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             logger.warning("No batch client for provider: %s", job.provider)
             return
@@ -946,7 +993,7 @@ class BatchQueueManager:
         Args:
             job: The BatchJob to retry
         """
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             logger.error(f"No batch client for provider {job.provider}, cannot retry")
             job.error_message = f"No batch client for provider: {job.provider}"
@@ -1130,7 +1177,7 @@ class BatchQueueManager:
             logger.warning(f"Job {job_id} is already in terminal state: {job.status}")
             return False
         
-        client = self._batch_clients.get(job.provider)
+        client = self._client_for(job.provider)
         if not client:
             return False
         
@@ -1198,7 +1245,7 @@ class BatchQueueManager:
         
         # Cancel the job at the provider
         if job.provider_job_id:
-            client = self._batch_clients.get(job.provider)
+            client = self._client_for(job.provider)
             if client:
                 try:
                     logger.info(

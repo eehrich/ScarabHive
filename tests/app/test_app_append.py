@@ -1,6 +1,4 @@
 import json
-import sys
-from unittest.mock import patch, MagicMock, PropertyMock
 
 from fastapi.testclient import TestClient
 

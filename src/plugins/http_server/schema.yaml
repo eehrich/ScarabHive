@@ -2,20 +2,20 @@ tools:
   - type: function
     function:
       name: "{{ name }}_ops"
-      description: HTTP adapter for MCP servers - health checks and proxied tool calls via REST API endpoints.
+      description: HTTP adapter for tool servers - health checks and proxied tool calls via REST API endpoints.
       parameters:
         type: object
         properties:
           operation:
             type: string
             enum: [health, call]
-            description: "'health' for server status, 'call' to proxy MCP tool calls via HTTP"
+            description: "'health' for server status, 'call' to proxy tool calls via HTTP"
           tool:
             type: string
-            description: "MCP tool name to call (required for 'call' operation)"
+            description: "tool name to call (required for 'call' operation)"
           params:
             type: object
-            description: "Parameters for MCP tool call (for 'call' operation)"
+            description: "Parameters for tool call (for 'call' operation)"
         required: [operation]
         additionalProperties: false
 

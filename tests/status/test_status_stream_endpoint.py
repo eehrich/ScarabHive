@@ -1,5 +1,4 @@
 import asyncio
-import sys
 import pytest
 import httpx
 
@@ -7,18 +6,7 @@ pytestmark = pytest.mark.anyio  # single backend auto-selected
 
 
 def _build_app_with_auth_disabled():
-    """Build app with auth disabled for testing."""
-    # Patch AuthConfig.enabled to return False
-    from agent_system.config.models import AuthConfig
-    
-    class DisabledAuth:
-        def __get__(self, obj, objtype=None):
-            return False
-        def __set__(self, obj, value):
-            pass
-    
-    AuthConfig.enabled = DisabledAuth()
-    
+    """Build app (endpoint auth disabled by the autouse fixture in conftest.py)."""
     from agent_system.app import build_app
     return build_app()
 

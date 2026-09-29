@@ -1,5 +1,5 @@
 """
-Memory Plugin - MCP Server Implementation
+Memory Plugin - Tool Server Implementation
 
 Provides persistent memory storage and retrieval for agent conversations.
 Uses ChromaDB for semantic vector search and JSON for metadata.
@@ -22,12 +22,14 @@ import re
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.paths import data_path
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.vector_store import VectorStore
+from agent_system.utils.suggest import suggest_path
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -112,12 +114,12 @@ class ChromaDBError(MemoryError):
 # Memory Management Server
 # =============================================================================
 
-class MemoryServer(SchemaBasedMCPServer, PluginHook):
+class MemoryServer(SchemaBasedHookToolServer):
     """
     Memory Management Server with ChromaDB vector search.
 
     Implements:
-    - MCP tool: 'memory' with operations (store/recall/search/list/delete)
+    - tool: 'memory' with operations (store/recall/search/list/delete)
     - Hook: inject_memory_context (pre_llm_call)
     - Storage: ChromaDB (vectors) + JSON (metadata)
     """
@@ -126,16 +128,16 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ):
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Storage paths (use config if available, otherwise default)
-        config_storage = getattr(mcp_config, 'storage_path', None)
+        config_storage = getattr(server_config, 'storage_path', None)
         if config_storage:
             self.storage_path = Path(config_storage)
         else:
-            self.storage_path = Path("data/memories")
+            self.storage_path = data_path("memories")
         
         self.vector_store_path = self.storage_path / "vectors"
 
@@ -156,7 +158,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         # Memory ID counters per session (session_id -> int)
         self._memory_counters: Dict[str, int] = {}
 
-        logger.info(f"MemoryServer initialized with storage_path={self.storage_path}")
+        # Behavioral config from schema.yaml (defaults mirror schema). Previously
+        # these were dead config — the inject hook hardcoded values and the
+        # per-session cap was never enforced (unbounded growth).
+        self.max_memories = int(getattr(server_config, 'max_memories', None) or 10)
+        self.max_memories_per_session = int(
+            getattr(server_config, 'max_memories_per_session', None) or 5000
+        )
+        self.search_n_results = int(getattr(server_config, 'search_n_results', None) or 5)
+        _semantic = getattr(server_config, 'use_semantic_injection', None)
+        self.use_semantic_injection = True if _semantic is None else bool(_semantic)
+        _auto_kw = getattr(server_config, 'auto_extract_keywords', None)
+        self.auto_extract_keywords = True if _auto_kw is None else bool(_auto_kw)
+
+        logger.info(
+            f"MemoryServer initialized with storage_path={self.storage_path}, "
+            f"max_memories={self.max_memories}, "
+            f"max_memories_per_session={self.max_memories_per_session}, "
+            f"use_semantic_injection={self.use_semantic_injection}"
+        )
 
     def _get_collection_name(self, session_id: str) -> str:
         """Get collection name for session"""
@@ -459,8 +479,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         agent_name: Optional[str] = None
     ) -> Dict:
         """Store a new memory"""
-        # Auto-extract keywords if not provided
-        if keywords is None or len(keywords) == 0:
+        # Auto-extract keywords if not provided (gated by config)
+        if self.auto_extract_keywords and (keywords is None or len(keywords) == 0):
             keywords = self._extract_keywords(f"{title} {content}")
 
         # Generate memory ID with session-specific counter (async)
@@ -483,6 +503,23 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         # Store metadata in JSON
         collection = await self._load_collection(session_id)
+
+        # Enforce the per-session cap (bounds the JSON metadata file — fully
+        # re-serialized on every save — and the vector collection). Evict the
+        # least-important, then oldest memories to make room for the new one.
+        if self.max_memories_per_session > 0:
+            while len(collection.memories) >= self.max_memories_per_session:
+                victim = min(
+                    collection.memories.values(),
+                    key=lambda m: (m.importance, m.created_at),
+                )
+                del collection.memories[victim.memory_id]
+                await self._delete_memory_from_chroma(session_id, victim.memory_id)
+                logger.info(
+                    f"Per-session memory cap ({self.max_memories_per_session}) "
+                    f"reached for {session_id}; evicted {victim.memory_id}"
+                )
+
         collection.memories[memory_id] = memory
         await self._save_collection(collection)
 
@@ -496,6 +533,25 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             "message": f"Memory stored successfully with ID: {memory_id}"
         }
 
+
+    @staticmethod
+    def _available_overview(collection, limit: int = 15) -> Dict:
+        """Bounded id+title listing for a not-found answer.
+
+        Replaces the old "use memory(operation='list')" advice: that advice IS
+        the extra turn — the tool can simply include what list would say.
+        """
+        memories = sorted(collection.memories.values(),
+                          key=lambda m: m.accessed_at, reverse=True)
+        return {
+            "available": [
+                {"memory_id": m.memory_id, "title": m.title,
+                 "keywords": m.keywords[:5]}
+                for m in memories[:limit]
+            ],
+            "total": len(collection.memories),
+        }
+
     async def _operation_recall(
         self,
         session_id: str,
@@ -506,9 +562,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found in session {session_id}")
+            hint = suggest_path(memory_id, list(collection.memories))
             return {
-                "error": f"Memory {memory_id} not found",
-                "message": f"Memory ID '{memory_id}' does not exist. Use memory(operation='list') to see available memories."
+                "error": f"Memory {memory_id} not found"
+                         + (f" — did you mean '{hint}'?" if hint else ""),
+                "did_you_mean": hint,
+                **self._available_overview(collection),
             }
 
         memory = collection.memories[memory_id]
@@ -561,7 +620,6 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     "message": "No memories found"
                 }
 
-            # Load metadata for access count updates
             metadata_collection = await self._load_collection(session_id)
 
             # Format results
@@ -569,8 +627,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             for i in range(len(results["ids"][0])):
                 memory_id = results["ids"][0][i]
 
-                # Get full memory from metadata for access count
+                # The JSON metadata is the record: the vector entry keeps the title, keywords and importance
+                # it was indexed with (an update re-indexes only new content), and outlives a memory whose
+                # vector delete failed.
                 memory_meta = metadata_collection.memories.get(memory_id)
+                if memory_meta is None:
+                    continue
 
                 # Calculate similarity score (1 - distance = easier to understand)
                 # ChromaDB distance: 0 = identical, 2 = completely different
@@ -580,12 +642,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
                 memories.append({
                     "memory_id": memory_id,
-                    "title": results["metadatas"][0][i]["title"],
-                    "content": results["documents"][0][i],
+                    "title": memory_meta.title,
+                    "content": memory_meta.content,
                     "similarity": round(similarity, 3),  # 0.0-1.0, higher = better match
-                    "importance": int(results["metadatas"][0][i].get("importance", "5")),
-                    "keywords": results["metadatas"][0][i].get("keywords", "").split(","),
-                    "access_count": memory_meta.access_count if memory_meta else 0
+                    "importance": memory_meta.importance,
+                    "keywords": memory_meta.keywords,
+                    "access_count": memory_meta.access_count
                 })
 
             logger.info(f"Search '{query}' returned {len(memories)} results")
@@ -666,9 +728,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found for deletion in session {session_id}")
+            # Deliberately NO did_you_mean here: steering an agent toward a
+            # deletion target it did not name is how the wrong memory dies.
             return {
                 "error": f"Memory {memory_id} not found",
-                "message": f"Cannot delete: Memory ID '{memory_id}' does not exist."
+                "message": f"Cannot delete: Memory ID '{memory_id}' does not exist.",
+                **self._available_overview(collection),
             }
 
         # Delete from JSON metadata
@@ -701,9 +766,12 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
         if memory_id not in collection.memories:
             logger.info(f"Memory {memory_id} not found for update in session {session_id}")
+            # Like delete: a write miss gets the listing but NO suggestion —
+            # updating a guessed target corrupts silently.
             return {
                 "error": f"Memory {memory_id} not found",
-                "message": f"Cannot update: Memory ID '{memory_id}' does not exist."
+                "message": f"Cannot update: Memory ID '{memory_id}' does not exist.",
+                **self._available_overview(collection),
             }
 
         memory = collection.memories[memory_id]
@@ -809,7 +877,9 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Stored: {result['memory_id']}")
+                    # The end line replaces the progress line, so it has to
+                    # carry the title too -- the id alone says nothing.
+                    await status.end(f"Stored: {title[:50]} ({result['memory_id']})")
                 return result
 
             elif operation == "recall":
@@ -847,7 +917,7 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     return {"error": error_msg}
                 
                 query = arguments["query"]
-                n_results = arguments.get("n_results", 5)
+                n_results = arguments.get("n_results", self.search_n_results)
                 if status:
                     await status.progress(f"Searching: '{query[:50]}...'")
 
@@ -858,7 +928,8 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                 )
 
                 if status:
-                    await status.end(f"Found {len(result.get('results', []))} memories")
+                    await status.end(
+                        f"{len(result.get('results', []))} memories -- '{query[:50]}'")
                 return result
 
             elif operation == "list":
@@ -930,7 +1001,15 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
                     if "error" in result:
                         await status.error(result.get("message", result["error"]))
                     else:
-                        await status.end(f"Updated: {memory_id}")
+                        # Which fields actually changed -- the id alone was
+                        # the same text the progress line already had. Read
+                        # from the result, which already computes exactly
+                        # this: recomputing it here gave the same answer
+                        # today and two answers the day one of them changes.
+                        changed = result.get("updated_fields") or []
+                        await status.end(
+                            f"Updated {memory_id}: {', '.join(changed)}"
+                            if changed else f"Updated {memory_id} (no fields given)")
                 return result
 
             else:
@@ -965,16 +1044,24 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
             if not collection.memories or len(collection.memories) == 0:
                 return HookResult(success=True, modified=False)
 
-            # Get config
-            max_memories = 10  # Default, should come from config
-            use_semantic = True  # Default
+            # Config-driven (wired from server_config in __init__)
+            max_memories = self.max_memories
+            use_semantic = self.use_semantic_injection
 
-            # Get user's current message for semantic search
+            # Get user's current message for semantic search.
+            # The LAST message is not it: notes the run or a hook appended sit
+            # there -- since the state blocks moved to the end of the history,
+            # the newest one is usually this hook's own injection from the step
+            # before, and the memories would then be selected by the list of
+            # memories. What a PERSON wrote is the query.
             user_message = None
-            if context.messages and len(context.messages) > 0:
-                last_msg = context.messages[-1]
-                if hasattr(last_msg, 'content'):
-                    user_message = last_msg.content
+            for msg in reversed(context.messages or []):
+                get = msg.get if isinstance(msg, dict) else (
+                    lambda key, m=msg: getattr(m, key, None))
+                if (get('role') == 'user' and get('injected_by') is None
+                        and isinstance(get('content'), str) and get('content').strip()):
+                    user_message = get('content')
+                    break
 
             # Select memories to inject
             if use_semantic and user_message:
@@ -1012,20 +1099,24 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
 
             injection = "\n".join(lines)
 
-            # Check if already injected and REMOVE old injection
+            # Append-only: the list is a turn in the history, not a block at
+            # the head rebuilt on every call. At the head it changed the prompt
+            # prefix every step, so the whole history was paid for again;
+            # appended at the end, everything before it stays byte-identical.
+            # The previous block keeps its place, and one that compaction took
+            # away simply comes back.
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-            for i, msg in enumerate(context.messages):
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and injection_marker in msg_content:
-                    # Remove old injection
-                    context.messages.pop(i)
-                    break
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "memory"), None)
+            if previous is not None and previous.content == injection:
+                return HookResult(success=True, modified=False, context=context)
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
-                content=injection
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
+                content=injection,
+                injected_by="memory",
             ))
 
             logger.info(f"Injected {len(relevant_memories)} memories into system prompt")
@@ -1040,15 +1131,3 @@ class MemoryServer(SchemaBasedMCPServer, PluginHook):
         except Exception as e:
             logger.error(f"Hook execution failed: {e}", exc_info=True)
             return HookResult(success=False, modified=False, metadata={"error": str(e)})
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

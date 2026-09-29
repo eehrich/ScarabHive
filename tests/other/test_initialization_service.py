@@ -6,7 +6,7 @@ import pytest
 
 from agent_system.config.settings import load_settings
 from agent_system.services.initialization_service import InitializationService
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 class TestInitializationService:
@@ -43,12 +43,12 @@ class TestInitializationService:
     def test_bootstrap_and_inject_creates_registry(self, service):
         """Test bootstrap creates new registry when not provided."""
         registry = service.bootstrap_and_inject()
-        assert isinstance(registry, MCPRegistry)
+        assert isinstance(registry, ToolServerRegistry)
         assert service.initialized is True
 
     def test_bootstrap_and_inject_uses_provided_registry(self, service):
         """Test bootstrap uses provided registry instead of creating new one."""
-        existing_registry = MCPRegistry()
+        existing_registry = ToolServerRegistry()
         registry = service.bootstrap_and_inject(registry=existing_registry)
         assert registry is existing_registry
         assert service.initialized is True
@@ -69,7 +69,7 @@ class TestInitializationService:
         """Test CLI initialization returns registry and session_service."""
         registry, session_service = service.initialize_for_cli()
         
-        assert isinstance(registry, MCPRegistry)
+        assert isinstance(registry, ToolServerRegistry)
         assert session_service is not None
         assert session_service is service.session_service
         assert len(registry.list()) > 0
@@ -77,7 +77,7 @@ class TestInitializationService:
 
     def test_initialize_for_api(self, service):
         """Test API initialization returns session_service."""
-        session_service = service.initialize_for_api(skip_bootstrap=True)
+        session_service = service.initialize_for_api()
         
         assert session_service is not None
         assert session_service is service.session_service
@@ -107,7 +107,7 @@ class TestInitializationService:
         """Test that injection can be skipped."""
         # This doesn't fail, just doesn't inject
         registry = service.bootstrap_and_inject(inject_sessions=False)
-        assert isinstance(registry, MCPRegistry)
+        assert isinstance(registry, ToolServerRegistry)
         # We don't verify injection didn't happen because it's hard to prove a negative
         # The main test is that it doesn't crash
 
@@ -125,3 +125,43 @@ class TestInitializationService:
         # But both work
         assert len(registry1.list()) > 0
         assert len(registry2.list()) > 0
+
+
+class TestTheRuntimeIsKept:
+    """Bootstrapping must leave the Runtime behind, not throw it away.
+
+    It holds the declaration of every configured server -- what a server IS
+    without building it, and the only path that builds one. A caller that has
+    to re-discover instead gets a second set of factory objects and a second
+    second of start-up.
+    """
+
+    @pytest.fixture
+    def service(self):
+        return InitializationService(load_settings())
+
+    def test_no_runtime_before_bootstrap(self, service):
+        assert service.runtime is None
+
+    def test_the_runtime_survives_bootstrap_and_knows_every_declaration(self, service):
+        registry = service.bootstrap_and_inject(ToolServerRegistry())
+
+        runtime = service.runtime
+        assert runtime is not None, "the Runtime was thrown away after bootstrap"
+        assert runtime.registry is registry
+        declared = set(runtime.declarations())
+        assert declared, "fixture: nothing was declared at all"
+        assert set(registry.list()) <= declared, (
+            "servers in the registry that no declaration explains: "
+            f"{sorted(set(registry.list()) - declared)}")
+
+    def test_every_agent_has_the_session_service_afterwards(self, service):
+        """The end state, whichever path put it there: the Runtime injects it
+        while building, and the injection walk covers agents built elsewhere.
+        (The Runtime's own half is measured in the runtime tests.)"""
+        registry = service.bootstrap_and_inject(ToolServerRegistry())
+
+        from agent_system.servers.agent.server import Agent
+        agents = [registry.get(n) for n in registry.list() if isinstance(registry.get(n), Agent)]
+        assert agents, "fixture: no agent was built"
+        assert all(a._session_service is service.session_service for a in agents)

@@ -14,6 +14,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# a job in one of these is still to be finished by ComfyUI
+ACTIVE_STATUSES = ("queued", "running", "pending")
+
 
 class ComfyUIJobTracker:
     """Track ComfyUI job execution state.
@@ -35,6 +38,12 @@ class ComfyUIJobTracker:
     def _init_db(self) -> None:
         """Initialize database schema."""
         with sqlite3.connect(self.db_path) as conn:
+            # Enable WAL so concurrent readers don't block writers.
+            # (Busy timeout defaults to 5s via sqlite3.connect(timeout=5.0).)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     prompt_id TEXT PRIMARY KEY,
@@ -49,9 +58,18 @@ class ComfyUIJobTracker:
                     output_prefix TEXT,
                     outputs TEXT,
                     error_message TEXT,
+                    server_url TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Migrate existing DBs that don't have server_url yet
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN server_url TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    logger.error("Unexpected error adding server_url column: %s", exc)
+                    raise
+                # Column already exists — expected on re-init.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)"
             )
@@ -69,7 +87,8 @@ class ComfyUIJobTracker:
         workflow_id: str,
         workflow_name: str,
         parameters: dict[str, Any],
-        output_prefix: str = ""
+        output_prefix: str = "",
+        server_url: str | None = None,
     ) -> None:
         """Register a new job.
         
@@ -79,14 +98,15 @@ class ComfyUIJobTracker:
             workflow_name: Human-readable workflow name
             parameters: Parameters passed to the workflow
             output_prefix: Prefix for output files
+            server_url: URL of the ComfyUI server that handled this job
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO jobs 
                 (prompt_id, workflow_id, workflow_name, status, 
-                 submitted_at, parameters, output_prefix)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, parameters, output_prefix, server_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     prompt_id,
@@ -95,11 +115,12 @@ class ComfyUIJobTracker:
                     "queued",
                     datetime.now(timezone.utc).isoformat(),
                     json.dumps(parameters),
-                    output_prefix
+                    output_prefix,
+                    server_url,
                 )
             )
             conn.commit()
-        logger.debug("Registered job %s for workflow %s", prompt_id, workflow_id)
+        logger.debug("Registered job %s for workflow %s on %s", prompt_id, workflow_id, server_url)
     
     def update_status(
         self,
@@ -119,22 +140,27 @@ class ComfyUIJobTracker:
         with sqlite3.connect(self.db_path) as conn:
             if status == "running":
                 conn.execute(
-                    "UPDATE jobs SET status = ?, started_at = ? WHERE prompt_id = ?",
+                    # the first report of a run starts its clock; every later status poll says running again
+                    "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE prompt_id = ?",
                     (status, now, prompt_id)
                 )
             elif status in ["completed", "failed", "cancelled"]:
-                # Calculate duration
+                # Calculate duration from started_at (actual run time);
+                # fall back to submitted_at if the job never reached 'running'.
                 cursor = conn.execute(
-                    "SELECT submitted_at FROM jobs WHERE prompt_id = ?",
+                    "SELECT COALESCE(started_at, submitted_at) FROM jobs WHERE prompt_id = ?",
                     (prompt_id,)
                 )
                 row = cursor.fetchone()
                 duration = None
                 if row and row[0]:
                     try:
-                        submitted = datetime.fromisoformat(row[0])
-                        duration = (datetime.now(timezone.utc) - submitted).total_seconds()
-                    except ValueError:
+                        started = datetime.fromisoformat(row[0])
+                        # Legacy/migration rows may be naive — treat as UTC.
+                        if started.tzinfo is None:
+                            started = started.replace(tzinfo=timezone.utc)
+                        duration = (datetime.now(timezone.utc) - started).total_seconds()
+                    except (ValueError, TypeError):
                         pass
                 
                 conn.execute(
@@ -186,6 +212,23 @@ class ComfyUIJobTracker:
             if row:
                 return self._row_to_dict(row)
         return None
+
+    def get_server_url(self, prompt_id: str) -> str | None:
+        """Get the server URL that handled a specific job.
+
+        Args:
+            prompt_id: Job identifier
+
+        Returns:
+            Server URL string (e.g. ``http://192.0.2.5:8188``) or None.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT server_url FROM jobs WHERE prompt_id = ?",
+                (prompt_id,),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
     
     def get_active_jobs(self) -> list[dict[str, Any]]:
         """Get all queued/running jobs.
@@ -361,44 +404,6 @@ class ComfyUIJobTracker:
             db_active_ids = {row[0] for row in cursor.fetchall()}
             
             return db_active_ids - live_prompt_ids
-    
-    def sync_with_queue(self, queue_data: dict[str, Any]) -> int:
-        """Sync database state with live ComfyUI queue.
-        
-        Updates stale "queued" or "running" jobs that are no longer
-        in the ComfyUI queue (e.g., after server restart).
-        
-        DEPRECATED: Use get_stale_job_ids() + mark_job_failed() instead
-        to properly check history before marking as failed.
-        
-        Args:
-            queue_data: Queue data from ComfyUI API containing queue_pending and queue_running
-            
-        Returns:
-            Number of jobs updated
-        """
-        stale_ids = self.get_stale_job_ids(queue_data)
-        
-        if stale_ids:
-            # Mark stale jobs as failed (server was restarted or job lost)
-            with sqlite3.connect(self.db_path) as conn:
-                placeholders = ",".join("?" * len(stale_ids))
-                conn.execute(
-                    f"""
-                    UPDATE jobs 
-                    SET status = 'failed', 
-                        error_message = 'Job lost (server restart or queue cleared)',
-                        completed_at = ?
-                    WHERE prompt_id IN ({placeholders})
-                    """,
-                    (datetime.now(timezone.utc).isoformat(), *stale_ids)
-                )
-                conn.commit()
-            
-            logger.info("Marked %d stale jobs as failed", len(stale_ids))
-            return len(stale_ids)
-        
-        return 0
     
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Convert database row to dict with parsed JSON fields.

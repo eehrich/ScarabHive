@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+# The index stores paths as written (data/context_engineer/...): read back,
+# they land in the data directory, wherever it is configured now.
+from agent_system.paths import resolve_data_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -133,7 +137,7 @@ class MediaStore:
             # Check if already stored
             if data_hash in self._metadata:
                 existing = self._metadata[data_hash]
-                existing_path = Path(existing["path"])
+                existing_path = resolve_data_path(existing["path"])
                 if existing_path.exists():
                     # Update access time
                     existing["last_accessed"] = time.time()
@@ -186,7 +190,7 @@ class MediaStore:
         """Get file path by data hash."""
         if data_hash in self._metadata:
             meta = self._metadata[data_hash]
-            path = Path(meta["path"])
+            path = resolve_data_path(meta["path"])
             if path.exists():
                 meta["last_accessed"] = time.time()
                 self._save_metadata()
@@ -214,14 +218,17 @@ class MediaStore:
         # First pass: remove expired files
         expired_hashes = []
         for data_hash, meta in list(self._metadata.items()):
-            created_at = meta.get("created_at", 0)
-            if now - created_at > self.ttl_seconds:
+            # Idle time, not age: storing the same bytes again refreshes only
+            # last_accessed and hands out the existing path in a new hint —
+            # expiring by created_at deleted a file that hint had just named.
+            last_used = meta.get("last_accessed") or meta.get("created_at", 0)
+            if now - last_used > self.ttl_seconds:
                 expired_hashes.append(data_hash)
         
         for data_hash in expired_hashes:
             meta = self._metadata.pop(data_hash, None)
             if meta:
-                path = Path(meta["path"])
+                path = resolve_data_path(meta["path"])
                 if path.exists():
                     try:
                         path.unlink()
@@ -242,7 +249,7 @@ class MediaStore:
             to_remove = len(self._metadata) - self.max_files
             for data_hash, meta in sorted_items[:to_remove]:
                 del self._metadata[data_hash]
-                path = Path(meta["path"])
+                path = resolve_data_path(meta["path"])
                 if path.exists():
                     try:
                         path.unlink()

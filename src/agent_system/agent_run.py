@@ -22,9 +22,18 @@ import sys
 from typing import TYPE_CHECKING
 
 from .config.settings import load_settings
-from .mcp.status import status_bus
+from .paths import enter_project
+from .tools.status import status_bus
 from .servers.agent.server import Agent
 from .services.session_manager import SessionPermissionError
+from .cli_utils.session_defaults import (
+    choose_agent_name,
+    choose_llm_profile,
+    profile_for_record,
+    session_defaults,
+)
+from .cli_utils.attachments import greedy_attach_hint, sort_attachments
+from .cli_utils.session_listing import DEFAULT_LIMIT, parse_listing, print_sessions
 from .cli_utils.common import (
     set_color_mode,
     status_subscriber,
@@ -33,6 +42,7 @@ from .cli_utils.common import (
     format_error
 )
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
+from .tools.integration import shutdown_tools
 
 if TYPE_CHECKING:
     from .llm.models import ChatMessage
@@ -56,7 +66,7 @@ def setup_basic_logging(verbose: bool = False) -> None:
 
 
 async def initialize_system(config):
-    """Initialize the MCP registry and load plugins using InitializationService."""
+    """Initialize the tool registry and load plugins using InitializationService."""
     # Use centralized initialization service
     from .services.initialization_service import InitializationService
     from .llm.factory import set_batch_config
@@ -77,8 +87,8 @@ async def initialize_system(config):
     except Exception as e:
         logger.warning(f"Initialization failed: {e}", exc_info=True)
         # Continue with minimal registry - agent can still work
-        from .mcp.base import MCPRegistry
-        return MCPRegistry(), None
+        from .tools.base import ToolServerRegistry
+        return ToolServerRegistry(), None
 
 
 async def create_agent(config, registry, agent_name: str, session_service=None):
@@ -89,7 +99,7 @@ async def create_agent(config, registry, agent_name: str, session_service=None):
 
     Args:
         config: System configuration
-        registry: MCP registry
+        registry: tool registry
         agent_name: Name of agent to create
         session_service: Optional SessionService to inject into agent
     """
@@ -107,6 +117,9 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
     """
+    from .utils.id import short_id
+
+    request_id = short_id()
     try:
         # Log request info (handle both string and ChatMessage)
         request_preview = request if isinstance(request, str) else f"<multimodal message with {len(request.content)} parts>"
@@ -117,6 +130,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         result = await collect_final_result(
             agent,
             request,
+            request_id=request_id,
             session_id=session_id,  # Pass session_id for conversation history
             llm_override=llm_override,
             llm_profile_info_override=llm_profile_info
@@ -127,13 +141,18 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
     except Exception as e:
         logger.error(f"Failed to execute agent request: {e}", exc_info=True)
         raise
+    finally:
+        # Named here so it can be let go of: what the run registered under it
+        # (a tool call, a preloaded tool, a sub-agent) goes with the run, as the
+        # API lets go of its request tree when the request ends.
+        from .core.request_context import release_request_user_tree
+        release_request_user_tree(request_id)
 
 
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
                      session_id: str | None = None, session_user: str = "cli_user",
-                     list_sessions: bool = False, session_title: str | None = None,
-                     image_paths: list[str] | None = None, audio_paths: list[str] | None = None,
-                     text_file_paths: list[str] | None = None) -> None:
+                     list_sessions: str | None = None, session_title: str | None = None,
+                     attachments: list[str] | None = None, force: bool = False) -> None:
     """Async main function to run agent request with session support.
 
     Args:
@@ -143,42 +162,40 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         show_status: Whether to display status messages
         session_id: Session ID to continue (optional)
         session_user: User ID for session storage
-        list_sessions: List all sessions for user
+        list_sessions: Count of sessions to list instead of running (0 = all,
+            "" for the default); None runs the request
         session_title: Title for new session (optional)
-        image_paths: List of image file paths to attach (optional)
-        audio_paths: List of audio file paths to attach (optional)
-        text_file_paths: List of text file paths to attach (optional)
+        attachments: Files to attach; the kind of each is detected, not declared
+        force: Run the session even though another process holds it
     """
+    presence = None
+    stopped = False   # Ctrl-C: its user stopped the run (core/session_presence.py)
     try:
         # Handle --list-sessions flag (needs session_manager only)
-        if list_sessions:
-            from pathlib import Path as PathLib
+        if list_sessions is not None:
+            from .core.session_presence import sessions_dir
             from .services.session_manager import SessionManager
 
-            storage_path = PathLib(__file__).parents[2] / "data" / "sessions"
-            session_manager = SessionManager(storage_path=str(storage_path))
+            # The store every run uses (AGENT_SESSION_STORAGE_PATH, else the
+            # data directory's sessions): this listing used to ignore the
+            # variable and read the checkout's sessions.
+            session_manager = SessionManager(storage_path=str(sessions_dir()))
 
-            sessions = await session_manager.list_sessions(session_user)
-
-            if not sessions:
-                print(f"No sessions found for user '{session_user}'")
-                return
-
-            print(f"\nSessions for user '{session_user}':")
-            print("-" * 80)
-            for sess in sessions:
-                sess_id = sess.get("session_id", "unknown")
-                title = sess.get("title", "Untitled")
-                agent = sess.get("agent_name", "unknown")
-                llm = sess.get("llm_profile", "unknown")
-                created = sess.get("created_at", "unknown")
-                msg_count = sess.get("message_count", len(sess.get("messages", [])))  # Use message_count from metadata
-
-                print(f"ID: {sess_id}")
-                print(f"  Title: {title}")
-                print(f"  Agent: {agent}, LLM: {llm}")
-                print(f"  Messages: {msg_count}, Created: {created}")
-                print()
+            # Every session, pipeline runs included: which agents the chat
+            # offers is in the configuration, and this listing deliberately
+            # reads none -- a config that does not load must not hide it.
+            # `all` is taken without a complaint, it is what this lists anyway.
+            limit, _, complaint = parse_listing(list_sessions)
+            if complaint:
+                print(f"Ignoring '{complaint}': --list-sessions takes a count or 'all'.")
+            await print_sessions(
+                session_manager, session_user,
+                limit=limit,
+                current_session_id=session_id,
+                more_hint="--list-sessions <count>, --list-sessions 0 for no limit",
+                # <id>: agent-run takes --session as it is, titles are agent-cli's
+                footer="Continue one with: --session <id>",
+            )
             return
 
         # Load configuration
@@ -190,9 +207,22 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         logger.info("Initializing system...")
         registry, session_service = await initialize_system(config)
 
-        # Get agent name from argument or use default
-        if agent_name is None:
-            agent_name = config.default_agent
+        # What this session was started with, when one is being continued.
+        # Same rules as agent-cli (cli_utils.session_defaults) on purpose: the
+        # two entry points share a session, and answering "which agent, which
+        # model" differently made every agent-run overwrite what agent-cli had
+        # stored there.
+        # getattr, not a dot: initialize_system returns session_service=None on
+        # its degraded path ("Continue with minimal registry - agent can still
+        # work"), and reaching through it here would raise BEFORE the agent is
+        # built -- turning a run that used to answer into an exit 1. The None
+        # lands on the guard in load_session_settings.
+        stored_agent, stored_llm = await session_defaults(
+            getattr(session_service, "session_manager", None),
+            session_user, session_id, config)
+
+        # Get agent name from argument, from the session, or use the default
+        agent_name = choose_agent_name(agent_name, stored_agent, config.default_agent)
         logger.info(f"Using agent: {agent_name}")
 
         # Create and initialize agent
@@ -203,136 +233,91 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         from .utils.id import short_id
         actual_session_id = session_id or short_id()
 
-        # Load existing session if --session provided, otherwise initialize empty
-        session_exists = False
-        was_new_session = False
-
-        if session_id:
-            logger.info(f"Loading session: {session_id}")
+        # Session presence (core/session_presence.py): the session is held
+        # BEFORE it is loaded -- a run that reads the file first can be
+        # overtaken by the process holding it and would write its own copy back
+        # over that run. Held through the save after the run (see the finally).
+        from .core.session_presence import SessionBusy, presence_for
+        presence = presence_for(config)
+        if presence:
             try:
-                session_exists, msg_count = await session_service.load_and_restore_session(
-                    agent, session_user, session_id
-                )
-                if session_exists:
-                    logger.info(f"Loaded session {session_id} with {msg_count} messages")
-                    print(f"Continuing session '{session_id}' ({msg_count} messages)")
-                    was_new_session = False
-                else:
-                    # Session ID provided but doesn't exist - create it
-                    logger.info(f"Session '{session_id}' not found, creating new session with this ID")
-                    print(f"Creating new session '{session_id}'")
-                    agent._session_tracker.set_session_messages(actual_session_id, [])
-                    was_new_session = True  # Will be saved at end
+                presence.hold(actual_session_id, session_user, agent_name)
+            except SessionBusy as busy:
+                if not force:
+                    print(f"Error: {busy}.", file=sys.stderr)
+                    print("Wait for it to finish, or pass --force if its lock is a leftover.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                print(f"Warning: {busy}; running it anyway (--force).", file=sys.stderr)
+
+        # Continue on the model the session was started with (see
+        # choose_llm_profile for what that does and does not outrank).
+        llm_profile = choose_llm_profile(
+            llm_profile, stored_llm, stored_agent, agent_name,
+            agent.agent_config.default_llm_profile)
+        record_profile = profile_for_record(llm_profile, agent.agent_config.default_llm_profile)
+
+        # Open the session the way the API and agent-cli do.
+        if session_service is not None:
+            try:
+                session_exists = await session_service.open_for_run(
+                    agent, session_user, actual_session_id, record_profile)
             except SessionPermissionError as e:
-                # User trying to access session they don't own
-                logger.error(f"Permission denied for session {session_id}: {e}")
+                # Exit 1, not return: a refused run is not a finished one.
+                logger.error(f"Permission denied for session {actual_session_id}: {e}")
                 print(f"Error: {e}", file=sys.stderr)
                 print("This session belongs to a different user. Use a different session ID.", file=sys.stderr)
-                return
-            except Exception as e:
-                logger.error(f"Failed to load session {session_id}: {e}", exc_info=True)
-                print(f"Error loading session: {e}", file=sys.stderr)
-                return
+                sys.exit(1)
+        elif session_id:
+            # The degraded bootstrap (initialize_system) has no store: a session
+            # named to continue would run without its history and not be saved.
+            print(f"Error: cannot continue session '{session_id}' -- the session store did not "
+                  f"start (see the log).", file=sys.stderr)
+            sys.exit(1)
         else:
-            # No session ID provided - create new one with auto-generated ID
-            logger.debug(f"Creating new session: {actual_session_id}")
-            agent._session_tracker.set_session_messages(actual_session_id, [])
-            was_new_session = True
+            # The degraded bootstrap without a session to continue: the run
+            # still answers, and still names its user to the tools.
+            session_exists = False
+            agent._session_tracker.set_session_metadata(actual_session_id, {
+                "user_id": session_user, "agent_name": agent.name, "llm_profile": record_profile})
+        was_new_session = not session_exists
+        if session_exists:
+            count = len(agent._session_tracker.get_session_messages(actual_session_id) or [])
+            logger.info(f"Loaded session {actual_session_id} with {count} messages")
+            print(f"Continuing session '{actual_session_id}' ({count} messages)")
+        elif session_id:
+            logger.info(f"Session '{session_id}' not found, creating new session with this ID")
+            print(f"Creating new session '{session_id}'")
 
         # Create LLM override if profile specified
         llm_override = None
         llm_profile_info = None
         if llm_profile and config.llm_system and config.llm_system.profiles:
-            if llm_profile not in config.llm_system.profiles:
-                error_msg = f"LLM profile '{llm_profile}' not found in configuration."
-                available_profiles = sorted(config.llm_system.profiles.keys())
-                if available_profiles:
-                    error_msg += "\n\nAvailable profiles:\n  " + "\n  ".join(available_profiles)
-                raise ValueError(error_msg)
-
+            from .llm.factory import UnknownLLMProfile, override_for_profile
             try:
-                # Use factory function that properly handles batch mode
-                from .llm.factory import create_llm_from_profile, resolve_llm_config_for_agent
-                from .config.models import AgentConfig
-
-                llm_override = create_llm_from_profile(
-                    config=config,
-                    llm_profile=llm_profile,
-                )
-
-                # Get profile info for status display
-                temp_agent_config = AgentConfig(llm_profile=llm_profile)
-                llm_kwargs = resolve_llm_config_for_agent(config, temp_agent_config)
-                model = llm_kwargs.get('model', 'unknown')
-                provider = llm_kwargs.get('provider', 'unknown')
-                llm_profile_info = f"{llm_profile}:{provider}/{model}"
-
+                llm_override, llm_profile_info = override_for_profile(
+                    config, agent.agent_config, llm_profile)
                 logger.info(f"Using LLM override: {llm_profile_info}")
+            except UnknownLLMProfile:
+                raise   # a ValueError whose message lists the profiles there are
             except Exception as e:
                 logger.error(f"Failed to create LLM override: {e}", exc_info=True)
                 raise ValueError(f"Failed to apply LLM profile '{llm_profile}': {str(e)}")
-
-        # Set session metadata for tool execution context (AFTER LLM override logic)
-        # This ensures user_id is available when tools are called
-        effective_llm_profile = llm_profile or agent.agent_config.default_llm_profile
-        agent._session_tracker.set_session_metadata(actual_session_id, {
-            "user_id": session_user,
-            "agent_name": agent.name,
-            "llm_profile": effective_llm_profile
-        })
 
         # Process multimodal attachments (images, audio, text files)
         from typing import Union
         task_input: Union[str, ChatMessage] = request
         
-        if image_paths or audio_paths or text_file_paths:
-            attachment_counts = []
-            if image_paths:
-                attachment_counts.append(f"{len(image_paths)} image(s)")
-            if audio_paths:
-                attachment_counts.append(f"{len(audio_paths)} audio(s)")
-            if text_file_paths:
-                attachment_counts.append(f"{len(text_file_paths)} text file(s)")
-            logger.info(f"Processing attachments: {', '.join(attachment_counts)}")
-            
-            try:
-                from pathlib import Path as PathLib
-                from .utils.multimodal_processor import (
-                    create_multimodal_message_extended,
-                    ImageProcessingError,
-                    AudioProcessingError,
-                    TextFileProcessingError
-                )
-
-                # Convert string paths to Path objects
-                images = [PathLib(p) for p in image_paths] if image_paths else None
-                audios = [PathLib(p) for p in audio_paths] if audio_paths else None
-                texts = [PathLib(p) for p in text_file_paths] if text_file_paths else None
-
-                # Create multimodal message with all attachment types
-                task_input = create_multimodal_message_extended(
-                    text=request,
-                    image_paths=images,
-                    audio_paths=audios,
-                    text_file_paths=texts,
-                    max_size_mb=None  # No hard limit, just warnings
-                )
-
-                logger.info("Created multimodal message")
-
-            except ImageProcessingError as e:
-                print(f"Error processing image: {e}", file=sys.stderr)
-                return
-            except AudioProcessingError as e:
-                print(f"Error processing audio: {e}", file=sys.stderr)
-                return
-            except TextFileProcessingError as e:
-                print(f"Error processing text file: {e}", file=sys.stderr)
-                return
-            except Exception as e:
-                print(f"Error processing attachments: {e}", file=sys.stderr)
-                logger.exception("Unexpected error in multimodal processing")
-                return
+        sorted_attachments, attachment_problems = sort_attachments(attachments or [])
+        if attachment_problems:
+            raise ValueError("; ".join(attachment_problems))
+        if any(sorted_attachments.values()):
+            # Checked against the model this run will use -- the --llm override
+            # wins. AttachmentRejected is a ValueError: the handler below says
+            # it and exits 1 -- publish_pipeline and the writer runners read
+            # the code.
+            from .utils.multimodal_processor import message_with_attachments
+            task_input = message_with_attachments(request, sorted_attachments, llm_override, agent)
 
         # Subscribe to status events if enabled
         status_queue = None
@@ -370,14 +355,21 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     pass
             if status_queue:
                 status_bus.unsubscribe(status_queue)  # Not async!
+        if result.get("cancelled", False):
+            # Its task was cancelled, not the run: the run cannot tell, this hold
+            # can, and notes it for the run it held around.
+            stopped = True
 
-        # Save session after successful request execution (skip if cancelled)
-        if not result.get("cancelled", False):
+        # Save session after successful request execution (skip if cancelled, or refused before it ran:
+        # the agent's role gate, another user's session, another run's lock -- it ran nothing, and a save
+        # only rewrote the record with this entry agent and profile, its updated_at moved)
+        if not result.get("cancelled", False) and not result.get("refused"):
             try:
                 # Use the actual agent name that was requested (from parameter or config.default_agent)
                 # instead of agent.agent_name which may not exist or be "default"
-                agent_name_used = agent_name  # Already determined from args or config.default_agent at line 172-174
-                llm_profile_used = llm_profile or "normal"
+                agent_name_used = agent_name  # From the argument, the session, or the default
+                llm_profile_used = profile_for_record(
+                    llm_profile, agent.agent_config.default_llm_profile)
 
                 # Save the session
                 success = await session_service.save_session(
@@ -386,7 +378,8 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                     session_id=actual_session_id,
                     agent_name=agent_name_used,
                     llm_profile=llm_profile_used,
-                    was_new_session=was_new_session
+                    was_new_session=was_new_session,
+                    title=session_title
                 )
 
                 if success:
@@ -418,8 +411,12 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
                 print_agent_response(formatted_summary, content_format)
             else:
                 import json
-                print(json.dumps(result, indent=2, ensure_ascii=False))
+                # default=str: a non-JSON tool value must not fail a finished run.
+                print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        stopped = True   # before or around the run: its user stopped it all the same
+        raise
     except ValueError as e:
         # User-friendly error for common issues (agent not found, etc.)
         print(format_error(str(e)), file=sys.stderr)
@@ -430,12 +427,38 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
         traceback.print_exc()
         sys.exit(1)
     finally:
+        if presence:
+            presence.release(actual_session_id, session_user, stopped=stopped)
         # Shutdown batch queue manager if it was started
         await shutdown_batch_system()
+        # The tool integration is this PROCESS's, not the agent's: the agent
+        # only set up the module-level singleton because it asked first. So
+        # the entry point takes it down, as agent-cli and the app do -- this
+        # stops every plugin (a terminal's background processes, an SSH
+        # channel, file_ops' indexer) instead of leaving them to whatever the
+        # interpreter's exit happens to reach. A wake run is this process too.
+        try:
+            await shutdown_tools()
+        except Exception as e:  # noqa: BLE001 - the run is over; say it, don't fail it
+            logger.warning("Failed to shut down the tool integration: %s", e)
 
 
 def main() -> None:
+    """The agent-run entry point: a local process, run by whoever operates the
+    installation -- so the agent role gate takes its default user, cli_user,
+    for the local operator (auth/agent_access.local_operator_trusted). The
+    API process never does."""
+    from .auth.agent_access import local_operator_trusted
+
+    with local_operator_trusted():
+        _main()
+
+
+def _main() -> None:
     """Main entry point for the agent-run CLI tool."""
+    # Same as agent-cli: run from the repository whatever directory this was
+    # started in, and keep where the person started for the paths they typed.
+    enter_project()
     parser = argparse.ArgumentParser(
         description="Simple Agent Runner - Execute requests with the default agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -478,7 +501,9 @@ Examples:
     parser.add_argument(
         "--color",
         choices=["auto", "always", "never", "ansi", "html", "text"],
-        default="always",
+        # Default "auto", not "always": "always" emitted escape sequences into
+        # redirected output (agent_cli.py fixed this first).
+        default="auto",
         help="Output format: auto=ANSI if TTY, always/ansi=ANSI colors, html=HTML, never/text=plain text"
     )
 
@@ -507,11 +532,20 @@ Examples:
         help="User ID for session storage (default: cli_user)"
     )
 
+    # nargs="?" without type=int on purpose: argparse fills an optional's slot
+    # from the next token BEFORE converting it, so `--list-sessions "what is
+    # going on"` would die on int() instead of listing -- which is what the
+    # store_true version did. parse_limit sorts the count from the text after.
     parser.add_argument(
         "--list-sessions",
         dest="list_sessions",
-        action="store_true",
-        help="List all sessions for the current user"
+        nargs="?",
+        const="",
+        default=None,
+        metavar="COUNT|all",
+        help=f"List this user's sessions, one line each (default {DEFAULT_LIMIT}, 0 = no limit; "
+             "'all' is taken, this lists everything anyway). "
+             "Sub-agent sessions are not listed."
     )
 
     parser.add_argument(
@@ -521,34 +555,45 @@ Examples:
     )
 
     parser.add_argument(
-        "--images", "--attach",
-        dest="images",
+        "--force",
+        action="store_true",
+        help="Run the session even though another process holds it "
+             "(for a lock left behind by a process that hangs)"
+    )
+
+    # One flag for every kind of file, like `/attach` in the chat: the kind is
+    # read from the file, not from which flag was typed (cli_utils.attachments).
+    # The three old flags still work for anyone's shell history but are out of
+    # the help; they land in the same list and are sorted the same way.
+    parser.add_argument(
+        "--attach",
+        dest="attachments",
         nargs="+",
         metavar="PATH",
-        help="Path(s) to image file(s) to attach to the request"
+        action="extend",
+        default=None,
+        help="File(s) to attach to the request -- images, audio or text; "
+             "the kind is detected per file"
     )
 
     parser.add_argument(
-        "--audio",
-        dest="audio",
+        "--images", "--audio", "--text", "--files",
+        dest="attachments",
         nargs="+",
         metavar="PATH",
-        help="Path(s) to audio file(s) to attach to the request (mp3, wav, ogg, etc.)"
-    )
-
-    parser.add_argument(
-        "--text", "--files",
-        dest="text_files",
-        nargs="+",
-        metavar="PATH",
-        help="Path(s) to text file(s) to attach to the request (txt, md, py, json, etc.)"
+        action="extend",
+        default=None,
+        help=argparse.SUPPRESS
     )
 
     args = parser.parse_args()
 
     # Validate that either --list-sessions or request is provided
-    if not args.list_sessions and not args.request:
-        parser.error("Either 'request' or --list-sessions must be provided")
+    if args.list_sessions is None and not args.request:
+        # Say WHY there is no request when --attach swallowed it, instead of
+        # sending someone to the usage line for a command they typed in full.
+        hint = greedy_attach_hint(args.attachments, command="agent-run")
+        parser.error(hint or "Either 'request' or --list-sessions must be provided")
 
     # Set color mode globally
     if args.no_color:
@@ -579,11 +624,10 @@ Examples:
             show_status=show_status,
             session_id=getattr(args, "session_id", None),
             session_user=getattr(args, "session_user", "cli_user"),
-            list_sessions=getattr(args, "list_sessions", False),
+            list_sessions=getattr(args, "list_sessions", None),
             session_title=getattr(args, "session_title", None),
-            image_paths=getattr(args, "images", None),
-            audio_paths=getattr(args, "audio", None),
-            text_file_paths=getattr(args, "text_files", None)
+            attachments=getattr(args, "attachments", None),
+            force=getattr(args, "force", False)
         ))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

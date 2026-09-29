@@ -6,34 +6,371 @@ layered compaction strategies to optimize context usage.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import hashlib
+import json
 import logging
+import re
+import shutil
+import threading
 import time
+from collections import OrderedDict
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any
 
 from agent_system.hooks import HookContext, HookResult, SchemaBasedPluginHook
+from agent_system.llm.message_roles import DEVELOPER, is_injected_note
 from agent_system.llm.models import ChatMessage
-from agent_system.mcp.status import StatusScope, status_bus
+from agent_system.paths import data_path, resolve_data_path
+from agent_system.tools.status import StatusScope, status_bus
 
-from .archival_memory import ArchivalMemory
-from .compaction import CompactionConfig, LayeredCompactionStrategy
+from .archival_memory import ARCHIVAL_COLLECTION, ArchivalMemory
+from .compaction import (
+    PLUGIN_LEVEL_KEYS,
+    TOOL_RESULTS_SECTION,
+    CompactionConfig,
+    LayeredCompactionStrategy,
+    _coerce,
+    compaction_config_from,
+    unknown_config_keys,
+)
 from .core_memory import CoreMemory
 from .media_store import MediaStore
+from .paging import (
+    find_in_text,
+    slice_text,
+)
 from .tool_result_store import ToolResultStore
-from .variable_manager import VariableManager
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _HysteresisMark:
+    """Where the last run of a rewriting layer left a session.
+
+    ``tokens`` is the base growth is measured from. It stays None until the
+    next call measures the compacted context, and a smaller reading lowers it.
+    Taking it from the run itself mixed two scales: the hook measures the
+    provider's prompt tokens where it can, the run reports original minus
+    ESTIMATED savings — off by 30 % of the context on a provider that counts
+    30 % more, enough to release the hold on the very next call. And a base
+    that never came down (the context shrank through context_summarizer, or an
+    inline image the estimate counts at 250k tokens was evicted) held every
+    layer until the context was back above the old base.
+
+    ``level`` is the deepest layer that was due when that run started
+    (_due_level). A deeper one becoming due is new work, not a repeat, and
+    passes the hold.
+
+    ``stale_readings`` counts readings that could not set the base because the
+    provider count was stale. A stale reading happens at most once per LLM call
+    — each call records fresh usage — so a second one in a row means nothing is
+    recorded any more, and the estimate becomes the base: without one, growth
+    counts as zero and a level-3 mark would hold every layer for good. Such a
+    base is ``provisional``: it is on the estimate's scale, so the next whole
+    reading replaces it instead of being measured against it — a provider that
+    counts 30 % more would otherwise release the hold with no growth at all.
+    """
+
+    level: int
+    tokens: int | None = None
+    stale_readings: int = 0
+    provisional: bool = False
+
+
+@dataclass
+class _ShownBlock:
+    """The restoration block a session's prompt carries, and what followed it.
+
+    ``conversation_length`` and ``head`` describe the conversation this hook
+    handed on last time (_conversation_probe). An incoming conversation that is
+    shorter, or starts differently, was rewritten after this hook — by
+    context_summarizer, typically.
+    """
+
+    text: str
+    conversation_length: int
+    head: bytes
+
+
+#: Marks and shown blocks kept per plugin instance, oldest dropped first. Not
+#: tied to the session components: those are evicted after two idle hours or
+#: beyond max_tracked_sessions, and a coordinator waiting on a large fan-out
+#: lost its mark that way and compacted again on its next call.
+_MAX_HYSTERESIS_MARKS = 10_000
+
+# Compaction events kept for the panel, in memory and in the history file.
+HISTORY_LIMIT = 1000
+
+
+def _conversation_probe(messages: list[dict[str, Any]]) -> tuple[int, bytes]:
+    """Length of the non-system part, and a digest of its first message.
+
+    A digest, not the text: the first message of an upload session carries the
+    image as base64, and a verbatim copy of it stayed in _shown_blocks for up to
+    _MAX_HYSTERESIS_MARKS sessions.
+    """
+    conversation = [m for m in messages if m.get("role") != "system"]
+    if not conversation:
+        return 0, b""
+    first = conversation[0]
+    head = f"{first.get('role')}:{first.get('content')}".encode("utf-8", "replace")
+    return len(conversation), hashlib.blake2b(head, digest_size=16).digest()
+
+
+def _context_window(context: HookContext) -> int | None:
+    """The window of the model this call goes to — the client's first, so an
+    llm_profile override counts; the agent's configured model otherwise."""
+    window = getattr(context.llm, "context_window", None)
+    if isinstance(window, int) and window > 0:
+        return window
+    agent = context.agent
+    if getattr(agent, "agent_config", None) is None or getattr(agent, "system_config", None) is None:
+        return None
+    try:
+        from agent_system.llm.factory import resolve_llm_config_for_agent
+        window = resolve_llm_config_for_agent(agent.system_config, agent.agent_config).spec.context_window
+    except Exception as e:
+        logger.debug("[ContextEngineer] no context window for %s: %s", context.agent_name, e)
+        return None
+    return window if isinstance(window, int) and window > 0 else None
+
+
+def _due_level(tokens: int, cfg: CompactionConfig) -> int:
+    """The deepest layer whose threshold ``tokens`` has reached, 0 for none."""
+    return max((level for level, threshold in ((1, cfg.layer1_threshold),
+                                               (2, cfg.layer2_threshold),
+                                               (3, cfg.layer3_threshold))
+                if tokens >= threshold), default=0)
+
+# ---------------------------------------------------------------------------
+# Shared vector store
+#
+# chromadb parks one System per persist directory in a process-global
+# registry, and each System owns a tokio runtime (~6 descriptors, 4 threads).
+# Giving every session its own directory therefore meant one runtime PER
+# SESSION — 229 of them on the writer host, which exhausted the API's
+# descriptor limit and turned every API-key request into a 401. The vectors
+# never needed separate directories: every write carries the session_id and
+# every query filters on it. So all sessions — and all plugin instances in
+# the process — share one store per storage base, and the runtime count stays
+# constant however many sessions run.
+# ---------------------------------------------------------------------------
+_SHARED_VECTOR_STORES: dict[str, Any] = {}
+_SHARED_VECTOR_STORES_LOCK = threading.Lock()
+_SHARED_VECTORS_DIRNAME = "_shared_vectors"
+# A directory under the storage base is a session directory iff it holds one
+# of these. The TTL sweep deletes nothing else — not the shared vector
+# directory, not history.json, not whatever another plugin may drop there.
+# media/metadata.json is rewritten on every store and every reuse. Without it a
+# session that only evicted media in the last days looked idle by its database
+# timestamps, and the sweep deleted files a live hint still pointed at.
+_SESSION_MARKERS = ("archive.db", "tool_results.db", "core_memory.json", "media/metadata.json")
+# A directory is renamed to <session_id> + this before rmtree. The rename is
+# atomic, so a session coming alive meanwhile gets a fresh directory instead
+# of writing into one being torn down — and a sweep stopped mid-rmtree (the
+# thread is a daemon; interpreter shutdown does not wait) leaves a leftover
+# the next run recognises, not a marker-less directory it would skip forever.
+_SWEEPING_SUFFIX = ".sweeping"
+# Sweep bookkeeping per storage base, process-wide: however many plugin
+# instances exist, one base is swept by one thread at a time, once per
+# interval. Per-instance state let a test process with dozens of instances
+# run dozens of concurrent sweeps against the same directory.
+_SWEEP_LOCK = threading.Lock()
+_SWEEP_LAST_RUN: dict[str, float] = {}
+_SWEEP_RUNNING: set[str] = set()
+# A failed store construction is retried after this long. Caching it for
+# good would pin every session to its own store — the leak this exists to
+# end — over a transient cause such as another process on the file.
+_SHARED_STORE_RETRY_SECONDS = 600.0
+_SHARED_STORE_FAILED_AT: dict[str, float] = {}
+
+
+def _shared_vector_store(storage_base: Path, create: bool = True) -> Any | None:
+    """The process-wide VectorStore for *storage_base*, or None.
+
+    None means "keep the per-session layout": either the backend is not
+    chromadb (sqlite-vec ignores metadata filters, and without them a shared
+    store would rank other sessions' messages — final, a property of the
+    installation), or the store could not be built just now (logged, retried
+    after _SHARED_STORE_RETRY_SECONDS). Each session then builds its own
+    store as before and degrades to text search if that fails too — the hook
+    itself never goes down over it.
+    """
+    key = str(storage_base.resolve())
+    with _SHARED_VECTOR_STORES_LOCK:
+        if key in _SHARED_VECTOR_STORES:
+            return _SHARED_VECTOR_STORES[key]
+        if not create:
+            return None
+        failed_at = _SHARED_STORE_FAILED_AT.get(key)
+        if failed_at is not None and time.time() - failed_at < _SHARED_STORE_RETRY_SECONDS:
+            return None
+        store: Any | None = None
+        try:
+            from agent_system.utils.vector_store import VectorStore, get_vector_backend
+            if get_vector_backend() != "chromadb":
+                _SHARED_VECTOR_STORES[key] = None
+                return None
+            store = VectorStore(persist_path=storage_base / _SHARED_VECTORS_DIRNAME)
+            store.get_or_create_collection(ARCHIVAL_COLLECTION)
+        except Exception as exc:  # noqa: BLE001 — degrade, never take the hook down
+            logger.error(
+                "shared VectorStore unavailable (%s: %s); sessions fall back to "
+                "their own stores or text search, retry in %ds",
+                exc.__class__.__name__, exc, _SHARED_STORE_RETRY_SECONDS,
+            )
+            if store is not None:
+                # Built but not usable: it already holds a Chroma runtime, and
+                # dropping the reference would leak it — in the very function
+                # that exists to stop that.
+                try:
+                    store.close()
+                except Exception:  # noqa: BLE001 — best effort on a failed store
+                    pass
+            _SHARED_STORE_FAILED_AT[key] = time.time()
+            return None
+        _SHARED_STORE_FAILED_AT.pop(key, None)
+        _SHARED_VECTOR_STORES[key] = store
+        logger.info("shared VectorStore initialized at %s", store.persist_path)
+        return store
+
+#: What the list tool can browse. Named sections, not guessed ones — the whole
+#: point of replacing `recall` is that the caller says which store it means.
+CONTEXT_SECTIONS = ("history", "tool_results", "facts")
+
+#: Rows per list page. A map has to fit in the context it is describing.
+MAX_LIST_LIMIT = 50
+
+#: Reference shapes, in the order they are tested. Each store owns a distinct
+#: prefix, so dispatch is a lookup rather than the heuristic `recall` used.
+_REF_PATTERNS = (
+    ("tool_result", re.compile(r"\A\$?(TR_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+)\Z")),
+    ("message", re.compile(r"\Aarch_[A-Za-z0-9]+\Z")),
+    # The `content_hash` the tool_result_ref placeholder carries. Without this
+    # the field was advertised in every placeholder — and resent on every turn
+    # forever — while _ref_kind rejected it before the retrieve_by_hash
+    # fallback below could ever run. Either the field earns its bytes or it
+    # should not be in the placeholder; this makes it earn them.
+    ("tool_result", re.compile(r"\A[0-9a-f]{8}\Z")),
+)
+
+#: File suffixes that mean "a stored media file", not a text reference.
+_MEDIA_SUFFIXES = frozenset({
+    ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".mp4", ".webm", ".avi", ".mov",
+})
+
+
+def _ref_kind(ref: str) -> str | None:
+    """Which store a reference belongs to, or None if it is not a reference."""
+    candidate = (ref or "").strip()
+    if not candidate:
+        return None
+    for kind, pattern in _REF_PATTERNS:
+        if pattern.match(candidate):
+            return kind
+    if Path(candidate).suffix.lower() in _MEDIA_SUFFIXES:
+        return "media"
+    return None
+
+
+#: How far a pointer chain is followed before giving up. Chains are a defect
+#: (see _is_archive_pointer in compaction.py); archives written before the fix
+#: hold them up to 20 deep, so the walk has to be generous — but bounded, or a
+#: cycle in damaged data would hang the turn.
+MAX_ARCHIVE_HOPS = 32
+
+
+def _resolve_archive_chain(archival: "ArchivalMemory", ref: str):
+    """Follow ``archived_ref`` pointers to the entry that holds real content.
+
+    Archives written before compaction stopped re-archiving its own
+    placeholders contain pointers to pointers — measured 20 levels deep, with
+    the original text alive at the bottom. Without this walk every read of such
+    a ref returns another placeholder, and the content is unreachable even
+    though it is still there.
+
+    Returns ``(entry_or_None, hops_followed)``.
+    """
+    seen: set[str] = set()
+    current = ref
+    hops = 0
+    while hops <= MAX_ARCHIVE_HOPS:
+        if current in seen:          # damaged data can point in a circle
+            return None, hops
+        seen.add(current)
+        entry = archival.get(current)
+        if entry is None:
+            return None, hops
+        content = entry.content or ""
+        if "archived_ref" not in content[:120]:
+            return entry, hops
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return entry, hops
+        nxt = data.get("ref_id") if isinstance(data, dict) else None
+        if not isinstance(nxt, str) or not nxt:
+            return entry, hops
+        current, hops = nxt, hops + 1
+    return None, hops
+
+
+def _page_start(offset: int | None, total: int, limit: int) -> int:
+    """Where a browse page starts, in file-reader terms.
+
+    ``None`` means the caller named no position and gets the tail — the newest
+    entries, which is what an agent asking "what left my context" wants. A
+    negative offset counts back from the end, a non-negative one is absolute.
+    Same rule as ``slice_text`` inside a single item, so one habit covers both.
+    """
+    if offset is None:
+        return max(0, total - limit)
+    offset = int(offset)
+    return max(0, total + offset) if offset < 0 else offset
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse to a single bounded line — list rows must stay scannable."""
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _around(content: str, needle: str, context_chars: int) -> str:
+    """The part of ``content`` around the first hit, or its head if none."""
+    text = content or ""
+    idx = text.lower().find((needle or "").lower())
+    if idx < 0:
+        return text[: context_chars * 2]
+    start = max(0, idx - context_chars)
+    end = min(len(text), idx + len(needle) + context_chars)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+#: Markiert die eigene System-Injektion ("Stored Information"), damit sie beim
+#: naechsten Turn ERSETZT statt ein zweites Mal eingefuegt wird. Gleiche
+#: Konvention wie ``debate_forum`` (INJECTION_MARKER + ChatMessage.injected_by).
+_RESTORATION_MARKER = "context_engineer_restoration"
+
+#: Ueberschrift des Blocks — Fallback fuer Sessions, deren Historie noch
+#: unmarkierte Kopien aus der Zeit vor dem Marker enthaelt. Muss zum Text in
+#: ``LayeredCompactionStrategy.get_restoration_context`` passen.
+_RESTORATION_HEADER = "# Context Engineer - Stored Information"
 
 
 class ContextEngineerPlugin(SchemaBasedPluginHook):
     """Schema-based plugin for advanced context engineering.
     
     Implements layered compaction strategy:
-    1. Reversible: Store tool results, create variables
+    1. Reversible: Store tool results and attached files, evict media
     2. Semi-Reversible: Archive old messages with summaries
     3. Irreversible: Drop very old messages
     
-    All stored information can be retrieved via MCP tools.
+    All stored information can be retrieved via tools.
     
     Configuration is loaded from schema.yaml.
     """
@@ -58,203 +395,477 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         self.history_callback = history_callback
         
         # Session tracking (with TTL to prevent memory leak)
-        self._last_compaction_time: dict[str, float] = {}
+        # Per session: the reference point of the hysteresis (_HysteresisMark).
+        self._hysteresis_marks: OrderedDict[str, _HysteresisMark] = OrderedDict()
+        # Per session: the restoration block its prompt carries (_ShownBlock).
+        self._shown_blocks: OrderedDict[str, _ShownBlock] = OrderedDict()
         self._session_components: dict[str, dict[str, Any]] = {}
-        
-        # Load config from schema (will be overridden by server.py sync)
-        config = self.get_config()
-        
-        # Memory management settings
-        self._session_ttl_seconds = int(config.get("session_ttl_seconds", 7200))
-        self._max_tracked_sessions = int(config.get("max_tracked_sessions", 100))
-        
-        # Token thresholds
-        self.layer1_threshold = int(config.get("layer1_threshold", 80000))
-        self.layer2_threshold = int(config.get("layer2_threshold", 100000))
-        self.layer3_threshold = int(config.get("layer3_threshold", 120000))
-        self.target_tokens = int(config.get("target_tokens", 60000))
-        
-        # Byte size limits (Gemini has 100MB limit)
-        self.max_request_bytes = int(config.get("max_request_bytes", 90 * 1024 * 1024))  # 90 MB
-        self.target_request_bytes = int(config.get("target_request_bytes", 70 * 1024 * 1024))  # 70 MB
-        
-        # Tool result settings
-        self.tool_result_min_size = int(config.get("tool_result_min_size", 500))
-        self.tool_result_keep_last = int(config.get("tool_result_keep_last", 3))
-        self.tool_result_max_inline_size = int(config.get("tool_result_max_inline_size", 5000))
-        
-        # Variable settings
-        self.variable_min_size = int(config.get("variable_min_size", 200))
-        self.assistant_keep_last = int(config.get("assistant_keep_last", 3))
-        
-        # Message settings
-        self.archive_after_turns = int(config.get("archive_after_turns", 10))
-        self.drop_after_turns = int(config.get("drop_after_turns", 50))
-        self.keep_system_messages = bool(config.get("keep_system_messages", True))
-        self.max_messages = int(config.get("max_messages", 0))  # 0 = disabled
-        
-        # Rate limiting
-        self.min_time_between = float(config.get("min_time_between_compactions", 120.0))
-        
-        # Optional features
-        self.enable_semantic_search = bool(config.get("enable_semantic_search", False))
-        
-        # Media handling settings
-        self.deduplicate_media = bool(config.get("deduplicate_media", True))
-        self.compact_media_after_user_message = bool(config.get("compact_media_after_user_message", False))
-        self.compact_media_after_final_response = bool(config.get("compact_media_after_final_response", False))
-        self.always_compact_media_keep_last = int(config.get("always_compact_media_keep_last", 0))
-        
-        # Media store settings (for storing inline base64 before compaction)
-        self.store_media_before_compaction = bool(config.get("store_media_before_compaction", True))
-        self.media_store_ttl_seconds = int(config.get("media_store_ttl_seconds", 86400 * 7))  # 7 days
-        self.media_store_max_files = int(config.get("media_store_max_files", 500))
-        
-        # Storage paths (will be session-specific)
-        self._storage_base = Path(config.get("storage_path", "data/context_engineer"))
-        
+        # Sessions with an in-flight compaction. Their stores (tool_store /
+        # archival_memory) must NOT be closed by eviction while a compaction
+        # holds references and is mid-flight on a worker thread (use-after-close).
+        self._active_compactions: set[str] = set()
+        # Sessions whose directory already exists while their components are
+        # still being built. Neither set above knows them yet, so the TTL
+        # sweep consults this one before deleting anything (reserved BEFORE
+        # mkdir, released after registration).
+        self._creating: set[str] = set()
+        # One summary client per llm profile (tool_result_summary_profile).
+        self._summary_llms: dict[str, Any] = {}
+
+        self.apply_config(None)
+
         logger.info(
             f"ContextEngineerPlugin initialized: "
             f"thresholds=L1:{self.layer1_threshold}/L2:{self.layer2_threshold}/"
             f"L3:{self.layer3_threshold}, target={self.target_tokens}, "
-            f"min_time_between={self.min_time_between}s, "
+            f"min_tokens_between={self.min_tokens_between_compactions}, "
             f"deduplicate_media={self.deduplicate_media}, "
             f"compact_media_after_user_message={self.compact_media_after_user_message}, "
             f"compact_media_after_final_response={self.compact_media_after_final_response}, "
             f"always_compact_media_keep_last={self.always_compact_media_keep_last}, "
             f"max_messages={self.max_messages}"
         )
-    
+
+    def apply_config(self, values: dict[str, Any] | None) -> None:
+        """Take the plugin's configuration as ONE mapping.
+
+        ``values`` comes from config/plugins.yaml and wins over the defaults in
+        schema.yaml. Every CompactionConfig field is set as an attribute of the
+        same name, because the compaction thresholds are also read directly
+        here (engineer_context checks them before deciding to run at all).
+
+        This replaces three hand-maintained lists that all had to name the same
+        key — read it in server.py, copy it onto this object, name it a third
+        time when constructing CompactionConfig. A key missing from any of them
+        was dropped in silence. Measured on the shipped config: 5 of 25
+        settings never arrived. A loop over the dataclass fields cannot forget
+        one, and unknown_config_keys() covers the other half — a key whose NAME
+        is wrong maps to nothing and now says so.
+        """
+        merged = {**(self.get_config() or {}), **(values or {})}
+
+        unknown = unknown_config_keys(merged)
+        if unknown:
+            logger.warning(
+                "[ContextEngineer] these config keys reach nothing and are "
+                "ignored: %s — check the spelling against CompactionConfig's "
+                "fields or PLUGIN_LEVEL_KEYS",
+                ", ".join(unknown),
+            )
+
+        self._config = merged
+
+        # Compaction settings: one attribute per dataclass field, defaults from
+        # the dataclass itself so there is no second copy of them anywhere.
+        for f in fields(CompactionConfig):
+            # A field with a default_factory has no `default` -- it holds
+            # MISSING, which is truthy and not iterable. Running the factory
+            # is what the dataclass constructor does; this loop sets the
+            # attributes itself and has to do the same. (Before, the one list
+            # field was saved from MISSING only by schema.yaml happening to
+            # carry `default: []`.)
+            fallback = f.default_factory() if f.default_factory is not MISSING else f.default
+            setattr(self, f.name, _coerce(merged[f.name], f.type, f.name)
+                    if f.name in merged else fallback)
+
+        # Plugin-level settings — the ones with no CompactionConfig field.
+        # PLUGIN_LEVEL_KEYS must list exactly these, or unknown_config_keys()
+        # would report a key that is in fact used.
+        self._session_ttl_seconds = int(merged.get("session_ttl_seconds", 7200))
+        self._max_tracked_sessions = int(merged.get("max_tracked_sessions", 100))
+        # Off unless the operator's config turns it on. A background job that
+        # deletes directories must never start because someone merely
+        # instantiated the plugin — a test suite did exactly that against the
+        # real data/context_engineer and swept 18,000 local session
+        # directories before this default was 0.
+        self._session_data_ttl_days = int(merged.get("session_data_ttl_days", 0))
+        self.enable_semantic_search = bool(merged.get("enable_semantic_search", False))
+        self.core_memory_max_tokens = int(merged.get("core_memory_max_tokens", 2000))
+        self._storage_base = Path(merged.get("storage_path") or data_path("context_engineer"))
+
     def _cleanup_expired_sessions(self) -> None:
         """Remove expired session components based on TTL and max count."""
         current_time = time.time()
         
-        # First: TTL-based cleanup
+        # First: TTL-based cleanup. Never evict a session with an in-flight
+        # compaction - closing its stores mid-operation is a use-after-close.
         expired = [
             sid for sid, components in self._session_components.items()
-            if (current_time - components.get("last_accessed", 0)) > self._session_ttl_seconds
+            if sid not in self._active_compactions
+            and (current_time - components.get("last_accessed", 0)) > self._session_ttl_seconds
         ]
         for sid in expired:
             self.cleanup_session(sid)
-        
-        # Second: LRU eviction if still over limit
+
+        # Second: LRU eviction if still over limit (also skips active sessions)
         if len(self._session_components) > self._max_tracked_sessions:
-            # Sort by last_accessed, evict oldest
+            # Sort by last_accessed, evict oldest non-active sessions
             sorted_sessions = sorted(
-                self._session_components.items(),
+                (kv for kv in self._session_components.items() if kv[0] not in self._active_compactions),
                 key=lambda x: x[1].get("last_accessed", 0)
             )
             evict_count = len(self._session_components) - self._max_tracked_sessions
             for sid, _ in sorted_sessions[:evict_count]:
                 self.cleanup_session(sid)
-        
-        # Also cleanup _last_compaction_time
-        stale_compaction = [
-            sid for sid, ts in self._last_compaction_time.items()
-            if (current_time - ts) > self._session_ttl_seconds
-        ]
-        for sid in stale_compaction:
-            del self._last_compaction_time[sid]
-    
-    def _get_session_components(self, session_id: str) -> dict[str, Any]:
+
+    # ------------------------------------------------------------------
+    # Session data TTL
+    #
+    # Nothing ever deleted a session directory: 1833 of them on the writer
+    # host since June, one per (mostly short-lived) writer sub-agent run. The
+    # sweep removes directories idle for longer than session_data_ttl_days,
+    # together with the session's vectors in the shared store — one criterion
+    # for both, so neither can outlive the other. Rate-limited and on its own
+    # thread: the first run after a deploy meets every legacy directory at
+    # once, and rmtree does not belong on the event loop.
+    # ------------------------------------------------------------------
+    _SWEEP_INTERVAL_SECONDS = 3600.0
+
+    def _maybe_start_sweep(self) -> None:
+        if self._session_data_ttl_days <= 0:
+            return
+        key = str(self._storage_base.resolve())
+        now = time.time()
+        with _SWEEP_LOCK:
+            # The interval check below already keeps sweeps apart — this one
+            # only matters when a sweep outlasts the interval (a huge backlog
+            # on a slow disk). Then it is the only thing preventing two
+            # threads from rmtree-ing the same directories.
+            if key in _SWEEP_RUNNING:
+                return
+            if now - _SWEEP_LAST_RUN.get(key, 0.0) < self._SWEEP_INTERVAL_SECONDS:
+                return
+            _SWEEP_LAST_RUN[key] = now
+            _SWEEP_RUNNING.add(key)
+        try:
+            self._start_sweep_thread(key)
+        except Exception as exc:  # noqa: BLE001 — whatever start() throws, the flag must clear
+            # Thread exhaustion. The flag must not stick — it would silence
+            # every later sweep in this process — and the session creation
+            # that triggered this must not fail over housekeeping.
+            with _SWEEP_LOCK:
+                _SWEEP_RUNNING.discard(key)
+            logger.error("session data sweep thread could not start (%s)", exc)
+
+    def _start_sweep_thread(self, key: str) -> None:
+        threading.Thread(
+            target=self._run_sweep, args=(key,),
+            name="context_engineer_sweep", daemon=True,
+        ).start()
+
+    def _run_sweep(self, key: str) -> None:
+        try:
+            self._sweep_stale_session_dirs()
+        except Exception:  # noqa: BLE001 — a failed sweep must not leave the flag stuck
+            logger.exception("session data sweep failed")
+        finally:
+            with _SWEEP_LOCK:
+                _SWEEP_RUNNING.discard(key)
+
+    def _is_session_live(self, session_id: str) -> bool:
+        """Known to THIS instance as live. A second plugin instance on the same
+        base is not consulted: for one of its sessions to be hit, it would
+        have to be idle for longer than the TTL by file mtime and still
+        registered there, which the 2 h eviction makes a corner case — and
+        the outcome would be logged write failures for that session, not a
+        crash."""
+        return (
+            session_id in self._session_components
+            or session_id in self._active_compactions
+            or session_id in self._creating
+        )
+
+    def _sweep_stale_session_dirs(self) -> int:
+        """Delete session directories idle longer than the TTL; returns the count.
+
+        Idle = the newest of the directory's own mtime and its marker files'
+        mtimes lies before the cutoff. The directory mtime alone would not do:
+        rewriting a file in place leaves it untouched, and
+        it only moves for the databases because SQLite's default DELETE
+        journal adds and removes a -journal entry per commit — switching the
+        stores to WAL would freeze it. The file mtimes depend on neither.
+        """
+        ttl_days = self._session_data_ttl_days
+        cutoff = time.time() - ttl_days * 86400
+        base = self._storage_base
+        if not base.is_dir():
+            return 0
+        started = time.monotonic()
+        removed = 0
+        scanned = 0
+        for path in list(base.iterdir()):
+            if not path.is_dir():
+                continue
+            leftover = path.name.endswith(_SWEEPING_SUFFIX)
+            if leftover:
+                # A previous run got as far as the rename. Its markers may be
+                # gone already, so neither age nor allow-list apply: finish it.
+                session_id = path.name[: -len(_SWEEPING_SUFFIX)]
+                scanned += 1
+            else:
+                markers = [path / m for m in _SESSION_MARKERS if (path / m).exists()]
+                if not markers:
+                    continue
+                scanned += 1
+                try:
+                    newest = max(p.stat().st_mtime for p in [path, *markers])
+                except OSError:
+                    continue
+                if newest >= cutoff:
+                    continue
+                session_id = path.name
+                # Checked right here and again right before the rename, not
+                # when the listing was taken: the session may come alive at
+                # any point in between.
+                if self._is_session_live(session_id):
+                    continue
+                # Vectors first. Were the directory removed first and this
+                # failed, no later sweep would ever see the session_id again
+                # and its vectors would stay forever. This way a failure
+                # leaves the directory in place and the next run retries
+                # both. A leftover never gets here: its vectors went in the
+                # run that renamed it — touching them again would hit the
+                # fresh vectors of a session that has since come back.
+                if not self._forget_session_vectors(session_id):
+                    continue
+            try:
+                if not leftover:
+                    if self._is_session_live(session_id):
+                        continue
+                    target = path.with_name(path.name + _SWEEPING_SUFFIX)
+                    path.rename(target)
+                    path = target
+                shutil.rmtree(path)
+            except OSError as exc:
+                # Windows refuses to rename or unlink an open SQLite file; one
+                # busy directory must not end the whole sweep.
+                logger.warning("sweep: %s not removed (%s)", path.name, exc.__class__.__name__)
+                continue
+            removed += 1
+        # Always, even for 0: after the first deploy nothing is left to remove,
+        # and "ran, nothing to do" must stay distinguishable from "never ran".
+        logger.info(
+            "session data sweep: removed %d of %d session directories idle for "
+            "more than %d days (%.1fs)",
+            removed, scanned, ttl_days, time.monotonic() - started,
+        )
+        return removed
+
+    def _forget_session_vectors(self, session_id: str) -> bool:
+        """Drop a session's vectors from the shared store; False if that failed.
+
+        True without doing anything when this process holds no shared store:
+        legacy directories kept their vectors inside themselves, and with
+        semantic search switched off nothing reads _shared_vectors — whatever
+        an earlier deploy left there is unused; delete that directory by hand
+        if the space matters.
+        """
+        store = _shared_vector_store(self._storage_base, create=False)
+        if store is None:
+            return True
+        try:
+            store.delete(ARCHIVAL_COLLECTION, where={"session_id": session_id})
+            return True
+        except Exception as exc:  # noqa: BLE001 — reported; the directory stays for a retry
+            logger.warning(
+                "sweep: vectors of %s not removed (%s); directory kept for the next run",
+                session_id, exc.__class__.__name__,
+            )
+            return False
+
+    def _compaction_config(self, overrides: dict[str, Any]) -> CompactionConfig:
+        """Plugin values with an agent's overrides on top, by field name."""
+        # Mapping by name drops a misspelled key without a word; plugins.yaml is
+        # checked in apply_config, an agent's hooks.overrides only here.
+        unknown = unknown_config_keys(overrides)
+        if unknown:
+            logger.warning(
+                "[ContextEngineer] agent override keys that reach no setting "
+                "(misspelled?): %s", ", ".join(unknown))
+        plugin_level = sorted(set(overrides) & PLUGIN_LEVEL_KEYS)
+        if plugin_level:
+            logger.warning(
+                "[ContextEngineer] agent override keys that only plugins.yaml can "
+                "set, ignored per agent: %s", ", ".join(plugin_level))
+        # A key left blank (None) sets nothing and keeps the plugin's value.
+        # Read as a value, a blank tool_result_summary_tools became the empty
+        # list -- every tool -- over the plugin's own patterns.
+        return compaction_config_from({
+            **{f.name: getattr(self, f.name) for f in fields(CompactionConfig)},
+            **{k: v for k, v in overrides.items()
+               if k not in PLUGIN_LEVEL_KEYS and v is not None},
+        })
+
+    def _summarizer(self, context: HookContext, cfg: CompactionConfig):
+        """What writes the summary of a long tool result, or None for none.
+
+        The engine knows nothing of profiles or clients; it calls this. Every
+        failure ends as None there, and the result is stored all the same.
+        """
+        profile = cfg.tool_result_summary_profile
+        if not profile or cfg.tool_result_summary_from <= 0:
+            return None
+        system_config = getattr(getattr(context, "agent", None), "system_config", None)
+        if system_config is None:
+            return None
+        # Asked here, not in the call: without a client there is no summary,
+        # and a selection made on one that cannot be built would take every
+        # long result out of the conversation for a pointer nobody writes.
+        llm = self._summary_llm(system_config, profile)
+        if llm is None:
+            return None
+        token = getattr(context, "cancellation_token", None)
+
+        async def summarize(text: str, tool_name: str) -> str | None:
+            from datetime import datetime as _dt
+            from agent_system.llm.models import ChatMessage
+            prompt = (f"Summarize what this {tool_name} result says, for another agent that must act on it "
+                      f"without seeing the original. Keep every decision, number, name, path and open "
+                      f"question; drop repetition and ceremony. No preamble, no markdown headings.\n\n{text}")
+            # The time limit is the engine's, for the whole round: it knows how
+            # many results share it. The token ends the call when the user
+            # stops the turn.
+            answer = await llm.chat(
+                messages=[ChatMessage(role="user", content=prompt, timestamp=_dt.now())],
+                cancellation_token=token)
+            return answer if isinstance(answer, str) else str(answer)
+
+        return summarize
+
+    def _summary_llm(self, system_config: Any, profile: str):
+        """One client per profile, kept for the life of the plugin -- a failure
+        too: a profile that does not resolve would otherwise be rebuilt, and
+        logged, for every single result."""
+        if profile in self._summary_llms:
+            return self._summary_llms[profile]
+        try:
+            from agent_system.llm.factory import create_llm_from_profile
+            client = create_llm_from_profile(system_config, profile)
+        except Exception as exc:  # noqa: BLE001 - no summary is not a failed compaction
+            logger.warning("[ContextEngineer] no summary client for profile %r, none will be written: %s",
+                           profile, exc)
+            client = None
+        self._summary_llms[profile] = client
+        return client
+
+    def _get_session_components(self, session_id: str,
+                                overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Get or create session-scoped components.
-        
+
         Args:
             session_id: Session identifier
-            
+            overrides: Optional per-agent overrides for CompactionConfig fields.
+                Sourced from ``context.hook_config`` in ``engineer_context``.
+                A caller without them (a tool) keeps what is
+                there; a caller with different ones replaces the compaction
+                config. The stores keep the settings they were created with.
+
         Returns:
-            Dict with tool_store, variable_manager, core_memory, archival_memory
+            Dict with tool_store, core_memory, archival_memory
         """
         if session_id in self._session_components:
-            # Update last accessed time
-            self._session_components[session_id]["last_accessed"] = time.time()
-            return self._session_components[session_id]
-        
+            components = self._session_components[session_id]
+            components["last_accessed"] = time.time()
+            # Whoever creates the components first used to fix their config for
+            # good. The tools (/compact, list, read) arrive without the agent's
+            # hooks.overrides, so a tool call before the session's first step
+            # replaced an agent's own thresholds with the plugin defaults. The
+            # hook always brings them; apply them.
+            if overrides and overrides != components.get("overrides"):
+                components["strategy"].config = self._compaction_config(overrides)
+                components["overrides"] = dict(overrides)
+            return components
+
+        ov = overrides or {}
         if session_id not in self._session_components:
-            # Create session-specific storage paths
-            session_path = self._storage_base / session_id
-            session_path.mkdir(parents=True, exist_ok=True)
+            # Reserve the name BEFORE the directory exists: the TTL sweep runs
+            # on its own thread and skips every name in _creating. Without the
+            # reservation there is a window between mkdir and the registration
+            # at the end of this block in which the directory is on disk but
+            # no set knows the session — the sweep's first run after a deploy,
+            # with ~1800 legacy directories, is exactly when that window bites.
+            self._creating.add(session_id)
+            try:
+                # Create session-specific storage paths
+                session_path = self._storage_base / session_id
+                session_path.mkdir(parents=True, exist_ok=True)
             
-            # Initialize components
-            tool_store = ToolResultStore(session_path / "tool_results.db")
-            variable_manager = VariableManager(
-                min_content_tokens=self.variable_min_size,
-                storage_path=session_path / "variables.json"
-            )
-            core_memory = CoreMemory(storage_path=session_path / "core_memory.json")
-            archival_memory = ArchivalMemory(
-                session_path / "archive.db",
-                session_id=session_id,
-                enable_semantic_search=self.enable_semantic_search,
-                vector_store_path=session_path / "vectors" if self.enable_semantic_search else None
-            )
-            
-            # Initialize media store for inline media preservation
-            media_store = None
-            if self.store_media_before_compaction:
-                media_store = MediaStore(
-                    storage_path=session_path / "media",
-                    ttl_seconds=self.media_store_ttl_seconds,
-                    max_files=self.media_store_max_files
+                # Initialize components
+                # The session_id is load-bearing, not decoration: every write that
+                # omits it falls back to "default", while list/search read with the
+                # REAL id and find nothing. Measured before this: a compaction
+                # stored a result, and list(section='tool_results') answered
+                # "0 of 0" — the agent could not see its own catalogue, and the
+                # system prompt telling it to look there was a dead instruction.
+                # Setting it on the store fixes every call site at once.
+                tool_store = ToolResultStore(session_path / "tool_results.db",
+                                             session_id=session_id)
+                core_memory = CoreMemory(storage_path=session_path / "core_memory.json",
+                                         max_tokens=self.core_memory_max_tokens)
+                shared_store = (_shared_vector_store(self._storage_base)
+                                if self.enable_semantic_search else None)
+                archival_memory = ArchivalMemory(
+                    session_path / "archive.db",
+                    session_id=session_id,
+                    enable_semantic_search=self.enable_semantic_search,
+                    # Used only when there is no shared store (non-chromadb
+                    # backend): the session then keeps its own, as before.
+                    vector_store_path=session_path / "vectors" if self.enable_semantic_search else None,
+                    vector_store=shared_store,
                 )
             
-            # Create compaction config
-            compaction_config = CompactionConfig(
-                layer1_threshold=self.layer1_threshold,
-                layer2_threshold=self.layer2_threshold,
-                layer3_threshold=self.layer3_threshold,
-                target_tokens=self.target_tokens,
-                max_request_bytes=self.max_request_bytes,
-                target_request_bytes=self.target_request_bytes,
-                tool_result_min_size=self.tool_result_min_size,
-                tool_result_keep_last=self.tool_result_keep_last,
-                tool_result_max_inline_size=self.tool_result_max_inline_size,
-                variable_min_size=self.variable_min_size,
-                assistant_keep_last=self.assistant_keep_last,
-                archive_after_turns=self.archive_after_turns,
-                drop_after_turns=self.drop_after_turns,
-                keep_system_messages=self.keep_system_messages,
-                max_messages=self.max_messages,
-                deduplicate_media=self.deduplicate_media,
-                compact_media_after_user_message=self.compact_media_after_user_message,
-                compact_media_after_final_response=self.compact_media_after_final_response,
-                always_compact_media_keep_last=self.always_compact_media_keep_last,
-                store_media_before_compaction=self.store_media_before_compaction,
-                media_store_ttl_seconds=self.media_store_ttl_seconds,
-                media_store_max_files=self.media_store_max_files
-            )
+                # Initialize media store for inline media preservation
+                media_store = None
+                if self.store_media_before_compaction:
+                    media_store = MediaStore(
+                        storage_path=session_path / "media",
+                        ttl_seconds=self.media_store_ttl_seconds,
+                        max_files=self.media_store_max_files
+                    )
             
-            logger.info(
-                f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
-                f"max_messages={compaction_config.max_messages}, "
-                f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
-            )
+                # Per-agent hook overrides relax fields like `tool_result_keep_last`
+                # for media-heavy agents (cover_artist, repeated comfyui image
+                # loads) without touching the plugin-wide default for everyone else.
+                # By field name, so an override now works for EVERY field — the
+                # hand-written list this replaces silently ignored an override for
+                # any field its author had not thought to include, and three of
+                # them (store_media_before_compaction, media_store_ttl_seconds,
+                # media_store_max_files) were not even wired to `_o`.
+                compaction_config = self._compaction_config(ov)
             
-            # Create strategy
-            strategy = LayeredCompactionStrategy(
-                tool_store=tool_store,
-                variable_manager=variable_manager,
-                core_memory=core_memory,
-                archival_memory=archival_memory,
-                config=compaction_config,
-                media_store=media_store
-            )
+                logger.info(
+                    f"[ContextEngineer] Created CompactionConfig for session {session_id}: "
+                    f"max_messages={compaction_config.max_messages}, "
+                    f"always_compact_media_keep_last={compaction_config.always_compact_media_keep_last}"
+                )
             
-            self._session_components[session_id] = {
-                "tool_store": tool_store,
-                "variable_manager": variable_manager,
-                "core_memory": core_memory,
-                "archival_memory": archival_memory,
-                "media_store": media_store,
-                "strategy": strategy,
-                "last_accessed": time.time()
-            }
+                # Create strategy
+                strategy = LayeredCompactionStrategy(
+                    tool_store=tool_store,
+                    core_memory=core_memory,
+                    archival_memory=archival_memory,
+                    config=compaction_config,
+                    media_store=media_store
+                )
             
-            # Cleanup expired sessions periodically
-            self._cleanup_expired_sessions()
+                self._session_components[session_id] = {
+                    "tool_store": tool_store,
+                    "core_memory": core_memory,
+                    "archival_memory": archival_memory,
+                    "media_store": media_store,
+                    "strategy": strategy,
+                    "overrides": dict(ov),
+                    "last_accessed": time.time()
+                }
             
-            logger.debug(f"Created session components for {session_id}")
-        
+                # Cleanup expired sessions periodically
+                self._cleanup_expired_sessions()
+                self._maybe_start_sweep()
+            
+                logger.debug(f"Created session components for {session_id}")
+            finally:
+                self._creating.discard(session_id)
+
         return self._session_components[session_id]
     
     async def engineer_context(self, context: HookContext) -> HookResult:
@@ -289,22 +900,72 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 else:
                     messages_as_dicts.append(msg)
             
+            # Per-agent overrides via hooks.overrides[context_engineer.engineer_context]
+            # in agent YAML — relax compaction thresholds for media-heavy agents
+            # without changing the plugin-wide default.
+            hook_overrides = context.hook_config if context.hook_config else None
+
             # Get session components (needed for token/byte estimation and compaction)
-            components = self._get_session_components(session_id)
+            components = self._get_session_components(session_id, overrides=hook_overrides)
             strategy: LayeredCompactionStrategy = components["strategy"]
-            
+            # Every decision below reads the SESSION's config. Reading the
+            # plugin-level attributes here ignored an agent's own thresholds at
+            # the gate, before the strategy that honours them was ever asked.
+            cfg = strategy.config
+            # Before the gate asks what arrives: whether a long result is worth
+            # a summary is part of that question, and the LLM layer is reached
+            # through the agent of THIS call, while the strategy outlives it.
+            strategy.summarize = self._summarizer(context, cfg)
+
             # Get actual or estimated token usage (prefer actual from usage_tracker)
-            current_tokens = self._get_actual_or_estimated_tokens(context, messages_as_dicts, strategy)
-            
+            current_tokens, reading_is_whole = self._read_tokens(context, messages_as_dicts, strategy)
+
+            # A new tool result too big for the window (Pre-Layer T) is stored
+            # whatever the thresholds and the hysteresis below say. Those decide
+            # on the call as it will go out — without the results T stores. Read
+            # again rather than subtracted: a provider count from the previous
+            # call never contained them, and max(count, estimate) minus their
+            # estimate undercut it.
+            context_window = _context_window(context)
+            arrivals = strategy.oversized_arrivals(messages_as_dicts, context_window)
+            gate_tokens = current_tokens
+            gate_messages = messages_as_dicts
+            if arrivals:
+                gate_messages = list(messages_as_dicts)
+                for i in arrivals:
+                    gate_messages[i] = {**gate_messages[i], "content": ""}
+                gate_tokens = min(current_tokens, self._read_tokens(context, gate_messages, strategy)[0])
+
+            # The hysteresis base follows every measurement, including the calls
+            # the threshold gate below turns away: taken only on a call that
+            # passed the gate, the first reading after a compaction would be the
+            # one that crosses the threshold again, and it would hold exactly
+            # the compaction that is due. Except readings of part of the picture:
+            # stale provider counts (see _read_tokens), and the compact tool's,
+            # which leaves the system prompt out — lowered to that, the next
+            # call's reading was released by the prompt's size alone.
+            mark = self._hysteresis_marks.get(session_id)
+            if mark is not None and not (context.metadata or {}).get("partial_view"):
+                if reading_is_whole:
+                    if mark.tokens is None or mark.provisional or gate_tokens < mark.tokens:
+                        mark.tokens = gate_tokens
+                        mark.provisional = False
+                elif mark.tokens is None:
+                    mark.stale_readings += 1
+                    if mark.stale_readings >= 2:
+                        mark.tokens = gate_tokens
+                        mark.provisional = True
+
             # Estimate request bytes using strategy's method (for Gemini 100MB limit check)
-            request_bytes = strategy._estimate_request_bytes(messages_as_dicts)
-            bytes_exceeded = request_bytes > self.max_request_bytes
-            
+            # — of the call as it will go out, like the token gates above.
+            request_bytes = strategy._estimate_request_bytes(gate_messages)
+            bytes_exceeded = request_bytes > cfg.max_request_bytes
+
             if bytes_exceeded:
                 logger.warning(
                     f"[ContextEngineer] Session {session_id}: Request size "
                     f"{request_bytes / (1024*1024):.1f}MB exceeds "
-                    f"{self.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
+                    f"{cfg.max_request_bytes / (1024*1024):.0f}MB limit - forcing compaction"
                 )
             
             # Check if compaction needed
@@ -313,16 +974,20 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Determine trigger event for media compaction BEFORE early return check
             # This is a pre_llm_call hook, so the last message is what the user just sent
             trigger_event = None
-            if messages_as_dicts:
-                last_msg = messages_as_dicts[-1]
-                last_role = last_msg.get("role", "")
-                if last_role == "user":
-                    trigger_event = "user_message"
+            # A person's message, behind any the agent loop added after it (the
+            # step budget note follows drained input): a note alone is no new
+            # turn, and evicting media on it rewrote old messages at the end of
+            # every long run.
+            last = len(messages_as_dicts) - 1
+            while last >= 0 and is_injected_note(messages_as_dicts[last]):
+                last -= 1
+            if last >= 0 and messages_as_dicts[last].get("role") == "user":
+                trigger_event = "user_message"
                 # Note: final_response is detected in post-hooks, not here
             
             # Check if event-based media compaction should run even below threshold
             event_media_compaction_needed = False
-            if trigger_event == "user_message" and self.compact_media_after_user_message:
+            if trigger_event == "user_message" and cfg.compact_media_after_user_message:
                 event_media_compaction_needed = True
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: Event-based media compaction "
@@ -330,15 +995,17 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 )
             
             # Check if always-compact-media is enabled (must run even below threshold)
-            always_compact_media_enabled = self.always_compact_media_keep_last > 0
-            
-            # Skip only if: not manual, below token threshold, below byte limit, 
+            always_compact_media_enabled = cfg.always_compact_media_keep_last > 0
+
+            # Skip only if: not manual, below token threshold, below byte limit,
             # AND no event-based media compaction, AND always_compact_media disabled
-            if not is_manual and current_tokens < self.layer1_threshold and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled:
+            below_gate = (not is_manual and gate_tokens < cfg.layer1_threshold and not bytes_exceeded
+                          and not event_media_compaction_needed and not always_compact_media_enabled)
+            if below_gate and not arrivals:
                 logger.debug(
                     f"[ContextEngineer] Session {session_id}: "
-                    f"{current_tokens} tokens < {self.layer1_threshold} threshold, "
-                    f"{request_bytes / (1024*1024):.1f}MB < {self.max_request_bytes / (1024*1024):.0f}MB limit, "
+                    f"{current_tokens} tokens < {cfg.layer1_threshold} threshold, "
+                    f"{request_bytes / (1024*1024):.1f}MB < {cfg.max_request_bytes / (1024*1024):.0f}MB limit, "
                     f"no event-based media compaction needed, skipping"
                 )
                 
@@ -350,70 +1017,96 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     metadata={
                         "reason": "below_threshold",
                         "current_tokens": current_tokens,
-                        "threshold": self.layer1_threshold,
+                        "threshold": cfg.layer1_threshold,
                         "request_bytes": request_bytes,
-                        "max_request_bytes": self.max_request_bytes
+                        "max_request_bytes": cfg.max_request_bytes
                     }
                 )
-            
-            # Rate limiting - but NOT if bytes exceeded (must compact to avoid API errors!)
-            # Also NOT if event-based media compaction or always_compact_media is needed
-            current_time = time.monotonic()
-            last_compaction = self._last_compaction_time.get(session_id)
-            
-            if not is_manual and not bytes_exceeded and not event_media_compaction_needed and not always_compact_media_enabled and last_compaction:
-                time_since = current_time - last_compaction
-                if time_since < self.min_time_between:
-                    logger.info(
-                        f"[ContextEngineer] Session {session_id}: Rate limited - "
-                        f"{time_since:.1f}s since last compaction "
-                        f"(min: {self.min_time_between}s)"
-                    )
-                    return HookResult(
-                        success=True,
-                        modified=False,
-                        context=context,
-                        metadata={
-                            "reason": "rate_limited",
-                            "time_since_last": time_since,
-                            "min_time_between": self.min_time_between
-                        }
-                    )
-            
+
+            # Hysteresis (min_tokens_between_compactions): after a run of the
+            # layers that rewrite messages, the next waits until the context has
+            # grown by that many tokens — unless a deeper layer has become due
+            # since. Never for a manual run or the byte limit. The media passes
+            # are not held: they used to bypass the old time limit ENTIRELY —
+            # and took the token layers along, so with always_compact_media on
+            # (production) the limit never held at all.
+            growth = None
+            held = False
+            if mark is not None:
+                # No base yet (only partial readings since the run): no growth.
+                growth = 0 if mark.tokens is None else gate_tokens - mark.tokens
+                held = (not is_manual and not bytes_exceeded
+                        and growth < cfg.min_tokens_between_compactions
+                        and _due_level(gate_tokens, cfg) <= mark.level)
+            held_back = held and not event_media_compaction_needed and not always_compact_media_enabled
+            if held_back and not arrivals:
+                logger.debug(
+                    f"[ContextEngineer] Session {session_id}: held by hysteresis - "
+                    f"{growth} tokens since the last compaction "
+                    f"(min: {cfg.min_tokens_between_compactions})"
+                )
+                return HookResult(
+                    success=True,
+                    modified=False,
+                    context=context,
+                    metadata={
+                        "reason": "hysteresis",
+                        "tokens_since_last": growth,
+                        "min_tokens_between_compactions": cfg.min_tokens_between_compactions,
+                    }
+                )
+
             # Force compaction if manually triggered, byte limit exceeded, event-based media compaction needed,
             # OR always_compact_media enabled
             # Byte limit MUST be enforced to avoid API errors (Gemini 100MB limit)
             force = is_manual or bytes_exceeded or event_media_compaction_needed or always_compact_media_enabled
             
-            # Apply compaction with status updates
-            result = None
-            async with StatusScope(
-                status_bus,
-                "context_engineer",
-                session_id,
-                start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
-                end_msg="Context engineering completed"
-            ):
-                import asyncio
-                await asyncio.sleep(0.01)  # Allow START message to be delivered
-                
+            # Apply compaction. Run it before emitting any status so we can
+            # decide afterwards whether anything actually changed - this hook
+            # fires on every LLM call (always_compact_media), and emitting
+            # START/END for no-op runs would flood the CLI with noise.
+            #
+            # Mark the session active for the duration so a concurrent
+            # _get_session_components (for another session) can't evict and
+            # close this session's stores while the compaction is mid-flight
+            # on a worker thread (use-after-close).
+            import asyncio
+            self._active_compactions.add(session_id)
+            try:
                 result = await strategy.compact(
-                    messages_as_dicts, 
-                    current_tokens, 
+                    messages_as_dicts,
+                    current_tokens,
                     force=force,
                     trigger_event=trigger_event,
-                    session_id=session_id
+                    session_id=session_id,
+                    manual=is_manual,
+                    rewrite_layers=not held,
+                    context_window=context_window,
+                    # In only for Pre-Layer T: no other pass may run that the
+                    # gates above would have kept out (media dedup, Pre-Layer P).
+                    arrivals_only=below_gate or held_back,
+                    tokens_after_arrivals=gate_tokens,
                 )
-            
-            # Update rate limit tracker
-            self._last_compaction_time[session_id] = current_time
-            
-            # Track in history for web UI - ONLY if something was actually compacted
-            # Skip history entry if nothing happened to avoid noise
+            finally:
+                self._active_compactions.discard(session_id)
+
+            # Only a run of a rewriting layer sets the mark — also one that
+            # found nothing to take: that is exactly the run which would
+            # otherwise repeat on every call. A media-only pass must not, or it
+            # would hold the token layers back for good.
+            # The level is what was due once Pre-Layer T had taken its share.
+            if any(layer in (1, 2, 3, "P") for layer in result.layers_applied):
+                self._hysteresis_marks[session_id] = _HysteresisMark(
+                    level=_due_level(gate_tokens, cfg))
+                self._hysteresis_marks.move_to_end(session_id)
+                while len(self._hysteresis_marks) > _MAX_HYSTERESIS_MARKS:
+                    self._hysteresis_marks.popitem(last=False)
+
+            # Determine whether anything was actually compacted. Gates both the
+            # START/END status messages and the web UI history entry.
             something_compacted = (
                 result.tokens_saved > 0 or
                 result.tool_results_stored > 0 or
-                result.variables_created > 0 or
                 result.messages_archived > 0 or
                 result.messages_dropped > 0 or
                 result.messages_pruned > 0 or  # Pre-Layer P (message count limit)
@@ -421,6 +1114,48 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 result.media_compacted_after_event > 0 or
                 result.media_always_compacted > 0  # Always-compact media (Pre-Layer M)
             )
+
+            # Emit START/END status only when the run actually changed the
+            # context - suppress the noise for no-op runs.
+            if something_compacted:
+                # A child of the request id, as context_summarizer does. With
+                # the session id the per-request forwarder dropped the line:
+                # it passes only the request's own id and its "_…" children,
+                # so API and WebUI clients never saw it.
+                status_id = context.request_id or session_id
+                if context.request_id and context.agent is not None and hasattr(
+                        context.agent, "next_internal_tool_request_id"):
+                    status_id = await context.agent.next_internal_tool_request_id(
+                        context.request_id)
+                async with StatusScope(
+                    status_bus,
+                    "context_engineer",
+                    status_id,
+                    start_msg=f"Engineering context: {current_tokens} tokens (target: {self.target_tokens}){' [MANUAL]' if is_manual else ''}",
+                ) as scope:
+                    await asyncio.sleep(0.01)  # Allow START message to be delivered
+                    # The end line is what survives in the WebUI (it replaces
+                    # the start line), so it must carry the result -- a bare
+                    # 'completed' says nothing. The something_compacted gate
+                    # guarantees at least one part below is non-zero.
+                    parts = []
+                    if result.tokens_saved > 0:
+                        parts.append(f"saved {result.tokens_saved} tokens "
+                                     f"({result.reduction_percent:.1f}%)")
+                    if result.tool_results_stored:
+                        parts.append(f"{result.tool_results_stored} tool result(s) stored")
+                    if result.messages_archived:
+                        parts.append(f"{result.messages_archived} message(s) archived")
+                    if result.messages_dropped:
+                        parts.append(f"{result.messages_dropped} message(s) dropped")
+                    if result.messages_pruned:
+                        parts.append(f"{result.messages_pruned} message(s) pruned")
+                    media_total = (result.media_deduplicated
+                                   + result.media_compacted_after_event
+                                   + result.media_always_compacted)
+                    if media_total:
+                        parts.append(f"{media_total} media item(s) compacted")
+                    await scope.end("Context engineered: " + ", ".join(parts))
             
             # Invalidate usage tracker data for this session if something was compacted
             # This prevents subsequent hooks (e.g., context_summarizer) from using stale
@@ -439,18 +1174,21 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                     "reduction_percent": result.reduction_percent,
                     "layers_applied": result.layers_applied,
                     "tool_results_stored": result.tool_results_stored,
-                    "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
                     "messages_pruned": result.messages_pruned,  # Pre-Layer P
                     "media_deduplicated": result.media_deduplicated,
                     "media_compacted_after_event": result.media_compacted_after_event,
+                    # The panel reads it, and with always_compact_media on it is
+                    # the main media path — missing here, the panel showed 0.
+                    "media_always_compacted": result.media_always_compacted,
                     "media_bytes_saved": result.media_bytes_saved
                 })
-                
+                del self.stats_history[:-HISTORY_LIMIT]
+
                 # Save history to disk (support both sync and async callbacks)
                 if self.history_callback is not None:
-                    if asyncio.iscoroutinefunction(self.history_callback):
+                    if inspect.iscoroutinefunction(self.history_callback):
                         await self.history_callback()
                     else:
                         # Run sync callback in thread pool to avoid blocking
@@ -463,26 +1201,98 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 for msg in modified_messages
             ]
             
-            # Inject restoration context (info about how to retrieve stored data)
+            # Inject restoration context (info about how to retrieve stored data).
+            # The block sits right behind the system prompt and lists the
+            # core-memory facts; changed on every call it differs, each
+            # store_fact rewrote the front of the conversation and re-billed all
+            # of it. So the session keeps the block it was shown until the
+            # content it describes is gone from the conversation or the front is
+            # rewritten anyway: messages left or were archived (a stored fact may
+            # have left with its store_fact call), someone else rewrote the
+            # conversation since the last call, or the first tool results were
+            # stored — their placeholder names no way back, the section does.
+            # Until then a new fact is still in the context, in its store_fact call.
+            # A rewrite by a hook that runs after this one (context_summarizer) is
+            # seen one call late, so the new block costs a break of its own — on
+            # the summarized, short conversation. Accepted rather than have the
+            # summarizer reach into this plugin to swap the block in its own call.
             strategy: LayeredCompactionStrategy = components["strategy"]
-            restoration_context = await strategy.get_restoration_context()
+            fresh_block = await strategy.get_restoration_context()
+            shown = self._shown_blocks.get(session_id)
+            incoming_length, incoming_head = _conversation_probe(messages_as_dicts)
+            if shown is None or (fresh_block != shown.text and (
+                    result.messages_dropped or result.messages_pruned or result.messages_archived
+                    or incoming_length < shown.conversation_length
+                    or incoming_head != shown.head
+                    or (result.tool_results_stored
+                        and TOOL_RESULTS_SECTION in fresh_block
+                        and TOOL_RESULTS_SECTION not in shown.text))):
+                restoration_context = fresh_block
+            else:
+                restoration_context = shown.text
+            self._shown_blocks[session_id] = _ShownBlock(
+                restoration_context, *_conversation_probe(result.modified_messages))
+            self._shown_blocks.move_to_end(session_id)
+            while len(self._shown_blocks) > _MAX_HYSTERESIS_MARKS:
+                self._shown_blocks.popitem(last=False)
             
-            if restoration_context:
-                # Find position after last system message to insert restoration context
-                # This preserves the agent's system prompt while adding our context
-                insert_pos = 0
-                for i, msg in enumerate(new_messages):
-                    msg_role = msg.role if hasattr(msg, 'role') else msg.get('role')
-                    if msg_role == 'system':
-                        insert_pos = i + 1
-                    else:
-                        break  # Stop at first non-system message
-                
-                restoration_msg = ChatMessage(
-                    role="system",
-                    content=restoration_context
-                )
-                new_messages.insert(insert_pos, restoration_msg)
+            # Vorherige Injektion ENTFERNEN, bevor neu eingefuegt wird
+            # (Konvention wie debate_forum: ueber `injected_by` markiert).
+            # Ohne das wuchs der Block mit: die kompaktierten Messages werden
+            # persistiert, also ist die Injektion des letzten Turns beim
+            # naechsten schon Teil der Historie -- und weil sie selbst eine
+            # system-Message ist, wandert die Einfuegestelle jedes Mal eins
+            # weiter. Gemessen an einem Sub-Agenten mit 109 Aufrufen:
+            # Request 21 = 15 Kopien, Request 61 = 55, Request 109 = 103
+            # Kopien in 201 Messages. Folge: halber Kontext war Duplikat, und
+            # die verschobene Einfuegestelle brach den Prompt-Cache in 103 von
+            # 108 Turns (Cache-Quote 8-13 % statt 50-65 %).
+            # Der Inhalts-Treffer ist NICHT redundant: Sessions, die vor
+            # diesem Fix liefen, tragen unmarkierte Kopien in ihrer
+            # persistierten Historie -- ohne ihn blieben die dort stehen.
+            for i in range(len(new_messages) - 1, -1, -1):
+                msg = new_messages[i]
+                # The legacy copies were system messages, and only those match
+                # by content. Matching every role deleted whatever merely
+                # CONTAINED the header — a tool result of an agent reading this
+                # very file, or a user quoting it — before the LLM call, and the
+                # conversation was persisted without it.
+                content = getattr(msg, "content", None)
+                if (getattr(msg, "role", None) == "system" and isinstance(content, str)
+                        and _RESTORATION_HEADER in content):
+                    new_messages.pop(i)
+
+            previous_block = next(
+                (m for m in reversed(new_messages)
+                 if getattr(m, "injected_by", None) == _RESTORATION_MARKER), None)
+            # NOT "fresh_block when nothing of ours stands here": the block is
+            # not persisted, so across requests there never is a previous one,
+            # and taking the fresh text there would switch the hysteresis off
+            # entirely. What it holds back is deliberate and measured (see the
+            # paragraph above), and the reason it gives -- do not rewrite the
+            # front for a fact that is still readable in its store_fact call --
+            # is weaker now that the block sits at the end, but it is not mine
+            # to overrule as a side effect of moving it.
+            if restoration_context and (previous_block is None
+                                        or previous_block.content != restoration_context):
+                # Appended, not inserted behind the system prompt: there a
+                # provider hoists it into the prompt head, and rebuilding it
+                # per call invalidated the cache for everything behind it.
+                # An earlier block keeps its place -- what it said was true
+                # when it was written -- and an unchanged one is not written
+                # again at all. It is not persisted with the conversation
+                # either, and the reason is worth naming exactly: what
+                # drops it is `is_volatile_note` in SessionTracker
+                # (session_tracking.py), which needs BOTH the developer role
+                # and `injected_by` -- a marked `user` turn, like debate_forum's
+                # posts, is deliberately kept. The two filters on THIS path
+                # throw away nothing but `role == 'system'`, so they are not
+                # what keeps the copies from piling up.
+                new_messages.append(ChatMessage(
+                    role=DEVELOPER,
+                    content=restoration_context,
+                    injected_by=_RESTORATION_MARKER,
+                ))
             
             # Build modified context with all fields
             modified_context = HookContext(
@@ -492,6 +1302,10 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 agent=context.agent,
                 agent_name=context.agent_name,
                 messages=new_messages,
+                # Carried on: the next pre-LLM hook (context_summarizer) reads
+                # the per-request schema from here, and without it fell back
+                # to the agent's shared, racy _current_tools_schema.
+                tools_schema=context.tools_schema,
                 llm_response=context.llm_response,
                 tool_call=context.tool_call,
                 tool_result=context.tool_result,
@@ -511,34 +1325,44 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 + (f", media_event: {result.media_compacted_after_event}" if result.media_compacted_after_event > 0 else "")
             )
             
-            # NOTE: Session persistence is now handled automatically by HookIntegrationManager
-            # when we return HookResult with modified=True. The _auto_sync_session_messages()
-            # method filters system messages correctly (keeping archived_ref types).
-            # The explicit set_compacted_messages() call below is kept for backwards compatibility
-            # and as a safety net, but is no longer strictly required.
-            if context.agent and hasattr(context.agent, '_session_tracker'):
-                # Filter out the ORIGINAL system message (agent's system prompt) for persistence.
-                # The system prompt is rebuilt each turn from config.
-                # BUT keep archived_ref system messages - those are compacted conversation!
-                import json
-                conversation_msgs = []
-                for msg in new_messages:
-                    if msg.role == 'system':
-                        # Check if this is an archived_ref (keep) or original system prompt (skip)
-                        content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                        if isinstance(content, str):
-                            try:
-                                parsed = json.loads(content)
-                                if isinstance(parsed, dict) and parsed.get("type") == "archived_ref":
-                                    # Keep archived references
-                                    conversation_msgs.append(msg)
-                                    continue
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        # Skip original system prompt
-                        continue
-                    conversation_msgs.append(msg)
-                
+            # NOTE: what persists this compaction is the auto-sync in the
+            # HookIntegrationManager, which writes the same slot after we return
+            # with modified=True and filters system messages correctly (keeping
+            # archived_ref types). The explicit set_compacted_messages() call
+            # below is NOT a safety net for that: on this path the loop clears
+            # the marker right after the hook chain (server.py), so no reader
+            # ever sees what we stage here. It is written for the one case the
+            # auto-sync cannot cover -- a hook that changes context.messages IN
+            # PLACE instead of returning a new list; then the auto-sync has
+            # nothing to notice and this call is the only thing that persists.
+            # No hook does that today. Note that the compact TOOL sets the same
+            # marker on its own path (server.py), and THAT one is read -- do not
+            # let this comment talk you out of that one.
+            # Only when something changed. The compact tool reaches this with the
+            # agent attached, and a staged history makes the agent rebuild its
+            # list after the tool as [system prompt] + staged + tool messages —
+            # dropping every other leading system message, a prompt rewrite for a
+            # run that compacted nothing.
+            if something_compacted and context.agent and hasattr(context.agent, '_session_tracker'):
+                # Filter out the ORIGINAL system message (agent's system prompt)
+                # for persistence — it is rebuilt each turn from config. The
+                # system messages that ARE compacted conversation must stay.
+                #
+                # This used to be a hand-written copy of that rule which knew
+                # only about archived_ref, so it dropped the prune breadcrumb.
+                # It survived by accident: the agent's auto-sync runs afterwards
+                # and overwrote the same slot with the correct list. Ordering is
+                # not a guarantee — a hook that mutates context.messages in
+                # place skips that overwrite and this copy wins.
+                from agent_system.servers.agent.components.hook_integration import (
+                    is_compaction_system_message,
+                )
+                conversation_msgs = [
+                    msg for msg in new_messages
+                    if msg.role != 'system' or is_compaction_system_message(msg)
+                ]
+
+
                 context.agent._session_tracker.set_compacted_messages(
                     session_id, conversation_msgs
                 )
@@ -553,13 +1377,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 modified=True,  # Always True when we made changes
                 context=modified_context,
                 metadata={
+                    # modified is True on every run that got this far; this says
+                    # whether the messages actually changed.
+                    "compacted": something_compacted,
                     "original_tokens": result.original_tokens,
                     "final_tokens": result.final_tokens,
                     "tokens_saved": result.tokens_saved,
                     "reduction_percent": result.reduction_percent,
                     "layers_applied": result.layers_applied,
                     "tool_results_stored": result.tool_results_stored,
-                    "variables_created": result.variables_created,
                     "messages_archived": result.messages_archived,
                     "messages_dropped": result.messages_dropped,
                     "messages_pruned": result.messages_pruned,
@@ -578,12 +1404,27 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             )
     
     def _get_actual_or_estimated_tokens(
-        self, 
-        context: HookContext, 
+        self,
+        context: HookContext,
         messages: list[dict[str, Any]],
         strategy: LayeredCompactionStrategy
     ) -> int:
+        """The token count alone; see _read_tokens."""
+        return self._read_tokens(context, messages, strategy)[0]
+
+    def _read_tokens(
+        self,
+        context: HookContext,
+        messages: list[dict[str, Any]],
+        strategy: LayeredCompactionStrategy
+    ) -> tuple[int, bool]:
         """Get actual token count from last LLM response or estimate from messages.
+
+        The second value says whether the reading may move the hysteresis base:
+        not when the session HAS provider counts but they are stale. Such a
+        reading is the estimate alone, and the next fresh one is on the
+        provider's scale again — measured against a base taken from the stale
+        one, the growth jumped by the gap between the two scales.
 
         Uses the MAXIMUM of:
         1. Actual prompt_tokens from last LLM response (via context_usage_tracker)
@@ -598,21 +1439,26 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             strategy: Compaction strategy for token estimation
 
         Returns:
-            Maximum of actual or estimated token count
+            Maximum of actual or estimated token count, and whether it may move
+            the hysteresis base
         """
+        stale = False
         estimated_tokens = strategy._estimate_messages_tokens(messages)
 
         # Include tool definition tokens in estimation (they consume context window)
-        if context.agent and hasattr(context.agent, '_current_tools_schema'):
+        # The per-request schema first; the agent attribute is shared by all of
+        # its sessions and only a fallback for callers that build a bare context.
+        tools_schema = context.tools_schema
+        if tools_schema is None and context.agent and hasattr(context.agent, '_current_tools_schema'):
             tools_schema = context.agent._current_tools_schema
-            if tools_schema and isinstance(tools_schema, list):
-                from agent_system.llm.token_utils import estimate_tools_token_count
-                tool_tokens = estimate_tools_token_count(tools_schema)
-                estimated_tokens += tool_tokens
-                logger.debug(
-                    f"[ContextEngineer] Added {tool_tokens} tool definition tokens "
-                    f"({len(tools_schema)} tools)"
-                )
+        if tools_schema and isinstance(tools_schema, list):
+            from agent_system.llm.token_utils import estimate_tools_token_count
+            tool_tokens = estimate_tools_token_count(tools_schema)
+            estimated_tokens += tool_tokens
+            logger.debug(
+                f"[ContextEngineer] Added {tool_tokens} tool definition tokens "
+                f"({len(tools_schema)} tools)"
+            )
 
         actual_tokens = 0
 
@@ -623,8 +1469,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             # Access the plugin registry via agent's system_config
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
 
                     # Get context_usage_tracker plugin
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
@@ -638,6 +1484,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                             # Check if data is stale (context was optimized since last LLM call)
                             # Stale data doesn't reflect current message list, so ignore it
                             if latest.get('is_stale'):
+                                stale = True
                                 logger.debug(
                                     f"[ContextEngineer] Ignoring stale usage_tracker data for session "
                                     f"{context.session_id} (context was already optimized)"
@@ -660,7 +1507,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 f"actual={actual_tokens}, estimated={estimated_tokens}, using={max_tokens}"
             )
 
-        return max_tokens
+        return max_tokens, not stale
     
     def _invalidate_usage_tracker_session(
         self, 
@@ -681,8 +1528,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         try:
             if context.agent and hasattr(context.agent, 'system_config'):
                 system_config = context.agent.system_config
-                if hasattr(system_config, 'mcp_registry') and system_config.mcp_registry:
-                    registry = system_config.mcp_registry
+                if hasattr(system_config, 'tool_registry') and system_config.tool_registry:
+                    registry = system_config.tool_registry
                     usage_tracker_plugin = registry.get_server('context_usage_tracker')
                     if usage_tracker_plugin and hasattr(usage_tracker_plugin, 'tracker'):
                         usage_tracker_plugin.tracker.invalidate_session(session_id, reason)
@@ -690,140 +1537,8 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             logger.debug(f"[ContextEngineer] Could not invalidate usage_tracker session: {e}")
     
     # === MCP Tool Handlers ===
-    # These are called by the MCP server when tools are invoked
-    
-    def get_tool_handlers(self) -> dict[str, Any]:
-        """Get tool handler functions for MCP server.
-        
-        Returns:
-            Dict mapping tool names to handler functions
-        """
-        return {
-            "recall": self._handle_recall,
-            "store_fact": self._handle_store_fact,
-            # Legacy handlers kept for backward compatibility but no longer exposed as tools
-            "get_variable": self._handle_get_variable,
-            "get_tool_result": self._handle_get_tool_result,
-            "stats": self._handle_stats,
-            "restore_multimodal": self._handle_restore_multimodal
-        }
-    
-    def _detect_recall_type(self, query: str) -> str:
-        """Detect what type of recall is needed based on query pattern.
-        
-        Returns one of: 'variable', 'tool_result', 'media', 'archive'
-        """
-        import re
-        from pathlib import Path
-        
-        query_stripped = query.strip()
-        
-        # Pattern 1: Variable reference ($VAR_N or VAR_N)
-        if re.match(r'^\$?VAR_\d+$', query_stripped, re.IGNORECASE):
-            return 'variable'
-        
-        # Pattern 2: Tool result reference (TR_xxx or hash-like)
-        if re.match(r'^TR_[a-zA-Z0-9]+$', query_stripped) or re.match(r'^call_[a-zA-Z0-9]+$', query_stripped):
-            return 'tool_result'
-        
-        # Pattern 3: Looks like a hex hash (8+ hex chars)
-        if re.match(r'^[a-f0-9]{8,}$', query_stripped, re.IGNORECASE):
-            return 'tool_result'
-        
-        # Pattern 4: File path with media extension
-        media_extensions = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac',
-                          '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
-                          '.mp4', '.webm', '.avi', '.mov'}
-        
-        # Check if it looks like a path
-        if '/' in query_stripped or '\\' in query_stripped or query_stripped.startswith('data/'):
-            suffix = Path(query_stripped).suffix.lower()
-            if suffix in media_extensions:
-                return 'media'
-        
-        # Default: archive search
-        return 'archive'
-    
-    async def _handle_recall(
-        self,
-        query: str,
-        mode: str = "auto",
-        limit: int = 5,
-        session_id: str = "default"
-    ) -> dict[str, Any]:
-        """Handle unified recall tool - auto-detects and retrieves any stored content.
-        
-        Supports:
-        - Archived messages (semantic/text search)
-        - Variables ($VAR_N)
-        - Tool results (TR_xxx or hash)
-        - Media files (file paths)
-        
-        Args:
-            query: Search query, variable name, reference, or file path
-            mode: Force specific mode or 'auto' to detect
-            limit: Max results for archive search
-            session_id: Session ID
-            
-        Returns:
-            Retrieved content based on detected/specified mode
-        """
-        
-        # Determine recall type
-        if mode == "auto":
-            recall_type = self._detect_recall_type(query)
-        else:
-            recall_type = mode
-        
-        # Handle each type
-        if recall_type == 'variable':
-            # Normalize variable name
-            var_name = query.strip().upper()
-            if not var_name.startswith('$'):
-                var_name = '$' + var_name
-            
-            return await self._handle_get_variable(
-                variable_name=var_name,
-                session_id=session_id,
-                mode="preview"
-            )
-        
-        elif recall_type == 'tool_result':
-            return await self._handle_get_tool_result(
-                reference=query.strip(),
-                session_id=session_id,
-                mode="preview"
-            )
-        
-        elif recall_type == 'media':
-            return await self._handle_restore_multimodal(
-                path=query.strip(),
-                session_id=session_id
-            )
-        
-        else:  # archive search
-            components = self._get_session_components(session_id)
-            archival: ArchivalMemory = components["archival_memory"]
-            
-            results = archival.search(query, limit=limit)
-            
-            return {
-                "recall_type": "archive",
-                "query": query,
-                "results": [
-                    {
-                        "id": r.id,
-                        "role": r.role,
-                        "summary": r.summary,
-                        "content_preview": r.content[:500] + "..." if len(r.content) > 500 else r.content,
-                        "timestamp": r.timestamp.isoformat()
-                    }
-                    for r in results
-                ],
-                "total_found": len(results),
-                "hint": "Use recall(query='$VAR_N') for variables, recall(query='TR_xxx') for tool results, or recall(query='/path/to/file.wav') for media" if not results else None
-            }
-    
+    # These are called by the tool server when tools are invoked
+
     async def _handle_store_fact(
         self,
         fact: str,
@@ -846,7 +1561,20 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         core_memory: CoreMemory = components["core_memory"]
         
         fact_id = await core_memory.add_fact(fact, category=category, importance=importance)
-        
+        if not fact_id:
+            # add_fact refuses rather than push out more important facts. Said
+            # as success, the agent believed a fact was kept that is nowhere.
+            too_large = not core_memory.fits_alone(fact, category)
+            return {
+                "success": False,
+                "error": (f"This fact alone is larger than core memory ({core_memory.max_tokens} "
+                          f"tokens); store a shorter summary of it." if too_large else
+                          "Core memory is full of more important facts; this one was "
+                          "not stored. Use a higher importance if it matters more."),
+                "importance": importance,
+                "total_facts": len(core_memory.facts),
+            }
+
         return {
             "success": True,
             "fact_id": fact_id,
@@ -855,294 +1583,15 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             "total_facts": len(core_memory.facts)
         }
     
-    async def _handle_get_variable(
-        self,
-        variable_name: str,
-        session_id: str = "default",
-        mode: str = "preview",
-        offset: int = 0,
-        limit: int = 1000,
-        search: str | None = None,
-        context_chars: int = 150
-    ) -> dict[str, Any]:
-        """Handle get_variable tool - retrieve stored variable with pagination.
-        
-        Args:
-            variable_name: Variable name (e.g., $VAR_1)
-            session_id: Session ID
-            mode: Retrieval mode (preview, chunk, search, full)
-            offset: Start position for chunk mode
-            limit: Max chars for chunk mode (max 10000 per request)
-            search: Search query for search mode
-            context_chars: Context around search matches
-            
-        Returns:
-            Variable content (possibly truncated) or error
-        """
-        # Validate pagination limit
-        max_limit = 5000
-        if limit > max_limit:
-            return {
-                "found": False,
-                "variable_name": variable_name,
-                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
-            }
-        
-        components = self._get_session_components(session_id)
-        variable_manager: VariableManager = components["variable_manager"]
-        
-        entry = variable_manager.get_variable(variable_name)
-        
-        if not entry:
-            return {
-                "found": False,
-                "variable_name": variable_name,
-                "error": f"Variable {variable_name} not found"
-            }
-        
-        content = entry.content
-        total_chars = len(content)
-        
-        # Apply mode-specific content extraction
-        if mode == "preview":
-            # Return first ~500 chars with truncation indicator
-            preview_limit = 500
-            extracted = content[:preview_limit]
-            truncated = total_chars > preview_limit
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "preview",
-                "content": extracted,
-                "truncated": truncated,
-                "total_chars": total_chars,
-                "returned_chars": len(extracted),
-                "content_type": entry.content_type,
-                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
-            }
-        
-        elif mode == "chunk":
-            # Paginated access
-            extracted = content[offset:offset + limit]
-            has_more = (offset + limit) < total_chars
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "chunk",
-                "content": extracted,
-                "offset": offset,
-                "limit": limit,
-                "returned_chars": len(extracted),
-                "total_chars": total_chars,
-                "has_more": has_more,
-                "next_offset": offset + limit if has_more else None,
-                "content_type": entry.content_type
-            }
-        
-        elif mode == "search":
-            # Search within content
-            if not search:
-                return {
-                    "found": True,
-                    "variable_name": variable_name,
-                    "mode": "search",
-                    "error": "search parameter required for mode='search'"
-                }
-            
-            matches = []
-            search_lower = search.lower()
-            content_lower = content.lower()
-            pos = 0
-            
-            while len(matches) < 10:  # Limit to 10 matches
-                idx = content_lower.find(search_lower, pos)
-                if idx == -1:
-                    break
-                
-                # Extract context around match
-                start = max(0, idx - context_chars)
-                end = min(total_chars, idx + len(search) + context_chars)
-                snippet = content[start:end]
-                
-                # Add ellipsis indicators
-                prefix = "..." if start > 0 else ""
-                suffix = "..." if end < total_chars else ""
-                
-                matches.append({
-                    "position": idx,
-                    "snippet": f"{prefix}{snippet}{suffix}"
-                })
-                pos = idx + 1
-            
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "search",
-                "query": search,
-                "match_count": len(matches),
-                "matches": matches,
-                "total_chars": total_chars,
-                "content_type": entry.content_type,
-                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
-            }
-        
-        else:  # mode == "full"
-            # Return everything (use sparingly!)
-            return {
-                "found": True,
-                "variable_name": variable_name,
-                "mode": "full",
-                "content": content,
-                "total_chars": total_chars,
-                "content_type": entry.content_type,
-                "token_count": entry.token_count,
-                "created_at": entry.created_at.isoformat(),
-                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
-            }
-    
-    async def _handle_get_tool_result(
-        self,
-        reference: str,
-        session_id: str = "default",
-        mode: str = "preview",
-        offset: int = 0,
-        limit: int = 1000,
-        search: str | None = None,
-        context_chars: int = 150
-    ) -> dict[str, Any]:
-        """Handle get_tool_result tool - retrieve stored tool output with pagination.
-        
-        Args:
-            reference: Reference ID or hash
-            session_id: Session ID
-            mode: Retrieval mode (preview, chunk, search, full)
-            offset: Start position for chunk mode
-            limit: Max chars for chunk mode (max 10000 per request)
-            search: Search query for search mode
-            context_chars: Context around search matches
-            
-        Returns:
-            Tool result content (possibly truncated) or error
-        """
-        # Validate pagination limit
-        max_limit = 5000
-        if limit > max_limit:
-            return {
-                "found": False,
-                "reference": reference,
-                "error": f"Limit {limit} exceeds maximum allowed {max_limit}. Use multiple requests with offset to retrieve large content."
-            }
-        
-        components = self._get_session_components(session_id)
-        tool_store: ToolResultStore = components["tool_store"]
-        
-        # Try by ID first, then by hash
-        entry = tool_store.retrieve(reference)
-        if not entry:
-            entry = tool_store.retrieve_by_hash(reference)
-        
-        if not entry:
-            return {
-                "found": False,
-                "reference": reference,
-                "error": f"Tool result with reference '{reference}' not found"
-            }
-        
-        content = entry.content
-        total_chars = len(content)
-        
-        # Apply mode-specific content extraction
-        if mode == "preview":
-            preview_limit = 500
-            extracted = content[:preview_limit]
-            truncated = total_chars > preview_limit
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "preview",
-                "content": extracted,
-                "truncated": truncated,
-                "total_chars": total_chars,
-                "returned_chars": len(extracted),
-                "hint": "Use mode='chunk' with offset/limit or mode='search' to access more content" if truncated else None
-            }
-        
-        elif mode == "chunk":
-            extracted = content[offset:offset + limit]
-            has_more = (offset + limit) < total_chars
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "chunk",
-                "content": extracted,
-                "offset": offset,
-                "limit": limit,
-                "returned_chars": len(extracted),
-                "total_chars": total_chars,
-                "has_more": has_more,
-                "next_offset": offset + limit if has_more else None
-            }
-        
-        elif mode == "search":
-            if not search:
-                return {
-                    "found": True,
-                    "reference": reference,
-                    "tool_name": entry.tool_name,
-                    "mode": "search",
-                    "error": "search parameter required for mode='search'"
-                }
-            
-            matches = []
-            search_lower = search.lower()
-            content_lower = content.lower()
-            pos = 0
-            
-            while len(matches) < 10:
-                idx = content_lower.find(search_lower, pos)
-                if idx == -1:
-                    break
-                
-                start = max(0, idx - context_chars)
-                end = min(total_chars, idx + len(search) + context_chars)
-                snippet = content[start:end]
-                
-                prefix = "..." if start > 0 else ""
-                suffix = "..." if end < total_chars else ""
-                
-                matches.append({
-                    "position": idx,
-                    "snippet": f"{prefix}{snippet}{suffix}"
-                })
-                pos = idx + 1
-            
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "search",
-                "query": search,
-                "match_count": len(matches),
-                "matches": matches,
-                "total_chars": total_chars,
-                "hint": "Use mode='chunk' with offset near match position for more context" if matches else None
-            }
-        
-        else:  # mode == "full"
-            return {
-                "found": True,
-                "reference": reference,
-                "tool_name": entry.tool_name,
-                "mode": "full",
-                "content": content,
-                "total_chars": total_chars,
-                "token_count": entry.token_count,
-                "stored_at": entry.timestamp.isoformat(),
-                "warning": "Full content returned - consider using preview/chunk/search to save tokens"
-            }
-    
+    @staticmethod
+    def _is_within(path: "Path", root: "Path") -> bool:
+        """True if `path` (already resolved) is inside `root` (already resolved)."""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
     async def _handle_restore_multimodal(
         self,
         path: str,
@@ -1161,10 +1610,33 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         Returns:
             Status and file info, or error if file not found
         """
-        from pathlib import Path
-        
-        file_path = Path(path)
-        
+        # data/... lands in the data directory (agent_system/paths.py)
+        file_path = resolve_data_path(path)
+
+        # SECURITY: `path` comes straight from LLM tool args
+        # (read(ref="/path/to/file.wav")). Without containment this is an
+        # arbitrary file read primitive: the file is base64-injected into the
+        # model context. Restrict
+        # to the project data roots where all plugin media legitimately lives
+        # (context_engineer media store, comfyui outputs, audio, covers - all
+        # under data/). Reject anything outside, including symlink escapes.
+        allowed_roots = []
+        for root in (self._storage_base, data_path()):
+            try:
+                allowed_roots.append(root.resolve())
+            except Exception:
+                pass
+        try:
+            resolved = file_path.resolve()
+        except Exception:
+            resolved = file_path
+        if not any(self._is_within(resolved, r) for r in allowed_roots):
+            logger.warning("restore_multimodal rejected out-of-root path: %r", path)
+            return {
+                "status": "error",
+                "error": "Path is outside the allowed media directories.",
+            }
+
         # Validate file exists
         if not file_path.exists():
             return {
@@ -1177,11 +1649,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
         stat = file_path.stat()
         size_bytes = stat.st_size
         size_mb = size_bytes / (1024 * 1024)
-        
-        # Estimate token cost
-        # Base64 encoding adds ~33% overhead, then ~4 chars per token
-        estimated_tokens = int(size_bytes * 0.33)
-        
+
         # Determine type from extension
         suffix = file_path.suffix.lower()
         if suffix in ('.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac'):
@@ -1218,7 +1686,13 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 "error": f"Unsupported file type: {suffix}",
                 "hint": "Supported types: audio (wav, mp3, ogg, flac, m4a, aac), image (png, jpg, gif, webp, bmp), video (mp4, webm, avi, mov)"
             }
-        
+
+        # What compaction counts the item at once it is back: priced by file
+        # size, a 2 MB cover was announced at ~700k tokens, above the whole
+        # window, for an image that costs about a thousand.
+        from agent_system.llm.token_utils import estimate_file_tokens
+        estimated_tokens = estimate_file_tokens(file_path, file_type=content_type)
+
         # Return multimodal content for injection
         # The _multimodal_content key will be picked up by tool execution
         return {
@@ -1240,48 +1714,6 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
             }]
         }
     
-    async def _handle_stats(
-        self,
-        session_id: str = "default"
-    ) -> dict[str, Any]:
-        """Handle stats tool - get context engineering statistics.
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            Statistics about stored data
-        """
-        components = self._get_session_components(session_id)
-        
-        tool_store: ToolResultStore = components["tool_store"]
-        variable_manager: VariableManager = components["variable_manager"]
-        core_memory: CoreMemory = components["core_memory"]
-        archival: ArchivalMemory = components["archival_memory"]
-        
-        # Aggregate media compaction stats from history for this session
-        media_deduplicated = 0
-        media_compacted = 0
-        if self.stats_history:
-            for event in self.stats_history:
-                if event.get("session_id") == session_id:
-                    media_deduplicated += event.get("media_deduplicated", 0)
-                    media_compacted += event.get("media_compacted_after_event", 0)
-        
-        return {
-            "tool_results": tool_store.get_stats(),
-            "variables": variable_manager.get_stats(),
-            "core_memory": {
-                "facts": len(core_memory.facts),
-                "facts_count": len(core_memory.facts),  # Added for UI compatibility
-                "categories": core_memory.get_categories(),
-                "token_usage": core_memory.get_token_usage()
-            },
-            "archival_memory": archival.get_stats(),
-            "media_deduplicated": media_deduplicated,
-            "media_compacted": media_compacted
-        }
-    
     def cleanup_session(self, session_id: str) -> None:
         """Clean up session resources.
         
@@ -1298,5 +1730,250 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
                 components["tool_store"].close()
             
             del self._session_components[session_id]
-            
+            # The hysteresis mark stays (see _MAX_HYSTERESIS_MARKS).
+
             logger.debug(f"Cleaned up session components for {session_id}")
+
+    # ------------------------------------------------------------------
+    # list / read — the browsing surface over stored context
+    #
+    # Replaces the single `recall` tool, which took a free-text query and
+    # guessed from its shape which of five stores was meant. The guess was
+    # documented as misfiring (agents writing "$TR_…" landed in the wrong
+    # handler), and the stores answered in four different shapes, so no stable
+    # expectation could form. These three verbs are the ones every model is
+    # already fluent in: what is there, where is it, give me a piece of it.
+    # ------------------------------------------------------------------
+
+    async def _handle_context_list(
+        self,
+        section: str | None = None,
+        offset: int | None = None,
+        limit: int = 20,
+        role: str | None = None,
+        filter: str | None = None,
+        session_id: str = "default",
+    ) -> dict[str, Any]:
+        """What is stored: addresses and one-line summaries, never bodies.
+
+        With ``filter`` the same rows come back narrowed to what matches, each
+        carrying the matching excerpt. Browsing and finding are one verb because
+        they answer one question and hand back one shape — the caller either has
+        words to go on or does not.
+
+        The two differ in one respect, which is why the section default depends
+        on it: browsing pages through ONE store in a defined order, so it
+        defaults to the conversation; filtering has no natural order across
+        stores and searches all of them. Both are overridable, and the reply
+        echoes which section it used.
+
+        Offsets read like a file, and all sections are chronological:
+        no offset → the LAST page (what just left the view, which is what an
+        agent asks about); a negative offset counts back from the end; a
+        non-negative one is absolute. Defaulting to the oldest page meant the
+        recent entries — the ones the conversation was actually about — could
+        only be reached by knowing the total and doing the arithmetic.
+        """
+        limit = max(1, min(int(limit), MAX_LIST_LIMIT))
+        needle = (filter or "").strip()
+        section = section or ("all" if needle else "history")
+        components = self._get_session_components(session_id)
+
+        if section not in CONTEXT_SECTIONS and section != "all":
+            return {
+                "status": "error",
+                "error": f"unknown section '{section}'",
+                "sections": ["all", *CONTEXT_SECTIONS],
+            }
+        if section == "all" and not needle:
+            return {
+                "status": "error",
+                "error": "section='all' needs a filter",
+                "hint": ("browsing pages through one store — pick a section "
+                         f"({', '.join(CONTEXT_SECTIONS)}), or pass a filter"),
+            }
+
+        wanted = CONTEXT_SECTIONS if section == "all" else (section,)
+        entries: list[dict[str, Any]] = []
+        total = 0
+        # Only meaningful while browsing; a filter ranks rather than orders, so
+        # it has no page to be at. Resolved per section against that section's
+        # count — safe because browsing is always exactly one section.
+        start = max(0, int(offset)) if offset is not None else 0
+
+        if "history" in wanted:
+            archival: ArchivalMemory = components["archival_memory"]
+            if needle:
+                # Off the loop: search takes the vector store's lock, and that
+                # store is shared by every session — a batch embedding elsewhere
+                # can hold it for seconds. Awaited inline, that would freeze
+                # the whole API for the duration, not just this call.
+                found = await asyncio.to_thread(
+                    archival.search, needle, session_id=session_id, limit=limit,
+                )
+                if role:
+                    # The index cannot filter by role, so do it here. Accepting
+                    # the parameter and ignoring it would be worse than not
+                    # offering it: the caller believes it narrowed the result.
+                    found = [m for m in found if m.role == role]
+            else:
+                total += archival.count_session_messages(session_id, role=role)
+                start = _page_start(offset, total, limit)
+                found = archival.get_session_messages(
+                    session_id=session_id, limit=limit, role=role, offset=start)
+            for m in found:
+                row = {
+                    "ref": m.id, "kind": "message", "role": m.role,
+                    "tool": m.tool_name, "tokens": m.token_count,
+                    "at": m.timestamp.isoformat(),
+                    "summary": _one_line(m.summary or "", 200),
+                }
+                if needle:
+                    row["match"] = _one_line(_around(m.content, needle, 200), 460)
+                entries.append(row)
+
+        if "tool_results" in wanted:
+            tool_store: ToolResultStore = components["tool_store"]
+            if needle:
+                rows = tool_store.search_entries(needle, session_id=session_id, limit=limit)
+            else:
+                total += tool_store.count_entries(session_id)
+                start = _page_start(offset, total, limit)
+                rows = tool_store.list_entries(session_id, offset=start, limit=limit)
+            for r in rows:
+                row = {
+                    "ref": r["ref"], "kind": "tool_result", "tool": r["tool"],
+                    "tokens": r["tokens"], "at": r["at"], "chars": r["chars"],
+                }
+                if needle:
+                    row["match"] = _one_line(r["match"], 460)
+                else:
+                    row["summary"] = _one_line(r.get("summary") or "", 200)
+                entries.append(row)
+
+        if "facts" in wanted:
+            core_memory: CoreMemory = components["core_memory"]
+            facts = list(core_memory.facts)
+            if needle:
+                facts = [f for f in facts
+                         if needle.lower() in getattr(f, "content", "").lower()][:limit]
+            else:
+                total += len(facts)
+                start = _page_start(offset, total, limit)
+                facts = facts[start:start + limit]
+            for f in facts:
+                row = {
+                    "ref": None, "kind": "fact",
+                    "category": getattr(f, "category", None),
+                    "importance": getattr(f, "importance", None),
+                    "summary": _one_line(getattr(f, "content", ""), 400),
+                }
+                if needle:
+                    row["match"] = _one_line(getattr(f, "content", ""), 460)
+                entries.append(row)
+
+        out: dict[str, Any] = {
+            "status": "success",
+            "section": section,
+            "count": len(entries),
+            "entries": entries,
+        }
+        if needle:
+            # Filtered results are ranked, not ordered, so there is no stable
+            # "next page" to hand out — say so rather than imply one exists.
+            out["filter"] = needle
+            out["hint"] = (
+                "nothing matched — drop the filter to see what is stored"
+                if not entries else
+                "the match is often the whole answer; read a ref only if you "
+                "need more of that item (find= gets just its matching parts)")
+        else:
+            shown = start + len(entries)
+            out["total"] = total
+            out["offset"] = start
+            # Both directions, because the default page is now the LAST one:
+            # with only next_offset a caller landing on the tail cannot tell
+            # that anything came before it.
+            out["has_more_before"] = start > 0
+            out["has_more_after"] = shown < total
+            out["next_offset"] = shown if shown < total else None
+        return out
+
+    async def _handle_context_read(
+        self,
+        ref: str,
+        session_id: str = "default",
+        offset: int = 0,
+        limit: int | None = None,
+        find: str | None = None,
+    ) -> dict[str, Any]:
+        """Read ONE stored item by address, always bounded.
+
+        The address decides the store — a declared reference, not a guess from
+        free text. An unrecognised ref is an error naming the valid shapes,
+        never a silent fallback into a keyword search.
+        """
+        ref = str(ref or "").strip()
+        if not ref:
+            return {"status": "error", "error": "ref is required",
+                    "hint": "get a ref from the list tool, or from a placeholder in this conversation"}
+
+        kind = _ref_kind(ref)
+        if kind is None:
+            return {
+                "status": "error",
+                "error": f"'{ref}' is not a known reference",
+                "hint": ("refs look like arch_… (archived message), TR_… (tool "
+                         "result or attached file) or a media file path; "
+                         "list returns valid refs"),
+            }
+
+        components = self._get_session_components(session_id)
+
+        if kind == "message":
+            archival: ArchivalMemory = components["archival_memory"]
+            entry, hops = _resolve_archive_chain(archival, ref)
+            if entry is None:
+                return {"status": "error", "ref": ref, "kind": kind,
+                        "error": f"no archived message '{ref}'",
+                        "hint": "list(section='history') shows valid refs"}
+            base = {
+                "status": "success", "ref": ref, "kind": "message",
+                "role": entry.role, "tool": entry.tool_name,
+                "tokens": entry.token_count, "at": entry.timestamp.isoformat(),
+                "summary": _one_line(entry.summary or "", 200),
+            }
+            if hops:
+                # Say it rather than quietly hand back different content than
+                # the ref names — the chain is a defect being worked around.
+                base["resolved_ref"] = entry.id
+                base["resolved_through"] = hops
+            if find:
+                return {**base, **find_in_text(entry.content, find)}
+            return {**base, **slice_text(entry.content, offset=offset, limit=limit)}
+
+        if kind == "media":
+            result = await self._handle_restore_multimodal(path=ref, session_id=session_id)
+            return {"status": "success", "ref": ref, "kind": "media", **result}
+
+        # Tool results (and the attached files that share this store) go through
+        # the same two paging helpers as the archive above, so every read
+        # answers in one shape. There used to be a second, private
+        # implementation here with four modes, two of which nothing called.
+        tool_store: ToolResultStore = components["tool_store"]
+        bare = ref.lstrip("$")
+        entry = tool_store.retrieve(bare) or tool_store.retrieve_by_hash(bare)
+        if entry is None:
+            return {"status": "error", "ref": ref, "kind": kind,
+                    "error": f"no stored tool result '{ref}'",
+                    "hint": "list(section='tool_results') shows valid refs"}
+
+        base = {
+            "status": "success", "ref": ref, "kind": kind,
+            "tool": entry.tool_name, "tokens": entry.token_count,
+            "at": entry.timestamp.isoformat(),
+            "summary": _one_line(entry.summary or "", 200),
+        }
+        if find:
+            return {**base, **find_in_text(entry.content, find)}
+        return {**base, **slice_text(entry.content, offset=offset, limit=limit)}

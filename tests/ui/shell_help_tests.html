@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shell help button tests</title>
+  <style>body { margin: 0; } iframe { width: 1400px; height: 900px; border: 0; }</style>
+</head>
+<body>
+<iframe id="shell" title="shell"></iframe>
+<script type="module">
+  // The shell's help buttons: the manual from the header, a plugin's guide from its panel (the catalogue's `help`).
+  // The real shell against the stub server of test_shell_browser.py, where the Memory panel has a guide.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  const frame = document.getElementById('shell');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const $$ = (selector) => [...doc().querySelectorAll(selector)];
+  const helpFrame = () => $$('iframe.panel-frame').find((f) => f.src.includes('/ui/panels/help'));
+  const helpText = () => helpFrame()?.contentDocument?.querySelector('.pk-guide-page')?.textContent || '';
+  const tab = (panelId) => $$('.dock-tab').find((one) => one.dataset.key.startsWith(`${panelId}:`));
+  // idle: the button keeps its place but shows nothing and takes no click
+  const dockHelpShown = () => getComputedStyle($('#dockHelp')).visibility === 'visible';
+  async function openPanel(panelId) {
+    $('#launcherButton').click();
+    (await until(`the ${panelId} entry`, () => $(`#launcherList [data-panel="${panelId}"]`))).click();
+    return until(`the ${panelId} tab in front`, () => tab(panelId)?.getAttribute('aria-selected') === 'true' && tab(panelId));
+  }
+
+  localStorage.clear();
+  sessionStorage.clear();
+  await new Promise((resolve) => { frame.onload = resolve; frame.src = `/?load=${performance.now()}`; });
+  await until('the started shell', () => $('.session-item') && ($('#chatWelcome') || $('#chat .msg')));
+
+  await check('the header help button opens the manual', async () => {
+    $('#helpButton').click();
+    await until('the manual in the Help panel', () => helpFrame()?.src.includes('guide=scarabhive')
+      && helpText().includes('ScarabHive'));
+    return tab('help')?.getAttribute('aria-selected') === 'true' && !dockHelpShown();  // Help has no guide of its own
+  });
+
+  await check('a docked panel with a guide shows the dock help button, which opens its guide', async () => {
+    await openPanel('memory');
+    const shown = dockHelpShown();
+    $('#dockHelp').focus();
+    $('#dockHelp').click();
+    await until('the guide of the Memory plugin', () => helpFrame()?.src.includes('guide=memory')
+      && helpText().includes('Stored memories.'));
+    // Help in front: the button went idle with the focus on it, the tab in front has it now
+    await until('the focus on the Help tab', () => doc().activeElement === tab('help'));
+    return shown && tab('help').getAttribute('aria-selected') === 'true';
+  });
+
+  await check("a panel's help button leaves the reader on the page of its guide they are on", async () => {
+    helpFrame().contentDocument.querySelector('a[data-file="docs/notes.md"]').click();  // a page of the guide past main
+    await until('the notes page', () => helpText().includes('Memory notes page.'));
+    await sleep(200);  // the viewer has told the shell the page it shows
+    const shown = helpFrame();
+    tab('memory').click();
+    $('#dockHelp').click();
+    await sleep(500);
+    const kept = helpFrame() === shown && helpText().includes('Memory notes page.')  // not loaded anew
+      && tab('help').getAttribute('aria-selected') === 'true';
+    helpFrame().contentDocument.querySelector('[data-nav="retrace"]').click();  // and the way back is there
+    await until('the guide start again', () => helpText().includes('Stored memories.'));
+    return kept;
+  });
+
+  await check('a panel without a guide leaves the dock help button idle, its place kept', async () => {
+    await openPanel('todo');
+    const button = $('#dockHelp');
+    return !dockHelpShown() && !button.hidden && button.getBoundingClientRect().width > 0;
+  });
+
+  await check('the header help button brings the manual back after the reader moved on', async () => {
+    tab('help').click();
+    const help = () => helpFrame().contentDocument;
+    help().querySelector('[data-nav="contents"]').click();  // the reader moves on inside the viewer: the plugin list
+    await until('the plugin list', () => help().querySelector('.pk-guide-table'));
+    $('#helpButton').click();
+    await until('the manual again', () => helpFrame().src.includes('guide=scarabhive')
+      && !helpFrame().contentDocument.querySelector('.pk-guide-table') && helpText().includes('ScarabHive'));
+    return tab('help').getAttribute('aria-selected') === 'true';
+  });
+
+  await check('the header help button leaves the reader on the manual page they are on', async () => {
+    helpFrame().contentDocument.querySelector('[data-nav="help"]').click();  // a manual page other than its start
+    await until('the page on using the help', () => helpText().includes('Where help opens'));
+    await sleep(200);  // the viewer has told the shell the page it shows
+    const src = helpFrame().src;
+    $('#helpButton').click();
+    await sleep(500);
+    return helpFrame().src === src && helpText().includes('Where help opens') && tab('help').getAttribute('aria-selected') === 'true';
+  });
+
+  await check("a window's help button opens the guide as a window above it, one without a guide has none", async () => {
+    tab('memory').querySelector('[data-act="float"]').click();
+    tab('todo').querySelector('[data-act="float"]').click();
+    const windows = await until('two windows', () => $$('.app-window').length === 2 && $$('.app-window'));
+    const memory = windows.find((one) => one.querySelector('iframe')?.src.includes('/plugins/memory/'));
+    const todo = windows.find((one) => one.querySelector('iframe')?.src.includes('/plugins/todo/'));
+    const none = todo.querySelector('[data-act="help"]') === null;
+    const helpWindow = () => $$('.app-window').find((one) => one.contains(helpFrame()));
+    const above = () => Number(helpWindow().style.zIndex) > Number(memory.style.zIndex);
+    // every Help frame the shell loads, counted as its address is set: a move to another place and guide loads once
+    let loads = 0;
+    const frames = frame.contentWindow.HTMLIFrameElement.prototype;
+    const src = Object.getOwnPropertyDescriptor(frames, 'src');
+    Object.defineProperty(frames, 'src', { ...src, set(value) {
+      if (String(value).includes('/ui/panels/help')) loads += 1;
+      src.set.call(this, value);
+    } });
+    // Help docked, on the manual: it moves out of the dock, which the window would cover
+    memory.querySelector('[data-act="help"]').click();
+    await until('Help as a window', () => helpWindow() && helpFrame().src.includes('guide=memory'));
+    await sleep(200);
+    const moved = above() && loads === 1;
+    // Help on the guide already: to the front, not loaded anew
+    const shown = helpFrame();
+    memory.dispatchEvent(new frame.contentWindow.PointerEvent('pointerdown', { bubbles: true }));  // the window in front
+    const under = !above();
+    memory.querySelector('[data-act="help"]').click();
+    await sleep(300);
+    const kept = under && helpFrame() === shown && above() && loads === 1;
+    // Help not open at all: it opens as a window
+    helpWindow().querySelector('[data-act="close"]').click();
+    await until('Help closed', () => !helpFrame());
+    memory.querySelector('[data-act="help"]').click();
+    await until('Help as a new window', () => helpWindow() && helpFrame().src.includes('guide=memory'));
+    const opened = above();
+    if (!(none && moved && kept && opened)) throw new Error(JSON.stringify({ none, moved, kept, opened, loads }));
+    return true;
+  });
+
+  await check('the header keeps every button in view on a narrow screen', async () => {
+    frame.style.width = '320px';
+    try {
+      await sleep(300);
+      const edge = doc().documentElement.clientWidth;
+      const cut = $$('.app-header > *, .app-header-actions > *').filter((one) => one.getClientRects().length
+        && one.getBoundingClientRect().right > edge + 0.5).map((one) => one.id || one.className);
+      if (cut.length) throw new Error(`cut off at ${edge}px: ${cut.join(', ')}`);
+      return true;
+    } finally {
+      frame.style.width = '';
+    }
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

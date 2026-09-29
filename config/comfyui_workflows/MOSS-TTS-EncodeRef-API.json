@@ -1,0 +1,51 @@
+{
+  "1": {
+    "inputs": {
+      "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (1.7B)",
+      "device": "cuda"
+    },
+    "class_type": "MOSSLoadModel",
+    "_meta": {
+      "title": "MOSS-TTS Load Model"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": "DE-Frank.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Reference Audio"
+    }
+  },
+  "3": {
+    "inputs": {
+      "moss_model": [
+        "1",
+        0
+      ],
+      "audio": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "MOSSEncodeTokens",
+    "_meta": {
+      "title": "MOSS-TTS Encode Tokens"
+    }
+  },
+  "4": {
+    "inputs": {
+      "tokens": [
+        "3",
+        0
+      ],
+      "filename_prefix": "moss_tokens/voice"
+    },
+    "class_type": "MOSSSaveTokens",
+    "_meta": {
+      "title": "MOSS-TTS Save Tokens"
+    }
+  }
+}

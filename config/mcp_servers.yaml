@@ -2,117 +2,129 @@
 # External MCP Servers Configuration
 # ================================
 # Configuration for remote/external MCP servers
+#
+# Reach: tools from external servers arrive at agents through the API AND
+# through `agent-cli run`. The latter did not work until 2026-09-02 -- the CLI
+# connected inside its own asyncio.run() and closed that loop before the agent
+# ever asked. It now runs ONE loop; the explanation sits at run_async() in
+# agent_system/agent_cli.py.
 
 external_servers:
   # Connection settings
   connection:
     timeout: 5.0
     parallel_connect: true
-  
+
   # Caching configuration
   cache:
     enabled: true
     tool_list_ttl: 3600.0  # TTL for tool list cache (seconds)
     max_size: null         # Maximum cache entries (null = unlimited)
-  
+
   # Remote MCP server definitions
+  #
+  # CAREFUL when adding these from another file: a config included AFTER this
+  # one that declares `external_servers.remote_servers` REPLACES this whole
+  # block rather than merging into it -- its siblings `connection` and `cache`
+  # do merge. Measured 2026-09-04: one entry added from config/agents/*.yaml
+  # left `remote_servers` holding only that entry, and the three below were
+  # gone without a word. Declare external servers here, in this file.
   remote_servers:
-    localhost:
-      url: http://127.0.0.1:8081
+    # --- A local server over stdio --------------------------------------
+    # The only stdio entry here, hence the detail: with transport stdio the
+    # server is STARTED rather than dialled, so it needs `command` (plus
+    # optional `args`, `env`) instead of `url`. It runs as a subprocess with
+    # our privileges -- which is what the version pin below is for.
+    #
+    # npx/uvx ARE the ecosystem's installation path: they fetch the package on
+    # first start and cache it. Nothing lands in the repo. If you do need
+    # servers on disk (offline, pinned, a host without npm), put them under
+    # external/ -- that is what it is for, and it is in .gitignore.
+    #
+    # Verified live on 2026-09-01 across the whole chain: bootstrap connects
+    # ("1 connected, 0 failed", protocol 2025-06-18), the agent
+    # mcp_external_test_agent sees 13 tools and actually called two of them --
+    # the log holds the server's answers, not the LLM's. It stays off all the
+    # same: a reference test server does not belong in a production start, and
+    # `npx` assumes node on the host.
+    everything:
       enabled: false
-      description: Local streaming MCP server
-      transport: streaming
-      initialization_options:
-        pirate_mode: false
+      transport: stdio
+      command: npx
+      # Without the version pin, `-y` pulls whatever is newest on EVERY start.
+      # NOTE: the npm version is date-based and has NOTHING to do with the one
+      # the server reports about itself in the handshake (there: "2.0.0").
+      # Pinning to the reported version fails with npm ENOTARGET and the
+      # server never starts -- ask `npm view <package> version`.
+      args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31"]
+      description: Protocol reference MCP server (example + smoke test)
       features:
         tools: true
-      tools:
-        allowed:
-          - hello
-        blocked: []
-    
-      controlhost:
-      url: http://192.0.2.114:8000/mcp
+
+    # --- The same server, from disk instead of on demand -----------------
+    # external/ is gitignored: after a fresh checkout it is EMPTY and this
+    # entry points at nothing. Installing is therefore a deliberate step, not
+    # an automatism:
+    #
+    #   mkdir -p external/mcp && cd external/mcp
+    #   npm init -y
+    #   npm install @modelcontextprotocol/server-everything@2026.8.31
+    #
+    # (npm writes the version into its package.json; keep the folder and that
+    # is your pin.)
+    #
+    # `node <path>` rather than the .bin shim: that is a .cmd on Windows and a
+    # symlink on Linux, while the path to dist/index.js is the same on both.
+    # Relative to the repo root, which is where API and CLI start.
+    #
+    # When it pays off against npx: measured 2026-09-01, median of three
+    # connections each -- npx 1.11s, local 0.18s. Factor six, and the start no
+    # longer depends on the network. The price is that someone has to trigger
+    # the update.
+    everything_local:
       enabled: false
-      description: controlhost MCP server
-      transport: streaming
+      transport: stdio
+      command: node
+      args: ["external/mcp/node_modules/@modelcontextprotocol/server-everything/dist/index.js"]
+      description: Like 'everything', but from external/mcp instead of via npx
       features:
         tools: true
-    
-    my1:
-      url: http://192.0.2.113/ts/mcp
+
+    # Bridge to a locally running Blender (blender-mcp 1.9.0): the stdio
+    # server translates MCP into a socket on localhost:9876, where the Blender
+    # addon listens.
+    #
+    # OFF since the native `blender` plugin (src/plugins/blender) exists: that
+    # speaks the addon socket directly, so nobody needs this bridge -- and an
+    # enabled external server is started for EVERY agent run, which meant a
+    # whole process spawned for nobody.
+    #
+    # It stays declared because it is the only thing that delivers the
+    # PolyHaven/Sketchfab/Hyper3D marketplace tools. To get those: set
+    # enabled: true here and add "blender.*" to the agent's allowlist. Both
+    # then run side by side -- `blender/*` (local plugin, slash) and
+    # `blender.*` (external server, dot) are strictly separate namespaces.
+    #
+    # Installation (external/ is gitignored):
+    #   uv venv external/mcp/blender_mcp/.venv
+    #   uv pip install --python external/mcp/blender_mcp/.venv blender-mcp==1.9.0
+    #   external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe install-addon
+    # Blender side (once): enable the addon 'Interface: Blender MCP', then in
+    # the N-panel "BlenderMCP" click "Start MCP Server" (port 9876). The
+    # native plugin needs this same addon -- only the bridge is redundant.
+    blender:
       enabled: false
-      description: My Smithery MCP Server 1
-      transport: streaming
-      features:
-        tools: false
-    
-    my2:
-      url: http://192.0.2.113/other/mcp
-      enabled: false
-      description: My Smithery MCP Server 2
-      transport: streaming
-      features:
-        tools: false
-    
-    open_web_search:
-      url: https://server.smithery.ai/@Aas-ee/open-websearch/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: Remote Open Web Search
-      transport: streaming
-      features:
-        tools: true
-    
-    x_tools:
-      url: https://server.smithery.ai/@acakom/x-mcp-server/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: Remote X-Tools (Twitter)
-      transport: streaming
-      features:
-        tools: true
-      initialization_options:
-        key: ***REMOVED***
-        bearer_token: ***REMOVED***
-        consumer_key: ''
-        consumer_secret: ''
-        access_token: ***REMOVED***
-        access_token_secret: ''
-    
-    context7:
-      url: https://server.smithery.ai/@upstash/context7-mcp/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: Remote Context7 MCP
-      transport: streaming
-      features:
-        tools: true
-    
-    weather_mcp:
-      url: https://server.smithery.ai/@smithery-ai/national-weather-service/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: Remote Weather Forecast MCP
-      transport: streaming
-      features:
-        tools: true
-      tools:
-        blocked:
-          - get_local_time
-    
-    exa_search:
-      url: https://server.smithery.ai/exa/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: Remote Exa Search
-      transport: streaming
-      features:
-        tools: true
-      tools:
-        blocked:
-          - deep_researcher_start
-          - deep_researcher_check
-    
-    ai_research_assistant:
-      url: https://server.smithery.ai/@hamid-vakilzadeh/mcpsemanticscholar/mcp?api_key=***REMOVED***&profile=***REMOVED***
-      enabled: false
-      description: AI Research Assistant
-      transport: streaming
+      transport: stdio
+      # Renders take minutes; the global connection.timeout (5s) killed every
+      # execute_blender_code call. The bridge itself cuts off towards Blender
+      # at 180s -- 300 here means its error arrives first and carries the
+      # better message.
+      timeout: 300
+      command: external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe
+      description: Blender control (scene, objects, material, code) via blender-mcp
+      env:
+        # Otherwise the package sends prompts + screenshots to a third-party
+        # Supabase.
+        BLENDER_MCP_DISABLE_TELEMETRY: "true"
       features:
         tools: true

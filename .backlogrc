@@ -1,5 +1,0 @@
-[backlog]
-default_file = backlog.md
-default_color = true
-backup_dir = .backups
-max_backups = 5

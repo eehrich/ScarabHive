@@ -1,0 +1,21 @@
+/* Memory: only what the kit has no component for -- the memory cell of the table and the content in the drawer.
+   Tokens only. */
+
+.mm-table tbody tr { cursor: pointer; }
+.mm-memory { min-width: 16rem; }
+.mm-title { font-weight: 600; overflow-wrap: anywhere; }
+.mm-content {
+  color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mm-meta { margin-top: var(--space-1); font-size: var(--text-xs); flex-wrap: wrap; }
+.mm-time { white-space: nowrap; }
+
+.mm-drawer { width: min(640px, 100vw); }
+.mm-drawer .pk-dialog-title { overflow-wrap: anywhere; }
+.mm-keywords { flex-wrap: wrap; }
+.mm-heading { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.mm-full {
+  padding: var(--space-2) var(--space-3); border-left: 2px solid var(--border-strong); background: var(--surface-1);
+  border-radius: var(--radius-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary);
+}

@@ -1,0 +1,281 @@
+{
+  "10": {
+    "inputs": {
+      "ckpt_name": "sd_xl_base_1.0.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Base Checkpoint"
+    }
+  },
+  "11": {
+    "inputs": {
+      "ckpt_name": "sd_xl_refiner_1.0.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Refiner Checkpoint"
+    }
+  },
+  "20": {
+    "inputs": {
+      "text": "a beautiful landscape, masterpiece, best quality, highly detailed",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Base Positive Prompt"
+    }
+  },
+  "21": {
+    "inputs": {
+      "text": "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text",
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Base Negative Prompt"
+    }
+  },
+  "22": {
+    "inputs": {
+      "text": "a beautiful landscape, masterpiece, best quality, highly detailed",
+      "clip": [
+        "11",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Refiner Positive Prompt"
+    }
+  },
+  "23": {
+    "inputs": {
+      "text": "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text",
+      "clip": [
+        "11",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Refiner Negative Prompt"
+    }
+  },
+  "30": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "40": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 0,
+      "steps": 30,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "start_at_step": 0,
+      "end_at_step": 26,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "30",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler Base (Steps 0-26)"
+    }
+  },
+  "41": {
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 30,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "start_at_step": 26,
+      "end_at_step": 30,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "11",
+        0
+      ],
+      "positive": [
+        "22",
+        0
+      ],
+      "negative": [
+        "23",
+        0
+      ],
+      "latent_image": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler Refiner (Steps 26-30)"
+    }
+  },
+  "50": {
+    "inputs": {
+      "samples": [
+        "41",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode (Base VAE)"
+    }
+  },
+  "70": {
+    "inputs": {
+      "model_name": "4x-UltraSharp.safetensors"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model (4x-UltraSharp)"
+    }
+  },
+  "71": {
+    "inputs": {
+      "upscale_model": [
+        "70",
+        0
+      ],
+      "image": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (4x-UltraSharp)"
+    }
+  },
+  "72": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "disabled",
+      "image": [
+        "71",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Downscale to hires target"
+    }
+  },
+  "73": {
+    "inputs": {
+      "pixels": [
+        "72",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode (for hires refine)"
+    }
+  },
+  "74": {
+    "inputs": {
+      "seed": 0,
+      "steps": 20,
+      "cfg": 7.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.4,
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler (hires refine pass)"
+    }
+  },
+  "75": {
+    "inputs": {
+      "samples": [
+        "74",
+        0
+      ],
+      "vae": [
+        "10",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode (final)"
+    }
+  },
+  "60": {
+    "inputs": {
+      "filename_prefix": "sdxl_refined",
+      "images": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}

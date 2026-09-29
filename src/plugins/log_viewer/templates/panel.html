@@ -1,151 +1,28 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Log Viewer Panel</title>
-    <link rel="stylesheet" href="/static/css/scrollbar.css">
-    <link rel="stylesheet" href="/plugins/{{ plugin_name }}/static/log_viewer.css?v={{ timestamp }}">
-    <style>
-        /* iframe-specific overrides for full-height layout */
-        html, body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: hidden;
-            background: #1e1e1e;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            padding: 10px;
-            box-sizing: border-box;
-        }
-        .log-viewer-wrapper {
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            border: 1px solid #3e3e42;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-        .log-viewer-container {
-            flex: 1;
-            min-height: 0;
-            overflow: hidden;
-        }
-        .log-container {
-            height: 100%;
-            max-height: none !important;
-            overflow-y: auto;
-            overflow-x: hidden;
-        }
-    </style>
-</head>
-<body>
-<div class="log-viewer-wrapper">
-    <div class="log-controls-fixed">
-        <div class="log-controls-top">
-            <div class="log-controls-row">
-                <button id="refreshBtn" class="icon-only" title="Refresh">🔄</button>
-                <button id="autoRefreshBtn" class="icon-only" title="Auto-refresh: OFF">⏱️</button>
-                <button id="autoScrollBtn" class="icon-only active" title="Auto-scroll">📜</button>
-                <span id="logStatus" class="status"></span>
-            </div>
-            
-            <div class="log-controls-row">
-                <label for="logFileSelect">Log File:</label>
-                <select id="logFileSelect">
-                    <option value="">Loading...</option>
-                </select>
-
-                <input type="text" id="searchInput" placeholder="Search logs..." style="width: 150px;">
-
-                <label for="lineLimitSelect">Lines:</label>
-                <select id="lineLimitSelect" style="width: 70px;">
-                    <option value="100">100</option>
-                    <option value="250">250</option>
-                    <option value="500" selected>500</option>
-                    <option value="1000">1000</option>
-                    <option value="5000">5000</option>
-                </select>
-
-                <div class="filter-dropdown">
-                    <button id="filterDropdownBtn" class="dropdown-btn">
-                        <span id="filterLabel">Levels: All</span>
-                        <span class="dropdown-arrow">▼</span>
-                    </button>
-                    <div id="filterDropdownMenu" class="dropdown-menu">
-                        <label class="filter-checkbox"><input type="checkbox" id="filterError" value="error" checked> ERROR</label>
-                        <label class="filter-checkbox"><input type="checkbox" id="filterWarning" value="warning" checked> WARN</label>
-                        <label class="filter-checkbox"><input type="checkbox" id="filterInfo" value="info" checked> INFO</label>
-                        <label class="filter-checkbox"><input type="checkbox" id="filterDebug" value="debug" checked> DEBUG</label>
-                        <div class="dropdown-divider"></div>
-                        <div class="filter-actions">
-                            <button id="selectAllLevels">All</button>
-                            <button id="selectNoneLevels">None</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="log-viewer-container">
-        <div id="logContainer" class="log-container"></div>
-    </div>
- </div>
-
- <script src="/plugins/{{ plugin_name }}/static/log_viewer_module.js?v={{ timestamp }}"></script>
- <script>
-    // Auto-initialize when loaded in plugin system (supports Shadow DOM)
-    (function() {
-        const currentRoot = document.currentScript ? document.currentScript.getRootNode() : document;
-        const shadowRoot = currentRoot !== document ? currentRoot : null;
-
-        function initLogViewer() {
-            console.log('Log viewer panel DOM loaded', shadowRoot ? 'in Shadow DOM' : 'in document');
-            console.log('Current AgentSystem state:', window.AgentSystem);
-
-            if (window.AgentSystem && window.AgentSystem.log_viewer) {
-                console.log('Initializing log viewer...');
-                window.AgentSystem.log_viewer.init(shadowRoot);
-                return true;
-            } else {
-                console.warn('Log viewer module not found, will retry...', window.AgentSystem);
-                return false;
-            }
-        }
-
-        // Try multiple initialization attempts with increasing delays
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        function tryInit() {
-            attempts++;
-            console.log(`Log viewer initialization attempt ${attempts}`);
-
-            if (initLogViewer()) {
-                console.log(`Log viewer initialized successfully on attempt ${attempts}`);
-                return;
-            }
-
-            if (attempts < maxAttempts) {
-                const delay = Math.min(50 * attempts, 500); // Progressive delay up to 500ms
-                console.log(`Retrying in ${delay}ms...`);
-                setTimeout(tryInit, delay);
-            } else {
-                console.error('Failed to initialize log viewer after', maxAttempts, 'attempts');
-            }
-        }
-
-        if (shadowRoot) {
-            // In shadow DOM, start initialization attempts after a brief delay
-            setTimeout(tryInit, 10);
-        } else {
-            // In regular document, wait for DOMContentLoaded
-            document.addEventListener('DOMContentLoaded', tryInit);
-        }
-            })();
-        </script>
-    </body>
-    </html>
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Logs{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}<span class="pk-muted lv-small" id="updated"></span><pk-refresh interval="5"></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-row">
+  <select id="file" class="pk-select pk-select--sm lv-file" aria-label="Log file"></select>
+  <label class="pk-search lv-search">{{ icon('search') }}<input id="search" class="pk-input pk-input--sm" type="search" placeholder="Search" aria-label="Search"></label>
+  <select id="lines" class="pk-select pk-select--sm lv-lines" aria-label="Entries">
+    <option value="100">Last 100</option>
+    <option value="250">Last 250</option>
+    <option value="500" selected>Last 500</option>
+    <option value="1000">Last 1000</option>
+    <option value="5000">Last 5000</option>
+  </select>
+  <div class="pk-row lv-levels" role="group" aria-label="Levels">
+    <button type="button" class="pk-btn pk-btn--sm" data-level="error" aria-pressed="true" title="Error and critical">Error</button>
+    <button type="button" class="pk-btn pk-btn--sm" data-level="warning" aria-pressed="true">Warning</button>
+    <button type="button" class="pk-btn pk-btn--sm" data-level="info" aria-pressed="true">Info</button>
+    <button type="button" class="pk-btn pk-btn--sm" data-level="debug" aria-pressed="true">Debug</button>
+  </div>
+  <button type="button" id="follow" class="pk-btn pk-btn--ghost pk-btn--sm" aria-pressed="true" title="Keep the newest entry in view">{{ icon('arrow-down', size='sm') }} Follow</button>
+  <span class="pk-muted lv-small" id="shown"></span>
+</div>
+<div id="log" class="lv-log"><span class="pk-skeleton"></span></div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

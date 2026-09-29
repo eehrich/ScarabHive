@@ -1,0 +1,174 @@
+# image_compose plugin — single render tool, freeform JSON spec.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_render"
+      description: "Compose a layered image (PNG/WEBP/JPEG). Layers render bottom-up."
+      parameters:
+        type: object
+        properties:
+          spec:
+            type: object
+            description: >
+              Composition spec. Inner layer structure is freeform — see prompt for full per-layer field reference.
+
+              LAYER COMMON: type(image|text|rect|gradient|svg|vignette), opacity(0-1), rotation(deg), blend_mode(normal|multiply|screen|overlay),
+                position: [x,y] OR {anchor, offset:[dx,dy]} OR {anchor, offset_pct:[%,%]}
+                anchor ∈ top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right
+
+              image: src(path|data-URI), size:[w,h]|{width_pct,height_pct}, fit(cover|contain|stretch),
+                     cutout(true = remove the background with rembg isnet-general-use; real alpha, applied before fit.
+                            Or a model name: birefnet-general-lite keeps thin parts (whiskers, rope) but is ~5x slower, isnet-anime for anime, u2net for a second opinion),
+                     trim(true: crop to the visible bounding box before fit — a sprite fills its canvas instead of the frame around it),
+                     alpha_threshold(1-255: alpha becomes 0 or 255 after the fit — pixel art, kills the soft halo a cutout leaves. Omit to keep soft edges)
+              text:  text, font(sans|sans_bold|serif|serif_bold|mono|display|display_grotesk|script|stencil|display_block|filename), size, color("#rrggbb[aa]"),
+                     align(left|center|right), max_width(px|{width_pct}), line_height, tracking, uppercase,
+                     stroke:{width,color}, shadow:{offset:[dx,dy], blur, color}
+              rect:  rect:[x,y,w,h], fill, radius, border:{width,color}
+              gradient: rect:[x,y,w,h] OR position+size, colors:[≥2], stops:[0..1],
+                        direction = where gradient ENDS (colors[0] at opposite side, colors[-1] at direction side).
+                        Enum: right|bottom_right|bottom|bottom_left|left|top_left|top|top_right OR angle° (0=right, 90=down).
+              svg:   svg(raw SVG string), size:[w,h]
+              vignette: strength(0-1), color
+            properties:
+              size:
+                type: array
+                items: { type: integer }
+                description: "[w, h] — default [1024, 1536] (2:3 book cover)."
+              background:
+                type: string
+                description: '#rrggbb[aa] or "transparent" (default)'
+              format:
+                type: string
+                enum: [png, webp, jpeg]
+              quality:
+                type: integer
+                description: "1..100 (webp/jpeg only)."
+              layers:
+                type: array
+                description: "Layers rendered bottom-up. See per-type fields above."
+                items:
+                  type: object
+          output_path:
+            type: string
+            description: "Relative to project root or absolute. Parent dirs created."
+          include_content:
+            type: boolean
+            default: true
+            description: "Attach rendered image for visual QA."
+          layers_dir:
+            type: string
+            description: "Auto-derived from output_path (<stem>_layers/). Omit unless overriding."
+          spec_path:
+            type: string
+            description: >
+              Optional: persist the in-memory spec as JSON next to the composite (UTF-8,
+              ensure_ascii=False). Pass this instead of writing the spec yourself via
+              file_ops — avoids double-encoding mojibake on non-ASCII text (e.g. ü → Ã¼).
+        required: [spec, output_path]
+
+  - type: function
+    function:
+      name: "{{ name }}_analyze"
+      description: >
+        Measure brightness/colour/edges of an image (or region). Returns brightness(0-1), brightness_std(>0.20=busy),
+        brightness_min/max/range from a 4x4 sub-grid (range>0.30=mixed dark+light, flat colour won't work everywhere),
+        edge_density(>0.10=detail), homogeneity(0-1, 1=uniform), dominant_color, palette,
+        recommendation(light_text|dark_text|midtone_uncertain_use_backdrop|mixed_use_stroke_or_pill).
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Image file path (project-relative or absolute)."
+          region:
+            type: array
+            description: "[x, y, w, h] in pixels. Omitted = whole image."
+            items:
+              type: integer
+            minItems: 4
+            maxItems: 4
+        required: [path]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_find_region"
+      description: >
+        Sliding-window search for the calmest rectangle of region_size in an image — use BEFORE picking text positions.
+        Returns top-N candidates sorted by homogeneity; each has region:[x,y,w,h], homogeneity, brightness,
+        brightness_std, brightness_min/max/range (4x4 sub-grid — range>0.30 means mixed dark+light), edge_density,
+        recommendation(includes "mixed_use_stroke_or_pill" when sub-cells span dark and light).
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Image file path (project-relative or absolute)."
+          region_size:
+            type: array
+            description: "[w, h] of the rectangle to search for."
+            items:
+              type: integer
+            minItems: 2
+            maxItems: 2
+          prefer:
+            type: string
+            enum: ["any", "top_third", "bottom_third", "top_half", "bottom_half"]
+            default: "any"
+            description: "Restrict search to a vertical band."
+          max_candidates:
+            type: integer
+            default: 3
+            minimum: 1
+            maximum: 10
+        required: [path, region_size]
+        additionalProperties: false
+
+config:
+  type: object
+  properties:
+    fonts_dir:
+      type: string
+      default: "src/plugins/image_compose/fonts"
+      description: >
+        Directory containing TTF/OTF files. Aliases resolve here first; system
+        fonts are tried as fallback. Default points to the plugin-bundled font
+        directory so fonts ship with the plugin. Override with an absolute path
+        or a project-relative path (e.g. "data/fonts") to use external fonts.
+    font_aliases:
+      type: object
+      description: >
+        Map of alias name → font filename (relative to fonts_dir) or absolute path.
+        Example: { "serif_bold": "CrimsonPro-Bold.ttf" }
+      additionalProperties:
+        type: string
+    output_directories:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >
+        Write sandbox for the composite, its layer directory and the spec
+        file. Empty = unrestricted (the default; the writer's cover pipeline
+        relies on it). Non-empty = every written path must resolve inside one
+        of these directories; anything else is refused before it is created.
+        Give an instance that a sub-agent drives its own directory here.
+    overlap_check_enabled:
+      type: boolean
+      default: true
+      description: >
+        After rendering, check for BBox overlap between foreground text/svg
+        layers. Emits a warning per offending pair (hard overlap, vertically
+        stacked too close, or horizontally placed too close). Set to false to
+        disable the check entirely.
+    overlap_min_gap_px:
+      type: integer
+      default: 30
+      minimum: 0
+      description: >
+        Required clearance in pixels between any two text/svg layer BBoxes.
+        Pairs closer than this (in the overlapping axis) emit a warning.
+        Mirrors the cover_artist prompt's "min 30 px gap" rule — adjust if a
+        plugin user needs a stricter or looser composition policy.

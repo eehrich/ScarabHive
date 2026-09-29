@@ -1,0 +1,428 @@
+# Godot control — tools, config.
+#
+# Two channels behind one surface. The HEADLESS tools (status, setup, check,
+# run, script, export) drive the Godot binary and work with the editor closed.
+# The EDITOR tools (scene, node, play, observe, command) talk to the godot_mcp
+# addon in a running editor and need the project open there.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_status"
+      description: |
+        Is the Godot binary usable, and is an editor with the addon listening?
+        Reports the binary version, and for the editor: addon version, project
+        name and path. Call first when an editor tool fails to connect.
+      parameters:
+        type: object
+        properties: {}
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_setup"
+      description: |
+        Prepare a project for this plugin, editor CLOSED: create a minimal
+        project.godot if there is none, copy the editor addon into
+        addons/godot_mcp, enable it, and run an import so the addon registers
+        its runtime autoload. Idempotent — safe to run on an existing project.
+        Afterwards open the project in the Godot editor for the editor tools.
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory: a name below the projects root, or a path inside it."
+          name:
+            type: string
+            description: "Project name for a NEW project.godot (default: directory name)."
+          main_scene:
+            type: string
+            description: "Main scene for a NEW project, e.g. res://main.tscn."
+          force:
+            type: boolean
+            default: false
+            description: "Reinstall the addon even if the same version is present."
+        required: [project]
+
+  - type: function
+    function:
+      name: "{{ name }}_import_assets"
+      description: |
+        Import new or changed assets (a copied .glb, .png, .wav ...) so the
+        project can use them. Do it after landing a file in the project and
+        before running or referencing it. A running editor on this project
+        is refreshed afterwards so it sees the result (`editor_refreshed`);
+        that refresh never decides the import.
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory (name below the projects root, or path inside it)."
+        required: [project]
+
+  - type: function
+    function:
+      name: "{{ name }}_check"
+      description: |
+        Parse check without running anything: one script, or every .gd in the
+        project (addons excluded). Returns errors with file and line. Run it
+        after every script edit — it is seconds, and a parse error otherwise
+        shows up as a scene that silently does nothing.
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory (name below the projects root, or path inside it)."
+          script:
+            type: string
+            description: "One script (res://... or project-relative). Omit to check all."
+        required: [project]
+
+  - type: function
+    function:
+      name: "{{ name }}_run"
+      description: |
+        Play the project (or one scene) HEADLESS for a number of frames and
+        read what it printed. Returns a verdict, the parsed error blocks with
+        file:line, and stdout. Note: a runtime push_error does NOT change the
+        exit code — the errors list is the truth, not `exit`.
+        Use for "does it start, does _ready crash, what does it print".
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory (name below the projects root, or path inside it)."
+          scene:
+            type: string
+            description: "Scene to run (res://...). Default: the project's main scene."
+          frames:
+            type: integer
+            minimum: 0
+            default: 60
+            description: "Quit after this many frames. 0 = run until the game quits or the timeout hits."
+          timeout:
+            type: number
+            description: "Seconds before the process is killed (default long_timeout)."
+          windowed:
+            type: boolean
+            default: false
+            description: "Open a real window instead of headless (a window will flash on the desktop)."
+          args:
+            type: array
+            items: { type: string }
+            description: "User arguments passed after `--` (OS.get_cmdline_user_args)."
+        required: [project]
+
+  - type: function
+    function:
+      name: "{{ name }}_script"
+      description: |
+        Run GDScript against the project with the engine API but WITHOUT the
+        editor: create or rewrite scenes and resources programmatically
+        (PackedScene.pack + ResourceSaver.save), batch-rename, inspect
+        resources, generate data. The script extends SceneTree (added if
+        missing); put the work in `func _init():` and print what you want
+        back. Returns stdout, parsed errors and the exit code.
+        If the editor has that scene open, reload it there afterwards
+        ({{ name }}_scene action=reload).
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory (name below the projects root, or path inside it)."
+          code:
+            type: string
+            description: "GDScript source. `extends SceneTree` is prepended when absent."
+          frames:
+            type: integer
+            minimum: 1
+            default: 1
+            description: "Iterations before Godot quits on its own; raise it for scripts that await."
+          timeout:
+            type: number
+            description: "Seconds before the process is killed (default long_timeout)."
+        required: [project, code]
+
+  - type: function
+    function:
+      name: "{{ name }}_export"
+      description: |
+        Export the project with one of its export presets (from
+        export_presets.cfg) into the output directory. Needs export templates
+        installed for that Godot version. Returns the path and size, or the
+        errors Godot printed.
+      parameters:
+        type: object
+        properties:
+          project:
+            type: string
+            description: "Project directory (name below the projects root, or path inside it)."
+          preset:
+            type: string
+            description: "Preset name exactly as in export_presets.cfg."
+          filename:
+            type: string
+            description: "Output file name inside the output directory, with the right extension."
+          debug:
+            type: boolean
+            default: false
+            description: "Debug template instead of release."
+        required: [project, preset]
+
+  - type: function
+    function:
+      name: "{{ name }}_scene"
+      description: |
+        The scene open in the EDITOR: `tree` (node hierarchy with types),
+        `open` a scene file, `save` the current scene, `reload` it from disk.
+        Reload after any tool changed a file the editor has open (script,
+        file edits) — the editor otherwise keeps the old version in memory
+        and saves it back over yours.
+      parameters:
+        type: object
+        properties:
+          action:
+            type: string
+            enum: [tree, open, save, reload]
+            default: tree
+          scene_path:
+            type: string
+            description: "res://... for open; optional for save/reload (default: current scene)."
+          max_depth:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "tree: depth limit, 0 = unlimited."
+          max_children:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "tree: children per node, 0 = unlimited."
+        required: []
+
+  - type: function
+    function:
+      name: "{{ name }}_node"
+      description: |
+        Nodes in the editor's open scene (and, for find, the running game):
+        `get` a node's properties, `find` nodes by name pattern or type,
+        `update` properties (position, scale, text, texture, script ...),
+        `reparent` a node. Save the scene afterwards ({{ name }}_scene
+        action=save) — edits live in memory until then.
+      parameters:
+        type: object
+        properties:
+          action:
+            type: string
+            enum: [get, find, update, reparent]
+          node_path:
+            type: string
+            description: "Node path from the scene root, e.g. Player/Sprite2D or /root/Main/Player."
+          properties:
+            type: object
+            description: "update: property -> value, e.g. {\"position\": [100, 200], \"visible\": true}."
+          name_pattern:
+            type: string
+            description: "find: glob on the node name, e.g. Enemy*."
+          type:
+            type: string
+            description: "find: node class, e.g. CharacterBody2D."
+          root_path:
+            type: string
+            description: "find: subtree to search (default: scene root)."
+          new_parent_path:
+            type: string
+            description: "reparent: the new parent."
+        required: [action]
+
+  - type: function
+    function:
+      name: "{{ name }}_play"
+      description: |
+        Run the game from the editor and drive it deterministically:
+        `run` (starts FROZEN by default — nothing moves until you step),
+        `step` duration_ms or frames with optional `inputs`,
+        `step_until` a GDScript expression holds (max_ms cap),
+        `input` an input sequence, `type_text`, `exec` GDScript inside the
+        running game (test setup, teleport, read a variable), `freeze`,
+        `thaw` (real time), `status`, `stop`.
+        Typical: run → step frames=1 → observe screenshot → step with inputs →
+        observe logs. Inputs are objects like {"action_name": "jump"},
+        {"action_name": "left", "duration_ms": 800}, {"key": "ctrl+s"},
+        {"joy_button": "a"}, {"axis": "left_x", "value": -1.0, "duration_ms": 500},
+        {"look": [dx, dy]}; several on one timeline with "start_ms".
+      parameters:
+        type: object
+        properties:
+          action:
+            type: string
+            enum: [run, stop, freeze, thaw, status, step, step_until, input, type_text, exec]
+          scene_path:
+            type: string
+            description: "run: scene to play (default: main scene)."
+          frozen:
+            type: boolean
+            default: true
+            description: "run: start with the clock frozen."
+          duration_ms:
+            type: integer
+            description: "step: game time to advance (max 50000)."
+          frames:
+            type: integer
+            description: "step: frames to advance instead of a duration (max 1200)."
+          until:
+            type: string
+            description: "step_until: GDScript expression; `root`, `tree`, autoloads and singletons are in scope."
+          max_ms:
+            type: integer
+            description: "step_until: safety cap (default 20000)."
+          inputs:
+            type: array
+            items: { type: object }
+            description: "step/step_until/input: input events applied inside the stepped window."
+          report:
+            type: array
+            items: { type: string }
+            description: "step/step_until/input: GDScript expressions evaluated after the step, returned with the result."
+          screenshot_at_ms:
+            type: array
+            items: { type: integer }
+            description: "input: capture the game at these offsets inside the sequence; each lands as a PNG path in the result."
+          screenshot_max_width:
+            type: integer
+            description: "input: width cap for those captures (default 900)."
+          text:
+            type: string
+            description: "type_text: text to type into the focused control."
+          submit:
+            type: boolean
+            description: "type_text: press Enter afterwards."
+          delay_ms:
+            type: integer
+            description: "type_text: pause between keystrokes."
+          source:
+            type: string
+            description: "exec: GDScript source run inside the game; `root` and `tree` are in scope."
+        required: [action]
+
+  - type: function
+    function:
+      name: "{{ name }}_observe"
+      description: |
+        Look at the running game or the editor: `screenshot` (game window or
+        editor viewport → PNG in the output directory; load the PATH with
+        media_ops to see it), `logs` (errors/warnings/prints since a cursor —
+        pass the returned cursor as `since` next time), `state` (live node
+        values), `stack` (last error's stack trace), `editor` (selection,
+        open scene, play state).
+      parameters:
+        type: object
+        properties:
+          action:
+            type: string
+            enum: [screenshot, logs, state, stack, editor]
+          source:
+            type: string
+            enum: [game, editor]
+            default: game
+            description: "screenshot: the running game, or the editor viewport."
+          viewport:
+            type: string
+            enum: ["2d", "3d"]
+            description: |
+              screenshot source=editor: which viewport. Default is the editor's
+              active tab, and a freshly opened project sits on 3D — for a 2D
+              game pass "2d" or you get an empty grid.
+          filename:
+            type: string
+            description: "screenshot: file name inside the output directory (default <source>.png)."
+          max_width:
+            type: integer
+            minimum: 128
+            maximum: 4096
+            default: 900
+            description: "screenshot: width cap in pixels; larger costs vision tokens."
+          since:
+            type: integer
+            default: 0
+            description: "logs: cursor from the previous call."
+          limit:
+            type: integer
+            default: 50
+          severity:
+            type: string
+            enum: [all, error, warning, info]
+            default: all
+          clear:
+            type: boolean
+            default: false
+            description: "logs: drop the returned messages from the buffer."
+          paths:
+            type: array
+            items: { type: string }
+            description: "state: node paths to read, e.g. [\"/root/Main/Player\"]. Omit to select by type/group."
+          include:
+            type: array
+            items: { type: string }
+            description: "state: extra properties per node, e.g. [\"position\", \"velocity\", \"hp\"]."
+          type:
+            type: string
+            description: "state: select nodes of this class instead of paths, e.g. CharacterBody2D."
+          group:
+            type: string
+            description: "state: select nodes in this group (default mcp_watch)."
+          max_nodes:
+            type: integer
+            default: 40
+            description: "state: cap on selected nodes."
+        required: [action]
+
+  - type: function
+    function:
+      name: "{{ name }}_command"
+      description: |
+        Any of the addon's 88 commands by name with raw params — the escape
+        hatch for what has no tool: animation tracks, tilemap cells, gridmaps,
+        profiler, selection, spatial info, resource info, rescan_filesystem.
+        The reply is returned as is, except that any image inside it is
+        written to the output directory and replaced by its path.
+      parameters:
+        type: object
+        properties:
+          command:
+            type: string
+            description: "Addon command name, e.g. get_input_map, set_cell, get_spatial_info."
+          params:
+            type: object
+            description: "Parameters for that command."
+          long:
+            type: boolean
+            default: false
+            description: "Use the long timeout (commands that run inside the game)."
+        required: [command]
+
+config:
+  # The Godot console executable. On Windows the `_console.exe` variant is
+  # the one that returns stdout/stderr; the plain exe detaches and prints
+  # nothing. Not resolved from PATH on purpose: say which Godot this is.
+  godot_binary: "godot"
+
+  # Every project a headless tool touches must live below this directory.
+  projects_root: "data/workspace"
+
+  # Where the editor addon listens once the project is open in the editor.
+  host: "127.0.0.1"
+  port: 6550
+
+  # Plain editor queries.
+  timeout: 60
+  # Subprocess runs, game-time steps, scripts inside the game.
+  long_timeout: 600
+
+  # Screenshots and exports land here, and nothing may escape it.
+  output_directory: "data/workspace/godot"

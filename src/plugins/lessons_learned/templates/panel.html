@@ -1,0 +1,119 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Lessons Learned{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}
+<button type="button" id="create" class="pk-btn pk-btn--sm pk-btn--primary">{{ icon('plus', size='sm') }} New lesson</button>
+<button type="button" id="consolidate" class="pk-btn pk-btn--sm">{{ icon('layers', size='sm') }} Consolidate</button>
+<button type="button" id="cleanup" class="pk-btn pk-btn--sm">{{ icon('trash-2', size='sm') }} Clean up</button>
+<pk-refresh interval="30"></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+<div class="pk-row">
+  <select id="agentFilter" class="pk-select pk-select--sm ll-filter" aria-label="Agent"><option value="">Every agent</option></select>
+  <select id="statusFilter" class="pk-select pk-select--sm ll-filter" aria-label="Status">
+    <option value="">Every status</option>
+    <option value="active">Active</option>
+    <option value="draft">Draft</option>
+    <option value="inactive">Inactive</option>
+    <option value="archived">Archived</option>
+  </select>
+  <select id="categoryFilter" class="pk-select pk-select--sm ll-filter" aria-label="Category"><option value="">Every category</option></select>
+  <select id="sortFilter" class="pk-select pk-select--sm ll-filter" aria-label="Sort by">
+    <option value="priority">By priority</option>
+    <option value="confidence">By confidence</option>
+    <option value="evidence">By evidence</option>
+    <option value="created">Newest first</option>
+    <option value="updated">Recently updated</option>
+  </select>
+</div>
+<form id="searchForm" class="pk-row">
+  <label class="pk-search pk-grow">{{ icon('search') }}<input id="query" class="pk-input pk-input--sm" type="search" placeholder="Search lessons by meaning" aria-label="Search" required></label>
+  <button type="submit" class="pk-btn pk-btn--sm">Search</button>
+  <button type="button" id="clearSearch" class="pk-btn pk-btn--sm pk-btn--ghost" hidden>Clear</button>
+</form>
+<div id="lessons"></div>
+<div class="pk-row" id="pager" hidden>
+  <span class="pk-muted pk-grow" id="range"></span>
+  <button type="button" id="previous" class="pk-btn pk-btn--sm">{{ icon('chevron-left', size='sm') }} Previous</button>
+  <button type="button" id="next" class="pk-btn pk-btn--sm">Next {{ icon('chevron-right', size='sm') }}</button>
+</div>
+<datalist id="agents"></datalist>
+<datalist id="categories"></datalist>
+
+<dialog id="editor" class="pk-dialog pk-dialog--wide" aria-labelledby="editorTitle">
+  <form id="editorForm">
+    <div class="pk-dialog-head"><h2 id="editorTitle" class="pk-dialog-title">New lesson</h2></div>
+    <div class="pk-dialog-body ll-form">
+      <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" required></label>
+      <label class="pk-field"><span class="pk-label">Category</span><input class="pk-input" name="category" list="categories" required></label>
+      <label class="pk-field ll-wide"><span class="pk-label">Title</span><input class="pk-input" name="title" maxlength="200" required></label>
+      <label class="pk-field ll-wide"><span class="pk-label">Content</span><textarea class="pk-textarea" name="content" maxlength="2000" rows="5" required></textarea></label>
+      <label class="pk-field"><span class="pk-label">Status</span>
+        <select class="pk-select" name="status">
+          <option value="active">Active</option><option value="draft">Draft</option>
+          <option value="inactive">Inactive</option><option value="archived">Archived</option>
+        </select></label>
+      <label class="pk-field"><span class="pk-label">Source</span>
+        <select class="pk-select" name="source_type">
+          <option value="manual">Manual</option><option value="cross_agent">Cross-agent</option>
+          <option value="reflection">Reflection</option><option value="auto">Auto</option>
+        </select></label>
+      <label class="pk-field"><span class="pk-label">Priority (1–10)</span><input class="pk-input" name="priority" type="number" min="1" max="10" step="any" required></label>
+      <label class="pk-field"><span class="pk-label">Confidence (0–1)</span><input class="pk-input" name="confidence" type="number" min="0" max="1" step="any" required></label>
+      <label class="pk-field ll-wide"><span class="pk-label">Tags</span><input class="pk-input" name="tags" placeholder="Comma-separated"></label>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" data-close>Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="consolidator" class="pk-dialog pk-dialog--wide" aria-labelledby="consolidatorTitle">
+  <form id="consolidateForm">
+    <div class="pk-dialog-head"><h2 id="consolidatorTitle" class="pk-dialog-title">Consolidate lessons</h2></div>
+    <div class="pk-dialog-body ll-form">
+      <p class="ll-wide ll-intro">Similar lessons are grouped and judged by an LLM; the best version of a group is kept, the others are deleted.</p>
+      <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" placeholder="Every agent"></label>
+      <label class="pk-field"><span class="pk-label">Similarity threshold</span><input class="pk-input" name="similarity_threshold" type="number" min="0.5" max="1" step="0.01" placeholder="Plugin default"></label>
+      <label class="pk-check ll-wide"><input type="checkbox" name="dry_run" checked> Dry run: only show what would be merged</label>
+      <div class="ll-wide pk-stack" id="consolidateProgress" hidden>
+        <div class="pk-row"><span class="pk-grow" id="consolidatePhase"></span><span class="pk-muted" id="consolidatePercent"></span></div>
+        <progress class="pk-progress" id="consolidateBar" value="0" max="100"></progress>
+      </div>
+      <div class="ll-wide" id="consolidateResult"></div>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" data-close>Close</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="runConsolidate">Run</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="cleaner" class="pk-dialog pk-dialog--wide" aria-labelledby="cleanerTitle">
+  <form id="cleanupForm">
+    <div class="pk-dialog-head"><h2 id="cleanerTitle" class="pk-dialog-title">Clean up lessons</h2></div>
+    <div class="pk-dialog-body ll-form">
+      <p class="ll-wide ll-intro">Deletes the lessons matching every filter set. Preview them first.</p>
+      <label class="pk-field"><span class="pk-label">Agent</span><input class="pk-input" name="agent_name" list="agents" placeholder="Every agent"></label>
+      <label class="pk-field"><span class="pk-label">Status</span>
+        <select class="pk-select" name="status">
+          <option value="">Every status</option><option value="draft">Draft</option><option value="inactive">Inactive</option>
+          <option value="archived">Archived</option><option value="active">Active</option>
+        </select></label>
+      <label class="pk-field"><span class="pk-label">Older than (days)</span><input class="pk-input" name="older_than_days" type="number" min="1" step="1"></label>
+      <label class="pk-field"><span class="pk-label">Evidence at most</span><input class="pk-input" name="max_evidence_count" type="number" min="0" step="1"></label>
+      <label class="pk-field"><span class="pk-label">Confidence at most</span><input class="pk-input" name="max_confidence" type="number" min="0" max="1" step="0.01"></label>
+      <div class="ll-wide" id="cleanupResult"></div>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" data-close>Close</button>
+      <button type="submit" class="pk-btn" id="preview">{{ icon('eye', size='sm') }} Preview</button>
+      <button type="button" class="pk-btn pk-btn--danger" id="deleteMatched" disabled>{{ icon('trash-2', size='sm') }} Delete</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

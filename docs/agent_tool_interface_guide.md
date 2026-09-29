@@ -5,7 +5,7 @@
 ## The Problem
 
 Agent has TWO tool interfaces that serve completely different purposes but are easily confused:
-1. Tools this agent **OFFERS** (external MCPServer interface)
+1. Tools this agent **OFFERS** (external ToolServer interface)
 2. Tools this agent **CAN USE** (internal execution interface)
 
 ## Clear Interface Names
@@ -13,13 +13,13 @@ Agent has TWO tool interfaces that serve completely different purposes but are e
 ### 1. EXTERNAL: What This Agent OFFERS to Others
 
 ```python
-async def list_tools(self) -> List[MCPTool]:
-    """Return tools this agent OFFERS to other agents (MCPServer interface)."""
+async def list_tools(self) -> List[ToolDef]:
+    """Return tools this agent OFFERS to other agents (ToolServer interface)."""
 ```
 
-- **Purpose**: MCPServer standard interface
+- **Purpose**: ToolServer standard interface
 - **Used by**: ToolSchemaBuilder when other agents discover available tools
-- **Returns**: Single MCPTool representing this agent as a callable tool
+- **Returns**: Single ToolDef representing this agent as a callable tool
 - **Example**: When Agent A queries Agent B's tools, it gets B's schema (not B's internal tools)
 - **Think**: "What can others call on me?"
 
@@ -27,7 +27,7 @@ async def list_tools(self) -> List[MCPTool]:
 ```
 Other Agent → ToolSchemaBuilder.build_schemas() 
            → server.list_tools() 
-           → Returns: [MCPTool(name="my_agent", description="...", input_schema={...})]
+           → Returns: [ToolDef(name="my_agent", description="...", input_schema={...})]
 ```
 
 ### 2. INTERNAL: What This Agent CAN USE
@@ -66,7 +66,7 @@ async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> List[
 
 | Method | Purpose | Returns | Used By |
 |--------|---------|---------|---------|
-| `list_tools()` | What I OFFER | `List[MCPTool]` | MCPServer interface, ToolSchemaBuilder |
+| `list_tools()` | What I OFFER | `List[ToolDef]` | ToolServer interface, ToolSchemaBuilder |
 | `list_usable_tools()` | What I CAN USE | `List[str]` | Internal execution (_run_events) |
 | `_list_usable_tools_with_details()` | What I CAN USE (detailed) | `List[Dict]` | BasicAgent tools, API endpoints |
 
@@ -76,7 +76,7 @@ async def _list_usable_tools_with_details(self, params: Dict[str, Any]) -> List[
 ```python
 # This gets what the agent OFFERS, not what it CAN USE
 tools = await agent.list_tools()
-# tools = [MCPTool(name="my_agent", ...)]  # Just the agent itself!
+# tools = [ToolDef(name="my_agent", ...)]  # Just the agent itself!
 ```
 
 ### ✅ CORRECT: Getting tools the agent can use
@@ -88,7 +88,7 @@ tool_names = await agent.list_usable_tools()
 
 ### ❌ WRONG: Expecting list_tools() to be filtered by agent config
 ```python
-# list_tools() is MCPServer interface - NOT filtered by agent config
+# list_tools() is ToolServer interface - NOT filtered by agent config
 tools = await agent.list_tools()
 # It ALWAYS returns the agent itself, regardless of config
 ```
@@ -109,7 +109,7 @@ Think of Agent as having two "faces":
 │            AGENT (Dual Face)            │
 ├─────────────────────────────────────────┤
 │                                         │
-│  EXTERNAL FACE (MCPServer)              │
+│  EXTERNAL FACE (ToolServer)              │
 │  ├─ list_tools() ───> "I'm callable!"  │
 │  │                                      │
 │  └─ What others see when they query    │
@@ -136,8 +136,8 @@ available_tool_names = await agent_a.list_usable_tools()
 # Step 2: ToolSchemaBuilder builds schemas for each tool
 for tool_name in available_tool_names:
     server = registry.get(tool_name)
-    schema = await server.list_tools()  # Gets MCPTool schema
-    # For "agent_b": Returns [MCPTool(name="agent_b", description="...")]
+    schema = await server.list_tools()  # Gets ToolDef schema
+    # For "agent_b": Returns [ToolDef(name="agent_b", description="...")]
 
 # Step 3: Agent A calls Agent B
 result = await agent_b.call("run", {"task": "analyze data"})
@@ -145,11 +145,11 @@ result = await agent_b.call("run", {"task": "analyze data"})
 
 ## Key Takeaways
 
-1. **list_tools()** = MCPServer interface = What I OFFER to others
+1. **list_tools()** = ToolServer interface = What I OFFER to others
 2. **list_usable_tools()** = Internal interface = What I CAN USE
 3. They serve **completely different purposes** - don't confuse them!
 4. When in doubt: 
-   - External/MCPServer → `list_tools()`
+   - External/ToolServer → `list_tools()`
    - Internal/Execution → `list_usable_tools()`
 
 ## History

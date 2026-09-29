@@ -2,14 +2,68 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import secrets
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import aiofiles
 
+from . import textsearch
+
 
 logger = logging.getLogger(__name__)
+
+
+#: Bytes of the file's name a temp name keeps (".<name>.<12 hex>.tmp"): at most
+#: 218 bytes, under the 255 a file system allows for one name.
+_TEMP_NAME_KEEP = 200
+
+
+def _temp_beside(path: Path) -> Path:
+    """A name next to ``path`` that no file has yet.
+
+    The writes used ``<name>.tmp``: a file of that name the person kept beside
+    ``<name>`` was overwritten, then deleted with the temp -- and a checkpoint of
+    the write, which names only ``<name>``, could not bring it back.
+    """
+    # The name only shortened: a temp name longer than the file's own failed on
+    # names near the file system's limit (255 bytes) that the plain write took.
+    kept = os.fsencode(path.name)[:_TEMP_NAME_KEEP].decode("utf-8", "ignore")
+    return path.with_name(f".{kept}.{secrets.token_hex(6)}.tmp")
+
+
+async def _write_through_temp(path: Path, content: str, encoding: str, keep_mode: bool) -> None:
+    """Replace ``path`` whole in one rename, through a temp file of its own.
+
+    ``keep_mode``: the replacement is a new file, and without the old mode an
+    executable script comes back without its bit, a 0600 file world-readable --
+    for an edit as much as for an overwrite.
+    """
+    temp_path = _temp_beside(path)
+    # Claimed here, in this thread and with O_EXCL: a name that exists after all
+    # is an error -- never a file overwritten, and not deleted either -- and once
+    # it exists this call knows it is its own. Then opened by NAME with 'r+',
+    # which creates nothing: an open still under way in the thread pool when a
+    # cancel cleans up finds the name gone, instead of making the temp again.
+    # (Created there, a cancel during the open left the temp behind.)
+    os.close(os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+    try:
+        async with aiofiles.open(temp_path, 'r+', encoding=encoding, newline='') as f:
+            await f.write(content)
+        if keep_mode:
+            try:
+                temp_path.chmod(path.stat().st_mode)
+            except OSError as exc:
+                logger.warning(f"Could not carry the mode of {path} over: {exc}")
+        temp_path.replace(path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:  # Windows: a handle the thread pool still holds
+            logger.warning(f"Could not remove the temp file {temp_path}: {exc}")
 
 
 class FileOperations:
@@ -128,24 +182,34 @@ class FileOperations:
         encoding: str = "utf-8"
     ) -> Dict[str, Any]:
         """
-        Create a new file atomically.
+        Create a file atomically, or replace one whole with overwrite.
 
         Args:
             path: File path to create
             content: File content
-            overwrite: Allow overwriting existing file
+            overwrite: Replace the file if it exists (its mode is carried over)
             create_dirs: Auto-create parent directories
             encoding: Text encoding
 
         Returns:
-            Dict with status, file_path, bytes_written, created_dirs
+            Dict with status, file_path, bytes_written, created_dirs, replaced
+            (whether a file was there before -- the caller asked, this answers)
         """
         try:
-            # Check if file exists
-            if path.exists() and not overwrite:
+            # A directory first: overwrite is no way out of it, so advising it would mislead.
+            if path.is_dir():
                 return {
                     "status": "error",
-                    "error": f"File already exists: {path}. Use overwrite=true to replace.",
+                    "error": f"Is a directory, not a file: {path}",
+                    "error_type": "IsADirectoryError",
+                    "file_path": str(path)
+                }
+            existed = path.exists()
+            if existed and not overwrite:
+                return {
+                    "status": "error",
+                    "error": f"File already exists: {path}. Use overwrite=true to replace it, "
+                             f"or replace_string_in_file to edit part of it.",
                     "error_type": "FileExistsError",
                     "file_path": str(path)
                 }
@@ -156,29 +220,16 @@ class FileOperations:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 created_dirs.append(str(path.parent))
 
-            # Write to temporary file first
-            temp_path = path.with_suffix(path.suffix + ".tmp")
+            await _write_through_temp(path, content, encoding, keep_mode=existed)
+            bytes_written = path.stat().st_size
 
-            try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
-                    await f.write(content)
-
-                # Atomic rename
-                temp_path.replace(path)
-
-                bytes_written = path.stat().st_size
-
-                return {
-                    "status": "success",
-                    "file_path": str(path),
-                    "bytes_written": bytes_written,
-                    "created_dirs": created_dirs
-                }
-
-            finally:
-                # Cleanup temp file if still exists
-                if temp_path.exists():
-                    temp_path.unlink()
+            return {
+                "status": "success",
+                "file_path": str(path),
+                "bytes_written": bytes_written,
+                "created_dirs": created_dirs,
+                "replaced": existed
+            }
 
         except Exception as e:
             logger.error(f"Error creating file {path}: {e}", exc_info=True)
@@ -192,31 +243,27 @@ class FileOperations:
     async def edit_file_safe(
         self,
         path: Path,
-        mode: str,
-        content: Optional[str] = None,
-        old_string: Optional[str] = None,
-        new_string: Optional[str] = None,
-        line_number: Optional[int] = None,
-        start_line: Optional[int] = None,
-        end_line: Optional[int] = None,
+        old_string: str,
+        new_string: str,
         encoding: str = "utf-8"
     ) -> Dict[str, Any]:
         """
-        Edit an existing file using various modes.
+        Replace text in an existing file — the one edit primitive.
+
+        Line-number modes (insert, replace_lines) and append used to live here
+        with no tool exposing them. They were removed rather than exposed: a
+        line number goes stale after the first edit above it, insert counted
+        from 0 while read_file counts from 1, and a replace anchored on real
+        text fails loudly instead of editing the wrong line.
 
         Args:
             path: File to edit
-            mode: Edit mode (append, replace, insert, replace_lines)
-            content: Content to add (append/insert/replace_lines modes)
-            old_string: String to replace (replace mode)
-            new_string: Replacement string (replace mode)
-            line_number: Line number to insert at (insert mode, 0-indexed)
-            start_line: Start line for replace_lines mode (1-indexed, inclusive)
-            end_line: End line for replace_lines mode (1-indexed, inclusive)
+            old_string: String to replace
+            new_string: Replacement string
             encoding: Text encoding
 
         Returns:
-            Dict with status, file_path, mode, changes
+            Dict with status, file_path, changes
         """
         try:
             if not path.exists():
@@ -227,271 +274,174 @@ class FileOperations:
                     "file_path": str(path)
                 }
 
-            # Read current content
-            async with aiofiles.open(path, 'r', encoding=encoding) as f:
+            # newline='' keeps the file's own line endings. The default
+            # translation turned every CRLF file into LF on its first edit —
+            # the whole file rewritten, whatever the edit was.
+            async with aiofiles.open(path, 'r', encoding=encoding, newline='') as f:
                 current_content = await f.read()
 
-            # Apply edit based on mode
-            if mode == "append":
-                if content is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameter 'content' is required for append mode",
-                        "error_type": "ValidationError"
-                    }
-                new_content = current_content + content
-                changes = {"appended_bytes": len(content)}
-
-            elif mode == "replace":
-                if old_string is None or new_string is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameters 'old_string' and 'new_string' are required for replace mode",
-                        "error_type": "ValidationError"
-                    }
-
-                # Try exact match first
-                replacements = current_content.count(old_string)
-
-                if replacements == 0:
-                    # Flexible matching: normalize line endings (accept both CRLF and LF)
-                    normalized_content = current_content.replace('\r\n', '\n')
-                    normalized_old_string = old_string.replace('\r\n', '\n')
-                    normalized_new_string = new_string.replace('\r\n', '\n')
-
-                    # Try with normalized line endings
-                    if normalized_old_string in normalized_content:
-                        # Match found with normalized line endings - use this
-                        logger.info("Using normalized line endings for replacement (CRLF/LF flexibility)")
-                        # Detect original line ending style and apply to new_string
-                        if '\r\n' in current_content:
-                            normalized_new_string = normalized_new_string.replace('\n', '\r\n')
-
-                        new_content = normalized_content.replace(normalized_old_string, normalized_new_string)
-                        replacements = normalized_content.count(normalized_old_string)
-
-                        # Restore original line ending style in final content
-                        if '\r\n' in current_content:
-                            new_content = new_content.replace('\n', '\r\n')
-                    else:
-                        # Check if it's only whitespace difference (informative error)
-                        stripped_content = normalized_content.replace(' ', '').replace('\t', '')
-                        stripped_old_string = normalized_old_string.replace(' ', '').replace('\t', '')
-
-                        if stripped_old_string in stripped_content:
-                            # Content matches but whitespace differs - provide detailed analysis
-                            # Find the position where content matches
-                            pos = stripped_content.find(stripped_old_string)
-
-                            # Reconstruct position in original content
-                            char_count = 0
-                            for i, char in enumerate(normalized_content):
-                                if char not in (' ', '\t'):
-                                    if char_count == pos:
-                                        # Found start position - extract a few lines for comparison
-                                        lines_before = normalized_content[:i].count('\n')
-                                        start_line = max(0, lines_before)
-
-                                        # Get the relevant lines from file
-                                        file_lines = normalized_content.splitlines()
-                                        search_lines = normalized_old_string.splitlines()
-
-                                        if start_line < len(file_lines) and search_lines:
-                                            # Build corrected oldString with proper whitespace
-                                            corrected_lines = []
-                                            for j, search_line in enumerate(search_lines):
-                                                file_idx = start_line + j
-                                                if file_idx < len(file_lines):
-                                                    file_line = file_lines[file_idx]
-                                                    # Extract leading whitespace from file
-                                                    file_leading = len(file_line) - len(file_line.lstrip())
-                                                    file_ws = file_line[:file_leading]
-                                                    # Apply to search line content
-                                                    search_content = search_line.lstrip()
-                                                    corrected_lines.append(file_ws + search_content)
-                                                else:
-                                                    corrected_lines.append(search_line)
-
-                                            corrected_old_string = '\n'.join(corrected_lines)
-
-                                            # Show first mismatched line with detailed whitespace info
-                                            file_line = file_lines[start_line]
-                                            search_line = search_lines[0]
-
-                                            # Analyze whitespace
-                                            file_leading = len(file_line) - len(file_line.lstrip())
-                                            search_leading = len(search_line) - len(search_line.lstrip())
-
-                                            file_ws = file_line[:file_leading]
-                                            search_ws = search_line[:search_leading]
-
-                                            ws_details = f"Line {start_line + 1}: "
-                                            if file_leading != search_leading:
-                                                ws_details += f"Expected {file_leading} leading whitespace chars, got {search_leading}. "
-
-                                            file_tabs = file_ws.count('\t')
-                                            file_spaces = file_ws.count(' ')
-                                            search_tabs = search_ws.count('\t')
-                                            search_spaces = search_ws.count(' ')
-
-                                            if file_tabs != search_tabs or file_spaces != search_spaces:
-                                                ws_details += f"File has {file_tabs} tabs + {file_spaces} spaces, search has {search_tabs} tabs + {search_spaces} spaces."
-
-                                            logger.warning(f"String found with whitespace differences in {path}: {ws_details}")
-                                            return {
-                                                "status": "error",
-                                                "error": f"String not found with exact whitespace. {ws_details}",
-                                                "error_type": "WhitespaceMatchError",
-                                                "file_path": str(path),
-                                                "file_sample": file_line,
-                                                "search_sample": search_line,
-                                                "corrected_old_string": corrected_old_string,
-                                                "hint": "Whitespace (spaces/tabs) doesn't match exactly. Use the 'corrected_old_string' value for oldString parameter."
-                                            }
-                                        break
-                                    char_count += 1
-
-                            # Fallback if detailed analysis fails
-                            logger.warning(f"String found with whitespace differences in {path}")
-                            return {
-                                "status": "error",
-                                "error": "String not found with exact whitespace. Content matches but spaces/tabs differ.",
-                                "error_type": "WhitespaceMatchError",
-                                "file_path": str(path),
-                                "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file."
-                            }
-
-                        # True not found
-                        return {
-                            "status": "error",
-                            "error": f"String not found in file: {old_string[:50]}...",
-                            "error_type": "StringNotFoundError",
-                            "file_path": str(path),
-                            "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
-                        }
-                else:
-                    # Exact match found - use it directly
-                    new_content = current_content.replace(old_string, new_string)
-
-                # Find modified lines
-                old_lines = current_content.splitlines()
-                new_lines = new_content.splitlines()
-                modified_lines = [
-                    i for i, (old, new) in enumerate(zip(old_lines, new_lines))
-                    if old != new
-                ]
-
-                changes = {
-                    "replacements": replacements,
-                    "lines_modified": modified_lines
-                }
-
-            elif mode == "insert":
-                if content is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameter 'content' is required for insert mode",
-                        "error_type": "ValidationError"
-                    }
-                if line_number is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameter 'line_number' is required for insert mode",
-                        "error_type": "ValidationError"
-                    }
-
-                lines = current_content.splitlines(keepends=True)
-
-                # Validate line number
-                if line_number < 0 or line_number > len(lines):
-                    return {
-                        "status": "error",
-                        "error": f"Invalid line_number {line_number}. File has {len(lines)} lines.",
-                        "error_type": "ValidationError",
-                        "file_path": str(path)
-                    }
-
-                # Insert content at line
-                lines.insert(line_number, content + '\n')
-                new_content = ''.join(lines)
-                changes = {"inserted_at_line": line_number}
-
-            elif mode == "replace_lines":
-                if content is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameter 'content' is required for replace_lines mode",
-                        "error_type": "ValidationError"
-                    }
-                if start_line is None or end_line is None:
-                    return {
-                        "status": "error",
-                        "error": "Parameters 'start_line' and 'end_line' are required for replace_lines mode",
-                        "error_type": "ValidationError"
-                    }
-
-                lines = current_content.splitlines(keepends=True)
-                total_lines = len(lines)
-
-                # Validate line numbers (1-indexed, inclusive)
-                if start_line < 1 or start_line > total_lines:
-                    return {
-                        "status": "error",
-                        "error": f"Invalid start_line {start_line}. File has {total_lines} lines (1-indexed).",
-                        "error_type": "ValidationError",
-                        "file_path": str(path)
-                    }
-
-                if end_line < start_line or end_line > total_lines:
-                    return {
-                        "status": "error",
-                        "error": f"Invalid end_line {end_line}. Must be >= start_line ({start_line}) and <= {total_lines}.",
-                        "error_type": "ValidationError",
-                        "file_path": str(path)
-                    }
-
-                # Replace lines (convert to 0-indexed for slicing)
-                start_idx = start_line - 1
-                end_idx = end_line  # end_line is inclusive, so we don't subtract 1 from slice end
-
-                # Ensure content ends with newline if replacing multiple lines
-                replacement_content = content if content.endswith('\n') else content + '\n'
-
-                # Build new content: before + replacement + after
-                new_lines = lines[:start_idx] + [replacement_content] + lines[end_idx:]
-                new_content = ''.join(new_lines)
-
-                changes = {
-                    "lines_replaced": end_line - start_line + 1,
-                    "start_line": start_line,
-                    "end_line": end_line
-                }
-
-            else:
+            if old_string is None or new_string is None:
                 return {
                     "status": "error",
-                    "error": f"Invalid mode: {mode}. Must be one of: append, replace, insert, replace_lines",
+                    "error": "Parameters 'old_string' and 'new_string' are required",
                     "error_type": "ValidationError"
                 }
 
-            # Write updated content atomically
-            temp_path = path.with_suffix(path.suffix + ".tmp")
+            # Try exact match first
+            replacements = current_content.count(old_string)
+            if replacements == 1:
+                new_content = current_content.replace(old_string, new_string, 1)
 
-            try:
-                async with aiofiles.open(temp_path, 'w', encoding=encoding, newline='') as f:
-                    await f.write(new_content)
+            elif replacements == 0:
+                # Flexible matching: the model writes \n, the file may hold \r\n
+                normalized_content = current_content.replace('\r\n', '\n')
+                normalized_old_string = old_string.replace('\r\n', '\n')
+                normalized_new_string = new_string.replace('\r\n', '\n')
+                replacements = normalized_content.count(normalized_old_string)
 
-                # Atomic rename
-                temp_path.replace(path)
+                if replacements == 1:
+                    logger.info("Using normalized line endings for replacement (CRLF/LF flexibility)")
+                    new_content = normalized_content.replace(
+                        normalized_old_string, normalized_new_string, 1)
+                    # Back to the file's style, once, for the whole text —
+                    # converting new_string beforehand as well made \r\r\n.
+                    if '\r\n' in current_content:
+                        new_content = new_content.replace('\n', '\r\n')
+                elif replacements == 0:
+                    # Check if it's only whitespace difference (informative error)
+                    stripped_content = normalized_content.replace(' ', '').replace('\t', '')
+                    stripped_old_string = normalized_old_string.replace(' ', '').replace('\t', '')
 
-            finally:
-                if temp_path.exists():
-                    temp_path.unlink()
+                    if stripped_old_string in stripped_content:
+                        # Content matches but whitespace differs - provide detailed analysis
+                        # Find the position where content matches
+                        pos = stripped_content.find(stripped_old_string)
+
+                        # Reconstruct position in original content
+                        char_count = 0
+                        for i, char in enumerate(normalized_content):
+                            if char not in (' ', '\t'):
+                                if char_count == pos:
+                                    # Found start position - extract a few lines for comparison
+                                    lines_before = normalized_content[:i].count('\n')
+                                    start_line = max(0, lines_before)
+
+                                    # Get the relevant lines from file
+                                    file_lines = normalized_content.splitlines()
+                                    search_lines = normalized_old_string.splitlines()
+
+                                    if start_line < len(file_lines) and search_lines:
+                                        # Build corrected oldString with proper whitespace
+                                        corrected_lines = []
+                                        for j, search_line in enumerate(search_lines):
+                                            file_idx = start_line + j
+                                            if file_idx < len(file_lines):
+                                                file_line = file_lines[file_idx]
+                                                # Extract leading whitespace from file
+                                                file_leading = len(file_line) - len(file_line.lstrip())
+                                                file_ws = file_line[:file_leading]
+                                                # Apply to search line content
+                                                search_content = search_line.lstrip()
+                                                corrected_lines.append(file_ws + search_content)
+                                            else:
+                                                corrected_lines.append(search_line)
+
+                                        corrected_old_string = '\n'.join(corrected_lines)
+
+                                        # Show first mismatched line with detailed whitespace info
+                                        file_line = file_lines[start_line]
+                                        search_line = search_lines[0]
+
+                                        # Analyze whitespace
+                                        file_leading = len(file_line) - len(file_line.lstrip())
+                                        search_leading = len(search_line) - len(search_line.lstrip())
+
+                                        file_ws = file_line[:file_leading]
+                                        search_ws = search_line[:search_leading]
+
+                                        ws_details = f"Line {start_line + 1}: "
+                                        if file_leading != search_leading:
+                                            ws_details += f"Expected {file_leading} leading whitespace chars, got {search_leading}. "
+
+                                        file_tabs = file_ws.count('\t')
+                                        file_spaces = file_ws.count(' ')
+                                        search_tabs = search_ws.count('\t')
+                                        search_spaces = search_ws.count(' ')
+
+                                        if file_tabs != search_tabs or file_spaces != search_spaces:
+                                            ws_details += f"File has {file_tabs} tabs + {file_spaces} spaces, search has {search_tabs} tabs + {search_spaces} spaces."
+
+                                        logger.warning(f"String found with whitespace differences in {path}: {ws_details}")
+                                        return {
+                                            "status": "error",
+                                            "error": f"String not found with exact whitespace. {ws_details}",
+                                            "error_type": "WhitespaceMatchError",
+                                            "file_path": str(path),
+                                            "file_sample": file_line,
+                                            "search_sample": search_line,
+                                            "corrected_old_string": corrected_old_string,
+                                            "hint": "Whitespace (spaces/tabs) doesn't match exactly. Use the 'corrected_old_string' value for oldString parameter."
+                                        }
+                                    break
+                                char_count += 1
+
+                        # Fallback if detailed analysis fails
+                        logger.warning(f"String found with whitespace differences in {path}")
+                        return {
+                            "status": "error",
+                            "error": "String not found with exact whitespace. Content matches but spaces/tabs differ.",
+                            "error_type": "WhitespaceMatchError",
+                            "file_path": str(path),
+                            "hint": "Whitespace (spaces/tabs) doesn't match exactly. Copy the exact indentation from the file."
+                        }
+
+                    # True not found
+                    return {
+                        "status": "error",
+                        "error": f"String not found in file: {old_string[:50]}...",
+                        "error_type": "StringNotFoundError",
+                        "file_path": str(path),
+                        "hint": "String does not exist in file. Check spelling and ensure you have the correct content."
+                    }
+
+            if replacements > 1:
+                # The schema promises ONE occurrence and asks for a unique
+                # oldString. Replacing all of them edited places the model never
+                # looked at.
+                return {
+                    "status": "error",
+                    "error": (f"oldString occurs {replacements} times in the file. "
+                              "Include more surrounding lines so it matches exactly once."),
+                    "error_type": "AmbiguousMatchError",
+                    "file_path": str(path),
+                    "occurrences": replacements
+                }
+
+            # Where the new text now stands: first and last line, 1-indexed.
+            # Compared line by line instead, every line after an inserted one
+            # counted as modified -- measured up to 53k characters of line
+            # numbers in one answer, 28 of 133 answers over 2k.
+            flat = current_content.replace('\r\n', '\n')
+            added = new_string.replace('\r\n', '\n')
+            # Newlines the new text opens with end the line before it: it
+            # starts that many lines further down. A closing newline ends its
+            # last line, it does not start another.
+            lead = len(added) - len(added.lstrip('\n'))
+            first = flat.count('\n', 0, max(flat.find(old_string.replace('\r\n', '\n')), 0)) + 1 + lead
+            added = added[lead:]
+            added = added[:-1] if added.endswith('\n') else added
+            changes = {
+                "replacements": replacements,
+                "lines": [first, first + added.count('\n')]
+            }
+
+
+            await _write_through_temp(path, new_content, encoding, keep_mode=True)
 
             return {
                 "status": "success",
                 "file_path": str(path),
-                "mode": mode,
+                "mode": "replace",
                 "changes": changes
             }
 
@@ -742,19 +692,28 @@ class FileOperations:
         dir_path: Path,
         recursive: bool = False,
         pattern: Optional[str] = None,
-        include_hidden: bool = False
+        include_hidden: bool = False,
+        max_results: int = 200,
+        include_ignored: bool = False,
+        excludes: Sequence[str] = textsearch.DEFAULT_EXCLUDES,
     ) -> Dict[str, Any]:
         """
-        List directory contents with filtering.
+        List directory contents with filtering, capped at max_results entries.
+
+        The listing itself lives in ``textsearch.list_directory`` and runs in
+        a worker thread: a recursive walk is blocking disk I/O.
 
         Args:
             dir_path: Directory to list
             recursive: Recursively list subdirectories
-            pattern: Glob pattern to filter files
+            pattern: Glob pattern to filter entries
             include_hidden: Include hidden files
+            max_results: Maximum number of entries (files + directories)
+            include_ignored: Also list .gitignored, excluded and hidden entries
+            excludes: Exclude globs pruned by a recursive listing
 
         Returns:
-            Dict with status, dir_path, files, directories
+            Dict with status, dir_path, files, directories, truncated, skipped
         """
         try:
             if not dir_path.exists():
@@ -773,33 +732,16 @@ class FileOperations:
                     "dir_path": str(dir_path)
                 }
 
-            files = []
-            directories = []
-
-            # Choose glob method
-            if recursive:
-                items = dir_path.rglob(pattern or "*")
-            else:
-                items = dir_path.glob(pattern or "*")
-
-            for item in items:
-                # Skip hidden files unless requested
-                if not include_hidden and item.name.startswith('.'):
-                    continue
-
-                if item.is_file():
-                    files.append(str(item))
-                elif item.is_dir():
-                    directories.append(str(item))
-
-            return {
-                "status": "success",
-                "dir_path": str(dir_path),
-                "files": sorted(files),
-                "directories": sorted(directories),
-                "total_files": len(files),
-                "total_directories": len(directories)
-            }
+            return await asyncio.to_thread(
+                textsearch.list_directory,
+                dir_path,
+                recursive=recursive,
+                pattern=pattern,
+                max_results=max_results,
+                excludes=excludes,
+                include_hidden=include_hidden,
+                include_ignored=include_ignored,
+            )
 
         except Exception as e:
             logger.error(f"Error listing directory {dir_path}: {e}", exc_info=True)

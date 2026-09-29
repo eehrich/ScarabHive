@@ -9,6 +9,22 @@ import builtins
 import math
 from .errors import UnsupportedFeatureError
 
+#: Seeded into every sandbox's variable table so ``isinstance(x, int)`` works.
+#: They are NOT user variables: anything that counts or lists variables has to
+#: subtract them, or a script that assigned one name reports nine -- which is
+#: what the status line and the "Variables:" output block both did.
+_SEEDED_TYPES = {
+    'int': int,
+    'str': str,
+    'float': float,
+    'bool': bool,
+    'list': list,
+    'dict': dict,
+    'tuple': tuple,
+    'set': set,
+}
+SEEDED_TYPE_NAMES = frozenset(_SEEDED_TYPES)
+
 
 class FunctionReturn(Exception):
     """Exception used to handle function returns in SafeExecutor."""
@@ -22,22 +38,53 @@ class SafeExecutor:
     def __init__(self, config):
         self.config = config
         self.allowed_functions = set(config.allowed_functions)
-        # Initialize variables with built-in types for isinstance() usage
-        self.variables = {
-            'int': int,
-            'str': str,
-            'float': float,
-            'bool': bool,
-            'list': list,
-            'dict': dict,
-            'tuple': tuple,
-            'set': set,
-        }
+        # Seeded so isinstance() works; SEEDED_TYPE_NAMES is the same set,
+        # for anyone who REPORTS variables.
+        self.variables = dict(_SEEDED_TYPES)
         self.user_functions = {}  # Store user-defined functions
         self.output_buffer = []
         self.start_time = None
         self.loop_count = 0
-        
+
+        # DoS guards for single uninterruptible C-level operations. A `**` or a
+        # sequence `*` int runs as ONE C call, so check_timeout() (only evaluated
+        # at AST-node boundaries) cannot interrupt it and it can block the
+        # interpreter / exhaust memory. We bound the RESULT size before computing
+        # it. (resource.setrlimit would be the OS-level alternative but is
+        # Unix-only.) Pow is bounded by compute time (~1 MB result is sub-100ms);
+        # sequence-multiply by the configured memory budget (worst-case 8 B/elem).
+        self._max_pow_result_bits = 8 * 1024 * 1024
+        self._max_seq_len = max(1, int(getattr(self.config, "max_memory_mb", 50)) * 1024 * 1024 // 8)
+
+    def _guard_binop_size(self, op, left, right):
+        """Reject `**` / sequence-`*` whose result would be huge, before it runs.
+
+        Raises ValueError (formatted into a clean error result by execute()).
+        No-op for every other operator and for value combinations that cannot
+        blow up (e.g. int*int, negative/zero exponents, base in {-1,0,1}).
+        """
+        if isinstance(op, ast.Pow):
+            if (isinstance(left, int) and isinstance(right, int)
+                    and right > 0 and left not in (-1, 0, 1)):
+                est_bits = right * left.bit_length()
+                if est_bits > self._max_pow_result_bits:
+                    raise ValueError(
+                        f"'**' result too large (~{est_bits} bits exceeds the "
+                        f"{self._max_pow_result_bits}-bit limit); rejected to "
+                        f"avoid blocking the interpreter"
+                    )
+        elif isinstance(op, ast.Mult):
+            seq, n = None, None
+            if isinstance(left, (str, bytes, bytearray, list, tuple)) and isinstance(right, int):
+                seq, n = left, right
+            elif isinstance(right, (str, bytes, bytearray, list, tuple)) and isinstance(left, int):
+                seq, n = right, left
+            if seq is not None and n > 0 and len(seq) * n > self._max_seq_len:
+                raise ValueError(
+                    f"'*' result too large ({len(seq) * n} elements exceeds the "
+                    f"{self._max_seq_len}-element limit); rejected"
+                )
+
     def safe_print(self, *args):
         """Safe print function that captures output."""
         if not args:
@@ -483,6 +530,7 @@ class SafeExecutor:
             rhs_value = self.eval_expression(node.value)
             
             # Perform the operation
+            self._guard_binop_size(node.op, current_value, rhs_value)
             if isinstance(node.op, ast.Add):
                 new_value = current_value + rhs_value
             elif isinstance(node.op, ast.Sub):
@@ -761,7 +809,8 @@ class SafeExecutor:
         elif isinstance(node, ast.BinOp):
             left = self.eval_expression(node.left)
             right = self.eval_expression(node.right)
-            
+            self._guard_binop_size(node.op, left, right)
+
             if isinstance(node.op, ast.Add):
                 return left + right
             elif isinstance(node.op, ast.Sub):
@@ -807,6 +856,24 @@ class SafeExecutor:
                 return not operand
             else:
                 raise RuntimeError(f"Unsupported unary operator: {type(node.op).__name__}")
+
+        elif isinstance(node, ast.BoolOp):
+            # and/or with Python short-circuit semantics: return the deciding
+            # operand's VALUE (not a bool), later operands stay unevaluated.
+            if isinstance(node.op, ast.And):
+                value = True
+                for operand in node.values:
+                    value = self.eval_expression(operand)
+                    if not value:
+                        return value
+                return value
+            else:  # ast.Or
+                value = False
+                for operand in node.values:
+                    value = self.eval_expression(operand)
+                    if value:
+                        return value
+                return value
                 
         elif isinstance(node, ast.Compare):
             left = self.eval_expression(node.left)
@@ -915,8 +982,15 @@ class SafeExecutor:
                 return self.eval_expression(node.orelse)
                 
         elif isinstance(node, ast.Subscript):
-            # Array/list subscript: arr[index]
+            # Array/list subscript: arr[index] — including slices arr[1:3],
+            # s[:100], x[::-1]. Slices only read (bounded by the value's own
+            # size), so no extra guards are needed beyond normal type errors.
             value = self.eval_expression(node.value)
+            if isinstance(node.slice, ast.Slice):
+                lower = self.eval_expression(node.slice.lower) if node.slice.lower else None
+                upper = self.eval_expression(node.slice.upper) if node.slice.upper else None
+                step = self.eval_expression(node.slice.step) if node.slice.step else None
+                return value[slice(lower, upper, step)]
             slice_value = self.eval_expression(node.slice)
             return value[slice_value]
             

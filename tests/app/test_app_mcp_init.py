@@ -2,7 +2,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from agent_system.app import build_app
-from agent_system.mcp.integration import get_mcp_integration
+from agent_system.tools.integration import get_tool_integration
 
 
 def test_api_initializes_mcp(tmp_path, monkeypatch):
@@ -68,12 +68,12 @@ def test_api_initializes_mcp(tmp_path, monkeypatch):
     # Use TestClient to trigger startup events
     with TestClient(app):
         # Startup should have run; retrieve global integration
-        integration = get_mcp_integration()
+        integration = get_tool_integration()
         # Integration should be initialized (we don't require a specific external
         # server to be connected here; presence of the integration is the core contract)
         assert integration is not None
         assert getattr(integration, 'initialized', True) is True
 
     # After TestClient context exits, shutdown should have run and integration cleaned up
-    # Note: We don't check get_mcp_integration() after shutdown because it requires
+    # Note: We don't check get_tool_integration() after shutdown because it requires
     # a config to create a new instance, and shutdown sets the global to None.

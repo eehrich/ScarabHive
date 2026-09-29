@@ -1,16 +1,19 @@
-"""Audio Operations MCP Server implementation."""
+"""Audio Operations Tool Server implementation."""
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.paths import data_path
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    import numpy as np
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +30,24 @@ class AudioOpsError(Exception):
         self.details = details or {}
 
 
-class AudioOpsServer(SchemaBasedMCPServer):
-    """MCP server for audio file manipulation.
+def _int32_to_int24_bytes(samples: "np.ndarray") -> bytes:
+    """Pack an int32 sample array into 3-byte little-endian PCM.
+
+    pydub supports sample_width=3 (24-bit PCM), but numpy has no native
+    int24 dtype. We drop the high byte of each little-endian int32 sample
+    to produce the packed 24-bit representation pydub round-trips.
+    """
+    import numpy as np
+    if samples.dtype != np.int32:
+        samples = samples.astype(np.int32)
+    raw = samples.tobytes()
+    # Build a uint8 view and strip every 4th byte (the high byte).
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 4)
+    return arr[:, :3].tobytes()
+
+
+class AudioOpsServer(SchemaBasedToolServer):
+    """tool server for audio file manipulation.
     
     Provides tools for:
     - Cutting audio segments
@@ -40,19 +59,19 @@ class AudioOpsServer(SchemaBasedMCPServer):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ) -> None:
         """Initialize audio operations server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Storage path configuration - supports {session_id} template for session isolation
-        self._storage_path_template = getattr(mcp_config, 'storage_path', "data/audio_ops")
+        self._storage_path_template = str(getattr(server_config, 'storage_path', None) or data_path("audio_ops"))
         # Base storage path (without session_id substitution) for cleanup and fallback
         self._storage_path_base = Path(self._storage_path_template.replace("{session_id}", "").rstrip("/\\"))
         # Don't create directory on init - only when needed for write operations
@@ -211,15 +230,19 @@ class AudioOpsServer(SchemaBasedMCPServer):
             )
         return ext[1:]  # Remove leading dot
     
-    def _load_audio(self, filepath: Path):
+    async def _load_audio(self, filepath: Path):
         """Load audio file using pydub.
-        
+
+        Async: the whole-file decode (AudioSegment.from_file) is offloaded to a
+        worker thread so it never blocks the shared event loop. Callers must
+        ``await`` this.
+
         Args:
             filepath: Path to audio file
-            
+
         Returns:
             AudioSegment object
-            
+
         Raises:
             AudioOpsError: If file cannot be loaded
         """
@@ -231,11 +254,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 error_type="DependencyError",
                 details={"missing": "pydub"}
             )
-        
+
         fmt = self._validate_format(filepath)
-        
+
         try:
-            return AudioSegment.from_file(str(filepath), format=fmt)
+            return await asyncio.to_thread(AudioSegment.from_file, str(filepath), format=fmt)
         except FileNotFoundError:
             raise AudioOpsError(
                 f"Audio file not found: {filepath.name}",
@@ -327,7 +350,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading: {source_file}")
             
             # Load audio
-            audio = self._load_audio(source_path)
+            audio = await self._load_audio(source_path)
             duration_sec = len(audio) / 1000.0
             
             # Validate time range against duration
@@ -365,7 +388,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 operation_desc = f"Removed {start_time}s-{end_time}s"
             
             # Export
-            result_audio.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result_audio.export, str(dest_path), format=dest_format)
             
             result_duration = len(result_audio) / 1000.0
             
@@ -469,7 +492,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         error_type="FileNotFoundError",
                         details={"file": filename, "index": i}
                     )
-                audio = self._load_audio(source_path)
+                audio = await self._load_audio(source_path)
                 segments.append(audio)
                 total_source_duration += len(audio) / 1000.0
                 
@@ -497,7 +520,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     result += segment
             
             # Export
-            result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -572,7 +595,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if status:
                 await status.progress(f"Reading: {filename}")
             
-            audio = self._load_audio(filepath)
+            audio = await self._load_audio(filepath)
             
             result = {
                 "status": "success",
@@ -710,7 +733,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 silent_audio = silent_audio.set_channels(2)
             
             # Export
-            silent_audio.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(silent_audio.export, str(dest_path), format=dest_format)
             
             duration_sec = duration_ms / 1000.0
             
@@ -779,6 +802,14 @@ class AudioOpsServer(SchemaBasedMCPServer):
             files = []
             
             if pattern:
+                # Reject path-traversal in the user-supplied glob (Path.glob
+                # honours '..' segments and can escape the storage root).
+                if ".." in pattern:
+                    raise AudioOpsError(
+                        f"Invalid pattern: {pattern}. Path traversal not allowed.",
+                        error_type="SecurityError",
+                        details={"pattern": pattern, "reason": "path_traversal_attempt"}
+                    )
                 # Use glob pattern
                 matching_files = list(effective_storage.glob(pattern))
             else:
@@ -790,7 +821,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             for filepath in sorted(matching_files):
                 if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_FORMATS:
                     try:
-                        audio = self._load_audio(filepath)
+                        audio = await self._load_audio(filepath)
                         files.append({
                             "name": filepath.name,
                             "size_bytes": filepath.stat().st_size,
@@ -806,7 +837,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         })
             
             if status:
-                await status.end(f"Found {len(files)} audio files")
+                unreadable = sum(1 for f in files if "error" in f)
+                await status.end(
+                    f"{len(files)} audio file(s)"
+                    + (f", {unreadable} unreadable" if unreadable else "")
+                    + f" -- {Path(effective_storage).name}")
             
             return {
                 "status": "success",
@@ -815,6 +850,15 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "total_count": len(files)
             }
             
+        except AudioOpsError as e:
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": e.error_type,
+                "details": e.details,
+            }
         except Exception as e:
             logger.error(f"Unexpected error in list: {e}", exc_info=True)
             if status:
@@ -863,7 +907,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             if status:
                 await status.progress(f"Loading: {filename}")
             
-            audio = self._load_audio(filepath)
+            audio = await self._load_audio(filepath)
             duration_sec = len(audio) / 1000.0
             
             # Handle segment extraction if start/end provided
@@ -906,11 +950,25 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 segment = audio[start_ms:end_ms]
                 segment_duration = len(segment) / 1000.0
                 
-                # Save segment to temp file for multimodal content (in session-isolated dir)
+                # Save segment to temp file for multimodal content (in session-isolated dir).
+                # Use NamedTemporaryFile(delete=False) so concurrent load() calls
+                # for the same (file, start, end) tuple don't race on the same path
+                # (one could be unlinked downstream while another is mid-use).
+                # The file must outlive this call - the caller consumes
+                # _multimodal_content asynchronously - so we keep delete=False
+                # and do not unlink here.
+                import tempfile
                 effective_storage = self._resolve_storage_path(session_id)
-                segment_filename = f"_temp_segment_{filepath.stem}.wav"
-                segment_path = effective_storage / segment_filename
-                segment.export(str(segment_path), format="wav")
+                effective_storage.mkdir(parents=True, exist_ok=True)
+                tmp = tempfile.NamedTemporaryFile(
+                    prefix=f"_temp_segment_{filepath.stem}_{start_ms}_{end_ms}_",
+                    suffix=".wav",
+                    dir=str(effective_storage),
+                    delete=False,
+                )
+                tmp.close()
+                segment_path = Path(tmp.name)
+                await asyncio.to_thread(segment.export, str(segment_path), format="wav")
                 output_path = segment_path
                 
                 segment_info = {
@@ -933,7 +991,11 @@ class AudioOpsServer(SchemaBasedMCPServer):
             }]
             
             if status:
-                await status.end(f"Loaded {filename} for analysis")
+                detail = (
+                    f"{segment_info['segment_duration_seconds']}s segment "
+                    f"{segment_info['start_time']}s-{segment_info['end_time']}s "
+                    f"of {duration_sec:.1f}s" if segment_info else f"{duration_sec:.1f}s")
+                await status.end(f"Loaded {detail}, {mime_type} -- {str(filename)[:60]}")
             
             result: dict[str, Any] = {
                 "status": "success",
@@ -1089,8 +1151,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading audio files: {file1}, {file2}")
             
             # Load both audio files
-            audio1 = self._load_audio(file1_path)
-            audio2 = self._load_audio(file2_path)
+            audio1 = await self._load_audio(file1_path)
+            audio2 = await self._load_audio(file2_path)
             
             duration1_sec = len(audio1) / 1000.0
             duration2_sec = len(audio2) / 1000.0
@@ -1122,7 +1184,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 mixed_result = self._mix_with_factor(audio1, audio2, validated_factor)
             
             # Export
-            mixed_result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(mixed_result.export, str(dest_path), format=dest_format)
             
             result_duration = len(mixed_result) / 1000.0
             
@@ -1326,58 +1388,84 @@ class AudioOpsServer(SchemaBasedMCPServer):
     
     def _mix_with_envelope(self, audio1, audio2, envelope: builtins.list[dict[str, float]], total_ms: int):
         """Mix two audio segments with a dynamic envelope.
-        
-        Processes audio in small chunks, applying interpolated mix factor.
-        
+
+        Vectorised via numpy: builds a per-sample factor envelope and applies
+        `out = a1 * (1-f) + a2 * f` over the whole buffer at once. Avoids the
+        O(N) Python loop over 10ms chunks (millions of iterations for
+        book-length audio).
+
         Args:
             audio1: First AudioSegment
-            audio2: Second AudioSegment  
+            audio2: Second AudioSegment
             envelope: List of {time, factor} points
             total_ms: Total duration in milliseconds
-            
+
         Returns:
             Mixed AudioSegment
         """
-        from pydub import AudioSegment
-        import math
-        
-        # Process in 10ms chunks for smooth transitions
-        chunk_ms = 10
-        result = AudioSegment.empty()
-        
-        for pos_ms in range(0, total_ms, chunk_ms):
-            # Get chunk end (don't exceed total)
-            end_ms = min(pos_ms + chunk_ms, total_ms)
-            
-            # Get factor at midpoint of chunk
-            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
-            factor = self._interpolate_factor(envelope, mid_sec)
-            
-            # Extract chunks
-            chunk1 = audio1[pos_ms:end_ms]
-            chunk2 = audio2[pos_ms:end_ms]
-            
-            # Apply volume based on factor
-            vol1 = 1.0 - factor
-            vol2 = factor
-            
-            if vol1 > 0:
-                db1 = 20 * math.log10(vol1)
-                chunk1 = chunk1 + db1
-            else:
-                chunk1 = chunk1 - 120
-            
-            if vol2 > 0:
-                db2 = 20 * math.log10(vol2)
-                chunk2 = chunk2 + db2
-            else:
-                chunk2 = chunk2 - 120
-            
-            # Mix chunks and append
-            mixed_chunk = chunk1.overlay(chunk2)
-            result += mixed_chunk
-        
-        return result
+        import numpy as np
+
+        # Both segments are pre-padded to the same length by the caller.
+        # Take format metadata from audio1 (audio2 is overlaid onto it).
+        sample_rate = audio1.frame_rate
+        channels = audio1.channels
+        sample_width = audio1.sample_width
+
+        # Pull interleaved PCM into numpy arrays. AudioSegment.get_array_of_samples()
+        # already matches sample_width (int8/int16/int32).
+        a1 = np.array(audio1.get_array_of_samples(), dtype=np.int32)
+        a2 = np.array(audio2.get_array_of_samples(), dtype=np.int32)
+
+        # Defensive length align (overlay tolerates mismatch; we just truncate).
+        n = min(a1.shape[0], a2.shape[0])
+        a1 = a1[:n]
+        a2 = a2[:n]
+
+        # Number of frames (samples per channel).
+        frame_count = n // channels
+
+        # Build per-frame factor envelope via vectorised linear interpolation
+        # over the envelope control points.
+        frame_times = np.arange(frame_count, dtype=np.float64) / float(sample_rate)
+        env_times = np.array([p["time"] for p in envelope], dtype=np.float64)
+        env_factors = np.array([p["factor"] for p in envelope], dtype=np.float64)
+        # np.interp clamps to first/last value outside the range - matches
+        # _interpolate_factor semantics.
+        factors = np.interp(frame_times, env_times, env_factors)
+
+        # Expand to per-sample (repeat each frame factor across channels).
+        if channels > 1:
+            factors = np.repeat(factors, channels)
+
+        vol1 = (1.0 - factors).astype(np.float32)
+        vol2 = factors.astype(np.float32)
+
+        # Mix and clip to the sample range for the given width.
+        max_val = (1 << (8 * sample_width - 1)) - 1
+        min_val = -(1 << (8 * sample_width - 1))
+
+        mixed = a1.astype(np.float32) * vol1 + a2.astype(np.float32) * vol2
+        np.clip(mixed, min_val, max_val, out=mixed)
+
+        # Cast back to the segment's PCM byte format. pydub supports 1/2/4
+        # natively (np.int8/int16/int32). 24-bit (sample_width=3) has no
+        # numpy dtype — we pack int32 samples into 3 bytes manually so
+        # 24-bit masters survive the round-trip instead of silently being
+        # written as int16-mangled bytes.
+        if sample_width == 1:
+            out_bytes = mixed.astype(np.int8).tobytes()
+        elif sample_width == 2:
+            out_bytes = mixed.astype(np.int16).tobytes()
+        elif sample_width == 3:
+            out_bytes = _int32_to_int24_bytes(mixed.astype(np.int32))
+        elif sample_width == 4:
+            out_bytes = mixed.astype(np.int32).tobytes()
+        else:
+            # Unknown width — keep prior behaviour but log so we hear about it.
+            logger.warning("Unexpected sample_width=%s in _mix_with_envelope", sample_width)
+            out_bytes = mixed.astype(np.int16).tobytes()
+
+        return audio1._spawn(out_bytes)
 
     async def volume(self, params: dict[str, Any]) -> dict[str, Any]:
         """Adjust volume of an audio file with static gain or dynamic envelope.
@@ -1481,7 +1569,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 await status.progress(f"Loading: {source_file}")
             
             # Load audio
-            audio = self._load_audio(source_path)
+            audio = await self._load_audio(source_path)
             
             if use_envelope and validated_envelope is not None:
                 if status:
@@ -1507,7 +1595,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     result = result - peak_amplitude  # Boost to 0 dB peak
             
             # Export
-            result.export(str(dest_path), format=dest_format)
+            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -1682,37 +1770,62 @@ class AudioOpsServer(SchemaBasedMCPServer):
     
     def _apply_volume_envelope(self, audio, envelope: builtins.list[dict[str, float]]):
         """Apply dynamic volume envelope to audio.
-        
-        Processes audio in small chunks, applying interpolated gain.
-        
+
+        Vectorised via numpy: builds a per-sample gain envelope (converted from
+        dB to linear factor) and applies it in one multiplication. Avoids the
+        O(N) Python loop over 10ms chunks (millions of iterations for
+        book-length audio).
+
         Args:
             audio: AudioSegment
             envelope: List of {time, gain_db} points
-            
+
         Returns:
             Processed AudioSegment
         """
-        from pydub import AudioSegment
-        
-        total_ms = len(audio)
-        # Process in 10ms chunks for smooth transitions
-        chunk_ms = 10
-        result = AudioSegment.empty()
-        
-        for pos_ms in range(0, total_ms, chunk_ms):
-            end_ms = min(pos_ms + chunk_ms, total_ms)
-            
-            # Get gain at midpoint of chunk
-            mid_sec = (pos_ms + end_ms) / 2 / 1000.0
-            gain = self._interpolate_gain(envelope, mid_sec)
-            
-            # Extract chunk and apply gain
-            chunk = audio[pos_ms:end_ms]
-            chunk = chunk + gain
-            
-            result += chunk
-        
-        return result
+        import numpy as np
+
+        sample_rate = audio.frame_rate
+        channels = audio.channels
+        sample_width = audio.sample_width
+
+        samples = np.array(audio.get_array_of_samples(), dtype=np.int32)
+        n = samples.shape[0]
+        frame_count = n // channels
+
+        # Build per-frame gain (dB) via vectorised interpolation, then convert
+        # to linear amplitude factor. np.interp clamps outside the range - same
+        # behaviour as _interpolate_gain.
+        frame_times = np.arange(frame_count, dtype=np.float64) / float(sample_rate)
+        env_times = np.array([p["time"] for p in envelope], dtype=np.float64)
+        env_gains_db = np.array([p["gain_db"] for p in envelope], dtype=np.float64)
+        gains_db = np.interp(frame_times, env_times, env_gains_db)
+        gains = np.power(10.0, gains_db / 20.0).astype(np.float32)
+
+        if channels > 1:
+            gains = np.repeat(gains, channels)
+
+        max_val = (1 << (8 * sample_width - 1)) - 1
+        min_val = -(1 << (8 * sample_width - 1))
+
+        processed = samples.astype(np.float32) * gains
+        np.clip(processed, min_val, max_val, out=processed)
+
+        # Cast back to the segment's PCM byte format — see _mix_with_envelope
+        # for the same 24-bit handling.
+        if sample_width == 1:
+            out_bytes = processed.astype(np.int8).tobytes()
+        elif sample_width == 2:
+            out_bytes = processed.astype(np.int16).tobytes()
+        elif sample_width == 3:
+            out_bytes = _int32_to_int24_bytes(processed.astype(np.int32))
+        elif sample_width == 4:
+            out_bytes = processed.astype(np.int32).tobytes()
+        else:
+            logger.warning("Unexpected sample_width=%s in _apply_volume_envelope", sample_width)
+            out_bytes = processed.astype(np.int16).tobytes()
+
+        return audio._spawn(out_bytes)
 
     async def detect_silence(self, params: dict[str, Any]) -> dict[str, Any]:
         """Detect silent segments in audio file.
@@ -1731,24 +1844,39 @@ class AudioOpsServer(SchemaBasedMCPServer):
         
         status = params.get("_status")
         source_file = params.get("source_file")
-        threshold_db = params.get("threshold_db", -40)
-        min_duration = params.get("min_duration", 0.3)
-        
+
         # Session ID for path resolution
         session_id = params.get("_session_id")
-        
+
         try:
-            await status.progress("Detecting silence...")
-            
+            # SECURITY: these values are interpolated into the ffmpeg '-af'
+            # filter string. ffmpeg filtergraph syntax uses commas/semicolons
+            # to chain filters (e.g. amovie=/etc/passwd reads arbitrary files),
+            # so a non-numeric value would inject filters. Coerce to numbers -
+            # the MCP arg schema is not enforced at this boundary. Raised inside
+            # the try so the handler's except AudioOpsError returns a clean
+            # error response.
+            try:
+                threshold_db = float(params.get("threshold_db", -40))
+                min_duration = float(params.get("min_duration", 0.3))
+            except (TypeError, ValueError):
+                raise AudioOpsError(
+                    "threshold_db and min_duration must be numeric",
+                    error_type="ValueError"
+                )
+
+            if status:
+                await status.progress("Detecting silence...")
+
             # Validate and resolve path
             source_path = self._validate_path(source_file, session_id)
-            
+
             if not source_path.exists():
                 raise AudioOpsError(
                     f"Source file not found: {source_file}",
                     error_type="FileNotFoundError"
                 )
-            
+
             # Run ffmpeg silencedetect
             detect_cmd = [
                 "ffmpeg", "-i", str(source_path),
@@ -1756,8 +1884,17 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "-f", "null", "-"
             ]
             
-            result = subprocess.run(detect_cmd, capture_output=True, text=True)
-            
+            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
+
+            # Check ffmpeg succeeded - otherwise an empty match list would
+            # incorrectly report "no silences" for a broken/unreadable file.
+            if result.returncode != 0:
+                raise AudioOpsError(
+                    f"ffmpeg silencedetect failed: {result.stderr[:500]}",
+                    error_type="ProcessingError",
+                    details={"returncode": result.returncode, "source_file": source_file}
+                )
+
             # Parse silence_start and silence_end from stderr
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
             silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
@@ -1776,7 +1913,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -1790,8 +1927,10 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     "duration": duration
                 })
             
-            await status.end(f"Found {len(silences)} silence segments")
-            
+            if status:
+                await status.end(
+                    f"{len(silences)} silence segment(s) -- {Path(source_file).name}")
+
             return {
                 "status": "success",
                 "silence_count": len(silences),
@@ -1800,17 +1939,20 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "min_duration": min_duration,
                 "source_file": source_file
             }
-            
+
         except AudioOpsError as e:
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
             return {
                 "status": "error",
                 "error": str(e),
-                "error_type": e.error_type
+                "error_type": e.error_type,
+                "details": e.details
             }
         except Exception as e:
             logger.exception(f"Unexpected error detecting silence in {source_file}")
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": "UnexpectedError"})
             return {
                 "status": "error",
                 "error": str(e),
@@ -1836,16 +1978,36 @@ class AudioOpsServer(SchemaBasedMCPServer):
         status = params.get("_status")
         source_file = params.get("source_file")
         dest_file = params.get("dest_file")
-        max_silence = params.get("max_silence", 1.0)
-        threshold_db = params.get("threshold_db", -40)
-        mp3_bitrate = params.get("mp3_bitrate", 192)
-        
+
         # Session ID for path resolution
         session_id = params.get("_session_id")
-        
+
         try:
-            await status.progress("Analyzing silence...")
-            
+            # SECURITY: threshold_db and mp3_bitrate are interpolated into
+            # ffmpeg filter/codec arguments; coerce to numbers to prevent
+            # filtergraph injection (see detect_silence). max_silence is only
+            # used in numeric comparisons but coerce it too. Raised inside the
+            # try so the handler's except AudioOpsError returns a clean error.
+            try:
+                max_silence = float(params.get("max_silence", 1.0))
+                threshold_db = float(params.get("threshold_db", -40))
+                mp3_bitrate = int(params.get("mp3_bitrate", 192))
+            except (TypeError, ValueError):
+                raise AudioOpsError(
+                    "max_silence, threshold_db and mp3_bitrate must be numeric",
+                    error_type="ValueError"
+                )
+
+            if max_silence <= 0:
+                raise AudioOpsError(
+                    f"max_silence must be positive, got: {max_silence}",
+                    error_type="ValidationError",
+                    details={"max_silence": max_silence}
+                )
+
+            if status:
+                await status.progress("Analyzing silence...")
+
             # Validate and resolve paths
             source_path = self._validate_path(source_file, session_id)
             dest_path = self._validate_path(dest_file, session_id, ensure_parent=True)
@@ -1864,21 +2026,34 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "-f", "null", "-"
             ]
             
-            result = subprocess.run(detect_cmd, capture_output=True, text=True)
-            
+            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
+
+            # Check ffmpeg succeeded - otherwise an empty match list would
+            # incorrectly report "no silences" for a broken/unreadable file.
+            if result.returncode != 0:
+                raise AudioOpsError(
+                    f"ffmpeg silencedetect failed: {result.stderr[:500]}",
+                    error_type="ProcessingError",
+                    details={"returncode": result.returncode, "source_file": source_file}
+                )
+
             # Parse silence segments
             silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
             silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
             
             if not silence_starts:
                 # No silences found, just copy file
-                await status.progress("No silences detected, copying file...")
-                subprocess.run([
+                if status:
+                    await status.progress("No silences detected, copying file...")
+                await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
-                
-                await status.end("No silences to compress")
+
+                if status:
+                    await status.end(
+                        f"No silences in {Path(source_file).name}, "
+                        f"copied to {Path(dest_file).name}")
                 return {
                     "status": "success",
                     "compressed_count": 0,
@@ -1899,7 +2074,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -1912,13 +2087,17 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             if not silences_to_compress:
                 # No silences exceed threshold, copy file
-                await status.progress("No silences exceed max duration, copying file...")
-                subprocess.run([
+                if status:
+                    await status.progress("No silences exceed max duration, copying file...")
+                await asyncio.to_thread(subprocess.run, [
                     "ffmpeg", "-y", "-i", str(source_path),
                     "-c", "copy", str(dest_path)
                 ], capture_output=True, check=True)
-                
-                await status.end("No silences exceed max duration")
+
+                if status:
+                    await status.end(
+                        f"No silence over {max_silence}s in {Path(source_file).name}, "
+                        f"copied to {Path(dest_file).name}")
                 return {
                     "status": "success",
                     "compressed_count": 0,
@@ -1927,7 +2106,8 @@ class AudioOpsServer(SchemaBasedMCPServer):
                     "dest_file": dest_file
                 }
             
-            await status.progress(f"Compressing {len(silences_to_compress)} silence segments...")
+            if status:
+                await status.progress(f"Compressing {len(silences_to_compress)} silence segments...")
             
             # Step 2: Build segments to keep
             keep_duration = max_silence / 2.0
@@ -1937,7 +2117,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(source_path)
             ]
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
             total_duration = 0.0
             if probe_result.returncode == 0:
                 probe_data = json.loads(probe_result.stdout)
@@ -1991,7 +2171,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             ffmpeg_cmd.append(str(dest_path))
             
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(subprocess.run, ffmpeg_cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 raise AudioOpsError(
@@ -2000,7 +2180,7 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 )
             
             # Get new duration
-            probe_result = subprocess.run([
+            probe_result = await asyncio.to_thread(subprocess.run, [
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(dest_path)
             ], capture_output=True, text=True)
@@ -2012,11 +2192,12 @@ class AudioOpsServer(SchemaBasedMCPServer):
             
             time_saved = total_duration - new_duration
             
-            await status.end(
-                f"Compressed {len(silences_to_compress)} silences, saved {time_saved:.1f}s "
-                f"({total_duration:.1f}s -> {new_duration:.1f}s)"
-            )
-            
+            if status:
+                await status.end(
+                    f"Compressed {len(silences_to_compress)} silences, saved {time_saved:.1f}s "
+                    f"({total_duration:.1f}s -> {new_duration:.1f}s)"
+                )
+
             return {
                 "status": "success",
                 "compressed_count": len(silences_to_compress),
@@ -2026,17 +2207,20 @@ class AudioOpsServer(SchemaBasedMCPServer):
                 "source_file": source_file,
                 "dest_file": dest_file
             }
-            
+
         except AudioOpsError as e:
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": e.error_type, **e.details})
             return {
                 "status": "error",
                 "error": str(e),
-                "error_type": e.error_type
+                "error_type": e.error_type,
+                "details": e.details
             }
         except Exception as e:
             logger.exception(f"Unexpected error compressing silence in {source_file}")
-            await status.end(f"Error: {str(e)}")
+            if status:
+                await status.error(str(e), meta={"error_type": "UnexpectedError"})
             return {
                 "status": "error",
                 "error": str(e),

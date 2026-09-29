@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>System panel tests</title>
+  <style>body { margin: 0; } iframe { width: 900px; height: 700px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real System panel against a stub server, loaded on its own (no shell).
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  async function open(role) {
+    document.cookie = `stub_role=${role}; path=/`;
+    const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+    frame.src = `/ui/panels/system?t=${Date.now()}`;
+    await loaded;  // the new document, not the one the last check left
+    await until('the panel', () => doc()?.getElementById('statusCard') && !doc().querySelector('#statusCard .pk-skeleton'));
+    return doc();
+  }
+
+  await check('an administrator sees the status with the reason behind each check', async () => {
+    const d = await open('admin');
+    const card = d.getElementById('statusCard');
+    const text = card.textContent;
+    return card.querySelector('.pk-badge--danger')?.textContent.trim() === 'Problems'
+      && text.includes('did not start: server')
+      && text.includes('Deployed code') && text.includes('bbbbbbbb')
+      && card.querySelectorAll('dt .pk-dot--warn').length === 1;
+  });
+
+  await check('an administrator sees the servers that did not start and the counts', async () => {
+    const d = doc();
+    const stats = await until('the stats', () => d.getElementById('overviewStats').textContent.includes('Running requests') && d.getElementById('overviewStats'));
+    await until('the running count', () => stats.textContent.includes('Running requests2'));
+    return !d.getElementById('problemsCard').hidden
+      && d.getElementById('problems').textContent.includes("server 'x': failed to start: boom")
+      && stats.textContent.includes('3 / 4') && stats.textContent.includes('6 / 10')
+      && !d.getElementById('processCard').hidden && d.getElementById('process').textContent.includes('512.5 MB')
+      && !d.getElementById('findingsCard').hidden && d.getElementById('findings').textContent.includes("agent 'lazy_one'");
+  });
+
+  await check('anyone else sees that the server answers, not a status without reasons', async () => {
+    const d = await open('user');
+    await until('the liveness card', () => d.getElementById('statusCard').textContent.includes('Server answers'));
+    return d.getElementById('statusCard').textContent.includes('administrators')
+      && d.getElementById('problemsCard').hidden && d.getElementById('findingsCard').hidden
+      && d.getElementById('processCard').hidden
+      && !d.getElementById('statusCard').textContent.includes('Problems')
+      && d.getElementById('overviewStats').textContent.includes('9.9.9');
+  });
+
+  await check('without authentication the overview still shows that the server answers', async () => {
+    const d = await open('noauth');
+    await until('the liveness card', () => d.getElementById('statusCard').textContent.includes('Server answers'));
+    return d.getElementById('statusCard').textContent.includes('authentication')
+      && d.getElementById('overviewStats').textContent.includes('9.9.9');
+  });
+
+  await fetch('/__results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

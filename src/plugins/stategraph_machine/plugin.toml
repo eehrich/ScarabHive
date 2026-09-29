@@ -1,0 +1,16 @@
+# stategraph_machine plugin manifest -- one stategraph machine addressed as an agent
+# (docs/stategraph_design.md §10, the agent facade). The class lives next to the
+# engine in plugins.stategraph.facade; this folder is the agent type.
+[plugin]
+name = "stategraph_machine"
+version = "0.1.0"
+description = "Runs one stategraph machine as an agent: SAM spawns, AgentCaller and /events address it like any agent, and it answers with the run's output as a JSON object"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+# The constructor reads flat config keys and builds the (unused) LLM client --
+# no I/O, no thread, no socket -- so a server of this type may be built lazily.
+lazy = true
+type = ["tool-server"]
+category = "automation"
+tags = ["agent", "workflow", "state-machine", "facade"]
+requires = { agent_system = ">=0.7.0" }

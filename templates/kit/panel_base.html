@@ -1,0 +1,32 @@
+{#- Base for every panel. A panel template:
+
+    {% extends "kit/panel_base.html" %}
+    {% block title %}Message Debugger{% endblock %}
+    {% block toolbar %}<pk-refresh interval="5"></pk-refresh>{% endblock %}
+    {% block content %} ... {% endblock %}
+    {% block scripts %}<script type="module" src="..."></script>{% endblock %}
+
+  The theme comes from the viewer's cookie, so the frame paints in the right
+  colours before any script runs. -#}
+<!doctype html>
+<html lang="{% block lang %}en{% endblock %}" class="pk-root" data-theme="{{ ui_theme(request) }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} · ScarabHive</title>
+  <link rel="icon" href="/static/kit/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/kit/kit.css">
+  {#- Before the first paint, so a framed panel never flashes a second title. #}
+  <script>if (window.parent !== window) document.documentElement.dataset.framed = '';</script>
+  <script type="module" src="/static/kit/panel-kit.js"></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="pk-panel">
+  <header class="pk-page-header">
+    <h1 class="pk-page-title">{{ self.title() }}</h1>
+    <div class="pk-toolbar">{% block toolbar %}{% endblock %}</div>
+  </header>
+  <main class="pk-page-body">{% block content %}{% endblock %}</main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

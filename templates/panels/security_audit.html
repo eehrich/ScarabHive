@@ -1,0 +1,25 @@
+{% extends "kit/panel_base.html" %}
+{% block title %}Security Audit{% endblock %}
+{% block toolbar %}<pk-refresh interval="5" auto></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-stack">
+  <div class="pk-row">
+    <select id="category" class="pk-select pk-select--sm" aria-label="Category">
+      <option value="">All categories</option>
+      {% for category in categories %}<option value="{{ category }}">{{ category | capitalize }}</option>{% endfor %}
+    </select>
+    <div class="pk-row" id="statuses" role="group" aria-label="Status">
+      {% for status in statuses %}<button type="button" class="pk-btn pk-btn--sm" data-status="{{ status }}" aria-pressed="true">{{ status }}</button>{% endfor %}
+    </div>
+    <select id="limit" class="pk-select pk-select--sm" aria-label="Requests">
+      <option value="100" selected>Last 100</option>
+      <option value="250">Last 250</option>
+      <option value="500">Last 500</option>
+      <option value="1000">Last 1000</option>
+    </select>
+  </div>
+  <div class="pk-stats" id="stats"></div>
+  <div id="entries"><span class="pk-skeleton"></span></div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/security_audit.js"></script>{% endblock %}

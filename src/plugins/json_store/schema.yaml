@@ -1,0 +1,170 @@
+# JSON Store Plugin - validated JSON working documents for agents
+# Single tool with 'operation' arg (like sub_agent_manager) to save tool slots.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_manage_json"
+      description: |
+        Validated JSON working documents — select the action via 'operation'.
+        The document lives server-side as a data structure: input is parsed and
+        validated (invalid JSON → precise error; code fences and raw newlines in
+        strings are auto-repaired), 'merge' deep-merges IN CODE (never re-type
+        the whole JSON yourself), 'read' returns guaranteed-valid canonical JSON.
+        Operations: write (create/replace), read (whole doc or 'path'), merge
+        (deep-merge object), merge_doc (merge one stored doc 'source' into 'doc',
+        no JSON re-typing), set_value (one value at 'path'), delete_keys,
+        delete_doc, undo (revert your LAST change to 'doc' — call again to step
+        further back; use it to recover from a mistake instead of re-typing the
+        old JSON), list (existing docs), outline (structure without values).
+        Write protection: a document belongs to whoever created it. You may READ
+        every document in the namespace, but only modify your own — write your
+        own document (omit 'doc' for a fresh id) and let the owner merge it.
+      parameters:
+        type: object
+        properties:
+          operation:
+            type: string
+            enum: [write, read, merge, merge_doc, set_value, delete_keys, delete_doc, undo, list, outline, stats]
+            description: "The action to perform"
+          namespace:
+            type: string
+            description: "Optional shared store id — pass the same value in different agents/sessions to share the document (else scoped to your session)."
+          doc:
+            type: string
+            description: "Document name/id. For 'write' OMIT it to get a fresh auto-generated collision-free id back (best for parallel writers — each gets its own doc). For merge_doc this is the TARGET. Required for everything except 'write' and 'list'."
+          source:
+            type: string
+            description: "merge_doc: the source document to merge FROM (its values overwrite the target's, deep). Both docs are in the same namespace."
+          data:
+            type: object
+            description: "write/merge: the JSON as structured object (preferred)"
+          json_text:
+            type: string
+            description: "write/merge: alternative — the JSON as string"
+          if_exists:
+            type: string
+            enum: [error, replace]
+            description: "write with a NAMED doc: what to do if it already exists — error (default, catches collisions) or replace (overwrite on purpose). Ignored when 'doc' is omitted (an auto-id is always a fresh create)."
+          write_access:
+            type: string
+            enum: [owner, shared]
+            description: "Only when CREATING a document: 'owner' (default) = only you may modify it later, everyone sharing the namespace may read it; 'shared' = anyone may modify it. Ignored for existing documents."
+          path:
+            type: string
+            description: "read/set_value: dot path, [i] for arrays (e.g. 'milestones[2].label'). stats: dot-path to the subtree whose CHILDREN are compared (e.g. 'beats'); empty = whole doc"
+          value:
+            description: "set_value: the value to set (any JSON type)"
+          paths:
+            type: array
+            items:
+              type: string
+            description: "delete_keys: paths to delete"
+          array_mode:
+            type: string
+            enum: [replace, concat]
+            description: "merge: array handling (default replace)"
+          depth:
+            type: integer
+            description: "outline: nesting depth (default 3)"
+          min_children:
+            type: integer
+            description: "stats: report terms present in at least this many children (default 2)"
+          top:
+            type: integer
+            description: "stats: max number of recurring terms returned (default 12)"
+          exclude:
+            type: array
+            items:
+              type: string
+            description: "stats: terms to filter out (substring match, case-insensitive) — e.g. character/location names that are expected to recur"
+        required: [operation]
+
+config:
+  session_scoped:
+    type: boolean
+    default: true
+    description: "Isolate documents per agent session (false = shared process-wide)"
+  default_write_access:
+    type: string
+    default: owner
+    description: |
+      Write protection for newly created documents when the call does not pass
+      'write_access'. 'owner' (default): only the creating session may modify a
+      document; every session sharing the namespace may read it. 'shared':
+      anyone may modify (pre-0.5 behaviour). Ownership is bound to the
+      runtime-injected _session_id, which an LLM cannot forge.
+  undo_depth:
+    type: integer
+    default: 5
+    description: |
+      How many prior versions of each document to keep so the 'undo' operation
+      can revert mistakes (each mutation snapshots the doc first). The interface
+      is single-step; depth lets 'undo' be called repeatedly to walk back a few
+      steps. 0 disables undo (no snapshots kept).
+  require_namespace:
+    type: boolean
+    default: false
+    description: "Reject any call that omits 'namespace' instead of silently scoping it to the caller's own session. Turn this on for stores that exist ONLY as a shared workspace: there a missing namespace is never intended, and the default is invisible — the write succeeds and returns a doc id that nobody, not even its author, can resolve afterwards."
+  max_docs:
+    type: integer
+    default: 50
+    description: "Maximum documents per session/namespace"
+  max_doc_bytes:
+    type: integer
+    default: 2097152
+    description: "Maximum serialized size per document (chars)"
+  namespace_ttl_hours:
+    type: number
+    default: 48
+    description: "Evict a session namespace from MEMORY after this many idle hours (0 = never). With persistence the files stay and are lazily reloaded on the next access — this only bounds memory in long-running server processes."
+  persist:
+    type: boolean
+    default: true
+    description: |
+      Persist documents to disk per NAMESPACE (one file per document, incl. its
+      owning session id, written atomically on every mutation; lazily reloaded
+      when a namespace is not in memory). Like the todo/memory plugins, this
+      makes the working documents survive a CLI abort + continue and server
+      restarts; the owner-based write protection keeps working because session
+      ids are restored on continue. Undo history stays in memory only.
+  storage_path:
+    type: string
+    default: data/json_store
+    description: "Root directory for persisted documents; the server name and namespace are appended (<storage_path>/<server>/<namespace>/<doc>.json)."
+  file_retention_hours:
+    type: number
+    default: 336
+    description: "Delete a namespace's files after this many idle hours (checked once at startup, against the newest file; 0 = keep forever). Independent of the memory TTL."
+  key_aliases:
+    type: object
+    default: {}
+    description: |
+      Optional wrong->right key remaps (flat, applied at any level before fuzzy
+      matching). Use for semantic renames fuzzy is too weak for. Auto-applied and
+      reported in the result's 'remapped'. Example: { synopsis: synopsis_text }
+  key_models:
+    type: object
+    default: {}
+    description: |
+      Optional allowed-key model per document name (a top-level "*" entry is a
+      default applied to any doc without its own — so unnamed/auto-id docs are
+      validated too). Nested dict of allowed keys; "*" allows any key at that
+      level (dynamic names, e.g. character names); {} means free subtree; a STRING
+      node is a leaf TYPE constraint (string|number|integer|boolean|array|object|any)
+      — the value must be that JSON type or null (null always passes; the guard is
+      against the wrong container, e.g. an array where a scalar belongs), else it is
+      rejected; a one-element LIST node [elem] asserts the value is an array and
+      models each element. Unknown keys are auto-remapped to the closest allowed key
+      (via key_aliases or a confident fuzzy match, e.g. 'genere'->'genre') and
+      reported; keys that can't be mapped are rejected with a "did you mean 'X'?"
+      hint. Example:
+        key_models:
+          "*":                         # one schema for every doc in this store
+            title_suggestion: string   # plain string, not an array (null ok)
+            themes: array
+            genre: {}                  # any type
+            milestones:
+              - { label: string, setting: string }   # array of these objects
+            key_characters:
+              "*": { age: {}, role: string, arc: {} }

@@ -76,7 +76,7 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
    - **Auth Endpoints** (`src/api/auth_endpoints.py`): `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, API key management
    - **Admin Endpoints** (`src/api/admin_endpoints.py`): `/admin/users/*` for user management (admin-only)
 
-8. **CLI Commands (`src/agent_system/cli/users.py`)**
+8. **CLI Commands (`src/agent_system/cli_utils/users.py`)**
    - `agent-cli users list`: List all users
    - `agent-cli users create`: Create a new user
    - `agent-cli users delete`: Delete a user
@@ -91,6 +91,15 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
 - **USER**: Standard access to API features
 - **GUEST**: Limited read-only access
 
+### Which agents a role may run
+
+An agent's `metadata.min_role` (`guest`, `user` or `admin`) is the lowest role
+that may run it -- on every path a run starts (`/run`, `/events`,
+`/chat/command`, sessions created for it, sub-agents, agents called as tools,
+stategraph, woken sessions, the OpenAI-compatible API) and for every tool the
+agent serves. Without it an agent runs for every account. Details:
+`docs/agent_visibility.md`; which shipped agents carry a gate: SECURITY.md.
+
 ### Authentication Methods
 
 1. **JWT Tokens**
@@ -100,7 +109,19 @@ The `EndpointSecurityEnforcer` class (`src/agent_system/auth/enforcement.py`) pr
 
 2. **API Keys**
    - Long-lived authentication
-   - Header: `X-API-Key: <key>`
+   - Header: `X-API-Key: <key>`, or `Authorization: Bearer <key>` as OpenAI
+     clients send it (a Bearer value without dots is a key, never a JWT;
+     two different keys in both headers are refused)
+   - Plugin routes take a key only when the plugin declares `accept_api_keys`
+     in its security config (`openai_api` does); all others stay tokens-only
+   - Routes that check their admin themselves (`user_management`,
+     `agent_editor`) use `get_token_user`: a token only, no key in either
+     header — `get_current_user` takes a Bearer key even when called with
+     `x_api_key=None`
+   - Both layers (middleware, dependencies) read the headers alike: the first
+     of a repeated header, the `Bearer` scheme in any case, and of two
+     `access_token` cookies the last (both parse the Cookie header with
+     Starlette's `cookie_parser`)
    - Hashed with SHA-256 before storage
 
 ## Configuration
@@ -112,7 +133,7 @@ Edit `config/config.yaml`:
 ```yaml
 auth:
   enabled: true  # Set to true to enable multi-user authentication
-  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"
+  secret_key: "your-secret-key-here-CHANGE-IN-PRODUCTION-min-32-chars"  # empty or missing: the API refuses to start
   algorithm: "HS256"
   access_token_expire_minutes: 30
   database_path: "data/users.db"
@@ -134,6 +155,12 @@ auth:
   default_admin_password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
   default_admin_email: "admin@example.com"
   
+  # Self-registration through POST /auth/register (reachable without login)
+  registration:
+    enabled: true            # false: the endpoint answers 403 and creates nobody
+    require_approval: false  # true: new accounts start inactive until an admin activates them
+    default_role: "user"     # "guest" or "user"; never "admin"
+
   # ============================================================
   # Anonymous Access Configuration (NEW in v0.5.1)
   # ============================================================
@@ -194,14 +221,25 @@ auth:
 
 5. **CORS Configuration**
    - Restrict `cors_origins` to trusted domains only
-   - Set `cors_allow_credentials: true` only when necessary
+   - Set `cors_credentials: true` only when necessary — and only together with an
+     explicit `cors_origins` allowlist. Combined with the `"*"` wildcard it is
+     refused (the middleware drops credentials and warns), because Starlette
+     reflects the request Origin instead of sending a literal `*`.
 
 ## API Reference
 
 ### Authentication Endpoints
 
 #### POST /auth/register
-Register a new user (requires admin privileges when auth is enabled).
+Register a new user. The endpoint is reachable without login (`* /auth/*` is
+public), so the caller chooses nothing about its own privileges: `role` and
+`is_active` are not accepted (422). `auth.registration` decides the rest:
+`enabled: false` answers 403 and creates nobody; `require_approval: true`
+creates the account inactive -- it cannot log in (403) until an admin activates
+it (user management panel, `POST /admin/users/{id}/activate`,
+`agent-cli users update NAME --activate`); `default_role` is `user` or `guest`.
+The setting is read on every request, so `agent-cli reload`
+(`POST /admin/reload-config`) applies it without a restart.
 
 **Request:**
 ```json
@@ -221,7 +259,7 @@ Register a new user (requires admin privileges when auth is enabled).
   "email": "john@example.com",
   "full_name": "John Doe",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000"
 }
 ```
@@ -271,7 +309,7 @@ Authorization: Bearer <token>
   "email": "john@example.com",
   "full_name": "John Doe",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000"
 }
 ```
@@ -290,9 +328,34 @@ Content-Type: application/json
 {
   "email": "newemail@example.com",
   "full_name": "New Full Name",
-  "password": "newpassword123"
+  "password": "newpassword123",
+  "current_password": "oldpassword123"
 }
 ```
+
+Ein neues Passwort braucht `current_password` (fehlt es: 400, falsch: 403) und
+**beendet jede frühere Anmeldung des Kontos**: ein Token trägt die
+Passwort-Generation, unter der es ausgestellt wurde (`gen`, Tabelle
+`token_generations`), und eines von vor dem Wechsel weisen die Prüfung jeder
+Anfrage (`get_current_user`, Security-Middleware) und `/auth/refresh` ab — auch
+eines ganz ohne `gen` (von vor dieser Regel), sobald das Passwort einmal
+gewechselt wurde. Der Browser, der es ändert, bekommt ein neues Cookie und bleibt
+angemeldet; wer mit einem Bearer-Token arbeitet, meldet sich neu an. Hat
+inzwischen jemand anderes das Passwort gesetzt (ein Admin, auch aus einem
+anderen Prozess), gilt dessen Passwort: die Änderung wird mit 409 abgelehnt,
+nichts gespeichert.
+
+Setzt ein Admin ein Passwort (Admin-API, Users-Panel, `agent-cli users`), enden
+die Anmeldungen dieses Kontos ebenso. Setzt er in Admin-API oder Users-Panel
+sein **eigenes**, bekommt sein Browser ein neues Cookie — geschrieben wird es wie bei
+`PATCH /auth/me` nur, solange seine Anmeldung gilt (kam ein Reset dazwischen: 409,
+nichts gespeichert); über `agent-cli` enden
+auch seine eigenen Browser-Anmeldungen. **Auch der API-Key des Kontos wird
+widerrufen** — er ist eine Anmeldung wie jede andere, und einen mit dem alten
+Passwort erzeugten konnte jeder anlegen, der es kannte. Wer einen braucht
+(`agent-cli reload` liest `AGENT_ADMIN_API_KEY`), erzeugt danach einen neuen
+(`POST /auth/api-key`, `agent-cli users generate-api-key`). Name oder E-Mail zu
+ändern lässt Anmeldungen und Key stehen.
 
 **Response:**
 ```json
@@ -302,7 +365,7 @@ Content-Type: application/json
   "email": "newemail@example.com",
   "full_name": "New Full Name",
   "is_active": true,
-  "role": "USER",
+  "role": "user",
   "created_at": "2025-10-10T20:00:00.000000",
   "updated_at": "2025-10-11T10:30:00.000000"
 }
@@ -313,11 +376,39 @@ Content-Type: application/json
 curl -X PATCH http://localhost:8000/auth/me \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"email": "newemail@example.com", "password": "newsecurepassword"}'
+  -d '{"email": "newemail@example.com", "password": "newsecurepassword", "current_password": "oldpassword123"}'
 ```
+
+#### GET/PUT /auth/me/preferences
+Anzeige-Einstellungen des angemeldeten Kontos (heute: der Chat). `GET` antwortet
+immer mit allen Schlüsseln, nicht Gewähltes mit dem Default; `PUT` ersetzt das
+ganze Objekt, Weggelassenes wird zum Default. Unbekannte Schlüssel und Werte
+werden mit 422 abgelehnt statt still gespeichert. Gespeichert in der Tabelle
+`user_preferences` von `users.db` (legt der Start selbst an), gelöscht mit dem
+Konto. Ohne Anmeldung 401, ohne Authentifizierung gibt es den Endpunkt nicht.
+
+```json
+{"chat": {"fold_steps": "at_end", "thinking": "collapsed", "sub_agents": "expanded",
+          "sub_agent_output": "collapsed"}}
+```
+
+- `fold_steps`: `at_end` (Steps klappen mit der Antwort zu), `at_next_step`
+  (sobald der nächste beginnt), `never`
+- `thinking`: `collapsed` | `expanded`
+- `sub_agents`: `expanded` | `collapsed` (Sub-Agent-Läufe im Chat)
+- `sub_agent_output`: `collapsed` | `expanded` (die Antwort eines Sub-Agents in
+  seinem Lauf)
+
+Ein Schlüssel, der später dazukommt, erreicht auch Konten, die vorher gespeichert
+haben: ihrer Zeile fehlt er, sie liest sich mit seinem Default und behält alles,
+was sie gewählt hat.
 
 #### POST /auth/api-key
 Generate a new API key for the current user.
+
+Der Key wird nur geschrieben, solange die Anmeldung gilt, mit der er angefragt
+wird (Token oder bisheriger Key): kommt ein Passwortwechsel dazwischen, auch aus
+einem anderen Prozess, antwortet der Endpunkt mit 401 und schreibt nichts.
 
 **Headers:**
 ```
@@ -358,20 +449,26 @@ List all users with pagination.
 - `skip`: Number of users to skip (default: 0)
 - `limit`: Maximum number of users to return (default: 100)
 
-**Response:**
+**Response** (`UserListResponse` — `total` ist die Gesamtzahl aller Benutzer,
+nicht die Seitengröße; Clients paginieren mit `skip + limit >= total`):
 ```json
-[
-  {
-    "id": 1,
-    "username": "admin",
-    "email": "admin@example.com",
-    "full_name": "Administrator",
-    "is_active": true,
-    "role": "ADMIN",
-    "created_at": "2025-10-10T20:00:00.000000",
-    "last_login": "2025-10-10T20:30:00.000000"
-  }
-]
+{
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "email": "admin@example.com",
+      "full_name": "Administrator",
+      "is_active": true,
+      "role": "ADMIN",
+      "created_at": "2025-10-10T20:00:00.000000",
+      "last_login": "2025-10-10T20:30:00.000000"
+    }
+  ],
+  "total": 1,
+  "skip": 0,
+  "limit": 100
+}
 ```
 
 #### GET /admin/users/{user_id}
@@ -387,7 +484,7 @@ Create a new user (admin operation).
   "email": "new@example.com",
   "password": "SecurePass123!",
   "full_name": "New User",
-  "role": "USER",
+  "role": "user",
   "is_active": true
 }
 ```
@@ -435,42 +532,46 @@ ID  USERNAME    EMAIL              FULL_NAME       ROLE   ACTIVE
 3   janedoe     jane@example.com   Jane Doe        GUEST  ✗
 ```
 
+Die Befehle adressieren Benutzer über den **Benutzernamen** (Positionsargument),
+nicht über `--email`. Hilfe: `agent-cli users BEFEHL --help`. Fehler enden mit
+Exit-Code 1.
+
 ### Create User
 
 ```bash
 # Interactive (prompts for password securely)
-agent-cli users create --email john@example.com --name "John Doe" --admin
+agent-cli users create johndoe john@example.com --name "John Doe" --admin
 
 # With password (not recommended for scripts)
-agent-cli users create --email john@example.com --password SecurePass123! --name "John Doe"
+agent-cli users create johndoe john@example.com --password SecurePass123! --name "John Doe"
 
 # As regular user (default role)
-agent-cli users create --email user@example.com
+agent-cli users create janedoe user@example.com
 ```
 
 ### Delete User
 
 ```bash
-agent-cli users delete --email john@example.com
+agent-cli users delete johndoe          # -f skips the confirmation
 ```
 
 ### Update User
 
 ```bash
 # Update name
-agent-cli users update --email john@example.com --name "John Smith"
+agent-cli users update johndoe --name "John Smith"
 
 # Change role
-agent-cli users update --email john@example.com --admin
+agent-cli users update johndoe --role admin
 
 # Deactivate user
-agent-cli users update --email john@example.com --deactivate
+agent-cli users update johndoe --deactivate
 ```
 
 ### Show User Info
 
 ```bash
-agent-cli users info --email john@example.com
+agent-cli users info johndoe
 ```
 
 Example output:
@@ -491,10 +592,10 @@ Last Login: 2025-10-10 20:30:00
 
 ```bash
 # Generate API key
-agent-cli users generate-api-key --email john@example.com
+agent-cli users generate-api-key johndoe
 
 # Revoke API key
-agent-cli users revoke-api-key --email john@example.com
+agent-cli users revoke-api-key johndoe
 ```
 
 ## Migration Guide
@@ -524,18 +625,18 @@ agent-cli users revoke-api-key --email john@example.com
 
 4. **Change Default Admin Password**
    ```bash
-   # Login as admin and generate API key
+   # First: the change ends every login made with the old password, the API key included
+   agent-cli users update admin --password NewSecurePassword
+
+   # Then log in with the new one (and generate an API key, if you need one)
    curl -X POST http://127.0.0.1:8000/auth/login \
      -H "Content-Type: application/json" \
-     -d '{"username": "admin", "password": "CHANGE_THIS_PASSWORD"}'
-   
-   # Use CLI to update password
-   agent-cli users update --email admin@example.com --password NewSecurePassword
+     -d '{"username": "admin", "password": "NewSecurePassword"}'
    ```
 
 5. **Create Additional Users**
    ```bash
-   agent-cli users create --email user@example.com --name "Regular User"
+   agent-cli users create regular user@example.com --name "Regular User"
    ```
 
 ### Backward Compatibility
@@ -564,7 +665,8 @@ To implement full session isolation:
 
 ## Database Schema
 
-The user database (`data/users.db`) contains a single `users` table:
+The user database (`data/users.db`) contains three tables, `users`,
+`user_preferences` and `token_generations`:
 
 ```sql
 CREATE TABLE users (
@@ -580,7 +682,26 @@ CREATE TABLE users (
     updated_at TEXT,
     last_login TEXT
 )
+
+CREATE TABLE user_preferences (
+    user_id INTEGER PRIMARY KEY,
+    data TEXT NOT NULL,        -- UserPreferences als JSON
+    updated_at TEXT NOT NULL
+)
+
+CREATE TABLE token_generations (
+    user_id INTEGER PRIMARY KEY,
+    generation INTEGER NOT NULL  -- Passwortwechsel des Kontos bisher
+)
 ```
+
+`user_preferences` und `token_generations` legt die Datenbank beim Start selbst
+an (auch in einer bestehenden `users.db`); gelöscht wird eine Zeile mit ihrem
+Konto. Eine Zeile gibt es erst, wenn jemand etwas gewählt bzw. das Passwort
+gewechselt hat — ohne sie gelten die Defaults bzw. die Generation 0.
+**`token_generations` gehört zu jeder Kopie und jedem Umzug der Datenbank:** ohne
+sie zählt jedes Konto wieder 0, und die Anmeldungen von vor einem Passwortwechsel
+gelten wieder.
 
 ### PostgreSQL Migration
 
@@ -589,7 +710,7 @@ To migrate to PostgreSQL:
 1. Install psycopg2: `pip install psycopg2-binary`
 2. Update database connection in `auth/database.py`
 3. Convert SQLite schema to PostgreSQL (adjust types as needed)
-4. Migrate user data
+4. Migrate user data (`users`, `user_preferences` and `token_generations`)
 
 Example PostgreSQL schema:
 ```sql
@@ -605,6 +726,17 @@ CREATE TABLE users (
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP,
     last_login TIMESTAMP
+);
+
+CREATE TABLE user_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    data JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE token_generations (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    generation INTEGER NOT NULL
 );
 ```
 
@@ -631,7 +763,7 @@ CREATE TABLE users (
 - Sliding window implementation
 
 ### Security Headers
-- X-Frame-Options: DENY
+- X-Frame-Options: DENY -- except for the pages the shell shows in frames (`/ui/`, `/plugins/`, `/debug/`), which get SAMEORIGIN
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: 1; mode=block
 - Strict-Transport-Security (HSTS)
@@ -718,83 +850,46 @@ The system includes a comprehensive web-based user management interface accessib
 **Access:**
 1. Navigate to `http://127.0.0.1:8000/` (web UI home)
 2. Login with admin credentials
-3. Click on the user profile dropdown (top-right corner)
-4. Select "Manage Users" from the dropdown menu
+3. Open the panel launcher (grid button in the header) or the command palette (Ctrl+K)
+4. Choose "Users"
 
 **Plugin Configuration:**
 
-The user management plugin is configured via `src/plugins/user_management/schema.yaml`:
+The user management plugin declares its panel in `src/plugins/user_management/schema.yaml`:
 
 ```yaml
 web_ui:
-  button:
-    enabled: false  # No header button
-  
-  menu:
-    enabled: true
-    items:
-      - id: "manage_users"
-        menu_id: "user_dropdown"
-        section: "admin"
-        label: "Manage Users"
-        action: "openPanel"
-        panel_id: "user_management"
-        icon: "users"
-        requires_admin: true
-        order: 10
-  
   panel:
-    enabled: true
-    title: "User Management"
-    endpoint: "/plugins/user_management/"
-    type: "iframe"
+    endpoint: "/plugins/{{ name }}/"
+    title: "Users"
+    description: "User accounts, roles and permissions"
+    icon: users
+    category: admin
+    keywords: [accounts, roles, permissions]
+    window: {width: 960, height: 680}
 ```
 
-### Dropdown Menu System
+### Panels and Roles
 
-The web UI features a flexible dropdown menu system that supports:
+Plugins contribute panels to the web UI. The shell loads the panel catalogue from `GET /api/ui/catalog`: the core panels plus the `web_ui.panel` block of every registered web plugin, filtered by the viewer's role. The launcher, the command palette and the context links in the chat all read this list.
 
-- **User Profile Menu**: Account settings, profile, logout
-- **Admin Menu**: User management, system settings (admin-only items)
-- **Dynamic Menu Items**: Plugins can contribute menu items via schema configuration
-- **Role-Based Filtering**: Menu items automatically hidden based on user role
-- **Real-time Updates**: Menu reflects authentication state changes
-
-**Menu Configuration in Plugins:**
-
-Plugins can add menu items by defining them in `schema.yaml`:
-
-```yaml
-web_ui:
-  menu:
-    enabled: true
-    items:
-      - id: "my_feature"
-        menu_id: "user_dropdown"  # or "admin_dropdown"
-        section: "tools"
-        label: "My Feature"
-        action: "openPanel"  # or "navigate"
-        panel_id: "my_plugin_panel"
-        icon: "wrench"
-        requires_admin: false
-        order: 20
-```
+- **Account Menu**: the avatar in the header opens a menu with the user's name and role, Settings, System and Log out
+- **Role-Based Filtering**: a plugin panel is listed for the roles that may open its endpoint -- the same rules in `config/config.yaml` that guard the plugin's routes decide, app-wide `auth.endpoint_security` and `auth.plugin_security` together, so an admin-only route (like the `endpoint_rules` entry for `/plugins/user_management/*`) is an admin-only panel. With authentication disabled the viewer counts as admin and sees every panel
 
 ### Authentication Flow in Web UI
 
 1. **Login Page**: `http://127.0.0.1:8000/login`
    - Username/password authentication
-   - JWT token stored in cookie and localStorage
+   - JWT token stored in an HttpOnly `access_token` cookie
    - Automatic redirect to home page on success
 
 2. **Authenticated Session**:
-   - User profile dropdown appears in header
-   - Admin-only menu items visible for admin users
-   - All API requests include Bearer token
+   - The account menu in the header shows the user's name and role
+   - Admin-only panels appear in the launcher and the command palette for admins only
+   - API requests from the shell and its panels carry the cookie (same origin)
 
 3. **Logout**:
-   - Token cleared from browser
-   - Real-time UI update (dropdown menu disappears)
+   - `POST /auth/logout` removes the cookie
    - Redirect to login page
 
 ## Future Enhancements

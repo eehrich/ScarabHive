@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_wait"
-      description: Wait for a specified number of seconds with countdown status updates.
+      description: "Wait for a specified number of seconds with countdown status updates. For a long wait set wake: true -- the call returns at once and your session is woken when the time is up, so the turn is not held open."
       parameters:
         type: object
         properties:
@@ -16,6 +16,10 @@ tools:
             type: string
             maxLength: 100
             description: "Optional message to display during wait"
+          wake:
+            type: boolean
+            default: false
+            description: "Do not hold the turn: answer at once and wake this session when the time is up (60 s or more). End your turn after such an answer; the answer says if waking was not possible."
         required: ["seconds"]
         additionalProperties: false
 

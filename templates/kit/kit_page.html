@@ -1,0 +1,280 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon, logo, empty, skeleton %}
+{% block title %}UI Kit{% endblock %}
+{% block head %}
+<style>
+  .kit-section { display: flex; flex-direction: column; gap: var(--space-3); }
+  .kit-section > h2 { font-size: var(--text-sm); color: var(--text-muted); font-weight: 500; }
+  .kit-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); }
+  .kit-swatch { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; font-size: var(--text-xs); }
+  .kit-swatch > div:first-child { height: 40px; }
+  .kit-swatch > div:last-child { padding: var(--space-2); font-family: var(--font-mono); }
+  .kit-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2); }
+  .kit-icons > div { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary); }
+  .kit-brand { display: flex; align-items: center; gap: var(--space-3); color: var(--brand); }
+  .kit-brand span { color: var(--text-primary); font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.02em; }
+  .kit-sidebar-main { padding-left: var(--space-3); }
+  #kit-sidebar { padding-right: var(--space-3); }
+</style>
+{% endblock %}
+{% block toolbar %}
+<div class="pk-row" role="group" aria-label="Theme">
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="light">{{ icon('sun') }} Light</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="dark">{{ icon('moon') }} Dark</button>
+  <button type="button" class="pk-btn pk-btn--sm" data-theme-choice="system">{{ icon('monitor') }} System</button>
+</div>
+{% endblock %}
+{% block content %}
+<section class="kit-section">
+  <div class="kit-brand">{{ logo(40) }}<span>ScarabHive</span></div>
+  <p class="pk-secondary" style="margin:0">Every control a panel needs, in every state. Panels use these classes and the tokens below; they define no colours and no controls of their own.</p>
+</section>
+
+<section class="kit-section">
+  <h2>Colour tokens</h2>
+  <div class="kit-swatches">
+    {% for token in ["surface-0", "surface-1", "surface-2", "surface-3", "text-primary", "text-secondary", "text-muted", "accent", "accent-text", "ok", "warn", "danger", "info", "brand"] %}
+    <div class="kit-swatch"><div style="background: var(--{{ token }})"></div><div>--{{ token }}</div></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Buttons</h2>
+  <div class="pk-row">
+    <button class="pk-btn pk-btn--primary">{{ icon('plus') }} Primary</button>
+    <button class="pk-btn">Secondary</button>
+    <button class="pk-btn pk-btn--ghost">Ghost</button>
+    <button class="pk-btn pk-btn--danger">{{ icon('trash-2') }} Danger</button>
+    <button class="pk-btn" disabled>Disabled</button>
+    <button class="pk-btn" aria-pressed="true">Pressed</button>
+    <button class="pk-btn pk-btn--icon" aria-label="Settings">{{ icon('settings') }}</button>
+    <pk-refresh interval="5"></pk-refresh>
+  </div>
+  <div class="pk-row">
+    <button class="pk-btn pk-btn--sm">Small</button>
+    <button class="pk-btn">Medium</button>
+    <button class="pk-btn pk-btn--lg">Large</button>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Which session a panel shows</h2>
+  <div class="pk-row">
+    <pk-session all></pk-session>
+    <pk-session></pk-session>
+    <span class="pk-muted"><code class="pk-mono">&lt;pk-session&gt;</code> in the toolbar, <code class="pk-mono">all</code> for the choice
+      between that session and every session. Following the chat it stays out of the way. A panel has one of them —
+      both stand here only to show both forms.</span>
+  </div>
+  <div class="pk-row">
+    <a class="pk-btn pk-btn--sm" href="/ui/kit?session_id=kit-demo-00000001">{{ icon('pin') }} Open this page as a context link opens a panel</a>
+    <span class="pk-muted">A link with <code class="pk-mono">?session_id=</code> pins a panel to one session: it stops following the chat,
+      both controls say which session that is, and Follow the chat drops the pin.</span>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Form controls</h2>
+  <form class="pk-form">
+    <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" placeholder="writer_review"><span class="pk-help">Shown in the dock.</span></label>
+    <label class="pk-field"><span class="pk-label">Email</span><input class="pk-input" aria-invalid="true" value="not-an-email"><span class="pk-error">Enter a valid address.</span></label>
+    <div class="pk-search">{{ icon('search') }}<input class="pk-input" type="search" placeholder="Search panels"></div>
+    <label class="pk-field"><span class="pk-label">Model</span><select class="pk-select"><option>deepseek-v4</option><option>gemini-flash</option></select></label>
+    <label class="pk-field"><span class="pk-label">Notes</span><textarea class="pk-textarea" placeholder="Optional"></textarea></label>
+    <div class="pk-row">
+      <label class="pk-check"><input type="checkbox" checked> Checkbox</label>
+      <label class="pk-radio"><input type="radio" name="r" checked> Radio</label>
+      <label class="pk-radio"><input type="radio" name="r"> Radio</label>
+      <label class="pk-switch"><input type="checkbox" role="switch" checked> Switch</label>
+    </div>
+    <div class="pk-form-actions"><button type="button" class="pk-btn">Cancel</button><button type="button" class="pk-btn pk-btn--primary">Save</button></div>
+  </form>
+</section>
+
+<section class="kit-section">
+  <h2>Tabs</h2>
+  <div class="pk-tabs" role="tablist" data-pk-tabs>
+    <button class="pk-tab" role="tab" aria-selected="true" aria-controls="kit-tab-a">Requests <span class="pk-tab-count">128</span></button>
+    <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-b">Hooks</button>
+    <button class="pk-tab" role="tab" aria-selected="false" aria-controls="kit-tab-c">Settings</button>
+  </div>
+  <div id="kit-tab-a" role="tabpanel">
+    <div class="pk-table-wrap">
+      <table class="pk-table" data-pk-sort="kit-demo">
+        <thead><tr><th aria-sort="descending">Time</th><th>Agent</th><th>Status</th><th class="pk-num">Duration</th></tr></thead>
+        <tbody>
+          <tr><td class="pk-mono">14:02:11</td><td>writer_review</td><td><span class="pk-badge pk-badge--ok">ok</span></td><td class="pk-num" data-sort-value="1200">1.2 s</td></tr>
+          <tr aria-selected="true"><td class="pk-mono">14:01:58</td><td>coder</td><td><span class="pk-badge pk-badge--warn">retry</span></td><td class="pk-num" data-sort-value="850">850 ms</td></tr>
+          <tr><td class="pk-mono">14:01:40</td><td>research</td><td><span class="pk-badge pk-badge--danger">error</span></td><td class="pk-num" data-sort-value="4800">4.8 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div id="kit-tab-b" role="tabpanel" hidden>
+    <div class="pk-empty">{{ icon('activity') }}<div class="pk-empty-title">No hook activity</div><div>Hooks show up here as soon as a request runs.</div></div>
+  </div>
+  <div id="kit-tab-c" role="tabpanel" hidden>
+    <dl class="pk-kv"><dt>Retention</dt><dd>5 GB</dd><dt>Capture</dt><dd>requests, responses, hooks</dd></dl>
+  </div>
+  <h3>Pages of one panel</h3>
+  <nav class="pk-tabs" aria-label="Pages">
+    <a class="pk-tab" href="#" aria-current="page">Overview</a>
+    <a class="pk-tab" href="#">Queue</a>
+    <a class="pk-tab" href="#">Books</a>
+  </nav>
+</section>
+
+<section class="kit-section">
+  <h2>Cards, numbers, status</h2>
+  <div class="pk-stats">
+    <div class="pk-stat"><div class="pk-stat-label">Requests today</div><div class="pk-stat-value">1,284</div></div>
+    <div class="pk-stat"><div class="pk-stat-label">Context used</div><div class="pk-stat-value">62%</div><progress class="pk-progress" value="62" max="100"></progress></div>
+    <div class="pk-stat"><div class="pk-stat-label">Cost</div><div class="pk-stat-value">$0.12</div></div>
+  </div>
+  <div class="pk-card">
+    <div class="pk-card-head"><h3 class="pk-card-title">Connections</h3><span class="pk-badge pk-badge--accent">3</span></div>
+    <div class="pk-stack">
+      <div class="pk-row"><span class="pk-dot pk-dot--ok"></span> api <span class="pk-muted">connected</span></div>
+      <div class="pk-row"><span class="pk-dot pk-dot--warn"></span> worker <span class="pk-muted">slow</span></div>
+      <div class="pk-row"><span class="pk-dot pk-dot--danger"></span> comfyui <span class="pk-muted">offline</span></div>
+    </div>
+  </div>
+  <div class="pk-row">
+    <span class="pk-badge">neutral</span><span class="pk-badge pk-badge--info">info</span><span class="pk-badge pk-badge--ok">ok</span>
+    <span class="pk-badge pk-badge--warn">warn</span><span class="pk-badge pk-badge--danger">danger</span>
+    <span class="pk-spinner" aria-label="Loading"></span>
+    <kbd class="pk-kbd">Ctrl K</kbd>
+  </div>
+  <div class="pk-stack" style="max-width: 320px"><span class="pk-skeleton"></span><span class="pk-skeleton" style="width: 70%"></span></div>
+</section>
+
+<section class="kit-section">
+  <h2>Dialogs and toasts</h2>
+  <div class="pk-row">
+    <button class="pk-btn" data-demo="alert">Alert</button>
+    <button class="pk-btn" data-demo="confirm">Confirm</button>
+    <button class="pk-btn" data-demo="danger">Confirm (danger)</button>
+    <button class="pk-btn" data-demo="prompt">Prompt</button>
+    <button class="pk-btn" data-demo="toast">Toasts</button>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Menu</h2>
+  <div class="pk-row">
+    <button class="pk-btn" popovertarget="kit-menu">{{ icon('ellipsis') }} Actions</button>
+    <div id="kit-menu" class="pk-menu" popover>
+      <div class="pk-menu-label">Session</div>
+      <button class="pk-menu-item">{{ icon('pencil') }} Rename</button>
+      <button class="pk-menu-item">{{ icon('copy') }} Copy id</button>
+      <hr class="pk-menu-separator">
+      <button class="pk-menu-item pk-menu-item--danger">{{ icon('trash-2') }} Delete</button>
+    </div>
+  </div>
+</section>
+
+<section class="kit-section">
+  <h2>Page layout</h2>
+  <form class="pk-filters">
+    <label class="pk-field"><span class="pk-label">Status</span><select class="pk-select"><option>open</option><option>resolved</option></select></label>
+    <label class="pk-field"><span class="pk-label">Search</span><input class="pk-input" placeholder="title or id"></label>
+    <button type="reset" class="pk-btn pk-btn--ghost">Reset</button>
+  </form>
+  <p class="pk-callout pk-callout--danger">The list could not be refreshed -- showing the state of 14:02.</p>
+  <p class="pk-callout pk-callout--warn">Two chapters are still being written.</p>
+  <p class="pk-callout pk-callout--info">Sorted by the server; the heads sort the page shown.</p>
+  <p class="pk-callout pk-callout--ok">Backup written.</p>
+  <div class="pk-split">
+    <div class="pk-stack">
+      <div class="pk-table-wrap">
+        <table class="pk-table" data-pk-select>
+          <thead><tr><th>Id</th><th>Title</th></tr></thead>
+          <tbody>
+            <tr data-id="1" tabindex="0" aria-selected="true"><td class="pk-num">1</td><td>The Night</td></tr>
+            <tr data-id="2" tabindex="0"><td class="pk-num">2</td><td>Buran</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pk-pager page="2" pages="7"></pk-pager>
+    </div>
+    <div class="pk-card pk-stack">
+      <h3 class="pk-card-title">The Night</h3>
+      <details class="pk-details" open><summary>Synopsis</summary>
+        <div class="pk-prose"><p>A buran holds everyone at the airport.</p><p>The heist is already running.</p></div>
+        <div class="pk-prose pk-prose--breaks">A stored text
+keeps its line breaks.</div>
+      </details>
+      <details class="pk-details"><summary>Raw data</summary><div id="kit-json-small"></div></details>
+      <progress class="pk-progress pk-progress--warn" value="62" max="100"></progress>
+      <div class="pk-row"><span class="pk-text--ok">92 good</span><span class="pk-text--warn">61 fair</span><span class="pk-text--danger">34 poor</span><span class="pk-text--info">new</span></div>
+    </div>
+  </div>
+  <div class="pk-card pk-sidebar-layout">
+    <nav class="pk-sidebar pk-stack" id="kit-sidebar" aria-label="Example list">
+      <label class="pk-search">{{ icon('search') }}<input class="pk-input pk-input--sm" type="search" placeholder="Search" aria-label="Search"></label>
+      <span>Drag the corner to the lower right to resize this pane; the width is kept for the next visit.</span>
+    </nav>
+    <div class="kit-sidebar-main">The main pane takes the rest.</div>
+  </div>
+  <div class="pk-card">{{ empty('library', 'No books yet', 'Books show up here once a story is written.') }}</div>
+  <div class="pk-card">{{ skeleton(3) }}</div>
+</section>
+
+<section class="kit-section">
+  <h2>Code, JSON and YAML</h2>
+  <pre class="pk-code">POST /events  {"agent_name": "writer_review", "task": "Check chapter 3"}</pre>
+  <div id="kit-json" class="pk-card"></div>
+  <pre id="kit-yaml" class="pk-code"></pre>
+</section>
+
+<section class="kit-section">
+  <h2>Help: the guide viewer</h2>
+  <p class="pk-secondary" style="margin:0">&lt;pk-guide guide="…" node="…"&gt; from /static/kit/guide.js shows a node of an AmigaGuide guide, with its buttons, links and Retrace. A plugin panel shows its own guide this way; the Help panel is one with <code>address search</code>. Writing a guide: Help → Writing a guide.</p>
+  <pk-guide guide="scarabhive" node="authoring" style="height: 360px"></pk-guide>
+</section>
+
+<section class="kit-section">
+  <h2>Icons</h2>
+  <div class="kit-icons">
+    {% for name in icons %}<div>{{ icon(name) }} {{ name }}</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="/static/kit/guide.js"></script>
+<script type="module">
+  import { alert, confirm, prompt, toast, jsonView, yamlCode, render, setTheme } from '/static/kit/panel-kit.js';
+
+  // setTheme: remembered in the cookie, and in the shell every panel follows
+  document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
+  });
+
+  const demos = {
+    alert: () => alert('The queue was paused by an operator.'),
+    confirm: async () => toast(`Confirmed: ${await confirm('Retry all failed jobs?')}`),
+    danger: async () => toast(`Confirmed: ${await confirm('Delete this session and its sub-agent sessions?', { title: 'Delete session', confirmLabel: 'Delete', danger: true })}`),
+    prompt: async () => toast(`Name: ${await prompt('New name for the session', { title: 'Rename session', value: 'Buch 945 Review' })}`),
+    toast: () => { toast('Saved'); toast('3 jobs finished', { kind: 'ok' }); toast('Worker is slow', { kind: 'warn' }); toast('Request failed: 502', { kind: 'error' }); },
+  };
+  document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', demos[b.dataset.demo]));
+
+  render(document.getElementById('kit-json-small'), jsonView({ title: 'The Night', chapters: 8, series: null }));
+  render(document.getElementById('kit-json'), jsonView({ request_id: '8f2c1a', agent: 'writer_review', usage: { prompt_tokens: 4120, completion_tokens: 380 }, tools: ['writer_content_chapter', 'writer_issues_list'], cached: null }));
+  render(document.getElementById('kit-yaml'), yamlCode([
+    '# yamlCode: the text as it is, coloured',
+    'writer_review:',
+    '  type: basic_agent',
+    '  enabled: true',
+    '  agent_config:',
+    '    max_steps: 30',
+    "    tools: {allowed: [+files/*, '!web/*']}",
+    '    system_prompt: |',
+    '      Review the chapter.',
+    '',
+    '      A blank line stays inside the prompt.',
+    '  description: "Checks chapters"  # shown in the list',
+  ].join('\n')));
+</script>
+{% endblock %}

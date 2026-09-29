@@ -1,0 +1,74 @@
+# The image agent: generation (ComfyUI) + composition (image_compose) +
+# a look at the result, delivering game-ready PNGs into the image workspace.
+#
+# A sub-agent by design, and the reason it is one: its loop is generate,
+# look, judge, regenerate -- every step carries a picture. Those belong in
+# its own context. What the caller gets back is a path and what was
+# verified. The writer's cover_artist is the older sibling of this agent;
+# this one knows nothing about books and everything about sizes, tiling and
+# how a generated image gets its alpha (a cutout in the compose step).
+plugins:
+  servers:
+
+    # A composition instance CONFINED to the image workspace. The shared
+    # `image_compose` server writes wherever it is told (the writer needs
+    # that); this one cannot leave data/workspace/images, so a model-chosen
+    # output path cannot land in a game project or anywhere else.
+    images:
+      type: image_compose
+      enabled: true
+      description: "image agent: composition and analysis, confined to data/workspace/images"
+      output_directories:
+        - "data/workspace/images"
+
+    image_agent:
+      type: basic_agent
+      enabled: true
+      description: "Produce a texture, sprite, icon or UI element as a PNG of an exact size: generates with ComfyUI, composes and resizes with image_compose, checks tiling and looks at the result before reporting the path"
+
+      self_tool_descriptions:
+        image_agent_execute_task: "Produce one image asset from a brief (what, exact size, tileable or not, background, style) and return the PNG path plus what was verified"
+        image_agent_list_available_tools: "List the image tools available (ComfyUI generation, composition, analysis, loading)"
+
+      agent_config:
+        # It has to LOOK at what it made, so both links can see images. The
+        # loop is many cheap vision calls (generate, look, judge, repeat);
+        # Flash carries that, Sonnet is the fallback when it is unavailable.
+        llm_profile: [or-gemini-flash, or-claude-sonnet]
+        llm_profile_advanced: []
+        llm_params:
+          "*":
+            context_window: 200000
+            prompt_cache_mode: multi_turn
+        # Generate, wait, look, regenerate up to three times, compose,
+        # verify: 40 is an ordinary asset, 60 is the ceiling.
+        max_steps: 60
+        system_template: "./prompts/image_agent.md"
+
+        skills:
+          always: ["image-assets"]
+          on_demand: []
+
+        tools:
+          allowed:
+            - "comfyui/*"              # generation, incl. wait_for_completion + result
+            - "images/*"               # render / analyze / find_region, confined
+            - "media_ops/*"            # look at a file
+            - "skills/*"
+            - "context_engineer/*"     # what the hook below evicts, it fetches back with this
+            - "datetime/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            # Every generated picture lands in the context; a long session
+            # dies at the limit without compaction.
+            context_engineer.engineer_context:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["images", "textures", "sprites", "comfyui", "gamedev"]
+        category: "media"
+        visibility: "both"

@@ -1,0 +1,303 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Context Summarizer panel tests</title>
+  <style>body { margin: 0; } iframe { width: 1100px; height: 800px; border: 0; }</style>
+</head>
+<body>
+<iframe id="panel" title="panel"></iframe>
+<script type="module">
+  // The real panel against the real plugin, driven from outside: same origin, so this page reaches into it.
+  const results = {};
+  const check = async (name, fn) => {
+    try { results[name] = (await fn()) === true ? 'ok' : 'failed'; }
+    catch (error) { results[name] = `error: ${error && error.message}`; }
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(what, predicate, timeout = 10000) {
+    const end = performance.now() + timeout;
+    for (;;) {
+      let value = null;
+      try { value = await predicate(); } catch { /* not there yet */ }
+      if (value) return value;
+      if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(30);
+    }
+  }
+
+  const MARKUP = '<img src="x" onerror="window.parent.__xss = 1">';
+  const frame = document.getElementById('panel');
+  const doc = () => frame.contentDocument;
+  const $ = (selector) => doc().querySelector(selector);
+  const go = (path) => new Promise((resolve) => { frame.onload = resolve; frame.src = path; });
+  const statValue = (key) => $(`#stats [data-stat="${key}"] .pk-stat-value`)?.textContent;
+  const statSub = (key) => $(`#stats [data-stat="${key}"] .cs-sub`)?.textContent;
+  const rows = () => [...doc().querySelectorAll('#events tbody tr')];
+  const ids = () => rows().map((row) => row.dataset.id).join();
+  const row = (id) => $(`#events tr[data-id="${id}"]`);
+  const n = (value) => Number(value).toLocaleString();
+  const percent = (ratio) => `${(ratio * 100).toFixed(1)}%`;
+  const tell = (message) => frame.contentWindow.postMessage(message, location.origin);
+  const refreshNow = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: false } }));
+  const asked = async () => (await fetch('/__stub/asked')).json();
+  const event = async (id) => (await fetch(`/plugins/context_summarizer/events/${id}`)).json();
+  const drawer = () => $('#detail');
+  const facts = () => Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent.trim()]));
+  const errorToast = (text) => [...doc().querySelectorAll('.pk-toast--error')].some((toast) => toast.textContent.includes(text));
+  const autoOff = async () => {
+    const toggle = await until('the refresh control', () => $('pk-refresh [data-act="auto"]'));
+    if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
+    forgetRefreshChoice();  // paused for this check only -- the kit would remember it for the panel
+  };
+  const forgetRefreshChoice = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith('pk.refresh:')).forEach((key) => localStorage.removeItem(key));
+  const noCookies = () => {
+    document.cookie = 'cs_history=; path=/; max-age=0';
+    document.cookie = 'cs_slow_event=; path=/; max-age=0';
+  };
+
+  await check('opened on a session, the panel counts its runs and lists them newest first with what each did', async () => {
+    await go('/plugins/context_summarizer/?session_id=s-1');
+    await until('the runs of s-1', () => statValue('events') === '3');
+    const applied = await event(1);
+    const reason = (id) => row(id).querySelector('.cs-reason')?.textContent;
+    const badge = (id) => row(id).querySelector('.pk-badge').textContent;
+    // the figures of the applied run alone: the rejected one summarized too, and its reduction is negative
+    return ids() === '3,2,1' && statSub('events') === '1 applied · 1 rejected · 1 skipped'
+      && statValue('saved') === n(applied.tokens_saved) && applied.tokens_saved > 0
+      && statValue('summarized') === n(30) && statValue('reduction') === percent(applied.reduction_ratio)
+      && badge(1) === 'applied' && badge(2) === 'rejected' && badge(3) === 'skipped'
+      && reason(1) === undefined && reason(2) === 'the summaries fell short of the minimum reduction'
+      && reason(3) === 'too few older messages'
+      && row(1).children[2].textContent === `${n(40)} → ${n(applied.summarized_message_count)}`
+      && row(3).children[3].textContent === '–' && row(3).children[5].textContent === '–'
+      && !$('#events thead').textContent.includes('Session') && $('#shown').hidden;
+  });
+
+  await check('all sessions show the session of each run and the newest 100 of every run', async () => {
+    $('[data-scope="all"]').click();
+    await until('every run', () => statValue('events') === '105');
+    const listed = rows().length === 100 && rows()[0].dataset.id === '105' && rows().at(-1).dataset.id === '6'
+      && $('#shown').textContent === 'the newest 100 of 105 runs' && !$('#shown').hidden && $('#events thead').textContent.includes('Session')
+      && rows()[0].children[2].textContent === 's-3' && statSub('events') === '2 applied · 1 rejected · 102 skipped'
+      && $('[data-scope="all"]').getAttribute('aria-pressed') === 'true'
+      && $('[data-scope="session"]').getAttribute('aria-pressed') === 'false';
+    document.cookie = 'cs_history=fails; path=/';
+    try {  // failed, no word of the runs listed before
+      refreshNow();
+      await until('the error', () => $('#stats').textContent.includes('The history could not be loaded'));
+      return listed && $('#shown').hidden;
+    } finally {
+      noCookies();
+    }
+  });
+
+  await check('a run opens in the drawer with its figures, its summaries and the messages they replaced, markup as text', async () => {
+    await go('/plugins/context_summarizer/?session_id=s-2');
+    await until('the run of s-2', () => ids() === '4');
+    row(4).focus();
+    row(4).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until('the drawer', () => drawer().open && $('#detailBody dl'));
+    const shown = facts();
+    const summaries = [...doc().querySelectorAll('#detailBody [data-part="after"] .cs-content')];
+    const replaced = doc().querySelectorAll('#detailBody [data-part="before"] .cs-message');
+    await sleep(200);  // an image that loaded would have fired its handler
+    const inert = !$('#detailBody img') && window.__xss === undefined;
+    $('#detail [data-close]').click();
+    return shown.Run === 'applied' && !('Reason' in shown) && shown.Session === 's-2' && shown.Request === 'r-4' && shown.Chunks === '3 of 3 summarized'
+      && shown.Messages === `${n(40)} → ${n(13)} (30 summarized)` && summaries.length === 3
+      && summaries.every((one) => one.textContent.endsWith(MARKUP)) && replaced.length === 30
+      && replaced[0].querySelector('.cs-role').textContent === 'user' && inert && !drawer().open;
+  });
+
+  await check('a run opened after another shows only the one opened last', async () => {
+    await go('/plugins/context_summarizer/?session_id=s-1');
+    await until('the runs of s-1', () => ids() === '3,2,1');
+    await autoOff();
+    document.cookie = 'cs_slow_event=1; path=/';
+    try {
+      row(1).click();  // held for 1.5 s
+      await sleep(100);
+      row(3).click();
+      await until('the skipped run', () => drawer().open && $('#detailTitle').textContent.startsWith('skipped'));
+      await sleep(2000);
+      const kept = $('#detailTitle').textContent.startsWith('skipped') && facts().Request === 'r-3' && facts().Reason === 'too few older messages';
+      $('#detail [data-close]').click();
+      return kept;
+    } finally {
+      noCookies();
+    }
+  });
+
+  await check('a run no longer in the history is refused with a notice and opens nothing', async () => {
+    await fetch('/__stub/drop/2', { method: 'POST' });
+    row(2).click();  // still listed: no tick since
+    await until('the refusal', () => errorToast('404: Event 2 is no longer in the history'));
+    await sleep(300);
+    const nothing = !drawer().open;
+    refreshNow();
+    await until('the list without it', () => ids() === '3,1');
+    return nothing;
+  });
+
+  await check('a failed load shows the error and none of the runs shown before', async () => {
+    document.cookie = 'cs_history=fails; path=/';
+    try {
+      refreshNow();
+      await until('the error', () => $('#stats').textContent.includes('The history could not be loaded'));
+      const shown = $('#stats').textContent.includes('The history is locked') && rows().length === 0
+        && $('#events').textContent.trim() === '' && $('#shown').hidden;
+      noCookies();
+      refreshNow();
+      await until('the runs again', () => ids() === '3,1');
+      return shown;
+    } finally {
+      noCookies();
+    }
+  });
+
+  await check('a tick of the auto refresh leaves a load still on its way alone', async () => {
+    const tick = () => doc().dispatchEvent(new CustomEvent('refresh', { detail: { auto: true } }));
+    let ticking = null;
+    document.cookie = 'cs_history=fails; path=/';
+    try {
+      refreshNow();
+      await until('the error', () => $('#stats').textContent.includes('The history could not be loaded'));
+      document.cookie = 'cs_history=slow; path=/';
+      refreshNow();  // answered after 1.5 s
+      ticking = setInterval(tick, 200);
+      await until('the runs while the ticks go on', () => ids() === '3,1', 4000);
+      return true;
+    } finally {
+      clearInterval(ticking);
+      noCookies();
+    }
+  });
+
+  await check('an answer for the session left behind is not drawn', async () => {
+    await go('/plugins/context_summarizer/');  // no link: the session is the host's, and this page is the host
+    await autoOff();
+    tell({ type: 'pk:init', theme: 'light', visible: true, session: { id: 's-2', title: 'Second' } });
+    await until('the run of s-2', () => ids() === '4');
+    const before = (await asked())['s-1'] || 0;
+    document.cookie = 'cs_history=slow; path=/';
+    try {
+      tell({ type: 'pk:session', session: { id: 's-1', title: 'First' } });
+      await until('the runs of s-1 asked for', async () => ((await asked())['s-1'] || 0) > before);
+    } finally {
+      noCookies();
+    }
+    tell({ type: 'pk:session', session: { id: 's-3', title: 'Third' } });
+    await until('the runs of s-3', () => statValue('events') === '101');
+    await sleep(2000);  // the answer for s-1 is in by now
+    return statValue('events') === '101' && rows()[0].dataset.id === '105' && !row(1);
+  });
+
+  await check('with no session open the panel says so and asks for nothing', async () => {
+    const total = async () => Object.values(await asked()).reduce((sum, count) => sum + count, 0);
+    const before = await total();
+    await go('/plugins/context_summarizer/');  // no shell, no link: no session
+    await until('the empty state', () => $('#stats')?.textContent.includes('No session open'));
+    await sleep(300);
+    return (await total()) === before && rows().length === 0 && !statValue('events') && $('#events').textContent.trim() === '';
+  });
+
+  await check('rows drawn anew keep the keyboard focus, and an unchanged answer draws nothing', async () => {
+    await go('/plugins/context_summarizer/?session_id=s-1');
+    await until('the runs of s-1', () => ids() === '3,1');
+    await autoOff();
+    const focused = row(1);
+    focused.focus();
+    await fetch('/__stub/record', { method: 'POST' });
+    refreshNow();
+    await until('the recorded run', () => ids() === '106,3,1');
+    const moved = doc().activeElement === row(1) && row(1) !== focused;
+    const drawnRows = rows();
+    const count = (await asked())['s-1'];
+    refreshNow();
+    await until('the unchanged answer', async () => (await asked())['s-1'] > count);
+    await sleep(300);
+    return moved && rows().every((one, i) => one === drawnRows[i]) && doc().activeElement === drawnRows[2];
+  });
+
+  await check('closing the drawer gives the focus back to its row, also when the list was drawn anew behind it', async () => {
+    row(1).focus();
+    row(1).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until('the drawer', () => drawer().open && $('#detailTitle').textContent.startsWith('applied'));
+    const before = row(1);
+    await fetch('/__stub/record', { method: 'POST' });
+    refreshNow();
+    await until('the list drawn anew', () => ids() === '107,106,3,1');
+    drawer().dispatchEvent(new Event('cancel'));  // what Escape sends before the dialog closes
+    drawer().close();
+    await sleep(100);
+    return !drawer().open && row(1) !== before && doc().activeElement === row(1);
+  });
+
+  await check('the auto refresh runs from the start and brings a new run', async () => {
+    await go('/plugins/context_summarizer/?session_id=s-1');
+    await until('the runs of s-1', () => ids() === '107,106,3,1');
+    const running = $('pk-refresh [data-act="auto"]').getAttribute('aria-pressed') === 'true';
+    await fetch('/__stub/record', { method: 'POST' });
+    await until('the new run, brought by a tick', () => ids() === '108,107,106,3,1', 8000);
+    return running;
+  });
+
+  await check('clearing asks once, cancelled keeps every run and confirmed forgets them', async () => {
+    await autoOff();  // no tick: the clear itself has to draw the panel anew
+    const questions = () => doc().querySelectorAll('dialog.pk-dialog[open]:not(#detail)');
+    const button = $('#clearButton');
+    button.focus();
+    button.click();
+    button.click();  // a double click asks once
+    let asking = await until('the question', () => questions()[0]);
+    await sleep(200);
+    const once = questions().length === 1 && asking.textContent.includes('Clear the summarization history');
+    asking.querySelector('[data-index="0"]').click();  // Cancel
+    await sleep(500);
+    const kept = ids() === '108,107,106,3,1';
+    button.click();
+    asking = await until('the question again', () => questions()[0]);
+    asking.querySelector('[data-index="1"]').click();
+    await until('the empty panel', () => statValue('events') === '0' && $('#events').textContent.includes('No summarization yet'));
+    const all = await (await fetch('/plugins/context_summarizer/history')).json();
+    const cleared = once && kept && all.stats.events === 0 && !button.disabled && doc().activeElement === button;
+    // one run left, the same in this session and in all: the other scope still draws its session column
+    await fetch('/__stub/record', { method: 'POST' });
+    refreshNow();
+    await until('the one run', () => rows().length === 1);
+    $('[data-scope="all"]').click();
+    await until('the session column', () => $('#events thead').textContent.includes('Session'));
+    return cleared;
+  });
+
+  await check('a click on a column head sorts the runs by value, and the order holds when they are drawn anew', async () => {
+    // after the clearing: one skipped run of s-1, listed in either scope
+    await fetch('/__stub/record?count=20', { method: 'POST' });
+    await fetch('/__stub/record?count=15', { method: 'POST' });
+    refreshNow();
+    await until('the recorded runs', () => rows().length === 3);
+    const heads = () => [...doc().querySelectorAll('#events th')];
+    const head = (label) => heads().find((th) => th.textContent.trim() === label);
+    const counts = () => rows().map((one) => one.children[heads().indexOf(head('Messages'))].textContent.split(' ')[0]).join();
+    const { events } = await (await fetch('/plugins/context_summarizer/history?session_id=s-1')).json();
+    const saved = Object.fromEntries(events.map((one) => [one.original_message_count, one.tokens_saved]));
+    // as text the 15-message run would come first: "909" above "1,849"
+    const asText = new Intl.Collator(undefined, { numeric: true }).compare(n(saved[15]), n(saved[20])) > 0;
+    const byTime = counts() === '15,20,5' && head('Time').getAttribute('aria-sort') === 'descending';
+    head('Saved').click();
+    const sorted = counts() === '20,15,5' && head('Saved').getAttribute('aria-sort') === 'descending'
+      && !head('Time').hasAttribute('aria-sort');
+    const drawn = $('#events table');
+    await fetch('/__stub/record', { method: 'POST' });  // an unchanged answer draws nothing
+    $('pk-refresh [data-act="now"]').click();
+    await until('the list drawn anew', () => $('#events table') !== drawn && rows().length === 4);
+    return asText && byTime && sorted && counts() === '20,15,5,5';
+  });
+
+  await fetch('/__results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(results) });
+</script>
+</body>
+</html>

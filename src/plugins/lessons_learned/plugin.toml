@@ -1,0 +1,16 @@
+# lessons_learned plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "lessons_learned"
+version = "1.0.0"
+description = "Persistent lessons learned across sessions with semantic search, deduplication, and cross-agent teaching"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server", "web"]
+category = "productivity"
+requires = { agent_system = ">=0.7.0" }
+# starlette is imported directly (web endpoints); it arrives transitively
+# via fastapi today, but a direct import earns a direct declaration.
+dependencies = ["starlette>=0.40"]

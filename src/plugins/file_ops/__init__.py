@@ -5,14 +5,12 @@ Similar to GitHub Copilot's file editing capabilities with additional search/ind
 
 Tools:
 - read_file: Read text files with pagination support
-- create_file: Create new text files
-- edit_file: Edit files (append/replace/insert modes)
-- delete_file: Delete files safely
-- list_directory: List directory contents with filtering
-- file_exists: Check file/directory existence
-- get_file_info: Get file metadata
-- search_files: Fast file search by glob pattern
+- manage: Create, delete, move, rename files and directories
+- replace_string_in_file: Replace one exact occurrence of a string
+- list_directory: List directory contents, capped, with filtering
+- search_files: File search by glob pattern
 - grep_search: Full-text search across files
+- semantic_search: Embedding search (off unless configured)
 
 Security:
 - Path traversal prevention

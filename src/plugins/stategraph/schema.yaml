@@ -1,0 +1,196 @@
+# Jinja2 variables: {{ name }}
+# stategraph: agent workflows as UML-style state machines (docs/stategraph_design.md).
+# Tools that validate, save, run or control machines require an admin user (§8.3):
+# machines contain Python and run agents and tools.
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_catalog"
+      description: "What a machine may use: activity kinds with their fields, the agents an agent activity can run, the tools a tool activity may call (flat name, what it does, its parameters and which are required), decision profiles, example machine ids. Use only what this lists."
+      parameters:
+        type: object
+        properties:
+          agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. v6_*; default: every agent"}
+          tools: {type: string, description: "fnmatch pattern on the flat tool name that narrows the tool list, e.g. *json*; default: every tool the runner may call"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_runs"
+      description: "The newest runs you may see (yours, and runs of nobody; an admin every run): id, machine, status, final state, times, run_key. Find a run whose id you lost here, then read it with get_run."
+      parameters:
+        type: object
+        properties:
+          machine_id: {type: string, description: "only runs of this machine"}
+          status: {type: string, enum: ["running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled"], description: "only runs in this status"}
+          limit: {type: integer, minimum: 1, maximum: 200, default: 20, description: "at most this many, newest first"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_machines"
+      description: "Machines in the machine roots: id, title, file, whether it is writable, whether it validates."
+      parameters: {type: object, properties: {}, additionalProperties: false}
+
+  - type: function
+    function:
+      name: "{{ name }}_get_machine"
+      description: "A machine as its file tree: files {relative path: text} (the YAML, its companion .py, imported machines in the same root), versions {path: version} to pass back when saving, and its validation problems."
+      parameters:
+        type: object
+        properties:
+          machine_id: {type: string, description: "id of the machine (its file is <machine_id>.yaml)"}
+        required: [machine_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_validate_machine"
+      description: "Check a machine without saving: format, graph, Python (compiles, names exist, purity), activities, submachine parameters, and whether the configuration can run it (agents that exist, tools the runner may call). Pass the whole tree as files, root file first, or a single yaml."
+      parameters:
+        type: object
+        properties:
+          files: {type: object, additionalProperties: {type: string}, description: "relative path -> text; the root machine is <machine_id>.yaml"}
+          yaml: {type: string, description: "a single machine file instead of files"}
+          machine_id: {type: string, description: "id of the root machine (default: the id in the YAML)"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_save_machine"
+      description: "Validate, then write the machine tree into the writable machine root. Refused if validation finds errors, or if a file changed since the versions you read (pass expected_versions from get_machine; omit for new files)."
+      parameters:
+        type: object
+        properties:
+          files: {type: object, additionalProperties: {type: string}, description: "relative path -> text: <machine_id>.yaml, its companion .py, imported machines"}
+          machine_id: {type: string, description: "id of the root machine (default: the id in <id>.yaml)"}
+          expected_versions: {type: object, additionalProperties: {type: string}, description: "relative path -> version from get_machine, for every existing file you change"}
+        required: [files]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_run_machine"
+      description: "Run a machine. mocks {state path: out} answer instead of the activity ({\"$visits\": [out1, out2]} per use of the path in the run, {\"$error\": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key makes it the same request again: the run with that key is attached to while it runs, resumed when interrupted, and answered again (ended: its status) once it ended; only a transient failure starts a new run."
+      parameters:
+        type: object
+        properties:
+          machine_id: {type: string, description: "id of the machine to run"}
+          request: {type: string, description: "instead of machine_id: '<machine id> {json params}' or '<machine id> key=value ...' (the slash command's line)"}
+          params: {type: object, description: "the machine's params (run input)"}
+          mocks: {type: object, description: "state path -> out; {\"$visits\": [...]} per visit; {\"$error\": {type, message}} to fail"}
+          mock_only: {type: boolean, default: false, description: "refuse every unmocked agent, tool or decision"}
+          breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
+          watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
+          run_key: {type: string, description: "the same request again: the run with this key instead of a second one -- attached to while it runs, resumed when interrupted, its outcome again once it ended (only a transient failure starts a new run)"}
+          pause_at_start: {type: boolean, default: false, description: "hold the run at its first hook (then step or continue with control_run)"}
+          full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
+          wait: {type: string, enum: ["finish", "background"], default: "finish", description: "finish: return when the run ends, pauses or waits for an event (a timer it waits out); background: return at once"}
+          max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish before returning status running"}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_get_run"
+      description: "A run's status, frames (active states, context), output or error, what it waits for, and its last journal rows."
+      parameters:
+        type: object
+        properties:
+          run_id: {type: string, description: "id from run_machine"}
+          steps: {type: integer, minimum: 1, maximum: 200, default: 30, description: "how many journal rows to return: the last ones, or the first after `after`"}
+          after: {type: integer, minimum: 0, description: "the rows after this journal seq (to page forward through a long run); without it, the last ones"}
+          kinds: {type: array, items: {type: string, enum: ["activity", "trace", "event", "edit", "timer"]}, description: "only rows of these kinds (activity: what each activity was given and answered; trace: transitions with the guards they evaluated, pauses, finals)"}
+          state: {type: string, description: "only rows of this state"}
+          wait: {type: string, enum: ["now", "finish"], default: "now", description: "finish: a running run (or one in a timer) is waited for until it ends, pauses or waits for an event (at most max_wait seconds)"}
+          max_wait: {type: number, default: 600, description: "seconds to wait with wait=finish"}
+          full_output: {type: boolean, default: false, description: "the run's output in full; without it, texts over 20,000 characters are cut"}
+        required: [run_id]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_control_run"
+      description: "Debugger and lifecycle: pause, continue, step, run_to (state), terminate, resume (an interrupted run), fork (from top-level step at_step), set_breakpoints, set_watchpoints, evaluate (expr, read-only), set (path, expr; only while paused)."
+      parameters:
+        type: object
+        properties:
+          run_id: {type: string, description: "id of the run"}
+          action: {type: string, enum: ["pause", "continue", "step", "run_to", "terminate", "resume", "fork", "set_breakpoints", "set_watchpoints", "evaluate", "set"], description: "what to do"}
+          state: {type: string, description: "run_to: the state to stop at"}
+          machine: {type: string, description: "run_to: the machine that state belongs to (default: any frame)"}
+          at_step: {type: integer, minimum: 0, description: "fork: the top-level step to fork from (at most where the source's journal ends; without it: there)"}
+          definition: {type: string, enum: ["snapshot", "current"], default: "snapshot", description: "fork: the run's own definition, or the machine as it is now"}
+          pause: {type: boolean, default: false, description: "fork: hold the fork at the fork point (its first live hook), to look at or set ctx before it goes on"}
+          mocks: {type: object, description: "fork: mocks over the source run's ({state path: out}); what the fork replays keeps its outcome"}
+          breakpoints: {type: array, items: {}, description: "set_breakpoints: 'state', 'state@exit', or {state, at, condition}"}
+          watchpoints: {type: array, items: {}, description: "set_watchpoints: Python expressions, or {expr, condition}"}
+          expr: {type: string, description: "evaluate / set: a read-only Python expression over the paused scope"}
+          path: {type: string, description: "set: the ctx path to assign, e.g. ctx.draft -- or out, at an exit or error breakpoint of a state with do: the activity completes with that out (a failure too)"}
+          steps: {type: integer, minimum: 1, maximum: 200, description: "how many of the run's last journal rows the answer carries (as get_run); without it, none"}
+        required: [run_id, action]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_send_event"
+      description: "Send a declared event to a run. It goes to the frame whose active states accept it; name frame when several do. An event nobody accepts yet waits in the run's inbox."
+      parameters:
+        type: object
+        properties:
+          run_id: {type: string, description: "id of the run"}
+          name: {type: string, description: "a declared event name"}
+          data: {type: [object, array, string, number, boolean, "null"], description: "payload; checked against the event's declared data schema"}
+          frame: {type: string, description: "frame prefix (from get_run accepts) when several frames accept the event"}
+        required: [run_id, name]
+        additionalProperties: false
+
+commands:
+  - name: stategraph-run
+    description: "run a state machine in the background"
+    tool: "{{ name }}_run_machine"
+    argument: request
+    argument_hint: "<machine id> [{json params} | key=value ...]"
+    params: {wait: background}
+  - name: stategraph-runs
+    description: "the newest state machine runs you may see"
+    tool: "{{ name }}_list_runs"
+    argument: machine_id
+    argument_hint: "[machine id]"
+  - name: stategraph-stop
+    description: "terminate a state machine run (its finally activities run)"
+    tool: "{{ name }}_control_run"
+    argument: run_id
+    argument_hint: "<run id>"
+    params: {action: terminate}
+
+web_ui:
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "State Graph"
+    description: "Model agent workflows as UML state machines, run and debug them"
+    icon: workflow
+    category: agents
+    keywords: [state machine, statechart, workflow, uml, debugger, breakpoints, watchpoints]
+    window: {width: 1320, height: 880}
+  endpoints:
+    - {path: "/", method: GET, handler: render_panel, response_type: html, description: "The State Graph panel"}
+    - {path: "/api/machines", method: GET, handler: api_list_machines, response_type: json}
+    - {path: "/api/machines", method: POST, handler: api_create_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}", method: GET, handler: api_get_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}", method: PUT, handler: api_save_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}", method: DELETE, handler: api_delete_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}/edit", method: POST, handler: api_edit_machine, response_type: json}
+    - {path: "/api/machines/{machine_id}/layout", method: PUT, handler: api_save_layout, response_type: json}
+    - {path: "/api/validate", method: POST, handler: api_validate, response_type: json}
+    - {path: "/api/kinds", method: GET, handler: api_kinds, response_type: json}
+    - {path: "/api/catalog", method: GET, handler: api_catalog, response_type: json}
+    - {path: "/callback", method: GET, handler: callback_page, response_type: html, description: "What a callback URL (?token=...) would send (no login: the token is the key)"}
+    - {path: "/callback", method: POST, handler: callback_send, response_type: json, description: "Send a callback URL's event (?token=...), once"}
+    - {path: "/callback/{token}", method: GET, handler: callback_page, response_type: html, description: "The same for a URL made before the token moved into the query"}
+    - {path: "/callback/{token}", method: POST, handler: callback_send, response_type: json, description: "The same for a URL made before the token moved into the query"}
+    - {path: "/api/runs", method: GET, handler: api_list_runs, response_type: json}
+    - {path: "/api/runs", method: POST, handler: api_start_run, response_type: json}
+    - {path: "/api/runs/{run_id}", method: GET, handler: api_get_run, response_type: json}
+    - {path: "/api/runs/{run_id}/journal", method: GET, handler: api_run_journal, response_type: json}
+    - {path: "/api/runs/{run_id}/control", method: POST, handler: api_control_run, response_type: json}
+    - {path: "/api/runs/{run_id}/events", method: POST, handler: api_send_event, response_type: json}

@@ -1,123 +1,122 @@
-"""Path validation and security for file operations.
+"""Path validation for file operations.
 
-Prevents path traversal attacks, validates paths within allowed directories,
-and safely handles symlinks.
+The containment rules themselves live in
+:mod:`agent_system.utils.path_sandbox` — one resolution point shared with the
+other plugins that take a path from LLM arguments. This module keeps the
+plugin-facing shape: ``SecurityError``, ``validate_path(path, must_exist)``,
+and the ``must_exist`` contract that turns a missing file into
+``FileNotFoundError`` rather than a security refusal.
+
+Two lexical rules were dropped when the containment moved: paths containing
+``..`` or ``~`` are no longer rejected on sight. Both are ineffective AFTER
+canonicalization — ``a/../../etc/passwd`` resolves outside and is refused by
+containment, ``a/../a/x`` resolves inside and IS the file that was named — so
+the extra rules only rejected harmless paths. The escape tests keep passing
+because they escape; see ``path_sandbox`` for why canonicalization must come
+before any lexical judgement.
+
+**Known gap — read_only lives in two places.** ``PathSandbox`` carries a
+``read_only`` mode, but this plugin does NOT pass it: the server keeps
+enforcing its own flag per operation (``server.py``). That is deliberate for
+now. The server's check also covers operations that never resolve a path
+through here, and routing it into the sandbox would mean deciding read-vs-write
+at each of the eleven ``validate_path`` call sites — a bigger change than
+moving the boundary, and one that belongs with the terminal work rather than
+smuggled in beside it. Until then: the VOCABULARY is shared, the enforcement
+for this plugin is not.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import re
 from pathlib import Path
 from typing import List
 
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 logger = logging.getLogger(__name__)
 
 
-class SecurityError(Exception):
-    """Raised when a security violation is detected."""
-    pass
+class SecurityError(PathSandboxDenied):
+    """Raised when a security violation is detected.
+
+    Subclass rather than alias: every catch site in this plugin reports
+    ``error_type: "SecurityError"`` to the model, and that string is part of
+    the model-facing contract.
+    """
+
+
+#: Git Bash writes a Windows drive as its letter: `/e/Projects/x` is E:\Projects\x.
+_GIT_BASH_DRIVE = re.compile(r"^/([a-zA-Z])(/.*)?$")
+
+
+def from_git_bash(path: str) -> str:
+    """On Windows, `/e/...` as the drive path it stands for; any other path as given.
+
+    The coder's shell is Git Bash: every `pwd` and error message hands the model
+    paths of that form, and the sandbox read them as a folder `e` on the root
+    of the current drive -- outside every allowed directory.
+    """
+    if os.name != "nt" or not isinstance(path, str):
+        return path
+    match = _GIT_BASH_DRIVE.match(path)
+    if match is None:
+        return path
+    return f"{match.group(1).upper()}:{match.group(2) or '/'}"
 
 
 class PathValidator:
     """Validates and sanitizes file paths for secure file operations."""
-    
-    def __init__(self, allowed_dirs: List[str]):
+
+    def __init__(self, allowed_dirs: List[str], base: Path | str | None = None):
         """
-        Initialize path validator with allowed directories.
-        
         Args:
-            allowed_dirs: List of directory paths that are allowed for file operations.
-                          All paths are resolved to absolute paths.
+            allowed_dirs: directories allowed for file operations. Relative
+                entries resolve against ``base``.
+            base: what a relative path counts against. Defaults to the current
+                working directory, which is what this plugin used before the
+                shared sandbox existed.
         """
-        self.allowed_dirs = [Path(d).resolve() for d in allowed_dirs]
-        logger.info(f"PathValidator initialized with {len(self.allowed_dirs)} allowed directories")
-        for d in self.allowed_dirs:
-            logger.debug(f"Allowed directory: {d}")
-    
+        self._sandbox = PathSandbox.from_config(
+            allowed_dirs, base=base if base is not None else Path.cwd())
+        logger.info(
+            "PathValidator initialized with %d allowed directories",
+            len(self._sandbox.roots))
+
+    @property
+    def allowed_dirs(self) -> List[Path]:
+        """The resolved allow-list (kept for callers and tests that read it)."""
+        return list(self._sandbox.roots)
+
     def validate_path(self, path: str, must_exist: bool = False) -> Path:
         """
         Validate that a path is safe and within allowed directories.
-        
-        Args:
-            path: Path to validate (can be absolute or relative)
-            must_exist: If True, raise error if path does not exist
-        
+
         Returns:
             Resolved absolute Path object
-        
+
         Raises:
-            SecurityError: If path is unsafe or outside allowed directories
-            FileNotFoundError: If must_exist=True and path does not exist
+            SecurityError: path is unsafe or outside allowed directories
+            FileNotFoundError: ``must_exist`` and the path does not exist
         """
-        # Check for null bytes
-        if '\x00' in path:
-            raise SecurityError("Path contains null byte")
-        
-        # Convert to Path object
-        p = Path(path)
-        
-        # Check for dangerous patterns in parts
-        if ".." in p.parts:
-            raise SecurityError("Path contains '..' traversal pattern")
-        
-        # Check for tilde expansion
-        if "~" in str(p):
-            raise SecurityError("Path contains '~' home directory pattern")
-        
-        # Resolve to absolute path (follows symlinks)
+        path = from_git_bash(path)
         try:
-            abs_path = p.resolve(strict=must_exist)
-        except OSError as e:
-            if must_exist:
-                raise FileNotFoundError(f"Path does not exist: {path}") from e
-            # If not strict, resolve without following final component
-            abs_path = p.absolute().resolve()
-        
-        # Check if within allowed directories
-        is_allowed = False
-        for allowed_dir in self.allowed_dirs:
-            try:
-                # Check if abs_path is relative to allowed_dir
-                abs_path.relative_to(allowed_dir)
-                is_allowed = True
-                break
-            except ValueError:
-                # Not relative to this allowed_dir, try next
-                continue
-        
-        if not is_allowed:
-            raise SecurityError(
-                f"Path outside allowed directories: {abs_path}\n"
-                f"Allowed directories: {[str(d) for d in self.allowed_dirs]}"
-            )
-        
-        # Additional symlink check: if path is a symlink, validate target
-        if abs_path.is_symlink():
-            target = abs_path.readlink()
-            # Recursively validate symlink target
-            if not target.is_absolute():
-                target = abs_path.parent / target
-            return self.validate_path(str(target), must_exist=must_exist)
-        
-        logger.debug(f"Path validated: {path} -> {abs_path}")
-        return abs_path
-    
+            resolved = self._sandbox.resolve(path)
+        except PathSandboxDenied as exc:
+            raise SecurityError(str(exc)) from exc
+
+        if must_exist and not resolved.exists():
+            raise FileNotFoundError(f"Path does not exist: {path}")
+
+        logger.debug("Path validated: %s -> %s", path, resolved)
+        return resolved
+
     def is_allowed_directory(self, path: Path) -> bool:
-        """Check if a path is one of the allowed directories."""
-        abs_path = path.resolve()
-        return abs_path in self.allowed_dirs
-    
+        """Check if a path is one of the allowed directories itself."""
+        return path.resolve() in self._sandbox.roots
+
     def get_relative_path(self, path: Path) -> str:
         """Get path relative to closest allowed directory."""
-        abs_path = path.resolve()
-        
-        for allowed_dir in self.allowed_dirs:
-            try:
-                rel_path = abs_path.relative_to(allowed_dir)
-                return str(rel_path)
-            except ValueError:
-                continue
-        
-        # Fallback to absolute path
-        return str(abs_path)
+        return self._sandbox.relative(path.resolve())

@@ -1,0 +1,89 @@
+# media_ops plugin — media between disk and context: load a file in,
+# list what the conversation currently carries, write one item back out.
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_load"
+      description: >
+        Load an existing image, audio or video file from disk so you can see/hear it.
+        The file is attached to this tool's answer and stays in the conversation for
+        the rest of the run — that costs context, audio and video far more than a
+        single image. Load only files you actually need to inspect, one per call.
+        Only files inside the configured media directories can be loaded; anything
+        else is refused. Supported: image (png, jpg, jpeg, gif, webp, bmp), audio
+        (wav, mp3, ogg, flac, m4a, aac), video (mp4, webm, avi, mov).
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "File path — absolute, or relative to the project root."
+        required: [path]
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_list_context"
+      description: >
+        List the images, audio and video currently in this conversation — the ones
+        you were shown, and the ones tools attached. Each entry has a stable id,
+        type, size and, when the item is already a file, its path. Cheap: no media
+        is re-sent, only the descriptions. Use it to get the id for
+        {{ name }}_save.
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+{% if not read_only %}
+  - type: function
+    function:
+      name: "{{ name }}_save"
+      description: >
+        Write one media item from this conversation to disk, so it survives the
+        run and can be handed to other tools. Take the id from
+        {{ name }}_list_context. Returns the written path. Media that is already
+        a file on disk is not copied — you get its existing path back. The target
+        must be inside the configured media directories and carry a supported
+        extension; existing files are only replaced with overwrite=true.
+      parameters:
+        type: object
+        properties:
+          id:
+            type: string
+            description: "Media id from {{ name }}_list_context."
+          path:
+            type: string
+            description: >
+              Target file path incl. extension — absolute, or relative to the
+              project root.
+          overwrite:
+            type: boolean
+            default: false
+            description: "Replace an existing file at that path."
+        required: [id, path]
+        additionalProperties: false
+{% endif %}
+
+config:
+  type: object
+  properties:
+    allowed_directories:
+      type: array
+      items:
+        type: string
+      default: ["data"]
+      description: >
+        Sandbox roots for BOTH directions: a file is only loaded, and a save
+        target only written, if its resolved path (symlinks followed) lies
+        inside one of these. Relative paths resolve against the project root.
+        Keep this list as small as possible: the path comes from LLM arguments,
+        every readable file ends up base64-encoded in the model context, and
+        every writable path can be overwritten.
+    max_file_size_mb:
+      type: number
+      default: 20
+      description: >
+        Upper bound per file in MB. Larger files are refused with their actual
+        size — a 200 MB video would blow up the request before it is sent.

@@ -1,0 +1,2183 @@
+@database "ScarabHive"
+@author "Enrico Ehrich"
+@$VER: scarabhive.guide 1.0 (28.09.2026)
+@smartwrap
+
+@node main "ScarabHive"
+@{jcenter}
+@{b}ScarabHive@{ub}
+@{jleft}
+
+ScarabHive is a plugin-based framework for building and running LLM agents:
+a core runtime, about seventy plugins, a web UI, a command-line client and a
+REST API, all driven by YAML configuration. This guide is the manual for
+both sides: for the people who install, run and use it, and for the people
+who extend it with plugins, agents and panels.
+
+Pick a topic below, or use Contents and Browse to move around.
+
+@{code}
+Getting started
+  @{"  What is ScarabHive  " link intro}
+  @{"  Quickstart  " link quickstart}
+  @{"  Concepts  " link concepts}
+
+Using ScarabHive
+  @{"  The web UI  " link webui}
+  @{"  Chat commands  " link commands}
+  @{"  Choosing an agent  " link agents}
+  @{"  Sessions  " link sessions}
+  @{"  Command line (agent-cli)  " link cli}
+
+Running and configuring
+  @{"  Running the server  " link running}
+  @{"  Configuration files  " link config}
+  @{"  Users, roles and login  " link auth}
+  @{"  LLM models and profiles  " link llm}
+  @{"  External MCP servers  " link mcp}
+  @{"  REST API  " link api}
+
+Developing
+  @{"  Architecture of the core  " link architecture}
+  @{"  Writing a plugin  " link plugins}
+  @{"  Tools  " link tools}
+  @{"  Hooks  " link hooks}
+  @{"  Panels and the UI kit  " link panels}
+  @{"  Writing an agent  " link agentdev}
+  @{"  Skills  " link skills}
+  @{"  Sub-agents and the SAM  " link subagents}
+  @{"  Config models and schemas  " link devconfig}
+  @{"  Tests and conventions  " link testing}
+  @{"  Browse installed plugins  " link plugins/main}
+
+About this help
+  @{"  Using this help  " link help}
+  @{"  Writing a guide  " link authoring}
+  @{"  Beyond AmigaOS  " link markdown}
+@{body}
+@endnode
+
+
+@node intro "What is ScarabHive"
+@{h1}What is ScarabHive
+
+ScarabHive is a framework for composing and running AI agents: a Python core
+that talks to LLM providers, a plugin system that gives agents tools, a
+FastAPI application with a web UI, and a command-line client. Agents are
+defined in YAML rather than in code, so adding a new agent is normally a
+configuration change, not a code change.
+
+It has two layers.
+
+@{b}The core@{ub} (@{tt}src/agent_system/@{utt}) is the runtime: the agent
+loop and session handling, the LLM layer, the tool server framework, plugin
+discovery, the configuration models, the FastAPI application with the web
+UI, lifecycle hooks, authentication and the CLI. Everything else is built on
+top of it; the core itself names no LLM provider. See
+@{" Architecture of the core " link architecture}.
+
+@{b}Plugins@{ub} (@{tt}src/plugins/@{utt}, and any other folder listed in
+@{tt}plugins.plugin_dirs@{utt}) supply what an agent can actually do: file
+operations, a terminal, web search, memory, sequential thinking, sub-agent
+orchestration, debugging tools, and the LLM providers themselves. A plugin
+can provide tools, hooks, a web panel, or ship agent definitions of its own.
+See @{" Writing a plugin " link plugins} and the
+@{" list of installed plugins " link plugins/main}.
+
+Agents can call other agents as tools (sub-agents), hold a persistent,
+multi-turn session, and stream their progress over Server-Sent Events to the
+web UI or the terminal while they work. Tools can also come from external
+servers that speak the Model Context Protocol (MCP).
+@endnode
+
+
+@node quickstart "Quickstart"
+@{h1}Quickstart
+
+@{h2}1. Install
+
+ScarabHive needs Python 3.11 or newer. No Node.js: the web UI is served by
+the Python application itself. From the repository folder:
+
+@{code bash}
+python -m venv .venv
+.venv\\Scripts\\activate          # Windows (cmd, PowerShell)
+source .venv/bin/activate       # Linux, macOS
+pip install -e .
+@{body}
+
+@{tt}pyproject.toml@{utt} also defines the optional extras @{tt}dev@{utt},
+@{tt}test@{utt} and @{tt}gpu@{utt}, for example
+@{tt}pip install -e ".[dev,test]"@{utt} for a contributor.
+
+@{h2}2. API keys
+
+Keys never go into the YAML files. Copy
+@{tt}config/secrets.env.example@{utt} to @{tt}config/secrets.env@{utt} and
+fill in the keys of the providers you use (@{tt}OPENROUTER_API_KEY@{utt},
+@{tt}OPENAI_API_KEY@{utt}, @{tt}ANTHROPIC_API_KEY@{utt},
+@{tt}GOOGLE_API_KEY@{utt}, ...). The configuration refers to them as
+@{tt}${NAME}@{utt}. A variable already set in the environment wins over
+@{tt}secrets.env@{utt}; one that is set nowhere becomes an empty string, and
+the start logs one warning naming every missing variable. Details:
+@{" Configuration files " link config}.
+
+@{h2}3. Start the server
+
+@{code bash}
+agent-api
+@{body}
+
+This starts the FastAPI application with the web UI and the REST API. It
+always reads @{tt}config/config.yaml@{utt} of the project and listens on
+@{tt}network.host@{utt} and @{tt}network.port@{utt} from that file
+(@{tt}127.0.0.1:8000@{utt} as shipped); the environment variables
+@{tt}HOST@{utt} and @{tt}PORT@{utt} override them. More in
+@{" Running the server " link running}.
+
+@{h2}4. Log in
+
+Open @{tt}http://127.0.0.1:8000@{utt}. The shipped configuration has
+authentication switched on, so the browser is sent to the login page. On its
+very first start, with an empty user database, the server creates one admin
+account from @{tt}auth.default_admin_username@{utt},
+@{tt}auth.default_admin_password@{utt} and
+@{tt}auth.default_admin_email@{utt} in @{tt}config/config.yaml@{utt} (a
+random password if none is set) and writes the credentials once into the
+console and the API log. Change that password at once: user menu,
+@{b}Settings@{ub}.
+
+Then open the @{b}Setup@{ub} panel (admin only; panel starter or Ctrl+K). It
+lists every @{tt}${NAME}@{utt} the configuration uses as @{i}set@{ui},
+@{i}missing@{ui} or @{i}placeholder@{ui}, says whether the admin still has a
+publicly known password and whether login tokens are signed with a known key
+(@{tt}auth.secret_key@{utt} -- set your own), and it can send one test
+request through the default agent.
+
+@{h2}5. Chat
+
+Choose an agent and a model profile with the two buttons under the message
+box, type, and send with @{b}Ctrl+Enter@{ub} (Enter alone makes a new line).
+See @{" The web UI " link webui} and @{" Chat commands " link commands}.
+
+Or from a terminal, without the browser:
+
+@{code bash}
+agent-cli chat                      # interactive, with the default agent
+agent-cli run "What can you do?"    # one task, then exit
+agent-cli chat --agent NAME         # another agent
+@{body}
+
+@{tt}agent-cli run@{utt} and @{tt}agent-cli chat@{utt} run the agent in
+their own process with the same configuration and the same session store;
+@{tt}agent-api@{utt} does not have to be running. See
+@{" Command line (agent-cli) " link cli}.
+@endnode
+
+
+@node concepts "Concepts"
+@{h1}Concepts
+
+The pieces below recur throughout this guide. Each links to the node that
+goes into more detail.
+
+@{b}Agent@{ub}: a configured assistant with a system prompt, a chain of LLM
+profiles, a tool allowlist and a step budget. Most agents are pure
+configuration (YAML), not code. Using one: @{" Choosing an agent " link agents};
+defining one: @{" Writing an agent " link agentdev}.
+
+@{b}Session@{ub}: the stored conversation between a user and an agent --
+its messages, the agent and LLM profile in use, and metadata. Survives
+restarts. See @{" Sessions " link sessions}.
+
+@{b}Plugin@{ub}: a folder of installable functionality. Most plugins are tool
+servers; others provide hooks, a web panel, agent definitions, or an LLM
+provider -- or several of these at once. See @{" Writing a plugin " link plugins}.
+
+@{b}Tool@{ub}: one function a tool server offers the model, described by a
+JSON schema the model reads as its contract. See @{" Tools " link tools}.
+
+@{b}Hook@{ub}: plugin code that runs at a fixed point of the agent loop
+(before an LLM call, after one, at session start, ...) and may change what is
+sent or what came back. See @{" Hooks " link hooks}.
+
+@{b}Skill@{ub}: a packaged piece of agent knowledge -- a SKILL.md with
+optional reference files -- that an agent's configuration names, instead of
+copying the text into every system prompt. See @{" Skills " link skills}.
+
+@{b}Sub-agent@{ub}: an agent that another agent starts and talks to through a
+tool, with its own session and history. Orchestrated by the
+@{i}sub_agent_manager@{ui} plugin (SAM). See @{" Sub-agents and the SAM " link subagents}.
+
+@{b}LLM provider / profile@{ub}: a provider is a plugin that talks to one kind
+of API (OpenAI, Anthropic, Gemini, OpenRouter, Ollama, OpenAI-compatible
+servers); a profile is a short name for a configured model that agents and
+users choose. See @{" LLM models and profiles " link llm}.
+
+@{b}Panel@{ub}: a page the core or a plugin adds to the web UI, opened from
+the panel catalog and docked next to the chat or floated as a window. See
+@{" The web UI " link webui}.
+@endnode
+
+
+@node webui "The web UI"
+@{h1}The web UI
+
+The browser UI is one page around a chat. Every other view -- the system
+status, a session's details, the settings, this help and every plugin's
+panel -- is a page of its own, shown in a frame: docked as a tab next to the
+chat, or floated as a window you can drag. A panel is open at most once;
+opening it again brings it to the front.
+
+@{h2}The screen
+
+@{table}
+Part | What is there
+Header | the panel starter (panels by category, with a search), the theme button (system, light, dark), the user menu (@{b}Settings@{ub}, @{b}System@{ub}, @{b}Log out@{ub})
+Sessions, left | your sessions grouped by day, with their sub-agent sessions; @{b}New@{ub}, rename, delete; a marker on sessions that are running right now. Ctrl+B hides it; its edge can be dragged
+Chat, middle | the conversation; while the agent works, a progress line per tool call, which ends in the tool's result line
+Message box | the text field; under it the @{b}Agent@{ub} and @{b}Model profile@{ub} buttons, attach, send, and @{b}Stop@{ub} while a run is going
+Dock, right | docked panels as tabs; drag a tab or use Shift+Left/Right to reorder; a button opens the panel in its own browser tab. Ctrl+Alt+B hides the dock
+Windows | floating panels, above everything else
+Status bar | connection, the open windows, the version
+@{body}
+
+On a narrow screen the sessions list becomes an overlay and a floating panel
+fills the screen.
+
+@{h2}Chatting
+
+@{bullet}Send with @{b}Ctrl+Enter@{ub}; Enter and Shift+Enter make a new
+line.
+@{bullet}A message sent while the agent is still working is added to the
+running turn.
+@{bullet}@{b}Stop@{ub} cancels the running turn.
+@{bullet}Attach files with the paper clip, by dropping them on the message
+box, or by pasting: images, audio and text, up to 20 MB each.
+@{bullet}The agent and the model profile are chosen with the two buttons
+under the message box, see @{" Choosing an agent " link agents}.
+@{bullet}A sub-agent's run is shown under the call that started it. What is
+folded -- a run's steps, thinking, sub-agents, their answers -- is set per
+account in @{b}Settings@{ub}.
+@{bullet}Slash commands work in the message box, see
+@{" Chat commands " link commands}.
+@{bullet}Whether an answer is rendered as Markdown depends on the agent:
+agents that run the @{tt}markdown_formatter@{utt} hook get formatted
+answers.
+
+@{h2}Finding a panel
+
+All of these read the same catalog (@{tt}GET /api/ui/catalog@{utt}), and
+each shows only the panels your role may open:
+
+@{bullet}the panel starter in the header: categories and a search;
+@{bullet}the command palette, @{b}Ctrl+K@{ub}: actions, panels, agents and
+sessions;
+@{bullet}links in the chat: a session's info button and its title, the
+request id under an answer -- they open the panels that can show that
+session or that request;
+@{bullet}the user menu: @{b}Settings@{ub} and @{b}System@{ub};
+@{bullet}a direct link: @{tt}/?panel=<panel path>@{utt}.
+
+@{h2}Panels that come with the core
+
+@{table}
+Panel | Shows
+Session | context variables, message counts and the token estimate of the active session
+System | the status with its reasons, the deployed commit, running requests, tool servers and external MCP servers
+Settings | theme; chat folding; your profile and password
+Help | this manual and every plugin's guide
+UI Kit | every standard control in every state, for panel authors
+Security Audit | (admin; with authentication and @{tt}auth.endpoint_security.audit_enabled@{utt}) every request, who sent it and what it was answered
+Performance, Memory Profile | (admin; only when started with @{tt}AGENT_ENABLE_PROFILING=1@{utt} or @{tt}AGENT_ENABLE_MEMORY_PROFILING=1@{utt}) profiling
+@{body}
+
+Plugins add more -- among them @{b}Setup@{ub}, @{b}Users@{ub},
+@{b}Agent Editor@{ub} (admin) and @{b}Session Archive@{ub}. Every plugin with
+its documentation: @{" Browse installed plugins " link plugins/main}.
+
+@{h2}Keys
+
+@{table}
+Key | Does
+Ctrl+K | command palette
+Ctrl+B | show or hide the sessions list
+Ctrl+Alt+B | show or hide the panel dock
+Ctrl+Enter | send
+Escape | close the palette, a picker, a menu or a dialog
+Shift+Left, Shift+Right | move the focused dock tab
+@{body}
+
+@{h2}What is remembered
+
+The theme is kept in this browser. The arrangement of docked and floating
+panels is kept in this browser, per account. The chat folding settings
+belong to the account and follow you to other browsers.
+@endnode
+
+
+@node commands "Chat commands"
+@{h1}Chat commands
+
+Commands are typed into the message box, in the web UI as in
+@{tt}agent-cli chat@{utt}. Most of them run without an LLM call and cost no
+tokens; @{tt}/retry@{utt} and a skill send a message to the agent. Both
+surfaces read the same catalogue (@{tt}src/agent_system/chat_commands.py@{utt}).
+
+@{table}
+Command | What it does
+@{tt}/new@{utt} | start a fresh session; the current one stays saved
+@{tt}/session@{utt} | show the current session and how to resume it
+@{tt}/sessions [count\|all]@{utt} | list recent sessions of the chat agents
+@{tt}/resume [id\|title]@{utt} | continue an earlier session; bare: the last one
+@{tt}/title [text]@{utt} | name this session; bare: show the name
+@{tt}/agent [name]@{utt} | bare: list the agents; a name switches and starts a new session
+@{tt}/vars [KEY=VALUE ...]@{utt} | session variables: bare lists, @{tt}KEY=VALUE@{utt} sets, @{tt}unset KEY@{utt}, @{tt}clear@{utt}
+@{tt}/tools [filter]@{utt} | the tools this agent really has, not what it claims
+@{tt}/skills@{utt} | the skills you can run, and what this agent loads
+@{tt}/costs@{utt} (@{tt}/cost@{utt}) | cost of the session so far, sub-agents included
+@{tt}/context@{utt} (@{tt}/ctx@{utt}) | what fills this session's context window
+@{tt}/history [n]@{utt} (@{tt}/hist@{utt}) | the last n exchanges (default 6)
+@{tt}/last@{utt} | the tool calls and results of the last turn, in full
+@{tt}/undo@{utt} | drop the last exchange from the session
+@{tt}/retry@{utt} | drop the last exchange and ask it again
+@{tt}/export [path]@{utt} | write the conversation to a Markdown file
+@{tt}/help@{utt} (@{tt}/h@{utt}, @{tt}/?@{utt}) | the list
+@{body}
+
+@{b}Terminal only@{ub} (@{tt}agent-cli chat@{utt}):
+
+@{table}
+Command | What it does
+@{tt}/model [profile]@{utt} (@{tt}/llm@{utt}) | bare: list the LLM profiles; a name switches this session's profile. In the browser the @{b}Model profile@{ub} button does this
+@{tt}/copy@{utt} | copy the last answer to the clipboard
+@{tt}/attach [path \| clear]@{utt} | attach a file to the next message; bare lists, @{tt}clear@{utt} empties
+@{tt}/edit [text]@{utt} | write the next message in @{tt}$EDITOR@{utt}
+@{tt}/exit@{utt} (@{tt}/quit@{utt}, @{tt}/q@{utt}, @{tt}/bye@{utt}) | end the chat; Ctrl-D works too
+@{body}
+
+@{h2}Commands from plugins and skills
+
+@{bullet}A plugin can declare commands in its @{tt}schema.yaml@{utt}; each
+runs one of its tools directly. It is offered only when the current agent
+may call that tool. When two plugins use the same name, it is
+@{tt}/<plugin>:name@{utt}. See @{" Tools " link tools}.
+@{bullet}Every discovered skill runs as @{tt}/skill-name arguments@{utt}:
+its text becomes the message. See @{" Skills " link skills}.
+@{bullet}When names collide, a built-in command wins over a plugin command,
+and a plugin command over a skill.
+
+@{h2}Cancelling in the terminal
+
+Ctrl-C while the agent works cancels the turn, not the chat; a second
+Ctrl-C forces it. At the empty prompt, Ctrl-C twice in a row ends the chat.
+@endnode
+
+
+@node agents "Choosing an agent"
+@{h1}Choosing an agent
+
+An agent is a configured assistant: its own system prompt, its own tools, its
+own chain of LLM profiles. Several are installed; which ones you can pick
+depends on how each is configured.
+
+@{b}Which agent runs@{ub}: the one you chose, else the one the session was
+started with, else @{tt}default_agent@{utt} from
+@{tt}config/config.yaml@{utt} (the shipped configuration names
+@{tt}chat_agent@{utt}).
+
+@{b}In the web UI@{ub}: the @{b}Agent@{ub} button under the message box
+lists every agent whose @{tt}metadata.visibility@{utt} is @{tt}ui@{utt} or
+@{tt}both@{utt}; the command palette (Ctrl+K) lists them too. The choice
+applies to the next message. @{tt}/agent NAME@{utt} switches and starts a
+new session, so a conversation does not mix two agents' prompts and tools;
+@{tt}/agent@{utt} alone lists the agents. Opening a session from the list
+switches to the agent it belongs to. The @{b}Model profile@{ub} button next
+to it picks the LLM profile, see @{" LLM models and profiles " link llm}.
+
+@{b}In the terminal@{ub}: @{tt}agent-cli chat --agent NAME@{utt} or
+@{tt}agent-cli run "task" --agent NAME@{utt}; @{tt}/agent NAME@{utt} inside
+@{tt}agent-cli chat@{utt} switches and starts a new session;
+@{tt}--llm PROFILE@{utt} and @{tt}/model PROFILE@{utt} choose the LLM
+profile. See @{" Command line (agent-cli) " link cli}.
+
+@{b}What an agent can do@{ub}: @{tt}/tools@{utt} shows the tools this agent
+really has, not what it says it has; @{tt}/skills@{utt} shows the skills it
+loads. Agents with visibility @{tt}tool@{utt} are not offered in the
+picker: they are sub-agents that other agents start, see
+@{" Sub-agents and the SAM " link subagents}.
+
+Defining a new agent is a YAML file, see @{" Writing an agent " link agentdev}.
+@endnode
+
+
+@node sessions "Sessions"
+@{h1}Sessions
+
+A session is the stored conversation between a user and an agent: its
+messages, the agent and LLM profile in use, the session's template variables
+(@{tt}/vars@{utt}) and metadata such as message and token counts. Each
+session is one JSON file, @{tt}sessions/<user>/<session id>.json@{utt} in
+the data directory, so a conversation survives a restart and can be resumed
+later by its id or its title.
+
+@{h2}Whose sessions
+
+Sessions belong to a user. The web UI uses the logged-in account (the name
+@{tt}anonymous@{utt} when authentication is off); @{tt}agent-cli@{utt} uses
+@{tt}cli_user@{utt} unless @{tt}--session-user@{utt} names another. A
+session that a running process holds is locked; @{tt}--force@{utt} takes it
+over from a process that got stuck.
+
+@{h2}Working with them
+
+@{table}
+Where | How
+Web UI | the sessions list on the left: grouped by day, @{b}New@{ub}, rename (pencil), delete (bin), a marker on running sessions
+Chat | @{tt}/new@{utt}, @{tt}/session@{utt}, @{tt}/sessions@{utt}, @{tt}/resume@{utt}, @{tt}/title@{utt}, @{tt}/export@{utt} -- see @{" Chat commands " link commands}
+Terminal | @{tt}agent-cli chat --session ID@{utt}, @{tt}--list-sessions [N\|all]@{utt}, @{tt}--session-title TEXT@{utt} -- see @{" Command line " link cli}
+API | @{tt}/api/sessions@{utt} -- see @{" REST API " link api}
+@{body}
+
+@{h2}Sub-agent sessions
+
+A sub-agent keeps its own session, filed under the session that started it.
+The sessions list shows them as sub-sessions, and the chat shows a
+sub-agent's run under the call that started it.
+
+@{h2}The archive
+
+Old conversations move out of the live store into zip files, a whole tree at
+a time (a session and all its sub-agent sessions), once @{b}every@{ub}
+session in the tree is older than the retention window. It is switched on as
+shipped. The keys under @{tt}session_archive:@{utt} in
+@{tt}config/config.yaml@{utt}:
+
+@{table}
+Key | Shipped | Meaning
+@{tt}enabled@{utt} | @{tt}true@{utt} | run the periodic sweep
+@{tt}retention_days@{utt} | @{tt}30@{utt} | the age a whole tree must reach
+@{tt}sweep_interval_hours@{utt} | @{tt}24.0@{utt} | how often the sweep runs
+@{tt}first_sweep_delay_seconds@{utt} | @{tt}300.0@{utt} | the wait after the start
+@{tt}max_trees_per_sweep@{utt} | @{tt}0@{utt} | 0 = no cap
+@{tt}archive_path@{utt} | unset | default: @{tt}session_archive@{utt} in the data directory
+@{body}
+
+Changes need a restart. Restore a tree in the @{b}Session Archive@{ub}
+panel, with @{tt}agent-cli run --restore-session ID@{utt}, or with
+@{tt}POST /api/sessions/{id}/restore@{utt}.
+@{tt}agent-cli run --list-archived [N]@{utt} lists the archive;
+@{tt}--archive-sessions [DAYS]@{utt} runs a sweep by hand, and with
+@{tt}--dry-run@{utt} only reports what it would move.
+
+@{h2}For developers: what a message carries
+
+Besides role and content, a stored message can carry fields that are
+@{b}never sent to a provider@{ub} (@{tt}PRIVATE_MESSAGE_FIELDS@{utt} in
+@{tt}src/agent_system/llm/models.py@{utt}), among them
+@{tt}injected_by@{utt} (set on every message the loop or a plugin inserted;
+absent means a person wrote it), @{tt}request_id@{utt} (the run that
+produced it) and @{tt}step@{utt}.
+@endnode
+
+
+@node cli "Command line (agent-cli)"
+@{h1}Command line
+
+@{table}
+Program | What it is
+@{tt}agent-api@{utt} | the server: web UI, REST API, all enabled plugins. See @{" Running the server " link running}
+@{tt}agent-cli@{utt} | the command-line client, below
+@{tt}agent-run@{utt} | a lighter one-shot runner: @{tt}agent-run "task"@{utt} with the default agent or @{tt}--agent NAME@{utt}; @{tt}agent-run --help@{utt} lists its options
+@{tt}validate-agents@{utt} | checks agent YAML files, see @{" Writing a plugin " link plugins}
+@{body}
+
+@{tt}agent-cli run@{utt} and @{tt}agent-cli chat@{utt} run the agent in
+their own process: same configuration, same session store, no running
+server needed. They write their log to @{tt}logs/cli.log@{utt}.
+
+@{h2}Global options (before the subcommand)
+
+@{table}
+Option | Effect
+@{tt}--config PATH@{utt} | the configuration; default @{tt}AGENT_CONFIG_PATH@{utt}, else @{tt}config/config.yaml@{utt}
+@{tt}-v@{utt}, @{tt}--verbose@{utt} | progress and debug messages on the console
+@{tt}--color auto\|always\|never\|ansi\|html\|text@{utt} | how output is rendered; @{tt}--no-color@{utt} = @{tt}never@{utt}
+@{tt}--show-tools@{utt} | show tool calls and their results
+@{tt}--no-status@{utt} | hide the status lines while a run works
+@{tt}--raw@{utt} | print the raw JSON result
+@{body}
+
+@{h2}run and chat
+
+@{code bash}
+agent-cli run "task" [options]
+agent-cli chat ["first message"] [options]
+@{body}
+
+Both take the same options:
+
+@{table}
+Option | Effect
+@{tt}--agent NAME@{utt} | the agent; default: the session's, else @{tt}default_agent@{utt}
+@{tt}--llm PROFILE@{utt} | the LLM profile
+@{tt}--llm-params KEY=VALUE ...@{utt} | extra LLM parameters
+@{tt}--max-steps N@{utt} | the step budget
+@{tt}--session ID@{utt} | continue a session
+@{tt}--session-user USER@{utt} | whose sessions (default @{tt}cli_user@{utt})
+@{tt}--session-title TEXT@{utt} | name the session
+@{tt}--force@{utt} | take over a session a stuck process still holds
+@{tt}--vars KEY=VALUE ...@{utt} | session template variables
+@{tt}--attach PATH ...@{utt} | attach files; image, audio or text, detected per file
+@{tt}--list-sessions [N\|all]@{utt} | list sessions
+@{tt}--list-archived [N]@{utt} | list archived sessions
+@{tt}--restore-session ID@{utt} | bring an archived tree back
+@{tt}--archive-sessions [DAYS]@{utt} | archive old trees now; with @{tt}--dry-run@{utt} only report
+@{body}
+
+Ctrl-C cancels a running turn; see @{" Chat commands " link commands} for
+the commands inside @{tt}agent-cli chat@{utt}. The exit code is 1 when the
+run could not start (unknown agent or profile, a session it may not use, a
+rejected attachment); a run that ends with errors in its answer, or is
+cancelled, still exits with 0.
+
+@{h2}The other subcommands
+
+@{code bash}
+agent-cli plugins [list|info|search] [NAME] [--format json|table] [--show-metadata]
+agent-cli reload [--url URL] [--api-key KEY] [--timeout SEC] [--format json|table]
+agent-cli mcp list | status [SERVER] | test SERVER | tools SERVER
+agent-cli hooks [list|inspect] [NAME] [--type TYPE] [--format json|table]
+agent-cli users list | create | delete | update | info | generate-api-key | revoke-api-key
+@{body}
+
+@{bullet}@{tt}plugins@{utt}: what was discovered. @{tt}info NAME@{utt}
+takes a plugin type (folder name) and shows its manifest and whether any
+instance is enabled -- not the effective configuration of an entry.
+@{bullet}@{tt}reload@{utt}: asks a running server to read its
+configuration again, see @{" Running the server " link running}.
+@{bullet}@{tt}mcp@{utt}: looks at the external MCP servers with
+connections of its own, see @{" External MCP servers " link mcp}.
+@{bullet}@{tt}hooks@{utt}: the registered hooks, see
+@{" Hooks " link hooks}.
+@{bullet}@{tt}users@{utt}: works directly on the user database, no running
+server needed. @{tt}users create USERNAME EMAIL@{utt} takes
+@{tt}--password@{utt}, @{tt}--name@{utt}, @{tt}--role user|admin|guest@{utt},
+@{tt}--admin@{utt}, @{tt}--inactive@{utt}; @{tt}users update USERNAME@{utt}
+takes @{tt}--email@{utt}, @{tt}--name@{utt}, @{tt}--password@{utt},
+@{tt}--role@{utt}, @{tt}--activate@{utt}, @{tt}--deactivate@{utt}. See
+@{" Users, roles and login " link auth}.
+
+Turning a plugin or an MCP server on is an edit of the configuration, not a
+command.
+@endnode
+
+
+@node running "Running the server"
+@{h1}Running the server
+
+@{h2}Starting
+
+@{tt}agent-api@{utt} starts the FastAPI application: the web UI, the REST
+API and every enabled plugin. It always reads @{tt}config/config.yaml@{utt}
+of the project (@{tt}AGENT_CONFIG_PATH@{utt} is read by @{tt}agent-cli@{utt},
+not by @{tt}agent-api@{utt}) and takes no command-line options. Environment
+variables it reads:
+
+@{table}
+Variable | Effect
+@{tt}HOST@{utt}, @{tt}PORT@{utt} | override @{tt}network.host@{utt} and @{tt}network.port@{utt} (shipped: @{tt}127.0.0.1@{utt}, @{tt}8000@{utt})
+@{tt}AGENT_LOG_LEVEL@{utt} | override the log level of the server process
+@{tt}AGENT_DATA_DIR@{utt} | move the data directory, see @{" Configuration files " link config}
+@{tt}AGENT_ENABLE_PROFILING@{utt}, @{tt}AGENT_ENABLE_MEMORY_PROFILING@{utt} | set to @{tt}1@{utt}: the admin-only Performance and Memory Profile panels and their @{tt}/debug/...@{utt} endpoints
+@{body}
+
+@{tt}agent-cli@{utt} and @{tt}agent-run@{utt} change into the project
+folder when they start, so relative paths mean the project, wherever the
+command was typed. @{tt}127.0.0.1@{utt} accepts connections from this machine only; set
+@{tt}network.host@{utt} (or @{tt}HOST@{utt}) to serve others.
+
+@{h2}Logs
+
+@{tt}logging:@{utt} in @{tt}config.yaml@{utt}: the server writes
+@{tt}logging.file_api@{utt} (@{tt}logs/api.log@{utt} as shipped),
+@{tt}agent-cli@{utt} writes @{tt}logging.file_cli@{utt}
+(@{tt}logs/cli.log@{utt}), so the two never share a file. The files rotate
+by @{tt}max_bytes@{utt} and @{tt}backup_count@{utt}. The first admin's
+credentials, missing @{tt}${NAME}@{utt} variables and hooks that failed
+show up there.
+
+@{h2}Reload or restart
+
+@{tt}agent-cli reload@{utt} (or @{tt}POST /admin/reload-config@{utt}, admin)
+makes a running server read its configuration again, without dropping
+sessions or runs. It changes only what a plugin can take over live:
+
+@{bullet}an agent's @{tt}max_steps@{utt} and a few escalation and fallback
+settings;
+@{bullet}a SAM's @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
+@{tt}allow_advanced_model@{utt}, @{tt}advanced_create_only_agents@{utt} and
+its limits.
+
+Everything else needs a @{b}restart@{ub} of @{tt}agent-api@{utt}: a new or
+removed server entry, an agent's tools, LLM profiles and timeouts, hook
+settings, LLM models, MCP servers, @{tt}network@{utt},
+@{tt}session_archive@{utt}, the data directory. Prompt templates need
+neither: they are read from disk on every render. There is no file watcher;
+a reload happens only when someone asks for it.
+
+@{tt}agent-cli reload@{utt} talks to @{tt}http://127.0.0.1:8000@{utt}
+unless @{tt}--url@{utt} or @{tt}AGENT_SERVER_URL@{utt} says otherwise, and
+authenticates with @{tt}--api-key@{utt} or @{tt}AGENT_ADMIN_API_KEY@{utt} /
+@{tt}AGENT_API_KEY@{utt} (the API key of an admin).
+
+@{h2}Health
+
+@{tt}GET /health@{utt} and @{tt}GET /api/health@{utt} answer without a
+login. The @{b}System@{ub} panel shows the status with its reasons, running
+requests, tool servers and external MCP servers.
+@endnode
+
+
+@node config "Configuration files"
+@{h1}Configuration files
+
+Configuration is YAML in @{tt}config/@{utt}, assembled from
+@{tt}config/config.yaml@{utt} and the files its @{tt}includes:@{utt} list
+names:
+
+@{table}
+File | Holds
+@{tt}config.yaml@{utt} | @{tt}includes@{utt}, @{tt}context@{utt} (date, time zone, location for prompts), @{tt}status@{utt}, @{tt}vision@{utt}, @{tt}session_presence@{utt}, @{tt}session_archive@{utt}, @{tt}network@{utt}, @{tt}default_agent@{utt}, @{tt}skills@{utt}, @{tt}auth@{utt}, @{tt}logging@{utt}; optionally @{tt}paths@{utt}
+@{tt}llm.yaml@{utt} | @{tt}llm_system:@{utt} models and profiles, see @{" LLM models and profiles " link llm}
+@{tt}llm_openrouter.yaml@{utt} | more @{tt}llm_system:@{utt} model entries (OpenRouter)
+@{tt}plugins.yaml@{utt} | @{tt}plugins.plugin_dirs@{utt}, @{tt}plugins.default_config@{utt} (what every server entry inherits), @{tt}plugins.servers@{utt} (one entry per plugin instance), and the global @{tt}hooks:@{utt} section
+@{tt}mcp_servers.yaml@{utt} | @{tt}external_servers:@{utt}, see @{" External MCP servers " link mcp}
+@{tt}agents*/*.yaml@{utt} | agents and other server entries of this installation
+@{tt}../src/plugins*/*/agents/*.yaml@{utt} | the agents and server entries that plugins ship
+@{body}
+
+Not included, read on their own: @{tt}llm_pricing.yaml@{utt} (prices for
+cost reporting), @{tt}secrets.env@{utt} (keys), and the prompt templates in
+@{tt}config/prompts/@{utt}.
+
+@{h2}How the files are merged
+
+An included file contributes only these sections: @{tt}llm_system@{utt},
+@{tt}plugins@{utt} and @{tt}hooks@{utt} are merged key by key with what came
+before; @{tt}external_servers@{utt} is @{b}replaced@{ub} as a whole by a
+later file. Everything else (@{tt}auth@{utt}, @{tt}network@{utt}, ...) is
+read from @{tt}config.yaml@{utt} alone. A file that does not parse is
+skipped with an error in the log, and the rest loads.
+
+@{h2}Secrets: ${NAME}
+
+Any value may contain @{tt}${NAME}@{utt} (capital letters, digits,
+underscore). At load it is replaced from the environment;
+@{tt}config/secrets.env@{utt} (copied from
+@{tt}config/secrets.env.example@{utt}) fills in the variables the
+environment does not already have -- a real environment variable always
+wins. An unset variable becomes an empty string, and the start logs one
+warning naming all of them. There is no default syntax
+(@{tt}${NAME:-x}@{utt}).
+
+Set your own @{tt}auth.secret_key@{utt}: it signs the login tokens. The
+@{b}Setup@{ub} panel reports a key that is publicly known.
+
+@{h2}The data directory
+
+Everything ScarabHive writes -- sessions, the user database, plugin
+databases, caches, the archive -- lies under one data directory,
+@{tt}data/@{utt} in the project by default. Move it with the environment
+variable @{tt}AGENT_DATA_DIR@{utt} or with @{tt}paths.data_dir@{utt} in
+@{tt}config.yaml@{utt} (the environment wins; a relative path is relative to
+the project). Either needs a restart. Log files are separate, see
+@{" Running the server " link running}.
+
+@{h2}Who changes what
+
+@{tt}config/llm*.yaml@{utt} is the operator's: nothing in ScarabHive
+rewrites it. The @{b}Agent Editor@{ub} panel (admin) edits agent YAML files
+and keeps their comments. After an edit:
+@{" reload or restart " link running}.
+@endnode
+
+
+@node auth "Users, roles and login"
+@{h1}Users, roles and login
+
+@{tt}auth.enabled@{utt} is switched on in the shipped
+@{tt}config/config.yaml@{utt}; without the key it is off. With it off there
+is a single user: every caller counts as admin for panels and routes, and
+sessions are stored under the name @{tt}anonymous@{utt} -- fine for one
+person on one machine, not for anything others can reach.
+
+@{h2}Roles
+
+@{tt}admin@{utt}, @{tt}user@{utt} and @{tt}guest@{utt}, in that order of
+rank. A new account is a @{tt}user@{utt}. With
+@{tt}auth.anonymous_access.enabled@{utt} (off as shipped) a caller without a
+login gets @{tt}auth.anonymous_access.role@{utt} (@{tt}guest@{utt}) on the
+routes in @{tt}auth.anonymous_access.allowed_endpoints@{utt}; as shipped,
+@{tt}auth.llm_security@{utt} still keeps such callers from starting LLM
+runs, and users can open only their own sessions.
+
+@{h2}Accounts
+
+@{bullet}The first admin is created on the very first start, see
+@{" Quickstart " link quickstart}.
+@{bullet}Admins manage accounts in the @{b}Users@{ub} panel, with
+@{tt}agent-cli users@{utt} (see @{" Command line " link cli}), or through
+@{tt}/admin/users@{utt}.
+@{bullet}Everybody changes their own profile and password in
+@{b}Settings@{ub}.
+@{bullet}@{b}Registration is open@{ub}: @{tt}POST /auth/register@{utt}
+creates an active @{tt}user@{utt} for anyone who can reach the server. The
+login page offers no sign-up, but the route is there. To close it, put a
+rule for @{tt}POST /auth/register@{utt} with @{tt}policy: require_auth@{utt}
+and @{tt}min_role: admin@{utt} before the @{tt}* /auth/*@{utt} rule (rules
+are read in order, see below).
+
+@{h2}Logging in
+
+The browser logs in on @{tt}/login@{utt}; the token is kept in an HttpOnly
+cookie (@{tt}access_token@{utt}); @{b}Log out@{ub} is in the user menu.
+Programs authenticate with either
+
+@{bullet}a bearer token from @{tt}POST /auth/login@{utt} (lifetime
+@{tt}auth.access_token_expire_minutes@{utt}; the shipped configuration sets
+it to years -- shorten it for anything but a local setup; renew with
+@{tt}POST /auth/refresh@{utt}), or
+@{bullet}a personal API key in the @{tt}X-API-Key@{utt} header, created with
+@{tt}POST /auth/api-key@{utt} or @{tt}agent-cli users generate-api-key@{utt}
+and revoked with @{tt}DELETE /auth/api-key@{utt} or
+@{tt}revoke-api-key@{utt}.
+
+@{h2}Which routes a role may use
+
+Two layers decide, and both must let a caller through:
+
+@{table}
+Layer | How it decides
+@{tt}auth.endpoint_security@{utt} | @{tt}rules@{utt}, read in order, the first match wins; each has a @{tt}pattern@{utt} ("METHOD /path", wildcards allowed), a @{tt}policy@{utt} (@{tt}require_auth@{utt} or @{tt}allow_anonymous@{utt}) and, for @{tt}require_auth@{utt}, a @{tt}min_role@{utt}. No match: @{tt}default_policy@{utt}
+@{tt}auth.plugin_security@{utt} | for @{tt}/plugins/...@{utt}: @{tt}endpoint_rules@{utt} first, then @{tt}plugin_overrides@{utt} per plugin, then @{tt}default_policy@{utt} and @{tt}default_min_role@{utt}
+@{body}
+
+The shipped rules keep @{tt}/docs@{utt}, @{tt}/redoc@{utt},
+@{tt}/openapi.json@{utt}, @{tt}/admin/*@{utt}, @{tt}/debug/*@{utt},
+@{tt}/hooks@{utt}, @{tt}/tools/*@{utt} and the agent debug routes to admins,
+and the Setup, Users, Agent Editor and State Graph panels too. The same two
+layers decide which panels the catalog offers: a panel appears only for the
+roles that may open it, without anything extra in the plugin.
+@endnode
+
+
+@node llm "LLM models and profiles"
+@{h1}LLM models and profiles
+
+Three layers: a @{b}provider@{ub} plugin knows how to talk to one kind of
+API; a @{b}model@{ub} entry configures one model on one provider; a
+@{b}profile@{ub} is a short name for a model entry. Agents and users choose
+profiles, never models.
+
+@{h2}Providers
+
+Providers are plugins in @{tt}src/plugins/llm_*@{utt}:
+
+@{table}
+Plugin | Provider names (@{tt}provider:@{utt} in a model entry)
+@{tt}llm_openai@{utt} | @{tt}openai@{utt}
+@{tt}llm_anthropic@{utt} | @{tt}anthropic@{utt}
+@{tt}llm_gemini@{utt} | @{tt}gemini@{utt}, @{tt}gemini_sdk@{utt}
+@{tt}llm_openrouter@{utt} | @{tt}openrouter_sdk@{utt}
+@{tt}llm_ollama@{utt} | @{tt}ollama@{utt}
+@{tt}llm_openai_compat@{utt} | @{tt}openai_httpx@{utt}, @{tt}openai_responses@{utt} (OpenAI-compatible servers)
+@{tt}llm_decisions@{utt} | small models for yes/no decisions
+@{body}
+
+@{tt}llm_common@{utt} holds the code the providers share. Some providers
+also offer batch processing or text-to-speech.
+
+@{h2}config/llm.yaml
+
+The file is yours: the framework never changes it. Everything sits under
+@{tt}llm_system:@{utt}; @{tt}config/llm_openrouter.yaml@{utt} adds more model
+entries the same way.
+
+@{table}
+Section | Holds
+@{tt}models@{utt} | named model entries: @{tt}provider@{utt}, @{tt}model@{utt}, @{tt}base_url@{utt}, @{tt}api_key: ${...}@{utt}, @{tt}context_window@{utt}, @{tt}max_tokens@{utt}, @{tt}capabilities@{utt}, ...; @{tt}extends: <other entry>@{utt} inherits and overrides only the differences
+@{tt}profiles@{utt} | short name -> @{tt}model_ref@{utt}, @{tt}description@{utt}, optionally @{tt}max_steps@{utt}
+@{tt}default_profile@{utt} | the profile used when nothing else is chosen
+@{tt}batch@{utt} | batch settings per provider
+@{tt}httpx_timeouts@{utt} | HTTP timeouts of the clients
+@{tt}tts_models@{utt}, @{tt}tts_profiles@{utt} | text-to-speech
+@{tt}decision_models@{utt}, @{tt}decision_profiles@{utt} | small models for yes/no decisions
+@{body}
+
+@{code yaml}
+llm_system:
+  models:
+    my-model:
+      provider: openai
+      model: some-model-id
+      api_key: ${OPENAI_API_KEY}
+      context_window: 128000
+  profiles:
+    normal:
+      model_ref: my-model
+      description: "Everyday work"
+@{body}
+
+A model entry can also carry prompt-cache options
+(@{tt}prompt_cache_key@{utt}, @{tt}prompt_cache_mode@{utt},
+@{tt}prompt_cache_marker_style@{utt}, @{tt}prompt_cache_options@{utt}).
+
+@{b}Prices@{ub} live in @{tt}config/llm_pricing.yaml@{utt} (per million
+tokens), read on its own for cost reporting. Where the provider reports the
+cost itself (OpenRouter), that figure wins. A model without a price entry is
+reported as unknown, not as free.
+
+@{h2}Choosing a profile
+
+@{bullet}An agent's @{tt}agent_config.llm_profile@{utt} is a chain: the
+primary profile, then fallbacks; @{tt}llm_profile_advanced@{utt} is a second
+chain for harder work. See @{" Writing an agent " link agentdev}.
+@{bullet}In the web UI: the @{b}Model profile@{ub} button under the message
+box (the list comes from @{tt}GET /llm/profiles@{utt}).
+@{bullet}In the terminal: @{tt}--llm PROFILE@{utt} on @{tt}agent-cli run@{utt}
+and @{tt}chat@{utt}, @{tt}/model PROFILE@{utt} inside @{tt}agent-cli chat@{utt}.
+
+An agent builds its LLM client when it starts: changes to
+@{tt}llm.yaml@{utt} or to an agent's profiles reach running agents only
+after a restart.
+
+@{h2}Writing a provider
+
+@{code toml}
+[plugin]
+type = ["llm-provider"]            # required: the LLM registry skips anything else
+provides = ["myprovider"]          # optional: provides_batch, provides_tts, provides_decisions
+default_base_url = { myprovider = "https://..." }
+dependencies = ["my-sdk>=1.0"]
+@{body}
+
+@{bullet}The module is always @{tt}<folder>/provider.py@{utt} with
+@{tt}PROVIDERS = {name: build_fn(cfg, ssl_verify)}@{utt} (optionally
+@{tt}BATCH_BACKENDS@{utt}, @{tt}TTS_PROVIDERS@{utt}), and there is no
+@{tt}plugin.py@{utt}. A name declared in @{tt}provides@{utt} but not
+exported fails with @{tt}ProviderNotFoundError@{utt}.
+@{bullet}Clients are built only through @{tt}create_llm_from_profile@{utt};
+the core names no provider and imports no provider SDK (guarded by
+@{tt}tests/llm/test_llm_provider_registry.py@{utt}).
+@{bullet}No provider tables (@{tt}if provider == "google"@{utt}, alias
+dicts): mappings come from configuration.
+@{bullet}Report usage in OpenAI terms: @{tt}prompt_tokens@{utt}
+@{b}including@{ub} cached tokens, the cache details as a subset.
+@endnode
+
+
+@node mcp "External MCP servers"
+@{h1}External MCP servers
+
+Besides its own plugins, ScarabHive can use the tools of external servers
+that speak the Model Context Protocol. The @{tt}mcp_client@{utt} plugin
+(enabled as shipped) connects to them; they are configured in
+@{tt}config/mcp_servers.yaml@{utt} under @{tt}external_servers@{utt}:
+
+@{code yaml}
+external_servers:
+  connection: {timeout: 5.0, parallel_connect: true}
+  cache: {enabled: true, tool_list_ttl: 3600.0}
+  remote_servers:
+    my_server:
+      enabled: true
+      transport: streaming          # or sse, or stdio
+      url: "https://..."            # streaming and sse
+      # command, args, env instead, for a local stdio server
+      tools: {allowed: [], blocked: []}
+      auth: {type: none}            # none | bearer | api_key | basic
+@{body}
+
+@{bullet}@{tt}transport: stdio@{utt} starts the server as a local process
+(@{tt}command@{utt}, optionally @{tt}args@{utt} and @{tt}env@{utt});
+@{tt}streaming@{utt} (streamable HTTP) and @{tt}sse@{utt} connect to a
+@{tt}url@{utt}.
+@{bullet}A key or token belongs in @{tt}config/secrets.env@{utt},
+referenced as @{tt}${NAME}@{utt}.
+@{bullet}@{b}Keep the whole section in this one file.@{ub} A later included
+file that also has an @{tt}external_servers:@{utt} section replaces this one
+completely instead of merging with it.
+
+@{h2}Reaching an agent
+
+In an agent's allowlist an external tool is written @{tt}server.tool@{utt}
+-- a dot, where plugin tools have a slash:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed: ["my_server.*"]
+@{body}
+
+The server entry's own @{tt}tools.allowed@{utt} and @{tt}tools.blocked@{utt}
+filter what it offers at all. The model sees the tool as
+@{tt}my_server_<tool>@{utt}.
+
+@{h2}Inspecting
+
+@{code bash}
+agent-cli mcp list
+agent-cli mcp status [SERVER]
+agent-cli mcp test SERVER
+agent-cli mcp tools SERVER
+@{body}
+
+These open connections of their own, which end with the command. The
+@{b}System@{ub} panel shows the external servers of the running server.
+Switching a server on or off is an edit of the file and a restart.
+@endnode
+
+
+@node api "REST API"
+@{h1}REST API
+
+@{tt}agent-api@{utt} serves the REST API next to the web UI. Most routes need
+a login (see @{" Users, roles and login " link auth}): the
+@{tt}access_token@{utt} cookie of the browser, @{tt}Authorization: Bearer
+<token>@{utt}, or @{tt}X-API-Key: <key>@{utt}. The interactive documentation
+is at @{tt}/docs@{utt} and @{tt}/redoc@{utt} -- admin only under the shipped
+rules. The main groups:
+
+@{table}
+Route | Purpose
+@{tt}POST /events@{utt} | start a run and stream its events (SSE); what the web chat uses
+@{tt}GET /events@{utt} | follow a run again, e.g. after a reload
+@{tt}POST /events/{request_id}/append@{utt} | add a message to a running turn
+@{tt}POST /run@{utt} | run a task; also accepts files (multipart), which the web chat uses for attachments
+@{tt}GET /api/requests/{id}/status@{utt}, @{tt}POST /api/requests/{id}/cancel@{utt} | a run's state; cancel it
+@{tt}/api/sessions@{utt} | @{tt}POST@{utt} create, @{tt}GET@{utt} list; also @{tt}/hierarchy@{utt}, @{tt}/active@{utt}, @{tt}/resolve@{utt}, @{tt}/listing@{utt}
+@{tt}/api/sessions/{id}@{utt} | @{tt}GET@{utt}, @{tt}PUT@{utt} or @{tt}PATCH@{utt}, @{tt}DELETE@{utt}; @{tt}/messages@{utt}, @{tt}/children@{utt}, @{tt}POST /restore@{utt}
+@{tt}GET /agents@{utt} | the agents for the picker
+@{tt}GET /agents/{name}/tools@{utt}, @{tt}/allowed-tools@{utt} | an agent's tools
+@{tt}GET /agents/debug/{name}/system-prompt@{utt}, @{tt}/allowed-tools@{utt} | what the agent finally sees (admin)
+@{tt}GET /llm/profiles@{utt} | the LLM profiles
+@{tt}/chat/...@{utt} | the chat commands: @{tt}GET /chat/commands@{utt}, @{tt}POST /chat/resolve@{utt}, @{tt}POST /chat/command@{utt}, @{tt}GET@{utt}/@{tt}POST /chat/vars@{utt}, @{tt}POST /chat/undo@{utt}, @{tt}GET /chat/context@{utt}, @{tt}GET /chat/transcript@{utt}
+@{tt}/auth/...@{utt} | @{tt}POST register@{utt}, @{tt}login@{utt}, @{tt}logout@{utt}, @{tt}refresh@{utt}; @{tt}GET@{utt}/@{tt}PATCH /auth/me@{utt}; @{tt}GET@{utt}/@{tt}PUT /auth/me/preferences@{utt}; @{tt}POST@{utt}/@{tt}DELETE /auth/api-key@{utt}
+@{tt}/admin/...@{utt} | admin: @{tt}POST reload-config@{utt}, @{tt}GET config@{utt}, @{tt}users@{utt} (@{tt}GET@{utt}, @{tt}POST@{utt}; @{tt}users/{id}@{utt}: @{tt}GET@{utt}, @{tt}PATCH@{utt}, @{tt}DELETE@{utt}, @{tt}POST activate@{utt}, @{tt}deactivate@{utt}, @{tt}promote@{utt}, @{tt}demote@{utt}), @{tt}GET active-sessions@{utt}, @{tt}POST active-sessions/{id}/cancel@{utt}, @{tt}GET system@{utt}, @{tt}GET security/audit@{utt}
+@{tt}GET /api/ui/catalog@{utt}, @{tt}/ui/kit@{utt}, @{tt}/ui/panels/{name}@{utt} | the panel catalog and the core panels
+@{tt}GET /api/help/node@{utt}, @{tt}/api/help/search@{utt}, @{tt}/api/help/asset@{utt} | this help
+@{tt}/hooks@{utt}, @{tt}/hooks/{name}@{utt}, @{tt}/hooks/stats/...@{utt} | registered hooks and their statistics (admin)
+@{tt}/tools/status@{utt}, @{tt}/tools/cache/...@{utt} | tool servers and the tool cache (admin)
+@{tt}/debug/memory/...@{utt}, @{tt}/debug/profile/...@{utt} | profiling (admin, and only with the environment flags, see @{" Running the server " link running})
+@{tt}GET /health@{utt}, @{tt}/api/health@{utt}, @{tt}/api/version@{utt} | open without login
+@{tt}/plugins/<instance>/...@{utt} | each plugin's own endpoints and @{tt}static/@{utt} files
+@{body}
+
+The web UI talks to the server only over HTTP and Server-Sent Events; there
+is no WebSocket.
+@endnode
+
+
+@node architecture "Architecture of the core"
+@{h1}Architecture of the core
+
+The core is the package @{tt}src/agent_system/@{utt}. Next to it, at the
+root of the repository, lie @{tt}static/@{utt} (the shell's scripts and the
+UI kit in @{tt}static/kit/@{utt}), @{tt}templates/@{utt} (the shell, the
+login page, the core panels, the kit's templates), @{tt}config/@{utt} and
+@{tt}schemas/@{utt}.
+
+@{table}
+Where | What
+@{tt}app.py@{utt} | builds the FastAPI application (@{tt}build_app@{utt}) with most routes; @{tt}run()@{utt} is @{tt}agent-api@{utt}
+@{tt}runtime.py@{utt} | the composition root: turns the configuration into running servers -- discover, merge the configuration, build, register
+@{tt}config/@{utt} | @{tt}models.py@{utt} (the Pydantic models, root @{tt}AgentSystemConfig@{utt}), @{tt}settings.py@{utt} (@{tt}load_settings@{utt}, includes, @{tt}${NAME}@{utt}, @{tt}get_tool_server_config@{utt})
+@{tt}plugins/@{utt} | discovery, manifests (@{tt}plugin.toml@{utt}), @{tt}schema.yaml@{utt} loading, the tool and web adapters, the schema router
+@{tt}tools/@{utt} | tool server base classes (@{tt}SchemaBasedToolServer@{utt}), @{tt}ToolServerRegistry@{utt}, status lines, the tool cache
+@{tt}servers/agent/@{utt} | the @{tt}Agent@{utt} and its step loop (@{tt}server.py@{utt}, @{tt}run_events@{utt}), prompt strategies, tool discovery and the allowlist, the components for hooks, tool execution, session tracking and status
+@{tt}hooks/@{utt} | @{tt}HookType@{utt}, @{tt}SchemaBasedPluginHook@{utt}, @{tt}HookRegistry@{utt}
+@{tt}llm/@{utt} | @{tt}ChatMessage@{utt} and the other models, the provider registry, @{tt}create_llm_from_profile@{utt} (@{tt}factory.py@{utt}), pricing, token counting
+@{tt}services/@{utt} | session manager and service, agent service, configuration service and reload, the session archive, background jobs, system status
+@{tt}core/@{utt} | cancellation tokens, the request context, session presence (the locks)
+@{tt}skills/@{utt} | @{tt}SkillRegistry@{utt}, running a skill as a command
+@{tt}auth/@{utt} | the user database, tokens and API keys, the route rules
+@{tt}api/@{utt} | routers for sessions, auth, admin and debug
+@{tt}ui/@{utt} | the panel catalog, the core panel routes, this help
+@{tt}chat_commands.py@{utt}, @{tt}plugin_commands.py@{utt} | the command catalogue both the terminal and the browser use
+@{tt}agent_cli.py@{utt}, @{tt}agent_run.py@{utt}, @{tt}cli_utils/@{utt} | the command-line clients
+@{tt}paths.py@{utt} | the project root and the data directory (@{tt}data_path@{utt})
+@{body}
+
+@{h2}How a chat message runs
+
+@{number}The browser sends @{tt}POST /events@{utt} (with attachments:
+@{tt}POST /run@{utt}) and reads the answer as Server-Sent Events.
+@{number}The application picks the agent (the one named, else the default)
+and, if one was chosen, an LLM profile, and calls the agent's
+@{tt}run_events@{utt}.
+@{number}The agent loads the session, renders its system prompt (template,
+skills), works out its tools from the allowlist, and on a new session runs
+the @{tt}session_start@{utt} hooks.
+@{number}Each step: @{tt}pre_llm_call@{utt} hooks, the LLM call,
+@{tt}post_llm_call@{utt} hooks, then the tool calls, with status events
+streamed to the browser -- until the model answers without a tool call or
+the step budget is spent.
+@{number}The session is saved, then the @{tt}session_end@{utt} hooks run.
+
+@{tt}agent-cli@{utt} runs the same agent code in its own process.
+
+@{h2}What a plugin gets
+
+A plugin is found by discovery, built by the runtime with
+@{tt}(name, system_config, server_config)@{utt}, and reached through its
+tools, its hooks and its web router. See
+@{" Writing a plugin " link plugins}.
+@endnode
+
+
+@node plugins "Writing a plugin"
+@{h1}Writing a plugin
+
+A plugin is a folder with a @{tt}plugin.toml@{utt}, inside one of the
+folders listed in @{tt}plugins.plugin_dirs@{utt}
+(@{tt}config/plugins.yaml@{utt}; the product's own plugins are in
+@{tt}src/plugins/@{utt}). @{b}The plugin type is the folder name@{ub}, not
+the @{tt}name@{utt} in @{tt}plugin.toml@{utt}. Look first whether one
+already exists: often a second server entry of an existing plugin with a
+different configuration (@{tt}type: file_ops@{utt}) is all that is needed.
+@{" Installed plugins " link plugins/main}.
+
+@{h2}Which kind
+
+What a plugin offers is detected from what it defines: tools from a
+@{tt}tools:@{utt} section in @{tt}schema.yaml@{utt}, hooks from a
+@{tt}hooks:@{utt} section, a panel from @{tt}get_web_router()@{utt}. The
+@{tt}type@{utt} in @{tt}plugin.toml@{utt} is read by the validator -- and by
+the LLM registry, which accepts only @{tt}llm-provider@{utt}.
+
+@{table}
+You want | type | Base class or shape | More
+functions for the model | @{tt}tool-server@{utt} | @{tt}SchemaBasedToolServer@{utt} | @{" Tools " link tools}
+to change LLM calls or the history | @{tt}hooks@{utt} | @{tt}SchemaBasedPluginHook@{utt} | @{" Hooks " link hooks}
+both | @{tt}["tool-server","hooks"]@{utt} | @{tt}SchemaBasedHookToolServer@{utt} | @{" Hooks " link hooks}
+a panel or endpoints | @{tt}web@{utt} | @{tt}get_web_router()@{utt} | @{" Panels " link panels}
+an agent without Python | @{tt}library@{utt} | @{tt}agents/*.yaml@{utt}, @{tt}prompts/@{utt}, @{tt}skills/@{utt} | @{" Writing an agent " link agentdev}
+an agent with code | @{tt}tool-server@{utt} | @{tt}SchemaBasedAgent@{utt} | @{" Writing an agent " link agentdev}
+an LLM provider | @{tt}llm-provider@{utt} | @{tt}provider.py@{utt} exporting @{tt}PROVIDERS@{utt} | @{" LLM " link llm}
+@{body}
+
+@{h2}Minimal layout (tool server)
+
+@{code text}
+src/plugins/my_plugin/
+  plugin.toml      # required
+  plugin.py        # the entrypoint module, directly in the folder
+  server.py
+  schema.yaml      # tools; lies next to the class's module
+  README.md        # with a "Model Experience" section
+  tests/test_plugin_my_plugin_*.py
+@{body}
+
+@{code toml}
+[plugin]
+name = "my_plugin"
+version = "0.1.0"
+description = "One line."
+entrypoint = "plugin:PLUGIN_FACTORY"   # the default; "server:MyServer" works too
+type = ["tool-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }
+dependencies = []                        # pip requirement strings
+@{body}
+
+@{code python}
+# plugin.py
+from .server import MyServer
+PLUGIN_FACTORY = MyServer   # called as (name, system_config, server_config)
+@{body}
+
+A folder without the entrypoint file or without the factory is skipped with
+a DEBUG log line only; an import error is a WARNING, and every server entry
+of that type then logs "Unknown server type". After adding a pip dependency
+run @{tt}python scripts/aggregate_plugin_deps.py@{utt}.
+
+@{h2}The activation chain
+
+Every link must hold, and almost every one fails @{b}silently@{ub}:
+
+@{number}The folder lies in a directory of @{tt}plugins.plugin_dirs@{utt}.
+@{number}A server entry @{tt}plugins: servers: <instance>: {type: <folder>,
+enabled: true}@{utt} exists in an included file. @{tt}enabled@{utt}
+defaults to @{b}false@{ub}.
+@{number}The agent's @{tt}agent_config.tools.allowed@{utt} matches the tool
+names, which carry the instance prefix (@{tt}my_plugin/*@{utt}). Empty
+allows nothing.
+@{number}For a sub-agent: it is enabled in the calling SAM, see
+@{" Sub-agents and the SAM " link subagents}.
+
+A new server entry needs a restart of the server.
+
+@{h2}Reading configuration
+
+@{tt}server_config@{utt} is a Pydantic model that allows extra keys, not a
+dict:
+
+@{code python}
+self.timeout = float(getattr(server_config, "timeout", 30))   # flat keys
+cfg = getattr(server_config, "config", None) or {}              # a nested config: block
+@{body}
+
+The framework does @{b}not@{ub} validate a plugin's own settings. For a
+tool server the @{tt}config:@{utt} block in @{tt}schema.yaml@{utt} is
+documentation; the defaults belong in the code. @{tt}${NAME}@{utt} values
+are expanded from the environment. Files go under the data directory:
+@{tt}data_path("my_plugin", "x.db")@{utt} from @{tt}agent_system.paths@{utt},
+called at run time -- never a spelled-out @{tt}data/@{utt}. To take changes
+without a restart, implement @{tt}reload_config(new_server_config)@{utt}.
+See @{" Config models and schemas " link devconfig}.
+
+@{h2}Checking it
+
+@{code bash}
+python src/scripts/validate_plugin.py src/plugins/my_plugin
+python src/scripts/validate_all_tool_schemas.py --plugin my_plugin
+python src/scripts/validate_agent_configs.py src/plugins/my_plugin/agents/*.yaml
+@{body}
+
+They check the manifest, the schema sections and that every tool routes to a
+method -- but not the silent links of the activation chain (a dead allowlist
+pattern, a sub-agent missing from the SAM). Check those in a test with
+@{tt}load_settings()@{utt} and @{tt}get_tool_server_config()@{utt}, as
+@{tt}src/plugins/amiga/tests/test_amiga_config.py@{utt} does.
+@{tt}agent-cli plugins list@{utt} shows what was discovered and whether it
+is enabled.
+
+@{h2}Documentation
+
+Every plugin whose tools a model calls gets a @{tt}README.md@{utt} with a
+@{b}Model Experience@{ub} section: what the model sees (tool descriptions,
+error texts, injected notes), the token and prompt-cache effect, and known
+gaps. A plugin may also ship a guide of its own,
+@{tt}<folder>/<folder>.guide@{utt}, which this help shows instead of the
+README, see @{" Writing a guide " link authoring}. Tests:
+@{" Tests and conventions " link testing}.
+@endnode
+
+
+@node tools "Tools"
+@{h1}Tools
+
+A tool is one function a tool server offers the model, described by a JSON
+schema the model reads as its contract. Good examples to copy from:
+@{tt}src/plugins/json_store@{utt}, @{tt}sqlite_query@{utt},
+@{tt}tool_script@{utt}, @{tt}todo@{utt}.
+
+@{h2}The server
+
+@{code python}
+import asyncio
+import logging
+from agent_system.tools.schema_based import SchemaBasedToolServer
+
+logger = logging.getLogger(__name__)   # there is no self.logger
+
+class MyServer(SchemaBasedToolServer):
+    def __init__(self, name, system_config, server_config):
+        super().__init__(name, system_config, server_config)
+        self.max_rows = int(getattr(server_config, "max_rows", 200))
+
+    async def query(self, params: dict) -> dict:          # tool "{name}_query"
+        status = params.get("_status")
+        token = params.get("_cancellation_token")
+        sql = params.get("sql")
+        if not sql:
+            if status: await status.error("sql parameter is required")
+            return {"status": "error", "error": "sql parameter is required"}
+        if token and token.is_cancelled:
+            return {"error": "Tool 'query' was cancelled.", "cancelled": True, "forced": False}
+        rows = await asyncio.to_thread(self._run, sql)    # never block the event loop
+        rows = rows[: self.max_rows]
+        if status: await status.end(f"Query returned {len(rows)} row(s)")
+        return {"status": "success", "rows": rows}
+@{body}
+
+@{h2}schema.yaml
+
+@{code yaml}
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_query"
+      description: |
+        What it does, when to use it, what it returns, how to recover.
+      parameters:
+        type: object
+        properties:
+          sql: {type: string, description: "..."}
+        required: ["sql"]
+        additionalProperties: false
+commands: []    # optional: slash commands, below
+web_ui: {}      # optional: a panel
+@{body}
+
+@{bullet}The file is rendered as @{b}Jinja first@{ub}, then parsed as YAML.
+The one default variable is @{tt}{{ name }}@{utt}, the instance name. A
+variable you forgot renders as an empty string, silently.
+@{bullet}@{b}Routing@{ub}: the tool @{tt}{name}_x@{utt} calls the method
+@{tt}x@{utt}; a tool named exactly @{tt}{name}@{utt} calls
+@{tt}execute@{utt}; anything else calls the method of the same name.
+@{bullet}@{b}Always prefix @{tt}{{ name }}_@{utt}@{ub}: two tools with the
+same name collide silently, and a second instance of the plugin needs names
+of its own.
+@{bullet}Parameter names never start with @{tt}_@{utt} and are never
+@{tt}request_id@{utt}: the framework sets those and drops what the model
+sends.
+@{bullet}A broken @{tt}schema.yaml@{utt} does not fail in
+@{tt}__init__@{utt}, only on the first @{tt}get_tools()@{utt} -- test that
+path.
+
+@{h2}The handler contract
+
+@{bullet}@{tt}async def tool(self, params: dict) -> dict@{utt}. The
+framework adds @{tt}_status@{utt}, @{tt}_request_id@{utt},
+@{tt}_session_id@{utt}, @{tt}_user_id@{utt}, @{tt}_agent_name@{utt},
+@{tt}_agent@{utt} and @{tt}_cancellation_token@{utt} -- the token only when
+there is a request id (not in tests, not for commands).
+@{bullet}@{b}No argument validation by the framework@{ub} beyond rejecting
+malformed JSON; @{tt}required@{utt} and @{tt}enum@{utt} are hints to the
+model. Check inputs yourself.
+@{bullet}Return @{tt}{"status": "success", ...}@{utt} or
+@{tt}{"status": "error", "error": "<what to do>"}@{utt}. A dict that looks
+like success on a failure is a silent failure; @{tt}{"status": "failed"}@{utt}
+or @{tt}{"success": false}@{utt} without @{tt}error@{utt} are shown as
+completed.
+@{bullet}The result reaches the model as JSON. Bound its size yourself
+(@{tt}max_rows@{utt}, paging): only the @{tt}context_engineer@{utt} hook caps
+tool results, and only for agents that run it.
+
+@{h2}Status and cancellation
+
+@{tt}_status@{utt} has exactly @{tt}progress(msg)@{utt}, @{tt}end(msg)@{utt}
+and @{tt}error(msg)@{utt}. Report steps with @{tt}progress@{utt}, then
+exactly one @{tt}end@{utt} or @{tt}error@{utt} whose text names the result (a
+count, ids, a title) in at most 140 characters -- the web UI shows only that
+line. @{tt}tests/plugins/test_status_end_lines.py@{utt} enforces it for every
+plugin.
+
+The cancellation token can be @{tt}None@{utt}; check
+@{tt}if token and token.is_cancelled@{utt} before starting and between
+chunks, and put blocking work into @{tt}asyncio.to_thread@{utt}. Return the
+cancelled dict shown above rather than raising. A user cancels with the
+@{b}Stop@{ub} button, Ctrl-C in @{tt}agent-cli chat@{utt}, or
+@{tt}POST /api/requests/{id}/cancel@{utt}.
+
+@{h2}Slash commands
+
+@{code yaml}
+commands:
+  - name: compact
+    description: "Compact the context now"
+    tool: "{{ name }}_compact"
+    argument: focus          # optional
+    argument_hint: "<topic>"
+@{body}
+
+A command runs the tool directly, without an LLM turn, through the agent's
+allowlist: if the current agent may not call the tool, the command is not
+offered. On a name clash with another plugin it is
+@{tt}/<plugin>:name@{utt}. See @{" Chat commands " link commands}.
+@endnode
+
+
+@node hooks "Hooks"
+@{h1}Hooks
+
+A hook is plugin code that runs at a fixed point of the agent loop and may
+change what happens next. The types (@{tt}HookType@{utt} in
+@{tt}src/agent_system/hooks/plugin_hook.py@{utt}):
+
+@{table}
+Type | Fires | What takes effect
+@{tt}session_start@{utt} | new session only, before history and user input | @{tt}messages@{utt}
+@{tt}pre_llm_call@{utt} | every step, before the LLM call | @{tt}messages@{utt} -- sent as changed, and kept in the session
+@{tt}llm_progress@{utt} | while a reply streams, every 2000 characters of thinking | nothing
+@{tt}post_llm_call@{utt} | after the assistant message is appended | its content and tool calls; @{tt}continue@{utt} in the metadata asks for another step
+@{tt}format_output@{utt} | for display | display only, never the history
+@{tt}session_end@{utt} | after the session is saved | nothing
+@{tt}pre_llm_request@{utt}, @{tt}post_llm_response@{utt} | in the LLM client: the exact request and response | read-only
+@{body}
+
+@{tt}pre_tool_call@{utt} and @{tt}post_tool_call@{utt} exist as names but
+never fire; registering one logs a warning.
+
+@{h2}A minimal hook plugin
+
+@{tt}plugin.toml@{utt}: @{tt}type = ["hooks"]@{utt},
+@{tt}category = "hooks"@{utt}.
+
+@{code yaml}
+# schema.yaml
+hooks:
+  - name: inject_note          # the method's name
+    type: pre_llm_call
+    enabled: false             # usually off; an agent switches it on
+    timeout: 5.0               # default: hooks.default_timeout
+    category: prompt_injection
+    order: {after: ["begin"], before: ["end"]}
+config:
+  note: {type: string, default: ""}
+@{body}
+
+@{code python}
+# hooks.py
+from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import DEVELOPER
+from agent_system.llm.models import ChatMessage
+
+MARK = "my_hook"
+
+class MyHook(SchemaBasedPluginHook):
+    def __init__(self, plugin_dir, server_config=None):
+        super().__init__(plugin_dir)          # the schema.yaml defaults
+        cfg = dict(self.get_config())
+        if server_config is not None and getattr(server_config, "config", None):
+            cfg.update(server_config.config)  # merging the entry's config is the plugin's job
+        self.note = cfg.get("note", "")
+
+    async def inject_note(self, context: HookContext) -> HookResult:
+        note = context.hook_config.get("note", self.note)   # per-agent keys
+        if not note or context.messages is None:
+            return HookResult(success=True, modified=False, context=context)
+        # appended at the end, never inserted at the front (prompt cache, below)
+        context.messages.append(ChatMessage(role=DEVELOPER, content=note, injected_by=MARK))
+        return HookResult(success=True, modified=True, context=context)
+@{body}
+
+@{code python}
+# plugin.py
+from pathlib import Path
+from .hooks import MyHook
+
+def PLUGIN_FACTORY(name=None, system_config=None, server_config=None):
+    return MyHook(Path(__file__).parent, server_config)
+@{body}
+
+Each hook gets its own copy of the messages: changes count only with
+@{tt}modified=True@{utt}, and @{tt}success=False@{utt} drops them. A hook
+that raises, times out or returns something invalid is logged and skipped,
+and the loop goes on with the unchanged messages -- @{b}a broken hook shows
+only in the log@{ub}.
+
+@{h2}Names, order, switching on and off
+
+@{bullet}The @{b}full name@{ub} is @{tt}<server instance>.<hook name>@{utt},
+not the plugin type.
+@{bullet}@{tt}order@{utt} understands full names, categories,
+@{tt}begin@{utt} and @{tt}end@{utt}; a short name is ignored without a word.
+@{bullet}Globally: the @{tt}hooks:@{utt} section (shipped in
+@{tt}config/plugins.yaml@{utt}) has @{tt}enabled@{utt} (the master switch),
+@{tt}default_timeout@{utt} and @{tt}overrides@{utt}, keyed by
+@{tt}<instance>.<hook>@{utt} or by @{tt}<instance>@{utt} for all its hooks.
+@{bullet}Per agent: @{tt}agent_config.hooks.enabled: false@{utt} switches
+all hooks of the agent off;
+@{tt}agent_config.hooks.overrides["<full name>"].enabled@{utt} switches one;
+every other key reaches the hook as @{tt}context.hook_config@{utt}. A key
+that is not a full hook name has no effect; the start logs a warning for it.
+@{bullet}A hook plugin runs only when its instance is
+@{tt}enabled: true@{utt}.
+@{bullet}Hook settings are wired at start: changing them needs a restart.
+
+@{h2}The rule that matters for cost
+
+Providers cache the beginning of a request. @{b}Every LLM request must be a
+prefix of the next one.@{ub} A hook or prompt that puts something changing (a
+clock, a counter) into the system prompt or at the front of the history, or
+rewrites an earlier message, pays for the whole context again on every step.
+Append at the end; find your own earlier insert by @{tt}injected_by@{utt}
+and replace it rather than adding another. Every @{tt}role: user@{utt}
+message a hook inserts carries @{tt}injected_by@{utt} -- a message without
+it counts as written by a person.
+
+Inspect: @{tt}agent-cli hooks list@{utt}, @{tt}agent-cli hooks inspect
+NAME@{utt}, or @{tt}GET /hooks@{utt} and @{tt}GET /hooks/{name}@{utt}
+(admin).
+@endnode
+
+
+@node panels "Panels and the UI kit"
+@{h1}Panels and the UI kit
+
+A panel is an HTML page the shell shows in a frame, docked as a tab or
+floating as a window, opened through the catalog
+(@{tt}GET /api/ui/catalog@{utt}). The same page also works on its own in a
+browser tab. The frame is a boundary for style, crashes and lifecycle --
+@{b}not for security@{ub}: panels run on the same origin with the shell's
+cookie. Never embed foreign code as a panel.
+
+The @{b}UI Kit@{ub} panel (@{tt}/ui/kit@{utt}) shows every component in
+every state, rendered from the same files a panel loads. Look there instead
+of copying markup from older panels.
+
+@{h2}1. The catalog entry (schema.yaml)
+
+@{code yaml}
+web_ui:
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Message Debugger"
+    description: "Captured message turns and raw API requests and responses"
+    icon: bug
+    category: debug
+    keywords: [requests, responses, llm]
+    window: {width: 1000, height: 700}
+    contexts:
+      request: "/plugins/{{ name }}/?request_id={request_id}"
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+@{body}
+
+@{bullet}Required: @{tt}endpoint@{utt}, @{tt}title@{utt}, @{tt}icon@{utt}
+(an id from @{tt}static/kit/icons.svg@{utt}) and @{tt}category@{utt} (one of
+the fixed list in @{tt}src/agent_system/ui/catalog.py@{utt}, such as
+@{tt}session@{utt}, @{tt}context@{utt}, @{tt}agents@{utt},
+@{tt}debug@{utt}, @{tt}system@{utt}, @{tt}admin@{utt}).
+@{bullet}@{tt}contexts@{utt}: entry points from the chat --
+@{tt}session@{utt} (a session's info button, the session title) and
+@{tt}request@{utt} (the request id under an answer). The URL must start
+with @{tt}endpoint@{utt}; the shell fills in @{tt}{session_id}@{utt} or
+@{tt}{request_id}@{utt}. A @{tt}session@{utt} context @{b}pins@{ub} a
+panel that otherwise follows the chat, so show the pinned session visibly
+(@{tt}<pk-session>@{utt} in the toolbar).
+@{bullet}@{tt}web_ui@{utt} knows exactly @{tt}panel@{utt} and
+@{tt}endpoints@{utt}; anything else is an error.
+@{bullet}@{b}Who sees the panel is not in this block@{ub}: the catalog
+offers it to the roles that both @{tt}auth.endpoint_security@{utt} and
+@{tt}auth.plugin_security@{utt} let through to its @{tt}endpoint@{utt}. An
+admin-only panel gets a rule in the configuration, and visibility and access
+match by themselves.
+@{bullet}The plugin must provide @{tt}get_web_router()@{utt} @{b}and@{ub}
+@{tt}get_schema_data()@{utt}; schema-based plugins inherit both from
+@{tt}SchemaBasedPluginWebInterface@{utt} and build the router from
+@{tt}web_ui.endpoints@{utt} with @{tt}SchemaRouterGenerator@{utt}. Without
+@{tt}get_schema_data()@{utt} the panel is missing, without a message.
+
+@{h2}2. The page
+
+@{code python}
+from agent_system.ui.resources import ui_templates
+
+templates = ui_templates(Path(__file__).parent / "templates")
+
+async def render_panel(self, request: Request):
+    return templates.TemplateResponse(request, "panel.html", {"plugin": self.name})
+@{body}
+
+@{code html}
+{% extends "kit/panel_base.html" %}
+{% block title %}Message Debugger{% endblock %}
+{% block toolbar %}<pk-refresh interval="5"></pk-refresh>{% endblock %}
+{% block content %}<div id="turns"></div>{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}
+@{body}
+
+@{tt}panel_base.html@{utt} sets the theme before the page paints, loads
+@{tt}kit.css@{utt} and @{tt}panel-kit.js@{utt}, and hides its own title
+inside the shell. Script and CSS lie in the plugin's @{tt}static/@{utt}
+folder, served at @{tt}/plugins/<name>/static/@{utt} when the plugin returns
+it from @{tt}get_static_assets()@{utt}.
+
+@{h2}3. panel-kit.js
+
+@{code javascript}
+import { api, html, render, session } from '/static/kit/panel-kit.js';
+
+async function load() {
+  const turns = await api(`/plugins/message_debugger/turns?session_id=${encodeURIComponent(session.id)}`);
+  render(document.getElementById('turns'),
+    html`<table class="pk-table">${turns.map((t) => html`<tr><td>${t.agent}</td></tr>`)}</table>`);
+}
+document.addEventListener('refresh', load);
+session.onChange(load);
+load();
+@{body}
+
+@{table}
+Export | For
+@{tt}api(path, {method, json, quiet, latest})@{utt} | every server call: cookie login, JSON in and out, errors as a toast (unless @{tt}quiet@{utt}); @{tt}latest: 'name'@{utt} aborts the previous call of that name
+@{tt}html`...`@{utt}, @{tt}render(el, x)@{utt}, @{tt}update(el, x)@{utt} | building markup: every inserted value is escaped; @{tt}update@{utt} redraws only when the markup changed
+@{tt}alert@{utt}, @{tt}confirm@{utt}, @{tt}prompt@{utt}, @{tt}dialog@{utt}, @{tt}toast@{utt} | dialogs and messages, drawn over the whole shell
+@{tt}session.id@{utt}, @{tt}session.onChange(fn)@{utt}, @{tt}<pk-session>@{utt} | the session open in the chat, and the one the panel shows
+@{tt}<pk-refresh interval="s">@{utt}, @{tt}autoRefresh(fn, ms)@{utt} | reloading, paused while the panel is not visible
+@{tt}notice@{utt}, @{tt}emptyState@{utt}, @{tt}skeleton@{utt}, @{tt}localTime@{utt}, @{tt}copyText@{utt} | messages in place, empty and loading states, time stamps, the clipboard
+@{tt}setDirty(bool)@{utt} | unsaved input: the shell asks before closing
+@{body}
+
+@{h2}4. Rules
+
+@{bullet}Components and @{b}tokens only@{ub}: @{tt}pk-btn@{utt},
+@{tt}pk-table@{utt}, @{tt}pk-tabs@{utt}, @{tt}pk-callout@{utt} and the rest;
+colours, spacing and fonts from the CSS tokens (@{tt}--surface-*@{utt},
+@{tt}--text-*@{utt}, @{tt}--space-*@{utt}, ...), valid in light and dark. A
+hex colour in a panel is a mistake.
+@{bullet}No native @{tt}alert@{utt}/@{tt}confirm@{utt}/@{tt}prompt@{utt}, no
+@{tt}innerHTML@{utt} with data (agent names and tool arguments come from
+models), no @{tt}window.parent@{utt} or @{tt}window.top@{utt}, no raw
+@{tt}fetch@{utt}, no buttons, tabs, modals or toasts of your own, no emoji as
+icons, no CDN (libraries go to @{tt}static/vendor/@{utt}).
+
+@{h2}5. Checking it
+
+@{tt}python src/scripts/validate_plugin.py src/plugins/<name>@{utt} runs the
+@{tt}web_ui@{utt} block through the catalog parser; @{tt}pytest tests/ui@{utt}
+checks icons, native dialogs and catalog rules. Then look at the panel in
+both themes, docked and floating, and once on its own in a browser tab.
+
+A panel can also show its plugin's guide in place with
+@{tt}<pk-guide>@{utt}, see @{" Writing a guide " link authoring}.
+@endnode
+
+
+@node agentdev "Writing an agent"
+@{h1}Writing an agent
+
+An agent is almost always pure configuration: a server entry with
+@{tt}type: basic_agent@{utt}, or with the name of another agent it inherits
+from. It lives in a YAML file under @{tt}config/agents*/@{utt} or in a
+plugin's own @{tt}agents/@{utt} folder; @{tt}config/config.yaml@{utt}
+includes both (@{tt}agents*/*.yaml@{utt} and
+@{tt}../src/plugins*/*/agents/*.yaml@{utt}).
+
+@{code yaml}
+plugins:
+  servers:
+    my_agent:
+      type: basic_agent
+      enabled: true                  # default false
+      description: "One line for humans and the SAM list."
+      metadata:
+        visibility: tool             # ui | tool | both | private (default)
+      agent_config:                  # unknown keys here fail the load
+        llm_profile: [primary, fallback]
+        max_steps: 30
+        system_template: "./prompts/my_agent.md"
+        template_vars: {}
+        skills: {always: [], on_demand: []}
+        tools:
+          allowed: ["file_ops/*", "my_sam/*"]
+          blocked: []
+        hooks:
+          overrides:
+            context_engineer.engineer_context: {enabled: true}
+@{body}
+
+@{h2}Rules that bite
+
+@{bullet}@{b}enabled defaults to false@{ub} and is read from the entry
+itself, not from what it inherits. A top-level @{tt}agents:@{utt} key is
+ignored, and a YAML file that does not parse is skipped as a whole.
+@{bullet}@{b}Visibility@{ub}: @{tt}ui@{utt} or @{tt}both@{utt} puts the
+agent into the web UI's picker; @{tt}tool@{utt} or @{tt}both@{utt} lets
+other agents start it as a sub-agent. @{tt}private@{utt}, the default, is
+neither.
+@{bullet}@{b}Tools allowlist@{ub}: empty means nothing is allowed. Patterns
+are fnmatch: @{tt}instance/*@{utt}, @{tt}instance@{utt}, or
+@{tt}instance/<full tool name>@{utt}. A tool name always carries the plugin
+instance's name as a prefix: the @{tt}semantic_search@{utt} tool of an
+instance @{tt}coder_fs@{utt} is
+@{tt}coder_fs/coder_fs_semantic_search@{utt};
+@{tt}coder_fs/semantic_search@{utt} silently matches nothing. A second
+instance of a plugin has its own tool names and needs its own entry. Tools
+of external MCP servers are written @{tt}server.*@{utt}, see
+@{" External MCP servers " link mcp}.
+@{bullet}@{b}Inherited lists@{ub}: a list without prefixes replaces the
+inherited one; @{tt}+item@{utt} adds to it, @{tt}!pattern@{utt} removes
+from it; mixing both forms is an error.
+@{bullet}@{b}Inheritance is invisible in the raw entry@{ub}:
+@{tt}type:@{utt} may name another entry, and its configuration is merged
+in. The raw @{tt}config.plugins.servers[name]@{utt} shows defaults, not the
+inherited values; code asks @{tt}get_tool_server_config(name)@{utt}. What
+an agent finally sees: @{tt}GET /agents/debug/{name}/system-prompt@{utt}
+and @{tt}GET /agents/debug/{name}/allowed-tools@{utt} (admin).
+
+@{h2}The system prompt
+
+@{bullet}@{tt}system_template@{utt} with @{tt}./@{utt} or @{tt}../@{utt}
+is relative to the YAML file; only @{tt}.md@{utt}, @{tt}.txt@{utt} and
+@{tt}.markdown@{utt}. It is a Jinja template; @{tt}<!-- -->@{utt} comments
+are removed first. @{tt}default_config@{utt} in
+@{tt}config/plugins.yaml@{utt} gives every agent
+@{tt}config/prompts/system_prompt.md@{utt}.
+@{bullet}@{b}Precedence@{ub}: a custom prompt, then a raw
+@{tt}system_prompt@{utt}, then @{tt}system_template@{utt}, then the
+default. An inherited @{tt}system_prompt@{utt} silently beats your template
+-- check the parent when an edit shows no effect.
+@{bullet}Templates are @{b}read from disk on every render@{ub} (run start
+and every step): an edit takes effect without a restart, even in a run under
+way.
+@{bullet}Nothing that changes on every call (a clock, a counter) belongs in
+the prompt: it breaks the provider's prompt cache, see
+@{" Hooks " link hooks}. The date comes from
+@{tt}context.auto_datetime@{utt} in @{tt}config/config.yaml@{utt}.
+@{bullet}A template can branch on what is installed:
+@{tt}has_tool('*_manage_sub_agent')@{utt} (the agent's own tools),
+@{tt}'some_plugin' in plugins@{utt}, @{tt}'github' in mcp_servers@{utt}.
+
+@{h2}LLM profiles
+
+@{tt}llm_profile@{utt} is a chain: the primary profile, then fallbacks.
+@{tt}llm_profile_advanced@{utt} is a second chain for harder work. On
+failure the agent tries the rest of its own chain, then the other chain.
+@{tt}llm_profile: []@{utt} is an error. See
+@{" LLM models and profiles " link llm}.
+
+@{h2}Reload or restart
+
+@{tt}agent-cli reload@{utt} changes only @{tt}max_steps@{utt} and a few
+escalation and fallback settings of a running agent.
+@{tt}llm_profile@{utt}, tools, timeouts, hook settings and a new agent need
+a restart. Prompt templates need neither. See
+@{" Running the server " link running}.
+
+@{h2}An agent with code
+
+Rarely needed. Subclass @{tt}SchemaBasedAgent@{utt}
+(@{tt}agent_system.servers.agent.schema_based@{utt}) and export
+@{tt}PLUGIN_FACTORY = make_agent_plugin_factory(MyAgent)@{utt}
+(@{tt}agent_system.plugins.factory_utils@{utt}) -- always through that
+factory, or the agent gets an empty private registry. Its methods become
+tools the same way as in any @{" tool server " link tools}.
+
+To make it a sub-agent of another agent, see
+@{" Sub-agents and the SAM " link subagents}.
+@endnode
+
+
+@node skills "Skills"
+@{h1}Skills
+
+A skill packages reusable agent knowledge as a directory with a
+@{tt}SKILL.md@{utt} -- YAML frontmatter with @{tt}name@{utt} and
+@{tt}description@{utt}, then the instructions -- and optional
+@{tt}references/@{utt}, @{tt}scripts/@{utt} and @{tt}assets/@{utt} folders.
+This is the Agent Skills layout other coding assistants read too, so a skill
+written for one of them works here. The body is used as written, not
+rendered as a template.
+
+@{b}Where skills are found@{ub}: every subfolder with a @{tt}SKILL.md@{utt}
+in a root listed in @{tt}skills.skill_dirs@{utt} of
+@{tt}config/config.yaml@{utt}. The shipped list is
+@{tt}.claude/skills@{utt}, @{tt}skills/*/@{utt} (grouped as
+@{tt}skills/<group>/<skill>/@{utt}) and @{tt}src/plugins*/*/skills@{utt}
+(the skills a plugin ships). Without the key, the roots are
+@{tt}skills@{utt} and @{tt}.claude/skills@{utt}. The first root that
+defines a name wins.
+
+@{b}Being found puts nothing into a prompt.@{ub} Only an agent's own
+configuration does that:
+
+@{code yaml}
+agent_config:
+  skills:
+    always: [some-skill]        # the whole body, in every render
+    on_demand: [other-skill]    # a one-line entry; the agent loads it when needed
+@{body}
+
+A skill an agent names but that cannot be found is logged as an error when
+the prompt renders, and the prompt renders without it.
+
+@{b}From the chat@{ub}: every discovered skill can be run as
+@{tt}/skill-name arguments@{utt}; its text becomes the message.
+@{tt}/skills@{utt} lists the runnable ones and what the current agent loads.
+A built-in command or a plugin command of the same name comes first, see
+@{" Chat commands " link commands}.
+@endnode
+
+
+@node subagents "Sub-agents and the SAM"
+@{h1}Sub-agents and the SAM
+
+A sub-agent is an ordinary agent that another agent starts and exchanges
+messages with through a tool, keeping its own session and history across
+calls. The @{b}sub_agent_manager@{ub} plugin (SAM) does this. An instance of
+it offers one tool, @{tt}<instance>_manage_sub_agent@{utt}, with the
+operations @{tt}create@{utt}, @{tt}continue@{utt}, @{tt}poll@{utt},
+@{tt}wait@{utt}, @{tt}wait_all@{utt}, @{tt}cancel@{utt}, @{tt}list@{utt},
+@{tt}info@{utt} and @{tt}delete@{utt}. There is no global list of
+sub-agents: each SAM instance decides which agents its callers may start.
+
+@{h2}Four conditions, none of them loud
+
+A sub-agent that should be startable but is not almost always misses one of
+these:
+
+@{number}@{b}It exists@{ub}: its YAML is included, @{tt}enabled: true@{utt},
+and its @{tt}type@{utt} resolves. Otherwise:
+@{tt}Agent type 'x' not found in registry@{utt}.
+@{number}@{b}The calling SAM allows it@{ub}: its instance name is in that
+SAM instance's @{tt}allowed_agents@{utt} (exact names or fnmatch patterns;
+without the key: @{tt}['*']@{utt}). @{tt}blocked_agents@{utt} is checked
+first and matches exact names only. Otherwise the call answers
+@{tt}agent_blocked@{utt}.
+@{number}@{b}The caller may use the SAM@{ub}:
+@{tt}tools.allowed: ["my_sam/*"]@{utt} in the calling agent.
+@{number}@{b}It is visible@{ub}: @{tt}metadata.visibility@{utt} is
+@{tt}tool@{utt} or @{tt}both@{utt}. The default, @{tt}private@{utt}, leaves
+it out of the SAM's list of available agents, so the model never learns its
+name.
+
+@{h2}SAM settings
+
+The SAM's knobs are @{b}top-level keys of its server entry@{ub}, not under a
+@{tt}config:@{utt} block (that block in the SAM's @{tt}schema.yaml@{utt} is
+not read): @{tt}allowed_agents@{utt}, @{tt}blocked_agents@{utt},
+@{tt}allow_advanced_model@{utt} (default true; false drops a caller's
+request for the advanced model), @{tt}advanced_create_only_agents@{utt}, and
+limits such as @{tt}max_sub_agents@{utt}, @{tt}max_nesting_depth@{utt} and
+@{tt}max_sub_agents_per_type@{utt}.
+
+@{code yaml}
+plugins:
+  servers:
+    my_sam:
+      type: sub_agent_manager
+      enabled: true
+      allowed_agents: [my_agent, "review_*"]
+      blocked_agents: []
+@{body}
+
+These settings and the limits take effect with @{tt}agent-cli reload@{utt}.
+A @{b}new@{ub} sub-agent needs a restart, because its server has to be
+built. Writing the agent itself: @{" Writing an agent " link agentdev}.
+@endnode
+
+
+@node devconfig "Config models and schemas"
+@{h1}Config models and schemas
+
+@{h2}The models
+
+The whole configuration is validated by Pydantic models in
+@{tt}src/agent_system/config/models.py@{utt}. The root is
+@{tt}AgentSystemConfig@{utt} with the sections @{tt}name@{utt},
+@{tt}version@{utt}, @{tt}description@{utt}, @{tt}includes@{utt},
+@{tt}paths@{utt}, @{tt}context@{utt}, @{tt}status@{utt}, @{tt}vision@{utt},
+@{tt}session_presence@{utt}, @{tt}session_archive@{utt},
+@{tt}network@{utt}, @{tt}default_agent@{utt}, @{tt}logging@{utt},
+@{tt}auth@{utt}, @{tt}skills@{utt}, @{tt}llm_system@{utt},
+@{tt}plugins@{utt}, @{tt}external_servers@{utt} and @{tt}hooks@{utt}.
+
+@{bullet}A server entry (@{tt}ToolServerConfig@{utt}) allows extra keys:
+that is where a plugin's own settings go, unchecked.
+@{bullet}@{tt}agent_config@{utt} forbids unknown keys: a typo there fails
+the load, with its name.
+@{bullet}@{b}When you change a model@{ub}, regenerate the JSON schemas in
+@{tt}schemas/@{utt} with @{tt}python src/scripts/generate_config_schemas.py@{utt};
+@{tt}tests/config/test_config_schemas.py@{utt} fails while they differ.
+
+@{h2}Loading
+
+@{bullet}@{tt}load_settings(path)@{utt} in
+@{tt}src/agent_system/config/settings.py@{utt} reads
+@{tt}config.yaml@{utt} and its includes, expands @{tt}${NAME}@{utt} and
+builds the models (see @{" Configuration files " link config} for the merge
+rules).
+@{bullet}@{tt}get_tool_server_config(name)@{utt} gives an entry as the
+runtime sees it: @{tt}plugins.default_config@{utt} and the @{tt}type:@{utt}
+chain merged in. The raw @{tt}config.plugins.servers[name]@{utt} does not
+show that inheritance.
+@{bullet}Inherited lists: no prefix replaces, @{tt}+item@{utt} adds,
+@{tt}!pattern@{utt} removes; mixing both forms raises an error.
+
+@{h2}Paths
+
+The data directory can move (@{tt}AGENT_DATA_DIR@{utt},
+@{tt}paths.data_dir@{utt}), so never spell out @{tt}data/@{utt}:
+
+@{bullet}@{tt}data_path("my_plugin", "x.db")@{utt} from
+@{tt}agent_system.paths@{utt}, called at run time, for a default;
+@{bullet}@{tt}resolve_data_path(value)@{utt} for a value that comes from
+the environment, a command line or a database row;
+@{bullet}values under @{tt}data/@{utt} in @{tt}plugins.yaml@{utt} and in
+@{tt}schema.yaml@{utt} defaults are moved by the loader.
+
+@{tt}tests/config/test_no_hardcoded_data_dir.py@{utt} guards this.
+
+@{h2}Live reload
+
+A plugin that implements @{tt}reload_config(new_server_config)@{utt} gets
+its fresh entry on @{tt}agent-cli reload@{utt} and returns what it changed;
+everything else keeps its start values until a restart. See
+@{" Running the server " link running}.
+@endnode
+
+
+@node testing "Tests and conventions"
+@{h1}Tests and conventions
+
+@{h2}Where tests live
+
+@{bullet}@{tt}tests/@{utt}, by area (@{tt}agent/@{utt}, @{tt}config/@{utt},
+@{tt}llm/@{utt}, @{tt}tools/@{utt}, @{tt}session/@{utt}, @{tt}hooks/@{utt},
+@{tt}ui/@{utt}, @{tt}integration/@{utt}, ...).
+@{bullet}A plugin's tests lie next to it:
+@{tt}src/plugins/<name>/tests/test_plugin_<name>_*.py@{utt};
+@{tt}tests/plugins/@{utt} is for tests across plugins. Test file names are
+unique in the whole repository.
+
+@{h2}How pytest is set up
+
+@{bullet}@{tt}pytest.ini@{utt}: warnings are errors, @{tt}asyncio_mode = auto@{utt},
+120 seconds per test, @{tt}pythonpath = src tests@{utt}.
+@{bullet}The root @{tt}conftest.py@{utt} replaces the construction of LLM
+clients with a fake: tests make no real LLM calls.
+@{bullet}At the end of a run the root @{tt}conftest.py@{utt} kills leftover
+Python processes it takes for this repository's. @{b}Do not run the tests
+on a machine that serves users@{ub}: a running @{tt}agent-api@{utt} can be
+among them.
+@{bullet}The whole suite takes long: run what you changed, for example
+@{tt}python -m pytest tests/ui/test_help.py -q@{utt}.
+@{bullet}Browser-side harnesses in @{tt}tests/js/@{utt} run from pytest
+through @{tt}node@{utt}; without node they are skipped.
+
+@{h2}What a good test does
+
+@{bullet}It goes through the real path: tools through
+@{tt}call_with_status@{utt} (otherwise @{tt}_status@{utt} is
+@{tt}None@{utt}), configuration through @{tt}load_settings()@{utt} and
+@{tt}get_tool_server_config()@{utt}.
+@{bullet}Caches and storage go to @{tt}tmp_path@{utt}; otherwise
+@{tt}PluginCache@{utt} writes into @{tt}data/cache@{utt}.
+@{bullet}@{b}Every new test gets a mutation check@{ub}: break the
+production line it guards; the test must fail. A test that stays green
+measures nothing.
+
+@{h2}Guards worth knowing
+
+@{table}
+Test | Guards
+@{tt}tests/plugins/test_status_end_lines.py@{utt} | the status end line of every plugin tool
+@{tt}tests/config/test_prompts_have_no_ticking_clock.py@{utt} | no clock in prompt templates
+@{tt}tests/agent/test_agent_step_budget_note.py@{utt} | every LLM request is a prefix of the next
+@{tt}tests/config/test_no_hardcoded_data_dir.py@{utt} | no spelled-out data paths
+@{tt}tests/config/test_config_schemas.py@{utt} | @{tt}schemas/@{utt} matches the config models
+@{tt}tests/pluginsystem/test_plugin_deps_aggregation.py@{utt} | plugin dependencies are aggregated
+@{tt}tests/pluginsystem/test_plugin_command_declarations.py@{utt} | slash command declarations
+@{tt}tests/ui/test_kit.py@{utt} | no native dialogs in panels
+@{tt}tests/ui/test_help.py@{utt} | every guide reads cleanly: links, commands, pens
+@{body}
+
+@{h2}Conventions
+
+@{bullet}Everything in a code file is English: identifiers, comments,
+docstrings, tool descriptions, log messages; commit messages too.
+@{bullet}Destructive jobs (cleanup, TTL, sweeps) are opt-in: off by default,
+in @{tt}schema.yaml@{utt} and in the code.
+@{bullet}Inserted messages carry @{tt}injected_by@{utt}; nothing that ticks
+goes into a prompt (@{" Hooks " link hooks}).
+@{bullet}Arguments are validated by the tool, errors are returned as
+@{tt}{"status": "error", "error": ...}@{utt} (@{" Tools " link tools}).
+@{bullet}No provider tables in LLM plugins (@{" LLM " link llm}).
+@{bullet}A plugin that a model calls has a README with a Model Experience
+section (@{" Writing a plugin " link plugins}).
+@endnode
+
+@node help "Using this help"
+@{h1}Using this help
+
+This is an AmigaGuide viewer. AmigaGuide is the hypertext help format of
+AmigaOS: a guide is one text file holding a database of pages, called
+nodes. Buttons in the text lead to other nodes, in the same guide or in
+another one.
+
+@{h2}Where help opens
+
+@{bullet}The question mark at the top right of ScarabHive opens this manual.
+
+@{bullet}A panel whose plugin has a guide or a README shows a question mark
+as well: at the end of the dock's tab bar for the tab in front, and in the
+bar of a detached window. It opens that plugin's guide here -- or, when
+this viewer shows that guide already, brings it forward on the page you
+are reading.
+
+@{h2}The buttons above the page
+
+@{table}
+Button | Leads to
+Contents | the table of contents of the guide you are reading
+Index | the guide's index; a guide without one gets an alphabetical list of its nodes
+Help | this page, unless a guide names a help node of its own
+Retrace | back to the page you came from
+Browse < and > | the previous and the next node in reading order
+@{body}
+
+@{h2}Buttons in the text
+
+@{bullet}A button opens the node it names, or a documentation file next to
+the guide.
+
+@{bullet}A button with an arrow opens a web page in a new browser tab.
+
+@{bullet}A red, crossed-out button leads nowhere: its target does not exist.
+That is a mistake in the guide, and the page lists it below itself.
+
+@{bullet}A grey button stands for something that would run a program on an
+Amiga (system, rx and the like). A guide here is a document; that button
+does nothing.
+
+@{h2}Search
+
+The search field looks through every guide at once: this manual, the
+plugin guides and the plugin READMEs. A node matches when it contains all
+the words you typed; nodes whose title matches come first.
+
+@{h2}Addresses
+
+The panel's address names the page on screen (@{tt}?guide=...&node=...@{utt}),
+so a copied link or a new browser tab opens the same page. Ctrl+click opens
+a button in a new tab.
+
+@{h2}What there is to read
+
+@{code}
+  @{" ScarabHive manual  " link main}   this guide
+  @{" Plugins            " link plugins/main}   every plugin, with its guide or its README
+  @{" Writing a guide    " link authoring}   how to document a plugin
+  @{" Beyond AmigaOS     " link markdown}   headings, lists, tables, code and more
+@{body}
+@endnode
+
+@node authoring "Writing a guide"
+@{h1}Writing a guide
+
+@{h2}Where a guide lies
+
+@{table}
+File | Shows up as
+@{tt}docs/guides/<name>.guide@{utt} | part of the manual; its id is @{tt}<name>@{utt}
+@{tt}<plugin folder>/<folder name>.guide@{utt} | the plugin's guide; its id is the folder name, which is the plugin type
+@{body}
+
+A plugin without a guide is shown with its @{tt}README.md@{utt} until it gets
+one, rendered as Markdown -- that is the README's own format. Its links to
+Markdown files under @{tt}docs/@{utt} open in the viewer as well; a file
+there that no guide, README or linked page links to does not. The
+@{" Plugins " link plugins/main} list is generated from
+@{tt}plugins.plugin_dirs@{utt} and links each plugin to whichever of the two it
+has.
+
+The viewer reads a guide again when its file, or a file it embeds, changes:
+save, click, and the change is there.
+
+@{h2}A minimal plugin guide
+
+@{code text}
+\@database "my_plugin"
+\@author "Your Name"
+\@$VER: my_plugin.guide 1.0 (28.09.2026)
+\@smartwrap
+
+\@node main "My plugin"
+\@{h1}My plugin
+What the plugin does, in a paragraph. Lines up to the next blank
+line are joined into one paragraph and reflowed to the panel width.
+
+\@{" Configuration " link config}
+\@endnode
+
+\@node config "Configuration"
+...
+\@endnode
+@{body}
+
+@{h2}Commands on a line of their own
+
+@{table}
+Command | What it does
+\@database "name" | the guide's name
+\@author, \@(c), \@$VER: | author, copyright, version
+\@node name "title" | starts a node; names ignore case
+\@endnode | ends it
+\@title "title" | the node's title, in place of the one \@node gives
+\@toc node | where Contents leads (default: main)
+\@prev node, \@next node | where Browse leads (default: the order in the file)
+\@index node | where Index leads (default: a node called index, else a generated list)
+\@help node | where Help leads (default: this manual's help page)
+\@wordwrap | every line is a paragraph that wraps
+\@smartwrap | lines up to a blank line are one paragraph
+\@embed file | a file inside the node: a Markdown file rendered, any other a code block
+\@remark text | a comment, not shown
+@{body}
+
+\@index, \@help, \@wordwrap and \@smartwrap before the first node apply to
+the whole guide, inside a node to that node. Without \@wordwrap or
+\@smartwrap, lines are shown exactly as written and do not wrap.
+
+@{h2}Inside the text
+
+@{table}
+Write | For
+\@{b} \@{ub}, \@{i} \@{ui}, \@{u} \@{uu} | bold, italic, underline on and off
+\@{plain} | all of them off
+\@{fg pen}, \@{bg pen} | colour; the pens are text, shine, shadow, fill, filltext, background, highlight
+\@{jleft}, \@{jcenter}, \@{jright} | alignment of the lines that follow
+\@{line}, \@{par}, \@{tab} | line break, paragraph break, tab
+\@{code} ... \@{body} | lines as written, no wrapping: button menus, aligned text
+\@{" label " link node} | a button to a node of this guide
+\@{" label " link other/node} | to a node of another guide
+\@{" label " link node 12} | to line 12 of the guide file, in that node
+\@{" label " link docs/design.md} | to a documentation file next to the guide
+\\\@ and \\\\ | a literal \@, a literal \\
+@{body}
+
+@{tt}other@{utt} is the id of a guide: a manual file's name or a plugin's
+folder name. Amiga style paths work as well: @{tt}other.guide/node@{utt},
+@{tt}HELP:other.guide/node@{utt}. Headings, lists, tables, code blocks,
+images and web links: @{" Beyond AmigaOS " link markdown}.
+
+Buttons that would run something on an Amiga (system, rx, rxs, beep, close,
+quit) are shown but do nothing: the viewer never runs what a guide says.
+
+@{h2}A guide inside a plugin's panel
+
+A panel can show its plugin's guide right where it is needed, with the
+same buttons, links and Retrace:
+
+@{code html}
+<script type="module" src="/static/kit/guide.js"></script>
+<pk-guide guide="my_plugin" node="config"></pk-guide>
+@{body}
+
+The element comes with the UI kit; the UI Kit panel shows it. This Help
+panel is the same element, filling the page.
+
+@{h2}Checking a guide
+
+A mistake does not stop a guide from showing. The panel lists the mistakes
+of a node below it: a link that leads nowhere, an image that is not there,
+an unknown attribute or pen, something that does not belong in a table
+cell or a code block, an \@{ without its closing brace. Mistakes in the structure -- a missing \@endnode, an unknown command,
+a node defined twice, an \@embed that finds no file -- go to the server
+log. This test checks every guide in the repository for both:
+
+@{code bash}
+.venv/Scripts/python.exe -m pytest tests/ui/test_help.py -k repository
+@{body}
+@endnode
+
+@node markdown "Beyond AmigaOS"
+@{h1}Beyond AmigaOS
+
+This viewer reads more than the Amiga did: what Markdown has, written in
+AmigaGuide's own syntax. A guide stays an AmigaGuide file; only a Markdown
+file -- a README, a linked @{tt}docs/*.md@{utt} -- is shown as Markdown.
+
+@{h2}Paragraphs of a kind
+
+A paragraph starts with one of these at the start of a line. It needs no
+blank line before it. With \@smartwrap a list item or a quote runs until a
+blank line or the next one starts; without it every line is a paragraph of
+its own. Numbers count on across blank lines, code blocks and tables; a
+plain paragraph, a heading, a quote, a rule or a bullet on the same level
+starts them anew.
+
+@{table}
+Write | Shows
+\@{h1}Title, \@{h2}, \@{h3} | a heading; it ends with its line
+\@{bullet}item | a bullet list item; \@{bullet 2} one level in
+\@{number}item | a numbered item, counted by itself; \@{number 2} one level in
+\@{quote}text | a quoted paragraph
+\@{rule} | a line across the page
+@{body}
+
+@{code text}
+\@{h2}Setup
+\@{number}Create the virtual environment.
+\@{number}Install it: \@{tt}pip install -e .\@{utt}
+\@{bullet 2}add \@{tt}[dev]\@{utt} for the developer tools
+\@{number}Start the API.
+@{body}
+
+shows as
+
+@{h2}Setup
+@{number}Create the virtual environment.
+@{number}Install it: @{tt}pip install -e .@{utt}
+@{bullet 2}add @{tt}[dev]@{utt} for the developer tools
+@{number}Start the API.
+
+@{h2}In the text
+
+@{table}
+Write | Shows
+\@{tt}code\@{utt} | inline code: a path, a command, a key
+\@{s}text\@{us} | struck-through text
+\@{image file.png "alt text"} | an image next to the guide, shown in place
+\@{" label " link https://...} | a web link, opened in a new tab (http, https, mailto)
+@{body}
+
+@{h2}Code blocks
+
+@{code text}
+\@{code yaml}
+plugins:
+  servers:
+    my_plugin: {type: my_plugin, enabled: true}
+\@{body}
+@{body}
+
+shows as
+
+@{code yaml}
+plugins:
+  servers:
+    my_plugin: {type: my_plugin, enabled: true}
+@{body}
+
+A language after @{tt}\@{code@{utt} makes a code block, coloured by its
+language (python, yaml, json, toml, bash, sql, javascript, typescript, css,
+html, xml, diff, markdown, c, cpp, java). A block with a button, an image
+or an attribute in it -- also one still switched on from before, such as an
+unclosed @{tt}\@{b}@{utt} -- keeps them and stays uncoloured. A page colours
+at most 100,000 characters of code; a block that no longer fits stays
+plain. @{tt}\@{code}@{utt} alone
+keeps its AmigaOS meaning -- lines as written, no wrapping -- for button
+menus and aligned text.
+
+@{h2}Tables
+
+@{code text}
+\@{table}
+Command | What it does
+\@{tt}agent-cli run "task"\@{utt} | one task, then exit
+\@{tt}agent-cli chat\@{utt} | an interactive session
+\@{body}
+@{body}
+
+One row per line, cells split by @{tt}|@{utt}, the first row is the header;
+a literal @{tt}|@{utt} in a cell is @{tt}\\|@{utt}. Buttons and attributes
+work inside a cell; a line break, a block or an alignment does not. A
+Markdown separator line right under the header (@{tt}|---|---|@{utt}) is
+allowed once and ignored.
+
+@{h2}Images and embedded files
+
+An image lies at the top of the guide's folder or under its
+@{tt}docs/@{utt} folder: @{tt}diagram.png@{utt} and
+@{tt}docs/diagram.png@{utt} work, @{tt}images/diagram.png@{utt} and
+@{tt}../other/diagram.png@{utt} do not. Images may be PNG, JPEG, GIF, WebP
+or SVG; a remote image is not loaded. The alt text is what a screen reader
+says and what the page shows when the file is missing. An embedded file
+lies in the guide's folder or below it, never above. A file larger than
+512 KB is named, not shown.
+
+@{tt}\@embed@{utt} is AmigaOS's own command: the file becomes part of the
+node and is never read as guide commands. A Markdown file is rendered, any
+other file is a code block in its language -- so a guide can show a real
+configuration file instead of a copy that goes stale.
+
+Back to @{" Writing a guide " link authoring}.
+@endnode

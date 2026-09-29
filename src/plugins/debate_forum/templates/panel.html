@@ -1,0 +1,72 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Debate Forum{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}
+<span class="pk-row" id="stats"></span>
+<button type="button" class="pk-btn pk-btn--sm" id="newChannel">{{ icon('plus', size='sm') }} New channel</button>
+<pk-refresh interval="5" auto></pk-refresh>
+{% endblock %}
+{% block content %}
+<div class="df-layout pk-sidebar-layout">
+  <aside class="df-sidebar pk-sidebar">
+    <label class="pk-search">{{ icon('search') }}<input type="search" class="pk-input pk-input--sm" id="search" placeholder="Search channels" aria-label="Search channels"></label>
+    <div class="pk-row df-filters">
+      <select class="pk-select pk-select--sm pk-grow" id="group" aria-label="Group"><option value="">Every group</option></select>
+      <select class="pk-select pk-select--sm pk-grow" id="status" aria-label="Status">
+        <option value="">Every status</option>
+        <option value="active">Active</option>
+        <option value="concluded">Concluded</option>
+        <option value="archived">Archived</option>
+      </select>
+    </div>
+    <nav class="df-channels" id="channels" aria-label="Channels"><span class="pk-skeleton"></span></nav>
+  </aside>
+  <section class="df-thread" id="thread">
+    <div id="placeholder"><div class="pk-empty">{{ icon('messages-square') }}<div class="pk-empty-title">No channel chosen</div><div>Choose a channel to read its debate.</div></div></div>
+    <div class="df-open" id="open" hidden>
+      <header class="df-head">
+        <div class="pk-row">
+          <h2 class="pk-grow pk-truncate df-name" id="name"></h2>
+          <span id="state"></span>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="copy" title="Copy the debate as text" aria-label="Copy the debate as text">{{ icon('copy', size='sm') }}</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" id="reopen">{{ icon('rotate-ccw', size='sm') }} Reopen</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--sm" id="archive">{{ icon('folder', size='sm') }} Archive</button>
+          <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" id="delete" title="Delete the channel" aria-label="Delete the channel">{{ icon('trash-2', size='sm') }}</button>
+        </div>
+        <div class="pk-muted" id="topic"></div>
+        <div class="pk-row df-participants" id="participants"></div>
+      </header>
+      <div class="df-messages" id="messages" role="log"></div>
+      <form class="df-composer" id="composer" hidden>
+        <div class="pk-row">
+          <input class="pk-input pk-input--sm df-who" id="author" value="User" aria-label="Name" required>
+          <input class="pk-input pk-input--sm df-who" id="role" value="user" aria-label="Role">
+        </div>
+        <div class="pk-row df-send">
+          <textarea class="pk-textarea pk-grow" id="text" rows="2" placeholder="Write a post; Enter sends, Shift+Enter breaks the line" aria-label="Post"></textarea>
+          <button type="submit" class="pk-btn pk-btn--primary" id="send">{{ icon('send-horizontal', size='sm') }} Send</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</div>
+<dialog class="pk-dialog" id="create" aria-labelledby="createTitle">
+  <form id="createForm">
+    <div class="pk-dialog-head"><h2 class="pk-dialog-title" id="createTitle">New channel</h2></div>
+    <div class="pk-dialog-body pk-form">
+      <label class="pk-field"><span class="pk-label">Name</span><input class="pk-input" name="name" maxlength="100" required></label>
+      <label class="pk-field"><span class="pk-label">Topic</span><input class="pk-input" name="topic" maxlength="200"></label>
+      <label class="pk-field"><span class="pk-label">Context</span><textarea class="pk-textarea" name="context" rows="3"></textarea></label>
+    </div>
+    <div class="pk-dialog-actions">
+      <button type="button" class="pk-btn" id="createCancel">Cancel</button>
+      <button type="submit" class="pk-btn pk-btn--primary" id="createSubmit">Create</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="/static/vendor/prism/prism.js" data-manual></script>
+<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>
+{% endblock %}

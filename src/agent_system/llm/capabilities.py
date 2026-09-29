@@ -1,27 +1,25 @@
-"""LLM model capabilities tracking system.
+"""Which inputs a model accepts, and the gate that asks before attaching them.
 
-This module defines capabilities for different LLM models including support for:
-- Tools/function calling
-- Image input (vision)
-- Audio input  
-- Video input
-- Multimodal features
-
-Capabilities are loaded from configuration files (llm.yaml) rather than hardcoded.
+The capability table is built from the merged configuration; nothing here is
+hardcoded per model.
 """
 from __future__ import annotations
 
-from typing import Optional, List
-from pydantic import BaseModel, Field
+from typing import Optional
 from enum import Enum
 import logging
-import yaml
 from pathlib import Path
+
+from ..config.models import ModelCapabilitiesConfig
 
 logger = logging.getLogger(__name__)
 
-# Global registry loaded from configuration
 _capabilities_registry: dict[str, "ModelCapabilities"] = {}
+_registry_loaded = False
+
+#: What ensure_model_supports() actually reads. Two config entries may share a
+#: provider model string; only a disagreement in THESE fields is ambiguous.
+_INPUT_FLAGS = ("image_input", "audio_input", "video_input")
 
 
 class ModelCapability(str, Enum):
@@ -33,323 +31,121 @@ class ModelCapability(str, Enum):
     VIDEO_INPUT = "video_input"
     STREAMING = "streaming"
     JSON_MODE = "json_mode"
+    STRUCTURED_OUTPUT = "structured_output"
 
 
-class OpenAIApiType(str, Enum):
-    """OpenAI API types that a model can use."""
-    CHAT_COMPLETIONS = "chat_completions"  # Standard chat API (default)
-    ASSISTANTS = "assistants"  # Assistants API with built-in memory
-    REALTIME = "realtime"  # Realtime API for speech-to-speech
+class ModelCapabilities(ModelCapabilitiesConfig):
+    """The capability set of a model — the config class plus its one query.
 
+    It used to be a second, field-for-field copy of ModelCapabilitiesConfig
+    (22 identical fields, some with differing defaults). A new capability had
+    to be added twice, and only one of them reached the registry.
+    """
 
-class ImageFormat(str, Enum):
-    """Supported image formats."""
-    JPEG = "jpeg"
-    PNG = "png"
-    GIF = "gif"
-    WEBP = "webp"
-    BMP = "bmp"
-    TIFF = "tiff"
-    PDF = "pdf"
-    RAW = "raw"
-    ICO = "ico"
-
-
-class ModelCapabilities(BaseModel):
-    """Capabilities and limits for a specific LLM model."""
-    
-    # Feature support flags
-    tools: bool = False
-    function_calling: bool = False  # Synonym for tools
-    image_input: bool = False
-    audio_input: bool = False
-    video_input: bool = False
-    streaming: bool = True  # Most models support streaming
-    json_mode: bool = False
-    
-    # OpenAI API configuration
-    supported_api_types: List[OpenAIApiType] = Field(
-        default_factory=lambda: [OpenAIApiType.CHAT_COMPLETIONS],
-        description="API types this model supports (chat_completions, assistants, realtime, etc.)"
-    )
-    default_api_type: OpenAIApiType = Field(
-        default=OpenAIApiType.CHAT_COMPLETIONS,
-        description="Default API type to use for this model"
-    )
-    
-    # Image input configuration
-    max_image_size: Optional[int] = None  # bytes
-    max_image_resolution: Optional[tuple[int, int]] = None  # (width, height)
-    min_image_resolution: Optional[tuple[int, int]] = None  # (width, height)
-    supported_image_formats: List[ImageFormat] = Field(default_factory=list)
-    image_detail_control: bool = False  # GPT-5 specific
-    
-    # Audio input configuration
-    max_audio_size: Optional[int] = None  # bytes
-    max_audio_duration: Optional[int] = None  # seconds
-    supported_audio_formats: List[str] = Field(default_factory=list)
-    
-    # Video input configuration
-    max_video_size: Optional[int] = None  # bytes
-    max_video_duration: Optional[int] = None  # seconds
-    supported_video_formats: List[str] = Field(default_factory=list)
-    
-    # Provider-specific features
-    supports_files_api: bool = False  # Anthropic Files API
-    supports_file_uploads: bool = False  # Google File API
-    
-    def has_capability(self, capability: ModelCapability | str) -> bool:
-        """Check if model has a specific capability."""
+    def has_capability(self, capability: "ModelCapability | str") -> bool:
         if isinstance(capability, str):
             capability = ModelCapability(capability)
-        
-        return getattr(self, capability.value, False)
-    
-    def supports_api_type(self, api_type: OpenAIApiType | str) -> bool:
-        """Check if model supports a specific OpenAI API type."""
-        if isinstance(api_type, str):
-            try:
-                api_type = OpenAIApiType(api_type)
-            except ValueError:
-                return False
-        
-        return api_type in self.supported_api_types
-    
-    def supports_multimodal(self) -> bool:
-        """Check if model supports any multimodal input."""
-        return self.image_input or self.audio_input or self.video_input
-    
-    def supports_image_format(self, format: str) -> bool:
-        """Check if model supports a specific image format."""
-        try:
-            img_format = ImageFormat(format.lower())
-            return img_format in self.supported_image_formats
-        except ValueError:
-            return False
+        return bool(getattr(self, capability.value, False))
 
 
 def load_capabilities_from_config(config_path: Optional[str | Path] = None) -> dict[str, ModelCapabilities]:
-    """Load model capabilities from configuration file(s).
-    
-    Loads capabilities from all included config files (llm.yaml, llm_openrouter.yaml, etc.)
-    by using the merged configuration system.
-    
-    Args:
-        config_path: Optional explicit path to a single config file. If None, 
-                     loads from the global merged configuration.
-    
-    Returns:
-        Dictionary mapping model names to their capabilities
+    """Build the registry from the merged configuration.
+
+    config.yaml is the only file read directly; its includes bring llm.yaml,
+    llm_openrouter.yaml and the per-plugin tables — resolved, with `extends`
+    already folded in. Reading a single file would miss the other models AND
+    every unresolved inheritance.
     """
-    capabilities_map = {}
-    
-    # First, try to get from global merged config (preferred method)
     try:
         from agent_system.config import load_settings
-        config = load_settings()
-        
-        if config and hasattr(config, 'llm_system') and config.llm_system:
-            models = config.llm_system.models or {}
-            
-            for model_name, model_config in models.items():
-                # Extract capabilities from model config
-                caps_data = {}
-                if hasattr(model_config, 'capabilities') and model_config.capabilities:
-                    caps_obj = model_config.capabilities
-                    # Convert Pydantic model to dict
-                    for field in ['tools', 'function_calling', 'streaming', 'json_mode',
-                                  'image_input', 'audio_input', 'video_input', 'multimodal']:
-                        if hasattr(caps_obj, field):
-                            value = getattr(caps_obj, field)
-                            if value is not None:
-                                # Map 'multimodal' to individual capabilities
-                                if field == 'multimodal' and value:
-                                    caps_data['image_input'] = True
-                                    caps_data['audio_input'] = True
-                                    caps_data['video_input'] = True
-                                else:
-                                    caps_data[field] = value
-                
-                # Convert to ModelCapabilities instance
-                capabilities = ModelCapabilities(**caps_data)
-                capabilities_map[model_name] = capabilities
-                
-                # Also register by the actual model string (e.g., "gpt-5" from model: gpt-5)
-                actual_model = model_config.model if hasattr(model_config, 'model') else None
-                if actual_model and actual_model != model_name:
-                    capabilities_map[actual_model] = capabilities
-            
-            logger.info("Loaded capabilities for %d models from merged config", len(capabilities_map))
-            return capabilities_map
-            
+        config = load_settings(str(config_path)) if config_path else load_settings()
     except Exception as e:
-        logger.debug("Could not load from merged config (%s), falling back to file loading", e)
-    
-    # Fallback: Load directly from YAML files
-    if config_path is None:
-        # Try default locations
-        possible_paths = [
-            Path("config/llm.yaml"),
-            Path(__file__).parent.parent.parent.parent / "config" / "llm.yaml",
-        ]
-        config_path = None
-        for path in possible_paths:
-            if path.exists():
-                config_path = path
-                break
-        
-        if config_path is None:
-            logger.warning("No llm.yaml config file found, using empty capabilities registry")
-            return {}
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        
-        if not config or 'llm_system' not in config:
-            logger.warning("Invalid config structure in %s", config_path)
-            return {}
-        
-        llm_system = config['llm_system']
-        models = llm_system.get('models', {})
-        
-        capabilities_map = {}
-        for model_name, model_config in models.items():
-            # Extract capabilities from model config
-            caps_data = model_config.get('capabilities', {})
-            
-            # Handle 'multimodal' shorthand
-            if caps_data.get('multimodal'):
-                caps_data['image_input'] = True
-                caps_data['audio_input'] = True
-                caps_data['video_input'] = True
-                del caps_data['multimodal']  # Remove before passing to ModelCapabilities
-            
-            # Convert to ModelCapabilities instance
-            capabilities = ModelCapabilities(**caps_data)
-            capabilities_map[model_name] = capabilities
-            
-            # Also register by the actual model string (e.g., "gpt-5" from model: gpt-5)
-            actual_model = model_config.get('model')
-            if actual_model and actual_model != model_name:
-                capabilities_map[actual_model] = capabilities
-        
-        logger.info("Loaded capabilities for %d models from %s", len(capabilities_map), config_path)
-        return capabilities_map
-    
-    except Exception as e:
-        logger.error("Error loading capabilities from %s: %s", config_path, e)
+        logger.error("Capabilities registry stays empty: the merged "
+                     "configuration could not be loaded (%s)", e)
         return {}
+
+    models = getattr(getattr(config, "llm_system", None), "models", None) or {}
+    out: dict[str, ModelCapabilities] = {}
+    aliases: list[tuple[str, str, ModelCapabilities]] = []
+    for name, model in models.items():
+        declared = getattr(model, "capabilities", None)
+        caps = (ModelCapabilities.model_validate(declared.model_dump())
+                if declared is not None else ModelCapabilities())
+        out[name] = caps
+        actual = getattr(model, "model", None)
+        if actual and actual != name:
+            aliases.append((actual, name, caps))
+
+    # A model is also reachable by its provider string — callers know either.
+    # Second pass, because an entry name always outranks somebody else's alias:
+    # 'claude-sonnet-5' is an entry AND the model string of two others.
+    alias_owner: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for actual, name, caps in aliases:
+        if actual in models:
+            continue
+        owner = alias_owner.get(actual)
+        if owner is None:
+            alias_owner[actual] = name
+            out[actual] = caps
+        elif _inputs_of(out[actual]) != _inputs_of(caps):
+            # Dict order would decide which answer the gate gives. Say nothing
+            # rather than flip a coin about what a model can take.
+            ambiguous.add(actual)
+            logger.warning("'%s' is claimed by '%s' and '%s' with different "
+                           "input capabilities — attachments to it stay "
+                           "unchecked", actual, owner, name)
+    for actual in ambiguous:
+        out.pop(actual, None)
+    logger.info("Loaded capabilities for %d models", len(out))
+    return out
+
+
+def _inputs_of(caps: "ModelCapabilities") -> tuple[bool, ...]:
+    return tuple(bool(getattr(caps, f, False)) for f in _INPUT_FLAGS)
 
 
 def init_capabilities_registry(config_path: Optional[str | Path] = None) -> None:
-    """Initialize the global capabilities registry from configuration.
-    
-    Args:
-        config_path: Path to llm.yaml config file. If None, uses defaults.
-    """
-    global _capabilities_registry
+    global _capabilities_registry, _registry_loaded
     _capabilities_registry = load_capabilities_from_config(config_path)
+    _registry_loaded = True
 
 
-def register_model_capabilities(model_name: str, capabilities: ModelCapabilities) -> None:
-    """Register capabilities for a specific model at runtime.
-    
-    Args:
-        model_name: Name of the model
-        capabilities: ModelCapabilities instance
+def capability_model_name(llm_override: object, agent: object) -> Optional[str]:
+    """The model the attachments will actually reach: the per-request override
+    wins over the agent's default. One rule for the HTTP API, the chat and
+    both command-line entry points."""
+    model = getattr(llm_override, "model", None)
+    return model or getattr(getattr(agent, "llm", None), "model", None)
+
+
+def ensure_model_supports(model_name: Optional[str], *, images: int = 0,
+                          audio: int = 0, video: int = 0) -> Optional[str]:
+    """Check a model against the attachments it is about to receive.
+
+    Returns an error message, or None when the model can take them. Every
+    entry point that attaches media must ask — until 2026-08-22 only the HTTP
+    API did, so `agent-cli --audio` handed a recording to text-only models and
+    the error came back from the provider, late and unspecific.
+
+    An unknown model name yields None: the registry is not complete enough to
+    veto a request over a name it has never seen.
     """
-    global _capabilities_registry
-    _capabilities_registry[model_name] = capabilities
-    logger.debug("Registered capabilities for model: %s", model_name)
-
-
-def get_model_capabilities(model_name: str) -> ModelCapabilities:
-    """Get capabilities for a specific model from the registry.
-    
-    Args:
-        model_name: Name of the model (e.g., "gpt-5", "claude-sonnet-4.5")
-    
-    Returns:
-        ModelCapabilities instance for the model, or default capabilities if not configured
-    """
-    global _capabilities_registry
-    
-    # Ensure registry is loaded
-    if not _capabilities_registry:
+    if not model_name:
+        return None
+    # Once per process, not once per request: load_settings() re-reads every
+    # YAML file and drops the plugin and inheritance caches on the way.
+    if not _registry_loaded:
         init_capabilities_registry()
-    
-    # Try exact match first
-    if model_name in _capabilities_registry:
-        return _capabilities_registry[model_name]
-    
-    # Log warning for unconfigured model
-    logger.warning(
-        "Model '%s' not found in capabilities registry. "
-        "Add capabilities to config/llm.yaml. Using default capabilities.",
-        model_name
-    )
-    
-    # Default: basic text-only model with tool support
-    return ModelCapabilities(
-        tools=True,
-        function_calling=True,
-        streaming=True,
-        json_mode=False,
-        image_input=False,
-        audio_input=False,
-        video_input=False
-    )
-
-
-def validate_capability_request(
-    model_name: str,
-    required_capability: ModelCapability | str
-) -> tuple[bool, Optional[str]]:
-    """Validate if a model supports a required capability.
-    
-    Args:
-        model_name: Name of the model
-        required_capability: Capability to check
-    
-    Returns:
-        Tuple of (is_supported, error_message)
-    """
-    capabilities = get_model_capabilities(model_name)
-    
-    if isinstance(required_capability, str):
-        try:
-            required_capability = ModelCapability(required_capability)
-        except ValueError:
-            return False, f"Unknown capability: {required_capability}"
-    
-    if not capabilities.has_capability(required_capability):
-        return False, f"Model '{model_name}' does not support {required_capability.value}"
-    
-    return True, None
-
-
-def get_compatible_models(required_capability: ModelCapability | str) -> List[str]:
-    """Get list of models that support a specific capability.
-    
-    Args:
-        required_capability: Capability to check
-    
-    Returns:
-        List of model names that support the capability
-    """
-    global _capabilities_registry
-    
-    # Ensure registry is loaded
-    if not _capabilities_registry:
-        init_capabilities_registry()
-    
-    if isinstance(required_capability, str):
-        required_capability = ModelCapability(required_capability)
-    
-    compatible = []
-    for model_name, capabilities in _capabilities_registry.items():
-        if capabilities.has_capability(required_capability):
-            compatible.append(model_name)
-    
-    return compatible
+    caps = _capabilities_registry.get(model_name)
+    if caps is None:
+        logger.warning("No capabilities known for '%s' — attachments pass "
+                       "unchecked", model_name)
+        return None
+    for count, flag in ((images, ModelCapability.IMAGE_INPUT),
+                        (audio, ModelCapability.AUDIO_INPUT),
+                        (video, ModelCapability.VIDEO_INPUT)):
+        if count and not caps.has_capability(flag):
+            return (f"Model '{model_name}' does not support {flag.value} "
+                    f"({count} attachment(s) given)")
+    return None

@@ -6,15 +6,23 @@ Provides administrative endpoints for user management.
 
 from __future__ import annotations
 
-from typing import List, Optional, Any, Dict
+from typing import List, Literal, Optional, Any, Dict
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel
 
+from agent_system.api.auth_endpoints import renew_own_login
 from agent_system.auth.models import User, UserCreate, UserUpdate, UserRole
-from agent_system.auth.database import get_db, UserDatabase
+from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
 from agent_system.auth.dependencies import require_admin
+from agent_system.auth.middleware import (
+    AUDIT_CATEGORIES,
+    AUDIT_LOG_PATH,
+    AUDIT_STATUS_CLASSES,
+    SecurityAuditMiddleware,
+    security_audit_log,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +41,63 @@ class MessageResponse(BaseModel):
     """Generic message response."""
     message: str
     detail: Optional[str] = None
+
+
+class ReloadConfigResponse(BaseModel):
+    """Result of a deliberate config reload."""
+    status: str
+    report: Dict[str, Any]
+
+
+@router.post("/reload-config", response_model=ReloadConfigResponse)
+async def reload_config_endpoint(
+    request: Request,
+    current_user: User = Depends(require_admin),
+):
+    """Deliberately re-read the on-disk config and refresh live plugin instances
+    (no restart, no dropped sessions/jobs).
+
+    Only servers implementing ``reload_config()`` are refreshed (e.g. a sub-agent
+    manager's ``allowed_agents`` / limits). Adding a brand-new agent/plugin
+    definition still requires a restart. There is no file watcher — this is the
+    explicit trigger (also reachable via ``agent-cli reload``).
+    """
+    cfg_service = getattr(request.app.state, "config_service", None)
+    cfg_path = getattr(request.app.state, "config_path", None)
+    if cfg_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="config reload unavailable (no config service in app state)",
+        )
+
+    try:
+        fresh = cfg_service.load_config(config_path=cfg_path, force_reload=True)
+    except Exception as e:
+        # Bad edit on disk: keep the running config untouched, report the error.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"config failed to parse, nothing reloaded: {e}",
+        )
+
+    from agent_system.services.config_reload import reload_plugin_configs
+
+    # Authentication is set up once, at start: the middleware, the signing key, the plugin route rules. A reloaded
+    # auth section would change only what the app says -- who viewer_role takes for an admin, which panels a role
+    # is shown -- while the one it started with is enforced: `auth.enabled: false` on disk made every signed-in
+    # user an admin viewer. It stays as running until a restart.
+    running_auth = request.app.state.config.auth
+    auth_changed = fresh.auth != running_auth
+    fresh.auth = running_auth
+    report = reload_plugin_configs(fresh)
+    if auth_changed:
+        report["auth"] = "changed on disk: takes effect on a restart"
+        logger.warning("Config reload: the auth section changed on disk and takes effect on a restart only")
+    request.app.state.config = fresh  # subsequent reads see the fresh config
+    logger.info(
+        "Admin '%s' reloaded config: %d server(s) refreshed",
+        getattr(current_user, "username", "?"), len(report.get("refreshed", [])),
+    )
+    return ReloadConfigResponse(status="ok", report=report)
 
 
 @router.get("/users", response_model=UserListResponse)
@@ -76,7 +141,8 @@ async def list_users(
     
     return UserListResponse(
         users=users,
-        total=len(users),
+        # Real total, not the page size -- clients paginate on skip+limit >= total.
+        total=db.count_users(),
         skip=skip,
         limit=limit,
     )
@@ -171,6 +237,8 @@ async def create_user_admin(
 async def update_user(
     user_id: int,
     update_data: UserUpdate,
+    request: Request,
+    response: Response,
     admin_user: User = Depends(require_admin),
     db: UserDatabase = Depends(get_db),
 ) -> User:
@@ -187,18 +255,41 @@ async def update_user(
         Updated user
     
     Raises:
-        HTTPException: If user not found
+        HTTPException: If user not found, or 400 if the email belongs to another user
+            or the admin would demote or deactivate themselves
     """
-    updated_user = db.update_user(user_id, update_data)
-    
+    # Same guard as /demote and /deactivate: this route must not be the way around them.
+    if user_id == admin_user.id and (
+        update_data.role not in (None, UserRole.ADMIN) or update_data.is_active is False
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote or deactivate your own account"
+        )
+    own_password = user_id == admin_user.id and update_data.password is not None
+    # One's own, as PATCH /auth/me: only while this login holds -- a reset from another process since is not
+    # overwritten by the login it ended -- and the fresh cookie is for the count this change makes
+    generation = request.state.login_generation if own_password else None
+    try:
+        updated_user = db.update_user(user_id, update_data, expected_generation=generation)
+    except PasswordChangedMeanwhile:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The password was changed meanwhile; nothing was saved -- sign in again",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     if not updated_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with ID {user_id} not found"
         )
-    
+
     logger.info(f"Admin {admin_user.username} updated user ID {user_id}")
-    
+    if own_password:
+        renew_own_login(response, updated_user, generation)
+
     return User(
         id=updated_user.id,
         username=updated_user.username,
@@ -475,7 +566,8 @@ async def list_active_sessions(
         List of active sessions with details
     """
     # Import here to avoid circular imports
-    from agent_system.app import _request_user_map, _app_registry
+    from agent_system.app import _app_registry
+    from agent_system.core.request_context import request_user_map as _request_user_map
     from agent_system.servers.agent.server import Agent
     
     sessions = []
@@ -543,50 +635,80 @@ async def cancel_active_session(
     request_id: str,
     admin_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """
-    Cancel an active session by request ID (admin only).
-    
+    """Cancel an active session by request ID (admin only).
+
+    Delegates to the canonical ``BackgroundJobManager.cancel_job`` path
+    that walks the agent registry + sets the cancellation token + force-
+    cancels the task after the grace period. The previously-duplicated
+    walk-the-registry loop lived here AND in ``/api/requests/{rid}/
+    cancel`` AND was the only one that worked correctly for sub-agent
+    requests — consolidated 2026-06-27 so there's a single
+    implementation everyone shares.
+
     Args:
         request_id: The request ID to cancel
         admin_user: Current admin user (verified by require_admin)
-    
+
     Returns:
         Status of the cancellation
     """
-    from agent_system.app import _app_registry
-    from agent_system.servers.agent.server import Agent
-    
-    # Try to cancel across all agents
-    cancelled = False
-    
+    from agent_system.services.background_job_manager import (
+        get_background_job_manager,
+    )
+
     try:
-        for agent_name in _app_registry.list():
-            try:
-                srv = _app_registry.get(agent_name)
-                if not isinstance(srv, Agent):
-                    continue
-                
-                # Check if this agent has this request
-                active_requests = srv._request_manager.get_active_requests()
-                if request_id in active_requests:
-                    success = await srv.cancel_request(request_id)
-                    if success:
-                        cancelled = True
-                        logger.info(f"Admin {admin_user.username} cancelled request {request_id} on agent {agent_name}")
-                        break
-                        
-            except Exception as e:
-                logger.debug(f"Failed to cancel on agent {agent_name}: {e}")
-                continue
-                
-    except Exception as e:
-        logger.exception(f"Failed to cancel request {request_id}: {e}")
+        success = await get_background_job_manager().cancel_job(
+            request_id, force_timeout=5.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Admin %s: cancel for request_id=%s failed: %s",
+            admin_user.username, request_id, exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to cancel request: {str(e)}"
+            detail=f"Failed to cancel request: {exc}",
         )
-    
-    if cancelled:
+
+    if success:
+        logger.info(
+            "Admin %s cancelled request %s",
+            admin_user.username, request_id,
+        )
         return {"status": "cancelled", "request_id": request_id}
-    else:
-        return {"status": "not_found", "request_id": request_id, "message": "Request not found or already completed"}
+    return {
+        "status": "not_found",
+        "request_id": request_id,
+        "message": "Request not found or already completed",
+    }
+
+
+@router.get("/system")
+async def system_status(
+    admin_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Health of this process with the reasons behind it (admin only).
+
+    ``status`` is the worst of ``checks``: servers that did not start (error),
+    agent config errors found at start (error), LLMs paused after rate limits
+    (warn), a checked-out commit newer than the one the process runs (warn).
+    ``/health`` stays the plain liveness probe.
+    """
+    from agent_system.services.system_status import collect_system_status
+
+    return await collect_system_status()
+
+
+@router.get(AUDIT_LOG_PATH.removeprefix("/admin"))
+async def security_audit(
+    audit: SecurityAuditMiddleware = Depends(security_audit_log),
+    admin_user: User = Depends(require_admin),
+    category: Optional[Literal[AUDIT_CATEGORIES]] = None,
+    status_classes: List[Literal[AUDIT_STATUS_CLASSES]] = Query([], alias="status"),
+    limit: int = Query(100, ge=1, le=1000),
+) -> Dict[str, Any]:
+    """The newest requests the security audit kept, newest first (admin only; 404 while the audit is off).
+
+    ``status`` may repeat (``?status=4xx&status=5xx``); none means every status.
+    """
+    return {"entries": audit.get_audit_log(category, status_classes, limit)}

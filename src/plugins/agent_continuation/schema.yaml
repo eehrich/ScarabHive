@@ -37,12 +37,16 @@ config:
       action.
     description: "User message injected when continuation is triggered"
 
-  # Strategy: "rules", "llm", or "hybrid"
+  # Strategy: "rules", "llm", "decision", or "hybrid"
   strategy:
     type: string
     default: "rules"
-    enum: ["rules", "llm", "hybrid"]
-    description: "Evaluation strategy — rules (fast), llm (smart), hybrid (rules first, llm fallback)"
+    enum: ["rules", "llm", "decision", "hybrid"]
+    description: >
+      Evaluation strategy — rules (fast, free), llm (a chat model answers
+      FINAL or CONTINUE), decision (a decision model answers one named
+      question with a probability), hybrid (rules first, then whichever
+      hybrid_fallback names).
 
   # LLM profile used for the evaluator (only for "llm" / "hybrid")
   llm_profile:
@@ -68,11 +72,71 @@ config:
       Reply with exactly one word: FINAL or CONTINUE
     description: "Prompt template for LLM-based evaluation"
 
+  # Which judge hybrid falls back to when no rule matched. The decision model
+  # is billed per call, so running the free rules first is the point of hybrid.
+  hybrid_fallback:
+    type: string
+    default: "llm"
+    enum: ["llm", "decision"]
+    description: "Judge for hybrid when no rule matched"
+
+  # ---------------------------------------------------------------
+  # strategy: "decision" — one named question, answered with a probability
+  # ---------------------------------------------------------------
+
+  # Which decision model judges. Empty = llm_system.default_decision_profile.
+  decision_profile:
+    type: string
+    default: ""
+    description: >
+      Profile from llm_system.decision_profiles. Empty means the configured
+      default_decision_profile — set this only to make one agent use a
+      different judge than the rest.
+
+  # The question. This is the whole prompt: no template, no placeholders.
+  decision_question:
+    type: string
+    default: >
+      Is this the agent's FINAL answer to its task?
+    description: "The one question the decision model answers about the response"
+
+  # What the two sides of that question mean. Both or neither: half a pair
+  # tells the model that the other case means nothing.
+  decision_final_means:
+    type: string
+    default: >
+      A finished result: the work is done and this reports the outcome.
+    description: "Criterion for 'yes, final' — sent as criteria.true"
+
+  decision_continue_means:
+    type: string
+    default: >
+      An intermediate status report, a plan, or an announcement of what the
+      agent is about to do next.
+    description: "Criterion for 'no, keep working' — sent as criteria.false"
+
+  # How sure the model must be that the answer is final before the loop stops.
+  decision_threshold:
+    type: number
+    default: 0.5
+    minimum: 0.0
+    maximum: 1.0
+    description: >
+      Continue while p(final) is BELOW this. 0.5 means "whichever the model
+      thinks is more likely". Raise it to keep working unless the model is
+      quite sure the answer is finished; lower it to stop more easily.
+
   # Per-agent rule overrides (keyed by agent name)
   agent_rules:
     type: object
     default: {}
     description: >
       Per-agent configuration.  Keys are agent names, values are objects
-      with optional keys: strategy, continue_message, default, rules.
+      with optional keys: strategy, continue_message, default, rules,
+      llm_prompt, max_continuations, followups, followups_on_continue,
+      hybrid_fallback, decision_profile, decision_question,
+      decision_final_means, decision_continue_means, decision_threshold,
+      required_spawns ({agents: jinja expression over the template vars
+      giving the agent types that must have been spawned, tool: the
+      sub-agent manager's tool name, message: text with {missing}).
       Agents that don't appear here use the global strategy/defaults.

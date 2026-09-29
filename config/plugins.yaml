@@ -1,7 +1,7 @@
 # ================================
 # Plugin Configuration
 # ================================
-# Configuration for local MCP plugins (servers)
+# Configuration for local plugins (servers)
 # Note: Additional plugin configs are loaded via includes in config/config.yaml
 # (e.g., agents_writer/writer_plugin_configs.yaml, agents_trading/trading_plugin_configs.yaml)
 
@@ -18,17 +18,19 @@ plugins:
     enabled: false
 
     agent_config:
-      llm_profile: normal
-      llm_profile_fallbacks: [chat]
+      llm_profile: [normal, think]
+      llm_profile_advanced: []
       max_steps: 20
-      system_template: "config/prompts/system_prompt.yaml"
+      system_template: "config/prompts/system_prompt.md"
 
       hooks:
         enabled: true
         overrides:  # by default disable html formatting of markdown
           markdown_formatter.format_markdown_output:
              enabled: false
-
+          markdown_formatter.inject_markdown_system_prompt:
+             enabled: false
+             
       timeouts:
         # Queue handler timeouts (prevent cross-session blocking)
         status_queue_put_timeout: 5.0  # seconds
@@ -50,44 +52,6 @@ plugins:
     example:
       type: example
       enabled: true
-
-    basic_agent:
-      type: basic_agent
-      enabled: true
-      agent_config:
-        llm_profile: ["think", "normal", "turbo", "chat"]  # First is default, rest are available options
-        
-        timeouts:
-          # Queue handler timeouts (prevent cross-session blocking)
-          status_queue_put_timeout: 5.0  # seconds
-          
-          # LLM task timeout - safety net only!
-          # For batch mode: actual timeout is max_wait_hours in llm.yaml
-          # For sync mode: actual timeout is request_timeout in model config
-          llm_task_max_iterations: 864000  # 864000 * 0.1s = 24h safety net
-          
-          # Session lock timeout (prevent same-session deadlock)
-          session_lock_timeout: 5.0  # seconds
-          
-          # NOTE: Hooks and tools have NO hard timeouts - they can run as long as needed
-          # Examples: context_summarizer (10+ min), sub_agent_manager (hours)
-        
-        tools:
-          allowed: []
-        hooks:
-          enabled: true
-          overrides:
-            todo.inject_todo_tasks:
-              enabled: true
-            memory.inject_memory_context:
-              enabled: true
-            sequential_thinking.inject_active_sessions:
-              enabled: true
-
-      metadata:
-        visibility: "tool"  # Make available as tool for meta_agent
-
-
 
     basic_operations:
       type: basic_operations
@@ -128,6 +92,32 @@ plugins:
       search_n_results: 5
       use_semantic_injection: true
 
+    okf:
+      type: okf
+      enabled: true
+      # Open Knowledge Format bundles (curated markdown knowledge, git-versioned).
+      # Sandbox: tools may only touch bundles under these directories.
+      allowed_directories:
+        - data/okf
+      # Consumer hook (context injection) is opt-in per agent via
+      # hooks.overrides; set hook_bundle on the agent that should use it.
+      # hook_bundle: data/okf/<bundle>
+      hook_max_concepts: 6
+      hook_graph_depth: 1
+
+    lessons_learned:
+      type: lessons_learned
+      enabled: true
+      description: "Persistent lessons learned across sessions with semantic search and cross-agent teaching"
+      database_path: "data/lessons_learned/lessons.db"
+      max_lessons_per_agent: 500
+      dedup_similarity_threshold: 0.82
+      exact_duplicate_threshold: 0.95
+      # Direct -> OpenRouter (2026-08-20): gleiches Modell, das Direct-Konto
+      # ist fast leer. Extraktion und Konsolidierung laufen ueber OR.
+      llm_profile: "or-deepseek-flash"
+      consolidation_llm_profile: "or-deepseek-flash"  # LLM for consolidation (merge decisions) - use think/normal for better quality
+
     http_server:
       type: http_server
       enabled: false
@@ -139,17 +129,83 @@ plugins:
       enabled: true
       description: "Monitor and query batch queue status"
 
+    image_compose:
+      type: image_compose
+      enabled: true
+      description: "Compose layered images (background + text + shapes + gradients + SVG)"
+      fonts_dir: "src/plugins/image_compose/fonts"   # plugin-bundled assets
+      # font_aliases: drop a TTF into fonts_dir and map an alias name to its filename.
+      # Available aliases (used in image_compose schema + cover_artist prompt):
+      #   sans, sans_bold, serif, serif_bold, mono, display,
+      #   display_grotesk (Type-Driven), script (handwritten), stencil (grunge),
+      #   display_block (dramatic display)
+      # Example:
+      # font_aliases:
+      #   display_grotesk: "Oswald-Bold.ttf"
+      #   script: "Caveat-Regular.ttf"
+      #   stencil: "StardosStencil-Bold.ttf"
+      #   display_block: "BungeeInline-Regular.ttf"
+      overlap_check_enabled: true   # warn on text/svg BBox overlap pairs after render
+      overlap_min_gap_px: 30        # required clearance between text/svg layers (px)
+
+    media_ops:
+      type: media_ops
+      enabled: true
+      description: "Load media files from disk into the agent's context, and save context media back to disk"
+      # Sandbox for BOTH directions: the path comes straight from LLM arguments,
+      # whatever is read ends up base64-encoded in the model context, and
+      # whatever is written lands on disk. Only paths whose RESOLVED form
+      # (symlinks followed, `..` collapsed) lies inside one of these roots are
+      # loaded or written — everything else is refused with an error, never
+      # silently redirected. Keep the list minimal; all plugin-produced media
+      # (comfyui outputs, audio_ops storage, covers, context_engineer media
+      # store) lives under data/. Relative paths resolve against the project root.
+      allowed_directories:
+        - data
+      # Per-file ceiling in MB. A 200 MB video would blow up the request before
+      # it is ever sent, so refuse it here and name the actual size.
+      max_file_size_mb: 20
+
     comfyui:
       type: comfyui
-      enabled: true  # ComfyUI server must be running on localhost:8188
+      enabled: true
       description: "Execute ComfyUI workflows for image, audio, and video generation"
-      host: "192.0.2.125"
+      host: "192.0.2.5"  # primary / fallback
       port: 8188
-      timeout_seconds: 300
+      strategy: "least_loaded"  # "least_loaded" (probe queues) or "random"
+      timeout_seconds: 1200
+      servers:  # 4 ComfyUI-Instanzen auf einem Server (2 GPUs), load-balanced
+        # Der lokale PC ist meist aus. Die Auswahl ist zwar health-aware und
+        # weicht aus, aber erst NACH dem Verbindungsversuch: gemessen 3,07 s
+        # Timeout je Job gegen 0,006 s auf gpuhost1. Wieder aufmachen, sobald
+        # der PC dauerhaft laeuft.
+        #- host: "192.0.2.64" # PC
+        #  port: 8188
+
+        # gpuhost1
+        - host: "192.0.2.5"  # 5090
+          port: 8188
+        #- host: "192.0.2.5"  # 3090
+        #  port: 8189
+        #- host: "192.0.2.5"
+        #  port: 8190
+        #- host: "192.0.2.5"
+        #  port: 8191
+
       unknown_threshold_seconds: 60  # Fail early if job stays unknown for this many seconds (lost/dropped)
       output_dir: "data/comfyui/outputs"
       workflow_files_dir: "config/comfyui_workflows"
       cleanup_age_hours: 48  # Delete files older than 48 hours (0 = disable cleanup)
+      # upload_image security allowlist. Mirrors the code defaults PLUS
+      # the writer cover dir — the Phase-E cover_feedback_judge uploads
+      # the real cover composite for its VLM verification passes; without
+      # this entry every judge run dies with "not found inside the
+      # configured upload_source_dirs allowlist" (book 26, job 242).
+      upload_source_dirs:
+        - "data/comfyui/outputs"
+        - "data/comfyui"
+        - "data/writer/assets"
+        - "data/writer/covers"
       workflows:
         - id: stable_audio
           name: "Stable Audio Generation"
@@ -251,6 +307,408 @@ plugins:
               node_id: "3"
               field: inputs.seed
 
+        - id: juggernaut_xl
+          name: "Juggernaut XL v9 + Hires-Fix (High-Quality SDXL)"
+          description: "Juggernaut XL v9 community checkpoint with a hires-fix pass: base render at width x height, 4x-UltraSharp model upscale, downscale to 1.5x, then a low-denoise refine pass. Far better anatomy, faces and detail than vanilla SDXL base. width/height set the BASE size (default 1024x1536); final output is 1.5x that (1536x2304)."
+          category: image_generation
+          workflow_file: juggernaut_xl.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate"
+              node_id: "6"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid in the image"
+              node_id: "7"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (divisible by 8; 1024 recommended)"
+              node_id: "5"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1536
+              description: "Image height (divisible by 8; 1536 = 2:3 book cover)"
+              node_id: "5"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 32
+              description: "Sampling steps (30-40 recommended for Juggernaut)"
+              node_id: "3"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 5.5
+              description: "Guidance scale (Juggernaut likes 3-7, lower than vanilla SDXL)"
+              node_id: "3"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "3"
+              field: inputs.seed
+
+        - id: sdxl_base_refiner
+          name: "SDXL Base + Refiner + Hires-Fix"
+          description: "Three-pass SDXL workflow: base model generates structure at width x height, refiner polishes details, then a 4x-UltraSharp upscale + lanczos downscale to hires_width x hires_height + low-denoise refine pass. Output dimensions = (hires_width, hires_height). Defaults give general SDXL-style output; set explicit hires dimensions for cover-art use. Requires both sd_xl_base_1.0 and sd_xl_refiner_1.0 checkpoints + 4x-UltraSharp."
+          category: image_generation
+          workflow_file: sdxl_base_refiner.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the image to generate (injected into both base and refiner CLIP encoders + hires refine)"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (if different from base). Defaults to same as prompt."
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature, jpeg artifacts"
+              description: "Things to avoid (injected into both base and refiner negative prompts + hires refine)"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (if different). Defaults to same as negative_prompt."
+              node_id: "23"
+              field: inputs.text
+            - name: width
+              type: integer
+              default: 1024
+              description: "Base image width — match an SDXL training bucket (1024x1024, 832x1216 for 2:3, 1216x832 for 3:2). Must be divisible by 8."
+              node_id: "30"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Base image height — match an SDXL training bucket. Must be divisible by 8."
+              node_id: "30"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps for both passes (25-35 recommended). Base uses ~80%, refiner ~20%."
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Total steps value for refiner KSampler (must match base steps)"
+              node_id: "41"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale (6-9 recommended)"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner (can be slightly lower for softer refinement)"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed for base sampler (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner sampler (0 for random)"
+              node_id: "41"
+              field: inputs.noise_seed
+            - name: hires_width
+              type: integer
+              default: 1024
+              description: "Final width after 4x upscale + lanczos downscale. Set to width for no resize, or to width * 1.5 for hires-fix boost. Must be divisible by 8."
+              node_id: "72"
+              field: inputs.width
+            - name: hires_height
+              type: integer
+              default: 1024
+              description: "Final height after 4x upscale + lanczos downscale. Set to height for no resize, or to height * 1.5 for hires-fix boost. Must be divisible by 8."
+              node_id: "72"
+              field: inputs.height
+            - name: hires_steps
+              type: integer
+              default: 20
+              description: "Sampling steps for the hires refine pass (15-25 typical)"
+              node_id: "74"
+              field: inputs.steps
+            - name: hires_cfg
+              type: float
+              default: 7.5
+              description: "CFG scale for hires refine pass"
+              node_id: "74"
+              field: inputs.cfg
+            - name: hires_denoise
+              type: float
+              default: 0.4
+              description: "Denoise strength for hires refine pass (0.0 = no change, 0.3-0.5 for sharpening, 0.6+ alters composition). Default 0.4 mirrors juggernaut_xl."
+              node_id: "74"
+              field: inputs.denoise
+            - name: hires_seed
+              type: integer
+              default: 0
+              description: "Random seed for hires refine pass (0 for random; can match seed for consistency)"
+              node_id: "74"
+              field: inputs.seed
+
+        - id: sdxl_img2img
+          name: "SDXL img2img (Style Continuation)"
+          description: >
+            SDXL image-to-image: encodes a reference image as the starting latent and denoises from
+            a given step, preserving composition and colour palette proportional to denoise strength.
+            Ideal for series covers where structural/colour continuity with a predecessor is desired.
+            Requires sd_xl_base_1.0.safetensors + sd_xl_refiner_1.0.safetensors.
+            Before using: upload the reference image with operation='upload_image' and pass the
+            returned filename as reference_image.
+          category: image_generation
+          workflow_file: sdxl_img2img.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the new image"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (defaults to prompt)"
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (defaults to negative_prompt)"
+              node_id: "23"
+              field: inputs.text
+            - name: reference_image
+              type: string
+              required: true
+              description: "Reference image: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
+              node_id: "05"
+              field: inputs.image
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps (25-35 recommended)"
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Must match steps"
+              node_id: "41"
+              field: inputs.steps
+            - name: start_at_step
+              type: integer
+              default: 7
+              description: >
+                Step to start denoising from (controls denoise strength).
+                Formula: int(steps * (1 - denoise)). Examples for steps=30:
+                denoise=0.75 → 7, denoise=0.60 → 12, denoise=0.85 → 4.
+                Lower = more faithful to reference; higher = more creative freedom.
+              node_id: "40"
+              field: inputs.start_at_step
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale (6-9 recommended)"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner (use same as seed)"
+              node_id: "41"
+              field: inputs.noise_seed
+
+        - id: sdxl_ipadapter
+          name: "SDXL + IP-Adapter (Style Transfer)"
+          description: >
+            SDXL with IP-Adapter: extracts style/mood/colour embedding from a reference image and
+            injects it as an additional conditioning signal. Generates a fully new composition
+            while preserving the visual aesthetic of the reference — ideal for series covers that
+            must feel like they belong together without being structural copies.
+            Requires: sd_xl_base_1.0.safetensors, sd_xl_refiner_1.0.safetensors,
+            ComfyUI-IPAdapter-Plus custom node, ip-adapter_sdxl.safetensors (ipadapter/ folder),
+            CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors (clip_vision/ folder).
+            Before using: upload the reference image with operation='upload_image' and pass the
+            returned filename as reference_image.
+          category: image_generation
+          workflow_file: sdxl_ipadapter.json
+          parameters:
+            - name: prompt
+              type: string
+              required: true
+              description: "Text description of the new image"
+              node_id: "20"
+              field: inputs.text
+            - name: prompt_refiner
+              type: string
+              required: false
+              description: "Prompt for refiner model (defaults to prompt)"
+              node_id: "22"
+              field: inputs.text
+            - name: negative_prompt
+              type: string
+              required: false
+              default: "blurry, low quality, ugly, distorted, deformed, bad anatomy, extra fingers, watermark, text, signature"
+              description: "Things to avoid"
+              node_id: "21"
+              field: inputs.text
+            - name: negative_prompt_refiner
+              type: string
+              required: false
+              description: "Negative prompt for refiner (defaults to negative_prompt)"
+              node_id: "23"
+              field: inputs.text
+            - name: reference_image
+              type: string
+              required: true
+              description: "Reference image: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
+              node_id: "05"
+              field: inputs.image
+            - name: weight
+              type: float
+              default: 0.7
+              description: >
+                IP-Adapter style weight (0.0–1.0). 0.5 = subtle style hint,
+                0.7 = clear style match (recommended), 0.9 = very close to reference.
+              node_id: "14"
+              field: inputs.weight
+            - name: width
+              type: integer
+              default: 1024
+              description: "Image width (1024 recommended for SDXL)"
+              node_id: "30"
+              field: inputs.width
+            - name: height
+              type: integer
+              default: 1024
+              description: "Image height (1024 recommended for SDXL)"
+              node_id: "30"
+              field: inputs.height
+            - name: steps
+              type: integer
+              default: 30
+              description: "Total sampling steps for both passes"
+              node_id: "40"
+              field: inputs.steps
+            - name: steps_refiner
+              type: integer
+              default: 30
+              description: "Must match steps"
+              node_id: "41"
+              field: inputs.steps
+            - name: cfg_scale
+              type: float
+              default: 7.5
+              description: "Classifier-free guidance scale"
+              node_id: "40"
+              field: inputs.cfg
+            - name: cfg_scale_refiner
+              type: float
+              default: 7.5
+              description: "CFG scale for refiner"
+              node_id: "41"
+              field: inputs.cfg
+            - name: seed
+              type: integer
+              default: 0
+              description: "Random seed (0 for random)"
+              node_id: "40"
+              field: inputs.noise_seed
+            - name: seed_refiner
+              type: integer
+              default: 0
+              description: "Random seed for refiner (use same as seed)"
+              node_id: "41"
+              field: inputs.noise_seed
+
+        - id: qwenvl_caption
+          name: "Qwen3-VL 8B caption / verification"
+          description: "Vision-language model — describes a given image. Use BEFORE accepting a generated image to verify what is actually depicted (people count, gender, visible objects). Returns a free-form text caption."
+          category: image_describe
+          workflow_file: qwenvl_caption.json
+          parameters:
+            - name: image
+              type: string
+              required: true
+              description: "Image to describe: LOCAL file path (e.g. output_path from wait_for_completion) or bare filename of a downloaded output — uploaded to the execution server automatically. Filenames already in ComfyUI's input folder also work."
+              node_id: "1"
+              field: inputs.image
+            - name: prompt
+              type: string
+              required: false
+              default: |
+                Describe what is actually depicted in this image. Cover the following on separate lines:
+
+                PEOPLE: For each person, list gender (girl/boy/woman/man/etc), approximate age, hair (colour + style), clothing (colours + items), and any distinctive accessories. End with "total person count: N". If there are no people, write "no people".
+
+                OBJECTS: List the prominent objects and props visible (e.g. backpack, teapot, bench, sword, book) with their colour/material.
+
+                SETTING: One short sentence describing the location (forest, kitchen, beach, dungeon, etc.) and time of day / lighting mood.
+
+                NOTABLE: Anything else that stands out (text, watermarks, logos, blood, deformed body parts, weird artifacts). If none, write "none".
+
+                Be concise but specific. Do not invent details that aren't visible.
+              description: "Custom question for the VLM. Default asks for people + objects + setting + notable artifacts — suitable for full cover verification."
+              node_id: "2"
+              field: inputs.custom_prompt
+            - name: max_tokens
+              type: integer
+              default: 512
+              description: "Max tokens in the caption (64–2048)."
+              node_id: "2"
+              field: inputs.max_tokens
+            - name: seed
+              type: integer
+              default: 1
+              description: "Sampling seed (reuse to reproduce). 1 = default."
+              node_id: "2"
+              field: inputs.seed
+
     twitter_search:
       type: twitter_search
       enabled: false
@@ -260,11 +718,37 @@ plugins:
     tavily_search:
       type: tavily_search
       enabled: true
-      api_key: "***REMOVED***"  # Set via TAVILY_API_KEY env var (recommended) or here
+      api_key: "${TAVILY_API_KEY}"  # Set via TAVILY_API_KEY env var (recommended) or here
       cache_ttl: 1800  # 30 minutes
       cache_enabled: true
       default_max_results: 5
       default_search_depth: "basic"  # "basic" or "advanced" (2x credits)
+
+    # Web search without an account (ddgs package). The fallback when no
+    # Tavily key is set -- tavily_search then offers no tools at all.
+    duckduckgo_search:
+      type: duckduckgo_search
+      enabled: true
+      cache_ttl: 900
+
+    # Read a page as text, list its links, or download a file. Every URL and
+    # every redirect hop passes the SSRF guard (no internal hosts).
+    web_scraper:
+      type: web_scraper
+      enabled: true
+      proxies: []
+      cache_ttl: 1800
+      # Empty rotates through browser identities. A site that wants a
+      # descriptive agent with a contact address (Wikipedia answers a browser
+      # one with 403) needs one fixed string here, with a real address.
+      user_agent: ""
+      # Where `download` may write. Without a directory the tool is not
+      # offered. The workspace is where the harnesses build, so a downloaded
+      # spec or asset lands where the coder, gamedev and amiga agents can
+      # read it.
+      allowed_directories:
+        - data/workspace
+      max_download_mb: 100
 
     weather:
       type: weather
@@ -274,9 +758,25 @@ plugins:
       type: datetime
       enabled: true
 
+    # Connects to the external MCP servers from config/mcp_servers.yaml via the
+    # official MCP SDK and hands their tools to the agents as "server.tool".
+    # Enabled even when no external server is: it must be findable, otherwise
+    # an outage is indistinguishable from "nothing configured". Its own tools
+    # (list_servers/connect/disconnect/tools) manage the connections.
+    mcp_client:
+      type: mcp_client
+      enabled: true
+
+    # Read access to skill bundles (docs/skills_design.md). Agents that only use
+    # `skills.always` do not need this — it is for reading a skill's bundled
+    # reference files on demand.
+    skills:
+      type: skills
+      enabled: true
+
     llm_router:
       type: llm_router
-      enabled: true
+      enabled: false
 
     log_viewer:
       type: log_viewer
@@ -286,9 +786,6 @@ plugins:
         - logs/cli.log
         - logs/profiling.log
         - logs/security.log
-
-      max_lines: 20           # Maximum lines to return per request
-      refresh_interval: 1.0   # Polling interval in seconds for UI updates
 
     script_interpreter:
       type: script_interpreter
@@ -316,9 +813,12 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
 
+    # The whole checkout -- config/secrets.env, data/users.db, the sessions of
+    # every user -- for any agent that is given it. No shipped agent is. Enable
+    # it only for trusted agents, ideally with narrower allowed_directories.
     workspace_file_ops:
       type: file_ops
-      enabled: true
+      enabled: false
       allowed_directories:
         - .
       max_file_size_mb: 200
@@ -357,12 +857,23 @@ plugins:
       type: sub_agent_manager
       enabled: true
       max_nesting_depth: 5
+      max_sub_agents_per_type: 6
+      auto_archive_on_limit: true 
+
       allowed_agents:
-        - financial_analyst_agent
-        - code_reviewer_agent
-        - meta_web_research_agent
+        - research_agent
         - sysadmin_agent
         - comfyui_agent
+        - chat_agent
+
+      # 'info' operation pagination (default tail size / hard per-call cap /
+      # per-message truncation). info_max_limit guards against one call
+      # dumping the whole transcript back into the coordinator's own context
+      # -- raise it deliberately, or have the coordinator page with 'offset'.
+      # info_default_limit: 20
+      # info_max_limit: 200
+      # info_default_max_chars: 4000
+
       hook_config:
         enabled: true
         inject_sub_agent_context:
@@ -374,81 +885,109 @@ plugins:
       type: user_management
       enabled: true
 
+    # Browse and restore what the archive sweep put away (config.yaml: session_archive)
+    session_archive:
+      type: session_archive
+      enabled: true
+
+    # The agents as models behind the OpenAI Responses and Chat Completions API
+    # (/plugins/openai_api/v1; key: the user's API key). src/plugins/openai_api/README.md
+    openai_api:
+      type: openai_api
+      enabled: true
+
+    agent_editor:
+      type: agent_editor
+      enabled: true
+
     context_summarizer:
       type: context_summarizer
       enabled: true
       config:
+        # Explizit, nicht ueber den schema-Default: bis 2026-08-18 hat ein
+        # Bug den konfigurierten Wert verschluckt (default_llm_profile ist
+        # eine Property, pydantic hat das kwarg still verworfen), also lief
+        # die Zusammenfassung unbeabsichtigt auf gpt-5.4-mini. Seit der Fix
+        # greift, wird das Modell hier bewusst gewaehlt: deepseek-v4-flash
+        # ist guenstiger und besser als gpt-5.4-nano, nicht-streamend (der
+        # Summarizer ruft .chat()) und hat 1M Kontext fuer lange Verlaeufe.
+        # or-deepseek-flash statt chat-nostream (2026-08-20): gleicher
+        # deepseek-v4-flash, aber ueber OpenRouter — das Direct-Konto ist
+        # fast leer. Plugin-Ebene kennt keine Kette. ACHTUNG: der
+        # context.llm-Rueckfall des Hooks greift nur, wenn die CLIENT-
+        # ERZEUGUNG scheitert (Tippfehler im Profilnamen). Ein LAUFZEIT-
+        # Ausfall von OpenRouter laesst die Zusammenfassung still
+        # ausfallen — der Kontext schrumpft dann nicht mehr. Galt genauso
+        # fuer die Direct-API davor; kein neues Risiko, aber ein offenes.
+        llm_profile: or-deepseek-flash
         max_message_preview_length: 5000
         min_time_between_summarizations: 500
         max_chunks: 10  # Limit parallel LLM calls (auto-increases chunk_size if needed)
-        max_messages: 150
-
-    context_optimizer:
-      type: context_optimizer
-      enabled: false # FIXME: Disabled it for now
-      config:
-        # Token limit: Use X% of LLM context window
-        max_context_percentage: 0.80  # 80% of context window
-        
-        # Message truncation: Max tokens for individual messages
-        max_message_length_tokens: 8000       # Soft limit - triggers smart truncation
-        hard_max_message_length_tokens: 16000 # Hard limit - force-truncate if exceeded
-        
-        # Smart JSON truncation for tool responses
-        # When tool response JSON exceeds max_message_length_tokens,
-        # long strings within the JSON are truncated while keeping structure valid
-        max_json_string_length: 50000  # Max chars per string in JSON
-        keep_string_end: true  # Keep END of strings (newest data) vs beginning
-        
-        # Message preservation rules
-        preserve_system_messages: true  # Never remove system messages
-        preserve_last_n_messages: 7  # Always keep last N messages
-        
-        # Remove consecutive duplicate messages (same role + content)
-        remove_duplicates: true
+        # UEBER dem max_messages des context_engineer (190): dessen Prune
+        # (ohne LLM-Call, mit Archiv) greift zuerst, die Zusammenfassung nur,
+        # wenn er es nicht unter 200 schafft.
+        max_messages: 200
+        summarization_trigger_percentage: 0.8
 
     context_engineer:
       type: context_engineer
       enabled: true
       config:
-        # Token thresholds for layered compaction
-        layer1_threshold: 60000   # Start reversible compaction (tool refs, variables)
-        layer2_threshold: 80000   # Start semi-reversible compaction (archival with summaries)
-        layer3_threshold: 120000  # Start irreversible compaction (drop old messages)
-        target_tokens: 40000      # Target token count after compaction
+        # Token thresholds for layered compaction.
+        # Cache-Hysterese (docs/prompt_cache_design.md par. 3.5): JEDE Mutation
+        # vor dem Prefix-Ende bricht das Provider-Prompt-Caching komplett.
+        # Deshalb selten und TIEF kuerzen (High-Watermark -> Low-Watermark mit
+        # grossem Hub, ~140k -> 70k), nie inkrementell. Die Schwellen liegen
+        # bewusst hoch: Writer-Profile fahren 200k-1M-Kontexte; kleine Modelle
+        # schuetzt weiterhin max_request_bytes.
+        layer1_threshold: 140000  # Start reversible compaction (tool refs, variables)
+        layer2_threshold: 170000  # Start semi-reversible compaction (archival with summaries)
+        layer3_threshold: 200000  # Start irreversible compaction (drop old messages)
+        target_tokens: 70000      # Target token count after compaction (Low-Watermark, grosser Hub)
+        min_tokens_between_compactions: 20000  # Wachstum seit der letzten Kompaktion — verhindert Kompaktions-Dauerlauf dicht ueber der Schwelle
 
         store_media_before_compaction: true  # Aktiviert MediaStore
         media_store_ttl_seconds: 604800      # 7 Tage
         media_store_max_files: 500           # Max Dateien pro Session
 
-        # Request size limits (bytes) - prevents Gemini 100MB limit errors
-        max_request_bytes: 94371840    # 90 MB - trigger compaction threshold
-        target_request_bytes: 73400320 # 70 MB - target after compaction
+        # Request size limits (bytes). OpenRouter (or-gemini-pro, or-gemini-flash)
+        # has a HARD 30 MB cap on downloaded image content per request — direct
+        # Gemini accepts up to 100 MB. We target near the OpenRouter cap since
+        # everything outside the images is just text (tokens are tiny in bytes).
+        # Direct-Gemini agents are unaffected (just compact a bit earlier).
+        max_request_bytes: 30408704    # 29 MB - trigger compaction (1 MB Puffer unter OpenRouter-30-MB-Cap)
+        target_request_bytes: 25165824 # 24 MB - target after compaction (5 MB Headroom für nächste Calls)
         
         # Core memory settings
-        core_memory_max_tokens: 3000   # Max tokens for always-present facts
+        core_memory_max_tokens: 5000   # Max tokens for always-present facts
         
         # Tool result storage settings
         tool_result_min_size: 500      # Min tokens to store tool result externally
-        tool_result_keep_last: 7       # Keep last N tool results inline (unless too large)
+        tool_result_keep_last: 5       # Keep last N tool results inline (unless too large)
         tool_result_max_inline_size: 10000  # ALWAYS archive results > this size (even if last N) *2 will also affect last tool call
         
-        # Variable substitution settings
-        variable_min_size: 500         # Min tokens to create $VAR_N variable
-        
         # Archival memory settings
-        archive_after_turns: 15        # Archive messages older than N turns
+        archive_after_turns: 9999      # Archive messages older than N turns, deactivated, breaks cache
         keep_system_messages: true     # Never archive/drop system messages
-        semantic_search: true          # Enable VectorStore semantic search (auto-detects ChromaDB or sqlite-vec)
-        
+
+        enable_semantic_search: true   # VectorStore-Semantiksuche (ChromaDB oder sqlite-vec)
+        session_data_ttl_days: 14      # delete a session's on-disk data (archive, tool results, media) and its vectors after N idle days; 0 = off
+
         # Irreversible compaction settings
         drop_after_turns: 30           # Drop messages older than N turns (Layer 3 only)
         max_summary_tokens: 100        # Max tokens for archived message summaries
         
-        # Pre-Layer P: Hard message limit - prunes oldest messages if exceeded
+        # Pre-Layer P: message limit - prunes oldest messages if exceeded
         # Runs BEFORE token-based layers to prevent excessive message counts
         # Counts ALL messages including tool calls/results, not just user messages
-        max_messages: 200              # 0 = disabled, e.g., 200 = keep max 200 messages
+        # Jeder Prune bricht den Prompt-Cache; entscheidend ist, wie selten:
+        # ueber 190 auf 100 heisst ein Bruch je ~90 Nachrichten, ohne LLM-Call,
+        # das Entfernte liegt im Archiv. Muss UNTER dem max_messages des
+        # context_summarizer (200) liegen, sonst fasst der zuerst zusammen.
+        # Der writer_context_summarizer (Writer-Agenten) steht auf 150 und
+        # greift dort weiterhin vorher.
+        max_messages: 190              # 0 = aus
+        max_messages_prune_to: 100     # so viele bleiben nach einem Prune; 0 = max_messages // 2
         
         deduplicate_media: true        # Auto-compact older duplicate media files (by file hash). Keeps only the newest occurrence of each media item
         compact_media_after_user_message: true  # Compact media files after user messages 
@@ -456,8 +995,12 @@ plugins:
         
         # Always compact media - runs regardless of token count
         # Removes ALL media items except those in the last N messages that contain media
-        # Set to 0 to disable, >0 to enable (e.g., 5 keeps last 5 messages with media)
-        always_compact_media_keep_last: 5
+        # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
+        # cover_feedback_judge) set their own value in their agent YAML.
+        always_compact_media_keep_last: 2
+        # Past keep_last, evict down to keep_last - headroom (at least 1): one
+        # cache break per headroom+1 new media messages instead of one per message.
+        always_compact_media_headroom: 1
 
     context_usage_tracker:
       type: context_usage_tracker
@@ -466,6 +1009,20 @@ plugins:
     request_logger:
       type: request_logger
       enabled: false
+
+    # OpenTelemetry traces for agent runs, LLM calls and tool calls
+    # (src/plugins/otel/README.md). Off by default. Endpoint and service name
+    # come from the standard OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME
+    # unless set here. Prompts, answers and tool arguments/results stay in the
+    # process unless capture_content is switched on.
+    otel:
+      type: otel
+      enabled: false
+      config:
+        exporter: otlp          # otlp | console | none
+        # endpoint: "http://localhost:4317"
+        capture_content: false
+        metrics: false
 
     message_validator:
       type: message_validator
@@ -481,8 +1038,92 @@ plugins:
       type: markdown_formatter
       enabled: true
 
+    # GitLab/GitHub for the coder (src/plugins/forge/README.md). For now the
+    # GitLab test instance on the Docker host (src/plugins/forge/tests/live/gitlab/),
+    # bot account scarabhive-bot (Developer); its token is in secrets.env.
+    forge:
+      type: forge
+      hosts:
+        gitlab-test:
+          provider: gitlab
+          api_url: http://192.0.2.27:8929/api/v4
+          token_env: FORGE_GITLAB_TOKEN
+          webhook_secret_env: FORGE_GITLAB_WEBHOOK_SECRET
+      # GitLab's project webhook starts and wakes the coder (forge README, "Webhook").
+      webhook:
+        user: admin                     # whose session list the webhook's sessions join
+        llm: or-deepseek-flash          # cheap while this is the test instance
+        max_new_per_hour: 6
+      repos:
+        app:
+          host: gitlab-test
+          project: forge-test/app
+          allow_merge: true
+
     message_debugger:
       type: message_debugger
+      enabled: true
+      config:
+        # Hard cap on the debugger DB's data size. Above ~90% the oldest
+        # turns/requests are auto-pruned down to ~75% (file plateaus, reuses
+        # freed pages, no VACUUM). The manual "prune old entries" panel button
+        # additionally VACUUMs to shrink the file on disk. 0 disables retention.
+        max_db_size_mb: 5120
+
+    debate_forum:
+      type: debate_forum
+      enabled: true
+      config:
+        db_path: "data/debate_forum/forum.db"
+        min_message_length: 10  # 0 = disabled
+
+    simple_prompt_inject:
+      type: simple_prompt_inject
+      enabled: true
+      config:
+        prompt_text: |
+          If you start to repeat yourself with tool calls or thinking, try a different approach.
+        injection_position: "after_system" # or "before_last_user" or "end"
+        # make it at system role, else the llm is confused about injections
+        role: "system"
+
+    # The project's AGENTS.md in front of the model, read once per session
+    # from the root the agent's file tools work in (Claude Code, Codex and
+    # Gemini CLI do the same). Registered here, OFF for every agent: an agent
+    # switches it on with
+    #   hooks.overrides["project_instructions.inject_project_instructions"].enabled: true
+    # The coder harness does. A new version of the file takes effect in a new
+    # session, or after `/vars unset project_instructions`.
+    project_instructions:
+      type: project_instructions
+      enabled: true
+      config:
+        filenames: ["AGENTS.md"]
+        max_bytes: 32768
+
+    # Checkpoints for FILES (/undo files, /rewind): how each file looked
+    # before the agent changed it through file_ops or media_ops, per turn.
+    # Registered here -- that is what the chat commands reach -- and OFF for
+    # every agent: an agent switches on BOTH hooks,
+    #   hooks.overrides["file_checkpoints.record_before_change"].enabled: true
+    #   hooks.overrides["file_checkpoints.record_after_change"].enabled: true
+    # The coder harness does. Shell commands are not recorded, only named.
+    # Records live in data/file_checkpoints/<user>/<session>/, bounded per
+    # session; nothing is deleted by age unless retention_days says so.
+    file_checkpoints:
+      type: file_checkpoints
+      enabled: true
+      config:
+        max_checkpoints: 50
+        retention_days: 0
+
+    # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
+    # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
+    # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen
+    # per Agent in dessen hooks.overrides."tool_preload.preload"; ohne Regeln
+    # tut der Hook nichts.
+    tool_preload:
+      type: tool_preload
       enabled: true
 
     agent_continuation:
@@ -507,6 +1148,54 @@ plugins:
         #       - type: keyword_final
         #         keywords: ["done", "completed"]
 
+    # Passive judge that watches running agents (stage 1: logs, never
+    # intervenes). The hook is off per default; an agent turns it on with
+    # hooks.overrides: agent_watchdog.observe_step: {enabled: true}.
+    # Verdicts and the judge's usage: data/agent_watchdog/verdicts.jsonl
+    agent_watchdog:
+      type: agent_watchdog
+      enabled: true
+      config:
+        llm_profile: "or-deepseek-flash"
+
+    # Approvals before tool calls (#091): allow/deny rules, and in ask mode a
+    # question to the person watching the run. The hook is off for every
+    # agent; an agent switches it on with
+    #   hooks.overrides:
+    #     tool_approval.check_tool_call:
+    #       enabled: true
+    #       mode: ask            # ask | auto | "off"
+    #       allow: ["file_ops/*_read_*"]
+    #       deny: [{tool: "terminal/*", arguments: {command: "\\brm\\b.*\\s-{1,2}[a-zA-Z-]*[rR]|--recursive|\\bfind\\b.*-delete"}}]
+    #   (a regex on a shell command stops the obvious, it is no boundary: to keep
+    #    an agent out of the shell, deny "terminal/*")
+    # The rules below hold for every agent that switches the hook on; its own
+    # are added to them. See src/plugins/tool_approval/README.md.
+    tool_approval:
+      type: tool_approval
+      enabled: true
+      config:
+        mode: ask
+        ask_timeout: 300
+        unattended: block
+        # ask_user only puts a question to the same person: approving it first
+        # would ask twice, and a run nobody watches would get this hook's block
+        # instead of ask_user's own "decide yourself".
+        allow: ["ask_user/*"]
+        deny: []
+
+    # The model asks the person watching the run (F12): a question with 2-4
+    # options or free text, answered in the web chat. A run nobody watches
+    # gets an error at once ("decide yourself"). Agents get it through their
+    # allowlist ("ask_user/*"). See src/plugins/ask_user/README.md.
+    ask_user:
+      type: ask_user
+      enabled: true
+      config:
+        ask_timeout: 300          # seconds a question waits; the only limit on the wait
+        reask_seconds: 20
+        gone_after_seconds: 15
+
 
     terminal:
       type: terminal
@@ -514,7 +1203,8 @@ plugins:
 
       # Security settings
       security:
-        # Whitelist: If set, only these patterns are allowed
+        # Whitelist: only these patterns, one command per call, no cwd/env_vars.
+        # This example is a convenience filter, not a boundary (patterns: terminal README).
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"
@@ -531,8 +1221,17 @@ plugins:
           - "mkfs"
           - "chmod 777"
 
-        # Allow chained commands (&&, ||, ;)
+        # false: one command per shell line (no ;, &&, ||, |, &, line break, substitution); a whitelist implies it
         allow_command_chains: true
+
+        # Extra regex patterns added to the built-in hand-brake list
+        # (rm -rf /, mkfs., fork bomb, dd of=/dev/, chmod -R 777,
+        # chown -R root, wget|sh, curl|bash). Tightening this is a deployment
+        # decision, not a code change — see src/plugins/terminal/security.py
+        # for why pure syntax patterns (backticks, $(...), quote counting)
+        # were removed rather than kept here.
+        # dangerous_patterns:
+        #   - "shutdown\\s"
 
       # Resource limits
       limits:
@@ -544,13 +1243,18 @@ plugins:
       # Platform settings
       platform:
         bash_path: "auto"  # Auto-detect or specify path
-        initial_cwd: null  # Default to current directory
+        initial_cwd: null  # Default: the directory the command was started in
 
     audio_ops:
       type: audio_ops
       enabled: true
       description: "Audio file manipulation - cut segments from FLAC/MP3/WAV files"
       storage_path: "data/audio_ops"
+
+
+    decision:
+      type: decision
+      enabled: true      
  
 # ================================
 # Hook Configuration
@@ -562,16 +1266,15 @@ hooks:
   default_timeout: 30.0  # Default timeout in seconds
 
   # Per-hook configuration overrides
-  # Format: hook_name or plugin_name.hook_name
-  overrides:
+  # Format: plugin_name.hook_name (exact, wins) or plugin_name (all hooks of that plugin)
+  overrides: {}
     # Example: Override request_logger hooks
     # request_logger.log_pre_llm:
     #   enabled: true
     #   timeout: 5.0
 
     # Example: Configure hook ordering
-    # context_optimizer:
-    #   enabled: true
+    # some_plugin.some_hook:
     #   timeout: 10.0
     #   order:
     #     after: ["begin"]
@@ -581,5 +1284,5 @@ hooks:
     #   enabled: true
     #   timeout: 5.0
     #   order:
-    #     after: ["context_optimizer"]
+    #     after: ["context_engineering"]
     #     before: ["end"]

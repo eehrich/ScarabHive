@@ -1,0 +1,27 @@
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}System{% endblock %}
+{% block toolbar %}<pk-refresh interval="10"></pk-refresh>{% endblock %}
+{% block content %}
+<div class="pk-tabs" role="tablist" data-pk-tabs>
+  <button class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Overview</button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-requests" data-tab="requests">Running requests <span class="pk-tab-count" id="requestCount"></span></button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-servers" data-tab="servers">Tool servers <span class="pk-tab-count" id="serverCount"></span></button>
+</div>
+<section id="tab-overview" class="pk-stack" role="tabpanel">
+  <div class="pk-card" id="statusCard"><span class="pk-skeleton"></span></div>
+  <div class="pk-stats" id="overviewStats"></div>
+  <div class="pk-card" id="problemsCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Servers that did not start</h3></div><ul id="problems" class="pk-stack"></ul></div>
+  <div class="pk-card" id="findingsCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Agent config errors</h3></div><ul id="findings" class="pk-stack"></ul></div>
+  <div class="pk-card" id="processCard" hidden><div class="pk-card-head"><h3 class="pk-card-title">Process</h3></div><dl class="pk-kv" id="process"></dl></div>
+</section>
+<section id="tab-requests" role="tabpanel" hidden></section>
+<section id="tab-servers" class="pk-stack" role="tabpanel" hidden>
+  <div class="pk-row">
+    <div class="pk-search pk-grow">{{ icon('search') }}<input id="serverFilter" class="pk-input" type="search" placeholder="Filter servers and tools"></div>
+    <button id="serverRefresh" type="button" class="pk-btn pk-btn--sm">Reconnect check</button>
+  </div>
+  <div id="serverList" class="pk-stack"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/panels/system.js"></script>{% endblock %}

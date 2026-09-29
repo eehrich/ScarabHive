@@ -1,0 +1,114 @@
+{
+  "21": {
+    "inputs": {
+      "target_text": [
+        "25",
+        0
+      ],
+      "model_choice": "1.7B",
+      "device": "auto",
+      "precision": "bf16",
+      "language": "German",
+      "ref_text": "",
+      "seed": [
+        "29",
+        0
+      ],
+      "max_new_tokens": 2048,
+      "top_p": 0.8,
+      "top_k": 80,
+      "temperature": 0.8,
+      "repetition_penalty": 1.1,
+      "x_vector_only": false,
+      "attention": "auto",
+      "unload_model_after_generate": false,
+      "custom_model_path": "",
+      "ref_audio": [
+        "28",
+        0
+      ],
+      "voice_clone_prompt": [
+        "26",
+        0
+      ]
+    },
+    "class_type": "FB_Qwen3TTSVoiceClone",
+    "_meta": {
+      "title": "🎭 Qwen3-TTS VoiceClone"
+    }
+  },
+  "23": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "25": {
+    "inputs": {
+      "value": "Am Anfang steht dieser Satz, er wird später wieder entfernt...-\n\nDie Feuchtigkeit verschmierte nur unzulänglich, doch es reichte, um die steil ansteigenden Telemetrie-Balken der Hauptkonsole zu erfassen. „Fremdpartikel im Primär-Schacht! Das Aerosol verstopft die Ansaugstutzen!\", schrie Voss gegen das mechanische Sterben der Rotoren an. „Ich initiiere den sofortigen Systemtrennschnitt!\" Sie hämmerte mit dem Zeigefinger auf den kapazitiven Notverschluss, der die äußeren Schottklappen hermetisch versiegeln sollte. Kein pneumatisches Klicken folgte. Kein Druckausgleich. Auf Voss' Monitor blinkte bedrohlich ein gelber Autorisierungs-Bypass auf. Die Schleusenklappen blieben sperrangelweit geöffnet, während der defekte Vorfilter unaufhörlich das feuchte, zähe Harz-Gemisch aus dem Morast ins zentrale Lebenserhaltungssystem saugte. „Override-Sperre? Wer blockiert die Manuell-Konsole?\", brüllte Voss und zerrte wütend an ihren Schultergurten.\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Input-Text"
+    }
+  },
+  "26": {
+    "inputs": {
+      "ref_text": "Ein warmes Lächeln breitete sich auf Thomas Bergmanns ernstem Gesicht aus, als er sich freudig vom Herd zu ihr umdrehte. „Elena... du bist früh heute!“. Doch die Heiterkeit verflog so schnell, wie sie gekommen war.\nDraußen zwitscherte ein Vogel — hell, gleichgültig, fast schon spöttisch. Thomas atmete tief aus, ungläubig: Dann stieg dieses dunkle Grollen in ihm auf und er sah sie wütend an. „Das ist doch Wahnsinn! Weiß er überhaupt... weiß er, was er da verdammt noch mal riskiert?“\n\nStille legte sich über die Küche. Wie sollte sie es ihm bloß erklären? Dass sie nachts am Fenster sitzt... stundenlang auf den See starrt... dass sie Angst hat, aber nicht weiß, wovor genau?\n\n„Nakamura hat gestern Nacht das Schiff rausgefahren“, sagte sie schließlich mit gepresster, angespannter Stimme. „Ganz allein.“",
+      "model_choice": "1.7B",
+      "device": "auto",
+      "precision": "bf16",
+      "attention": "auto",
+      "x_vector_only": false,
+      "unload_model_after_generate": false,
+      "ref_audio": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "FB_Qwen3TTSVoiceClonePrompt",
+    "_meta": {
+      "title": "🎭 Qwen3-TTS VoiceClonePrompt"
+    }
+  },
+  "28": {
+    "inputs": {
+      "audio": "DE-Karl.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Audio"
+    }
+  },
+  "29": {
+    "inputs": {
+      "value": 422
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "seed"
+    }
+  },
+  "30": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  }
+}

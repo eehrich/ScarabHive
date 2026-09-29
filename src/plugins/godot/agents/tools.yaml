@@ -1,0 +1,75 @@
+# Tool instances for the godot plugin and the gamedev harness.
+#
+# `godot` is the tool surface every agent here shares. `gamedev_sam` and
+# `gamedev_okf` exist because the gamedev agent inherits the coder harness
+# (type: coder) and needs two things the coder's instances cannot give it: a
+# sub-agent list that includes the asset agents, and a knowledge bundle that
+# is about Godot rather than about this Python codebase. Files, shell and the
+# read-only sandbox are the coder's own instances -- the game projects live
+# in the same data/workspace tree, so nothing has to be duplicated for them.
+plugins:
+  servers:
+
+    godot:
+      type: godot
+      enabled: true
+      description: "Godot 4: headless checks and runs of a project, and a running editor via the godot_mcp addon"
+      # THE ONE KNOB: the console executable of the Godot this machine has.
+      # On Windows it must be the `_console.exe` -- the plain exe detaches
+      # and returns no stdout, so every headless tool would report silence.
+      godot_binary: "C:/prog/Godot/Godot_v4.7.2-stable_win64_console.exe"
+      # Same tree as coder_fs: a project the headless tools may touch must
+      # live below it, and it is where the harness can read and edit files.
+      projects_root: "data/workspace"
+      output_directory: "data/workspace/godot"
+      timeout: 60
+      # A game-time step of 50 s, an export, an import of a big project.
+      long_timeout: 600
+
+    # Sub-agent manager for the gamedev harness.
+    #
+    # The three coder roles come along (the reviewer and explorer unchanged:
+    # their read-only sandbox already covers data/workspace), the tester is
+    # the Godot-aware variant, and the two asset producers are sub-agents
+    # rather than tools on purpose: their loops are look-change-look with
+    # screenshots, and those pictures belong in THEIR context, not in the
+    # orchestrator's. What comes back is a file path.
+    gamedev_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "gamedev harness: explorer, reviewer, Godot tester, Blender and image sub-agents"
+      max_nesting_depth: 2
+      max_sub_agents_per_type: 4
+      max_sub_agents_per_session: 20
+      max_message_history: 100
+      # A Blender model or a rendered texture takes minutes, not seconds.
+      default_wait_timeout: 3600
+      auto_archive_on_limit: true
+      allowed_agents:
+        - coder_explorer
+        - coder_reviewer
+        - gamedev_tester
+        - blender_agent
+        - image_agent
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 6
+          show_completed: false
+          format: markdown
+
+    # The harness's own knowledge bundle, rooted at ONE directory so the
+    # sandbox -- not the prompt -- keeps it out of every other agent's
+    # bundle (same reasoning as coder_okf). Godot facts do not belong in the
+    # coder's Python conventions, hence a bundle of its own.
+    gamedev_okf:
+      type: okf
+      enabled: true
+      description: "gamedev harness: durable project knowledge (OKF bundle)"
+      allowed_directories:
+        - data/okf/gamedev
+      hook_max_concepts: 10
+      hook_graph_depth: 1
+      max_concept_file_kb: 512
+      max_bundle_files: 5000

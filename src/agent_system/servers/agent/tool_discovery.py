@@ -9,12 +9,17 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple, TYPE_CHECKING
 import logging
-import fnmatch
+
+from .tool_schema_builder import server_matches_patterns
+# Module level on purpose: inside _is_tool_visible it would sit in a
+# try/except that answers "invisible" -- a future import cycle would
+# then empty every agent's tool list in silence instead of failing loud.
+from ...runtime import ServerView
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentConfig
-    from agent_system.mcp.base import MCPRegistry
-    from agent_system.servers.agent.components.mcp_integration import MCPIntegrationManager
+    from agent_system.tools.base import ToolServerRegistry
+    from agent_system.servers.agent.components.tool_integration import ToolIntegrationManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +31,8 @@ class ToolDiscoveryService:
         self,
         agent_name: str,
         agent_config: AgentConfig,
-        mcp_integration_manager: MCPIntegrationManager,
-        registry: Optional[MCPRegistry] = None
+        tool_integration_manager: ToolIntegrationManager,
+        registry: Optional[ToolServerRegistry] = None
     ):
         """
         Initialize tool discovery service.
@@ -35,12 +40,12 @@ class ToolDiscoveryService:
         Args:
             agent_name: Name of the agent
             agent_config: Agent configuration with tool settings
-            mcp_integration_manager: MCP integration manager
-            registry: Optional local MCP registry
+            tool_integration_manager: tool integration manager
+            registry: Optional local tool registry
         """
         self.agent_name = agent_name
         self.agent_config = agent_config
-        self.mcp_integration_manager = mcp_integration_manager
+        self.tool_integration_manager = tool_integration_manager
         self.registry = registry
     
     async def discover_allowed_tools(self) -> Tuple[List[str], Optional[List[str]], Optional[List[str]]]:
@@ -50,7 +55,7 @@ class ToolDiscoveryService:
         Combines tools from:
         1. Plugin-provided tool servers
         2. External MCP servers
-        3. Local registry (filtered by _mcp_tool_visible flag)
+        3. Local registry (filtered by _tool_visible flag)
         
         Then applies allow-list filtering at server level. Both allowed and blocked
         patterns are returned for fine-grained filtering after tool expansion.
@@ -125,7 +130,7 @@ class ToolDiscoveryService:
         plugin_tools = self._get_plugin_tools()
         
         # Get external + plugin + adapter tools
-        available_tools = await self.mcp_integration_manager.get_available_tools(plugin_tools)
+        available_tools = await self.tool_integration_manager.get_available_tools(plugin_tools)
         
         # NOTE: Do NOT expand tools here - build_schemas() will do that when building tool schemas
         # Expansion here causes duplicate processing and breaks schema building
@@ -138,55 +143,19 @@ class ToolDiscoveryService:
         
         return available_tools
     
-    async def _expand_plugin_tools(self, server_names: List[str]) -> List[str]:
-        """
-        Expand plugin server names into individual tool names.
-        
-        Converts: ["web_scraper", "duckduckgo_search"]
-        Into: ["web_scraper/scrape_webpage", "duckduckgo_search/search", ...]
-        
-        Args:
-            server_names: List of plugin server names
-            
-        Returns:
-            List of expanded tool names in servername/toolname format
-        """
-        expanded = []
-        
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
-            logger.warning(f"Agent {self.agent_name}: Cannot expand tools - MCP not initialized")
-            return expanded
-        
-        try:
-            all_tools_dict = await self.mcp_integration_manager.mcp_integration.list_all_tools()
-            logger.debug(f"Agent {self.agent_name}: Available plugin servers for expansion: {list(all_tools_dict.get('plugins', {}).keys())}")
-            
-            for server_name, tools in all_tools_dict.get("plugins", {}).items():
-                for tool in tools:
-                    tool_name = f"{server_name}/{tool['name']}"  # tool is a dict, not object
-                    expanded.append(tool_name)
-                    logger.debug(f"Agent {self.agent_name}: Expanded {server_name} -> {tool_name}")
-                    
-            logger.info(f"Agent {self.agent_name}: Expanded {len(expanded)} tools from {len(all_tools_dict.get('plugins', {}))} plugin servers")
-        except Exception as e:
-            logger.error(f"Agent {self.agent_name}: Failed to expand plugin tools: {e}", exc_info=True)
-        
-        return expanded
-    
     def _get_plugin_tools(self) -> List[str]:
         """Get list of plugin-provided tool servers."""
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
+        if not (self.tool_integration_manager.tool_integration and
+                self.tool_integration_manager.tool_integration.initialized):
             return []
         
-        return self.mcp_integration_manager.mcp_integration.plugin_registry.list_servers()
+        return self.tool_integration_manager.tool_integration.plugin_registry.list_servers()
     
     def _get_registry_tools(self) -> List[str]:
         """
-        Get tools from local registry, filtered by _mcp_tool_visible flag.
+        Get tools from local registry, filtered by _tool_visible flag.
         
-        Only includes agents that have _mcp_tool_visible=True or don't have
+        Only includes agents that have _tool_visible=True or don't have
         the attribute (backward compatibility).
         
         Returns:
@@ -206,7 +175,7 @@ class ToolDiscoveryService:
     
     def _is_tool_visible(self, tool_name: str) -> bool:
         """
-        Check if a tool is visible (exposed as MCP tool).
+        Check if a tool is visible (exposed as tool).
         
         Args:
             tool_name: Name of the tool to check
@@ -214,17 +183,43 @@ class ToolDiscoveryService:
         Returns:
             True if tool is visible, False otherwise
         """
+        # Inside the try, like everything else here: an invisible tool is the
+        # fail-safe answer this method has always given when it could not
+        # look, and the view must not be the one path that throws out of it.
         try:
+            # Asked through describe(), not get(): this runs for EVERY server
+            # on EVERY request, and building a server to read one boolean off
+            # it is the one thing a lazy start must not do. The view answers
+            # from the instance whenever there is one, so the result is
+            # identical.
+            #
+            # isinstance, not "is not None": the suite is full of registries
+            # that are Mock() objects, and a Mock answers describe() with a
+            # truthy Mock whose every attribute is truthy too. That would
+            # silently turn this filter into "everything is visible" and stop
+            # consulting the get() those tests steer.
+            view = self.registry.describe(tool_name)
+            if isinstance(view, ServerView):
+                if not view.tool_visible:
+                    logger.debug(
+                        f"Skipping agent '{tool_name}' in tool discovery "
+                        f"(not exposed as tool: _tool_visible=False)"
+                    )
+                    return False
+                return True
+
+            # Unbound registry, or a declaration that cannot answer for its
+            # instance: the instance is the only source. Verbatim the old path.
             server = self.registry.get(tool_name)
-            if server and hasattr(server, '_mcp_tool_visible'):
-                visible = getattr(server, '_mcp_tool_visible', True)
+            if server and hasattr(server, '_tool_visible'):
+                visible = getattr(server, '_tool_visible', True)
                 if not visible:
                     logger.debug(
                         f"Skipping agent '{tool_name}' in tool discovery "
-                        f"(not exposed as tool: _mcp_tool_visible=False)"
+                        f"(not exposed as tool: _tool_visible=False)"
                     )
                     return False
-            # No _mcp_tool_visible attribute → include as tool (backward compat)
+            # No _tool_visible attribute → include as tool (backward compat)
             return True
         except Exception as e:
             logger.debug(f"Failed to check tool visibility for '{tool_name}': {e}")
@@ -261,42 +256,12 @@ class ToolDiscoveryService:
         
         return filtered_tools
     
-    def _apply_block_list(self, tools: List[str], patterns: List[str]) -> List[str]:
-        """
-        Remove blocked tools from list.
-        
-        Args:
-            tools: List of tool names
-            patterns: List of blocked patterns
-            
-        Returns:
-            Filtered list with blocked tools removed
-        """
-        before_block = list(tools)
-        filtered_tools = [
-            t for t in tools 
-            if not self._matches_any_pattern(t, patterns)
-        ]
-        
-        removed = set(before_block) - set(filtered_tools)
-        if removed:
-            logger.debug(
-                "Agent %s blocked_tools removed: %s",
-                self.agent_name,
-                sorted(removed)
-            )
-        
-        if not filtered_tools:
-            logger.warning("Agent %s blocked_tools removed all tools", self.agent_name)
-        
-        return filtered_tools
-    
     async def _apply_wildcard_fallback(self, patterns: List[str]) -> List[str]:
         """
         Fallback for wildcard patterns that produced empty results.
         
         If '*' was specified but nothing matched, try fetching plugin
-        server names directly from the MCP plugin registry.
+        server names directly from the plugin registry.
         
         Args:
             patterns: Allowed patterns
@@ -308,12 +273,12 @@ class ToolDiscoveryService:
         if not any(p == '*' for p in patterns):
             return []
         
-        if not (self.mcp_integration_manager.mcp_integration and
-                self.mcp_integration_manager.mcp_integration.initialized):
+        if not (self.tool_integration_manager.tool_integration and
+                self.tool_integration_manager.tool_integration.initialized):
             return []
         
         try:
-            plugin_registry = self.mcp_integration_manager.mcp_integration.plugin_registry
+            plugin_registry = self.tool_integration_manager.tool_integration.plugin_registry
             plugin_names = list(plugin_registry.list_servers())
             
             if plugin_names:
@@ -355,77 +320,10 @@ class ToolDiscoveryService:
     
     def _matches_any_pattern(self, tool: str, patterns: List[str]) -> bool:
         """
-        Check if tool matches any pattern.
-        
-        Supports:
-        - Exact matches
-        - Wildcards with '*'
-        - Dot notation patterns
-        - Server name matching for wildcard patterns (e.g., "ssh_control" matches "ssh_control/*")
-        - Server name matching for specific tool patterns (e.g., "writer_content" matches "writer_content/writer_content_book")
-        
-        Args:
-            tool: Tool name to check
-            pattern: Pattern to match against
-            
-        Returns:
-            True if tool matches any pattern
+        Check if a discovery-stage name matches any pattern.
+
+        Thin delegate to the SINGLE shared discovery-stage matcher
+        ``tool_schema_builder.server_matches_patterns`` (see its docstring for
+        pattern semantics). Kept as a method for existing callers/tests.
         """
-        for pattern in patterns:
-            # Exact match
-            if tool == pattern:
-                return True
-            
-            # Wildcard match
-            if '*' in pattern:
-                if fnmatch.fnmatch(tool, pattern):
-                    return True
-                
-                # Special case: If pattern is "server_name/*", also match "server_name"
-                # This allows server names to pass through for later expansion
-                if pattern.endswith('/*'):
-                    server_name = pattern[:-2]  # Remove "/*"
-                    if tool == server_name:
-                        return True
-            
-            # Special case: If pattern is "server_name/tool_name", match "server_name"
-            # This allows server names to pass through for later tool-level filtering
-            if '/' in pattern and '*' not in pattern:
-                server_name = pattern.split('/')[0]
-                if tool == server_name:
-                    return True
-            
-            # Dot notation match (e.g., "plugin.tool" matches "plugin.*")
-            if '.' in pattern and '.' in tool:
-                pattern_parts = pattern.split('.')
-                tool_parts = tool.split('.')
-                if self._matches_dot_pattern(tool_parts, pattern_parts):
-                    return True
-        
-        return False
-    
-    def _matches_dot_pattern(self, tool_parts: List[str], pattern_parts: List[str]) -> bool:
-        """
-        Match dot-separated patterns.
-        
-        Examples:
-        - "plugin.*" matches "plugin.tool1", "plugin.tool2"
-        - "plugin.sub.*" matches "plugin.sub.tool1"
-        
-        Args:
-            tool_parts: Tool name split by '.'
-            pattern_parts: Pattern split by '.'
-            
-        Returns:
-            True if pattern matches
-        """
-        if len(pattern_parts) > len(tool_parts):
-            return False
-        
-        for i, pattern_part in enumerate(pattern_parts):
-            if pattern_part == '*':
-                return True  # Wildcard matches rest
-            if i >= len(tool_parts) or tool_parts[i] != pattern_part:
-                return False
-        
-        return True
+        return server_matches_patterns(tool, patterns)

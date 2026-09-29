@@ -1,0 +1,203 @@
+# Tool instances for the coder harness.
+#
+# These are not agents — they are per-harness instances of shared plugins, so
+# the coder's sandbox, its shell and its sub-agent limits are set here once
+# instead of being repeated in every agent file.
+#
+# THE ONE KNOB you will want to change: `allowed_directories` on coder_fs and
+# coder_fs_ro. It decides which tree the harness may touch at all. Both lists
+# must stay identical — a reviewer that cannot read what the coder just wrote
+# reviews nothing.
+plugins:
+  servers:
+
+    # Read+write file access for the coder itself.
+    coder_fs:
+      type: file_ops
+      enabled: true
+      description: "coder harness: read/write file access inside the sandbox"
+      allowed_directories:
+        # The project workspace the harness builds in.
+        - data/workspace/
+        # Its own skills: the harness may correct the discipline it works by.
+        - src/plugins/coder/skills/
+        # The repository itself. With `.` in the list the two entries above
+        # are contained in it, and so is this file: the coder can rewrite its
+        # own tool allowlist. Drop `src/` and `.` to get that boundary back.
+        #
+        # Search stays cheap all the same: overlapping roots are walked once,
+        # and gitignored trees (data/sessions, data/message_debugger) are
+        # pruned — while data/workspace stays searchable, because a configured
+        # root is never hidden by an ignore rule of the root above it.
+        - src/
+        - .
+      max_file_size_mb: 10
+      max_unpaginated_file_size_kb: 200
+      default_line_limit: 500
+      search:
+        # grep_search and search_files walk the disk and need no index.
+        #
+        # This instance OWNS the semantic index of the coder tree; the
+        # read-only twin below reads the same collection. It is the owner
+        # because it is the one that always exists: instances are built on
+        # first use, and the read-only twin only comes up when a reviewer or
+        # explorer sub-agent is spawned -- an index that waits for that is an
+        # index the main agent never gets.
+        #
+        # Measured on this repository on 18.09.2026: 3.295 indexable files ->
+        # 51.730 documents, 423 s for the first build (288 MB on disk), and
+        # 0.4 s for an incremental pass afterwards. The build starts with
+        # the first semantic_search on THIS instance and runs in the
+        # background; searches that arrive before it is done say so and
+        # point at grep_search instead of answering "nothing found" --
+        # including those of the read-only twin, which only reads.
+        enable_semantic_search: true
+        enable_indexing: true
+        index_on_startup: true
+        collection_name: file_ops_coder_tree
+        # Every five minutes: a coder writes code and then looks for it. The
+        # pass only reads what changed.
+        auto_reindex_interval: 300
+        exclude_patterns:
+          - '**/.git/**'
+          - '**/__pycache__/**'
+          - '**/node_modules/**'
+          - '**/.venv/**'
+          - '**/*.pyc'
+          - '**/dist/**'
+          - '**/build/**'
+
+    # The same tree, but writes are impossible. This is what makes
+    # "whoever reviews, reviews read-only" a property of the config instead of
+    # a sentence in a prompt: in read_only mode file_ops does not even render
+    # its write tools into the schema, and the server rejects them a second
+    # time if one is called anyway.
+    coder_fs_ro:
+      type: file_ops
+      enabled: true
+      description: "coder harness: read-only file access for reviewer and explorer"
+      read_only: true
+      # Identical to coder_fs, see the header.
+      allowed_directories:
+        - data/workspace/
+        - src/plugins/coder/skills/
+        - src/
+        - .
+      max_file_size_mb: 10
+      max_unpaginated_file_size_kb: 200
+      default_line_limit: 500
+      search:
+        # READS the index coder_fs builds -- same tree, same collection name.
+        # Indexing it here as well would be the same 51.730 documents and the
+        # same seven minutes twice over, and because a full rebuild clears its
+        # collection first, the two would also take turns emptying each other's
+        # index. `enable_indexing: false` is what makes this instance a reader.
+        enable_semantic_search: true
+        enable_indexing: false
+        collection_name: file_ops_coder_tree
+        exclude_patterns:
+          - '**/.git/**'
+          - '**/__pycache__/**'
+          - '**/node_modules/**'
+          - '**/.venv/**'
+          - '**/*.pyc'
+          - '**/dist/**'
+          - '**/build/**'
+
+    # Shell for the coder and the test runner.
+    #
+    # NOT confined by the kernel: `sandbox.mode` would need bubblewrap, and on
+    # Windows every command in a confining mode fails with
+    # SANDBOX_UNAVAILABLE. So the blacklist below is a speed bump against
+    # typos and nothing more — a pattern list cannot bound what `bash -c` can
+    # do. The enforced boundary in this harness is coder_fs, not this shell.
+    # Read that as: do not hand this instance to an agent you would not trust
+    # with the whole machine.
+    coder_shell:
+      type: terminal
+      enabled: true
+      description: "coder harness: shell for builds, tests and git"
+      # Top level, not under `config:` — the terminal server reads `security`,
+      # `limits`, `platform` and `sandbox` straight off its ToolServerConfig.
+      security:
+        blacklist:
+          - 'rm -rf /'
+          - 'dd if='
+          - mkfs
+          - 'chmod 777'
+          # git verbs that rewrite history or throw away uncommitted work.
+          # The harness reads git; committing is the user's call.
+          - 'git push'
+          - 'git reset --hard'
+          - 'git checkout --'
+          - 'git clean -'
+        allow_command_chains: true
+      platform:
+        # The repository root: the base coder_fs resolves relative paths
+        # against, so one relative path names one file in both tools. Started
+        # in data/workspace, the shell read every path the file tools gave it
+        # one level too deep -- measured 12 wrong paths in 7 of 9 real coder
+        # sessions (data\workspace\data\workspace\dodge.html, `cd
+        # data/workspace/backlog` from inside data/workspace).
+        initial_cwd: "."
+      limits:
+        max_output_size_kb: 60
+        default_timeout_seconds: 300
+        max_timeout_seconds: 1800
+        max_concurrent_background: 5
+
+    # The harness's own knowledge bundle (OKF: git-versioned markdown concepts
+    # with a link graph, agent-writable).
+    #
+    # A DEDICATED instance, not the shared `okf` server, and that is the whole
+    # point: the shared one is sandboxed to all of `data/okf`, so an agent
+    # using it can write into every other agent's bundle -- the sysadmin's
+    # `infra` runbooks included, which are injected into that agent's prompt.
+    # Rooting this instance at one bundle makes the boundary something the
+    # sandbox enforces rather than something the prompt asks for.
+    coder_okf:
+      type: okf
+      enabled: true
+      description: "coder harness: durable project knowledge (OKF bundle)"
+      allowed_directories:
+        - data/okf/coder
+      # Injection defaults. The agent-level hook override sets `hook_bundle`;
+      # without it the hook does nothing at all.
+      #
+      # The hook injects each concept's FULL body, hard-truncated at 1500
+      # characters (not configurable). So this number is a token ceiling:
+      # 10 concepts = at most 15000 characters, roughly 3.7k tokens. Against a
+      # 200k window that is affordable, and a coding task usually touches more
+      # than a couple of conventions at once -- 6 was cutting the neighbourhood
+      # too early, given 3 lexical seeds expand one hop before this cap applies.
+      hook_max_concepts: 10
+      hook_graph_depth: 1
+      max_concept_file_kb: 512
+      max_bundle_files: 5000
+
+    # Sub-agent manager for the harness roles.
+    #
+    # Nesting is capped at 2: coder -> role sub-agent, and there it ends. The
+    # roles are leaves by design, none of them owns a manager, so a review
+    # cannot start a review.
+    coder_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "coder harness: explorer, reviewer and test-runner sub-agents"
+      max_nesting_depth: 2
+      max_sub_agents_per_type: 4
+      max_sub_agents_per_session: 20
+      max_message_history: 100
+      default_wait_timeout: 3600
+      auto_archive_on_limit: true
+      allowed_agents:
+        - coder_explorer
+        - coder_reviewer
+        - coder_tester
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 6
+          show_completed: false
+          format: markdown

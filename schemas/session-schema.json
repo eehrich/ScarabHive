@@ -54,6 +54,11 @@
       "default": 1,
       "description": "Nesting depth (1=root session, 2=sub-agent, 3=sub-sub-agent, etc.)"
     },
+    "depth_budget": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Levels of sub-agents that may still be created below this session. Absent on root sessions (no inherited limit); set by sub_agent_manager on every sub-session as min(inherited, max_nesting_depth) - 1"
+    },
     "messages": {
       "type": "array",
       "description": "Conversation message history",
@@ -137,7 +142,7 @@
                 },
                 "agent_type": {
                   "type": "string",
-                  "description": "Agent type (e.g., 'web_research_agent')"
+                  "description": "Agent type (e.g., 'research_agent')"
                 },
                 "created_at": {
                   "type": "string",

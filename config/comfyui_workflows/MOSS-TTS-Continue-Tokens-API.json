@@ -1,0 +1,172 @@
+{
+  "1": {
+    "inputs": {
+      "previous_text": [
+        "7",
+        0
+      ],
+      "text": [
+        "4",
+        0
+      ],
+      "language": "German",
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "target_tokens": [
+        "2",
+        0
+      ],
+      "max_new_tokens": 4096,
+      "seed": [
+        "8",
+        0
+      ],
+      "previous_tokens": [
+        "6",
+        0
+      ],
+      "head_trim_frames": 1,
+      "moss_model": [
+        "3",
+        0
+      ],
+      "prev_tokens": [
+        "30",
+        0
+      ],
+      "target_overshoot_frames": 50,
+      "audio_repetition_penalty": 1.0,
+      "text_temperature": 1.0,
+      "text_top_p": 1.0,
+      "text_top_k": 50
+    },
+    "class_type": "MOSSVoiceContinue",
+    "_meta": {
+      "title": "MOSS-TTS Voice Continue"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "words_per_minute": 160
+    },
+    "class_type": "MOSSEstimateTokens",
+    "_meta": {
+      "title": "MOSS-TTS Estimate Tokens"
+    }
+  },
+  "3": {
+    "inputs": {
+      "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (1.7B)",
+      "device": "cuda"
+    },
+    "class_type": "MOSSLoadModel",
+    "_meta": {
+      "title": "MOSS-TTS Load Model"
+    }
+  },
+  "4": {
+    "inputs": {
+      "value": "Das ist der ContinueText"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "ContinueText"
+    }
+  },
+  "6": {
+    "inputs": {
+      "value": -935408622238234
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "PrevTokens"
+    }
+  },
+  "7": {
+    "inputs": {
+      "value": "Das ist der PrevText"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "PrevText"
+    }
+  },
+  "8": {
+    "inputs": {
+      "value": 42
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "path": "",
+      "path_override": ""
+    },
+    "class_type": "MOSSLoadTokens",
+    "_meta": {
+      "title": "MOSS-TTS Load Tokens (base anchor)"
+    }
+  },
+  "21": {
+    "inputs": {
+      "path": "",
+      "path_override": ""
+    },
+    "class_type": "MOSSLoadTokens",
+    "_meta": {
+      "title": "MOSS-TTS Load Tokens (window seg n-2)"
+    }
+  },
+  "22": {
+    "inputs": {
+      "path": "",
+      "path_override": ""
+    },
+    "class_type": "MOSSLoadTokens",
+    "_meta": {
+      "title": "MOSS-TTS Load Tokens (window seg n-1)"
+    }
+  },
+  "30": {
+    "inputs": {
+      "tokens_a": [
+        "20",
+        0
+      ],
+      "tokens_b": [
+        "21",
+        0
+      ],
+      "tokens_c": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "MOSSConcatTokens",
+    "_meta": {
+      "title": "MOSS-TTS Concat Tokens"
+    }
+  }
+}

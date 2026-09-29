@@ -1,18 +1,19 @@
 """Tests for prompt_renderer module.
 
-Tests cover:
-- YAML template rendering (existing behavior)
-- Markdown/text template rendering (new feature)
-- Jinja2 variable substitution in both formats
-- File extension detection
+Prompts are markdown-only (whole file = system_prompt, Jinja2-rendered). The
+former multi-section YAML format was removed — a .yaml/.yml path now raises a
+clear error with migration guidance.
 """
 from __future__ import annotations
+
+import time
 
 import pytest
 from pathlib import Path
 
 from agent_system.utils.prompt_renderer import (
     render_prompts,
+    strip_prompt_comments,
     _is_text_template,
     _render_text_template,
     get_datetime_context,
@@ -103,57 +104,107 @@ class TestRenderTextTemplate:
         assert "{{ invalid syntax" in result["system_prompt"]
 
 
-class TestRenderPromptsYaml:
-    """Tests for render_prompts() with YAML templates (existing behavior)."""
+class TestHtmlCommentsNeverReachTheModel:
+    """Agents that edit a prompt leave notes in <!-- --> and rely on the model
+    never seeing them. Stripped from the template source, not the rendered
+    text: what a variable brings in stays as it is."""
 
-    def test_yaml_multi_section(self, tmp_path: Path) -> None:
-        """Test YAML template with multiple sections."""
-        yaml_file = tmp_path / "multi.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  You are an assistant.\n"
-            "tools_prompt: |\n"
-            "  Available tools: {{ tools }}\n"
-            "custom_section: |\n"
-            "  Custom content here.\n",
-            encoding="utf-8"
-        )
-        
-        context = {"tools": "search, calculate"}
-        result = render_prompts(str(yaml_file), context, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert "tools_prompt" in result
-        assert "custom_section" in result
-        assert "search, calculate" in result["tools_prompt"]
+    def test_comments_are_gone_and_leave_no_blank_lines(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text(
+            "# Agent\n"
+            "<!-- why this rule exists: book 77 -->\n"
+            "Rule one. <!-- inline note --> Rule two.\n"
+            "  <!--\n  a note over\n  several lines\n  -->\n"
+            "End.",
+            encoding="utf-8")
 
-    def test_yaml_single_section(self, tmp_path: Path) -> None:
-        """Test YAML template with single section."""
-        yaml_file = tmp_path / "single.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  You are a helpful assistant.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert len(result) == 1
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
 
-    def test_yaml_with_auto_datetime(self, tmp_path: Path) -> None:
-        """Test YAML template with auto datetime context."""
-        yaml_file = tmp_path / "datetime.yaml"
-        yaml_file.write_text(
-            "system_prompt: |\n"
-            "  Today is {{ current_date }}.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=True)
-        
-        # Should contain a date pattern
-        assert "Today is 20" in result["system_prompt"]  # 20XX-XX-XX
+        assert result["system_prompt"] == "# Agent\nRule one.  Rule two.\nEnd."
+
+    def test_prose_between_two_comments_survives(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- a --> keep me\n<!-- b -->\nkeep me too", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert result["system_prompt"] == " keep me\nkeep me too"
+
+    def test_an_included_partial_is_stripped_too(self, tmp_path: Path) -> None:
+        (tmp_path / "partial.md").write_text("<!-- partial note -->\nShared rule.", encoding="utf-8")
+        md_file = tmp_path / "agent.md"
+        md_file.write_text('Own rule.\n{% include "partial.md" %}', encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert result["system_prompt"] == "Own rule.\nShared rule."
+
+    def test_text_from_a_variable_keeps_its_comments(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- note -->\nChapter:\n{{ chapter }}", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {"chapter": "a <!-- b --> c"}, auto_datetime=False)
+
+        assert result["system_prompt"] == "Chapter:\na <!-- b --> c"
+
+    def test_the_raw_fallback_is_stripped_as_well(self, tmp_path: Path) -> None:
+        # A broken template ships unrendered -- still without its notes.
+        md_file = tmp_path / "agent.md"
+        md_file.write_text("<!-- note -->\nContent with {{ invalid syntax", encoding="utf-8")
+
+        result = render_prompts(str(md_file), {}, auto_datetime=False)
+
+        assert "note" not in result["system_prompt"]
+        assert "{{ invalid syntax" in result["system_prompt"]
+
+    def test_a_second_comment_after_prose_keeps_the_line_break(self) -> None:
+        source = "Rule one. <!-- a --> <!-- b -->\nRule two."
+        assert strip_prompt_comments(source) == "Rule one.  \nRule two."
+
+    def test_crlf_comment_lines_leave_no_blank_lines(self) -> None:
+        # Jinja's loader reads bytes, so an include still carries its \r\n here.
+        assert strip_prompt_comments("A\r\n<!-- note -->\r\nB") == "A\r\nB"
+
+    def test_an_unclosed_comment_keeps_the_rest_and_warns(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="agent_system.utils.prompt_renderer"):
+            result = strip_prompt_comments("keep\n<!-- open\nrest", "agent.md")
+
+        assert result == "keep\n<!-- open\nrest"
+        assert "agent.md" in caplog.text
+
+    def test_many_unclosed_openers_stay_linear(self) -> None:
+        # Rescanning to the end from every opener is quadratic: at 1.4 MB a
+        # str.find loop takes ~3.6 s (a regex minutes), one scan ~0.2 ms.
+        source = "<!-- yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n" * 40000
+        started = time.perf_counter()
+        strip_prompt_comments(source)
+        assert time.perf_counter() - started < 1.0
+
+    def test_many_comments_on_one_line_stay_linear(self) -> None:
+        # Looking for the line's start and end per comment is quadratic on a
+        # line without newlines: 440 KB took ~2.3 s that way.
+        source = "x<!-- a -->" * 80000
+        started = time.perf_counter()
+        assert strip_prompt_comments(source) == "x" * 80000
+        assert time.perf_counter() - started < 1.0
+
+
+class TestYamlRejected:
+    """YAML prompt templates are no longer supported — they must fail loudly
+    with a migration hint rather than silently embedding raw YAML."""
+
+    def test_yaml_path_raises(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "old.yaml"
+        yaml_file.write_text("system_prompt: |\n  hi\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="no longer supported"):
+            render_prompts(str(yaml_file), {}, auto_datetime=False)
+
+    def test_yml_path_raises(self, tmp_path: Path) -> None:
+        yml_file = tmp_path / "old.yml"
+        yml_file.write_text("system_prompt: hi\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="markdown"):
+            render_prompts(str(yml_file), {}, auto_datetime=False)
 
 
 class TestRenderPromptsMarkdown:
@@ -272,54 +323,9 @@ class TestEdgeCases:
     """Edge case and integration tests."""
 
     def test_file_not_found(self, tmp_path: Path) -> None:
-        """Test that FileNotFoundError is raised for missing files."""
+        """Test that FileNotFoundError is raised for a missing markdown file."""
         with pytest.raises(FileNotFoundError):
-            render_prompts(str(tmp_path / "nonexistent.yaml"), {})
-
-    def test_yaml_with_non_string_values(self, tmp_path: Path) -> None:
-        """Test YAML with non-string values are skipped."""
-        yaml_file = tmp_path / "mixed.yaml"
-        yaml_file.write_text(
-            "system_prompt: You are an assistant.\n"
-            "version: 1.0\n"  # This is a float, should be skipped
-            "enabled: true\n"  # This is a bool, should be skipped
-            "metadata:\n"  # This is a dict, should be skipped
-            "  author: test\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        # Only system_prompt should be in result
-        assert "system_prompt" in result
-        assert "version" not in result
-        assert "enabled" not in result
-        assert "metadata" not in result
-
-    def test_yaml_with_internal_keys(self, tmp_path: Path) -> None:
-        """Test YAML with underscore-prefixed keys are skipped."""
-        yaml_file = tmp_path / "internal.yaml"
-        yaml_file.write_text(
-            "system_prompt: You are an assistant.\n"
-            "_internal: This should be skipped.\n"
-            "_version: Also skipped.\n",
-            encoding="utf-8"
-        )
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert "system_prompt" in result
-        assert "_internal" not in result
-        assert "_version" not in result
-
-    def test_empty_yaml_file(self, tmp_path: Path) -> None:
-        """Test empty YAML file."""
-        yaml_file = tmp_path / "empty.yaml"
-        yaml_file.write_text("", encoding="utf-8")
-        
-        result = render_prompts(str(yaml_file), {}, auto_datetime=False)
-        
-        assert result == {}
+            render_prompts(str(tmp_path / "nonexistent.md"), {})
 
     def test_unicode_content(self, tmp_path: Path) -> None:
         """Test templates with unicode content."""

@@ -14,6 +14,8 @@ from typing import Dict, Set
 import asyncio
 import aiofiles
 
+from agent_system.paths import resolve_data_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,9 +46,10 @@ class BatchJobTracker:
         """Initialize the job tracker.
         
         Args:
-            storage_path: Directory to store the tracking file
+            storage_path: Directory to store the tracking file (a data/...
+                path lands in the data directory, agent_system/paths.py)
         """
-        self.storage_path = Path(storage_path)
+        self.storage_path = resolve_data_path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.tracker_file = self.storage_path / "tracked_batch_jobs.json"
         self._lock = asyncio.Lock()

@@ -1,8 +1,8 @@
 """
 Integration test for Agent bootstrap functionality.
 """
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
-from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 from agent_system.servers.agent.server import Agent
 
@@ -12,7 +12,7 @@ def create_test_config(**overrides):
     base_config = {
         "llm_system": LLMSystemConfig(
             models={
-                "test-model": LLMModelConfig(provider="openai", model="test-model", openai_api_key="fake-key")
+                "test-model": LLMModelConfig(provider="openai", model="test-model", api_key="fake-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="test-model")
@@ -32,7 +32,7 @@ class TestBootstrapSubAgent:
         config = create_test_config(
             plugins=PluginsConfig(
                 servers={
-                    "test_sub": MCPConfig(
+                    "test_sub": ToolServerConfig(
                         type="agent",
                         enabled=True,
                         agent_config=AgentConfig(),
@@ -42,7 +42,7 @@ class TestBootstrapSubAgent:
             )
         )
         
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         
         # Bootstrap should create the sub-agent
         bootstrap_servers(config, registry)
@@ -52,14 +52,14 @@ class TestBootstrapSubAgent:
         server = registry.get("test_sub")
         assert isinstance(server, Agent)
         assert server.name == "test_sub"
-        assert server.mcp_config.description == "Test agent"
+        assert server.server_config.description == "Test agent"
         
     def test_bootstrap_sub_agent_default_description(self):
         """Test agent bootstrap with default description."""
         config = create_test_config(
             plugins=PluginsConfig(
                 servers={
-                    "my_sub": MCPConfig(
+                    "my_sub": ToolServerConfig(
                         type="agent",
                         enabled=True,
                         agent_config=AgentConfig()
@@ -68,7 +68,7 @@ class TestBootstrapSubAgent:
             )
         )
         
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         bootstrap_servers(config, registry)
         
         server = registry.get("my_sub")
@@ -81,17 +81,17 @@ class TestBootstrapSubAgent:
         config = create_test_config(
             plugins=PluginsConfig(
                 servers={
-                    "test_sub": MCPConfig(
+                    "test_sub": ToolServerConfig(
                         type="agent",
                         enabled=True,
                         agent_config=AgentConfig(),
                         description="Test agent"
                     ),
-                    "datetime": MCPConfig(
+                    "datetime": ToolServerConfig(
                         type="datetime",
                         enabled=True
                     ),
-                    "duckduckgo_search": MCPConfig(
+                    "duckduckgo_search": ToolServerConfig(
                         type="duckduckgo_search",
                         enabled=True
                     )
@@ -99,7 +99,7 @@ class TestBootstrapSubAgent:
             )
         )
         
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         bootstrap_servers(config, registry)
         
         # Should have at least the agent (datetime/duckduckgo might not be registered if plugins don't exist)

@@ -1,5 +1,5 @@
 """
-TODO Management Plugin - MCP Server Implementation
+TODO Management Plugin - Tool Server Implementation
 
 Provides persistent task tracking and lifecycle management for agent workflows.
 Complements sequential_thinking plugin: tracks WHAT to do (vs HOW to think).
@@ -17,6 +17,8 @@ Key features:
 import asyncio
 import json
 import logging
+import re
+import threading
 from datetime import datetime, UTC
 from difflib import SequenceMatcher
 from enum import Enum
@@ -26,11 +28,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_serializer
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
+from agent_system.paths import data_path
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -149,54 +152,60 @@ class StorageError(TodoError):
 # TODO Management Server
 # =============================================================================
 
-class TodoServer(SchemaBasedMCPServer, PluginHook):
+class TodoServer(SchemaBasedHookToolServer):
     """
-    TODO Management MCP Server with Hook Integration
+    TODO Management Tool Server with Hook Integration
 
     Provides task lifecycle tracking with dependency management and persistence.
     Implements PluginHook to inject tasks into system prompts (hooks defined in schema.yaml).
     Hook configuration is loaded from schema.yaml config section.
     """
 
-    def __init__(self, name: str, system_config: "AgentSystemConfig", mcp_config: "MCPConfig"):
+    def __init__(self, name: str, system_config: "AgentSystemConfig", server_config: "ToolServerConfig"):
         """
         Initialize TODO Management server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration with:
+            server_config: Plugin-specific configuration with:
                 - storage_path: Path to JSON storage directory
                 - max_tasks_per_session: Limit on tasks per session
                 - enable_dependencies: Whether to enforce dependencies
                 - auto_save: Auto-save on modifications
         """
-        # Initialize MCP server (loads schema.yaml for tools)
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
-
-        # Initialize PluginHook with hook config from schema.yaml
-        # Extract hook config defaults from loaded schema
-        hook_config = self._extract_hook_config_from_schema()
-        PluginHook.__init__(self, name, config=hook_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
 
         # Configuration (using getattr like sequential_thinking)
         self._storage_path = Path(
-            getattr(mcp_config, "storage_path", "data/todos")
+            getattr(server_config, "storage_path", None) or data_path("todos")
         )
-        self._max_tasks = int(getattr(mcp_config, "max_tasks_per_session", 1000))
-        self._enable_deps = bool(getattr(mcp_config, "enable_dependencies", True))
-        self._auto_save = bool(getattr(mcp_config, "auto_save", True))
+        self._max_tasks = int(getattr(server_config, "max_tasks_per_session", 1000))
+        self._enable_deps = bool(getattr(server_config, "enable_dependencies", True))
+        self._auto_save = bool(getattr(server_config, "auto_save", True))
 
         # In-memory cache: session_id → TaskCollection
         # Limited to prevent memory leaks - sessions are persisted to disk
         self._sessions: Dict[str, TaskCollection] = {}
-        self._max_cache_size = int(getattr(mcp_config, 'max_cache_size', 50))
+        self._max_cache_size = int(getattr(server_config, 'max_cache_size', 50))
 
         # Task ID counter per session
         self._task_counters: Dict[str, int] = {}
 
-        # Session locks to prevent concurrent access issues
+        # Per-session asyncio locks (event-loop only) to serialize load/save of
+        # the SAME session. NOTE: these are never evicted (see
+        # _evict_cache_if_needed) so that mutual exclusion can never be broken.
         self._session_locks: Dict[str, asyncio.Lock] = {}
+
+        # Guards all structural access to _sessions / _task_counters. These dicts
+        # are mutated from worker threads (load/save/evict run via
+        # asyncio.to_thread) AND read on the event loop, so a plain threading
+        # lock is required — an asyncio.Lock would not serialize the threads.
+        # RLock because _load_session holds it and calls _evict_cache_if_needed.
+        # Only ever held around fast dict ops, never around disk I/O.
+        self._cache_lock = threading.RLock()
 
         # Create storage directory
         self._storage_path.mkdir(parents=True, exist_ok=True)
@@ -206,40 +215,12 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             f"max_tasks={self._max_tasks})"
         )
 
-    def _extract_hook_config_from_schema(self) -> Dict[str, Any]:
-        """
-        Extract hook configuration defaults from schema.yaml.
-
-        SchemaBasedMCPServer already loaded schema.yaml via SchemaBaseMixin.
-        This method extracts the config section and converts it to runtime values.
-
-        Returns:
-            Dict with hook config values (defaults from schema.yaml)
-        """
-        schema_data = self.get_schema_data()
-        schema_config = schema_data.get("config", {})
-        hook_config = {}
-
-        for key, value in schema_config.items():
-            if isinstance(value, dict) and 'default' in value:
-                # Schema format: {key: {type: ..., default: value}}
-                hook_config[key] = value['default']
-            else:
-                # Already a simple value
-                hook_config[key] = value
-
-        return hook_config
-
-    # =========================================================================
-    # Session Management
-    # =========================================================================
-
     def _get_session_id(self, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Extract or generate session ID from context.
 
         Args:
-            context: MCP tool call context with session metadata
+            context: tool call context with session metadata
 
         Returns:
             Session ID string
@@ -258,28 +239,46 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
     def _evict_cache_if_needed(self) -> None:
         """Evict oldest sessions from cache if over limit.
-        
+
         Sessions are persisted to disk, so eviction only removes from memory.
         They will be reloaded on next access.
+
+        Concurrency: acquires self._cache_lock (RLock) so the snapshot+delete
+        cannot race other threads mutating the dicts; re-entrant, so it is also
+        safe when called from _load_session which already holds the lock.
+        Sessions whose per-session lock is currently held are SKIPPED — they have
+        an in-flight load/save and evicting them would drop state another
+        coroutine is using. The per-session asyncio.Lock objects are
+        intentionally NOT evicted: popping a lock that another coroutine holds
+        (or is about to acquire) would let a fresh Lock be created and break
+        mutual exclusion.
         """
-        if len(self._sessions) < self._max_cache_size:
-            return
-        
-        # Find sessions to evict (oldest by updated_at)
-        sessions_by_time = sorted(
-            self._sessions.items(),
-            key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
-        )
-        
-        # Evict oldest half when over limit
-        evict_count = len(self._sessions) - (self._max_cache_size // 2)
-        for session_id, _ in sessions_by_time[:evict_count]:
-            del self._sessions[session_id]
-            self._task_counters.pop(session_id, None)
-            self._session_locks.pop(session_id, None)
-            logger.debug(f"Evicted session {session_id} from cache (LRU)")
-        
-        logger.info(f"TodoServer: Evicted {evict_count} sessions from cache")
+        with self._cache_lock:
+            if len(self._sessions) < self._max_cache_size:
+                return
+
+            # Oldest first; skip sessions with an in-flight (locked) lock.
+            sessions_by_time = sorted(
+                self._sessions.items(),
+                key=lambda x: x[1].updated_at or datetime.min.replace(tzinfo=UTC)
+            )
+
+            target = len(self._sessions) - (self._max_cache_size // 2)
+            evicted = 0
+            for session_id, _ in sessions_by_time:
+                if evicted >= target:
+                    break
+                lock = self._session_locks.get(session_id)
+                if lock is not None and lock.locked():
+                    continue  # in-flight load/save — do not evict
+                del self._sessions[session_id]
+                self._task_counters.pop(session_id, None)
+                # NOTE: do not pop self._session_locks[session_id] (see docstring)
+                evicted += 1
+                logger.debug(f"Evicted session {session_id} from cache (LRU)")
+
+        if evicted:
+            logger.info(f"TodoServer: Evicted {evicted} sessions from cache")
 
     def _load_session(self, session_id: str) -> TaskCollection:
         """
@@ -294,14 +293,19 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Raises:
             StorageError: If file parsing fails
         """
-        # Check cache first
-        if session_id in self._sessions:
-            return self._sessions[session_id]
+        # Check cache + evict under the cache lock (fast dict ops only). Same-
+        # session concurrency is already serialized by the per-session asyncio
+        # lock held in _load_session_async, so the cache miss below cannot be
+        # raced by another load of the SAME session; the lock only guards
+        # cross-session mutation and eviction.
+        with self._cache_lock:
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+            # Evict old entries before adding new one
+            self._evict_cache_if_needed()
 
-        # Evict old entries before adding new one
-        self._evict_cache_if_needed()
-
-        # Load from disk
+        # Load from disk (I/O OUTSIDE the cache lock so the event loop is never
+        # blocked on file reads held by a worker thread).
         file_path = self._get_storage_path(session_id)
 
         if file_path.exists():
@@ -310,7 +314,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                     data = json.load(f)
 
                 collection = TaskCollection(**data)
-                self._sessions[session_id] = collection
+                with self._cache_lock:
+                    self._sessions[session_id] = collection
 
                 logger.debug(
                     f"Loaded session {session_id}: {len(collection.tasks)} tasks"
@@ -324,8 +329,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         # Create new session
         collection = TaskCollection(session_id=session_id)
-        self._sessions[session_id] = collection
-        self._task_counters[session_id] = 0
+        with self._cache_lock:
+            self._sessions[session_id] = collection
+            self._task_counters[session_id] = 0
 
         logger.debug(f"Created new session {session_id}")
         return collection
@@ -340,11 +346,14 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Raises:
             StorageError: If file write fails
         """
-        if session_id not in self._sessions:
+        # Resolve the collection atomically (membership check + fetch) so a
+        # concurrent eviction cannot delete it between the two statements.
+        with self._cache_lock:
+            collection = self._sessions.get(session_id)
+        if collection is None:
             logger.warning(f"Cannot save non-existent session {session_id}")
             return
 
-        collection = self._sessions[session_id]
         collection.updated_at = datetime.now(UTC)
 
         file_path = self._get_storage_path(session_id)
@@ -415,8 +424,20 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             await asyncio.to_thread(self._save_session, session_id)
 
     def _get_storage_path(self, session_id: str) -> Path:
-        """Get file path for session storage"""
-        return self._storage_path / f"{session_id}.json"
+        """Get file path for session storage.
+
+        SECURITY: session_id can reach this from the web router unvalidated
+        (web_endpoints.py accepts session_id as a query param with no auth/IDOR
+        check). Without sanitization a value like '../../tmp/evil' or an
+        absolute path escapes the storage dir -> arbitrary JSON read/write.
+        Allow only a safe charset and assert containment.
+        """
+        if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", session_id):
+            raise StorageError(f"Invalid session_id: {session_id!r}")
+        path = (self._storage_path / f"{session_id}.json").resolve()
+        if not path.is_relative_to(self._storage_path.resolve()):
+            raise StorageError(f"session_id escapes storage directory: {session_id!r}")
+        return path
 
     def _generate_task_id(self, session_id: str) -> str:
         """
@@ -428,24 +449,27 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Returns:
             Task ID (e.g., "task_042")
         """
-        # Initialize counter from existing tasks if not set
-        if session_id not in self._task_counters and session_id in self._sessions:
-            collection = self._sessions[session_id]
-            if collection.tasks:
-                # Find highest task number
-                max_num = 0
-                for task_id in collection.tasks.keys():
-                    if task_id.startswith("task_"):
-                        try:
-                            num = int(task_id.split("_")[1])
-                            max_num = max(max_num, num)
-                        except (IndexError, ValueError):
-                            pass
-                self._task_counters[session_id] = max_num
+        # Counter init + increment under the cache lock so the read-modify-write
+        # cannot race a concurrent eviction/load mutating the same dicts.
+        with self._cache_lock:
+            # Initialize counter from existing tasks if not set
+            if session_id not in self._task_counters and session_id in self._sessions:
+                collection = self._sessions[session_id]
+                if collection.tasks:
+                    # Find highest task number
+                    max_num = 0
+                    for task_id in collection.tasks.keys():
+                        if task_id.startswith("task_"):
+                            try:
+                                num = int(task_id.split("_")[1])
+                                max_num = max(max_num, num)
+                            except (IndexError, ValueError):
+                                pass
+                    self._task_counters[session_id] = max_num
 
-        counter = self._task_counters.get(session_id, 0)
-        counter += 1
-        self._task_counters[session_id] = counter
+            counter = self._task_counters.get(session_id, 0)
+            counter += 1
+            self._task_counters[session_id] = counter
 
         return f"task_{counter:03d}"
 
@@ -880,7 +904,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             depends_on: List of task IDs this task depends on
             allow_duplicates: Allow creating duplicate tasks (default: False)
             idempotency_key: Optional key to prevent duplicate creation on retries
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Created task details with task_id OR existing task if duplicate found
@@ -1039,7 +1063,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Created {task_id}")
+                await status.end(
+                    f"Created {task_id}" + (" (blocked)" if is_blocked else "")
+                    + f": {title[:60]}")
 
             return {
                 "task_id": task_id,
@@ -1066,6 +1092,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         set_depends_on: Optional[List[str]] = None,
         add_depends_on: Optional[List[str]] = None,
         remove_depends_on: Optional[List[str]] = None,
+        only_from: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1082,7 +1109,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             set_depends_on: Replace all dependencies (None = no change)
             add_depends_on: Dependencies to add (incremental)
             remove_depends_on: Dependencies to remove (incremental)
-            context: MCP tool call context
+            only_from: Statuses the task must be in, else nothing changes and the answer is
+                ``status_changed`` -- for a change decided on a view of the task that may be out of date
+            context: tool call context
 
         Returns:
             Updated task with change summary
@@ -1113,6 +1142,18 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 }
 
             task = collection.tasks[task_id]
+            # no await between this check and the changes below: nothing else in the process changes the task in between
+            if only_from is not None and task.status.value not in only_from:
+                msg = f"Task '{task_id}' is {task.status.value} now"
+                logger.info(f"Update rejected (status changed): {task_id}")
+                if status:
+                    await status.error(msg)
+                return {
+                    "task_id": task_id,
+                    "status": "status_changed",
+                    "message": msg,
+                }
+
             changes = {}
 
             # Save old values BEFORE any updates (for accurate change tracking)
@@ -1379,7 +1420,8 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Updated {task_id}")
+                what = ", ".join(changes) if changes else "no changes"
+                await status.end(f"Updated {task_id}: {what[:60]}")
 
             return {
                 "task_id": task_id,
@@ -1422,7 +1464,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             sort_by: Sort field (priority/created_at/updated_at/progress)
             limit: Max results to return
             offset: Number of results to skip (for pagination)
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Filtered task list with metadata
@@ -1541,7 +1583,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         Args:
             task_id: Task identifier
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Full task object with dependency info
@@ -1630,7 +1672,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Deletion summary with cascade list
@@ -1654,7 +1696,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         Args:
             task_id: Task identifier
             cascade: If true, also delete dependent tasks
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Deletion summary with cascade list
@@ -1710,11 +1752,17 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             if cascade and task.blocks:
                 for block_id in list(task.blocks):
                     if block_id in collection.tasks:
-                        # Recursive cascade (call implementation directly)
+                        # Recursive cascade (call implementation directly).
+                        # WITHOUT _status: all frames share one StatusScope,
+                        # so the deepest child used to call status.end() and
+                        # set ended=True -- the end line of the task that was
+                        # actually requested was a no-op after that.
+                        sub_context = {k: v for k, v in (context or {}).items()
+                                       if k != "_status"}
                         sub_result = await self._delete_todo_impl(
                             task_id=block_id,
                             cascade=True,
-                            context=context
+                            context=sub_context
                         )
                         cascade_deleted.append(block_id)
                         cascade_deleted.extend(sub_result.get("cascade_deleted", []))
@@ -1735,7 +1783,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
             # Short status message
             if status:
-                await status.end(f"Deleted {task_id}")
+                await status.end(
+                    f"Deleted {task_id}"
+                    + (f" + {len(cascade_deleted)} dependent task(s)"
+                       if cascade_deleted else ""))
 
             return {
                 "task_id": task_id,
@@ -1759,7 +1810,7 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
 
         Args:
             group_by: Grouping field (status/priority)
-            context: MCP tool call context
+            context: tool call context
 
         Returns:
             Progress summary with completion metrics
@@ -1867,7 +1918,9 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
         adds active tasks from the current session to the agent's context,
         providing task awareness without explicit tool calls.
 
-        Configuration is loaded from schema.yaml config section.
+        Configuration: the schema.yaml ``config`` defaults, the server
+        entry's ``hook_config:`` on top, and the calling agent's own
+        ``hooks.overrides`` on top of that.
 
         Args:
             context: Hook context with messages, session_id, agent
@@ -1884,13 +1937,18 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             return HookResult(success=True, modified=False, context=context)
 
         try:
-            # Get hook config from PluginHook (loaded from schema.yaml via _extract_hook_config_from_schema)
-            max_tasks = self.config.get("max_tasks", 20)
-            filter_status = self.config.get("filter_status", [
+            # `self.config` is schema.yaml plus the server entry's
+            # `hook_config:`; `context.hook_config` is what THIS agent put in
+            # its own `hooks.overrides`, and the README has been offering that
+            # since before the hook existed -- without it, every key an agent
+            # sets there was read by nobody.
+            settings = {**self.config, **(context.hook_config or {})}
+            max_tasks = settings.get("max_tasks", 20)
+            filter_status = settings.get("filter_status", [
                 "not-started", "in-progress", "blocked"
             ])
-            include_completed = self.config.get("include_completed", False)
-            format_type = self.config.get("format", "markdown")
+            include_completed = settings.get("include_completed", False)
+            format_type = settings.get("format", "markdown")
 
             # Query tasks from current session
             result = await self.list_todos(
@@ -1900,18 +1958,10 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
             )
 
             # Always inject TODO tool reminder, with or without tasks
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
 
             tasks_list = result.get("tasks", []) if result else []
-
-            # Check if already injected and REMOVE old injection to replace it
-            # This allows updating from "no tasks" to "with tasks" seamlessly
-            for i, msg in enumerate(context.messages):
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and "## TODO Tool Available" in msg_content:
-                    # Remove old TODO injection
-                    context.messages.pop(i)
-                    break
 
             if tasks_list and len(tasks_list) > 0:
                 # Format existing tasks with reminder
@@ -1920,11 +1970,26 @@ class TodoServer(SchemaBasedMCPServer, PluginHook):
                 # No tasks yet - inject reminder about todo tool
                 task_prompt = self._format_todo_reminder()
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
-                content=task_prompt
+            # Append-only: the list is a turn in the history, not a block at
+            # the head rebuilt on every call. Rebuilt at the head it changed
+            # the prompt prefix every step and the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is and is
+            # superseded by this one, which is the last of them; and a block
+            # compaction has taken away simply comes back, which is the same
+            # branch as a first one. An emptied list is not silence either --
+            # the reminder below takes its place and says there is nothing
+            # open, which an older list would otherwise keep claiming.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "todo"), None)
+            if previous is not None and previous.content == task_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
+                content=task_prompt,
+                injected_by="todo",
             ))
 
             return HookResult(success=True, modified=True, context=context)
@@ -1998,14 +2063,3 @@ Example: `todo(operation="create", title="Analyze data and create report", prior
             "low": "🟢 LOW"
         }
         return labels.get(priority, priority.upper())
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert task list (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            if msg.role == "system":
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

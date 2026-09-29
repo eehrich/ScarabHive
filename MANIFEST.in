@@ -2,5 +2,6 @@ include README.md
 include LICENSE
 recursive-include templates *
 recursive-include static *
+recursive-include docs/guides *.guide
 recursive-include config *.yaml
 recursive-include schemas *.json

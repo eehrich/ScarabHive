@@ -1,3 +1,11 @@
+"""LLMFactory dependency-injection tests.
+
+SCOPE, honestly stated: these run against the conftest fake
+(registry.build_client is replaced), so they verify that the factory
+resolves profiles and forwards the resolved spec — the returned object is
+a _FakeLLMClient carrying provider/model from the spec, not a real client.
+Real construction is covered by tests/llm/test_llm_provider_registry.py.
+"""
 from agent_system.llm.factory import LLMFactory
 from agent_system.config.models import (
     AgentSystemConfig, 
@@ -21,7 +29,7 @@ def make_config():
                 "gpt-test": LLMModelConfig(
                     provider="openai", 
                     model="gpt-test", 
-                    openai_api_key="test-key"
+                    api_key="test-key"
                 )
             },
             profiles={
@@ -76,7 +84,7 @@ def test_llmfactory_respects_agent_profile():
     config.llm_system.models["gpt-turbo"] = LLMModelConfig(
         provider="openai",
         model="gpt-turbo",
-        openai_api_key="test-key"
+        api_key="test-key"
     )
     config.llm_system.profiles["turbo"] = LLMProfile(model_ref="gpt-turbo")
     

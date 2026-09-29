@@ -4,24 +4,36 @@ This module consolidates all plugin/agent bootstrap and dependency injection log
 that was previously duplicated across app.py, agent_cli.py, and agent_run.py.
 
 Key responsibilities:
-- MCP server/plugin bootstrap and registration
+- tool server/plugin bootstrap and registration
 - SessionManager and SessionService initialization
 - Dependency injection (session_service) into all agents
-- Support for both MCPRegistry (CLI/agent_run) and PluginMCPRegistry (API)
+- Support for both ToolServerRegistry (CLI/agent_run) and PluginToolRegistry (API)
 - Work in both sync and async contexts
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+import os
 from typing import Optional
 
 from ..config.models import AgentSystemConfig
-from ..mcp.base import MCPRegistry
+from ..core.session_presence import sessions_dir
+from ..tools.base import ToolServerRegistry
 from .session_manager import SessionManager
 from .session_service import SessionService
 
 logger = logging.getLogger(__name__)
+
+
+def apply_ssl_verify_to_environment(config: AgentSystemConfig) -> None:
+    """``network.ssl_verify: false`` for what reads the environment instead of
+    our clients' flag (requests, curl, subprocesses). Nothing when it is true."""
+    if config.network.ssl_verify:
+        return
+    os.environ["PYTHONHTTPSVERIFY"] = "0"
+    for name in ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
+        os.environ.setdefault(name, "")
+    logger.info("SSL verification disabled - set environment variables for global SSL bypass")
 
 
 class InitializationService:
@@ -45,13 +57,18 @@ class InitializationService:
         self.config = config
         self._session_manager: Optional[SessionManager] = None
         self._session_service: Optional[SessionService] = None
+        self._runtime = None  # agent_system.runtime.Runtime, created on bootstrap
         self._initialized = False
 
     @property
     def session_manager(self) -> SessionManager:
         """Get or create the SessionManager."""
         if self._session_manager is None:
-            storage_path = Path(__file__).parents[3] / "data" / "sessions"
+            # One rule for every process: a woken run (core/session_presence)
+            # is an agent-cli process that inherits AGENT_SESSION_STORAGE_PATH,
+            # and reading sessions from somewhere else than the process that
+            # woke it means continuing a session it cannot find.
+            storage_path = sessions_dir()
             self._session_manager = SessionManager(storage_path=str(storage_path))
             logger.debug("SessionManager initialized at %s", storage_path)
         return self._session_manager
@@ -66,14 +83,14 @@ class InitializationService:
 
     def bootstrap_and_inject(
         self,
-        registry: Optional[MCPRegistry] = None,
+        registry: Optional[ToolServerRegistry] = None,
         inject_sessions: bool = True
-    ) -> MCPRegistry:
+    ) -> ToolServerRegistry:
         """
-        Bootstrap all MCP servers and inject dependencies.
+        Bootstrap all tool servers and inject dependencies.
         
         This method:
-        1. Creates a new MCPRegistry if not provided
+        1. Creates a new ToolServerRegistry if not provided
         2. Calls bootstrap_servers() to discover and register all plugins/agents
         3. Injects session_service into all agents (optional)
         4. Returns the fully initialized registry
@@ -83,18 +100,25 @@ class InitializationService:
             inject_sessions: Whether to inject session_service into agents (default: True)
         
         Returns:
-            MCPRegistry with all servers bootstrapped and dependencies injected
+            ToolServerRegistry with all servers bootstrapped and dependencies injected
         """
-        from ..servers.bootstrap import bootstrap_servers
-        
+        from ..runtime import Runtime, configure_process_singletons
+
         # Create registry if not provided
         if registry is None:
-            registry = MCPRegistry()
-            logger.debug("Created new MCPRegistry")
+            registry = ToolServerRegistry()
+            logger.debug("Created new ToolServerRegistry")
 
-        # Bootstrap all configured servers/plugins
-        logger.info("Bootstrapping MCP servers from config")
-        bootstrap_servers(self.config, registry)
+        # Bootstrap all configured servers/plugins. The Runtime is KEPT: it
+        # holds the declaration of every configured server, so a caller can
+        # later ask about one -- or build it -- without a second discovery.
+        logger.info("Bootstrapping tool servers from config")
+        configure_process_singletons(self.config)
+        self._runtime = Runtime(
+            self.config, registry=registry,
+            session_service=self.session_service if inject_sessions else None,
+        )
+        self._runtime.start()
         logger.info("Servers registered: %s", ", ".join(registry.list()))
 
         # Inject session_service into all agents
@@ -107,7 +131,7 @@ class InitializationService:
         self._initialized = True
         return registry
 
-    def initialize_for_cli(self) -> tuple[MCPRegistry, SessionService]:
+    def initialize_for_cli(self) -> tuple[ToolServerRegistry, SessionService]:
         """
         Full initialization for CLI context.
         
@@ -131,27 +155,28 @@ class InitializationService:
     def initialize_for_api(
         self,
         plugin_registry=None,
-        skip_bootstrap: bool = False
     ) -> SessionService:
         """
         Initialization for API context (FastAPI app).
         
         API context is more complex because:
-        - PluginMCPRegistry (singleton) is used instead of MCPRegistry
+        - PluginToolRegistry (singleton) is used instead of ToolServerRegistry
         - Agents might be created via build_mcp_app() which does its own bootstrap
         - We need to inject into the global plugin_registry
         
         Args:
-            plugin_registry: The global PluginMCPRegistry instance (singleton)
-            skip_bootstrap: If True, skip bootstrap (already done elsewhere)
+            plugin_registry: The global PluginToolRegistry instance (singleton)
         
         Returns:
             SessionService ready for use in API context
         """
         logger.info("[InitializationService] Initializing for API context")
         
-        # If we have a plugin_registry and need to inject
-        if plugin_registry is not None and not skip_bootstrap:
+        # The injection is this method's whole point. It used to hang off a
+        # `skip_bootstrap` flag although the method never bootstrapped
+        # anything -- the sole caller passed True and turned the call into a
+        # silent no-op while still logging "initialization complete".
+        if plugin_registry is not None:
             from .agent_injection import inject_session_service_into_agents
             logger.debug("Injecting session_service into API plugin_registry")
             inject_session_service_into_agents(plugin_registry, self.session_service)
@@ -160,6 +185,15 @@ class InitializationService:
         self._initialized = True
         logger.info("[InitializationService] API initialization complete")
         return self.session_service
+
+    @property
+    def runtime(self):
+        """The Runtime this service bootstrapped with, or None before bootstrap.
+
+        Whoever holds it can ask what a server IS (``describe``) and build one
+        on demand (``materialize``) instead of re-running discovery.
+        """
+        return self._runtime
 
     @property
     def initialized(self) -> bool:

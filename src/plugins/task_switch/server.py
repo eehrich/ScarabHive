@@ -53,30 +53,31 @@ Execute the plan step by step.
 """
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import json
 import logging
 import re
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TaskSwitchServer(SchemaBasedMCPServer):
+class TaskSwitchServer(SchemaBasedToolServer):
     """Task state management server with optional precondition gates."""
     
     def __init__(self, name: str, system_config: "AgentSystemConfig",
-                 mcp_config: "MCPConfig") -> None:
-        super().__init__(name, system_config, mcp_config)
+                 server_config: "ToolServerConfig") -> None:
+        super().__init__(name, system_config, server_config)
         
         # Config for variable name and allowed tasks
         self._task_var_name = "current_task"
         self._allowed_tasks: Optional[List[str]] = None
         self._task_preconditions: Dict[str, Dict[str, Any]] = {}
         
-        config_dict = mcp_config.config if hasattr(mcp_config, "config") else {}
+        config_dict = server_config.config if hasattr(server_config, "config") else {}
         if config_dict:
             self._task_var_name = config_dict.get("task_var_name", "current_task")
             allowed = config_dict.get("allowed_tasks")
@@ -271,30 +272,93 @@ class TaskSwitchServer(SchemaBasedMCPServer):
 
     async def set_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set runtime context variables (template_vars) for the agent.
-        
+
         This allows setting values like book_id at runtime, which can then be
         used in precondition checks and prompt templates.
-        
+
         Args:
-            params: Dict containing key-value pairs to set in template_vars
-                   Special keys starting with _ are ignored (internal params)
+            params: Either {"vars": <JSON string or dict>} (schema form) or
+                   legacy flat key-value pairs. Keys starting with _ and
+                   framework-injected runtime params are ignored.
         """
         status = params.get("_status")
         agent = params.get("_agent")
         session_id = params.get("_session_id")
-        
-        # Extract user-provided context vars (ignore internal _ params)
-        context_vars = {k: v for k, v in params.items() if not k.startswith('_')}
-        
+
+        # Preferred form: a single `vars` argument carrying the key-value pairs.
+        # Declared as a JSON string in the schema because freeform objects
+        # (properties: {} + additionalProperties: true) get mangled by some
+        # provider tool-call serializers — observed: OpenAI (gpt-5.x) strips
+        # undeclared properties so calls arrive as {}, and Gemini's constrained
+        # decoder used to collapse on freeform objects (same reason
+        # comfyui_workflow.parameters is a JSON string). Dict is accepted too
+        # for internal/test callers.
+        # Framework-injected runtime params are never user context — they
+        # used to pollute the session vars (a bare set_context() call
+        # reported "Set: request_id=…" as success).
+        _injected = {"request_id", "requestId", "vars"}
+
+        def _clean(source: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                k: v for k, v in source.items()
+                if not str(k).startswith('_') and k not in _injected
+            }
+
+        vars_arg = params.get("vars")
+        if vars_arg is not None:
+            if isinstance(vars_arg, str):
+                try:
+                    vars_arg = json.loads(vars_arg) if vars_arg.strip() else {}
+                except json.JSONDecodeError as e:
+                    if status:
+                        await status.error(f"vars is not valid JSON: {e}")
+                    return {"status": "error", "error": f"vars is not valid JSON: {e}"}
+            if not isinstance(vars_arg, dict):
+                if status:
+                    await status.error("vars must be a JSON object or dict")
+                return {"status": "error", "error": "vars must be a JSON object (e.g. '{\"book_id\": 42}')"}
+            # Review-Befund: gleiche Hygiene wie im Legacy-Zweig (keine _-/
+            # Framework-Keys als template_vars — sie erben sonst in alle
+            # Sub-Agents), und flache non-internal Keys neben `vars` nicht
+            # still verwerfen, sondern mitnehmen (`vars` gewinnt bei
+            # Konflikt) — ein Mixed-Form-Call meldete sonst success,
+            # obwohl Werte fehlten.
+            context_vars = {**_clean(params), **_clean(vars_arg)}
+        else:
+            # Legacy flat form: every non-internal top-level key is a
+            # context var.
+            context_vars = _clean(params)
+
         if not context_vars:
             if status:
                 await status.error("No context variables provided")
-            return {"status": "error", "error": "No context variables provided"}
+            return {
+                "status": "error",
+                "error": (
+                    "No context variables provided. Pass them via the `vars` "
+                    "argument as a JSON object string, e.g. "
+                    "vars='{\"book_id\": 42}'."
+                ),
+            }
         
         # Get previous values from SESSION-SCOPED template vars (not agent_config!)
         # CRITICAL: This ensures session isolation - multiple sessions won't contaminate each other
         previous_values = {}
-        
+
+        # ORDERING INVARIANT — do NOT introduce an `await` before the tracker
+        # write below.
+        #
+        # An LLM commonly emits set_context and a sub-agent spawn in the SAME
+        # turn, and tool_execution runs those calls as concurrent asyncio tasks.
+        # The spawn inherits the parent's live tracker vars (sub_agent_manager
+        # create_sub_session), so the write here must land first. It does,
+        # because this handler reaches the write with ZERO awaits while any
+        # consumer yields to the loop at least once (the spawn does session I/O
+        # first). Round-robin scheduling then guarantees the order regardless of
+        # which tool call the LLM listed first.
+        #
+        # Add an await above this line and that guarantee silently disappears.
+        # tests/plugins/test_plugin_task_switch_ordering.py pins it.
         if session_id and agent and hasattr(agent, '_session_tracker') and agent._session_tracker:
             session_vars = agent._session_tracker.get_session_template_vars(session_id)
             for key in context_vars:
@@ -362,45 +426,48 @@ class TaskSwitchServer(SchemaBasedMCPServer):
                 if metadata:
                     user_id = metadata.get("user_id", "anonymous")
             
-            # Try to load current session, or create it if it doesn't exist
-            session_data = None
-            try:
-                session_data = await session_manager.load_session(user_id, session_id)
-            except Exception as load_error:
-                # Session doesn't exist yet (new chat) - create it
-                logger.debug(f"Session {session_id} not found, creating it to persist context_vars: {load_error}")
+            # One write of the session at a time (SessionService.save_lock): a
+            # rename or a save landing between this load and save was lost
+            async with agent._session_service.save_lock(session_id):
+                # Try to load current session, or create it if it doesn't exist
+                session_data = None
                 try:
-                    # Get agent name and llm_profile for session creation
-                    agent_name = getattr(agent, 'name', 'unknown')
-                    llm_profile = None
-                    if hasattr(agent, 'agent_config') and agent.agent_config:
-                        llm_profile = getattr(agent.agent_config, 'default_llm_profile', None)
+                    session_data = await session_manager.load_session(user_id, session_id)
+                except Exception as load_error:
+                    # Session doesn't exist yet (new chat) - create it
+                    logger.debug(f"Session {session_id} not found, creating it to persist context_vars: {load_error}")
+                    try:
+                        # Get agent name and llm_profile for session creation
+                        agent_name = getattr(agent, 'name', 'unknown')
+                        llm_profile = None
+                        if hasattr(agent, 'agent_config') and agent.agent_config:
+                            llm_profile = getattr(agent.agent_config, 'default_llm_profile', None)
                     
-                    session_data = await session_manager.create_session(
-                        user_id=user_id,
-                        session_id=session_id,
-                        title="New Session",
-                        agent_name=agent_name,
-                        llm_profile=llm_profile or "default"
-                    )
-                    logger.info(f"Created session {session_id} for user {user_id} to persist context_vars")
-                except Exception as create_error:
-                    logger.warning(f"Could not create session {session_id} to persist context vars: {create_error}")
+                        session_data = await session_manager.create_session(
+                            user_id=user_id,
+                            session_id=session_id,
+                            title="New Session",
+                            agent_name=agent_name,
+                            llm_profile=llm_profile or "default"
+                        )
+                        logger.info(f"Created session {session_id} for user {user_id} to persist context_vars")
+                    except Exception as create_error:
+                        logger.warning(f"Could not create session {session_id} to persist context vars: {create_error}")
+                        return
+            
+                if not session_data:
+                    logger.warning(f"Could not load/create session {session_id} to persist context vars")
                     return
             
-            if not session_data:
-                logger.warning(f"Could not load/create session {session_id} to persist context vars")
-                return
+                # Update or create context_vars field
+                if "context_vars" not in session_data:
+                    session_data["context_vars"] = {}
             
-            # Update or create context_vars field
-            if "context_vars" not in session_data:
-                session_data["context_vars"] = {}
+                session_data["context_vars"].update(vars_to_update)
             
-            session_data["context_vars"].update(vars_to_update)
-            
-            # Save session
-            await session_manager.save_session(session_data)
-            logger.debug(f"Persisted context vars to session {session_id}: {list(vars_to_update.keys())}")
+                # Save session
+                await session_manager.save_session(session_data)
+                logger.debug(f"Persisted context vars to session {session_id}: {list(vars_to_update.keys())}")
             
         except Exception as e:
             logger.warning(f"Failed to persist context vars to session {session_id}: {e}")

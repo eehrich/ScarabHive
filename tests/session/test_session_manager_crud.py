@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from agent_system.services.session_manager import (
+    SessionDeletedError,
     SessionManager,
     SessionNotFoundError,
     SessionPermissionError
@@ -564,6 +565,105 @@ async def test_cache_functionality(session_manager):
 
 
 @pytest.mark.asyncio
+async def test_a_file_another_process_wrote_is_not_served_from_the_cache(temp_storage):
+    # A run woken by session presence continues a session a long-lived API
+    # process has cached; the API's next request must see what that run wrote.
+    api = SessionManager(storage_path=temp_storage)
+    session = await api.create_session(user_id="user1")
+    await api.load_session("user1", session["session_id"])
+    await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+
+    woken = SessionManager(storage_path=temp_storage)
+    written = await woken.load_session("user1", session["session_id"])
+    written["messages"].append({"role": "user", "content": "from the woken run"})
+    await woken.save_session(written)
+
+    loaded = await api.load_session("user1", session["session_id"])
+
+    assert loaded["messages"] == written["messages"]
+
+
+@pytest.mark.asyncio
+async def test_changed_on_disk_only_reports_what_another_process_wrote(temp_storage):
+    # What the API asks before it re-reads a session for an append: its own
+    # writes are not a change, or a run whose newest messages are still only in
+    # memory would be sent back to the older file for them.
+    api = SessionManager(storage_path=temp_storage)
+    session = await api.create_session(user_id="user1")
+    sid = session["session_id"]
+
+    other = SessionManager(storage_path=temp_storage)
+    assert other.changed_on_disk("user1", sid) is None, "a file it never read is not an answer"
+
+    session["messages"].append({"role": "user", "content": "from this process"})
+    await api.save_session(session)
+    await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+
+    assert api.changed_on_disk("user1", sid) is False
+
+    woken = SessionManager(storage_path=temp_storage)
+    written = await woken.load_session("user1", sid)
+    written["messages"].append({"role": "user", "content": "from the woken run"})
+    await woken.save_session(written)
+
+    assert api.changed_on_disk("user1", sid) is True
+
+
+@pytest.mark.asyncio
+async def test_a_delete_waits_for_a_save_of_the_session_already_under_way(session_manager):
+    """The save writes first and the delete comes after it -- not a delete that the save then undoes."""
+    session = await session_manager.create_session(user_id="user1", session_id="saving_one")
+    entered, release = asyncio.Event(), asyncio.Event()
+    write = session_manager._atomic_write_async
+
+    async def slow_write(path, data):
+        if Path(path).name == "saving_one.json":
+            entered.set()
+            await release.wait()
+        await write(path, data)
+
+    session_manager._atomic_write_async = slow_write
+    session["messages"].append({"role": "user", "content": "late"})
+    save = asyncio.create_task(session_manager.save_session(session))
+    await entered.wait()
+    delete = asyncio.create_task(session_manager.delete_session("user1", "saving_one"))
+    await asyncio.sleep(0.05)
+    assert not delete.done(), "the delete did not wait for the save under way"
+    release.set()
+    await save
+    await delete
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.load_session("user1", "saving_one", bypass_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_had_the_session_before_its_delete_does_not_write_it_again(session_manager):
+    session = await session_manager.create_session(user_id="user1", session_id="loaded_before")
+    session["messages"].append({"role": "user", "content": "from a run still going"})
+    await session_manager.delete_session("user1", "loaded_before")
+
+    with pytest.raises(SessionDeletedError):
+        await session_manager.save_session(session)
+    with pytest.raises(SessionNotFoundError):
+        await session_manager.load_session("user1", "loaded_before", bypass_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_session_written_again_by_another_process_is_a_session_again(temp_storage):
+    api = SessionManager(storage_path=temp_storage)
+    await api.create_session(user_id="user1", session_id="written_again")
+    await api.delete_session("user1", "written_again")
+    assert api.is_deleted("written_again")
+
+    cli = SessionManager(storage_path=temp_storage)  # agent-cli, say
+    await cli.create_session(user_id="user1", session_id="written_again")
+
+    assert not api.is_deleted("written_again")
+    await api.update_session_metadata("user1", "written_again", {"tags": ["kept"]})
+    assert (await api.load_session("user1", "written_again", bypass_cache=True))["metadata"]["tags"] == ["kept"]
+
+
+@pytest.mark.asyncio
 async def test_clear_cache(session_manager):
     """Test clearing the cache."""
     session = await session_manager.create_session(user_id="user1")
@@ -644,3 +744,181 @@ async def test_corrupt_session_file_handling(session_manager, temp_storage):
     
     with pytest.raises(ValueError, match="Corrupt session file"):
         await session_manager.load_session("user1", session["session_id"], bypass_cache=True)
+
+
+# ---------------------------------------------------------------------------
+# Cache-based session lookup (race condition prevention)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_session_owner_async_uses_cache(session_manager):
+    """_find_session_owner_async should find sessions via in-memory cache,
+    even if the filesystem scan would miss them (race prevention)."""
+    await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_001",
+        title="Cached"
+    )
+    # Session is in cache now. Remove the file on disk to prove cache lookup works.
+    user_dir = Path(session_manager.storage_path) / "user1"
+    session_file = user_dir / "cached_sid_001.json"
+    session_file.unlink()
+
+    owner = await session_manager._find_session_owner_async("cached_sid_001")
+    assert owner == "user1"
+
+
+@pytest.mark.asyncio
+async def test_find_session_owner_sync_uses_cache(session_manager):
+    """Sync variant should also consult the cache first."""
+    await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_002",
+        title="Cached"
+    )
+    user_dir = Path(session_manager.storage_path) / "user1"
+    (user_dir / "cached_sid_002.json").unlink()
+
+    owner = session_manager._find_session_owner("cached_sid_002")
+    assert owner == "user1"
+
+
+@pytest.mark.asyncio
+async def test_session_id_exists_globally_uses_cache(session_manager):
+    """_session_id_exists_globally should detect cached sessions."""
+    await session_manager.create_session(
+        user_id="user1",
+        session_id="cached_sid_003",
+        title="Cached"
+    )
+    user_dir = Path(session_manager.storage_path) / "user1"
+    (user_dir / "cached_sid_003.json").unlink()
+
+    assert session_manager._session_id_exists_globally("cached_sid_003") is True
+
+
+@pytest.mark.asyncio
+async def test_save_session_preserves_parent_session(session_manager):
+    """save_session must not strip parent_session (sub-agent metadata)."""
+    session = await session_manager.create_session(
+        user_id="user1",
+        session_id="sub_agent_001",
+        title="Sub-agent"
+    )
+    session["parent_session"] = {"session_id": "parent_001", "created_at": "2025-01-01T00:00:00Z"}
+    session["depth"] = 2
+    await session_manager.save_session(session)
+
+    loaded = await session_manager.load_session("user1", "sub_agent_001")
+    assert loaded["parent_session"]["session_id"] == "parent_001"
+    assert loaded["depth"] == 2
+
+
+class TestResolveSessionRef:
+    """A person types the name they gave a session; an id is machine-made.
+
+    The id cannot be renamed -- it is the key the usage tracker, the message
+    debugger, the context stores, the sub-session indexes and the presence
+    locks file their rows under -- so the title is the name, and --session
+    and /resume take it.
+    """
+
+    async def _titled(self, manager, title, session_id, updated_at=None, parent=None):
+        if not updated_at:
+            session = await manager.create_session(
+                user_id="u", session_id=session_id, title=title,
+                agent_name="a", llm_profile="p")
+            await manager.save_session(session)
+            return session
+        # A record with the stamp it is given: save_session stamps "now", and
+        # "newest" would then be decided by the wall clock (two saves inside
+        # one Windows clock tick tie). reinstate_session writes it as it is.
+        session = {"session_id": session_id, "user_id": "u", "title": title,
+                   "created_at": updated_at, "updated_at": updated_at,
+                   "agent_name": "a", "llm_profile": "p", "messages": [], "metadata": {}}
+        if parent:
+            session["parent_session"] = {"session_id": parent, "created_at": updated_at}
+        await manager.reinstate_session(session)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_an_id_wins_over_a_title_that_looks_like_one(self, session_manager):
+        await self._titled(session_manager, "fpga", "abc123")
+        await self._titled(session_manager, "Quartus", "fpga")
+
+        assert await session_manager.resolve_session_ref("u", "fpga") == "fpga"
+
+    @pytest.mark.asyncio
+    async def test_a_title_finds_its_session_whatever_the_case(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "2332j2kj22k")
+
+        assert await session_manager.resolve_session_ref("u", "fpga quartus") == "2332j2kj22k"
+
+    @pytest.mark.asyncio
+    async def test_the_same_title_many_times_means_the_newest(self, session_manager):
+        """A pipeline writes hundreds of "Bewerte Kapitel 3" -- the one the
+        person means is the one they last worked in."""
+        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+                           updated_at="2026-09-24T10:00:00+00:00")
+        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+
+        assert await session_manager.resolve_session_ref("u", "Bewerte Kapitel 3") == "new1"
+
+    @pytest.mark.asyncio
+    async def test_the_others_with_the_same_title_are_named(self, session_manager):
+        """So the caller can say it took the newest of several."""
+        await self._titled(session_manager, "Bewerte Kapitel 3", "new1",
+                           updated_at="2026-09-24T10:00:00+00:00")
+        await self._titled(session_manager, "Bewerte Kapitel 3", "old1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+        await self._titled(session_manager, "Anderes", "other1")
+        others: list = []
+
+        assert await session_manager.resolve_session_ref(
+            "u", "Bewerte Kapitel 3", others=others) == "new1"
+        assert others == ["old1"]
+
+    @pytest.mark.asyncio
+    async def test_a_sub_agents_task_title_is_neither_taken_nor_counted(self, session_manager):
+        """A sub-agent's title is its task text, shared by the hundred in a
+        pipeline -- a title a person typed belongs to a session they see."""
+        await self._titled(session_manager, "Recherche", "root1",
+                           updated_at="2026-09-01T10:00:00+00:00")
+        await self._titled(session_manager, "Recherche", "sub1",
+                           updated_at="2026-09-24T10:00:00+00:00", parent="root1")
+        others: list = []
+
+        assert await session_manager.resolve_session_ref("u", "Recherche", others=others) == "root1"
+        assert others == [], "a sub-agent session was counted as a namesake"
+        assert await session_manager.resolve_session_ref("u", "sub1") == "sub1", \
+            "its id no longer reaches a sub-agent session"
+
+    @pytest.mark.asyncio
+    async def test_the_start_of_a_title_is_enough(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus Prime", "xyz789")
+
+        assert await session_manager.resolve_session_ref("u", "FPGA Qua") == "xyz789"
+
+    @pytest.mark.asyncio
+    async def test_a_prefix_that_fits_two_sessions_names_neither(self, session_manager):
+        """`--session build` creates a session called "build"; joining a
+        stranger's conversation because the first letters matched is worse."""
+        await self._titled(session_manager, "Build pipeline v4", "aaa111")
+        await self._titled(session_manager, "Build the panel", "bbb222")
+
+        assert await session_manager.resolve_session_ref("u", "Build") is None
+
+    @pytest.mark.asyncio
+    async def test_a_name_nobody_gave_resolves_to_nothing(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "xyz789")
+
+        assert await session_manager.resolve_session_ref("u", "Amiga") is None
+        assert await session_manager.resolve_session_ref("u", "   ") is None
+
+    @pytest.mark.asyncio
+    async def test_another_users_session_is_not_found_by_its_title(self, session_manager):
+        await self._titled(session_manager, "FPGA Quartus", "xyz789")
+
+        assert await session_manager.resolve_session_ref("somebody_else", "FPGA Quartus") is None

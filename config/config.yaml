@@ -1,10 +1,10 @@
 # ================================
-# Scarab AgentSystem Configuration
+# ScarabHive Configuration
 # ================================
 
-name: "AgentSystem"
-version: "0.5.3"
-description: "Scarab Flexible AI Agent System with plugin support"
+name: "ScarabHive"
+version: "0.7.0"
+description: "ScarabHive - Flexible AI Agent Framework with plugin support"
 
 # all included configs
 includes:
@@ -12,11 +12,12 @@ includes:
   - llm_openrouter.yaml
   - plugins.yaml
   - mcp_servers.yaml
-  - mcp_server_mode.yaml
-  - agents/*.yaml
-  - agents_writer/*.yaml
-  - agents_trading/*.yaml
-  - agents_priv/*.yaml
+  # agents in config dir
+  - agents*/*.yaml
+  # plugin agent configs
+  - ../src/plugins*/*/agents/*.yaml
+  # This machine only, last so it wins; never in the repository (.gitignore)
+  - local.yaml
 
 # Context information automatically added to prompts
 context:
@@ -36,9 +37,27 @@ vision: # type VisionConfig
   image_warn_size_mb: 10.0  # Warn when images exceed this size (MB)
   image_max_size_mb: null  # Maximum allowed image size (MB), null = no limit
 
+# Which sessions run right now; lets direct messages wake idle sessions
+session_presence: # type SessionPresenceConfig
+  enabled: true
+
+# Old conversations move out of data/sessions into zips, whole trees at a time
+# (root session + its sub-agent sessions). Restore in the "Session Archive"
+# panel or with agent-cli --restore-session. Changes need a restart.
+session_archive: # type SessionArchiveConfig
+  enabled: true
+  retention_days: 30            # a tree moves when EVERY session in it is older
+  sweep_interval_hours: 24.0
+  first_sweep_delay_seconds: 300.0  # let the app finish starting before the first sweep
+  max_trees_per_sweep: 0        # 0 = no cap: one pass takes everything old enough
+  # archive_path: null          # default: data/session_archive
+
 # Network settings
 network:
   ssl_verify: true
+  # A machine that opens the API to the LAN for a webhook (host: 0.0.0.0,
+  # remote_paths) does it in config/local.yaml: behind nginx, remote_paths
+  # would shut the LAN's users out of the UI.
   host: 127.0.0.1
   port: 8000
   disable_cache: true
@@ -50,11 +69,39 @@ network:
 # define the agent which will be startet by default if no other agent is specified
 default_agent: chat_agent
 
+# ================================
+# Skills — packaged agent knowledge (docs/skills_design.md)
+# ================================
+# Discovery roots, like plugins.plugin_dirs: every immediate subdirectory of a
+# root whose SKILL.md carries YAML frontmatter is one skill. The first root
+# defining a name wins. Relative paths resolve config-folder-first, then repo
+# root. Wildcards work like in `includes` above:
+#   - skills/*/     ->  group skills as skills/<group>/<skill>/SKILL.md
+#   - skills/**/    ->  any depth
+# Overlapping roots are scanned only once, so mixing plain and pattern is safe.
+# Which skills an agent actually gets is set per agent (agent_config.skills).
+# Omit or leave empty to use the defaults ("skills" and ".claude/skills");
+# $AGENT_SKILL_DIRS overrides the defaults too.
+skills:
+  skill_dirs:
+    # Where the ecosystem drops project-local skills (Claude Code, Codex,
+    # Cursor ...). Listed second, so our own names win a collision. Being
+    # discovered puts nothing into a prompt -- only an agent's skills: block does.
+    - .claude/skills
+    # Grouped skills, if you ever want subfolders: skills/<group>/<skill>/
+    - skills/*/
+    # Plugins specific skills
+    - src/plugins*/*/skills
+
 # Multi-user authentication and authorization (optional)
 auth:
   enabled: true  # Disabled for development - set to true for production
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
+  # The key above is published (it is in the repository): anyone can sign an
+  # admin token with it. The server logs an error at startup; true refuses to
+  # start instead. An empty or short key (under 32 characters) always does.
+  reject_default_secret_key: false
   access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
   refresh_token_expire_days: 3650    # 10 years (not used when access token is this long)
 
@@ -67,10 +114,19 @@ auth:
   security_headers_enabled: true
 
   # CORS settings
+  # NOTE: "*" and cors_credentials are mutually exclusive. Starlette answers a
+  # wildcard by REFLECTING the request Origin, so credentials would let any
+  # cross-origin page read authenticated responses. Requested together, the
+  # middleware drops credentials and warns.
+  # The bundled UI is served same-origin (templates + /static), so it needs no
+  # credentialed CORS. For a cross-origin frontend, list its origins explicitly
+  # and set cors_credentials: true, e.g.
+  #   cors_origins: ["http://localhost:3000"]
+  #   cors_credentials: true
   cors_enabled: true
   cors_origins:
     - "*"  # Change to specific origins in production
-  cors_credentials: true
+  cors_credentials: false
   cors_methods:
     - "*"
   cors_headers:
@@ -86,6 +142,14 @@ auth:
   default_admin_username: "admin"
   default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@example.com"
+
+  # Self-registration (POST /auth/register, reachable without login): a new
+  # account starts inactive until an admin activates it (user management panel,
+  # agent-cli users update NAME --activate). enabled: false turns it off.
+  registration:
+    enabled: true
+    require_approval: true
+    default_role: "user"
 
   # ============================================================
   # Anonymous Access Configuration (NEW)
@@ -112,15 +176,10 @@ auth:
     default_policy: "require_auth"  # Default: require authentication
     audit_enabled: true             # Log all endpoint access to security.log
     rules:
+      - pattern: "POST /plugins/forge/webhook"
+        policy: "allow_anonymous"
+        description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
       # Public API endpoints - no auth required
-      - pattern: "GET /api/menu-definitions"
-        policy: "allow_anonymous"
-        description: "Menu definitions needed for login button display"
-      
-      - pattern: "GET /api/menu-items"
-        policy: "allow_anonymous"
-        description: "Menu items needed for UI initialization"
-      
       - pattern: "GET /agents"
         policy: "allow_anonymous"
         description: "Agent listing for UI dropdown"
@@ -193,7 +252,12 @@ auth:
       - pattern: "* /api/plugins/security/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "Security audit endpoints require admin role"
+        description: "Plugin security status requires admin role"
+
+      - pattern: "GET /ui/panels/security_audit"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Security Audit panel (its data is under /admin/*)"
       
       # Config endpoint - admin only (exposes system configuration)
       # Note: Now under /admin/config (moved from /config)
@@ -209,16 +273,11 @@ auth:
         min_role: "admin"
         description: "Hook listing requires admin role"
       
-      # MCP endpoints - admin only (system internals)
-      - pattern: "* /mcp/*"
+      # Tool endpoints - admin only (system internals)
+      - pattern: "* /tools/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "MCP endpoints expose plugin internals"
-      
-      - pattern: "POST /mcp"
-        policy: "require_auth"
-        min_role: "admin"
-        description: "MCP protocol endpoint requires admin"
+        description: "Tool endpoints expose plugin internals"
       
       # Status pages - user role (system status is useful for all users)
       - pattern: "GET /status"
@@ -322,6 +381,9 @@ auth:
     
     # Endpoint pattern rules (highest priority, processed in order)
     endpoint_rules:
+      - pattern: "/plugins/forge/webhook"
+        policy: "allow_anonymous"
+        description: "GitLab webhook (forge): the route checks X-Gitlab-Token itself"
       # Block all plugin admin endpoints for non-admins
       - pattern: "/plugins/*/admin/*"
         policy: "require_auth"
@@ -331,8 +393,53 @@ auth:
       - pattern: "/plugins/user_management/*"
         policy: "require_auth"
         min_role: "admin"
-        description: "Management of users via plugin requires admin role"        
-      
+        description: "Management of users via plugin requires admin role"
+
+      # The agent editor writes the agent YAMLs (tools, prompts, models).
+      - pattern: "/plugins/agent_editor/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Agent editor requires admin role"
+
+      # The setup panel: which keys are missing, whether a known admin password
+      # still opens, whether the signing key is a known one.
+      - pattern: "/plugins/setup/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Setup panel requires admin role"
+
+      # stategraph machines contain Python and run agents and tools: editing,
+      # running and debugging them is operator work (docs/stategraph_design.md §8.3).
+      - pattern: "/plugins/stategraph/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "State machine editor, runner and debugger require admin role"
+
+      # writer_admin exposes the whole writer DB (jobs.db, books.db,
+      # sessions, story payloads, raw reader feedback) — operator
+      # surface only. Pre-existing gap closed in Phase D after the
+      # Phase-B review surfaced H1 (any user-role JWT could DELETE
+      # queue jobs, dump payloads, etc.). The plugin button itself was
+      # gated at the UI layer, but the routes were technically reachable.
+      - pattern: "/plugins/writer_admin/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "writer_admin plugin (DB inspector + queue debug) requires admin role"
+
+      # The logs carry every user's prompts, names, IPs and session ids (the
+      # API logs each task at INFO): one user must not read another's.
+      - pattern: "/plugins/log_viewer/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Log viewer requires admin role"
+
+      # ssh_control runs commands on the configured hosts with the server's
+      # keys, and adds hosts: operator work.
+      - pattern: "/plugins/ssh_control/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "SSH machine panel requires admin role"
+
       # Example: Allow anonymous access to specific plugin endpoint
       # - pattern: "GET /plugins/todo/panel"
       #   policy: "allow_anonymous"

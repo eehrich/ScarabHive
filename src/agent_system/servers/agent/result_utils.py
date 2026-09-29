@@ -1,7 +1,9 @@
 """
 Utility functions for agent execution and result collection.
 """
-from typing import Dict, Any, Optional, Union
+import inspect
+import uuid
+from typing import Any, Callable, Dict, Optional, Union
 from .server import Agent
 from ...llm.models import ChatMessage
 
@@ -44,7 +46,8 @@ async def collect_final_result(
     request_id: Optional[str] = None,
     session_id: Optional[str] = None,
     llm_override: Optional[object] = None,
-    llm_profile_info_override: Optional[str] = None
+    llm_profile_info_override: Optional[str] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Collect final result from agent.run_events() into a structured result dict.
@@ -56,13 +59,34 @@ async def collect_final_result(
         agent: The agent instance to execute
         task: The task to execute (string or ChatMessage with multimodal content)
         request_id: Optional request ID for correlation
-        session_id: Optional session ID for conversation history
+        session_id: Optional session ID for conversation history. Omit it for a
+            STATELESS call -- an ephemeral id is generated so the run starts
+            with an empty history and leaves nothing behind (sub-agents it
+            starts excepted, see EPHEMERAL_SESSION_PREFIX).
         llm_override: Optional LLM client to use instead of agent's default
         llm_profile_info_override: Optional profile info string for status display
-        
+        on_event: Called with every event as it passes, before it is collected --
+            for a caller that shows the run while it collects it (POST /run's job,
+            agent-cli's stream). What it returns is awaited when it is awaitable:
+            agent-cli prints the answer through async output hooks as it arrives.
+
     Returns:
         Dict containing task, calls, summary, and optionally errors
     """
+    # An omitted session_id used to reach the session tracker as the literal
+    # key None, so EVERY caller that did not pass one shared a single growing
+    # history on that agent instance. Per-item agents (one instance reused for
+    # hundreds of segments/scenes) therefore replayed every previous exchange
+    # on every call until the request blew past the model's context limit
+    # ("input token count exceeds the maximum number of tokens allowed
+    # 1048576" on the audio_text_comparator). "No session id" must mean "no
+    # shared history", so give each such call its own throwaway session.
+    ephemeral_session = session_id is None
+    if ephemeral_session:
+        from agent_system.services.session_service import EPHEMERAL_SESSION_PREFIX
+
+        session_id = f"{EPHEMERAL_SESSION_PREFIX}{uuid.uuid4()}"
+
     # Extract task text for result logging
     if isinstance(task, ChatMessage):
         if isinstance(task.content, str):
@@ -80,13 +104,23 @@ async def collect_final_result(
         task_text = task
     
     result = {"task": task_text, "calls": []}
+    # Inside another run (an agent-as-tool, a plugin calling an agent from its tool
+    # call), a Ctrl-C is not this call's: its user started the outer run, and only
+    # that run's handler knows it (agent-cli, chat). Asked now -- the nested run
+    # sets the variable itself.
+    from ...tools.status import current_request_id
+    inside_a_run = bool(current_request_id.get())
     
     try:
         async for event in agent.run_events(task, request_id=request_id, session_id=session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info_override):
+            if on_event is not None:
+                shown = on_event(event)
+                if inspect.isawaitable(shown):
+                    await shown
             event_type = event.get("type")
             
             # Collect MCP calls for the result
-            if event_type == "mcp_call":
+            if event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                 # Initialize the call entry
                 call_entry = {
                     "server": event.get("server"),
@@ -95,7 +129,7 @@ async def collect_final_result(
                 }
                 result["calls"].append(call_entry)
             
-            elif event_type == "mcp_result":
+            elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
                 # Find matching call and add result
                 server = event.get("server")
                 action = event.get("action")
@@ -112,13 +146,30 @@ async def collect_final_result(
             
             elif event_type == "error":
                 result.setdefault("errors", []).append(event.get("message"))
+                from .server import refused_before_the_run
+
+                if refused_before_the_run(event):  # it ran nothing: its caller saves nothing after it
+                    result["refused"] = event["error_type"]
     
     except (KeyboardInterrupt, Exception) as e:
         # Handle cancellation gracefully
         import asyncio
+        if isinstance(e, KeyboardInterrupt) and inside_a_run:
+            raise
         if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
             result["cancelled"] = True
         else:
             result.setdefault("errors", []).append(str(e))
-    
+    finally:
+        # A throwaway session must not outlive its single call, otherwise the
+        # tracker accumulates one entry per invocation.
+        if ephemeral_session:
+            tracker = getattr(agent, "_session_tracker", None)
+            discard = getattr(tracker, "discard_session", None)
+            if discard is not None:
+                try:
+                    discard(session_id)
+                except Exception:  # noqa: BLE001 - cleanup must never fail a run
+                    pass
+
     return result

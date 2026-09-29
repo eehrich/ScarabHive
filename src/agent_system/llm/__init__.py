@@ -1,30 +1,37 @@
 """LLM module exports."""
 
 from .models import ChatMessage, LLMClient
-from .clients import make_llm
+from .tts import (
+    TTSClient,
+    TTSResult,
+    TTSVoice,
+    TTSSpeaker,
+    create_tts_from_profile,
+)
+from .decisions import create_decisions_from_profile
 from .capabilities import (
     ModelCapability,
     ModelCapabilities,
-    ImageFormat,
-    get_model_capabilities,
-    validate_capability_request,
-    get_compatible_models,
+    ensure_model_supports,
     init_capabilities_registry,
-    register_model_capabilities,
-    load_capabilities_from_config
+    load_capabilities_from_config,
 )
 
 __all__ = [
     "ChatMessage",
     "LLMClient",
-    "make_llm",
+    # TTS (service definition; clients live in plugins via provides_tts)
+    "TTSClient",
+    "TTSResult",
+    "TTSVoice",
+    "TTSSpeaker",
+    "create_tts_from_profile",
+    # Decisions (profile lookup; clients live in plugins via provides_decisions)
+    "create_decisions_from_profile",
+    # Capabilities
     "ModelCapability",
     "ModelCapabilities",
-    "ImageFormat",
-    "get_model_capabilities",
-    "validate_capability_request",
-    "get_compatible_models",
+    "ensure_model_supports",
     "init_capabilities_registry",
-    "register_model_capabilities",
     "load_capabilities_from_config"
 ]

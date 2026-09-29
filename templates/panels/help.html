@@ -1,0 +1,5 @@
+{% extends "kit/panel_base.html" %}
+{% block title %}Help{% endblock %}
+{#- The whole panel is the kit's guide viewer: it owns the page's address and title (address) and searches (search). -#}
+{% block content %}<pk-guide address search></pk-guide>{% endblock %}
+{% block scripts %}<script type="module" src="/static/kit/guide.js"></script>{% endblock %}

@@ -15,7 +15,7 @@ from typing import Any
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="plugins.basic_operations",
-        description="Basic Operations MCP Server - Utility operations for testing and timing"
+        description="Basic Operations Tool Server - Utility operations for testing and timing"
     )
 
     # Operation selection
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Server mode options
-    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=9010, help="Port to listen on when in server mode")
 
     # Misc
@@ -62,23 +62,23 @@ async def async_main():
     args = parser.parse_args()
 
     from .plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
     
     # Create minimal config for CLI usage
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="basic_operations", enabled=True)
+    server_config = ToolServerConfig(type="basic_operations", enabled=True)
     
-    server = PLUGIN_FACTORY("basic_operations", system_config, mcp_config)
+    server = PLUGIN_FACTORY("basic_operations", system_config, server_config)
 
     if args.server:
-        print(f"Starting Basic Operations MCP Server on port {args.port}")
+        print(f"Starting Basic Operations Tool Server on port {args.port}")
         try:
-            from agent_system.servers.http_server import serve_mcp_server
+            from agent_system.servers.http_server import serve_tool_server
         except Exception:
-            print("serve_mcp_server not available; cannot start HTTP server")
+            print("serve_tool_server not available; cannot start HTTP server")
             return
 
-        await serve_mcp_server(server, port=args.port)
+        await serve_tool_server(server, port=args.port)
     else:
         try:
             from unittest.mock import AsyncMock
@@ -108,14 +108,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     summary: dict[str, Any] = {
-        "description": "Basic Operations MCP Server",
+        "description": "Basic Operations Tool Server",
         "operation": args.operation,
         "seconds": args.seconds if args.operation == "wait" else None,
         "server_mode": args.server,
         "port": args.port,
     }
 
-    print("Basic Operations MCP Server")
+    print("Basic Operations Tool Server")
     print(json.dumps(summary))
 
 

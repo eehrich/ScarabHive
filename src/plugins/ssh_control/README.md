@@ -1,26 +1,19 @@
 # SSH Control Plugin
 
-The SSH Control plugin provides comprehensive SSH-based control and management of multiple remote Linux machines. It offers command execution, file operations, connection management, and a terminal-style web interface with real-time command streaming.
+The SSH Control plugin provides comprehensive SSH-based control and management of multiple remote Linux machines. It offers command execution, file operations, connection management, and a terminal-style panel.
 
 ## Overview
 
-This plugin enables secure remote machine control through SSH with support for multiple authentication methods, connection pooling, and a modern web UI. It combines MCP tools for programmatic access with an interactive terminal interface for manual operations.
+This plugin enables secure remote machine control through SSH with support for multiple authentication methods, connection pooling, and a modern web UI. It combines tools for programmatic access with an interactive terminal interface for manual operations.
 
 ## Features
 
 ### Core Operations
-- **Command Execution**: Execute commands on remote machines with streaming output
+- **Command Execution**: Execute commands on remote machines
 - **File Operations**: Upload/download files via SCP/SFTP
 - **Connection Management**: Pooled connections with automatic reconnection
 - **Multi-machine Support**: Manage multiple SSH servers simultaneously
-- **Dynamic Provisioning**: Add/remove machines at runtime via MCP tools
-
-### Web Interface
-- **Terminal Emulation**: Tab-based terminal UI for each machine
-- **Real-time Streaming**: SSE-based command output streaming
-- **Status Monitoring**: Connection status and latency indicators
-- **Command History**: Persistent command history per machine
-- **Machine Management**: Add/remove machines via web UI modal
+- **Dynamic Provisioning**: Add/remove machines at runtime via tools
 
 ### Security
 - **Multiple Auth Methods**: SSH keys, passwords, SSH agent
@@ -30,7 +23,8 @@ This plugin enables secure remote machine control through SSH with support for m
 
 ## Configuration
 
-Configure the SSH Control plugin in `config/mcp.yaml`:
+Configure the SSH Control plugin in its agent YAML under `config/agents/`
+(the block is `ssh_control:` inside `plugins.servers`):
 
 ```yaml
 mcp:
@@ -42,7 +36,7 @@ servers:
     enabled: true
     type: plugin
     plugin: ssh_control
-    description: "SSH Control MCP Server"
+    description: "SSH Control Tool Server"
     machines:
       - name: production-web
         host: ssh.example.com
@@ -93,6 +87,17 @@ servers:
 }
 ```
 
+#### Background Command
+```json
+{
+  "tool": "ssh_control_execute",
+  "machine": "production-web",
+  "command": "make -C /srv/app build",
+  "background": true,
+  "wake": true
+}
+```
+
 #### Upload File
 ```json
 {
@@ -134,31 +139,140 @@ servers:
 }
 ```
 
-### Web UI Usage
+## The panel
 
-#### Access Terminal Interface
-1. Navigate to the main web UI at `http://localhost:8000`
-2. Select the SSH Control panel from the plugin list
-3. Click on machine tabs to switch between servers
-4. Use the command input at the bottom to execute commands
+**SSH Machines** in the panel launcher (category *system*). One tab per machine, each with a dot for its
+connection: green with the latency once commands went through in the last five minutes, grey when not connected
+yet or idle, red when unreachable.
 
-#### Add Machine via Web UI
-1. Click the "+" button in the tab bar
-2. Fill in the machine details:
-   - Name (unique identifier)
-   - Host (hostname or IP)
-   - Port (default: 22)
-   - Username
-   - Authentication method (key/password/agent)
-   - Credentials (key path or password)
-   - Tags (optional, comma-separated)
-3. Check "Save to config file" to persist the machine
-4. Click "Add Machine" to test connection and add
+- **Terminal.** The tab shows the last 50 commands run on that machine -- by agents and from the panel, failed runs
+  included -- with their output, exit code, duration and time. The line at the bottom runs a command on the machine
+  shown; while it runs, that machine's line is locked, the other machines stay usable. A machine that cannot be
+  reached or a command that does not finish within the machine's `command_timeout` is reported and recorded.
+- **Refreshing.** Every 5 seconds the panel looks at the machines and brings new commands and machines an agent
+  added. It does not connect for that. The refresh button also pings each machine that was connected to before, so
+  a machine gone away shows as unreachable. A machine whose connections are all busy is not pinged -- its last use
+  stands.
+- **Add machine.** Name, host, port, username and the way to authenticate. The connection is tested before the
+  machine is added (the same path as the `add_machine` tool); a refusal is shown in the dialog. *Keep across
+  restarts* stores it in `data/ssh_control/machines.<instance>.yaml` -- a machine with a password is added but not
+  stored, since no password is written to disk.
+- **Remove.** Asks first, then closes the machine's connections and removes it from the store too. A machine from
+  the configuration comes back at the next start; the panel says so.
 
-#### View Connection Status
-- Connected machines show latency in milliseconds (e.g., "45ms")
-- Disconnected machines show an em-dash (—)
-- Hover over status indicator for tooltip
+The panel never receives a password or a key path. Anyone who may open it may run commands on every machine:
+restrict `/plugins/<instance>/*` in `auth.plugin_security` if that is not everyone.
+
+## Background commands and waking
+
+`execute(background=true)` starts a long command and returns at once with a
+`process_id`. `get_output` reads what it has written so far and whether it still
+runs; `kill_process` stops it. One machine per call — the answer carries one
+process id, and how many may run at once is what the pool allows (see below).
+
+A `process_id` you choose yourself must not belong to a RUNNING command:
+reusing one returns `ProcessIdInUse` rather than replacing the entry, which
+would leave the command behind it running with no way to read its output or
+stop it. Once that command is over the id is free again: the next run takes
+the name, and anything recorded under it is dropped with it.
+
+**What a background command costs:** it holds one connection out of that
+machine's pool for its whole life. `max_connections` is 3 by default, and one
+connection always stays free for ordinary commands — so two background commands
+per machine, and the third is refused with `BackgroundLimitReached` naming the
+setting. With `max_connections: 1` there is nothing to spare and background
+commands are refused outright; raise it for that machine if you want them.
+
+`wake: true` lets the caller end its turn over the command. When it ends —
+finished, failed or stopped, there is no second ending — the plugin tells the
+core that input is waiting for the calling session (`core/session_presence.py`,
+`wake_session`): a session another process holds reads that at its next step,
+a session nobody holds is continued in a run of its own. The woken run reads the
+result with `get_output` on the `process_id` from its own history.
+
+**The answer says whether the wake is armed**, because a caller that asked for
+one and silently did not get it would end its turn over work it never hears
+about again. Both reasons are known before the command starts:
+
+| `wake` | `wake_note` | What to do |
+|---|---|---|
+| `true` | — | End the turn. `get_output` when woken. |
+| `false` | `session presence is off (config: session_presence.enabled)` | Poll `get_output`. |
+| `false` | `this call belongs to no session, so there is nobody to wake` | Poll `get_output`. |
+
+A call that did not ask is told nothing about a wake — both fields are absent.
+
+**An armed wake is best effort, not a promise.** What cannot be checked up front
+is whether the process holding the command is still there when it ends. A caller
+that is not woken should poll `get_output`.
+
+**A woken run is a different process, so the outcome is recorded.** Waking a
+session nobody holds starts a fresh `agent-cli run`, which builds its own tool
+servers — its process registry is empty, and `get_output` on an id from the old
+process would find nothing. When a wake is armed, the outcome (exit code and
+the tail of both streams) is therefore written to the plugin's cache
+(`data/cache/<instance>/`, one hour, at most 30 000 characters per stream).
+`get_output` answers from it when the process is not in this process's memory,
+marks the answer `"source": "recorded"`, and drops the record — it is handed
+over, not kept. A call without `wake` writes nothing: its caller polls from the
+process that holds the result anyway.
+
+**A wake is rung more than once.** The core only leaves a marker, and a session
+that is in the middle of a turn takes that marker at its next step expecting a
+hook to hand the waiting input over — nothing hands over "your command
+finished". So the ringing repeats while the session stays busy (10 s apart, up
+to five minutes) and stops early once the session has dealt with the command
+itself — `get_output` on the finished result, or `kill_process`. Either way it
+is not started again for something it already handled.
+
+Three further cases end with no wake, and only the first is refused up front:
+
+| Case | What happens |
+|---|---|
+| `session_presence.max_wake_depth` reached, or `0` | refused before the start, with the setting named |
+| A sub-agent's session | armed, but never woken — the run that spawned it hands its result over. Reading this up front means parsing the whole session file on the event loop for every armed wake, so it is not checked |
+| A one-shot `agent-cli run` | armed, but the run ends and takes the work with it |
+
+`wake: true` without `background: true` is answered too: the results are already
+in that answer, so there is nothing to wake for.
+
+### Model Experience
+
+**What the model sees.** The same vocabulary as the `terminal` plugin —
+`background`, `wake`, `process_id`, `get_output`, `kill_process` — so one tool
+does not have to be learned twice. A refusal names what to change:
+`BackgroundLimitReached` carries the machine's `max_connections`,
+`InvalidParameter` says that a list of machines is not a background command,
+`ProcessIdInUse` that an id you chose is taken (the command behind it keeps
+running, untouched), `StoppedBeforeStart` that the command was stopped while
+its channel was still opening,
+`ProcessNotFound` covers both a wrong id and another session's process.
+
+**Token and cache effect.** Append-only: two more tool definitions, and three
+more parameters on `execute`. Output is capped at 1000 lines per stream and
+older lines are dropped, so a long build cannot grow the answer without bound.
+
+**Known gaps.**
+
+- **A recorded result lives one hour and is read once.** It is dropped as soon
+  as anybody reads the finished command — by the woken run that recalls it, by
+  a `get_output` in the process that still holds the result, or by handing its
+  `process_id` to a new run. A woken run that never calls `get_output` at all
+  leaves it to expire; a second reader finds nothing.
+- **Only the last 50 finished commands stay readable.** Each entry holds two
+  line buffers, so they cannot be kept for the life of the process. What is
+  still running is never dropped, and neither is the one that just ended.
+- **Nothing survives a restart.** The registry is in memory. A restarted
+  process loses every `process_id`, and the remote command keeps running with
+  nobody reading it.
+- **A wake needs the process that started the command.** The API and
+  `agent-cli chat` (whose prompt waits on the same loop) can wake; a one-shot
+  `agent-cli run` ends its turn and takes its background commands with it.
+- **Output is read, not streamed.** `get_output` returns what has arrived; a
+  command that writes nothing for an hour looks the same as one that hangs.
+- **The connection is the lifeline.** If it drops, the capture ends and the
+  command is recorded as finished with whatever status arrived — the remote
+  process itself may well run on.
 
 ## Security Best Practices
 
@@ -183,30 +297,14 @@ servers:
 
 ## Web API Endpoints
 
-### Command Execution
-- `POST /plugins/ssh_control/api/execute`
-  - Body: `{"machine": "name", "command": "ls -la"}`
-  - Returns: `{"stdout": "...", "stderr": "...", "exit_code": 0, "duration": 1.23}`
+What the panel calls, under `/plugins/<instance>/`:
 
-### Machine Status
-- `GET /plugins/ssh_control/api/machines/{name}/status`
-  - Returns: `{"connected": true, "latency_ms": 45}`
-
-### Machine Management
-- `POST /plugins/ssh_control/api/machines/add`
-  - Body: Machine configuration with optional `persistent` flag
-  - Returns: `{"success": true, "machine": "name", "persisted": true}`
-- `DELETE /plugins/ssh_control/api/machines/{name}`
-  - Returns: `{"success": true, "message": "Machine removed"}`
-
-### Command History
-- `GET /plugins/ssh_control/api/machines/{name}/history?limit=50`
-  - Returns: Array of command history entries with timestamps
-
-### SSE Streaming
-- `GET /plugins/ssh_control/api/stream/{machine}`
-  - Server-Sent Events endpoint for real-time command output
-  - Subscribe with EventSource in browser
+- `GET api/machines[?active=true]` -- the machines and their connection state
+- `POST api/machines` -- add a machine (body like the `add_machine` tool); a refusal is `400`
+- `DELETE api/machines/{name}` -- remove a machine, from the store too; `404` if unknown
+- `GET api/machines/{name}/history` -- the last 50 runs, oldest first
+- `POST api/execute` -- `{"machine": "...", "command": "..."}`; `404` unknown machine, `502` not reachable,
+  `504` timed out
 
 ## Troubleshooting
 
@@ -215,17 +313,12 @@ servers:
 #### "SSH key not found"
 - **Cause**: The `key_path` points to a non-existent file
 - **Solution**: Verify the key path exists and is accessible to the API process
-- **Error Response**: `401 Authentication failed: SSH key not found: /path/to/key`
+- **Error Response**: `502 SSH key not found: /path/to/key`
 
-#### Disconnected Status (em-dash)
+#### Unreachable (red dot)
 - **Cause**: Machine is unreachable or authentication failed
 - **Check**: Verify host, port, and credentials are correct
 - **Test**: Use `ssh username@host -p port` from API host to test manually
-
-#### "Exit code: undefined" (legacy)
-- **Cause**: Old browser cache with outdated JavaScript
-- **Solution**: Clear browser cache and reload the SSH Control panel
-- **Note**: Modern UI shows explicit error messages
 
 ### Authentication Problems
 
@@ -258,12 +351,15 @@ servers:
 src/plugins/ssh_control/
 ├── __init__.py
 ├── plugin.yaml           # Plugin metadata
-├── server.py             # MCP server implementation
+├── server.py             # tool server implementation
 ├── web_endpoints.py      # FastAPI endpoints
 ├── connection_manager.py # Connection pooling
 ├── auth.py               # Authentication helpers
 ├── templates/
-│   └── panel.html        # Web UI template
+│   └── panel.html        # Panel template (kit/panel_base.html)
+├── static/
+│   ├── panel.js          # Panel script
+│   └── panel.css         # Panel styles
 └── README.md            # This file
 ```
 
@@ -284,30 +380,16 @@ pytest tests/test_ssh_control_integration.py
 3. Add API endpoint in `web_endpoints.py` if needed
 4. Update this README with usage example
 
-#### Customize Web UI
-1. Edit `templates/panel.html` for UI changes
-2. Update JavaScript event handlers for new functionality
-3. Add corresponding API endpoints in `web_endpoints.py`
-
-## Error Handling
-
-The plugin provides detailed error responses with appropriate HTTP status codes:
-
-- `400 Bad Request`: Invalid parameters or malformed request
-- `401 Unauthorized`: Authentication failure (missing key, wrong password)
-- `403 Forbidden`: Permission denied on remote machine
-- `404 Not Found`: Machine not found in configuration
-- `500 Internal Server Error`: Unexpected server error
-- `503 Service Unavailable`: Connection refused by remote machine
-- `504 Gateway Timeout`: Connection or command timeout
-
-Web UI displays these errors as clear messages in the terminal output.
+#### Change the Panel
+1. `templates/panel.html`, `static/panel.js`, `static/panel.css` -- built on the UI kit (`/ui/kit`)
+2. Endpoints in `web_endpoints.py`, listed under `web_ui.endpoints` in `schema.yaml`
+3. `tests/test_plugin_ssh_control_panel.py` drives the panel in a real browser
 
 ## Examples
 
 ### Example 1: Basic Command Execution
 ```bash
-# Via MCP tool
+# Via tool
 agent-cli "Execute 'uptime' on production-web using ssh_control"
 
 # Expected output:
@@ -335,26 +417,6 @@ agent-cli "Download /var/log/app.log from staging to ./logs/ using ssh_control"
 agent-cli "Execute 'systemctl status nginx' on all production machines using ssh_control"
 ```
 
-### Example 4: SSE Stream Subscription (JavaScript)
-```javascript
-// Subscribe to command stream
-const eventSource = new EventSource(
-  '/plugins/ssh_control/api/stream/production-web'
-);
-
-eventSource.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('Command:', data.command);
-  console.log('Output:', data.stdout);
-  console.log('Exit code:', data.exit_code);
-};
-
-eventSource.onerror = (error) => {
-  console.error('SSE connection error:', error);
-  eventSource.close();
-};
-```
-
 ## Version History
 
 - **0.1.0** (2025-10-08): Initial release
@@ -369,7 +431,8 @@ eventSource.onerror = (error) => {
   - Improved error message display
   - Added proper status indicators (connected/disconnected)
   - Backend error categorization (401/503/504)
-  - Verified persistence to config/mcp.yaml
+  - Verified persistence to config/mcp.yaml (a file nothing read back;
+    replaced 2026-09-04 by data/ssh_control/machines.<instance>.yaml)
 
 ## License
 
@@ -380,4 +443,5 @@ This plugin is part of the AgentSystem project and follows the same license.
 For issues, questions, or contributions:
 - File issues in the main AgentSystem repository
 - Check logs in `logs/api.log` for detailed error messages
-- Review `config/mcp.yaml` for configuration issues
+- Review the `ssh_control:` block in `config/agents/` for configuration issues,
+  and `data/ssh_control/machines.<instance>.yaml` for machines added at runtime

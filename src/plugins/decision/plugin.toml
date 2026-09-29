@@ -1,0 +1,10 @@
+[plugin]
+name = "decision"
+version = "0.1.0"
+description = "Decision and scoring engine using calibrated decision models (Jev)"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+category = "tools"
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

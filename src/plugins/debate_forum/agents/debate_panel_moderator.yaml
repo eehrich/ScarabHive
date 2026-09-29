@@ -1,0 +1,101 @@
+# Debate Panel Moderator Agent
+# Orchestrates structured 5-participant debates with diverse perspectives and parallel execution
+
+plugins:
+  servers:
+
+    # Task switch for setting context_vars (debate_channel_id)
+    debate_switch:
+      type: task_switch
+      enabled: true
+      config:
+        task_var_name: "debate_phase"
+        allowed_tasks:
+          - setup
+          - discussion
+          - consensus
+          - concluded
+
+    # Spezieller Sub-Agent-Manager für das Debate-System
+    debate_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "Sub-Agent-Manager für Debate-Agents"
+
+      max_nesting_depth: 3
+      max_sub_agents_per_type: 10
+      max_sub_agents_per_session: 10
+      
+      # Timeout-Konfiguration
+      default_wait_timeout: 1000
+
+      # NUR Debate-Agents erlaubt
+      allowed_agents:
+        - debate_panel_participant_chat
+        - debate_panel_participant_flash
+        - debate_panel_participant_gpt
+
+      blocked_agents: []
+
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 50
+          format: "markdown"
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["debate", "sub-agent-manager", "orchestration"]
+        category: "debate"
+
+
+
+    debate_panel_moderator:
+      type: basic_agent
+      enabled: true
+      description: "Moderates multi-participant panel debates (5 agents) with diverse roles and parallel execution"
+
+      agent_config:
+        llm_profile: [or-gemini-flash, or-deepseek-flash, chat]
+        llm_profile_advanced: []
+        max_steps: 500
+
+        system_template: "./debate_panel_moderator_prompt.md"
+
+        tools:
+          allowed:
+            # Debate forum: create channels, post messages, read threads, conclude
+            - "debate_forum/*"
+
+            # Sub-agent manager: spawn participant agents
+            - "debate_sam/*"
+
+            # Context vars: set debate_channel_id for sub-agents
+            - "debate_switch/debate_switch_set_context"
+
+            # Reasoning support
+            - "sequential_thinking/*"
+            - "context_engineer/*"
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+            # not needed, he has already the history in his message list
+            #debate_forum.inject_debate_context:
+            #  enabled: true              
+            debate_sam.inject_sub_agent_context:
+              enabled: true
+            sequential_thinking.inject_active_sessions:
+              enabled: true
+            context_engineer.engineer_context:
+              enabled: true              
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["debate", "moderation", "orchestration", "panel"]
+        category: "collaboration"
+        visibility: "both"

@@ -1,0 +1,34 @@
+# The branch of a wide question: research_agent minus its sub-agent manager.
+#
+# That subtraction is the whole design. A branch that cannot reach a manager
+# cannot start branches of its own, wherever in a session tree it runs -- a
+# property of its tool list, which the prompt shows, rather than a limit that
+# would only surface as a failed call.
+plugins:
+  servers:
+
+    research_worker:
+      type: research_agent
+      enabled: true
+      description: "One part of a wide research question: searches, reads, answers with sources"
+
+      agent_config:
+        max_steps: 25              # one part of a question, not the whole thing
+        tools:
+          # No ask_user either: a branch answers the coordinator, and its
+          # questions are the coordinator's to ask.
+          allowed: ["!research_sam/*", "!ask_user/*"]
+        template_vars:
+          can_fork: false          # drops the branching section of the prompt
+
+        hooks:
+          overrides:
+            # Its answer is read by the coordinator, not by a screen.
+            markdown_formatter.format_markdown_output:
+              enabled: false
+            # It owns no manager, so there is never a sub-agent to list.
+            research_sam.inject_sub_agent_context:
+              enabled: false
+
+      metadata:
+        visibility: "tool"         # a role inside the harness, not a UI entry

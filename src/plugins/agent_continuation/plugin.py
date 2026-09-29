@@ -16,16 +16,16 @@ from typing import Any
 from .hooks import AgentContinuationPlugin
 
 
-def PLUGIN_FACTORY(name: str, system_config: Any, mcp_config: Any) -> AgentContinuationPlugin:
+def PLUGIN_FACTORY(name: str, system_config: Any, server_config: Any) -> AgentContinuationPlugin:
     """Factory function for plugin discovery.
 
     Args:
         name: Plugin instance name
         system_config: System configuration
-        mcp_config: MCP-specific configuration (contains config from plugins.yaml)
+        server_config: instance-specific configuration (contains config from plugins.yaml)
 
     Returns:
         AgentContinuationPlugin instance
     """
     plugin_dir = Path(__file__).parent
-    return AgentContinuationPlugin(plugin_dir, mcp_config)
+    return AgentContinuationPlugin(plugin_dir, server_config)

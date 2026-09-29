@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_execute"
-      description: "Execute a shell command either synchronously (wait for completion) or as a background process."
+      description: "Execute a shell command either synchronously (wait for completion) or as a background process.{% if whitelisted %} This terminal runs only the commands its configuration allows, in its configured working directory and environment.{% endif %}{{ sandbox_note }}"
       parameters:
         type: object
         properties:
@@ -13,23 +13,27 @@ tools:
             type: boolean
             default: false
             description: "Run as background process (default: false). If true, returns immediately with process_id."
-          cwd:
+          {% if not whitelisted %}cwd:
             type: string
             description: "Working directory for command execution (defaults to current directory)"
-          timeout:
+          {% endif %}timeout:
             type: number
             minimum: 1
             maximum: 3600
             default: 300
             description: "Timeout in seconds for foreground commands (1-3600, default: 300, ignored for background)"
-          env_vars:
+          {% if not whitelisted %}env_vars:
             type: object
             description: "Environment variables to set (merged with current environment)"
             additionalProperties:
               type: string
-          process_id:
+          {% endif %}process_id:
             type: string
             description: "Custom process ID for background processes (auto-generated if omitted, only used when background=true)"
+          wake:
+            type: boolean
+            default: false
+            description: "Only with background=true: wake this session when the process ends, so you can end your turn instead of polling. When woken, call get_output with the process_id to read the result. The answer says whether the wake is armed; if it is not, poll instead. A wake is best effort even when armed - if you are not woken, fall back to polling."
         required: ["command"]
         additionalProperties: false
 
@@ -88,9 +92,22 @@ config:
     default_timeout_seconds: 300
     max_timeout_seconds: 3600
     max_concurrent_background: 10
+  # Process confinement for spawned commands. Omitted = danger-full-access,
+  # i.e. exactly the behaviour before this existed. A pattern list can never
+  # bound what `bash -c` can do; this hands the kernel a process that cannot
+  # reach outside the workspace instead of inspecting the command text.
+  #
+  # Requires a backend: bubblewrap on Linux, Seatbelt (sandbox-exec) on
+  # macOS. Where none is usable - Windows today - a confining mode makes every
+  # command fail with SANDBOX_UNAVAILABLE rather than run unconfined.
+  sandbox:
+    mode: danger-full-access   # read-only | workspace-write | danger-full-access
+    # workspace_root: .        # what workspace-write may write to; default = initial_cwd
   platform:
     # 'auto' = automatically detect bash location on system
-    # Persistent terminal sessions: environment variables and cwd persist across commands
+    # Every command runs in a fresh `bash -c` (executor.py): a `cd` or an
+    # `export` does not carry over to the next command.
     bash_path: auto
-    # null = use terminal's default working directory
+    # null = the directory the command was started in (relative paths are
+    # resolved against the project); this is also the sandbox's workspace root
     initial_cwd: null

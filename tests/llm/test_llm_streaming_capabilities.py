@@ -2,9 +2,9 @@
 
 import pytest
 from unittest.mock import AsyncMock, patch
-from agent_system.llm.httpx_client import HTTPXOpenAIClient
-from agent_system.llm.openai_client import OpenAIAsyncClient
-from agent_system.llm.ollama_client import OllamaNativeAsyncClient
+from plugins.llm_openai_compat.httpx_client import HTTPXOpenAIClient
+from plugins.llm_openai.openai_client import OpenAIAsyncClient
+from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
 from agent_system.config.models import ModelCapabilitiesConfig
 
 

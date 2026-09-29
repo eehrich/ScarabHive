@@ -9,6 +9,7 @@ Tests cover:
 - Concurrent access
 """
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import MagicMock
 
@@ -33,6 +34,11 @@ def job_manager():
             job.task.cancel()
 
 
+async def _all_events(job):
+    """Every event of the run, read to its end."""
+    return [event async for event in job.follow(keepalive=0.5) if event is not None]
+
+
 @pytest.fixture
 def reset_singleton():
     """Reset singleton before and after test."""
@@ -55,7 +61,6 @@ class TestBackgroundJob:
     """Test BackgroundJob dataclass."""
     
     def test_default_values(self):
-        queue = asyncio.Queue()
         task = MagicMock(spec=asyncio.Task)
         
         job = BackgroundJob(
@@ -64,7 +69,6 @@ class TestBackgroundJob:
             agent_name="test_agent",
             session_id="sess1",
             task=task,
-            event_queue=queue,
         )
         
         assert job.request_id == "req1"
@@ -81,6 +85,7 @@ class TestBackgroundJob:
         assert job.actual_session_id is None
         assert job.last_status_message is None
         assert job.task_description is None
+        assert len(job.events) == 0 and job.events_emitted == 0
 
 
 class TestBackgroundJobManager:
@@ -111,11 +116,7 @@ class TestBackgroundJobManager:
         assert job.status == JobStatus.RUNNING
         
         # Wait for job to complete and collect events
-        while True:
-            event = await asyncio.wait_for(job.event_queue.get(), timeout=2.0)
-            if event is None:
-                break
-            events_received.append(event)
+        events_received = await asyncio.wait_for(_all_events(job), timeout=2.0)
         
         assert len(events_received) == 3
         assert events_received[0] == {"type": "start"}
@@ -141,22 +142,119 @@ class TestBackgroundJobManager:
             agent_runner=failing_runner,
         )
         
-        # Collect events until None
-        events = []
-        while True:
-            event = await asyncio.wait_for(job.event_queue.get(), timeout=2.0)
-            if event is None:
-                break
-            events.append(event)
-        
-        assert len(events) == 1
-        assert events[0] == {"type": "start"}
+        events = await asyncio.wait_for(_all_events(job), timeout=2.0)
+
+        # the failure is said on the stream, not only in the job's status
+        assert events == [{"type": "start"},
+                          {"type": "error", "request_id": "req1", "message": "Test error"}]
         
         # Give task time to update status
         await asyncio.sleep(0.1)
         assert job.status == JobStatus.FAILED
         assert "Test error" in job.error_message
     
+    @pytest.mark.asyncio
+    async def test_create_job_refuses_duplicate_running_request_id(
+        self, job_manager,
+    ):
+        """Check-and-register must be ONE atomic step.
+
+        The callers' duplicate guard (app.py's _validate_client_request_id)
+        is a check-then-act with a wide window — it runs in the request
+        handler while create_job only runs once the SSE body streams — so
+        two concurrent requests both passed it and both started a full
+        agent run. Registering blindly then left the older run alive but
+        unreachable by id: no reconnect, and cancel_job would have hit the
+        younger run instead.
+        """
+        from agent_system.services.background_job_manager import (
+            DuplicateRequestIdError,
+        )
+        may_finish = asyncio.Event()
+        started = []
+
+        async def runner():
+            started.append(1)
+            yield {"type": "ev"}
+            await may_finish.wait()
+
+        first = await job_manager.create_job(
+            request_id="dup0", user_id="u", agent_name="a",
+            session_id=None, agent_runner=runner,
+        )
+        await asyncio.sleep(0)  # let the first wrapper start
+
+        with pytest.raises(DuplicateRequestIdError):
+            await job_manager.create_job(
+                request_id="dup0", user_id="u", agent_name="a",
+                session_id=None, agent_runner=runner,
+            )
+
+        assert await job_manager.get_job("dup0") is first, (
+            "the refused duplicate displaced the live job anyway"
+        )
+        may_finish.set()
+        await asyncio.wait_for(first.task, timeout=2.0)
+        assert started == [1], f"a second agent run started: {started!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome, expected",
+        [
+            ("complete", JobStatus.COMPLETED),
+            ("raise", JobStatus.FAILED),
+            ("cancel", JobStatus.CANCELLED),
+        ],
+    )
+    async def test_terminal_status_is_written_to_its_own_job(
+        self, job_manager, outcome, expected,
+    ):
+        """A finishing job must only write its OWN status — on every one
+        of the three terminal paths.
+
+        Writing through self._jobs[request_id] instead meant that if the
+        dict had since been rebound to another job, the finishing run
+        marked THAT still-running job terminal: a live agent reported as
+        done. Parametrised because the three branches are separate code:
+        covering only 'completed' let the failure and cancel paths keep
+        the old lookup silently.
+        """
+        may_finish = asyncio.Event()
+
+        async def runner():
+            yield {"type": "ev"}
+            await may_finish.wait()
+            if outcome == "raise":
+                raise ValueError("boom")
+
+        job = await job_manager.create_job(
+            request_id="own1", user_id="u", agent_name="a",
+            session_id=None, agent_runner=runner,
+        )
+        await asyncio.sleep(0)
+
+        # Rebind the id to a foreign job, exactly as a racing duplicate
+        # would have. Bypasses create_job (which now refuses duplicates) —
+        # the point here is the WRITE path, not the registration.
+        foreign = BackgroundJob(
+            request_id="own1", user_id="u", agent_name="other",
+            session_id=None, task=MagicMock(spec=asyncio.Task),
+        )
+        job_manager._jobs["own1"] = foreign
+
+        may_finish.set()
+        if outcome == "cancel":
+            job.task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(job.task), timeout=2.0)
+        await asyncio.sleep(0.05)
+
+        assert job.status == expected
+        assert foreign.status == JobStatus.RUNNING, (
+            f"the finishing job wrote {foreign.status} onto a foreign, "
+            "still-running job — status lies about a live agent"
+        )
+
     @pytest.mark.asyncio
     async def test_get_job(self, job_manager):
         """Test getting a job by ID."""
@@ -355,43 +453,6 @@ class TestBackgroundJobManager:
         assert job.sse_client_count == 0
     
     @pytest.mark.asyncio
-    async def test_get_active_jobs(self, job_manager):
-        """Test getting list of active jobs."""
-        async def slow_runner():
-            yield {"type": "start"}
-            await asyncio.sleep(10)
-        
-        # Create multiple jobs
-        await job_manager.create_job(
-            request_id="req1",
-            user_id="user1",
-            agent_name="agent1",
-            session_id=None,
-            agent_runner=slow_runner,
-        )
-        
-        await job_manager.create_job(
-            request_id="req2",
-            user_id="user2",
-            agent_name="agent2",
-            session_id=None,
-            agent_runner=slow_runner,
-        )
-        
-        await asyncio.sleep(0.1)  # Let jobs start
-        
-        # Get all active jobs
-        active = await job_manager.get_active_jobs()
-        assert len(active) == 2
-        assert any(j["request_id"] == "req1" for j in active)
-        assert any(j["request_id"] == "req2" for j in active)
-        
-        # Get by user
-        user1_jobs = await job_manager.get_active_jobs(user_id="user1")
-        assert len(user1_jobs) == 1
-        assert user1_jobs[0]["request_id"] == "req1"
-    
-    @pytest.mark.asyncio
     async def test_get_all_jobs(self, job_manager):
         """Test getting all jobs including completed."""
         async def quick_runner():
@@ -421,7 +482,7 @@ class TestBackgroundJobManager:
     
     @pytest.mark.asyncio
     async def test_event_buffer_overflow(self, job_manager):
-        """Test that queue overflow drops old events."""
+        """A full buffer drops its oldest events, and the count goes on."""
         # Use small buffer for testing
         original_max = BackgroundJobManager.MAX_EVENT_BUFFER
         BackgroundJobManager.MAX_EVENT_BUFFER = 5
@@ -445,16 +506,19 @@ class TestBackgroundJobManager:
             while job.status == JobStatus.RUNNING:
                 await asyncio.sleep(0.1)
             
-            # Queue should have at most MAX_EVENT_BUFFER + 1 (for None signal)
-            # Actually may have less due to race conditions
-            assert job.event_queue.qsize() <= 6  # 5 events + None
+            assert [e["index"] for e in job.events] == [5, 6, 7, 8, 9]
+            assert job.events_emitted == event_count
             
         finally:
             BackgroundJobManager.MAX_EVENT_BUFFER = original_max
     
     @pytest.mark.asyncio
     async def test_cleanup_old_jobs(self, job_manager):
-        """Test cleanup of old completed jobs."""
+        """A finished job past its TTL keeps how its run ended -- and stays, found by its id.
+
+        writer_jobs' story_design retry reconnects under the same id long after and reads
+        the answer from it; with the job gone, the retry started the whole run again.
+        """
         # Set very short TTL for testing
         original_ttl = BackgroundJobManager.COMPLETED_JOB_TTL
         BackgroundJobManager.COMPLETED_JOB_TTL = 0.1  # 100ms
@@ -462,6 +526,8 @@ class TestBackgroundJobManager:
         try:
             async def quick_runner():
                 yield {"type": "data"}
+                yield {"type": "final", "summary": "the answer"}
+                yield {"type": "data", "after": "the answer"}
             
             job = await job_manager.create_job(
                 request_id="req1",
@@ -484,8 +550,10 @@ class TestBackgroundJobManager:
             # Run cleanup
             await job_manager._cleanup_old_jobs()
             
-            # Job should be removed
-            assert await job_manager.get_job("req1") is None
+            assert await job_manager.get_job("req1") is job, "the finished job is gone"
+            assert job.status == JobStatus.COMPLETED
+            assert job.events_from(0) == ([{"type": "final", "summary": "the answer"},
+                                           {"type": "data", "after": "the answer"}], 3),                 "the job kept more, or less, than how its run ended"
             
         finally:
             BackgroundJobManager.COMPLETED_JOB_TTL = original_ttl
@@ -521,8 +589,9 @@ class TestBackgroundJobManager:
             # Run cleanup
             await job_manager._cleanup_old_jobs()
             
-            # Job should still exist because of SSE client
+            # A reader is on it: its buffer stays whole
             assert await job_manager.get_job("req1") is not None
+            assert list(job.events) == [{"type": "data"}]
             
         finally:
             BackgroundJobManager.COMPLETED_JOB_TTL = original_ttl
@@ -584,20 +653,6 @@ class TestCleanupLoop:
     """Test cleanup loop functionality."""
     
     @pytest.mark.asyncio
-    async def test_cleanup_loop_can_be_cancelled(self, job_manager):
-        """Test that cleanup loop can be cleanly cancelled."""
-        task = asyncio.create_task(job_manager.cleanup_loop())
-        
-        await asyncio.sleep(0.1)
-        task.cancel()
-        
-        # Cleanup loop handles cancellation gracefully and doesn't raise
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass  # This is also acceptable behavior
-    
-    @pytest.mark.asyncio
     async def test_start_stop_cleanup_task(self, job_manager):
         """Test starting and stopping cleanup task."""
         assert job_manager._cleanup_task is None
@@ -607,3 +662,455 @@ class TestCleanupLoop:
         
         await job_manager.stop_cleanup_task()
         assert job_manager._cleanup_task is None
+
+
+class TestCancelSession:
+    """Deleting a session cancels its runs that have not answered: its background jobs -- by the session they were
+    started for or the one their start named -- and the requests an agent runs inline for it."""
+
+    @pytest.mark.asyncio
+    async def test_cancels_the_jobs_and_inline_requests_of_the_session_only(self, job_manager):
+        from unittest.mock import MagicMock
+
+        async def waiting_runner():
+            await asyncio.sleep(30)
+            yield {"type": "end"}
+
+        async def answered_runner():
+            yield {"type": "final", "summary": "done"}
+            await asyncio.sleep(30)  # its save and session-end hooks
+            yield {"type": "end"}
+
+        for request_id, session_id in (("job-of-s1", "s1"), ("job-of-s2", "s2"), ("job-named-s1", None)):
+            await job_manager.create_job(request_id=request_id, user_id="user1", agent_name="test_agent",
+                                         session_id=session_id, agent_runner=waiting_runner)
+        job_manager._jobs["job-named-s1"].actual_session_id = "s1"
+        answered = await job_manager.create_job(request_id="answered-of-s1", user_id="user1", agent_name="test_agent",
+                                                session_id="s1", agent_runner=answered_runner)
+        final = await asyncio.wait_for(anext(aiter(answered.follow())), timeout=2)
+        assert final["type"] == "final" and answered.status == JobStatus.RUNNING, "fixture: the job is not finishing"
+        inline = _agent_owning({"inline-of-s1", "inline-of-s2"})
+        inline._session_tracker = MagicMock()
+        inline._session_tracker.get_session_for_request = MagicMock(
+            side_effect={"inline-of-s1": "s1", "inline-of-s2": "s2"}.get)
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["inline"])
+        registry.get = MagicMock(return_value=inline)
+        job_manager.set_agent_registry(registry=registry, default_agent=None)
+        cancelled = []
+
+        async def recording_cancel(request_id, force_timeout=0.0):
+            cancelled.append(request_id)
+            return True
+
+        job_manager.cancel_job = recording_cancel
+
+        assert await job_manager.cancel_session("s1") == ["inline-of-s1", "job-named-s1", "job-of-s1"]
+        assert sorted(cancelled) == ["inline-of-s1", "job-named-s1", "job-of-s1"]
+
+
+# --------------------------------------------------------------------------- #
+# 2026-06-27 — registry-aware cancel_job
+# --------------------------------------------------------------------------- #
+
+
+def _agent_owning(owned_request_ids: set[str]):
+    """Stand-in for agent_system.servers.agent.server.Agent that
+    passes isinstance() AND exposes _request_manager + cancel_request
+    so cancel_job's registry walk can drive it deterministically."""
+    from unittest.mock import AsyncMock, MagicMock
+    from agent_system.servers.agent.server import Agent
+
+    agent = MagicMock(spec=Agent)
+    agent._request_manager = MagicMock()
+    agent._request_manager.get_active_requests = MagicMock(
+        return_value=set(owned_request_ids),
+    )
+    agent.cancel_request = AsyncMock(return_value=True)
+    return agent
+
+
+class TestCancelJobRegistryWalk:
+    """The 2026-06-27 cancel regression: writer-side cancel was
+    setting the cancellation token + asking the DEFAULT agent only.
+    Sub-agent requests (linear_book, v5b_story_designer, ...) kept
+    running because the agent server that owned them never had its
+    _request_manager flag flipped. cancel_job now walks the registry
+    AND falls back to the default agent."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_walks_registry_and_cancels_owning_agent(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        owning = _agent_owning({"req-target"})
+        bystander = _agent_owning({"req-other"})
+        non_agent = MagicMock()  # not Agent → must be filter-skipped
+
+        registry = MagicMock()
+        registry.list = MagicMock(
+            return_value=["non_agent", "bystander", "owning"],
+        )
+        registry.get = MagicMock(side_effect=lambda n: {
+            "non_agent": non_agent,
+            "bystander": bystander,
+            "owning": owning,
+        }[n])
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("req-target")
+        assert ok is True
+        owning.cancel_request.assert_awaited_once_with("req-target")
+        bystander.cancel_request.assert_not_called()
+        # default-agent path is the fallback and must NOT have fired
+        # (we found the request via the registry).
+        default_agent.cancel_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_falls_back_to_default_agent_when_registry_misses(
+        self,
+    ):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"some-other-id"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=True)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("orphan-id")
+        assert ok is True
+        unrelated._request_manager.get_active_requests.assert_called_once()
+        unrelated.cancel_request.assert_not_called()
+        default_agent.cancel_request.assert_awaited_once_with("orphan-id")
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_false_when_nothing_owns(self):
+        """Single source of truth must not lie with True if no layer
+        actually acknowledged the cancel — that's the regression we
+        are closing."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"x"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        # Make sure no CancellationManager token exists for this id
+        # so the True path can only come from an agent ack.
+        ok = await mgr.cancel_job("ghost-id")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_survives_registry_probe_exception(self):
+        """A broken Agent server (probe raises) must not abort the
+        whole cancel — log and move on to the next server / default."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        broken = _agent_owning({"x"})
+        broken._request_manager.get_active_requests = MagicMock(
+            side_effect=RuntimeError("simulated probe failure"),
+        )
+        healthy = _agent_owning({"target"})
+
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["broken", "healthy"])
+        registry.get = MagicMock(side_effect=lambda n: {
+            "broken": broken, "healthy": healthy,
+        }[n])
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("target")
+        assert ok is True
+        healthy.cancel_request.assert_awaited_once_with("target")
+
+    @pytest.mark.asyncio
+    async def test_cancel_without_registry_wired_still_works(self):
+        """Backward compat: if set_agent_registry was never called
+        (legacy startup path / test code), cancel_job must still
+        behave like the original token-only version. No crash, no
+        registry walk, just the token + job-task layers."""
+        mgr = BackgroundJobManager()
+        # Deliberately NO set_agent_registry call.
+        ok = await mgr.cancel_job("ghost-id")
+        assert ok is False    # token didn't exist, no agent, no job
+
+    @pytest.mark.asyncio
+    async def test_set_agent_registry_is_idempotent(self):
+        """Wiring is a single call from app.py startup; tolerate
+        re-invocation (e.g. hot-reload of the FastAPI app) without
+        losing state."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = BackgroundJobManager()
+        reg1 = MagicMock()
+        reg1.list = MagicMock(return_value=[])
+        agent1 = MagicMock()
+        agent1.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=reg1, default_agent=agent1)
+
+        reg2 = MagicMock()
+        reg2.list = MagicMock(return_value=[])
+        agent2 = MagicMock()
+        agent2.cancel_request = AsyncMock(return_value=True)
+        # Second call overrides — that's the contract.
+        mgr.set_agent_registry(registry=reg2, default_agent=agent2)
+
+        await mgr.cancel_job("test-rid")
+        agent1.cancel_request.assert_not_called()
+        agent2.cancel_request.assert_awaited_once_with("test-rid")
+
+
+class TestCancelJobIntegrationWithCancellationManager:
+    """Self-review follow-up: the standalone TestCancelJobRegistryWalk
+    cases mock the cancellation manager away. These exercise the REAL
+    CancellationManager singleton + the registry walk together so the
+    ``token_cancelled or agent_cancelled or job_exists`` return-value
+    composition is provably correct under realistic state."""
+
+    def _isolate_cancellation_manager(self, monkeypatch):
+        """Replace the singleton with a fresh instance so the test
+        starts with an empty token store and other tests can't pollute
+        what we see."""
+        from agent_system.core import cancellation as cm
+        fresh = cm.CancellationManager()
+        monkeypatch.setattr(cm, "_cancellation_manager", fresh)
+        return fresh
+
+    @pytest.mark.asyncio
+    async def test_token_and_registry_walk_both_fire_and_return_true(
+        self, monkeypatch,
+    ):
+        """The realistic production case: cancel arrives, the token
+        store has a token for the request_id AND a registered agent
+        owns it. Both layers must fire — the agent's per-request flag
+        flips (registry walk) AND the prefix-token gets set (so
+        sub-requests cancel too). Return True."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        cm = self._isolate_cancellation_manager(monkeypatch)
+        # Pre-create a token as if /run had registered one for this rid.
+        cm.create_token("req-real")
+        # And one prefix-matched sub-request — must also get cancelled.
+        cm.create_token("req-real_sub_xyz")
+
+        mgr = BackgroundJobManager()
+        owning = _agent_owning({"req-real"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["owning"])
+        registry.get = MagicMock(return_value=owning)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("req-real")
+        assert ok is True
+
+        # Token layer: parent + sub both flipped to cancelled.
+        assert cm.get_token("req-real").is_cancelled
+        assert cm.get_token("req-real_sub_xyz").is_cancelled
+        # Registry layer: owning server got the call.
+        owning.cancel_request.assert_awaited_once_with("req-real")
+
+    @pytest.mark.asyncio
+    async def test_token_only_no_agent_returns_true(self, monkeypatch):
+        """A request that has a registered token but no Agent server
+        owns it (rare: token registered, agent died, default agent
+        also doesn't know about it). Token-only success path must
+        STILL return True — the operator's button feels correct."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        cm = self._isolate_cancellation_manager(monkeypatch)
+        cm.create_token("orphan")
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"someone-else"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("orphan")
+        assert ok is True
+        assert cm.get_token("orphan").is_cancelled
+        unrelated.cancel_request.assert_not_called()
+        default_agent.cancel_request.assert_awaited_once_with("orphan")
+
+    @pytest.mark.asyncio
+    async def test_no_token_no_agent_no_job_returns_false(
+        self, monkeypatch,
+    ):
+        """The only path that must return False — every layer
+        genuinely had nothing to cancel. Closes the regression
+        precisely: pre-fix the endpoint lied with True even here."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        self._isolate_cancellation_manager(monkeypatch)
+        # No create_token call — token store is empty.
+
+        mgr = BackgroundJobManager()
+        unrelated = _agent_owning({"someone-else"})
+        registry = MagicMock()
+        registry.list = MagicMock(return_value=["unrelated"])
+        registry.get = MagicMock(return_value=unrelated)
+        default_agent = MagicMock()
+        default_agent.cancel_request = AsyncMock(return_value=False)
+        mgr.set_agent_registry(registry=registry, default_agent=default_agent)
+
+        ok = await mgr.cancel_job("never-existed")
+        assert ok is False
+
+
+async def test_an_answer_delta_the_next_one_supersedes_is_kept_without_the_whole_answer(job_manager):
+    """Each answer delta carries the whole answer so far; the buffer held every prefix of it."""
+    sent = []
+
+    async def runner():
+        for n in range(1, 4):
+            for event in ({"type": "thinking_delta", "step": 1, "delta": "abc"[n - 1], "accumulated": "abc"[:n]},
+                          {"type": "status", "message": f"line {n}"},   # the forwarder's lines come between
+                          {"type": "sub_run", "run_id": "sub1", "event": {
+                              "type": "thinking_delta", "step": 1, "delta": "x", "accumulated": "x" * n}}):
+                sent.append(event)
+                yield event
+        yield {"type": "thinking_delta", "step": 2, "delta": "d", "accumulated": "d"}
+
+    job = await job_manager.create_job(request_id="deltas", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    held = list(job.events)
+    answer = [e for e in held if e["type"] == "thinking_delta"]
+    sub = [e["event"] for e in held if e["type"] == "sub_run"]
+    assert [e.get("accumulated") for e in answer] == [None, None, "abc", "d"], answer
+    assert "".join(e["delta"] for e in answer[:3]) == "abc", "agent-cli adds up the deltas"
+    assert [e.get("accumulated") for e in sub] == [None, None, "xxx"], sub
+    assert all("accumulated" in (e.get("event") or e) for e in sent if e["type"] != "status"), \
+        "the run's own events were changed in place"
+
+
+async def test_a_job_that_ended_without_an_answer_keeps_its_last_error(job_manager, monkeypatch):
+    monkeypatch.setattr(BackgroundJobManager, "COMPLETED_JOB_TTL", 0)
+
+    async def runner():
+        yield {"type": "error", "message": "a tool failed"}
+        yield {"type": "data"}
+        raise RuntimeError("the run broke")
+
+    job = await job_manager.create_job(request_id="broke", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    await asyncio.sleep(0.01)
+    await job_manager._cleanup_old_jobs()
+    assert [e["message"] for e in job.events] == ["the run broke"], list(job.events)
+
+
+async def test_answer_deltas_are_slimmed_in_a_buffer_that_has_overflowed(job_manager, monkeypatch):
+    monkeypatch.setattr(BackgroundJobManager, "MAX_EVENT_BUFFER", 4)
+
+    async def runner():
+        text = ""
+        for n in range(12):
+            text += f"{n} "
+            yield {"type": "thinking_delta", "step": 1, "delta": f"{n} ", "accumulated": text}
+            yield {"type": "status", "message": f"line {n}"}
+
+    job = await job_manager.create_job(request_id="full", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    await asyncio.wait_for(_all_events(job), timeout=2.0)
+    await asyncio.sleep(0.01)
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    deltas = [e for e in job.events if e["type"] == "thinking_delta"]
+    assert [e.get("accumulated") for e in deltas] == [None, "0 1 2 3 4 5 6 7 8 9 10 11 "], deltas
+
+
+async def test_a_reader_waiting_for_the_next_event_is_woken_by_it(job_manager):
+    go, hold = asyncio.Event(), asyncio.Event()
+
+    async def runner():
+        await go.wait()
+        yield {"type": "data"}
+        await hold.wait()   # still running: the run's end, which wakes everyone, is not what wakes it
+
+    job = await job_manager.create_job(request_id="wake", user_id="u", agent_name="a",
+                                       session_id=None, agent_runner=runner)
+    reader = job.follow(keepalive=30)   # longer than this test waits: only a wake-up reaches it
+    first = asyncio.ensure_future(reader.__anext__())
+    await asyncio.sleep(0.05)
+    go.set()
+    try:
+        assert await asyncio.wait_for(first, timeout=2.0) == {"type": "data"}
+    finally:
+        hold.set()
+        await reader.aclose()
+
+
+class TestUnreadFor:
+    """How long nobody has read a job: tool_approval asks a person only while
+    one reads the run, and allows a reload its moment without a reader."""
+
+    async def _job(self, manager, request_id):
+        done = asyncio.Event()
+
+        async def runner():
+            yield {"type": "status", "message": "working"}
+            await done.wait()
+
+        await manager.create_job(request_id=request_id, user_id="u", agent_name="a",
+                                 session_id=None, agent_runner=runner)
+        return done
+
+    async def test_the_clock_runs_from_the_moment_the_last_reader_left(self, job_manager):
+        done = await self._job(job_manager, "unread1")
+        try:
+            await job_manager.increment_sse_client("unread1")
+            assert job_manager.unread_for("unread1") == 0.0
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread1")
+            assert job_manager.unread_for("unread1") < 0.1, "the clock ran while the job was read"
+            await asyncio.sleep(0.2)
+            assert job_manager.unread_for("unread1") >= 0.2
+        finally:
+            done.set()
+
+    async def test_a_reader_who_came_back_restarts_the_clock(self, job_manager):
+        """A reload, and later the tab is closed: the grace counts from the close,
+        not from the reload."""
+        done = await self._job(job_manager, "unread2")
+        try:
+            await job_manager.increment_sse_client("unread2")
+            await job_manager.decrement_sse_client("unread2")   # the reload leaves ...
+            await asyncio.sleep(0.2)
+            await job_manager.increment_sse_client("unread2")   # ... and comes back
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread2")   # the tab is closed
+            assert job_manager.unread_for("unread2") < 0.1
+        finally:
+            done.set()
+
+    async def test_an_extra_leave_does_not_restart_the_clock(self, job_manager):
+        done = await self._job(job_manager, "unread3")
+        try:
+            await job_manager.increment_sse_client("unread3")
+            await job_manager.decrement_sse_client("unread3")
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread3")
+            assert job_manager.unread_for("unread3") >= 0.2
+        finally:
+            done.set()
+
+    def test_a_run_without_a_job_has_no_clock(self, job_manager):
+        assert job_manager.unread_for("nojob") is None

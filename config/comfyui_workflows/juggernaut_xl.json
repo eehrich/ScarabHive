@@ -1,0 +1,210 @@
+{
+  "4": {
+    "inputs": {
+      "ckpt_name": "Juggernaut-XL_v9.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint (Juggernaut XL v9)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": 1024,
+      "height": 1536,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image (base)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "a beautiful landscape",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": "blurry, low quality, ugly",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "seed": 0,
+      "steps": 32,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler (base pass)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode (base)"
+    }
+  },
+  "10": {
+    "inputs": {
+      "model_name": "4x-UltraSharp.safetensors"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model (4x-UltraSharp)"
+    }
+  },
+  "11": {
+    "inputs": {
+      "upscale_model": [
+        "10",
+        0
+      ],
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (4x-UltraSharp)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1536,
+      "height": 2304,
+      "crop": "disabled",
+      "image": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Downscale to 1.5x target"
+    }
+  },
+  "13": {
+    "inputs": {
+      "pixels": [
+        "12",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode (for hires refine)"
+    }
+  },
+  "14": {
+    "inputs": {
+      "seed": 0,
+      "steps": 20,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.4,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler (hires refine pass)"
+    }
+  },
+  "15": {
+    "inputs": {
+      "samples": [
+        "14",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode (final)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "juggernaut",
+      "images": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}

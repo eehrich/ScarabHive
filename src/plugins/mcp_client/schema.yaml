@@ -1,0 +1,67 @@
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_list_servers"
+      description: List the configured external MCP servers with their connection state, protocol version and transport.
+      parameters:
+        type: object
+        properties: {}
+  - type: function
+    function:
+      name: "{{ name }}_connect"
+      description: Connect or reconnect one configured external MCP server. Performs the full MCP handshake and reports the server info.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Name of the server as configured under external_servers.remote_servers
+        required: [server]
+  - type: function
+    function:
+      name: "{{ name }}_disconnect"
+      description: Close the connection to one external MCP server.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Name of the connected server
+        required: [server]
+  - type: function
+    function:
+      name: "{{ name }}_tools"
+      description: List the tools offered by the connected external MCP servers. Blocked tools are included and marked, not hidden.
+      parameters:
+        type: object
+        properties:
+          server:
+            type: string
+            description: Restrict the listing to this server
+          force_refresh:
+            type: boolean
+            description: Bypass the cached tool list and ask the servers again
+
+# Slash commands — what a PERSON can trigger at the chat prompt. Each one runs
+# one of the tools above through the agent's own dispatch, so it inherits the
+# allowlist. /mcp-connect without a server name gets the tool's own
+# "server is required" answer — no extra parsing here.
+commands:
+  - name: mcp
+    description: "list the external MCP servers and their connection state"
+    tool: "{{ name }}_list_servers"
+  - name: mcp-connect
+    description: "connect or reconnect one external MCP server"
+    tool: "{{ name }}_connect"
+    argument: server
+    argument_hint: "<server>"
+  - name: mcp-disconnect
+    description: "close the connection to one external MCP server"
+    tool: "{{ name }}_disconnect"
+    argument: server
+    argument_hint: "<server>"
+  - name: mcp-tools
+    description: "list the tools the connected external servers offer"
+    tool: "{{ name }}_tools"
+    argument: server
+    argument_hint: "[server]"

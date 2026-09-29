@@ -1,0 +1,319 @@
+"""
+Text-to-Speech (TTS) client abstraction layer — service definition only.
+
+Provides the provider-agnostic interface for TTS generation. Concrete
+clients live in TTS provider plugins under src/plugins/ (their
+manifests declare `provides_tts`; dispatch goes through
+agent_system.llm.registry, same seam as the LLM providers).
+
+Usage:
+    from agent_system.llm.tts import create_tts_from_profile, TTSVoice, TTSSpeaker
+
+    client = create_tts_from_profile(config, "gemini-tts")
+
+    # Single speaker
+    result = await client.synthesize("Hello world!", voice=TTSVoice(name="Kore"))
+    
+    # Multi-speaker
+    result = await client.synthesize_multi_speaker(
+        text='Joe: How are you?\\nJane: Great!',
+        speakers=[
+            TTSSpeaker(name="Joe", voice=TTSVoice(name="Kore")),
+            TTSSpeaker(name="Jane", voice=TTSVoice(name="Puck")),
+        ],
+    )
+    
+    # Save to WAV file
+    result.save_wav("output.wav")
+"""
+
+from __future__ import annotations
+
+import wave
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+from agent_system.llm import hook_notify
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TTSVoice:
+    """Voice configuration for TTS.
+
+    Attributes:
+        name: Prebuilt voice name (e.g. "Kore", "Puck", "Zephyr"; see the
+              provider's catalog) — or just a label when ``reference_audio``
+              is set.
+        reference_audio: Raw audio file bytes (WAV, FLAC, OGG, AIFF, MP4/M4A
+              or MP3 container) of the voice to clone. ``openai_speech`` sends
+              them as OpenRouter's stateless ``input_references`` and omits
+              ``voice``; a client without ``supports_voice_cloning`` refuses
+              them in ``check_voice`` — never a silent preset instead.
+        reference_text: Transcript of ``reference_audio`` (optional; sharpens
+              the clone).
+    """
+    name: str
+    reference_audio: Optional[bytes] = None
+    reference_text: Optional[str] = None
+
+
+@dataclass
+class TTSSpeaker:
+    """Speaker configuration for multi-speaker TTS.
+    
+    Attributes:
+        name: Speaker identifier (must match names used in transcript text).
+        voice: Voice to use for this speaker.
+    """
+    name: str
+    voice: TTSVoice
+
+
+@dataclass
+class TTSResult:
+    """Result from TTS generation.
+    
+    Contains raw PCM audio data and metadata needed to write a WAV file.
+    
+    Attributes:
+        audio_data: Raw PCM audio bytes.
+        sample_rate: Sample rate in Hz (default 24000 for Gemini).
+        sample_width: Sample width in bytes (default 2 = 16-bit).
+        channels: Number of audio channels (default 1 = mono).
+        model: Model used for generation.
+        voice_name: Primary voice name used.
+        metadata: Additional provider-specific metadata.
+    """
+    audio_data: bytes
+    sample_rate: int = 24000
+    sample_width: int = 2
+    channels: int = 1
+    model: str = ""
+    voice_name: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def duration_seconds(self) -> float:
+        """Duration of the audio in seconds."""
+        if not self.audio_data:
+            return 0.0
+        bytes_per_sample = self.sample_width * self.channels
+        if bytes_per_sample == 0:
+            return 0.0
+        return len(self.audio_data) / (self.sample_rate * bytes_per_sample)
+
+    def save_wav(self, path: str | Path) -> Path:
+        """Save audio data as a WAV file.
+        
+        Args:
+            path: Output file path.
+            
+        Returns:
+            The resolved Path object.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(self.sample_width)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(self.audio_data)
+        return path
+
+
+# ---------------------------------------------------------------------------
+# Hook dispatch (shared by every TTS client)
+# ---------------------------------------------------------------------------
+# The dispatch itself lives in llm/hook_notify.py, shared with the other
+# clients that run without an agent around them. What stays here is the TTS
+# vocabulary: audio seconds and bytes, and a token usage only where the
+# provider reports one -- Gemini does, OpenAI's /audio/speech does not.
+
+
+async def notify_tts_request(
+    *, provider: str, model: str, url: str, payload: dict,
+) -> None:
+    """Fire PRE_LLM_REQUEST for a TTS call.
+
+    TTS clients are invoked directly, not through Agent, so they bypass the
+    per-agent ``wire_llm_hooks`` path and must tell the global registry
+    themselves — the debugger must not go blind just because a profile
+    switched provider.
+    """
+    await hook_notify.notify_request(
+        provider=provider, model=model, url=url, payload=payload)
+
+
+async def notify_tts_response(
+    *, provider: str, model: str, url: str, duration_ms: float,
+    audio_seconds: Optional[float] = None,
+    audio_bytes_len: Optional[int] = None,
+    usage: Optional[dict] = None,
+    error: Optional[str] = None,
+    finish_reason: Optional[str] = None,
+) -> None:
+    """Fire POST_LLM_RESPONSE with the TTS result or error.
+
+    ``usage`` only when the provider actually reports one, and the two
+    providers here differ: Gemini answers a synthesis with the same
+    ``usage_metadata`` its chat calls carry, so those tokens are real and
+    measured; OpenAI's ``/audio/speech`` returns audio and nothing else, and
+    is billed per character. Passing a guess for the second would be worse
+    than passing nothing — context_usage_tracker skips a call with no usage,
+    so a provider that cannot say stays out of the live cost table instead of
+    entering it with an invented number.
+    """
+    response_data: dict[str, Any] = {}
+    if audio_seconds is not None:
+        response_data["audio_seconds"] = audio_seconds
+    if audio_bytes_len is not None:
+        response_data["audio_bytes"] = audio_bytes_len
+    await hook_notify.notify_response(
+        provider=provider, model=model, url=url, duration_ms=duration_ms,
+        response_data=response_data or None, usage=usage, error=error,
+        finish_reason=finish_reason)
+
+
+# ---------------------------------------------------------------------------
+# Base client
+# ---------------------------------------------------------------------------
+
+class TTSClient:
+    """Base class for Text-to-Speech clients.
+
+    Subclasses must implement ``synthesize`` and optionally
+    ``synthesize_multi_speaker``.
+    """
+
+    #: Whether ``TTSVoice.reference_audio`` is honoured. ``check_voice``
+    #: refuses a reference on a client without it — never narrate a book in
+    #: a preset voice instead.
+    supports_voice_cloning: bool = False
+
+    #: Whether ``system_instruction``/``language``/``seed`` reach the model.
+    #: False on wire formats that have no field for them (the speech API):
+    #: a caller must then know its narrator direction is NOT applied, rather
+    #: than record it as if it were.
+    supports_style_prompt: bool = True
+
+    def check_voice(self, voice: Optional[TTSVoice]) -> None:
+        """Raise ValueError if this client cannot honour ``voice``.
+
+        Called by ``synthesize`` before any request, and by callers that
+        want a long run to fail ONCE up front rather than per segment.
+        Providers extend it with their own preconditions (a required voice
+        name, sample size limits, ...).
+        """
+        if voice is not None and voice.reference_audio is not None \
+                and not self.supports_voice_cloning:
+            raise ValueError(
+                f"{type(self).__name__} cannot clone voices — reference_audio "
+                f"on voice {voice.name!r} cannot be honoured; use a client "
+                f"with supports_voice_cloning (e.g. openai_speech with "
+                f"fish-audio/s2.1-pro)")
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: Optional[TTSVoice] = None,
+        language: Optional[str] = None,
+        system_instruction: Optional[str] = None,
+        seed: Optional[int] = None,
+    ) -> TTSResult:
+        """Generate speech from text with a single speaker.
+        
+        Args:
+            text: The text (or prompt) to convert to speech.
+                  Can include style/direction instructions.
+            voice: Voice to use. Provider default if None.
+            language: Optional language hint (auto-detected by most models).
+            system_instruction: Optional system prompt to control speech style,
+                language, pacing, etc. Supported by Gemini TTS.
+            seed: Optional seed for reproducible output.
+            
+        Returns:
+            TTSResult with raw PCM audio data.
+        """
+        raise NotImplementedError
+
+    async def synthesize_multi_speaker(
+        self,
+        text: str,
+        *,
+        speakers: list[TTSSpeaker],
+        language: Optional[str] = None,
+    ) -> TTSResult:
+        """Generate multi-speaker speech from a transcript.
+        
+        The transcript text must reference speakers by the names given
+        in ``speakers``.  Gemini supports up to 2 speakers.
+        
+        Args:
+            text: Transcript with speaker labels.
+            speakers: Speaker → voice mappings (max 2 for Gemini).
+            language: Optional language hint.
+            
+        Returns:
+            TTSResult with raw PCM audio data.
+        """
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def create_tts_from_profile(
+    config: Any,
+    tts_profile: str,
+) -> TTSClient:
+    """Create a TTS client from a named profile in the system config.
+
+    Looks up the profile in ``config.llm_system.tts_profiles``, resolves the
+    model reference from ``config.llm_system.tts_models``, and returns a
+    configured client via the provider registry.
+    
+    Args:
+        config: AgentSystemConfig instance.
+        tts_profile: Profile name (e.g. "gemini-tts-flash").
+        
+    Returns:
+        Configured TTSClient.
+        
+    Raises:
+        ValueError: If profile or model not found.
+    """
+    llm_cfg = config.llm_system
+    if not llm_cfg:
+        raise ValueError("No llm_system configuration found in config.")
+
+    profiles = llm_cfg.tts_profiles
+    if tts_profile not in profiles:
+        raise ValueError(
+            f"TTS profile {tts_profile!r} not found. "
+            f"Available: {list(profiles.keys())}"
+        )
+
+    profile = profiles[tts_profile]
+    model_ref = profile.model_ref
+
+    models = llm_cfg.tts_models
+    if model_ref not in models:
+        raise ValueError(
+            f"TTS model {model_ref!r} (from profile {tts_profile!r}) not found. "
+            f"Available: {list(models.keys())}"
+        )
+
+    model_cfg = models[model_ref]
+
+    # Late import for the same reason as factory._build_client: the seam
+    # stays patchable, and TTS provider plugins load lazily on first use.
+    from agent_system.llm import registry
+
+    return registry.build_tts_client(model_cfg)

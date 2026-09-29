@@ -5,10 +5,9 @@ import logging
 from typing import Dict, Any, Optional
 
 from agent_system.servers.agent.schema_based import SchemaBasedAgent
-from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig
-from agent_system.mcp.base import MCPRegistry
-from agent_system.llm.factory import resolve_llm_config_for_agent
-from agent_system.llm.clients import make_llm
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.tools.base import ToolServerRegistry
+from agent_system.llm.factory import override_for_profile
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +23,10 @@ class BasicAgent(SchemaBasedAgent):
     Note: The MCP standard method list_tools() is inherited from Agent base class.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig, registry: MCPRegistry,
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig, registry: ToolServerRegistry,
                  session_service: object | None = None):
         """Initialize BasicAgent with modern config system."""
-        super().__init__(name, system_config, mcp_config, registry, session_service=session_service)
+        super().__init__(name, system_config, server_config, registry, session_service=session_service)
 
     async def execute_task(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a task using the basic agent.
@@ -41,7 +40,10 @@ class BasicAgent(SchemaBasedAgent):
             return {"status": "error", "error": "Missing required parameter 'task'"}
 
         request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        # The session: never a plain ``session_id`` from the model's arguments (it could
+        # name another user's session of this agent, whose approvals would hold instead of
+        # its caller's), and not the caller's own -- one of this agent's below it, from the
+        # injected ``_session_id`` (Agent.tool_session, as Agent.call).
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")
         use_advanced_model = params.get("use_advanced_model", False)
@@ -50,16 +52,11 @@ class BasicAgent(SchemaBasedAgent):
         llm_override: Optional[object] = None
         llm_profile_info: Optional[str] = None
 
-        # Determine profile to use
-        # Priority: llm_profile > use_advanced_model > default
-        if not llm_profile_name and use_advanced_model:
-            # Map use_advanced_model to best available profile
-            available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
-            if available_profiles:
-                # Use last profile in list (assumed to be most capable)
-                llm_profile_name = available_profiles[-1]
-                logger.debug(f"use_advanced_model=True mapped to profile '{llm_profile_name}'")
-
+        # Priority: llm_profile > use_advanced_model > default.
+        # use_advanced_model wird NICHT hier gemappt, sondern als Flag an
+        # run_events durchgereicht — dort passiert das Advanced-Mapping
+        # zentral (inkl. llm_params) und _run_events berechnet die zur
+        # Advanced-Kette passende Fallback-Reihenfolge.
         if llm_profile_name:
             # Validate profile exists in agent's available profiles
             available_profiles = self.agent_config.available_llm_profiles if self.agent_config else []
@@ -77,32 +74,20 @@ class BasicAgent(SchemaBasedAgent):
                 }
 
             try:
-                # Create temporary agent config with the requested profile
-                temp_agent_config = AgentConfig(llm_profile=llm_profile_name)
-                llm_kwargs = resolve_llm_config_for_agent(self.system_config, temp_agent_config)
-
-                # Get SSL verify setting
-                ssl_verify = getattr(self.system_config.network, 'ssl_verify', None)
-
-                # Create LLM client with the profile
-                llm_override = make_llm(
-                    llm_kwargs["provider"],
-                    llm_kwargs["model"],
-                    llm_kwargs["api_key"],
-                    llm_kwargs["base_url"],
-                    llm_kwargs["context_window"],
-                    llm_kwargs["ollama_mode"],
-                    llm_kwargs["request_timeout"],
-                    ssl_verify=ssl_verify,
-                    httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-                    capabilities=llm_kwargs.get("capabilities"),
-                )
-
-                # Create profile info for logging
-                profile = self.system_config.llm_system.profiles[llm_profile_name]
-                model_ref = profile.model_ref
-                model_config = self.system_config.llm_system.models[model_ref]
-                llm_profile_info = f"{llm_profile_name}:{model_config.provider}/{model_config.model}"
+                # override_for_profile (create_llm_from_profile underneath), not
+                # the raw registry: it forwards EVERY resolved field.
+                # Hand-listing the arguments dropped
+                # thinking_level, max_tokens, safety_settings, service_tier and
+                # provider_routing — invisible for the profiles configured
+                # today, and silently wrong the moment this agent is pointed at
+                # an OpenRouter profile. The profile here comes from a runtime
+                # tool argument, so that moment is one config line away.
+                #
+                # And with the agent's own llm_params: the argument picks another
+                # MODEL, not another agent, so what the agent says about every
+                # model it runs on ("*") holds here as it does for a fallback.
+                llm_override, llm_profile_info = override_for_profile(
+                    self.system_config, self.agent_config, llm_profile_name)
 
                 logger.info(f"Using LLM profile override: {llm_profile_info}")
 
@@ -116,7 +101,22 @@ class BasicAgent(SchemaBasedAgent):
                     "error": f"Failed to initialize LLM profile '{llm_profile_name}': {str(e)}"
                 }
 
+        # Dispatched with a _user_id but without a request that names a user (a
+        # plugin command): an id of its own for the injected _user_id, as
+        # Agent.call does -- else the run would be nobody's (see there).
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
+
         try:
+            session_id, refusal = await self.tool_session(params, request_id=request_id)
+            # Another user's session, this agent running above the call already, or a session that cannot be
+            # stored with its caller's sub-agent budget (Agent.tool_session): nothing ran.
+            if refusal:
+                if status:
+                    await status.error(refusal["error"])
+                return {"status": "error", **refusal, "request_id": request_id}
+
             if status:
                 await status.progress(f"Starting basic agent task: {task[:100]}...")
 
@@ -130,7 +130,9 @@ class BasicAgent(SchemaBasedAgent):
                 request_id=request_id,
                 session_id=session_id,
                 llm_override=llm_override,
-                llm_profile_info_override=llm_profile_info
+                llm_profile_info_override=llm_profile_info,
+                # Explizites llm_profile gewinnt: dann kein Advanced-Mapping.
+                use_advanced_model=bool(use_advanced_model) and not llm_profile_name
             ):
                 event_type = event.get("type")
 
@@ -139,7 +141,7 @@ class BasicAgent(SchemaBasedAgent):
                     if status:
                         await status.progress("Starting analysis...")
 
-                elif event_type == "mcp_call":
+                elif event_type in ("tool_call", "mcp_call"):  # the old name until every deployed side is new (rename 17.09.2026)
                     step_count += 1
                     tool_name = event.get("server", "unknown")
                     action = event.get("action", "unknown")
@@ -154,7 +156,7 @@ class BasicAgent(SchemaBasedAgent):
                         "params": filtered_params
                     })
 
-                elif event_type == "mcp_result":
+                elif event_type in ("tool_result", "mcp_result"):  # the old name until every deployed side is new (rename 17.09.2026)
                     tool_name = event.get("server", "unknown")
                     if status:
                         await status.progress(f"Processing results from {tool_name}...")
@@ -172,11 +174,21 @@ class BasicAgent(SchemaBasedAgent):
                     return {
                         "status": "error",
                         "error": error_msg,
-                        "request_id": request_id
+                        "request_id": request_id,
+                        # the error's own error_type, whatever the run's error was -- a refusal before the run
+                        # (Agent.run_events: REFUSED_BEFORE_THE_RUN) says which, as Agent.call's answer does
+                        **({"error_type": event["error_type"]} if event.get("error_type") else {}),
                     }
 
             if status:
-                await status.progress("Task completed successfully")
+                # end, not progress: this was the last thing said, so the
+                # scope's default overwrote it with a bare "completed" and
+                # threw away steps, tool calls and result size.
+                task_text = params.get("task") or ""
+                subject = task_text if len(task_text) <= 60 else task_text[:57] + "..."
+                await status.end(
+                    f"{step_count} step(s), {len(tool_calls)} tool call(s), "
+                    f"{len(result_text or '')} chars -- {subject}")
 
             # Return the actual result from the final event
             return {
@@ -196,8 +208,12 @@ class BasicAgent(SchemaBasedAgent):
                 "error": str(e),
                 "request_id": request_id
             }
+        finally:
+            if own_request_id:
+                from agent_system.core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
 
-    async def list_available_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """List all available tools for this agent.
 
         This method is automatically called for the "basic_agent_list_available_tools" tool.

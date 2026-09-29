@@ -1,0 +1,124 @@
+plugins:
+  servers:
+
+    # Dev harness for create(blocking=false, wake_when_done=true): the caller
+    # ends its turn over a running sub-agent and the manager wakes the session
+    # when the job is done.
+    #
+    # Best watched in `agent-cli chat --agent wake_test_agent`: since 9d9c4652
+    # its prompt waits ON the event loop, so the job runs on while nobody types
+    # and the woken turn appears in the same window. The API serves it too, but
+    # there the woken run is a headless subprocess writing into the session
+    # file -- the panel shows it only after a reload.
+    #
+    # Not `agent-cli run`: its process ends with the turn and takes the job.
+    # Needs session_presence.enabled (config/config.yaml, on by default).
+    #
+    # Cost of `visibility: ui` below: the harness stands in everyone's agent
+    # picker. That is what makes it selectable in the panel; flip it to
+    # "private" if that is not wanted -- the CLI does not read this flag.
+
+    wake_test_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "Sub-agent manager for the wake harness"
+      max_nesting_depth: 1
+      max_sub_agents_per_session: 5
+      max_sub_agents_per_type: 5
+      allowed_agents:
+        - "wake_test_worker"
+
+    # Answers in one step and takes its time doing it, so the caller really is
+    # asleep while it runs.
+    wake_test_worker:
+      type: basic_agent
+      enabled: true
+      description: "Worker for the wake harness"
+
+      agent_config:
+        llm_profile: [turbo]
+        max_steps: 3
+        system_prompt: |
+          You answer the task you are given in a single reply, in the language
+          of the task. Be thorough: several paragraphs, worked through rather
+          than summarised. You have no tools and need none -- just answer.
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["test", "wake"]
+        category: "development"
+        visibility: "tool"
+
+    wake_test_agent:
+      type: basic_agent
+      enabled: true
+      description: "Dev harness: sleep over a sub-agent, be woken when it is done"
+
+      agent_config:
+        max_steps: 12
+
+        tools:
+          allowed:
+            - "wake_test_sam/*"
+            - "datetime/*"
+
+        # The list of sub-agents, appended as a developer turn at the end of
+        # the history (not at the head -- there every change would cost the
+        # cached prefix). A worker reads "running" there while it works and
+        # "idle" once it is done, which is what the "asked" case below reads.
+        hooks:
+          enabled: true
+          overrides:
+            wake_test_sam.inject_sub_agent_context:
+              enabled: true
+
+        system_prompt: |
+          You are a harness for one mechanism: sleeping over a sub-agent
+          instead of polling it. Do exactly the following and nothing else.
+
+          When the user gives you a task:
+          1. Read the current time (datetime tool).
+          2. Hand the task to one sub-agent, with the manage_sub_agent tool of
+             wake_test_sam:
+             operation="create", agent_type="wake_test_worker",
+             task=<the user's message, as they wrote it>,
+             blocking=false, wake_when_done=true
+             Pass it on as it stands. Do not turn it into instructions, and
+             never tell the worker to use a tool: it has none, and a task that
+             asks for one produces nothing to wake you for.
+          3. End your turn right there, with one short line: the instance_id,
+             the time, and that you are going to sleep now. Do not poll, do not
+             wait, do not call any tool again in this turn. Ending the turn is
+             the point of the test.
+
+          You will be woken when the sub-agent is done, however it ends. A
+          woken turn starts with a note that input is waiting for this session.
+          Then:
+          1. Read the time again.
+          2. operation="poll" with the instance_id for its status.
+          3. operation="info" with the instance_id for its answer.
+          4. Report, in this order: the status, how long you slept (both
+             times), and then the sub-agent's answer in full.
+
+          If you are woken and nothing has finished, say so in one line and end
+          your turn again. Never poll in a loop and never use wait or wait_all
+          -- that is the mechanism this harness exists to avoid.
+
+          One more case, and it is not a wake: in a CLI chat nobody starts a
+          turn for you, the user does. So whenever a turn of yours begins and
+          the injected sub-agent list shows an instance that is no longer
+          running (idle, failed, cancelled or interrupted) and that you have
+          not reported yet, report it first, the same way (poll, info, times),
+          before you do anything else the user asked for.
+
+          Say which of the two happened, every time, in one line: "woken" when
+          a turn began without the user typing, "asked" when they did. Being
+          asked is not being woken, and the harness exists to tell them apart.
+
+      metadata:
+        author: "AgentSystem"
+        version: "1.0.0"
+        tags: ["test", "wake"]
+        category: "development"
+        visibility: "ui"

@@ -1,6 +1,6 @@
 # Caching Systems in AgentSystem
 
-AgentSystem implements multiple caching layers to optimize performance across different components. This document covers the two main caching systems: **Plugin Caching** (file-based caching for plugin operations) and **MCP Tool Caching** (configuration-aware caching for MCP tool discovery).
+AgentSystem implements multiple caching layers to optimize performance across different components. This document covers the two main caching systems: **Plugin Caching** (file-based caching for plugin operations) and **MCP Tool Caching** (configuration-aware caching for tool discovery).
 
 ## Plugin Caching System
 
@@ -252,7 +252,7 @@ Cache files use JSON format with metadata:
 
 ## MCP Tool Caching System
 
-The MCP tool caching system uses configuration-aware caching to avoid reinitializing tools on every request when working with external MCP servers.
+The tool caching system uses configuration-aware caching to avoid reinitializing tools on every request when working with external MCP servers.
 
 ### How It Works
 
@@ -260,7 +260,7 @@ The MCP tool caching system uses configuration-aware caching to avoid reinitiali
 
 Unlike traditional time-based caching (TTL), the tool cache uses configuration hashing:
 
-1. **Config Hash**: A SHA256 hash is computed from the MCP configuration (servers, blocked tools, etc.)
+1. **Config Hash**: A SHA256 hash is computed from the tool server configuration (servers, blocked tools, etc.)
 2. **Auto-Invalidation**: When the config changes, the hash changes, automatically invalidating stale cache entries
 3. **No Stale Data**: Cache is always fresh when configuration is unchanged
 
@@ -268,19 +268,19 @@ Unlike traditional time-based caching (TTL), the tool cache uses configuration h
 
 The system uses two levels of caching:
 
-1. **MCPIntegration.list_all_tools()** - Config-hash-based cache (new)
+1. **ToolServerIntegration.list_all_tools()** - Config-hash-based cache (new)
    - Caches the combined result of plugin + external tools
-   - Invalidates automatically when MCP configuration changes
+   - Invalidates automatically when tool server configuration changes
    - No TTL needed (always fresh)
 
-2. **MCPClientManager.list_all_tools()** - Time-based cache (existing)
+2. **ExternalServerPool.list_tools_by_server()** - Time-based cache in the mcp_client plugin
    - Internal cache for external server HTTP calls
    - Uses TTL (default 30s)
    - Reduces HTTP requests to external servers
 
 ### Configuration
 
-MCP tool caching is configured in `config/mcp_servers.yaml`:
+tool caching is configured in `config/mcp_servers.yaml`:
 
 #### config/mcp_servers.yaml
 
@@ -298,7 +298,7 @@ cache:
   - Default: `true`
   - When disabled, tools are fetched fresh on every request
 
-- **tool_list_ttl**: Time-to-live for MCPClientManager internal cache
+- **tool_list_ttl**: Time-to-live for the mcp_client plugin's tool-list cache
   - Type: `float`
   - Default: `30.0` seconds
   - Controls how often external servers are queried via HTTP
@@ -315,7 +315,7 @@ cache:
 The cache exposes statistics for monitoring:
 
 ```python
-stats = await mcp_integration.get_cache_statistics()
+stats = await tool_integration.get_cache_statistics()
 ```
 
 Returns:
@@ -374,7 +374,7 @@ Typical hit rates in production:
 #### Automatic Invalidation
 
 Cache automatically invalidates when:
-- MCP configuration changes (servers added/removed)
+- tool server configuration changes (servers added/removed)
 - Blocked tools list changes
 - Plugin registry changes
 
@@ -382,10 +382,10 @@ Cache automatically invalidates when:
 
 ```python
 # Invalidate entire cache
-await mcp_integration.invalidate_tools_cache()
+await tool_integration.invalidate_tools_cache()
 
 # Invalidate specific key
-await mcp_integration._tool_cache.invalidate("all_tools")
+await tool_integration._tool_cache.invalidate("all_tools")
 ```
 
 ### Thread Safety
@@ -493,7 +493,7 @@ Enable debug logging to monitor cache behavior:
 ```python
 import logging
 logging.getLogger("agent_system.plugins.cache").setLevel(logging.DEBUG)
-logging.getLogger("agent_system.mcp.integration").setLevel(logging.DEBUG)
+logging.getLogger("agent_system.tools.integration").setLevel(logging.DEBUG)
 ```
 
 This will show cache hits, misses, invalidations, and cleanup operations in the logs.

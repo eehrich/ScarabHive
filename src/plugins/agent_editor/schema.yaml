@@ -1,0 +1,121 @@
+# Agent Editor Plugin Schema
+# No tools - a web-only admin panel that edits agent entries in the config files.
+
+tools: []
+
+web_ui:
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Agent Editor"
+    description: "Create and edit agents: model chain, tools, prompt, hooks and sub-agent access"
+    icon: cpu
+    category: agents
+    keywords: [agents, llm, model, tools, allowlist, prompt, hooks, yaml, config]
+    window: {width: 1240, height: 820}
+
+  # Every endpoint checks for an active admin itself (endpoints.py), on top of the route rules in config.yaml.
+  # Writes take JSON only and answer 409 when the file changed on disk, 422 when the result does not load.
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "The Agent Editor panel"
+
+    - path: "/agents"
+      method: "GET"
+      handler: "list_agents"
+      response_type: "json"
+      description: "Every agent entry with its file, editability and live state"
+
+    - path: "/agents/{name}"
+      method: "GET"
+      handler: "get_agent"
+      response_type: "json"
+      description: "One agent: own, inherited and effective config, children, sub-agent access, prompt file"
+
+    - path: "/inherited"
+      method: "GET"
+      handler: "get_inherited"
+      response_type: "json"
+      description: "What an entry of ?type= gets without keys of its own (a parent server, a plugin class, or basic_agent)"
+
+    - path: "/agents"
+      method: "POST"
+      handler: "create_agent"
+      response_type: "json"
+      description: "Create an agent in config/agents/<name>.yaml (dry_run answers the diff only)"
+
+    - path: "/agents/{name}"
+      method: "PUT"
+      handler: "save_agent"
+      response_type: "json"
+      description: "Write an agent's own entry back into its file, comments kept (dry_run answers the diff only)"
+
+    - path: "/agents/{name}"
+      method: "DELETE"
+      handler: "delete_agent"
+      response_type: "json"
+      description: "Remove an agent entry, and its file when nothing else is left in it"
+
+    - path: "/managers"
+      method: "GET"
+      handler: "list_managers"
+      response_type: "json"
+      description: "The enabled sub-agent managers: own entry, lists, the agents each can start"
+
+    - path: "/managers"
+      method: "POST"
+      handler: "create_manager"
+      response_type: "json"
+      description: "Create a sub-agent manager in config/agents/<name>.yaml (dry run first)"
+
+    - path: "/managers/{name}"
+      method: "PUT"
+      handler: "save_manager"
+      response_type: "json"
+      description: "Write a sub-agent manager's own entry (dry run first)"
+
+    - path: "/agents/{name}/spawnable"
+      method: "PUT"
+      handler: "set_spawnable"
+      response_type: "json"
+      description: "Let a sub-agent manager spawn the agent or not, via its own allowed/blocked lists"
+
+    - path: "/meta"
+      method: "GET"
+      handler: "get_meta"
+      response_type: "json"
+      description: "Picker data: agent classes, LLM profiles, skills, hooks, prompt files, reloadable fields"
+
+    - path: "/tools"
+      method: "GET"
+      handler: "list_tools"
+      response_type: "json"
+      description: "The tools of every running tool server, grouped by server"
+
+    - path: "/tools/effective"
+      method: "POST"
+      handler: "effective_tools"
+      response_type: "json"
+      description: "The tools an allow/block list yields after inheritance, with per-pattern counts"
+
+    - path: "/prompt"
+      method: "GET"
+      handler: "read_prompt"
+      response_type: "json"
+      description: "A prompt template file inside the repository (?path=, ?agent= for ./ paths)"
+
+    - path: "/yaml"
+      method: "POST"
+      handler: "render_yaml"
+      response_type: "json"
+      description: "An entry rendered as YAML"
+
+    - path: "/yaml/parse"
+      method: "POST"
+      handler: "parse_yaml"
+      response_type: "json"
+      description: "YAML text parsed into an entry"

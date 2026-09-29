@@ -21,7 +21,7 @@ def test_plugins_discover_entrypoint_plugins(monkeypatch):
         return 'server'
 
     # build a fake entry_points() return shape
-    fake_eps = [DummyEP('dummy', 'agent_system.mcp_plugins', factory)]
+    fake_eps = [DummyEP('dummy', 'agent_system.tool_plugins', factory)]
 
     class FakeMetadata:
         def entry_points(self):
@@ -29,7 +29,7 @@ def test_plugins_discover_entrypoint_plugins(monkeypatch):
 
     monkeypatch.setattr(metadata, 'entry_points', lambda: fake_eps)
 
-    found = plugins.discover_entrypoint_plugins(group='agent_system.mcp_plugins')
+    found = plugins.discover_entrypoint_plugins(group='agent_system.tool_plugins')
     # Should expose the factory under the entrypoint name
     assert 'dummy' in found
     server = found['dummy']()

@@ -2,10 +2,9 @@
 
 This module provides tools to diagnose performance issues in the async FastAPI application:
 - Request timing middleware
-- Async task monitoring (detect blocking operations)
-- Active session/task tracking
-- Slow callback detection
-- Memory usage tracking
+- Async task listing
+- Event loop lag
+- Memory and thread details
 
 Enable via environment variable: AGENT_ENABLE_PROFILING=1
 """
@@ -13,17 +12,17 @@ Enable via environment variable: AGENT_ENABLE_PROFILING=1
 from __future__ import annotations
 
 import asyncio
-import functools
 import gc
 import logging
 import os
 import threading
 import time
-import traceback
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
+
+from agent_system.utils.logging import loggable_path
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -77,7 +76,6 @@ def setup_profiling_logger() -> None:
 
 # Configuration from environment
 PROFILING_ENABLED = os.getenv("AGENT_ENABLE_PROFILING", "0") == "1"
-SLOW_CALLBACK_THRESHOLD = float(os.getenv("AGENT_SLOW_CALLBACK_MS", "100")) / 1000  # Convert ms to seconds
 SLOW_REQUEST_THRESHOLD = float(os.getenv("AGENT_SLOW_REQUEST_MS", "1000")) / 1000
 
 
@@ -92,30 +90,6 @@ class RequestMetrics:
     duration_ms: Optional[float] = None
     status_code: Optional[int] = None
     error: Optional[str] = None
-
-
-@dataclass
-class AsyncTaskInfo:
-    """Information about an async task."""
-    task_id: str
-    name: str
-    created_at: float
-    coro_name: str
-    stack_summary: str
-    state: str = "pending"
-
-
-@dataclass
-class ProfilingSnapshot:
-    """Point-in-time snapshot of system state."""
-    timestamp: datetime
-    active_requests: int
-    active_tasks: int
-    slow_requests: list[RequestMetrics]
-    blocked_tasks: list[AsyncTaskInfo]
-    event_loop_lag_ms: float
-    memory_mb: float
-    thread_count: int
 
 
 class RequestProfiler:
@@ -146,8 +120,13 @@ class RequestProfiler:
         with self._lock:
             self._active_requests[request_id] = metrics
     
-    def end_request(self, request_id: str, status_code: int, error: Optional[str] = None) -> Optional[RequestMetrics]:
-        """Record end of a request and return metrics."""
+    def end_request(self, request_id: str, status_code: int, error: Optional[str] = None,
+                    stats_path: Optional[str] = None) -> Optional[RequestMetrics]:
+        """Record end of a request and return metrics.
+
+        stats_path: what the aggregated stats count the request under -- the route
+        template, so /sessions/<id> does not open a new row for every id. Defaults to the path.
+        """
         with self._lock:
             metrics = self._active_requests.pop(request_id, None)
             if metrics:
@@ -155,27 +134,17 @@ class RequestProfiler:
                 metrics.duration_ms = (metrics.end_time - metrics.start_time) * 1000
                 metrics.status_code = status_code
                 metrics.error = error
-                
+                key = stats_path or metrics.path
+
                 # Update aggregated stats
-                self._request_counts[metrics.path] += 1
-                self._total_duration_by_path[metrics.path] += metrics.duration_ms
+                self._request_counts[key] += 1
+                self._total_duration_by_path[key] += metrics.duration_ms
                 if metrics.duration_ms > self.slow_threshold * 1000:
-                    self._slow_count_by_path[metrics.path] += 1
-                
-                # Track min/max
-                if metrics.path not in self._min_duration_by_path:
-                    self._min_duration_by_path[metrics.path] = metrics.duration_ms
-                else:
-                    self._min_duration_by_path[metrics.path] = min(
-                        self._min_duration_by_path[metrics.path], metrics.duration_ms
-                    )
-                
-                if metrics.path not in self._max_duration_by_path:
-                    self._max_duration_by_path[metrics.path] = metrics.duration_ms
-                else:
-                    self._max_duration_by_path[metrics.path] = max(
-                        self._max_duration_by_path[metrics.path], metrics.duration_ms
-                    )
+                    self._slow_count_by_path[key] += 1
+                self._min_duration_by_path[key] = min(self._min_duration_by_path.get(key, metrics.duration_ms),
+                                                      metrics.duration_ms)
+                self._max_duration_by_path[key] = max(self._max_duration_by_path.get(key, metrics.duration_ms),
+                                                      metrics.duration_ms)
                 
                 # Keep history
                 self._completed_requests.append(metrics)
@@ -237,142 +206,19 @@ class RequestProfiler:
             self._completed_requests.clear()
 
 
-class AsyncTaskMonitor:
-    """Monitors async tasks and detects blocking operations."""
-    
-    def __init__(self, slow_threshold: float = SLOW_CALLBACK_THRESHOLD):
-        self.slow_threshold = slow_threshold
-        self._tracked_tasks: dict[int, AsyncTaskInfo] = {}
-        self._slow_callbacks: list[dict[str, Any]] = []
-        self._max_slow_history = 100
-        self._lock = threading.Lock()
-        self._monitoring = False
-        self._original_time_func: Optional[Callable] = None
-        self._last_check_time: float = 0
-    
-    def start_monitoring(self) -> None:
-        """Start monitoring async tasks and event loop."""
-        if self._monitoring:
-            return
-        
-        self._monitoring = True
-        loop = asyncio.get_event_loop()
-        
-        # Enable slow callback warnings
-        loop.slow_callback_duration = self.slow_threshold
-        
-        # WARNING: loop.set_debug(True) can cause segfaults on Linux with OpenSSL 3.x
-        # when combined with SSL streaming (httpx, aiohttp, etc.).
-        # The debug mode adds extra callback tracking that can race with SSL shutdown.
-        # We explicitly DO NOT enable debug mode to avoid these crashes.
-        # See: https://github.com/python/cpython/issues/91227
-        # 
-        # If you need slow callback detection, use loop.slow_callback_duration instead
-        # which works without the full debug mode overhead and SSL instability.
-        
-        profiling_logger.info(f"Async task monitoring started (slow_threshold={self.slow_threshold*1000:.0f}ms)")
-        profiling_logger.info("Note: asyncio debug mode disabled to prevent SSL segfaults")
-    
-    def stop_monitoring(self) -> None:
-        """Stop monitoring."""
-        self._monitoring = False
-        # Note: We no longer enable/disable debug mode due to SSL segfault issues
-        profiling_logger.info("Async task monitoring stopped")
-    
-    def track_task(self, task: asyncio.Task) -> None:
-        """Add a task to tracking."""
-        task_id = id(task)
-        coro = task.get_coro()
-        coro_name = getattr(coro, '__qualname__', str(coro))
-        
-        # Get stack info
-        try:
-            stack_frames = traceback.extract_stack(limit=10)
-            stack_summary = '\n'.join(traceback.format_list(stack_frames[-5:]))
-        except Exception:
-            stack_summary = "Unable to capture stack"
-        
-        info = AsyncTaskInfo(
-            task_id=str(task_id),
-            name=task.get_name(),
-            created_at=time.perf_counter(),
-            coro_name=coro_name,
-            stack_summary=stack_summary
-        )
-        
-        with self._lock:
-            self._tracked_tasks[task_id] = info
-        
-        # Add done callback to clean up
-        task.add_done_callback(lambda t: self._on_task_done(task_id))
-    
-    def _on_task_done(self, task_id: int) -> None:
-        """Called when a tracked task completes."""
-        with self._lock:
-            self._tracked_tasks.pop(task_id, None)
-    
-    def get_active_tasks(self) -> list[AsyncTaskInfo]:
-        """Get all active tracked tasks."""
-        with self._lock:
-            return list(self._tracked_tasks.values())
-    
-    def get_all_tasks_info(self, include_stack: bool = False) -> list[dict[str, Any]]:
-        """Get info about ALL asyncio tasks (not just tracked ones).
-        
-        Args:
-            include_stack: If True, capture stack traces (expensive, creates FrameSummary objects).
-                          Default False to avoid memory accumulation.
-        """
-        try:
-            all_tasks = asyncio.all_tasks()
-        except RuntimeError:
-            return []
-        
-        result = []
-        for task in all_tasks:
-            coro = task.get_coro()
-            coro_name = getattr(coro, '__qualname__', str(coro))
-            
-            task_info: dict[str, Any] = {
-                "name": task.get_name(),
-                "coro": coro_name,
-                "done": task.done(),
-                "cancelled": task.cancelled(),
-            }
-            
-            # Only capture stack if explicitly requested (expensive operation)
-            if include_stack:
-                try:
-                    stack = task.get_stack(limit=3)
-                    if stack:
-                        # Format directly to string without keeping FrameSummary objects
-                        task_info["stack"] = '\n'.join(
-                            traceback.format_list(traceback.extract_stack(stack[0], limit=3))
-                        )
-                    else:
-                        task_info["stack"] = "No stack available"
-                except Exception:
-                    task_info["stack"] = "Unable to capture stack"
-            
-            result.append(task_info)
-        
-        return result
-    
-    def record_slow_callback(self, duration: float, callback_info: str) -> None:
-        """Record a slow callback event."""
-        with self._lock:
-            self._slow_callbacks.append({
-                "timestamp": datetime.now().isoformat(),
-                "duration_ms": duration * 1000,
-                "callback": callback_info
-            })
-            if len(self._slow_callbacks) > self._max_slow_history:
-                self._slow_callbacks = self._slow_callbacks[-self._max_slow_history:]
-    
-    def get_slow_callbacks(self) -> list[dict[str, Any]]:
-        """Get recorded slow callbacks."""
-        with self._lock:
-            return list(self._slow_callbacks)
+def get_async_tasks(limit: int) -> dict[str, Any]:
+    """The pending asyncio tasks of the running loop: how many, and the first ``limit`` by coroutine, then name.
+
+    One enumeration for both, so the count and the list describe the same moment. all_tasks()
+    is a set in no particular order: sorted before it is cut, the same tasks give the same list.
+    """
+    try:
+        tasks = list(asyncio.all_tasks())  # only pending tasks: a done one is no longer listed
+    except RuntimeError:  # no running loop
+        tasks = []
+    listed = sorted(({"name": task.get_name(), "coro": getattr(task.get_coro(), "__qualname__", str(task.get_coro()))}
+                     for task in tasks), key=lambda task: (task["coro"], task["name"]))
+    return {"total_count": len(tasks), "tasks": listed[:limit]}
 
 
 class EventLoopMonitor:
@@ -413,16 +259,15 @@ class EventLoopMonitor:
             await asyncio.sleep(expected_interval)
             actual = time.perf_counter() - start
             
-            # Lag is how much longer than expected
-            lag = (actual - expected_interval) * 1000  # Convert to ms
-            if lag > 0:
-                self._lag_samples.append(lag)
-                if len(self._lag_samples) > self._max_samples:
-                    self._lag_samples = self._lag_samples[-self._max_samples:]
-                
-                # Warn on significant lag
-                if lag > 100:  # More than 100ms lag
-                    profiling_logger.warning(f"Event loop lag detected: {lag:.1f}ms")
+            # Lag is how much longer than expected. A wake-up measured early (the loop's
+            # clock is coarser than perf_counter, ~15 ms on Windows) is no lag, but still a
+            # sample: skipped, "current" would keep showing an older one.
+            lag = max((actual - expected_interval) * 1000, 0.0)
+            self._lag_samples.append(lag)
+            if len(self._lag_samples) > self._max_samples:
+                self._lag_samples = self._lag_samples[-self._max_samples:]
+            if lag > 100:
+                profiling_logger.warning(f"Event loop lag detected: {lag:.1f}ms")
     
     def get_lag_stats(self) -> dict[str, float]:
         """Get event loop lag statistics."""
@@ -470,8 +315,9 @@ class MemoryMonitor:
                 "percent": process.memory_percent(),
                 "num_fds": process.num_fds() if hasattr(process, 'num_fds') else None,
                 "num_threads": process.num_threads(),
+                # No len(gc.get_objects()): it walks every live object on the event loop,
+                # and the Performance panel asks for this report every few seconds.
                 "gc_counts": gc.get_count(),
-                "gc_objects": len(gc.get_objects())
             }
         except ImportError:
             return {"error": "psutil not installed"}
@@ -481,7 +327,6 @@ class MemoryMonitor:
 
 # Global profiler instances
 _request_profiler: Optional[RequestProfiler] = None
-_task_monitor: Optional[AsyncTaskMonitor] = None
 _loop_monitor: Optional[EventLoopMonitor] = None
 
 
@@ -493,20 +338,29 @@ def get_profiler() -> RequestProfiler:
     return _request_profiler
 
 
-def get_task_monitor() -> AsyncTaskMonitor:
-    """Get the global task monitor."""
-    global _task_monitor
-    if _task_monitor is None:
-        _task_monitor = AsyncTaskMonitor()
-    return _task_monitor
-
-
 def get_loop_monitor() -> EventLoopMonitor:
     """Get the global event loop monitor."""
     global _loop_monitor
     if _loop_monitor is None:
         _loop_monitor = EventLoopMonitor()
     return _loop_monitor
+
+
+def _stats_key(scope: dict[str, Any]) -> str:
+    """The row a finished request is counted under -- never its raw path, so the rows stay a bounded set.
+
+    Routing leaves its result in the scope the middleware passed down: the matched
+    route (its template, below the root path of the app it lives in), or a mount it
+    entered (static files: no route, but a root path of its own). Anything else --
+    a 404, a slash redirect, a request refused before routing -- shares one row.
+    """
+    root_path = scope.get("root_path", "")
+    route = scope.get("route")
+    if route is not None and getattr(route, "path_format", None):
+        return f"{root_path}{route.path_format}"
+    if "app_root_path" in scope and root_path != scope["app_root_path"]:
+        return f"{root_path}/{{path}}"
+    return "(no route)"
 
 
 def add_profiling_middleware(app: "FastAPI") -> None:
@@ -532,7 +386,7 @@ def add_profiling_middleware(app: "FastAPI") -> None:
                 return
             
             request_id = str(uuid.uuid4())[:8]
-            path = scope.get("path", "")
+            path = loggable_path(scope.get("path", ""))  # kept for the report and the slow-request log
             method = scope.get("method", "")
             
             profiler.start_request(request_id, path, method)
@@ -552,7 +406,7 @@ def add_profiling_middleware(app: "FastAPI") -> None:
                 error = str(e)
                 raise
             finally:
-                metrics = profiler.end_request(request_id, status_code, error)
+                metrics = profiler.end_request(request_id, status_code, error, _stats_key(scope))
                 if metrics and metrics.duration_ms and metrics.duration_ms > SLOW_REQUEST_THRESHOLD * 1000:
                     profiling_logger.warning(
                         f"Slow request: {method} {path} took {metrics.duration_ms:.1f}ms "
@@ -564,66 +418,9 @@ def add_profiling_middleware(app: "FastAPI") -> None:
     logger.info("Profiling middleware added to app")
 
 
-# Keep async version for backwards compatibility
-async def create_profiling_middleware(app: "FastAPI") -> None:
-    """Deprecated: Use add_profiling_middleware() instead.
-    
-    This async version doesn't work properly because middleware must be
-    added before the app starts, not during startup event.
-    """
-    add_profiling_middleware(app)
-    profiling_logger.info("Profiling middleware installed")
-
-
-def profile_async(name: Optional[str] = None):
-    """Decorator to profile async functions."""
-    def decorator(func: Callable) -> Callable:
-        func_name = name or func.__qualname__
-        
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            if not PROFILING_ENABLED:
-                return await func(*args, **kwargs)
-            
-            start = time.perf_counter()
-            try:
-                return await func(*args, **kwargs)
-            finally:
-                duration = (time.perf_counter() - start) * 1000
-                if duration > SLOW_CALLBACK_THRESHOLD * 1000:
-                    profiling_logger.warning(f"Slow async function: {func_name} took {duration:.1f}ms")
-        
-        return wrapper
-    return decorator
-
-
-def get_profiling_snapshot() -> ProfilingSnapshot:
-    """Get a complete profiling snapshot."""
-    profiler = get_profiler()
-    task_monitor = get_task_monitor()
-    loop_monitor = get_loop_monitor()
-    
-    active_requests = profiler.get_active_requests()
-    slow_requests = profiler.get_slow_requests()
-    all_tasks = task_monitor.get_all_tasks_info()
-    lag_stats = loop_monitor.get_lag_stats()
-    
-    return ProfilingSnapshot(
-        timestamp=datetime.now(),
-        active_requests=len(active_requests),
-        active_tasks=len(all_tasks),
-        slow_requests=slow_requests,
-        blocked_tasks=task_monitor.get_active_tasks(),
-        event_loop_lag_ms=lag_stats.get("current_ms", 0),
-        memory_mb=MemoryMonitor.get_memory_mb(),
-        thread_count=threading.active_count()
-    )
-
-
 def get_profiling_report() -> dict[str, Any]:
     """Generate a comprehensive profiling report."""
     profiler = get_profiler()
-    task_monitor = get_task_monitor()
     loop_monitor = get_loop_monitor()
     
     return {
@@ -631,7 +428,6 @@ def get_profiling_report() -> dict[str, Any]:
         "timestamp": datetime.now().isoformat(),
         "thresholds": {
             "slow_request_ms": SLOW_REQUEST_THRESHOLD * 1000,
-            "slow_callback_ms": SLOW_CALLBACK_THRESHOLD * 1000
         },
         "requests": {
             "active": [
@@ -655,84 +451,47 @@ def get_profiling_report() -> dict[str, Any]:
             ],
             "stats_by_path": profiler.get_stats()
         },
-        "async_tasks": {
-            "total_count": len(task_monitor.get_all_tasks_info()),
-            "tasks": task_monitor.get_all_tasks_info()[:20],  # Limit to 20
-            "slow_callbacks": task_monitor.get_slow_callbacks()[-10:]
-        },
+        "async_tasks": get_async_tasks(limit=20),
         "event_loop": loop_monitor.get_lag_stats(),
         "memory": MemoryMonitor.get_memory_details(),
         "threads": _get_thread_details()
     }
 
 
+#: Where a waiting thread's innermost Python frame sits: (file name, function name).
+#: Only the innermost frame counts -- every executor thread has thread.py:_worker
+#: somewhere below it, the busy ones too. A wait inside C (time.sleep, a socket
+#: read) leaves the caller as innermost frame: such a thread shows as active.
+_IDLE_FRAMES = frozenset({
+    ("threading.py", "wait"),          # Event.wait(), Condition.wait(), queue.Queue.get()
+    ("selectors.py", "select"),        # an event loop waiting for I/O
+    ("windows_events.py", "_poll"),    # the same on the Windows proactor loop
+    ("thread.py", "_worker"),          # ThreadPoolExecutor worker waiting on its SimpleQueue
+})
+
+
 def _get_thread_details() -> dict[str, Any]:
-    """Get detailed thread information including idle/active state.
-    
-    Returns thread list with idle detection based on stack frames.
-    A thread is considered idle if any frame in its stack is in a blocking call like:
-    - queue.get() (ThreadPoolExecutor workers waiting for work)
-    - threading.Event.wait() (condition variable waits)
-    - select.select() (I/O waits)
-    - ThreadPoolExecutor._worker (worker threads waiting for tasks)
-    """
+    """Every thread with whether it waits (idle) or runs Python code (active)."""
     import sys
-    
-    # Get current frames for all threads
+
     frames = sys._current_frames()
-    
-    # Known idle patterns in stack frames (module/filename pattern, function name pattern)
-    idle_patterns = [
-        ('queue', 'get'),           # Queue.get() - workers waiting for tasks
-        ('threading', 'wait'),      # Event.wait(), Condition.wait()
-        ('selectors', 'select'),    # select/poll - I/O waiting
-        ('socket', 'recv'),         # Socket receive
-        ('time', 'sleep'),          # Explicit sleep
-        ('thread.py', '_worker'),   # ThreadPoolExecutor worker waiting for work
-    ]
-    
     threads_info = []
     for thread in threading.enumerate():
         frame = frames.get(thread.ident)
-        is_idle = False
-        idle_reason = None
-        
-        if frame:
-            # Walk up the stack to find idle patterns (not just top frame)
-            current_frame = frame
-            depth = 0
-            while current_frame and not is_idle and depth < 20:
-                filename = current_frame.f_code.co_filename
-                funcname = current_frame.f_code.co_name
-                
-                # Extract just the filename for matching
-                basename = filename.split('/')[-1].split('\\')[-1]
-                
-                for module, func in idle_patterns:
-                    # Check if pattern matches (module can be in path or equal to basename)
-                    module_match = module in filename or module == basename
-                    func_match = func in funcname
-                    
-                    if module_match and func_match:
-                        is_idle = True
-                        idle_reason = f"{basename}:{func}"
-                        break
-                
-                current_frame = current_frame.f_back
-                depth += 1
-        
+        where = (os.path.basename(frame.f_code.co_filename), frame.f_code.co_name) if frame else None
+        is_idle = where in _IDLE_FRAMES
         threads_info.append({
             "name": thread.name,
             "ident": thread.ident,
             "daemon": thread.daemon,
             "alive": thread.is_alive(),
             "idle": is_idle,
-            "idle_reason": idle_reason
+            "idle_reason": f"{where[0]}:{where[1]}" if is_idle else None,
         })
-    
+
     # Sort: active first, then by name
     threads_info.sort(key=lambda t: (t["idle"], t["name"]))
-    
+
     return {
         "count": len(threads_info),
         "active_count": sum(1 for t in threads_info if not t["idle"]),
@@ -752,11 +511,6 @@ async def start_profiling() -> None:
     
     profiling_logger.info("Starting performance profiling...")
     profiling_logger.info(f"Slow request threshold: {SLOW_REQUEST_THRESHOLD * 1000}ms")
-    profiling_logger.info(f"Slow callback threshold: {SLOW_CALLBACK_THRESHOLD * 1000}ms")
-    
-    # Start monitors
-    task_monitor = get_task_monitor()
-    task_monitor.start_monitoring()
     
     loop_monitor = get_loop_monitor()
     await loop_monitor.start()
@@ -767,9 +521,6 @@ async def start_profiling() -> None:
 
 async def stop_profiling() -> None:
     """Stop all profiling components."""
-    task_monitor = get_task_monitor()
-    task_monitor.stop_monitoring()
-    
     loop_monitor = get_loop_monitor()
     await loop_monitor.stop()
     

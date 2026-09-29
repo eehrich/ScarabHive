@@ -21,7 +21,7 @@ from agent_system.hooks import (
 
 
 class MockHookPlugin(PluginHook):
-    """Mock plugin implementing ONLY PluginHook interface (no MCP tools)."""
+    """Mock plugin implementing ONLY PluginHook interface (no tools)."""
     
     def __init__(self, name: str, config: Dict[str, Any] = None):
         super().__init__(name, config or {})
@@ -409,3 +409,68 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
     assert clean_registry.get_hook_info('multi_hook_plugin.pre_hook') is not None
     assert clean_registry.get_hook_info('multi_hook_plugin.post_hook') is not None
     assert clean_registry.get_hook_info('multi_hook_plugin.format_hook') is not None
+
+
+@pytest.mark.asyncio
+async def test_instance_hook_config_disables_the_registration_default(clean_registry):
+    """A server instance's hook_config.enabled=False must win over the schema.
+
+    This is the "one instance on, second instance off" case: the schema says
+    enabled, the instance (e.g. writer_context_summarizer) says off-by-default.
+    Until 2026-09-02 the instance value was written into configs but read by
+    nobody -- every agent without an override ran BOTH summarizer instances.
+    """
+    plugin = MockHookPlugin("writer_summarizer", {})
+    metadata = {'hooks': [{'name': 'summarize', 'type': 'pre_llm_call',
+                           'enabled': True}]}
+
+    registered = await register_plugin_hooks(
+        "writer_summarizer", plugin, metadata, clean_registry,
+        instance_hook_config={'enabled': False})
+
+    assert registered == ['writer_summarizer.summarize']
+    assert clean_registry.get_hook_info('writer_summarizer.summarize')['enabled'] is False
+
+
+@pytest.mark.asyncio
+async def test_global_override_still_beats_the_instance_default(clean_registry):
+    """Operator config (hooks.overrides) must outrank the instance default."""
+    from agent_system.hooks.config import HooksConfig
+
+    plugin = MockHookPlugin("p", {})
+    metadata = {'hooks': [{'name': 'h', 'type': 'pre_llm_call', 'enabled': True}]}
+    hooks_config = HooksConfig(overrides={'p.h': {'enabled': True}})
+
+    await register_plugin_hooks("p", plugin, metadata, clean_registry,
+                                hooks_config=hooks_config,
+                                instance_hook_config={'enabled': False})
+
+    assert clean_registry.get_hook_info('p.h')['enabled'] is True
+
+
+@pytest.mark.asyncio
+async def test_instance_enabled_true_does_not_lift_a_schema_off_switch(clean_registry):
+    """Lower-only: the shipped sub_agent_manager config says enabled:true
+    against a schema that deliberately registers the hook disabled. Honouring
+    the True would flip that hook on for every agent -- so True is a no-op."""
+    plugin = MockHookPlugin("sam", {})
+    metadata = {'hooks': [{'name': 'inject', 'type': 'pre_llm_call',
+                           'enabled': False}]}
+
+    await register_plugin_hooks("sam", plugin, metadata, clean_registry,
+                                instance_hook_config={'enabled': True})
+
+    assert clean_registry.get_hook_info('sam.inject')['enabled'] is False
+
+
+@pytest.mark.asyncio
+async def test_instance_hook_config_without_enabled_changes_nothing(clean_registry):
+    """hook_config may carry other keys; only 'enabled' speaks here."""
+    plugin = MockHookPlugin("p", {})
+    metadata = {'hooks': [{'name': 'h', 'type': 'pre_llm_call', 'enabled': False}]}
+
+    await register_plugin_hooks("p", plugin, metadata, clean_registry,
+                                instance_hook_config={'other_setting': 1})
+
+    assert clean_registry.get_hook_info('p.h')['enabled'] is False
+

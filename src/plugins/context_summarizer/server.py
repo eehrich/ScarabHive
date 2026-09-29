@@ -1,6 +1,6 @@
-"""Context Summarizer MCP Server - Manual context summarization tool with hook support.
+"""Context Summarizer Tool Server - Manual context summarization tool with hook support.
 
-Unified implementation combining MCP tools and hook functionality.
+Unified implementation combining tools and hook functionality.
 Allows LLMs to manually trigger context summarization and automatically
 summarizes when context exceeds configured thresholds.
 """
@@ -10,20 +10,20 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Dict, List
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
-from agent_system.hooks.plugin_hook import PluginHook, HookContext, HookResult
+from agent_system.tools.hook_tool_server import SchemaBasedHookToolServer
+from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.llm.token_utils import estimate_token_count, estimate_tools_token_count
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
-    """Unified MCP server and hook for context summarization.
+class ContextSummarizerServer(SchemaBasedHookToolServer):
+    """Unified tool server and hook for context summarization.
 
-    Provides MCP tools:
+    Provides tools:
     - summarize: Manually trigger summarization of current conversation
     - check_stats: Check current context statistics (token count, message count)
 
@@ -31,34 +31,31 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
     exceeds configured thresholds.
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Initialize ContextSummarizerServer.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        # Initialize MCP server
-        SchemaBasedMCPServer.__init__(self, name, system_config, mcp_config)
+        # Tool server and hook in one: the base class initialises both
+        # halves and builds the hook config (schema defaults, plugins.yaml on top).
+        super().__init__(name, system_config, server_config)
 
-        # Initialize hook
-        hook_config = getattr(mcp_config, 'hook_config', {})
-        PluginHook.__init__(self, name, config=hook_config)
-
-        # Load configuration
-        config_dict = mcp_config.config if hasattr(mcp_config, 'config') else {}
-        self.trigger_percentage = float(config_dict.get('summarization_trigger_percentage', 0.60))
-        self.chunk_size = int(config_dict.get('summarization_chunk_size', 10))
-        self.preserve_recent = int(config_dict.get('preserve_recent_count', 10))
-        self.preserve_system = bool(config_dict.get('preserve_system_messages', True))
-        self.llm_profile = str(config_dict.get('llm_profile', 'fast'))
-        self.prompt_template = str(config_dict.get('summary_prompt_template', ''))
-        self.min_reduction = float(config_dict.get('min_summary_reduction', 0.3))
-        self.store_metadata = bool(config_dict.get('store_original_metadata', True))
-        self.marker_format = str(config_dict.get('summary_marker_format',
-                                        '[Summary of {count} messages from {start_time} to {end_time}]'))
-        self.max_preview_length = int(config_dict.get('max_message_preview_length', 5000))
+        # Load configuration. ONE mapping, handed over whole — the hook merges
+        # it over the schema defaults and owns every key from there.
+        #
+        # This used to be a second default table here plus a line-per-key copy
+        # onto the hook, which ran AFTER the schema had already resolved the
+        # right values and overwrote them. Two of those fallbacks were wrong:
+        # llm_profile fell back to 'fast' (not a profile config/llm.yaml
+        # defines) and summary_prompt_template to '' — and an empty template
+        # makes `template.replace('{messages}', …)` an EMPTY prompt. Measured
+        # on this exact path: the summarizer called the LLM with an empty user
+        # message. Neither key is set in plugins.yaml, so the wrong fallback
+        # was always the effective value.
+        config_dict = dict(server_config.config) if getattr(server_config, 'config', None) else {}
 
         # Web UI history tracking
         self.summarization_history: List[Dict[str, Any]] = []
@@ -71,32 +68,27 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             plugin_dir,
             summarization_history=self.summarization_history
         )
-        
-        # Override hook config with server config (from plugin_configs.yaml)
-        # This ensures both MCP tools and hooks use the same configuration
-        self._hooks_impl.trigger_percentage = self.trigger_percentage
-        self._hooks_impl.chunk_size = self.chunk_size
-        self._hooks_impl.preserve_recent = self.preserve_recent
-        self._hooks_impl.preserve_system = self.preserve_system
-        self._hooks_impl.llm_profile = self.llm_profile
-        self._hooks_impl.prompt_template = self.prompt_template
-        self._hooks_impl.min_reduction = self.min_reduction
-        self._hooks_impl.store_metadata = self.store_metadata
-        self._hooks_impl.marker_format = self.marker_format
-        self._hooks_impl.max_preview_length = self.max_preview_length
+        self._hooks_impl.apply_config(config_dict)
+
+        # The tool below reports the threshold; read it off the hook so
+        # there is one source rather than a copy that can disagree.
+        self.trigger_percentage = self._hooks_impl.trigger_percentage
 
         logger.info(
             f"ContextSummarizerServer initialized: trigger={self.trigger_percentage:.0%} of context window, "
-            f"chunk_size={self.chunk_size}, preserve_recent={self.preserve_recent}, "
-            f"llm_profile={self.llm_profile}"
+            f"chunk_size={self._hooks_impl.chunk_size}, "
+            f"preserve_recent={self._hooks_impl.preserve_recent}, "
+            f"llm_profile={self._hooks_impl.llm_profile}, "
+            f"max_messages={self._hooks_impl.max_messages or 'disabled'}, "
+            f"min_time_between={self._hooks_impl.min_time_between}s"
         )
 
     # =========================================================================
-    # MCP Tools Interface
+    # Tools Interface
     # =========================================================================
 
     async def list_tools(self) -> list:
-        """List available MCP tools from schema.
+        """List available tools from schema.
 
         Returns tools defined in schema.yaml for this plugin.
         """
@@ -158,10 +150,18 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             # Get current messages from the agent's LIVE messages list, not persisted session
             # This ensures we include the current assistant message (with tool_calls) that
             # triggered this summarize() call. Without this, orphaned tool responses occur.
+            # Session-correct live messages (keyed by session_id), falling back
+            # to the persisted session tracker. Replaces the shared-singleton
+            # agent._current_messages read which could return another session's
+            # messages under concurrency.
             messages = None
-            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+            if hasattr(agent, 'get_live_messages'):
+                live = agent.get_live_messages(session_id)
+                if isinstance(live, list):
+                    messages = live.copy()
+            elif hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
                 messages = agent._current_messages.copy()
-            
+
             # Fallback to session tracker if live messages not available
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
@@ -206,7 +206,10 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
                 session_id=session_id,
                 messages=messages,
                 agent=agent,
-                llm=agent.llm if hasattr(agent, 'llm') else None,
+                # The model answering the running step, not the configured one:
+                # the trigger is a share of ITS window.
+                llm=(agent.llm_for_session(session_id) if hasattr(agent, 'llm_for_session')
+                     else getattr(agent, 'llm', None)),
                 metadata={"manual_trigger": True, "reason": reason}
             )
 
@@ -300,10 +303,18 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Get current messages from the agent's LIVE messages list
             # This ensures we include the current assistant message (with tool_calls)
+            # Session-correct live messages (keyed by session_id), falling back
+            # to the persisted session tracker. Replaces the shared-singleton
+            # agent._current_messages read which could return another session's
+            # messages under concurrency.
             messages = None
-            if hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
+            if hasattr(agent, 'get_live_messages'):
+                live = agent.get_live_messages(session_id)
+                if isinstance(live, list):
+                    messages = live.copy()
+            elif hasattr(agent, '_current_messages') and isinstance(agent._current_messages, list):
                 messages = agent._current_messages.copy()
-            
+
             # Fallback to session tracker if live messages not available
             if not messages:
                 messages = agent._session_tracker.get_session_messages(session_id)
@@ -326,27 +337,38 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
             # Calculate tokens - try to get actual tokens from context_usage_tracker first
             estimated_tokens = estimate_token_count(messages)
 
-            # Include tool definition tokens in estimation (they consume context window)
+            # Include tool definition tokens in estimation (session-correct).
             tool_definition_tokens = 0
-            if hasattr(agent, '_current_tools_schema') and isinstance(agent._current_tools_schema, list) and agent._current_tools_schema:
-                tool_definition_tokens = estimate_tools_token_count(agent._current_tools_schema)
+            tools_schema = None
+            if hasattr(agent, 'get_live_tools_schema'):
+                tools_schema = agent.get_live_tools_schema(session_id)
+            if tools_schema is None:
+                tools_schema = getattr(agent, '_current_tools_schema', None)
+            if isinstance(tools_schema, list) and tools_schema:
+                tool_definition_tokens = estimate_tools_token_count(tools_schema)
                 estimated_tokens += tool_definition_tokens
                 logger.debug(
                     f"[check_stats] Added {tool_definition_tokens} tool definition tokens "
-                    f"({len(agent._current_tools_schema)} tools)"
+                    f"({len(tools_schema)} tools)"
                 )
 
             actual_tokens = 0
 
             # Try to get actual tokens from context_usage_tracker (more accurate)
             try:
-                if hasattr(agent, 'system_config') and hasattr(agent.system_config, 'mcp_registry'):
-                    registry = agent.system_config.mcp_registry
+                if hasattr(agent, 'system_config') and hasattr(agent.system_config, 'tool_registry'):
+                    registry = agent.system_config.tool_registry
                     usage_tracker = registry.get_server('context_usage_tracker')
                     if usage_tracker and hasattr(usage_tracker, 'tracker'):
-                        tracker = usage_tracker.tracker
-                        if tracker._latest_snapshot and tracker._latest_snapshot.session_id == session_id:
-                            actual_tokens = tracker._latest_snapshot.prompt_tokens
+                        # get_latest(session_id=...) instead of the tracker's
+                        # private _latest_snapshot: that attribute was the
+                        # process's own last call and is gone since the tracker
+                        # moved to a shared store. Reaching into it kept
+                        # "working" — the AttributeError landed in the except
+                        # below and this silently fell back to the estimate.
+                        latest = usage_tracker.tracker.get_latest(session_id=session_id)
+                        if latest:
+                            actual_tokens = latest.get('prompt_tokens', 0) or 0
                             logger.debug(
                                 f"[check_stats] Got actual tokens from usage_tracker: {actual_tokens} "
                                 f"(estimated: {estimated_tokens})"
@@ -359,8 +381,10 @@ class ContextSummarizerServer(SchemaBasedMCPServer, PluginHook):
 
             # Get context window
             context_window = 0
-            if hasattr(agent, 'llm') and agent.llm:
-                context_window = getattr(agent.llm, 'context_window', 0)
+            answering = (agent.llm_for_session(session_id) if hasattr(agent, 'llm_for_session')
+                         else getattr(agent, 'llm', None))
+            if answering:
+                context_window = getattr(answering, 'context_window', 0)
 
             # Calculate utilization
             utilization = (total_tokens / context_window * 100) if context_window > 0 else 0

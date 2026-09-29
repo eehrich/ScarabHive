@@ -1,43 +1,35 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, TYPE_CHECKING
 
 from agent_system.llm.models import ChatMessage
-from agent_system.llm.clients import make_llm
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.llm.text_sanitizer import sanitize_for_llm
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 
-class LLMRouterServer(SchemaBasedMCPServer):
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
-        super().__init__(name, system_config, mcp_config)
+class LLMRouterServer(SchemaBasedToolServer):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
+        super().__init__(name, system_config, server_config)
         
         # Store the full system config for LLM routing
         self.llm_config = system_config.llm_system
-        self.agent_config = system_config
+        # NO self.agent_config alias here: it held the SYSTEM config under an
+        # agent name, and _resolve_profile_config duly handed it to
+        # resolve_llm_config_for_agent() as the first argument with a plain
+        # string as the second. The base class already exposes system_config.
+        # _make_client passes self.ssl_verify onward, but the base
+        # class never sets it - without this every chat() call raised
+        # AttributeError (swallowed by the broad except, so the tool was
+        # silently non-functional). Mirror basic_agent/server.py.
+        network_cfg = getattr(system_config, 'network', None)
+        self.ssl_verify = getattr(network_cfg, 'ssl_verify', True) if network_cfg else True
 
 
-
-    def _resolve_profile_config(self, profile_name: str) -> dict:
-        """Resolve LLM configuration from profile name using AgentConfig."""
-        if not self.llm_config:
-            raise ValueError("Profile-based routing requires LLM system configuration")
-        
-        try:
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            
-            # Create temporary AgentConfig with the requested profile
-            temp_config = self.agent_config.model_copy()
-            temp_config.agent_llm_profiles = {f"llm_router_{profile_name}": profile_name}
-            
-            # Resolve profile to get LLM kwargs
-            return resolve_llm_config_for_agent(temp_config, f"llm_router_{profile_name}")
-        except Exception as e:
-            raise ValueError(f"Failed to resolve profile '{profile_name}': {e}")
 
     def _make_serializable(self, obj) -> Any:
         """Convert objects to JSON-serializable format."""
@@ -112,22 +104,22 @@ class LLMRouterServer(SchemaBasedMCPServer):
         return profile_details
 
     def _make_client(self, profile: str):
-        """Create an LLM client using profile-based configuration."""
+        """Create an LLM client for one profile.
+
+        create_llm_from_profile forwards every resolved field and handles
+        batch wrapping. The previous route resolved the config by hand - with
+        the arguments swapped, so it raised on every call - and then dropped
+        thinking_level, max_tokens, safety_settings, service_tier,
+        provider_routing and capabilities on the way to the client factory.
+        """
+        from agent_system.llm.factory import create_llm_from_profile
+
         try:
-            llm_kwargs = self._resolve_profile_config(profile)
-            return make_llm(
-                llm_kwargs["provider"],
-                llm_kwargs["model"],
-                llm_kwargs["api_key"],
-                llm_kwargs["base_url"],
-                llm_kwargs["context_window"],
-                llm_kwargs["ollama_mode"],
-                llm_kwargs["request_timeout"],
-                ssl_verify=self.ssl_verify,
-                httpx_timeouts=llm_kwargs.get("httpx_timeouts"),
-            )
+            return create_llm_from_profile(
+                self.system_config, profile, ssl_verify=self.ssl_verify)
         except Exception as e:
-            raise ValueError(f"Failed to create LLM client for profile '{profile}': {e}")
+            raise ValueError(
+                f"Failed to create LLM client for profile '{profile}': {e}")
 
     async def chat(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -141,7 +133,8 @@ class LLMRouterServer(SchemaBasedMCPServer):
         # Check for cancellation before LLM routing
         cancellation_token = params.get("_cancellation_token")
         if cancellation_token and cancellation_token.is_cancelled:
-            return {"error": "LLM routing request cancelled by user", "cancelled": True}
+            return {"error": "LLM routing request cancelled by user", "cancelled": True,
+                    "forced": cancellation_token.is_forced}
 
         # Handle both message formats first
         if "messages" in params:
@@ -168,13 +161,37 @@ class LLMRouterServer(SchemaBasedMCPServer):
 
             content = await client.chat(messages, cancellation_token=cancellation_token)
 
-            await status.end(f"Chat completed using profile '{profile}'")
+            # The end line repeated the progress line: neither the model
+            # that actually served the call nor the response size, although
+            # both are read two lines below.
+            # Outcome first: the model id can be long ("anthropic/claude-...")
+            # and the WebUI cuts the line on the right.
+            await status.end(
+                f"{len(content or '')} chars via '{profile}' "
+                f"-- {getattr(client, 'model', 'unknown')}")
             return {
                 "content": content,
                 "profile": profile,
                 "provider": getattr(client, 'provider', 'unknown'),
                 "model": getattr(client, 'model', 'unknown')
             }
+        except asyncio.CancelledError:
+            # The user's cancel reaches the client as CancelledError. Letting
+            # it out of the tool makes the agent server answer the model with
+            # "force-cancelled", so it is answered here -- the same result as
+            # the check before the call, reported the same way: the scope stays
+            # open on purpose, and the tool base turns the error result into an
+            # error event (a cancel is not a completed call).
+            # The token here is the TOOL's (tool_execution.py), and a forced
+            # termination never marks it: the manager forces the MAIN token and
+            # cancels this task, so the kill arrives as an ordinary cancel with
+            # `is_forced` false. Answering it ends the tool right here -- the
+            # provider call is already gone with the same CancelledError -- so
+            # nothing survives the kill, which is what the rule protects.
+            if cancellation_token and cancellation_token.is_cancelled:
+                return {"error": "LLM routing request cancelled by user", "cancelled": True,
+                        "forced": cancellation_token.is_forced}
+            raise
         except Exception as e:
             return {
                 "error": f"Chat failed with profile '{profile}': {str(e)}",

@@ -5,21 +5,13 @@ from unittest.mock import AsyncMock
 
 from agent_system.servers.agent.server import Agent
 from agent_system.config.models import AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
+from tool_execution_test_helpers import execute_tools_collect
 
 
 def create_test_config():
     """Create a test configuration with the new LLM system structure."""
     return AgentConfig(
-        llm_system=LLMSystemConfig(
-            models={
-                "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="fake-key")
-            },
-            profiles={
-                "normal": LLMProfile(model_ref="gpt-4")
-            },
-            default_profile="normal"
-        ),
         max_steps=1
     )
 
@@ -30,14 +22,14 @@ class TestAgentSanitizationIntegration:
     @pytest.mark.asyncio
     async def test_agent_sanitizes_user_input(self):
         """Test that user input is sanitized before being sent to LLM."""
-        from agent_system.config.models import AgentSystemConfig, MCPConfig
-        
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+
         # Create mock config
         agent_config = create_test_config()
         system_config = AgentSystemConfig(
             llm_system=LLMSystemConfig(
                 models={
-                    "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="fake-key")
+                    "gpt-4": LLMModelConfig(provider="openai", model="gpt-4", api_key="fake-key")
                 },
                 profiles={
                     "normal": LLMProfile(model_ref="gpt-4")
@@ -45,43 +37,43 @@ class TestAgentSanitizationIntegration:
                 default_profile="normal"
             )
         )
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_config)
-        
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_config)
+
         # Create mock registry
-        registry = MCPRegistry()
-        
+        registry = ToolServerRegistry()
+
         # Create agent
-        agent = Agent("test_agent", system_config, mcp_config, registry)
-        
+        agent = Agent("test_agent", system_config, server_config, registry)
+
         # Mock the LLM to capture what messages it receives
         captured_messages = []
-        
+
         async def mock_chat_tools_streaming(messages, tools, cancellation_token=None, status_scope=None):
             captured_messages.extend(messages)
             # Yield streaming chunks
             yield {"type": "content_delta", "delta": "Test", "accumulated": "Test"}
             yield {"type": "final", "assistant": {"role": "assistant", "content": "Test response"}}
-        
+
         agent.llm = AsyncMock()
         agent.llm.supports_streaming = lambda: True
         agent.llm.chat_tools_streaming = mock_chat_tools_streaming
-        
+
         # Test with problematic input containing null bytes and control characters
         problematic_input = "Hello\x00world\x01test\u200Bdata"
-        
+
         # Call the agent (tool param is agent name, task in params)
         await agent.call(agent.name, {"task": problematic_input})
-        
+
         # Verify the user message was sanitized
         user_messages = [msg for msg in captured_messages if msg.role == "user"]
         assert len(user_messages) == 1
         user_content = user_messages[0].content
-        
+
         # Should not contain problematic characters
         assert "\x00" not in user_content
         assert "\x01" not in user_content
         assert "\u200B" not in user_content
-        
+
         # Should contain the safe parts
         assert "Hello" in user_content
         assert "world" in user_content
@@ -97,16 +89,16 @@ class TestAgentSanitizationIntegration:
         then run the agent through one iteration and capture the tool message
         sent to the LLM to assert sanitization occurred.
         """
-        from agent_system.config.models import AgentSystemConfig, MCPConfig, AgentConfig as AC
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig, AgentConfig as AC
     # No external plugin classes required; use a simple DummyToolServer below
 
         # Create system and agent configs
         system_config = AgentSystemConfig()
         agent_cfg = AC(max_steps=1)
-        mcp_config = MCPConfig(type="agent", enabled=True, agent_config=agent_cfg)
+        server_config = ToolServerConfig(type="agent", enabled=True, agent_config=agent_cfg)
 
         # Create registry and register a dummy tool server that returns problematic chars
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
 
         class DummyToolServer:
             def __init__(self, name):
@@ -156,7 +148,7 @@ class TestAgentSanitizationIntegration:
         agent_llm.chat_tools = mock_chat_tools
 
         # Build agent with injected mock LLM to avoid real LLM init
-        agent = Agent("test_agent", system_config, mcp_config, registry, llm=agent_llm)
+        agent = Agent("test_agent", system_config, server_config, registry, llm=agent_llm)
 
         # Instead of driving the full agent planning loop, call the ToolExecutionManager
         # directly with a single prepared tool call so we reliably invoke the DummyToolServer.
@@ -167,7 +159,7 @@ class TestAgentSanitizationIntegration:
         tool_name_mapping = {}
         available_tools = ["test_tool"]
 
-        tool_messages, events, results = await agent._tool_execution_manager.execute_tools(
+        tool_messages, events, results = await execute_tools_collect(agent._tool_execution_manager,
             tool_calls, tool_name_mapping, available_tools, step=0, request_id="req1"
         )
 

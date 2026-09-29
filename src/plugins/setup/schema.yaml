@@ -1,0 +1,69 @@
+# Setup: what an installation still lacks, and one real request to see whether the chat answers.
+# Keys are never passed through a tool: they go into config/secrets.env (docs/einrichtung_konzept.md).
+
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_status"
+      description: >-
+        What this installation still lacks. Lists every API key the configuration names with its
+        state -- set, missing, or placeholder (a copied template value the provider refuses) -- and
+        the config sections that name it (other entries inherit it through `extends`). A missing key
+        matters only for what uses it; whether the chat answers, setup_probe_chat tells. Also: the
+        default chat agent and its first LLM profile, whether an admin still opens with a publicly
+        known password, whether logins are signed with a publicly known key, and whether the config file
+        names one (a restart applies it). In auth, null means it cannot be told from here, never "no".
+        Never returns a key's value.
+        Administrators only. Never ask for a key in the chat: the user puts it into
+        config/secrets.env and restarts the API; the Setup panel shows its state.
+      parameters:
+        type: object
+        properties: {}
+        additionalProperties: false
+
+  - type: function
+    function:
+      name: "{{ name }}_probe_chat"
+      description: >-
+        Sends one short request through an LLM profile the way an agent would (default: the
+        default chat agent's first profile) and says whether an answer came, or the error the
+        provider gave -- a refused key shows as such. Uses the configuration the chat started with.
+        Costs one small request; batch profiles are refused. Administrators only.
+      parameters:
+        type: object
+        properties:
+          profile:
+            type: string
+            description: "LLM profile to try; omit for the default chat agent's first profile"
+        additionalProperties: false
+
+web_ui:
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Setup"
+    description: "What this installation still lacks: API keys, the admin password, its own signing key; test the chat"
+    icon: settings
+    category: admin
+    keywords: [setup, install, keys, api key, openrouter, admin, password, first start, onboarding]
+    window: {width: 900, height: 720}
+
+  # /plugins/setup/* is admin only by its rule in config.yaml (plugin_security); the data endpoints check
+  # for an admin themselves as well (require_admin_viewer). The page carries no data.
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "The Setup panel"
+
+    - path: "/state"
+      method: "GET"
+      handler: "get_state"
+      response_type: "json"
+      description: "Keys (state, never the value), default chat profile, admin password and signing key"
+
+    - path: "/probe"
+      method: "POST"
+      handler: "post_probe"
+      response_type: "json"
+      description: "One short request through the default chat profile: did it answer, and else the provider's error"

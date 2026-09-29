@@ -7,7 +7,7 @@ as the architecture was replaced with DirectStatusHandler (synchronous, no backg
 import asyncio
 import pytest
 from agent_system.servers.agent.components.tool_execution import ToolExecutionManager
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 
 
 class TestToolExecutionInfiniteLoopPrevention:
@@ -16,7 +16,7 @@ class TestToolExecutionInfiniteLoopPrevention:
     @pytest.fixture
     def tool_manager(self):
         """Create ToolExecutionManager for testing."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         return ToolExecutionManager(registry)
 
     @pytest.mark.asyncio
@@ -161,7 +161,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_tool_list(self):
         """Test tool execution with empty tool list."""
-        registry = MCPRegistry()
+        registry = ToolServerRegistry()
         tool_manager = ToolExecutionManager(registry)
         
         # Execute with empty tool calls list

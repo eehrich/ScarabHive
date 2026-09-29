@@ -1,72 +1,58 @@
 # Memory Plugin - Schema (Tools, Hooks, Config, Web UI)
 
 web_ui:
-  button:
-    enabled: true
-    text: "Memories"
-    icon: "💾"
-
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Memory Manager"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    width: "1000px"
-    height: "800px"
+    title: "Memory"
+    description: "Long-term memories of the agents"
+    icon: database
+    category: context
+    keywords: [memory, recall]
+    window: {width: 1000, height: 760}
+    contexts:
+      session: "/plugins/{{ name }}/?session_id={session_id}"
 
   endpoints:
     - path: "/"
       method: "GET"
       handler: "get_panel"
       response_type: "html"
-      description: "Render the Memory management dashboard"
+      description: "The Memory panel"
 
     - path: "/memories"
       method: "GET"
       handler: "get_memories"
       response_type: "json"
-      description: "Get memories with pagination and sorting"
-
-    - path: "/memories/{memory_id}"
-      method: "GET"
-      handler: "get_memory"
-      response_type: "json"
-      description: "Get a single memory by ID"
-
-    - path: "/memories/search"
-      method: "POST"
-      handler: "search_memories"
-      response_type: "json"
-      description: "Semantic search for memories"
-
-    - path: "/memories"
-      method: "POST"
-      handler: "create_memory"
-      response_type: "json"
-      description: "Create a new memory"
-
-    - path: "/memories/{memory_id}"
-      method: "DELETE"
-      handler: "delete_memory"
-      response_type: "json"
-      description: "Delete a memory"
+      description: "The 100 most recently accessed memories of a session (session_id) and their total"
 
     - path: "/stats"
       method: "GET"
       handler: "get_stats"
       response_type: "json"
-      description: "Get summary statistics"
+      description: "Count, average importance and accesses of a session's memories (session_id)"
+
+    - path: "/memories/search"
+      method: "POST"
+      handler: "search_memories"
+      response_type: "json"
+      description: "Semantic search in a session's memories (session_id), the 20 closest"
+
+    - path: "/memories/{memory_id}"
+      method: "DELETE"
+      handler: "delete_memory"
+      response_type: "json"
+      description: "Delete a memory of a session (session_id)"
 
 hooks:
   - name: inject_memory_context
     type: pre_llm_call
     enabled: false  # default is disabled
     timeout: 5.0
-    description: "Inject relevant memory titles into system prompt before LLM calls"
+    description: "Append the relevant memory titles to the history before an LLM call"
     category: "prompt_injection"
     order:
-      after: ["context_optimization"]
       before: ["message_validation"]
 
 config:
@@ -78,7 +64,7 @@ config:
   max_memories:
     type: integer
     default: 10
-    description: "Maximum number of memories to inject into system prompt"
+    description: "Maximum number of memories listed in the injected block"
     minimum: 1
     maximum: 50
 

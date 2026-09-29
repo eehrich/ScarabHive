@@ -1,7 +1,7 @@
 """Test server-level LLM overrides in bootstrap functionality."""
 
-from agent_system.config.models import AgentSystemConfig, PluginsConfig, MCPConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
-from agent_system.mcp.base import MCPRegistry
+from agent_system.config.models import AgentSystemConfig, PluginsConfig, ToolServerConfig, AgentConfig, LLMSystemConfig, LLMModelConfig, LLMProfile
+from agent_system.tools.base import ToolServerRegistry
 from agent_system.servers.bootstrap import bootstrap_servers
 
 
@@ -10,7 +10,7 @@ def test_server_llm_override():
     config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
-                "base-model": LLMModelConfig(provider="openai", model="gpt-3.5-turbo", openai_api_key="base-key")
+                "base-model": LLMModelConfig(provider="openai", model="gpt-3.5-turbo", api_key="base-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="base-model")
@@ -19,7 +19,7 @@ def test_server_llm_override():
         ),
         plugins=PluginsConfig(
             servers={
-                "override_agent": MCPConfig(
+                "override_agent": ToolServerConfig(
                     type="agent",
                     enabled=True,
                     agent_config=AgentConfig(),
@@ -32,17 +32,17 @@ def test_server_llm_override():
         )
     )
     
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     bootstrap_servers(config, registry)
     
     # Verify agent was registered
     agent = registry.get("override_agent")
     assert agent is not None
     
-    # Verify the agent has access to override config through mcp_config
-    assert agent.mcp_config.default_provider == "ollama"
-    assert agent.mcp_config.model == "llama3:8b"
-    assert agent.mcp_config.ollama_url == "http://localhost:11434"
+    # Verify the agent has access to override config through server_config
+    assert agent.server_config.default_provider == "ollama"
+    assert agent.server_config.model == "llama3:8b"
+    assert agent.server_config.ollama_url == "http://localhost:11434"
     
     # Agent should still have access to global llm_system through system_config
     assert "base-model" in agent.system_config.llm_system.models
@@ -53,7 +53,7 @@ def test_server_no_override():
     config = AgentSystemConfig(
         llm_system=LLMSystemConfig(
             models={
-                "base-model": LLMModelConfig(provider="openai", model="gpt-4", openai_api_key="base-key")
+                "base-model": LLMModelConfig(provider="openai", model="gpt-4", api_key="base-key")
             },
             profiles={
                 "normal": LLMProfile(model_ref="base-model")
@@ -62,7 +62,7 @@ def test_server_no_override():
         ),
         plugins=PluginsConfig(
             servers={
-                "normal_agent": MCPConfig(
+                "normal_agent": ToolServerConfig(
                     type="agent",
                     enabled=True,
                     agent_config=AgentConfig(),
@@ -72,7 +72,7 @@ def test_server_no_override():
         )
     )
     
-    registry = MCPRegistry()
+    registry = ToolServerRegistry()
     bootstrap_servers(config, registry)
     
     # Verify agent was registered

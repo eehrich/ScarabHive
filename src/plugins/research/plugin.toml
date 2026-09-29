@@ -1,0 +1,18 @@
+# research plugin manifest — a CONFIG-ONLY plugin: no plugin.py, no tools of
+# its own. It ships one agent (agents/research_agent.yaml), its prompt and
+# the skill that carries the research method. The core picks all three up
+# by convention:
+#   agent   <- config/config.yaml includes ../src/plugins*/*/agents/*.yaml
+#   prompt  <- system_template "./prompts/x.md" resolves next to the YAML
+#   skill   <- config/config.yaml skills.skill_dirs has src/plugins*/*/skills
+# The tools it uses (tavily_search, duckduckgo_search, web_scraper) are the
+# shared instances in config/plugins.yaml. Same shape as coder and amiga.
+[plugin]
+name = "research"
+version = "1.0.0"
+description = "Web research agent: searches, reads the sources, answers with citations. Works with a Tavily key or without one (DuckDuckGo + scraper)."
+author = "Enrico Ehrich"
+type = ["library"]
+category = "research"
+tags = ["research", "web", "search", "skills"]
+requires = { agent_system = ">=0.6.0" }

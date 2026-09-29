@@ -1,0 +1,354 @@
+{
+  "id": "023b78df-74d5-48f1-a6d1-1409951fd69b",
+  "revision": 0,
+  "last_node_id": 30,
+  "last_link_id": 25,
+  "nodes": [
+    {
+      "id": 21,
+      "type": "FB_Qwen3TTSVoiceClone",
+      "pos": [
+        1354.2094012872687,
+        3479.9138155278383
+      ],
+      "size": [
+        400,
+        522
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ref_audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 21
+        },
+        {
+          "name": "voice_clone_prompt",
+          "shape": 7,
+          "type": "VOICE_CLONE_PROMPT",
+          "link": 25
+        },
+        {
+          "name": "target_text",
+          "type": "STRING",
+          "widget": {
+            "name": "target_text"
+          },
+          "link": 17
+        },
+        {
+          "name": "seed",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            13,
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FB_Qwen3TTSVoiceClone"
+      },
+      "widgets_values": [
+        "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye.",
+        "1.7B",
+        "auto",
+        "bf16",
+        "German",
+        "",
+        182,
+        "fixed",
+        2048,
+        0.8,
+        80,
+        0.8,
+        1.1,
+        false,
+        "auto",
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 23,
+      "type": "PreviewAudio",
+      "pos": [
+        1932.8017622465566,
+        3525.8710971769774
+      ],
+      "size": [
+        270,
+        88
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 13
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAudio"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 25,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        -22.69750702617194,
+        2750.7723188646974
+      ],
+      "size": [
+        578.2548932280362,
+        620.42402154917
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            17
+          ]
+        }
+      ],
+      "title": "Input-Text",
+      "properties": {
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "Am Anfang steht dieser Satz, er wird später wieder entfernt...-\n\nDie Feuchtigkeit verschmierte nur unzulänglich, doch es reichte, um die steil ansteigenden Telemetrie-Balken der Hauptkonsole zu erfassen. „Fremdpartikel im Primär-Schacht! Das Aerosol verstopft die Ansaugstutzen!\", schrie Voss gegen das mechanische Sterben der Rotoren an. „Ich initiiere den sofortigen Systemtrennschnitt!\" Sie hämmerte mit dem Zeigefinger auf den kapazitiven Notverschluss, der die äußeren Schottklappen hermetisch versiegeln sollte. Kein pneumatisches Klicken folgte. Kein Druckausgleich. Auf Voss' Monitor blinkte bedrohlich ein gelber Autorisierungs-Bypass auf. Die Schleusenklappen blieben sperrangelweit geöffnet, während der defekte Vorfilter unaufhörlich das feuchte, zähe Harz-Gemisch aus dem Morast ins zentrale Lebenserhaltungssystem saugte. „Override-Sperre? Wer blockiert die Manuell-Konsole?\", brüllte Voss und zerrte wütend an ihren Schultergurten.\n"
+      ]
+    },
+    {
+      "id": 26,
+      "type": "FB_Qwen3TTSVoiceClonePrompt",
+      "pos": [
+        322.28135171601673,
+        3573.0252561278826
+      ],
+      "size": [
+        465.19673892121114,
+        358.6679499040674
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ref_audio",
+          "type": "AUDIO",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "voice_clone_prompt",
+          "type": "VOICE_CLONE_PROMPT",
+          "links": [
+            25
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FB_Qwen3TTSVoiceClonePrompt"
+      },
+      "widgets_values": [
+        "Ein warmes Lächeln breitete sich auf Thomas Bergmanns ernstem Gesicht aus, als er sich freudig vom Herd zu ihr umdrehte. „Elena... du bist früh heute!“. Doch die Heiterkeit verflog so schnell, wie sie gekommen war.\nDraußen zwitscherte ein Vogel — hell, gleichgültig, fast schon spöttisch. Thomas atmete tief aus, ungläubig: Dann stieg dieses dunkle Grollen in ihm auf und er sah sie wütend an. „Das ist doch Wahnsinn! Weiß er überhaupt... weiß er, was er da verdammt noch mal riskiert?“\n\nStille legte sich über die Küche. Wie sollte sie es ihm bloß erklären? Dass sie nachts am Fenster sitzt... stundenlang auf den See starrt... dass sie Angst hat, aber nicht weiß, wovor genau?\n\n„Nakamura hat gestern Nacht das Schiff rausgefahren“, sagte sie schließlich mit gepresster, angespannter Stimme. „Ganz allein.“",
+        "1.7B",
+        "auto",
+        "bf16",
+        "auto",
+        false,
+        false
+      ]
+    },
+    {
+      "id": 28,
+      "type": "LoadAudio",
+      "pos": [
+        -425.8036506384783,
+        3506.678641380321
+      ],
+      "size": [
+        282.83333587646484,
+        136
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            21,
+            22
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "DE-Karl.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 29,
+      "type": "PrimitiveInt",
+      "pos": [
+        362.45463458794075,
+        4020.134542821479
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "title": "seed",
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "widgets_values": [
+        422,
+        "fixed"
+      ]
+    },
+    {
+      "id": 30,
+      "type": "SaveAudio",
+      "pos": [
+        1939.2117141731708,
+        3709.6129062077143
+      ],
+      "size": [
+        270,
+        112
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 24
+        }
+      ],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "audio/ComfyUI"
+      ]
+    }
+  ],
+  "links": [
+    [
+      13,
+      21,
+      0,
+      23,
+      0,
+      "AUDIO"
+    ],
+    [
+      17,
+      25,
+      0,
+      21,
+      2,
+      "STRING"
+    ],
+    [
+      21,
+      28,
+      0,
+      21,
+      0,
+      "AUDIO"
+    ],
+    [
+      22,
+      28,
+      0,
+      26,
+      0,
+      "AUDIO"
+    ],
+    [
+      23,
+      29,
+      0,
+      21,
+      3,
+      "INT"
+    ],
+    [
+      24,
+      21,
+      0,
+      30,
+      0,
+      "AUDIO"
+    ],
+    [
+      25,
+      26,
+      0,
+      21,
+      1,
+      "VOICE_CLONE_PROMPT"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.1,
+      "offset": [
+        -1185.2294221573948,
+        -3180.169855221042
+      ]
+    },
+    "workflowRendererVersion": "LG",
+    "frontendVersion": "1.36.13"
+  },
+  "version": 0.4
+}

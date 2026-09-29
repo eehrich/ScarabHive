@@ -11,14 +11,17 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from urllib.parse import unquote, parse_qs
+from typing import Dict, List, Optional, Any, Sequence, TYPE_CHECKING
+from urllib.parse import quote, unquote
 import logging
 from logging.handlers import RotatingFileHandler
 
+from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send, Message
+
+from agent_system.utils.logging import KeyInPathFilter, loggable_path
 
 if TYPE_CHECKING:
     from agent_system.config import AuthConfig
@@ -45,7 +48,7 @@ class EndpointSecurityMiddleware:
     def __init__(self, app: ASGIApp, auth_config: "AuthConfig"):
         """
         Initialize endpoint security middleware.
-        
+
         Args:
             app: ASGI application
             auth_config: Authentication configuration with endpoint_security rules
@@ -54,6 +57,22 @@ class EndpointSecurityMiddleware:
         self.auth_config = auth_config
         self._compiled_patterns: List[tuple] = []
         self._compile_patterns()
+        # Lazy-loaded singleton handle for X-API-Key validation against UserDatabase.
+        # None until first X-API-Key request reaches the middleware.
+        self._user_db: Optional[Any] = None
+
+    def _get_user_db(self) -> Any:
+        """Lazy import + cache the global UserDatabase singleton.
+
+        Imported lazily so the middleware module does not pull in the auth
+        database (and its SQLite init side-effects) at import time. The
+        underlying SQLite database opens a fresh connection per query, so the
+        cached handle is safe to share across concurrent ASGI requests.
+        """
+        if self._user_db is None:
+            from agent_system.auth.database import get_db
+            self._user_db = get_db()
+        return self._user_db
     
     def _compile_patterns(self) -> None:
         """Compile endpoint patterns into regex for efficient matching."""
@@ -152,75 +171,208 @@ class EndpointSecurityMiddleware:
         return (default_requires_auth, "user" if default_requires_auth else None, "default")
     
     def _extract_user_info(self, scope: Scope) -> tuple:
-        """Extract user info from JWT token.
-        
+        """Extract user info from JWT token or X-API-Key header.
+
         Checks in priority order:
-        1. Authorization: Bearer <token> header
-        2. access_token cookie
-        3. ?token=<token> query parameter (for WebSocket/SSE connections)
-        
+        1. Authorization: Bearer <token> header (JWT)
+        2. access_token cookie (JWT)
+        3. X-API-Key header (API key, looked up in UserDatabase) -- or an API key
+           sent as the Bearer value (``security.bearer_api_key``: OpenAI clients
+           send theirs that way), which then counts as that header
+
+        Deliberately no ``?token=`` query parameter: a token in a URL ends up in
+        access logs, browser history and Referer headers. EventSource, the one
+        client that cannot set headers, sends the cookie same-origin anyway.
+
+        JWT validation failures fall through to the X-API-Key lookup so that
+        clients which combine an invalid/expired session with a valid API key
+        (e.g. a still-mounted browser cookie alongside a programmatic header)
+        are still authenticated. If neither path yields a valid user, returns
+        (None, None).
+
         Returns:
             Tuple of (username, role) or (None, None) if not authenticated
         """
         from jose import jwt, JWTError
-        
-        headers = dict(scope.get("headers", []))
+
+        # As the route dependencies read them (Starlette, HTTPBearer): the first of a repeated header, the scheme
+        # in any case. Read otherwise, `bearer <key>` or a second Authorization header next to a cookie made the
+        # two layers name different users.
+        headers: dict = {}
+        for name, value in scope.get("headers", []):
+            headers.setdefault(name, value)
         token = None
-        
+
         # 1. Try Authorization header (highest priority)
         auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-        
-        # 2. Try cookie
-        if not token:
-            cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
-            for part in cookie_header.split(";"):
-                part = part.strip()
-                if part.startswith("access_token="):
-                    token = part[13:].strip()
-                    break
-        
-        # 3. Try query parameter (for SSE/WebSocket where headers may not be available)
-        if not token:
-            query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
-            if query_string:
-                query_params = parse_qs(query_string)
-                token_list = query_params.get("token", [])
-                if token_list:
-                    token = token_list[0].strip()
-        
-        if not token:
+        scheme, _, credentials = auth_header.partition(" ")
+        if scheme.lower() == "bearer":
+            token = credentials.strip()
+        from agent_system.auth.security import bearer_api_key
+        bearer_key = bearer_api_key(token)
+        if bearer_key:
+            token = None  # an API key, not a JWT: step 4 decides, and no cookie stands in for it
+
+        # 2. Try cookie -- parsed by the parser behind the dependencies' request.cookies, so of two access_token
+        # cookies both layers take the same one (the last): read the first, the middleware passed one user and
+        # the route ran as the other.
+        if not token and not bearer_key:
+            from starlette.requests import cookie_parser
+            token = cookie_parser(headers.get(b"cookie", b"").decode("latin-1")).get("access_token") or None
+
+        # Try to decode JWT if a token was found. Soft-fail to allow the
+        # X-API-Key fallback below to still authenticate the request.
+        if token:
+            try:
+                payload = jwt.decode(
+                    token,
+                    self.auth_config.secret_key,
+                    algorithms=[self.auth_config.algorithm]
+                )
+                username = payload.get("sub")
+
+                if payload.get("type", "access") != "access":
+                    # Refresh tokens are exchange-only (/auth/refresh); they
+                    # must not authenticate requests directly.
+                    logger.debug("JWT is not an access token (type=%s) - rejected",
+                                 payload.get("type"))
+                elif not username or not isinstance(username, str):
+                    logger.debug("JWT token has invalid or missing 'sub' claim")
+                elif not all(c.isalnum() or c in '_-.' for c in username):
+                    logger.warning("JWT token has invalid username format")
+                else:
+                    identity = self._lookup_token_user(username, payload.get("user_id"), payload.get("gen", 0))
+                    if identity != (None, None):
+                        return identity
+            except JWTError as e:
+                logger.debug(f"JWT token error: {e}")
+
+        # 4. Try X-API-Key header (API key auth via UserDatabase).
+        # Duplicate X-API-Key headers are refused outright: two keys could name
+        # two users, and nothing says which one the request is. (The header
+        # map above keeps the first, as Starlette's Headers.get does for the
+        # downstream FastAPI dependencies.)
+        raw_headers = scope.get("headers", [])
+        api_key_header_count = sum(1 for h in raw_headers if h[0].lower() == b"x-api-key")
+        if api_key_header_count > 1:
+            logger.warning("Multiple X-API-Key headers received; rejecting request")
             return (None, None)
-        
-        # Decode JWT token with verification
+        api_key = headers.get(b"x-api-key", b"").decode("utf-8", errors="ignore").strip()
+        if bearer_key:
+            if api_key and api_key != bearer_key:
+                logger.warning("Different API keys in Authorization and X-API-Key; rejecting request")
+                return (None, None)
+            api_key = bearer_key
+        if api_key:
+            return self._lookup_api_key(api_key)
+
+        return (None, None)
+
+    # Constant dummy hash for the "key not in DB" branch of _lookup_api_key.
+    # Used to keep verify_api_key timing identical between hit and miss so that
+    # the SQLite lookup latency is the only remaining signal (~µs constant).
+    _DUMMY_API_KEY_HASH = "0" * 64
+
+    def _lookup_api_key(self, api_key: str) -> tuple:
+        """Validate an X-API-Key against the user database.
+
+        Uses the same flow as auth.dependencies.get_current_user:
+        hash → DB lookup → hmac.compare_digest verify → return (username, role).
+
+        Security invariants:
+        - Never logs the raw key or the stored hash.
+        - Always runs verify_api_key() (constant-time hmac.compare_digest)
+          on EVERY call — even on a DB miss — to flatten timing differences
+          between known and unknown keys.
+        - Inactive users are rejected.
+        - Username/role are sanitized identically to the JWT path so the
+          downstream audit/role checks see the same shape.
+        - Infrastructure errors (DB/import) are logged at WARNING so an
+          operator notices silent 401-loops; only the exception class is
+          logged (never the raw key).
+
+        Returns:
+            Tuple of (username, role) on success, (None, None) otherwise.
+        """
         try:
-            payload = jwt.decode(
-                token, 
-                self.auth_config.secret_key, 
-                algorithms=[self.auth_config.algorithm]
+            from agent_system.auth.security import hash_api_key, verify_api_key
+        except ImportError as exc:
+            logger.error(f"API-Key auth unavailable — security module import failed: {exc}")
+            return (None, None)
+
+        try:
+            api_key_hash = hash_api_key(api_key)
+            user_in_db = self._get_user_db().get_user_by_api_key(api_key_hash)
+        except Exception as exc:  # noqa: BLE001
+            # DB-side failure (corrupted file, locked, out of descriptors, ...)
+            # — loud, no raw key. The message matters: logging only the class
+            # name turned a descriptor exhaustion ("unable to open database
+            # file") into an unexplained OperationalError, and the 401 storm it
+            # caused read like an auth defect for hours. The exception carries
+            # the hash at most, never the key, and SQLite does not echo bound
+            # parameters into its messages.
+            logger.error(
+                "API-Key DB lookup failed (%s: %s); requests with X-API-Key "
+                "will return 401",
+                exc.__class__.__name__,
+                exc,
             )
-            username = payload.get("sub")
-            role = payload.get("role", "user")
-            
-            # Validate extracted values
-            if not username or not isinstance(username, str):
-                logger.debug("JWT token has invalid or missing 'sub' claim")
+            return (None, None)
+
+        # Always verify, even on miss, to equalise timing between hit/miss.
+        stored_hash = user_in_db.api_key if user_in_db and user_in_db.api_key else self._DUMMY_API_KEY_HASH
+        verified = verify_api_key(api_key, stored_hash)
+        if not user_in_db or not verified or not user_in_db.is_active:
+            return (None, None)
+        return self._identity_of(user_in_db)
+
+    def _lookup_token_user(self, username: str, user_id: Any, generation: Any = 0) -> tuple:
+        """Resolve a verified access token to its account, like the API-key branch.
+
+        The token only names the account: it must still exist under the id it was
+        issued for and be active, and the role is the account's current one -- so a
+        demoted, deactivated or deleted admin loses access now, not at token expiry.
+        A password changed since it was issued (its generation) ends it the same way.
+        """
+        try:
+            db = self._get_user_db()
+            user_in_db = db.get_user_by_username(username)
+            current = user_in_db and user_in_db.id == user_id and generation == db.token_generation(user_in_db.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("JWT user DB lookup failed (%s: %s); request will return 401",
+                         exc.__class__.__name__, exc)
+            return (None, None)
+        if not current or not user_in_db.is_active:
+            logger.debug("JWT does not match an active account - rejected")
+            return (None, None)
+        return self._identity_of(user_in_db)
+
+    @staticmethod
+    def _identity_of(user_in_db: Any) -> tuple:
+        """(username, role) of an account row, sanitised the same way for every auth path."""
+        try:
+            username = user_in_db.username
+            if not isinstance(username, str) or not all(
+                c.isalnum() or c in "_-." for c in username
+            ):
+                logger.warning("Authenticated user has invalid username format")
                 return (None, None)
-            
-            # Sanitize username (alphanumeric, underscore, hyphen, dot only)
-            if not all(c.isalnum() or c in '_-.' for c in username):
-                logger.warning("JWT token has invalid username format")
-                return (None, None)
-            
-            # Validate role is a known value
+
+            role_obj = user_in_db.role
+            role = role_obj.value if hasattr(role_obj, "value") else str(role_obj)
             if not isinstance(role, str) or role.lower() not in ROLE_HIERARCHY:
-                logger.debug(f"JWT token has unknown role: {role}, defaulting to 'user'")
+                logger.warning(
+                    "Authenticated user has unknown role %r; defaulting to 'user'",
+                    role,
+                )
                 role = "user"
-            
+
             return (username, role)
-        except JWTError as e:
-            logger.debug(f"JWT token error: {e}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "User record could not be normalised (%s)",
+                exc.__class__.__name__,
+            )
             return (None, None)
     
     def _check_role(self, user_role: Optional[str], min_role: Optional[str]) -> bool:
@@ -258,8 +410,9 @@ class EndpointSecurityMiddleware:
             return
         
         # Auth required - check user
-        username, user_role = self._extract_user_info(scope)
-        
+        # the audit around this layer has looked the account up already
+        username, user_role = scope[IDENTITY_SCOPE_KEY] if IDENTITY_SCOPE_KEY in scope else self._extract_user_info(scope)
+
         # No user and auth required
         if username is None:
             # Check if anonymous access is allowed for this endpoint
@@ -333,159 +486,124 @@ class EndpointSecurityMiddleware:
         })
 
 
+#: What the audit log sorts a request into; static files are never kept.
+AUDIT_CATEGORIES = ("plugin", "api", "agent", "auth", "tools", "debug", "health", "other")
+AUDIT_STATUS_CLASSES = ("2xx", "3xx", "4xx", "5xx")
+#: Where the Security Audit panel reads the log (api/admin_endpoints.py).
+AUDIT_LOG_PATH = "/admin/security/audit"
+AUDIT_LOGGER_NAME = "agent_system.security.audit"
+#: Where the audit leaves the (username, role) it resolved for the endpoint security inside it.
+IDENTITY_SCOPE_KEY = "agent_system.identity"
+
+
+def security_audit_logger() -> logging.Logger:
+    """The writer of logs/security.log, shared by every auditor in the process.
+
+    One handler per process: the endpoint audit and the plugin route audit both
+    write here, and a handler each wrote every line twice.
+    """
+    security_logger = logging.getLogger(AUDIT_LOGGER_NAME)
+    if not security_logger.handlers:
+        security_logger.setLevel(logging.INFO)
+        security_logger.propagate = False
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        handler = RotatingFileHandler(log_dir / "security.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+                                      encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s",
+                                               datefmt="%Y-%m-%d %H:%M:%S"))
+        handler.addFilter(KeyInPathFilter())
+        security_logger.addHandler(handler)
+        logger.info("Security audit logger initialized: logs/security.log")
+    return security_logger
+
+
+def log_field(value: Any) -> str:
+    """A value as one field of a security.log line, percent-encoded.
+
+    A decoded path (or a name) may carry a newline, which would forge the next line,
+    or " | user=root", which would forge a field of this one. Normal path characters stay.
+    """
+    return quote(str(value), safe="/:@!$&'()*+,;=[]")
+
+
 class SecurityAuditMiddleware:
     """
     Security audit middleware (Pure ASGI implementation).
-    
-    Logs all HTTP requests for security auditing.
-    Stores in-memory buffer for UI and writes to security.log file.
+
+    Logs every HTTP request (static files aside) to logs/security.log and keeps
+    the latest in memory for the Security Audit panel.
     """
-    
-    _security_logger: Optional[logging.Logger] = None
+
     _instance: Optional["SecurityAuditMiddleware"] = None
-    
+
     def __init__(
         self,
         app: ASGIApp,
+        auth_config: "AuthConfig",
         enabled: bool = True,
         max_memory_entries: int = 1000,
-        log_allowed: bool = True,
     ):
         """
-        Initialize security audit middleware.
-        
         Args:
             app: ASGI application
+            auth_config: resolves who sent a request exactly as the endpoint security does
             enabled: Whether audit logging is enabled
             max_memory_entries: Maximum entries to keep in memory
-            log_allowed: Whether to log allowed requests (vs only denied)
         """
         self.app = app
         self.enabled = enabled
         self._audit_log: List[Dict[str, Any]] = []
         self._max_memory_entries = max_memory_entries
-        self._log_allowed = log_allowed
-        self._setup_security_logger()
+        # The log names the account the request authenticates as -- a verified token
+        # of an existing active account or a valid API key -- never a claim anyone can write.
+        self._identity = EndpointSecurityMiddleware(app, auth_config)
         SecurityAuditMiddleware._instance = self
-    
-    def _setup_security_logger(self) -> None:
-        """Setup dedicated security audit file logger."""
-        if SecurityAuditMiddleware._security_logger is not None:
-            return
-        
-        security_logger = logging.getLogger("agent_system.security.audit")
-        security_logger.setLevel(logging.INFO)
-        security_logger.propagate = False
-        
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        handler = RotatingFileHandler(
-            log_dir / "security.log",
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding="utf-8"
-        )
-        handler.setLevel(logging.INFO)
-        
-        formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        security_logger.addHandler(handler)
-        
-        SecurityAuditMiddleware._security_logger = security_logger
-        logger.info("Security audit logger initialized: logs/security.log")
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Process request with audit logging."""
         if scope["type"] != "http" or not self.enabled:
             await self.app(scope, receive, send)
             return
-        
-        # Extract request info
+
         path = scope.get("path", "")
+        category = self._get_category(path)
+        if category == "static":  # never kept (too noisy): not worth an account lookup either
+            await self.app(scope, receive, send)
+            return
         method = scope.get("method", "GET")
         client = scope.get("client")
         client_ip = client[0] if client else "unknown"
-        
-        # Extract user from JWT token in headers
-        user_id = self._extract_user_from_headers(scope)
-        
-        # Track response status
         response_status = 0
-        
+        # Before the route runs: a request that changes its own credentials (DELETE /auth/api-key)
+        # is named by what it authenticated with. The endpoint security inside reuses it.
+        identity = scope[IDENTITY_SCOPE_KEY] = self._identity._extract_user_info(scope)
+
         async def send_wrapper(message: Message) -> None:
             nonlocal response_status
             if message["type"] == "http.response.start":
                 response_status = message.get("status", 0)
             await send(message)
-        
+
         start_time = time.time()
-        
         try:
             await self.app(scope, receive, send_wrapper)
+        except Exception:
+            if not response_status:
+                response_status = 500  # what the server error middleware outside answers
+            raise
         finally:
-            duration_ms = (time.time() - start_time) * 1000
-            
-            # Determine category
-            category = self._get_category(path)
-            
-            # Log the access
-            allowed = 200 <= response_status < 400
             self._audit_access(
                 path=path,
                 method=method,
-                user_id=user_id,
+                user_id=identity[0] or "anonymous",
                 client_ip=client_ip,
                 status_code=response_status,
-                duration_ms=duration_ms,
+                duration_ms=(time.time() - start_time) * 1000,
                 category=category,
-                allowed=allowed
+                allowed=200 <= response_status < 400,
             )
-    
-    def _extract_user_from_headers(self, scope: Scope) -> str:
-        """Extract username from JWT token in Authorization header or cookie."""
-        headers = dict(scope.get("headers", []))
-        
-        # Try Authorization header first
-        auth_header = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
-        token = None
-        
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        else:
-            # Try cookie
-            cookie_header = headers.get(b"cookie", b"").decode("utf-8", errors="ignore")
-            if cookie_header:
-                for cookie in cookie_header.split(";"):
-                    cookie = cookie.strip()
-                    if cookie.startswith("access_token="):
-                        token = cookie[13:]
-                        break
-        
-        if token:
-            try:
-                # Decode JWT without verification (we just want the username for logging)
-                import base64
-                import json
-                
-                # JWT format: header.payload.signature
-                parts = token.split(".")
-                if len(parts) >= 2:
-                    # Decode payload (add padding if needed)
-                    payload_b64 = parts[1]
-                    padding = 4 - len(payload_b64) % 4
-                    if padding != 4:
-                        payload_b64 += "=" * padding
-                    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    return payload.get("sub", "anonymous")
-            except Exception:
-                pass
-        
-        return "anonymous"
-    
+
     def _get_category(self, path: str) -> str:
         """Categorize the endpoint."""
         if path.startswith("/plugins/"):
@@ -498,15 +616,15 @@ class SecurityAuditMiddleware:
             return "static"
         elif path.startswith("/auth/") or path.startswith("/login") or path.startswith("/logout"):
             return "auth"
-        elif path.startswith("/mcp/"):
-            return "mcp"
+        elif path.startswith("/tools/"):
+            return "tools"
         elif path.startswith("/debug/"):
             return "debug"
         elif path.startswith("/health") or path.startswith("/meta"):
             return "health"
         else:
             return "other"
-    
+
     def _audit_access(
         self,
         path: str,
@@ -519,15 +637,9 @@ class SecurityAuditMiddleware:
         allowed: bool
     ) -> None:
         """Log endpoint access for auditing."""
-        # Skip static file logging (too noisy)
-        if category == "static":
-            return
-        
-        timestamp = datetime.now(timezone.utc).isoformat()
-        
         entry = {
-            "timestamp": timestamp,
-            "path": path,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": loggable_path(path),  # the Security Audit panel shows it
             "method": method,
             "user_id": user_id,
             "client_ip": client_ip,
@@ -536,63 +648,45 @@ class SecurityAuditMiddleware:
             "category": category,
             "allowed": allowed
         }
-        
-        # Keep limited entries in memory for UI display
-        self._audit_log.append(entry)
-        if len(self._audit_log) > self._max_memory_entries:
-            self._audit_log = self._audit_log[-self._max_memory_entries:]
-        
-        # Log to file
-        if SecurityAuditMiddleware._security_logger:
-            status_str = "ALLOWED" if allowed else "DENIED"
-            SecurityAuditMiddleware._security_logger.log(
-                logging.INFO if allowed else logging.WARNING,
-                f"{status_str} | {method} {path} | user={user_id} | ip={client_ip} | "
-                f"status={status_code} | {duration_ms:.1f}ms | {category}"
-            )
-    
+
+        # An open audit panel reads the log every few seconds: its answered reads
+        # would push out of memory what it is there to show. The file keeps them.
+        if not (allowed and method == "GET" and path == AUDIT_LOG_PATH):
+            self._audit_log.append(entry)
+            if len(self._audit_log) > self._max_memory_entries:
+                self._audit_log = self._audit_log[-self._max_memory_entries:]
+
+        status_str = "ALLOWED" if allowed else "DENIED"
+        security_audit_logger().log(
+            logging.INFO if allowed else logging.WARNING,
+            f"{status_str} | {log_field(method)} {log_field(path)} | user={log_field(user_id)} | ip={log_field(client_ip)} | "
+            f"status={status_code} | {duration_ms:.1f}ms | {category}"
+        )
+
     def get_audit_log(
         self,
         category: Optional[str] = None,
+        status_classes: Sequence[str] = (),
         limit: int = 100,
-        status_filter: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get recent audit log entries from memory buffer.
-        
+        """The newest ``limit`` kept entries, newest first.
+
         Args:
-            category: Filter by category (plugin, api, agent, etc.)
+            category: only this category (plugin, api, agent, ...)
+            status_classes: only these status classes ("2xx" ... "5xx"); empty for all
             limit: Maximum entries to return
-            status_filter: Comma-separated status code ranges (2xx,3xx,4xx,5xx) or None for all
         """
-        entries = self._audit_log
-        
-        if category:
-            entries = [e for e in entries if e["category"] == category]
-        
-        # Support multiple status filters (comma-separated: "2xx,4xx,5xx")
-        if status_filter:
-            filters = [f.strip() for f in status_filter.split(',')]
-            if filters:
-                filtered_entries = []
-                for entry in entries:
-                    status_code = entry["status_code"]
-                    for filter_range in filters:
-                        if filter_range == "2xx" and 200 <= status_code < 300:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "3xx" and 300 <= status_code < 400:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "4xx" and 400 <= status_code < 500:
-                            filtered_entries.append(entry)
-                            break
-                        elif filter_range == "5xx" and status_code >= 500:
-                            filtered_entries.append(entry)
-                            break
-                entries = filtered_entries
-        
-        return entries[-limit:]
-    
+        return [
+            entry for entry in reversed(self._audit_log)
+            if (category is None or entry["category"] == category)
+            and (not status_classes or self._status_class(entry["status_code"]) in status_classes)
+        ][:limit]
+
+    @staticmethod
+    def _status_class(status_code: int) -> str:
+        """A request left without an answer (0: the client went away) counts with the server errors, as the panel counts it."""
+        return f"{status_code // 100}xx" if status_code else "5xx"
+
     @classmethod
     def get_instance(cls) -> Optional["SecurityAuditMiddleware"]:
         """Get the singleton instance."""
@@ -602,6 +696,15 @@ class SecurityAuditMiddleware:
 def get_security_audit_middleware() -> Optional[SecurityAuditMiddleware]:
     """Get the global security audit middleware instance."""
     return SecurityAuditMiddleware.get_instance()
+
+
+def security_audit_log(request: Request) -> SecurityAuditMiddleware:
+    """The audit log this server keeps; 404 while it keeps none (authentication or audit off)."""
+    auth = request.app.state.config.auth
+    audit = SecurityAuditMiddleware.get_instance()
+    if not (auth.enabled and auth.endpoint_security.audit_enabled) or audit is None:
+        raise HTTPException(status_code=404, detail="The security audit log is off")
+    return audit
 
 
 class RateLimitMiddleware:
@@ -701,11 +804,12 @@ class SecurityHeadersMiddleware:
         
         # Get path for plugin detection
         path = scope.get("path", "")
-        # Allow iframes for plugin panels and debug dashboards
+        # Allow iframes for panels: the shell shows every panel in a frame
+        # (agent_system.ui.catalog lists them).
         is_embeddable_path = (
-            path.startswith("/plugins/") or 
-            path.startswith("/debug/") or
-            path.startswith("/api/security/audit")
+            path.startswith("/plugins/") or
+            path.startswith("/ui/") or
+            path.startswith("/debug/")
         )
         
         async def send_with_headers(message: Message) -> None:
@@ -755,22 +859,45 @@ def configure_cors(
 ) -> None:
     """
     Configure CORS middleware.
-    
+
     Args:
         app: FastAPI application
         allow_origins: Allowed origins (default: ["*"])
         allow_credentials: Allow credentials
         allow_methods: Allowed methods (default: ["*"])
         allow_headers: Allowed headers (default: ["*"])
+
+    Security: credentials are never combined with a wildcard origin. Starlette's
+    CORSMiddleware does NOT answer wildcard+credentials with a literal "*"; it
+    reflects the *request* Origin and emits Access-Control-Allow-Credentials:true
+    whenever a cookie is present. So allow_origins=["*"] + allow_credentials=True
+    lets any cross-origin page (e.g. another port/subdomain that still receives
+    the SameSite=Lax auth cookie) read authenticated responses. When that
+    combination is requested we drop credentials and warn; to use credentialed
+    CORS, configure an explicit cors_origins allowlist (no "*").
     """
+    resolved_origins = allow_origins or ["*"]
+    if allow_credentials and "*" in resolved_origins:
+        logger.warning(
+            "CORS: allow_credentials=True is incompatible with wildcard origin "
+            "'*' (Starlette reflects arbitrary origins with credentials). "
+            "Disabling credentials for CORS. Set an explicit cors_origins "
+            "allowlist to enable credentialed cross-origin requests."
+        )
+        allow_credentials = False
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins or ["*"],
+        allow_origins=resolved_origins,
         allow_credentials=allow_credentials,
         allow_methods=allow_methods or ["*"],
         allow_headers=allow_headers or ["*"],
     )
-    logger.info("CORS middleware configured")
+    logger.info(
+        "CORS middleware configured (origins=%s, credentials=%s)",
+        resolved_origins,
+        allow_credentials,
+    )
 
 
 def configure_security_middleware(
@@ -801,15 +928,14 @@ def configure_security_middleware(
             auth_config=auth_config,
         )
         logger.info("Endpoint security enforcement middleware enabled")
-    
-    # Security audit (must be first to capture all requests)
-    if audit_enabled:
-        app.add_middleware(
-            SecurityAuditMiddleware,
-            enabled=True,
-        )
+
+    # Security audit. add_middleware prepends, so it wraps the endpoint security (keeping its
+    # 401/403 and reusing the account it looked up) and sits inside the rate limiter and host
+    # check on purpose: a flood they refuse must not reach the audit's buffer, file and lookups.
+    if audit_enabled and auth_config and auth_config.enabled:
+        app.add_middleware(SecurityAuditMiddleware, auth_config=auth_config)
         logger.info("Security audit middleware enabled")
-    
+
     # Rate limiting
     if rate_limit_enabled:
         app.add_middleware(

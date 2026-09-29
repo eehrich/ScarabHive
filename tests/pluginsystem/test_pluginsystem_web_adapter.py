@@ -4,7 +4,7 @@ Tests for plugin web adapter and registry
 
 import pytest
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
@@ -17,12 +17,11 @@ from agent_system.plugins.web_adapter import (
 class MockWebPlugin(PluginWebInterface):
     """Mock plugin with web capabilities for testing"""
     
-    def __init__(self, name: str, has_router: bool = True, has_static: bool = True, has_panels: bool = True):
+    def __init__(self, name: str, has_router: bool = True, has_static: bool = True):
         self.name = name
         self.has_router = has_router
         self.has_static = has_static
-        self.has_panels = has_panels
-        
+
     def get_web_router(self) -> Optional[APIRouter]:
         if not self.has_router:
             return None
@@ -40,17 +39,6 @@ class MockWebPlugin(PluginWebInterface):
             return None
         # Return a mock path that exists (use current directory for testing)
         return Path.cwd()
-    
-    def get_panels(self) -> List[Dict[str, Any]]:
-        if not self.has_panels:
-            return []
-            
-        return [{
-            "id": f"{self.name}_panel",
-            "title": f"{self.name.title()} Panel",
-            "url": f"/plugins/{self.name}/panel.html",
-            "icon": "chart-bar"
-        }]
     
     def get_security_config(self) -> Dict[str, Any]:
         return {
@@ -73,8 +61,7 @@ class TestPluginWebInterface:
         
         assert plugin.get_web_router() is None
         assert plugin.get_static_assets() is None
-        assert plugin.get_panels() == []
-        
+
         security_config = plugin.get_security_config()
         assert security_config["require_auth"] is False
         assert security_config["cors_origins"] == []
@@ -140,49 +127,6 @@ class TestPluginWebRegistry:
         assert "test" not in registry.static_mounts
         assert "test" not in registry.security_configs
     
-    def test_get_all_panels(self, registry):
-        """Test getting all panels from registered plugins"""
-        plugin1 = MockWebPlugin("plugin1")
-        plugin2 = MockWebPlugin("plugin2")
-        plugin3 = MockWebPlugin("plugin3", has_panels=False)
-        
-        registry.register_web_plugin("plugin1", plugin1)
-        registry.register_web_plugin("plugin2", plugin2)
-        registry.register_web_plugin("plugin3", plugin3)
-        
-        panels = registry.get_all_panels()
-        
-        assert len(panels) == 2  # Only plugin1 and plugin2 have panels
-        
-        # Check that plugin names are added to panel configs
-        plugin_names = {panel["plugin_name"] for panel in panels}
-        assert plugin_names == {"plugin1", "plugin2"}
-        
-        # Check that defaults are applied
-        for panel in panels:
-            assert "position" in panel
-            assert "width" in panel
-            assert "height" in panel
-            assert panel["position"] == "right"  # Default value
-    
-    def test_get_all_panels_missing_required_fields(self, registry):
-        """Test handling of panels with missing required fields"""
-        
-        class BadPlugin(PluginWebInterface):
-            def get_panels(self):
-                return [
-                    {"title": "No ID panel"},  # Missing 'id'
-                    {"id": "no_url", "title": "No URL panel"},  # Missing 'url'
-                    {"id": "valid", "title": "Valid panel", "url": "/test"}  # Valid
-                ]
-        
-        registry.register_web_plugin("bad", BadPlugin())
-        panels = registry.get_all_panels()
-        
-        # Only the valid panel should be included
-        assert len(panels) == 1
-        assert panels[0]["id"] == "valid"
-    
     def test_get_security_config(self, registry, mock_plugin):
         """Test getting security config for a plugin"""
         registry.register_web_plugin("test", mock_plugin)
@@ -216,13 +160,78 @@ class TestPluginWebRegistry:
         assert response.status_code == 200
         assert response.json() == {"status": "ok", "plugin": "test"}
         
-        # Test panels endpoint
-        response = client.get("/api/plugins/panels")
-        assert response.status_code == 200
-        data = response.json()
-        assert "panels" in data
-        assert len(data["panels"]) == 1
-        assert data["panels"][0]["plugin_name"] == "test"
+
+
+def test_plugin_route_security_takes_only_access_tokens_of_the_account_they_were_issued_for(tmp_path, monkeypatch):
+    from agent_system.auth import database, security
+    from agent_system.auth.models import UserCreate, UserRole
+    from agent_system.config.models import AuthConfig
+
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    monkeypatch.setattr(security, "SECRET_KEY", "test-only-secret-not-the-config-one")
+    for name, role in [("root", UserRole.ADMIN), ("bob", UserRole.USER), ("gone", UserRole.ADMIN)]:
+        users.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse", role=role))
+    auth = AuthConfig(enabled=True)
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    auth.plugin_security.plugin_overrides = {"probe": {"policy": "require_auth", "min_role": "admin"}}
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("probe", MockWebPlugin("probe", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+
+    def token(name, kind="access"):
+        claims = {"sub": name, "user_id": users.get_user_by_username(name).id, "role": "admin"}
+        return {"Authorization": "Bearer " + security.create_access_token(claims, token_type=kind)}
+
+    gone = token("gone")
+    users.delete_user(users.get_user_by_username("gone").id)
+    users.create_user(UserCreate(username="gone", email="gone2@example.com", password="correct-horse", role=UserRole.ADMIN))
+    answers = {
+        "access token": web.get("/plugins/probe/status", headers=token("root")).status_code,
+        "no token": web.get("/plugins/probe/status").status_code,
+        "refresh token": web.get("/plugins/probe/status", headers=token("root", "refresh")).status_code,
+        "user role": web.get("/plugins/probe/status", headers=token("bob")).status_code,
+        "deleted account's token": web.get("/plugins/probe/status", headers=gone).status_code,
+    }
+    assert answers == {"access token": 200, "no token": 401, "refresh token": 401, "user role": 403,
+                       "deleted account's token": 401}
+
+
+class KeyTakingPlugin(MockWebPlugin):
+    def get_security_config(self) -> Dict[str, Any]:
+        return {"accept_api_keys": True}
+
+
+@pytest.mark.parametrize("header", ["bearer", "x-api-key"])
+def test_an_api_key_opens_only_plugins_that_accept_api_keys(tmp_path, monkeypatch, header):
+    """openai_api takes the user's API key (OpenAI clients send it as the Bearer value); every other plugin
+    route stays tokens-only, as it always was."""
+    from agent_system.auth import database
+    from agent_system.auth.models import UserCreate, UserRole
+    from agent_system.config.models import AuthConfig
+
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    alice = users.create_user(UserCreate(username="alice", email="alice@example.com", password="correct-horse",
+                                         role=UserRole.USER))
+    key = users.generate_user_api_key(alice.id)
+    auth = AuthConfig(enabled=True)
+    auth.endpoint_security.audit_enabled = False
+    auth.plugin_security.endpoint_rules = []
+    registry = PluginWebRegistry()
+    registry.register_web_plugin("keyed", KeyTakingPlugin("keyed", has_static=False))
+    registry.register_web_plugin("plain", MockWebPlugin("plain", has_static=False))
+    app = FastAPI()
+    registry.apply_to_app(app, auth)
+    web = TestClient(app)
+    sent = {"Authorization": f"Bearer {key}"} if header == "bearer" else {"X-API-Key": key}
+
+    assert web.get("/plugins/keyed/status", headers=sent).status_code == 200
+    assert web.get("/plugins/plain/status", headers=sent).status_code == 401
+    assert web.get("/plugins/keyed/status", headers={"Authorization": "Bearer not-a-key"}).status_code == 401
 
 
 class TestPluginWebIntegration:

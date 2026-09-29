@@ -1,0 +1,83 @@
+# Reviewer — attacks a finished change, and cannot touch it.
+#
+# Two properties make this worth a separate agent instead of a prompt section
+# in the coder:
+#
+# 1. A FRESH CONTEXT. The coder knows what it meant; that knowledge is exactly
+#    what hides the bug. The reviewer sees only the code.
+# 2. NO WRITE ACCESS, enforced by config. coder_fs_ro does not render write
+#    tools into the schema, and the server refuses them a second time. A
+#    reviewer that can "just fix it" stops reviewing and starts rewriting.
+#
+# Judging is where a stronger model pays for itself: a false finding costs the
+# coder a whole fix round, so the model that decides gets the good chain.
+plugins:
+  servers:
+
+    coder_reviewer:
+      type: multi_turn_agent
+      enabled: true
+      description: "Adversarial code reviewer — read-only, tries to refute every finding before reporting it"
+
+      self_tool_descriptions:
+        coder_reviewer_execute_task: "Review a finished change adversarially and report only findings that survived a refutation attempt, each with the failing case"
+        coder_reviewer_list_available_tools: "List the read-only review tools available"
+
+      agent_config:
+        # Same chain as the coder: judging a change is not the cheaper half of
+        # the work, so it does not get the cheaper model.
+        llm_profile: [code, code_fallback]
+        # Reached via use_advanced_model=true when a caller escalates.
+        llm_profile_advanced: [code_adv, code_adv_fallback]
+
+        llm_params:
+          "*":
+            context_window: 200000
+
+        # Read the diff, read around it, chase the callers, try to break each
+        # finding. That is a lot of reading for one report, and on a large
+        # change it is hours of it. The cap has to be a safety net, not a
+        # budget: a reviewer that runs out mid-verification reports the
+        # findings it happened to reach, which reads exactly like a clean
+        # review.
+        max_steps: 200
+
+        system_template: "./prompts/coder_reviewer.md"
+
+        skills:
+          always: ["adversarial-review"]
+          on_demand: ["codebase-design"]
+
+        tools:
+          allowed:
+            - "+coder_fs_ro/*"
+            - "+skills/*"
+            - "+sequential_thinking/*"
+            
+        hooks:
+          enabled: true
+          overrides:
+            # Off: it rewrites the cached prompt prefix on every call, and
+            # what it injects are this agent's own thoughts -- already in the
+            # transcript, and re-readable through its own tool.
+            sequential_thinking.inject_active_sessions:
+              enabled: false
+            # The project's AGENTS.md: the conventions a change is judged by.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+            # Read-only, so nothing to record -- switched on so that the coder's
+            # checkpoint does not name its spawn as one that records nothing.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["coding", "review", "read-only", "adversarial"]
+        category: "development"
+        visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): reads the whole checkout, config/secrets.env and data/users.db included

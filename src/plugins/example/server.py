@@ -1,13 +1,13 @@
-"""Example MCP Server implementation.
+"""Example Tool Server implementation.
 
-This module demonstrates the MODERN way to implement an MCP server
-using SchemaBasedMCPServer with automatic tool dispatching.
+This module demonstrates the MODERN way to implement a tool server
+using SchemaBasedToolServer with automatic tool dispatching.
 
 Key Pattern (NO manual call() override needed):
-1. Inherit from SchemaBasedMCPServer
+1. Inherit from SchemaBasedToolServer
 2. Define tools in schema.yaml with names like: "{{ name }}_toolname"
 3. Implement async methods matching EXACT tool names from schema
-4. MCPServer.call() automatically routes to your methods
+4. ToolServer.call() automatically routes to your methods
 
 For a plugin named "example", with tools in schema.yaml:
 - "example_calculator" → auto-routes to self.example_calculator(params)
@@ -20,16 +20,16 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 from decimal import Decimal, InvalidOperation
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 
 if TYPE_CHECKING:
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ExampleServer(SchemaBasedMCPServer):
-    """Example MCP server showing the modern way to implement plugins.
+class ExampleServer(SchemaBasedToolServer):
+    """Example tool server showing the modern way to implement plugins.
 
     This server demonstrates:
     - Schema-based tool definitions (tools defined in schema.yaml)
@@ -39,24 +39,24 @@ class ExampleServer(SchemaBasedMCPServer):
     - Clean error handling and input validation
     - Proper logging
     
-    All tools are automatically loaded from schema.yaml by SchemaBasedMCPServer.
-    Tool calls are automatically routed to methods by MCPServer.call().
+    All tools are automatically loaded from schema.yaml by SchemaBasedToolServer.
+    Tool calls are automatically routed to methods by ToolServer.call().
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig):
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig):
         """Initialize the example server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Extract plugin-specific configuration with sensible defaults
-        # mcp_config contains the plugin's specific settings
-        self.precision = int(getattr(mcp_config, "precision", 2))
-        self.max_text_length = int(getattr(mcp_config, "max_text_length", 1000))
+        # server_config contains the plugin's specific settings
+        self.precision = int(getattr(server_config, "precision", 2))
+        self.max_text_length = int(getattr(server_config, "max_text_length", 1000))
         
         logger.info(f"Example server '{name}' initialized with precision={self.precision}, max_length={self.max_text_length}")
 

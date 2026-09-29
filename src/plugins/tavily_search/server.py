@@ -6,16 +6,16 @@ import logging
 import os
 from typing import Any, TYPE_CHECKING
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.plugins.cache import PluginCache
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class TavilySearchServer(SchemaBasedMCPServer):
+class TavilySearchServer(SchemaBasedToolServer):
     """Tavily search server with caching and async support.
     
     Provides two main tools:
@@ -23,33 +23,43 @@ class TavilySearchServer(SchemaBasedMCPServer):
     - extract: Content extraction from URLs with better success than traditional scraping
     """
     
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """Initialize Tavily search server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration (api_key, cache_ttl, etc.)
+            server_config: Plugin-specific configuration (api_key, cache_ttl, etc.)
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
         # Get API key from config or environment
-        self.api_key = getattr(mcp_config, 'api_key', None) or os.environ.get('TAVILY_API_KEY', '')
+        self.api_key = getattr(server_config, 'api_key', None) or os.environ.get('TAVILY_API_KEY', '')
         if not self.api_key:
-            logger.warning("Tavily API key not configured. Set TAVILY_API_KEY env var or api_key in plugins.yaml")
+            # Without a key the server stays loadable but offers NO tools (see
+            # get_template_vars): an agent must not see a tool whose every call
+            # can only fail, or it burns a step finding that out.
+            logger.warning("Tavily API key not configured -- %s offers no tools. "
+                           "Set TAVILY_API_KEY or api_key in plugins.yaml", name)
         
         # Initialize cache (30 minutes default for search results)
-        cache_ttl = getattr(mcp_config, 'cache_ttl', 1800)
+        cache_ttl = getattr(server_config, 'cache_ttl', 1800)
         self.cache = PluginCache(plugin_name="tavily_search", default_ttl=cache_ttl)
-        self.cache_enabled = getattr(mcp_config, 'cache_enabled', True)
+        self.cache_enabled = getattr(server_config, 'cache_enabled', True)
         
         # Default settings
-        self.default_max_results = getattr(mcp_config, 'default_max_results', 5)
-        self.default_search_depth = getattr(mcp_config, 'default_search_depth', 'basic')
+        self.default_max_results = getattr(server_config, 'default_max_results', 5)
+        self.default_search_depth = getattr(server_config, 'default_search_depth', 'basic')
         
         # Lazy-loaded client
         self._client: Any = None
     
+    def get_template_vars(self) -> dict[str, Any]:
+        """schema.yaml renders its tools only when a key is configured."""
+        vars = super().get_template_vars()
+        vars["api_key_configured"] = bool(self.api_key)
+        return vars
+
     async def _get_client(self) -> Any:
         """Get or create async Tavily client."""
         if self._client is None:
@@ -136,7 +146,13 @@ class TavilySearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached = await self.cache.get(cache_key)
             if cached is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # Subject and count, like the fresh path below -- the bare
+                # "Retrieved from cache" replaced the progress line that had
+                # the query, so a cache hit said nothing at all.
+                hits = cached.get("result_count", len(cached.get("results", [])))
+                await status.end(
+                    f"{hits} results (cached) -- {query[:60]}",
+                    meta={"cache_hit": True, "results": hits})
                 logger.debug(f"Cache hit for Tavily search: {query[:50]}...")
                 return cached
         
@@ -245,7 +261,15 @@ class TavilySearchServer(SchemaBasedMCPServer):
         if self.cache_enabled and not ignore_cache:
             cached = await self.cache.get(cache_key)
             if cached is not None:
-                await status.end("Retrieved from cache", meta={"cache_hit": True})
+                # What was EXTRACTED, not what was requested -- the cached
+                # payload carries its own counts, and partial failures are
+                # cached too, so `len(urls)` reported three pages for a call
+                # that had returned one.
+                got = cached.get("success_count", len(cached.get("results", [])))
+                missed = cached.get("failed_count", 0)
+                await status.end(
+                    f"{got} page(s) (cached)" + (f", {missed} failed" if missed else ""),
+                    meta={"cache_hit": True, "success": got, "failed": missed})
                 logger.debug(f"Cache hit for Tavily extract: {len(urls)} URLs")
                 return cached
         

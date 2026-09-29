@@ -51,32 +51,8 @@
   }
   
   function getFileIcon(fileType) {
-    switch (fileType) {
-      case 'image':
-        return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-          <circle cx="8.5" cy="8.5" r="1.5"/>
-          <polyline points="21 15 16 10 5 21"/>
-        </svg>`;
-      case 'audio':
-        return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M9 18V5l12-2v13"/>
-          <circle cx="6" cy="18" r="3"/>
-          <circle cx="18" cy="16" r="3"/>
-        </svg>`;
-      case 'text':
-        return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-        </svg>`;
-      default:
-        return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-          <polyline points="13 2 13 9 20 9"/>
-        </svg>`;
-    }
+    const name = { image: 'image', audio: 'music', text: 'file-text' }[fileType] || 'paperclip';
+    return `<svg class="pk-icon" aria-hidden="true"><use href="/static/kit/icons.svg#${name}"/></svg>`;
   }
 
   function isValidFile(file) {
@@ -120,7 +96,8 @@
     // Remove button
     const removeBtn = document.createElement('button');
     removeBtn.className = 'attached-file-remove';
-    removeBtn.innerHTML = '×';
+    removeBtn.innerHTML = '<svg class="pk-icon pk-icon--sm" aria-hidden="true"><use href="/static/kit/icons.svg#x"/></svg>';
+    removeBtn.setAttribute('aria-label', 'Remove file');
     removeBtn.type = 'button';
     removeBtn.title = 'Remove file';
     removeBtn.onclick = () => removeFile(index);
@@ -131,8 +108,7 @@
     item.appendChild(removeBtn);
 
     if (!validation.valid) {
-      item.style.borderColor = '#ef4444';
-      item.style.color = '#ef4444';
+      item.classList.add('is-invalid');
       name.textContent += ` (${validation.error})`;
     }
 
@@ -168,7 +144,14 @@
     updatePreview();
   }
 
-  function clearFiles() {
+  /** Take the given files off the list -- the ones a message sent; any attached since stay. */
+  function removeFiles(files) {
+    selectedFiles = selectedFiles.filter((file) => !files.includes(file));
+    updatePreview();
+  }
+
+  /** Empty the list, the files that could not be sent included (/attach clear). */
+  function clear() {
     selectedFiles = [];
     updatePreview();
   }
@@ -207,6 +190,8 @@
     
     // Update file input to accept more types
     fileInput.accept = 'image/*,audio/*,.txt,.md,.csv,.json,.xml,.html,.py,.js,.ts,.css,.yaml,.yml,.log';
+    // a button reachable with the keyboard opens the hidden input's picker
+    document.getElementById('attachButton').addEventListener('click', () => fileInput.click());
 
     // Handle file selection
     fileInput.addEventListener('change', (e) => {
@@ -222,19 +207,19 @@
       textarea.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        textarea.style.borderColor = '#3b82f6';
+        textarea.parentElement.classList.add('is-dragover');
       });
 
       textarea.addEventListener('dragleave', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        textarea.style.borderColor = '';
+        textarea.parentElement.classList.remove('is-dragover');
       });
 
       textarea.addEventListener('drop', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        textarea.style.borderColor = '';
+        textarea.parentElement.classList.remove('is-dragover');
         
         const files = e.dataTransfer.files;
         if (files.length > 0) {
@@ -272,7 +257,8 @@
   fileUploadModule.getFiles = getFiles;
   fileUploadModule.getFilesByType = getFilesByType;
   fileUploadModule.hasValidFiles = hasValidFiles;
-  fileUploadModule.clearFiles = clearFiles;
+  fileUploadModule.removeFiles = removeFiles;
+  fileUploadModule.clear = clear;
   fileUploadModule.addFiles = addFiles;
   fileUploadModule.isValidFile = isValidFile;
   fileUploadModule.getFileType = getFileType;

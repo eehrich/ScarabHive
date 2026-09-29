@@ -1,0 +1,73 @@
+# The game development agent: the coder harness plus Godot plus asset agents.
+#
+# `type: coder` inherits everything the coder is -- its sandbox (coder_fs),
+# its shell, its model chain, its explorer and reviewer, its 300 steps -- and
+# this file states only what a game changes: the Godot tools, a Godot-aware
+# tester, Blender and the image agent as sub-agents, its own knowledge bundle,
+# and a loop skill that knows what "run the tests" means for a game.
+#
+# Knowledge lives in skills, not in the prompt:
+#   always     gamedev-loop        — the loop: files -> check -> run -> playtest -> review
+#   on_demand  godot-conventions   — Godot 4 facts the model gets wrong from memory
+#              asset-pipeline      — how to brief Blender / the image agent and land the file
+#              adversarial-review, diagnosing-bugs, tdd — the coder's own, unchanged
+plugins:
+  servers:
+
+    gamedev:
+      type: coder
+      enabled: true
+      description: "Game development agent: builds, changes and debugs Godot 4 projects with the coder harness, playtests in the running editor, and delegates 3D models to Blender and textures/sprites to the image agent"
+
+      self_tool_descriptions:
+        gamedev_execute_task: "Implement, change or debug something in a Godot project -- scenes, scripts, gameplay, assets -- verified headless and in the editor, reviewed before reporting"
+        gamedev_list_available_tools: "List the game development tools available (Godot, files, shell, sub-agents, skills)"
+
+      agent_config:
+        system_template: "./prompts/gamedev.md"
+
+        template_vars:
+          # Read by the prompt AND by the injection hook below; one place.
+          okf_bundle: "data/okf/gamedev"
+
+        # A bare list REPLACES the coder's skills: the loop is a different
+        # one, and the coder's on-demand skills that still apply are named
+        # again here rather than inherited blindly.
+        skills:
+          always: ["gamedev-loop"]
+          on_demand: ["godot-conventions", "asset-pipeline", "adversarial-review", "diagnosing-bugs", "tdd"]
+
+        tools:
+          # Every entry prefixed = merge with the coder's list. `!` takes the
+          # coder's instance away, `+` adds the gamedev one in its place.
+          allowed:
+            - "+godot/*"                  # headless + editor channel
+            - "+media_ops/*"              # look at a screenshot
+            - "!coder_sam/*"
+            - "+gamedev_sam/*"            # explorer, reviewer, tester, blender, image
+            - "!coder_okf/*"
+            - "+gamedev_okf/*"            # its own bundle
+
+        hooks:
+          enabled: true
+          overrides:
+            # The coder's bundle would inject Python conventions into a
+            # Godot task; off here, the gamedev bundle on in its place.
+            coder_okf.okf_context_injection:
+              enabled: false
+            gamedev_okf.okf_context_injection:
+              enabled: true
+              hook_bundle: data/okf/gamedev
+            # Off for the same reason coder_sam's is off in the coder: it
+            # rewrites the cached prompt prefix mid-turn, and the agent can
+            # list its sub-agents with a tool call when it needs to.
+            gamedev_sam.inject_sub_agent_context:
+              enabled: false
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["gamedev", "godot", "harness", "blender", "review"]
+        category: "development"
+        visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell, Claude Code and write access to the whole checkout

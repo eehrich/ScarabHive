@@ -1,4 +1,4 @@
-"""Cognitive Stack MCP Server implementation.
+"""Cognitive Stack Tool Server implementation.
 
 This module provides a stack-based working memory for LLMs to manage nested
 contexts, interrupt-and-resume patterns, and hierarchical problem-solving.
@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.hooks.plugin_hook import HookContext, HookResult
 from agent_system.utils.id import short_id
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ class CognitiveStack:
     max_depth: int = 20  # Prevent infinite recursion
 
 
-class CognitiveStackServer(SchemaBasedMCPServer):
-    """Cognitive Stack MCP server for working memory management.
+class CognitiveStackServer(SchemaBasedToolServer):
+    """Cognitive Stack tool server for working memory management.
 
     This server provides:
     - push_batch: Push one or more contexts onto stack
@@ -60,21 +60,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
     - Depth limit protection
     """
 
-    def __init__(self, name: str, system_config: AgentSystemConfig, mcp_config: MCPConfig) -> None:
+    def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig) -> None:
         """
         Initialize Cognitive Stack server.
 
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
 
         # Configuration
-        self.max_depth = int(getattr(mcp_config, 'max_depth', 20))
-        self.max_frames_in_prompt = int(getattr(mcp_config, 'max_frames_in_prompt', 3))
-        self.session_ttl_seconds = int(getattr(mcp_config, 'session_ttl_seconds', 3600))
+        self.max_depth = int(getattr(server_config, 'max_depth', 20))
+        self.max_frames_in_prompt = int(getattr(server_config, 'max_frames_in_prompt', 3))
+        self.session_ttl_seconds = int(getattr(server_config, 'session_ttl_seconds', 3600))
 
         # Session storage (in-memory) with TTL cleanup
         self._stacks: dict[str, CognitiveStack] = {}
@@ -350,8 +350,21 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                     "cleared_frames": frame_count,
                     "message": f"Cleared {frame_count} frames from stack"
                 }
+            elif params.get("_session_id"):
+                # A per-session caller (the framework injects _session_id on
+                # every LLM tool call) resolved no stack. The server is a
+                # singleton shared across all sessions/users, so falling through
+                # to a global wipe here would destroy every OTHER session's
+                # stacks (cross-session data loss reachable from LLM output).
+                # Refuse and tell the caller to pass an explicit stack_id.
+                error_msg = "No active stack for this session (provide an explicit stack_id to clear a specific stack)"
+                if status:
+                    await status.error(error_msg)
+                return {"status": "error", "error": error_msg}
             else:
-                # Clear all stacks
+                # No session context at all - a maintenance/CLI call. Allow the
+                # global clear-all (not reachable from an LLM tool call, which
+                # always carries _session_id).
                 total_frames = sum(len(s.frames) for s in self._stacks.values())
                 stack_count = len(self._stacks)
 
@@ -581,16 +594,8 @@ class CognitiveStackServer(SchemaBasedMCPServer):
             agent_session_id = context.session_id
             stack_id = self._agent_session_mapping.get(agent_session_id)
 
+            from agent_system.llm.message_roles import DEVELOPER
             from agent_system.llm.models import ChatMessage
-
-            # Check if already injected and REMOVE old injection(s)
-            # Loop backwards to safely remove multiple occurrences
-            for i in range(len(context.messages) - 1, -1, -1):
-                msg = context.messages[i]
-                msg_content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
-                if msg_content and ("Cognitive Stack" in msg_content and msg_content.startswith("##")):
-                    context.messages.pop(i)
-                    logger.debug(f"Removed old cognitive stack injection at index {i}")
 
             if stack_id and stack_id in self._stacks:
                 stack = self._stacks[stack_id]
@@ -610,11 +615,22 @@ class CognitiveStackServer(SchemaBasedMCPServer):
                 stack_prompt = self._format_stack_reminder()
                 logger.info("[CognitiveStackHook] No active stack - injecting tool reminder")
 
-            # Insert after first system message
-            insert_pos = self._find_system_message_position(context.messages)
-            context.messages.insert(insert_pos, ChatMessage(
-                role="system",
-                content=stack_prompt
+            # Append-only: the block is a turn in the history, not a text
+            # at the head rebuilt on every call. At the head it changed the
+            # prompt prefix every step, so the whole history was paid for
+            # again; appended at the end, everything before it stays
+            # byte-identical. The previous block stays where it is, and one
+            # that compaction took away simply comes back.
+            previous = next(
+                (msg for msg in reversed(context.messages)
+                 if getattr(msg, 'injected_by', None) == "cognitive_stack"), None)
+            if previous is not None and previous.content == stack_prompt:
+                return HookResult(success=True, modified=False, context=context)
+
+            context.messages.append(ChatMessage(
+                role=DEVELOPER,
+                content=stack_prompt,
+                injected_by="cognitive_stack",
             ))
 
             return HookResult(success=True, modified=True, context=context)
@@ -668,15 +684,3 @@ You have no active stack. Use `{self.name}(operation="push_batch", items=[...])`
                 lines.append(f"- **Frame #{position}**{data_info}: {context}")
 
         return "\n".join(lines)
-
-    def _find_system_message_position(self, messages: list) -> int:
-        """Find position to insert system message (after all consecutive system messages at start)."""
-        # Find the end of consecutive system messages at the beginning
-        position = 0
-        for i, msg in enumerate(messages):
-            role = msg.role if hasattr(msg, 'role') else msg.get('role')
-            if role == 'system':
-                position = i + 1  # Keep moving past system messages
-            else:
-                break  # Stop at first non-system message
-        return position

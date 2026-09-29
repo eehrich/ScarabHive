@@ -1,51 +1,60 @@
-<div class="message-debugger-panel">
-    <link rel="stylesheet" href="/static/css/scrollbar.css">
-    <link rel="stylesheet" href="/plugins/message_debugger/static/panel.css">
-    
-    <div class="debugger-header">
-        <div class="debugger-title">🐛 Message Debugger</div>
-        <div class="debugger-controls">
-            <button class="debugger-btn" onclick="messageDebugger.refresh()" title="Refresh">
-                🔄
-            </button>
-            <button class="debugger-btn danger" onclick="messageDebugger.clearHistory()" title="Clear History">
-                🗑️
-            </button>
-            <button class="debugger-btn" id="auto-refresh-btn" onclick="messageDebugger.toggleAutoRefresh()" title="Auto-Refresh - Inactive">
-                ⏱️
-            </button>
-        </div>
-    </div>
-    
-    <div class="debugger-stats" id="stats-container">
-        <!-- Stats will be populated by JavaScript -->
-    </div>
-    
-    <div class="debugger-filters">
-        <div class="filter-group">
-            <label class="filter-label">Agent Name</label>
-            <select class="filter-input" id="filter-agent" onchange="messageDebugger.applyFilters()">
-                <option value="">All Agents</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label class="filter-label">Session ID</label>
-            <select class="filter-input" id="filter-session" onchange="messageDebugger.applyFilters()">
-                <option value="">All Sessions</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label class="filter-label">Max Results</label>
-            <input type="number" class="filter-input" id="filter-limit" value="50" min="1" max="500" onchange="messageDebugger.applyFilters()">
-        </div>
-    </div>
-    
-    <div class="snapshots-list" id="snapshots-container">
-        <div class="loading">
-            <div class="spinner"></div>
-            <div>Loading message snapshots...</div>
-        </div>
-    </div>
-    
-    <script src="/plugins/message_debugger/static/panel.js"></script>
+{% extends "kit/panel_base.html" %}
+{% from "kit/macros.html" import icon %}
+{% block title %}Message Debugger{% endblock %}
+{% block head %}<link rel="stylesheet" href="/plugins/{{ plugin }}/static/panel.css">{% endblock %}
+{% block toolbar %}
+<pk-refresh interval="5"></pk-refresh>
+<button id="actionsButton" type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" popovertarget="actions" aria-label="More actions" title="More actions"{% if not sees_everything %} hidden{% endif %}>{{ icon('ellipsis') }}</button>
+<div id="actions" class="pk-menu" popover>
+  <button type="button" class="pk-menu-item" data-action="prune">{{ icon('hard-drive') }} Prune and reclaim disk space</button>
+  <hr class="pk-menu-separator">
+  <button type="button" class="pk-menu-item pk-menu-item--danger" data-action="clear">{{ icon('trash-2') }} Clear all captured data</button>
 </div>
+{% endblock %}
+{% block content %}
+<div class="pk-stats" id="stats"><span class="pk-skeleton"></span></div>
+
+<div class="pk-row" role="group" aria-label="Filters">
+  <select id="filterAgent" class="pk-select pk-select--sm md-filter" aria-label="Agent"><option value="">All agents</option></select>
+  <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterSession" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Session ID" aria-label="Session ID"></div>
+  <div class="pk-search pk-grow">{{ icon('search') }}<input id="filterRequest" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="Request ID" aria-label="Request ID"></div>
+  <div class="pk-search pk-grow" id="userFilter"{% if not sees_everything %} hidden{% endif %}>{{ icon('user') }}<input id="filterUser" class="pk-input pk-input--sm pk-input--mono" type="search" placeholder="User" aria-label="User"></div>
+</div>
+
+<div class="pk-tabs" role="tablist" data-pk-tabs>
+  <button class="pk-tab" role="tab" aria-selected="true" aria-controls="tab-turns" data-tab="turns">Turns <span class="pk-tab-count" id="turnsCount"></span></button>
+  <button class="pk-tab" role="tab" aria-selected="false" aria-controls="tab-requests" data-tab="requests">LLM requests <span class="pk-tab-count" id="requestsCount"></span></button>
+</div>
+<section id="tab-turns" class="pk-stack" role="tabpanel">
+  <div class="pk-row">
+    <select id="filterType" class="pk-select pk-select--sm md-filter" aria-label="Type">
+      <option value="">Before and after the LLM</option>
+      <option value="pre_llm">Before the LLM (input)</option>
+      <option value="post_llm">After the LLM (output)</option>
+    </select>
+  </div>
+  <div id="turns"><span class="pk-skeleton"></span></div>
+</section>
+<section id="tab-requests" class="pk-stack" role="tabpanel" hidden>
+  <div class="pk-row">
+    <select id="filterProvider" class="pk-select pk-select--sm md-filter" aria-label="Provider"><option value="">All providers</option></select>
+    <select id="filterDirection" class="pk-select pk-select--sm md-filter" aria-label="Direction">
+      <option value="">Requests and responses</option>
+      <option value="request">Requests</option>
+      <option value="response">Responses</option>
+    </select>
+  </div>
+  <div id="requests"><span class="pk-skeleton"></span></div>
+</section>
+
+<dialog id="detail" class="pk-dialog pk-drawer md-detail" aria-labelledby="detailTitle">
+  <div class="pk-dialog-head">
+    <h2 id="detailTitle" class="pk-dialog-title pk-truncate pk-grow"></h2>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-step="-1" aria-label="Newer entry" title="Newer entry">{{ icon('chevron-up') }}</button>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-step="1" aria-label="Older entry" title="Older entry">{{ icon('chevron-down') }}</button>
+    <button type="button" class="pk-btn pk-btn--ghost pk-btn--icon pk-btn--sm" data-close aria-label="Close" title="Close">{{ icon('x') }}</button>
+  </div>
+  <div id="detailBody" class="pk-dialog-body pk-stack"></div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="/plugins/{{ plugin }}/static/panel.js"></script>{% endblock %}

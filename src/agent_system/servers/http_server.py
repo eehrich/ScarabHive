@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
 
-from ..mcp.base import MCPServer
+from ..tools.base import ToolServer
 
 
 class CallRequest(BaseModel):
@@ -15,8 +15,8 @@ class CallRequest(BaseModel):
     params: dict[str, Any] = {}
 
 
-async def serve_mcp_server(server: MCPServer, host: str | None = None, port: int | None = None) -> None:
-    app = FastAPI(title=f"MCP Server: {server.name}")
+async def serve_tool_server(server: ToolServer, host: str | None = None, port: int | None = None) -> None:
+    app = FastAPI(title=f"Tool server: {server.name}")
 
     @app.get("/health")
     def health():

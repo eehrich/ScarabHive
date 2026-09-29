@@ -1,0 +1,22 @@
+# llm_openrouter — the official OpenRouter SDK as a second route to the same
+# /responses endpoint llm_openai_compat already serves. Built to be COMPARED
+# against it (same payload builder, same parser, same healing loop — only the
+# transport differs), not to replace it unmeasured. pip requirements live
+# HERE, not in core.txt; scripts/aggregate_plugin_deps.py folds them into
+# requirements/all.txt.
+[plugin]
+name = "llm_openrouter"
+version = "0.1.0"
+description = "OpenRouter SDK client for the Responses API (A/B candidate for openai_responses)"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["openrouter_sdk"]
+# Same endpoint as openai_responses — the resolver reads this to tell that a
+# base_url-less entry talks to OpenRouter (provider_routing,
+# key-follows-endpoint). Pinned by tests/llm/test_llm_openrouter_routing_default.py.
+default_base_url = { openrouter_sdk = "https://openrouter.ai/api/v1" }
+requires = { agent_system = ">=0.6.0" }
+# The SDK pins pydantic<2.13 — installing it caps the whole application one
+# minor below the current release. That cost is part of what this plugin
+# exists to weigh.
+dependencies = ["openrouter>=1.1.108"]

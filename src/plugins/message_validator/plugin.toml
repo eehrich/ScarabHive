@@ -1,0 +1,12 @@
+# message_validator plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "message_validator"
+version = "1.0.0"
+description = "Validates and sanitizes messages before LLM calls to ensure safety, proper formatting, and compliance with content policies.\n"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+requires = { agent_system = ">=0.6.0" }

@@ -1,0 +1,330 @@
+# Hook definitions for debate_forum plugin
+hooks:
+  - name: inject_debate_context
+    type: pre_llm_call
+    enabled: false
+    timeout: 5.0
+    description: "Inject debate forum messages from other participants into the agent's context"
+    category: "prompt_injection"
+    order:
+      before: ["message_validation"]
+
+  - name: deliver_direct_messages
+    type: pre_llm_call
+    enabled: true
+    timeout: 5.0
+    description: "Hand the session the direct messages sent to it"
+    category: "prompt_injection"
+    order:
+      before: ["message_validation"]
+
+  - name: mark_direct_messages_delivered
+    type: session_end
+    enabled: true
+    timeout: 5.0
+    description: "Direct messages count as delivered once the conversation that carried them is saved"
+    category: "cleanup"
+
+# Tool definitions for debate_forum plugin
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_create_group"
+      description: >
+        Create a new channel group. Groups let you organize related debate channels
+        together (e.g. all channels for one story design run). Returns the group_id.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Group name (e.g. 'Story Design - Buch 5 - 2024-03-15')"            
+          description:
+            type: string
+            description: "Optional description (e.g. 'V5b pipeline run for book 5')"
+        required: [name]
+
+  - type: function
+    function:
+      name: "{{ name }}_list_groups"
+      description: >
+        List all channel groups, newest first. Each group includes a channel_count.
+      parameters:
+        type: object
+        properties:
+          limit:
+            type: integer
+            description: "Maximum groups to return (default 100)"
+
+  - type: function
+    function:
+      name: "{{ name }}_create_channel"
+      description: >
+        Create a new debate channel. Returns the channel_id.
+        Each debate gets its own channel where agents post messages.
+      parameters:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Short channel name (e.g. 'synopsis-debatte-book-3')"
+          topic:
+            type: string
+            description: "What is being debated (e.g. 'Welche der 3 Synopsen ist am besten?')"
+          context:
+            type: string
+            description: "Background context as text or JSON (genre, premise, candidates, etc.)"
+          group_id:
+            type: integer
+            description: "Optional group ID to assign this channel to"
+          metadata:
+            type: object
+            description: "Optional metadata (book_id, stage, pipeline, etc.)"
+        required: [name, topic]
+
+  - type: function
+    function:
+      name: "{{ name }}_post_message"
+      description: >
+        Post a message to a debate channel. Long output: post the first chunk, then send
+        the rest with append=true + the returned message_id (concatenated server-side into
+        one message) — never truncate or summarize.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "Channel to post to (new message)"
+          agent_name:
+            type: string
+            description: "Agent display name (e.g. 'Mira', 'Sven')"
+          agent_role:
+            type: string
+            description: "Role in the debate"
+          round:
+            type: integer
+            description: "Round number (1, 2, 3, ...)"
+          content:
+            type: string
+            description: "Message content (or next chunk if append=true)"
+          append:
+            type: boolean
+            description: "Append 'content' to message_id instead of posting new — long output in chunks. Continue exactly where the last chunk ended."
+          message_id:
+            type: integer
+            description: "Message to append to (from the first post). Required if append=true."
+          metadata:
+            type: object
+            description: "Optional metadata (llm_profile, token_count, ...)"
+        required: [content]
+
+  - type: function
+    function:
+      name: "{{ name }}_get_thread"
+      description: >
+        Get the full discussion thread for a channel, formatted as text.
+        Use this to build context for the next agent in the debate.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel"
+          format:
+            type: string
+            description: "Output format: 'text' (default, for LLM context) or 'json' (raw data)"
+            enum: ["text", "json"]
+          max_messages:
+            type: integer
+            description: "Limit number of messages returned (0=all, default=0)"
+        required: [channel_id]
+
+  - type: function
+    function:
+      name: "{{ name }}_conclude"
+      description: >
+        Conclude a debate with a verdict. Sets channel status to 'concluded'.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel"
+          verdict:
+            type: object
+            description: "Verdict data (winner, score, feedback, action_items, etc.)"
+          summary:
+            type: string
+            description: "Human-readable summary of the verdict"
+        required: [channel_id, verdict]
+
+  - type: function
+    function:
+      name: "{{ name }}_reopen_channel"
+      description: >
+        Reopen a concluded or archived debate channel back to active status.
+        Allows posting new messages and continuing the debate.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel to reopen"
+        required: [channel_id]
+
+  - type: function
+    function:
+      name: "{{ name }}_rename_channel"
+      description: >
+        Rename a debate channel. Updates only the display name; channel_id,
+        messages, pins and history stay intact.
+      parameters:
+        type: object
+        properties:
+          channel_id:
+            type: integer
+            description: "ID of the channel to rename"
+          new_name:
+            type: string
+            description: "New display name for the channel"
+        required: [channel_id, new_name]
+
+  - type: function
+    function:
+      name: "{{ name }}_list_channels"
+      description: >
+        List debate channels, optionally filtered by status or group.
+      parameters:
+        type: object
+        properties:
+          status:
+            type: string
+            description: "Filter by status: 'active', 'concluded', 'archived'. Omit for all."
+            enum: ["active", "concluded", "archived"]
+          group_id:
+            type: integer
+            description: "Filter by group ID. Omit to show all groups."
+          limit:
+            type: integer
+            description: "Maximum channels to return (default 50)"
+          search:
+            type: string
+            description: "Search in channel name/topic"
+
+  - type: function
+    function:
+      name: "{{ name }}_pin_message"
+      description: >
+        Pin or unpin a message. Pinned messages are always included in the context
+        injection for sub-agents, regardless of the sliding window size.
+        Use this to preserve important context (original task, key decisions, etc.).
+      parameters:
+        type: object
+        properties:
+          message_id:
+            type: integer
+            description: "ID of the message to pin or unpin"
+          pinned:
+            type: boolean
+            description: "true to pin, false to unpin (default: true)"
+        required: [message_id]
+
+  - type: function
+    function:
+      name: "{{ name }}_list_sessions"
+      description: "List your other sessions that run right now. Sub-agents' sessions are not listed."
+      parameters:
+        type: object
+        properties: {}
+
+  - type: function
+    function:
+      name: "{{ name }}_send_message"
+      description: >
+        Send a direct message to another session. A running session reads it
+        on its next step; an idle one is started to read it. Status "queued"
+        means it waits there for that session's next run.
+      parameters:
+        type: object
+        properties:
+          to:
+            type: string
+            description: "session_id: from list_sessions, or the from_session of a message you got"
+          message:
+            type: string
+        required: [to, message]
+
+# Web UI configuration
+web_ui:
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
+  panel:
+    endpoint: "/plugins/{{ name }}/"
+    title: "Debate Forum"
+    description: "Agent debate channels and discussion threads"
+    icon: messages-square
+    category: agents
+    keywords: [debate, discussion, panel]
+    window: {width: 900, height: 680}
+
+  endpoints:
+    - path: "/"
+      method: "GET"
+      handler: "render_panel"
+      response_type: "html"
+      description: "The Debate Forum panel"
+    - path: "/api/stats"
+      method: "GET"
+      handler: "api_get_stats"
+      response_type: "json"
+      description: "Channels per status and messages in all"
+    - path: "/api/groups"
+      method: "GET"
+      handler: "api_list_groups"
+      response_type: "json"
+      description: "The newest channel groups"
+    - path: "/api/channels"
+      method: "GET"
+      handler: "api_list_channels"
+      response_type: "json"
+      description: "The most recently active channels matching status, search and group"
+    - path: "/api/channels"
+      method: "POST"
+      handler: "api_create_channel"
+      response_type: "json"
+      description: "Create a channel"
+    - path: "/api/channels/{channel_id}"
+      method: "GET"
+      handler: "api_get_channel"
+      response_type: "json"
+      description: "A channel with its verdict"
+    - path: "/api/channels/{channel_id}"
+      method: "DELETE"
+      handler: "api_delete_channel"
+      response_type: "json"
+      description: "Delete a channel and its messages for good"
+    - path: "/api/channels/{channel_id}/messages"
+      method: "GET"
+      handler: "api_get_messages"
+      response_type: "json"
+      description: "A channel's messages, rendered"
+    - path: "/api/channels/{channel_id}/messages"
+      method: "POST"
+      handler: "api_post_message"
+      response_type: "json"
+      description: "Post into an active channel"
+    - path: "/api/channels/{channel_id}/archive"
+      method: "POST"
+      handler: "api_archive_channel"
+      response_type: "json"
+      description: "Archive a channel"
+    - path: "/api/channels/{channel_id}/reopen"
+      method: "POST"
+      handler: "api_reopen_channel"
+      response_type: "json"
+      description: "Reopen a concluded or archived channel"
+    - path: "/api/messages/{message_id}/pin"
+      method: "POST"
+      handler: "api_toggle_pin"
+      response_type: "json"
+      description: "Pin or unpin a message"

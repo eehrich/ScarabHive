@@ -3,18 +3,38 @@ hooks:
   - name: debugger_capture_pre_llm
     type: pre_llm_call
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures LLM input messages just before sending to LLM (runs last in pre-chain)"
     category: "message_debugging"
     order:
-      after: ["context_summarization", "context_optimization", "prompt_injection", "message_validation"]
+      after: ["context_summarization", "prompt_injection", "message_validation"]
       before: ["end"]
   
   - name: debugger_capture_post_llm
     type: post_llm_call
     enabled: true
-    timeout: 5.0
+    timeout: 20.0
     description: "Captures LLM response immediately after receiving from LLM (runs first in post-chain)"
+    category: "message_debugging"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+  - name: debugger_capture_pre_request
+    type: pre_llm_request
+    enabled: true
+    timeout: 20.0
+    description: "Captures raw API request payload before sending to LLM provider"
+    category: "message_debugging"
+    order:
+      after: ["begin"]
+      before: ["end"]
+
+  - name: debugger_capture_post_response
+    type: post_llm_response
+    enabled: true
+    timeout: 20.0
+    description: "Captures raw API response data after receiving from LLM provider"
     category: "message_debugging"
     order:
       after: ["begin"]
@@ -22,13 +42,6 @@ hooks:
 
 # Configuration schema
 config:
-  max_history_entries:
-    type: integer
-    default: 100
-    description: "Maximum number of message snapshots to keep in history"
-    minimum: 10
-    maximum: 1000
-  
   capture_enabled:
     type: boolean
     default: true
@@ -44,6 +57,16 @@ config:
     default: true
     description: "Capture messages after LLM call (output)"
   
+  capture_llm_requests:
+    type: boolean
+    default: true
+    description: "Capture raw LLM API requests and responses"
+
+  db_path:
+    type: string
+    default: ""
+    description: "Path to SQLite database file (default: data/message_debugger/debugger.db)"
+  
   include_tool_calls:
     type: boolean
     default: true
@@ -53,65 +76,81 @@ config:
     type: boolean
     default: true
     description: "Calculate and include token estimates for each message"
-  
-  auto_cleanup_threshold:
+
+  max_field_chars:
     type: integer
-    default: 150
-    description: "When history exceeds this size, automatically cleanup old entries"
-    minimum: 50
-    maximum: 2000
+    default: 500
+    description: "Turn snapshots store every field of every message. content and tool_calls stay whole; any other string longer than this is cut to a preview that names its full length (encrypted reasoning and base64 media would otherwise repeat in every snapshot of a run). 0 keeps everything."
+    minimum: 0
+  
+  max_db_size_mb:
+    type: integer
+    default: 5120
+    description: "Hard cap on the debugger DB's data size (MB). Above ~90% the oldest turns/requests are pruned down to ~75% (hysteresis). The file plateaus at this size and reuses freed pages (no VACUUM). 0 disables retention."
+    minimum: 0
+    maximum: 1048576
+
+  capture_queue_max:
+    type: integer
+    default: 2000
+    description: "Bound on the async write queue. Captures are written by a background thread so the agent never blocks on a slow/large DB; if the writer falls catastrophically behind, the newest snapshots are dropped (logged) once this many are queued. 0 = unbounded (risk: memory growth if the DB wedges)."
+    minimum: 0
+    maximum: 1000000
 
 # Web UI configuration
 web_ui:
-  # Header button configuration
-  button:
-    enabled: true
-    text: "Message Debug"
-    icon: "🔍"
-    tooltip: "View captured LLM messages (pre & post calls)"
-  
-  # Panel configuration
+  # The panel's catalogue entry: launcher, command palette and chat links read it
+  # (agent_system/ui/catalog.py lists the fields and categories).
   panel:
-    enabled: true
-    title: "Message Debugger - LLM Input/Output Snapshots"
-    panel_id: "{{ name }}"
     endpoint: "/plugins/{{ name }}/"
-    type: "iframe"
-    description: "View captured message snapshots from before and after LLM calls"
-  
+    title: "Message Debugger"
+    description: "Captured message turns and raw API requests and responses"
+    icon: bug
+    category: debug
+    keywords: [requests, responses, llm, hooks]
+    window: {width: 1000, height: 700}
+    contexts:
+      request: "/plugins/{{ name }}/?request_id={request_id}"
+      session: "/plugins/{{ name }}/?session_id={session_id}"
+
   endpoints:
-    - path: "/snapshots"
+    - path: "/turns"
       method: "GET"
-      handler: "list_snapshots"
+      handler: "list_turns"
       response_type: "json"
-      description: "Get list of captured message snapshots with filtering options"
-    - path: "/snapshots/{index}"
+      description: "List captured agent-level message turns"
+    - path: "/turns/{turn_id}"
       method: "GET"
-      handler: "get_snapshot"
+      handler: "get_turn"
       response_type: "json"
-      description: "Get specific snapshot by index"
+      description: "Get specific turn by ID"
+    - path: "/llm-requests"
+      method: "GET"
+      handler: "list_llm_requests"
+      response_type: "json"
+      description: "List raw LLM API request/response logs"
+    - path: "/llm-requests/{entry_id}"
+      method: "GET"
+      handler: "get_llm_request"
+      response_type: "json"
+      description: "Get one LLM request log entry by its row ID"
     - path: "/stats"
       method: "GET"
       handler: "get_stats"
       response_type: "json"
-      description: "Get debugger statistics (total captures, agent breakdown, etc.)"
-    - path: "/snapshots"
+      description: "Get debugger statistics"
+    - path: "/clear"
       method: "DELETE"
-      handler: "clear_snapshots"
+      handler: "clear_all"
       response_type: "json"
-      description: "Clear all captured snapshots"
+      description: "Clear all captured data"
+    - path: "/prune"
+      method: "POST"
+      handler: "prune"
+      response_type: "json"
+      description: "Prune the oldest entries down to the retention watermark, then compact the file"
     - path: "/"
       method: "GET"
       handler: "render_panel"
       response_type: "html"
       description: "Render the interactive web panel UI"
-    - path: "/static/panel.css"
-      method: "GET"
-      handler: "serve_css"
-      response_type: "response"
-      description: "Serve panel CSS"
-    - path: "/static/panel.js"
-      method: "GET"
-      handler: "serve_js"
-      response_type: "response"
-      description: "Serve panel JavaScript"

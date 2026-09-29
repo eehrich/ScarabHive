@@ -1,6 +1,6 @@
 # Audio Operations Plugin
 
-MCP plugin for audio file manipulation - cutting, merging, mixing, analyzing, and optimizing audio files.
+plugin for audio file manipulation - cutting, merging, mixing, analyzing, and optimizing audio files.
 
 ## Features
 

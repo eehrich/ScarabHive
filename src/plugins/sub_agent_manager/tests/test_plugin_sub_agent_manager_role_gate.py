@@ -1,0 +1,302 @@
+"""The SAM refuses a sub-agent behind a role gate its caller's user does not pass (metadata.min_role).
+
+Refused as the tool's own error, before a sub-session exists -- the backstop in
+Agent.run_events would refuse the run as well, but only after the SAM had made a
+sub-session for a run that can never happen, and the model would read a
+"completed" instance whose answer is an error.
+
+A real SubAgentManagerServer and a real gated Agent on a scripted LLM that
+records its calls; sessions and the user store (root: admin, bob: user) live in
+tmp_path, never in data/.
+"""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from agent_system.auth import database
+from agent_system.auth.models import UserCreate, UserRole
+from agent_system.config.models import (
+    AgentConfig, AgentMetadata, AgentSystemConfig, AuthConfig, LLMModelConfig, LLMProfile, LLMSystemConfig,
+    ToolServerConfig,
+)
+from agent_system.servers.agent.server import Agent
+from agent_system.services.session_manager import SessionManager
+from agent_system.services.session_service import SessionService
+from agent_system.tools.base import ToolServerRegistry
+from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+AUTH = AuthConfig(enabled=True, database_path="/nonexistent/agent-gate-test/users.db")
+
+
+def _scripted_llm():
+    seen = []
+
+    async def stream(messages, tools, cancellation_token=None, status_scope=None):
+        seen.append(list(messages))
+        yield {"type": "final", "assistant": {"role": "assistant", "content": "done"},
+               "usage": {"completion_tokens": 5}, "finish_reason": "stop"}
+
+    llm = AsyncMock()
+    llm.supports_streaming = lambda: True
+    llm.chat_tools_streaming = stream
+    return llm, seen
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    for name, role in (("root", UserRole.ADMIN), ("bob", UserRole.USER)):
+        users.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse", role=role))
+
+    service = SessionService(session_manager=SessionManager(storage_path=str(tmp_path / "sessions")))
+    registry = ToolServerRegistry()
+    llm_system = LLMSystemConfig(models={"m": LLMModelConfig(provider="openai", model="m", api_key="fake")},
+                                 profiles={"normal": LLMProfile(model_ref="m")}, default_profile="normal")
+    worker = Agent("gated_worker", AgentSystemConfig(llm_system=llm_system, auth=AUTH),
+                   ToolServerConfig(type="agent", enabled=True, agent_config=AgentConfig(max_steps=2, llm_profile="normal"),
+                                    metadata=AgentMetadata(visibility="tool", min_role="admin")),
+                   registry)
+    worker.llm, seen = _scripted_llm()
+    registry.register("gated_worker", worker)
+    sam = SubAgentManagerServer("sam", AgentSystemConfig(auth=AUTH), ToolServerConfig(allowed_agents=["*"]))
+
+    async def params_for(user, **more):
+        """The params tool execution hands the SAM for a run of *user* in its own parent session."""
+        parent = f"parent-{user}"
+        try:
+            await service.session_manager.load_session(user, parent)
+        except Exception:
+            await service.session_manager.create_session(user_id=user, session_id=parent,
+                                                         agent_name="coordinator", llm_profile="normal")
+        caller = SimpleNamespace(registry=registry, _session_service=service)
+        return {"_session_id": parent, "_user_id": user, "_session_service": service, "_agent": caller,
+                "_request_id": f"rq-{user}", **more}
+
+    async def sub_agents(user):
+        stored = await service.session_manager.load_session(user, f"parent-{user}", bypass_cache=True)
+        return (stored.get("metadata") or {}).get("sub_agents") or {}
+
+    return SimpleNamespace(sam=sam, worker=worker, seen=seen, params_for=params_for, sub_agents=sub_agents)
+
+
+async def test_a_users_spawn_of_a_gated_agent_is_refused_before_a_sub_session_exists(world):
+    answer = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work"))
+
+    assert answer["status"] == "error", answer
+    assert answer["error_type"] == "agent_role_gate", answer
+    assert "gated_worker" in answer["error"], answer
+    assert await world.sub_agents("bob") == {}, "a sub-session was made for a run that cannot happen"
+    assert world.seen == [], "the gated agent's LLM was called"
+
+
+async def test_an_admins_spawn_runs(world):
+    answer = await world.sam.manage_sub_agent(
+        await world.params_for("root", operation="create", agent_type="gated_worker", task="work"))
+
+    assert (answer["status"], answer["outcome"]) == ("completed", "completed"), answer
+    assert world.seen, "the admin's sub-agent never ran"
+
+
+async def test_a_continue_after_the_gate_was_raised_is_refused_before_the_instance_is_reopened(world):
+    world.worker.min_role = None  # the gate at the time the instance was made
+    created = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work"))
+    assert created["outcome"] == "completed", f"fixture: the ungated create failed: {created}"
+    calls = len(world.seen)
+    ended = (await world.sub_agents("bob"))[created["instance_id"]]["status"]
+
+    world.worker.min_role = "admin"  # what a config reload does to the live agent
+    answer = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="continue", instance_id=created["instance_id"], message="more"))
+
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
+    assert len(world.seen) == calls, "the gated agent ran again"
+    assert (await world.sub_agents("bob"))[created["instance_id"]]["status"] == ended, "the instance was reopened"
+
+
+def _transcript(tmp_path, instance_id):
+    [path] = list((tmp_path / "sessions").rglob(f"{instance_id}.json"))
+    return path.read_bytes()
+
+
+async def test_a_continue_the_agent_refuses_after_the_sams_gate_passed_is_an_error(world, monkeypatch, tmp_path):
+    """The agent's backstop (Agent.run_events) refuses the run after the SAM's own gate let it through -- a
+    reload between the two. Nothing ran: the model reads a refusal with its error_type, worded as the SAM's
+    own gate words it, not a completed instance whose answer is an error, and the transcript stays as it was."""
+    world.worker.min_role = None
+    created = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work"))
+    assert created["outcome"] == "completed", f"fixture: the ungated create failed: {created}"
+    calls, before = len(world.seen), _transcript(tmp_path, created["instance_id"])
+    world.worker.min_role = "admin"
+    monkeypatch.setattr(world.sam, "_role_gate_refusal", lambda *args, **kwargs: None)  # the SAM's gate passed
+
+    answer = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="continue", instance_id=created["instance_id"], message="more"))
+
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
+    assert "gated_worker" in answer["error"] and not answer["error"].startswith("Error:"), answer
+    assert len(world.seen) == calls, "the gated agent ran"
+    stored = (await world.sub_agents("bob"))[created["instance_id"]]
+    assert (stored["status"], stored.get("error")) == ("failed", answer["error"]), stored
+    assert _transcript(tmp_path, created["instance_id"]) == before, "the refused run's transcript was saved"
+    polled = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="poll", instance_id=created["instance_id"]))
+    assert (polled["status"], polled.get("error_type")) == ("failed", "agent_role_gate"), polled
+
+
+async def test_a_later_failure_does_not_report_an_earlier_refusal(world, monkeypatch):
+    """The refusal's error_type is stored with the instance; a later run of it that fails for another reason
+    must not be reported as that refusal (reopen clears it, as it clears the error)."""
+    world.worker.min_role = None
+    created = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work"))
+    instance_id = created["instance_id"]
+    world.worker.min_role = "admin"
+    with monkeypatch.context() as gate_passes:
+        gate_passes.setattr(world.sam, "_role_gate_refusal", lambda *args, **kwargs: None)
+        refused = await world.sam.manage_sub_agent(
+            await world.params_for("bob", operation="continue", instance_id=instance_id, message="more"))
+    assert refused.get("error_type") == "agent_role_gate", f"fixture: {refused}"
+    world.worker.min_role = None
+
+    async def broken(messages, tools, cancellation_token=None, status_scope=None):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover -- an async generator
+
+    monkeypatch.setattr(world.worker.llm, "chat_tools_streaming", broken)
+    await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="continue", instance_id=instance_id, message="again"))
+    polled = await world.sam.manage_sub_agent(await world.params_for("bob", operation="poll", instance_id=instance_id))
+
+    assert polled["status"] == "failed", f"fixture: the second run did not fail: {polled}"
+    assert "error_type" not in polled, polled
+
+
+async def test_a_create_the_agent_refuses_after_the_sams_gate_passed_is_an_error(world, monkeypatch, tmp_path):
+    """The same for a blocking create: an error with its error_type, not ``completed`` with the outcome
+    ``error``. The instance it made for a run that never started goes again, record and file: nothing of it
+    remains to list."""
+    monkeypatch.setattr(world.sam, "_role_gate_refusal", lambda *args, **kwargs: None)  # the SAM's gate passed
+
+    answer = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work"))
+    listed = await world.sam.manage_sub_agent(await world.params_for("bob", operation="list"))
+
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
+    assert not answer["error"].startswith("Error:"), answer
+    assert world.seen == [], "the gated agent ran"
+    assert await world.sub_agents("bob") == {}, "the refused create left its record"
+    assert "gated_worker" not in str(listed), listed
+    assert sorted(path.stem for path in (tmp_path / "sessions").rglob("*.json")
+                  if not path.name.startswith(".") and "index" not in path.name) == ["parent-bob"]
+
+
+async def test_a_refused_create_under_a_parent_not_saved_yet_leaves_no_file(world, monkeypatch, tmp_path):
+    """A parent not saved yet: the creation stores it with the sub-session, under the registered owner, and
+    the refusal takes the sub-session away again -- nothing but the parent is left."""
+    from types import SimpleNamespace
+
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    monkeypatch.setattr(world.sam, "_role_gate_refusal", lambda *args, **kwargs: None)  # the SAM's gate passed
+    params = await world.params_for("bob", operation="create", agent_type="gated_worker", task="work")
+    params.update(_session_id="parent-unsaved", _request_id="rq-unsaved")
+    del params["_user_id"]
+    params["_agent"] = SimpleNamespace(registry=world.worker.registry, _session_service=params["_session_service"],
+                                       name="coordinator", agent_config=world.worker.agent_config)
+    register_request_user("rq-unsaved", "bob")
+    try:
+        answer = await world.sam.manage_sub_agent(params)
+    finally:
+        release_request_user_tree("rq-unsaved")
+
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
+    left = sorted(path.relative_to(tmp_path / "sessions").as_posix() for path in (tmp_path / "sessions").rglob("*.json")
+                  if not path.name.startswith(".") and "index" not in path.name and "parent" not in path.stem)
+    assert left == [], left
+
+
+async def test_a_background_create_the_agent_refuses_ends_its_job_with_the_error_type(world, monkeypatch):
+    """A background create (blocking false): the job ends failed, and says it was a refusal."""
+    monkeypatch.setattr(world.sam, "_role_gate_refusal", lambda *args, **kwargs: None)  # the SAM's gate passed
+
+    started = await world.sam.manage_sub_agent(
+        await world.params_for("bob", operation="create", agent_type="gated_worker", task="work", blocking=False))
+    instance_id = started["instance_id"]
+    await world.sam._async_jobs[instance_id]["task_handle"]
+    job = await world.sam.manage_sub_agent(await world.params_for("bob", operation="poll", instance_id=instance_id))
+
+    assert job["status"] == "failed" and job["error_type"] == "agent_role_gate", job
+    assert not job["error"].startswith("Error:"), job
+    assert world.seen == [], "the gated agent ran"
+    # Read again, the job is gone from memory: the stored state answers, and says the same
+    again = await world.sam.manage_sub_agent(await world.params_for("bob", operation="poll", instance_id=instance_id))
+    waited = await world.sam.manage_sub_agent(await world.params_for("bob", operation="wait", instance_id=instance_id))
+    assert (again["status"], again.get("error_type")) == ("failed", "agent_role_gate"), again
+    assert (waited["status"], waited.get("error_type")) == ("failed", "agent_role_gate"), waited
+
+
+async def test_without_a_named_caller_a_gated_spawn_is_refused_whoever_owns_the_parent_folder(world):
+    """No ``_user_id``, no registered request: the caller is unidentified. The SAM's own user lookup would
+    walk the session folders and find root's -- the parent session is root's -- which is no identity."""
+    params = await world.params_for("root", operation="create", agent_type="gated_worker", task="work")
+    del params["_user_id"]
+
+    answer = await world.sam.manage_sub_agent(params)
+
+    assert answer["status"] == "error" and answer["error_type"] == "agent_role_gate", answer
+    assert world.seen == []
+
+
+@pytest.mark.parametrize("owner, injected, runs", [
+    ("root", None, True),     # a caller without _user_id (repair pipeline, AgentCaller): the request names it
+    ("bob", "root", False),   # the registered owner is asked first, as Agent._run_denial does
+])
+async def test_the_registered_request_owner_names_the_caller(world, owner, injected, runs):
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    params = await world.params_for("root", operation="create", agent_type="gated_worker", task="work")
+    params["_request_id"] = "rq-named"
+    if injected:
+        params["_user_id"] = injected
+    else:
+        del params["_user_id"]
+    register_request_user("rq-named", owner)
+    try:
+        answer = await world.sam.manage_sub_agent(params)
+    finally:
+        release_request_user_tree("rq-named")
+
+    assert (answer.get("error_type") != "agent_role_gate") is runs, answer
+    assert bool(world.seen) is runs
+
+
+async def test_the_spawn_runs_and_is_stored_as_the_user_the_gate_judged(world, tmp_path):
+    """No ``_user_id``, a parent session not saved yet: the SAM's own lookup found nobody and answered
+    "anonymous" -- so the sub-session was stored, registered and run as anonymous, and the gated sub-run's
+    backstop refused what the SAM gate had let through. One user now: the registered owner."""
+    from types import SimpleNamespace
+
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    params = await world.params_for("root", operation="create", agent_type="gated_worker", task="work")
+    params.update(_session_id="parent-unsaved", _request_id="rq-unsaved")
+    del params["_user_id"]
+    params["_agent"] = SimpleNamespace(registry=world.worker.registry, _session_service=params["_session_service"],
+                                       name="coordinator", agent_config=world.worker.agent_config)
+    register_request_user("rq-unsaved", "root")
+    try:
+        answer = await world.sam.manage_sub_agent(params)
+    finally:
+        release_request_user_tree("rq-unsaved")
+
+    assert (answer.get("status"), answer.get("outcome")) == ("completed", "completed"), answer
+    sessions = tmp_path / "sessions"
+    assert (sessions / "root" / f"{answer['instance_id']}.json").exists(), "the sub-session is not root's"
+    assert not (sessions / "anonymous").exists(), "stored under anonymous"

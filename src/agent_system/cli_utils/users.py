@@ -14,6 +14,7 @@ from typing import Optional
 import logging
 
 import typer
+from pydantic import ValidationError
 from tabulate import tabulate
 
 from agent_system.auth.database import setup_database, UserDatabase
@@ -21,8 +22,15 @@ from agent_system.auth.models import UserCreate, UserUpdate, UserRole
 from agent_system.config.settings import load_settings
 
 
-app = typer.Typer(help="User management commands")
+# add_completion=False: the completion installer targets a program named after
+# this module, not `agent-cli users`, and its options broke the `list` default.
+app = typer.Typer(help="User management commands", add_completion=False,
+                  context_settings={"help_option_names": ["-h", "--help"]})
 logger = logging.getLogger(__name__)
+
+#: The agent-cli --config path, set before the app runs. Without it the user
+#: commands read the default config whatever --config said.
+CONFIG_PATH: Optional[str] = None
 
 
 def _supports_color() -> bool:
@@ -52,16 +60,22 @@ def _colorize(text: str, color_code: str) -> str:
     return f"\x1b[{color_code}m{text}\x1b[0m"
 
 
+def _validation_message(error: ValidationError) -> str:
+    """Field and reason per error, never the input: pydantic's own text echoes the password."""
+    return "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors())
+
+
 def get_configured_db() -> UserDatabase:
     """Get database instance from configuration."""
     try:
-        config = load_settings()
-        if config.auth and config.auth.database_path:
-            db_path = Path(config.auth.database_path)
-        else:
-            db_path = Path("data/users.db")
-        
+        config = load_settings(CONFIG_PATH)
+        # None: UserDatabase's own default, users.db in the data directory
+        db_path = (Path(config.auth.database_path)
+                   if config.auth and config.auth.database_path else None)
         return setup_database(db_path)
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error loading configuration: {e}", err=True)
         raise typer.Exit(1)
@@ -117,6 +131,9 @@ def list_users(
         typer.echo(tabulate(rows, headers=headers, tablefmt="github"))
         typer.echo(f"\nTotal: {len(users)} users")
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error listing users: {e}", err=True)
         raise typer.Exit(1)
@@ -164,17 +181,23 @@ def create_user(
         )
         
         created_user = db.create_user(user_data)
-        
+
         typer.echo("✓ User created successfully:")
         typer.echo(f"  ID: {created_user.id}")
         typer.echo(f"  Username: {created_user.username}")
         typer.echo(f"  Email: {created_user.email}")
         typer.echo(f"  Role: {created_user.role.value}")
         typer.echo(f"  Active: {'Yes' if created_user.is_active else 'No'}")
-        
+
+    except ValidationError as e:
+        typer.echo(f"Error: {_validation_message(e)}", err=True)
+        raise typer.Exit(1)
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error creating user: {e}", err=True)
         raise typer.Exit(1)
@@ -209,6 +232,9 @@ def delete_user(
             typer.echo(f"Failed to delete user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error deleting user: {e}", err=True)
         raise typer.Exit(1)
@@ -234,25 +260,29 @@ def update_user(
             typer.echo(f"User '{username}' not found.", err=True)
             raise typer.Exit(1)
         
-        # Build update data
-        update_data = UserUpdate()
-        
+        # Collect, then build once: assigning to a model skips its validation.
+        fields = {}
         if email:
-            update_data.email = email
+            fields["email"] = email
         if full_name:
-            update_data.full_name = full_name
+            fields["full_name"] = full_name
         if password:
-            update_data.password = password
+            fields["password"] = password
         if role:
             try:
-                update_data.role = UserRole(role.lower())
+                fields["role"] = UserRole(role.lower())
             except ValueError:
                 typer.echo(f"Invalid role: {role}. Use 'user', 'admin', or 'guest'.", err=True)
                 raise typer.Exit(1)
         if activate:
-            update_data.is_active = True
+            fields["is_active"] = True
         elif deactivate:
-            update_data.is_active = False
+            fields["is_active"] = False
+        try:
+            update_data = UserUpdate(**fields)
+        except ValidationError as e:
+            typer.echo(f"Error: {_validation_message(e)}", err=True)
+            raise typer.Exit(1)
         
         # Update user
         updated_user = db.update_user(user.id, update_data)
@@ -263,10 +293,15 @@ def update_user(
             typer.echo(f"  Full Name: {updated_user.full_name or '-'}")
             typer.echo(f"  Role: {updated_user.role.value}")
             typer.echo(f"  Active: {'Yes' if updated_user.is_active else 'No'}")
+            if password:
+                typer.echo("  Logins made with the old password have ended; its API key is revoked.")
         else:
             typer.echo(f"Failed to update user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error updating user: {e}", err=True)
         raise typer.Exit(1)
@@ -297,6 +332,9 @@ def user_info(
         typer.echo(f"  Updated: {user.updated_at.strftime('%Y-%m-%d %H:%M:%S') if user.updated_at else '-'}")
         typer.echo(f"  Last Login: {user.last_login.strftime('%Y-%m-%d %H:%M:%S') if user.last_login else 'Never'}")
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error getting user info: {e}", err=True)
         raise typer.Exit(1)
@@ -325,6 +363,9 @@ def generate_api_key(
             typer.echo(f"Failed to generate API key for user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error generating API key: {e}", err=True)
         raise typer.Exit(1)
@@ -361,6 +402,9 @@ def revoke_api_key(
             typer.echo(f"Failed to revoke API key for user '{username}'.", err=True)
             raise typer.Exit(1)
         
+    except typer.Exit:
+        # Deliberate exits (cancel, not-found) must not be re-reported as errors
+        raise
     except Exception as e:
         typer.echo(f"Error revoking API key: {e}", err=True)
         raise typer.Exit(1)

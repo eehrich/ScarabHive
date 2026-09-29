@@ -1,6 +1,6 @@
 """ComfyUI Plugin Server.
 
-MCP server for executing ComfyUI workflows with web monitoring interface.
+tool server for executing ComfyUI workflows with web monitoring interface.
 """
 
 from __future__ import annotations
@@ -11,22 +11,22 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import APIRouter
 
-from agent_system.mcp.schema_based import SchemaBasedMCPServer
+from agent_system.paths import data_path, resolve_data_path
+from agent_system.tools.schema_based import SchemaBasedToolServer
 from .comfyui_client import ComfyUIClient
-from .job_tracker import ComfyUIJobTracker
+from .job_tracker import ACTIVE_STATUSES, ComfyUIJobTracker
+from .web_endpoints import ComfyUIWebEndpoints
 
 if TYPE_CHECKING:
-    from agent_system.config import AgentSystemConfig, MCPConfig
+    from agent_system.config import AgentSystemConfig, ToolServerConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ComfyUIServer(SchemaBasedMCPServer):
-    """MCP Server for ComfyUI workflow execution.
+class ComfyUIServer(SchemaBasedToolServer):
+    """Tool server for ComfyUI workflow execution.
     
     Provides tools for:
     - Listing configured workflows
@@ -42,46 +42,114 @@ class ComfyUIServer(SchemaBasedMCPServer):
         self,
         name: str,
         system_config: "AgentSystemConfig",
-        mcp_config: "MCPConfig"
+        server_config: "ToolServerConfig"
     ) -> None:
         """Initialize ComfyUI server.
         
         Args:
             name: Plugin instance name
             system_config: System-wide configuration
-            mcp_config: Plugin-specific configuration
+            server_config: Plugin-specific configuration
         """
-        super().__init__(name, system_config, mcp_config)
+        super().__init__(name, system_config, server_config)
         
-        # Server configuration - directly from mcp_config attributes
-        self.host = getattr(mcp_config, 'host', "127.0.0.1")
-        self.port = getattr(mcp_config, 'port', 8188)
-        self.timeout = getattr(mcp_config, 'timeout_seconds', 300)
+        # Server configuration - directly from server_config attributes
+        self.host = getattr(server_config, 'host', "127.0.0.1")
+        self.port = getattr(server_config, 'port', 8188)
+        self.timeout = getattr(server_config, 'timeout_seconds', 300)
         # Threshold for detecting lost jobs (unknown status) - fail early if job stays unknown
-        self.unknown_threshold = getattr(mcp_config, 'unknown_threshold_seconds', 60)
+        self.unknown_threshold = getattr(server_config, 'unknown_threshold_seconds', 60)
+        self._lb_strategy = getattr(server_config, 'strategy', 'least_loaded') or 'least_loaded'
+
+        # Build server list for load balancing.
+        # If 'servers' list is configured, use it; otherwise fall back to single host/port.
+        raw_servers = getattr(server_config, 'servers', None)
+        if raw_servers and isinstance(raw_servers, list) and len(raw_servers) > 0:
+            self._servers: list[dict[str, Any]] = [
+                {"host": s["host"], "port": int(s.get("port", 8188))}
+                for s in raw_servers
+                if isinstance(s, dict) and "host" in s
+            ]
+            logger.info(
+                "ComfyUI load balancing enabled: %d server(s) configured",
+                len(self._servers),
+            )
+        else:
+            self._servers = [{"host": self.host, "port": self.port}]
         
         # Output directory - supports {session_id} template for session isolation
-        self._output_dir_template = getattr(mcp_config, 'output_dir', "data/comfyui/outputs")
+        self._output_dir_template = str(getattr(server_config, 'output_dir', None) or data_path("comfyui", "outputs"))
         # Base output dir (without session_id substitution) for cleanup and fallback
         self._output_dir_base = Path(self._output_dir_template.replace("{session_id}", "").rstrip("/\\"))
         self._output_dir_base.mkdir(parents=True, exist_ok=True)
         # Legacy: self.output_dir for backward compatibility (uses base path)
         self.output_dir = self._output_dir_base
-        self.cleanup_age_hours = int(getattr(mcp_config, 'cleanup_age_hours', 48))
+        self.cleanup_age_hours = int(getattr(server_config, 'cleanup_age_hours', 48))
+
+        # upload_image security allowlist — list of absolute roots that
+        # _op_upload_image is allowed to read from. LLM-controlled
+        # file_path values are rejected if they don't resolve inside one
+        # of these roots, preventing confused-deputy reads of arbitrary
+        # host files. An empty list disables upload_image entirely.
+        #
+        # Default scope is INTENTIONALLY narrow — the plugin's own
+        # output_dir (re-upload of generated images) and an
+        # image-asset subtree under data/. The bare project ``data/``
+        # tree contains databases (writer.db, users.db, message_debugger
+        # debugger.db, comfyui jobs.db, lessons_learned), agent traces,
+        # and other non-image state. Setting the default to ``data/``
+        # would re-open the confused-deputy class the allowlist was
+        # introduced to close. Operators who need broader access opt in
+        # explicitly via the ``upload_source_dirs`` config.
+        raw_allowlist = getattr(server_config, 'upload_source_dirs', None)
+        if raw_allowlist is None:
+            raw_allowlist = [
+                str(self._output_dir_base),
+                str(data_path("comfyui")),
+                str(data_path("writer", "assets")),
+            ]
+        # Normalise a string config to a single-entry list so a misset
+        # YAML value (e.g. upload_source_dirs: "data/img") doesn't get
+        # iterated character-by-character into a silently-empty list.
+        if isinstance(raw_allowlist, (str, Path)):
+            raw_allowlist = [raw_allowlist]
+        self._upload_source_dirs: list[Path] = []
+        for p in raw_allowlist:
+            try:
+                self._upload_source_dirs.append(Path(p).resolve())
+            except (TypeError, OSError) as e:
+                logger.warning(
+                    "Skipping invalid comfyui.upload_source_dirs entry %r: %s", p, e,
+                )
+
+        # Permitted file extensions for upload_image (case-insensitive).
+        # Defense-in-depth against exfil of non-image bytes (DB files,
+        # JSON traces, .env, etc.) even if they sit inside an allowed
+        # root. Override via server_config.upload_image_extensions.
+        raw_exts = getattr(server_config, 'upload_image_extensions', None)
+        if raw_exts is None:
+            raw_exts = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]
+        if isinstance(raw_exts, str):
+            raw_exts = [raw_exts]
+        self._upload_image_extensions: set[str] = {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in raw_exts
+            if isinstance(e, str)
+        }
         
         # Parse workflow configurations
         self.workflows: dict[str, dict[str, Any]] = {}
-        self.workflow_files_dir = Path(getattr(mcp_config, 'workflow_files_dir', "config/comfyui_workflows"))
+        self.workflow_files_dir = Path(getattr(server_config, 'workflow_files_dir', "config/comfyui_workflows"))
         
-        for wf_config in getattr(mcp_config, 'workflows', []):
+        for wf_config in getattr(server_config, 'workflows', []):
             wf_id = wf_config.get("id") if isinstance(wf_config, dict) else None
             if wf_id:
                 self.workflows[wf_id] = wf_config
         
-        # Initialize client
+        # Initialize client (primary server — used for monitoring, fallback, upload_image)
         self.client = ComfyUIClient(
-            host=self.host,
-            port=self.port,
+            host=self._servers[0]["host"],
+            port=self._servers[0]["port"],
             output_dir=self.output_dir,
             timeout=float(self.timeout)
         )
@@ -90,22 +158,132 @@ class ComfyUIServer(SchemaBasedMCPServer):
         db_path = self.output_dir.parent / "jobs.db"
         self.job_tracker = ComfyUIJobTracker(db_path)
         
-        # Templates for web UI
-        self.templates_dir = Path(__file__).parent / "templates"
-        self.templates: Jinja2Templates | None = None
-        if self.templates_dir.exists():
-            self.templates = Jinja2Templates(directory=str(self.templates_dir))
-        
         # Flag for lazy startup sync (will run on first tool call)
         self._startup_sync_done = False
         
         # Flag for cleanup task - will be started lazily when event loop is available
         self._cleanup_task_started = False
+        # Strong reference to the running cleanup task so the event loop
+        # doesn't GC it mid-execution (asyncio docs warn fire-and-forget
+        # tasks can disappear, producing "Task was destroyed but it is
+        # pending" warnings and partial cleanups).
+        self._cleanup_task: asyncio.Task[int] | None = None
         
         logger.info(
             "ComfyUI plugin initialized: %s:%s with %d workflows",
             self.host, self.port, len(self.workflows)
         )
+
+    # =========================================================================
+    # Load-balancing helpers
+    # =========================================================================
+
+    # Health cache: maps "host:port" → time.monotonic() of last offline probe.
+    # Servers are skipped for _HEALTH_CACHE_TTL seconds to avoid repeated
+    # connection timeouts when a server is down.
+    _health_cache: dict[str, float] = {}
+    _HEALTH_CACHE_TTL = 60.0
+
+    def _build_client(self, host: str, port: int, output_dir: Path) -> "ComfyUIClient":
+        """Build a ComfyUIClient for the given server."""
+        return ComfyUIClient(
+            host=host,
+            port=port,
+            output_dir=output_dir,
+            timeout=float(self.timeout),
+        )
+
+    async def _pick_client(self, output_dir: Path) -> "ComfyUIClient":
+        """Return a client pointing at a ComfyUI server.
+
+        Uses the ``strategy`` config (``least_loaded`` or ``random``).
+        Offline servers are cached for 60s to avoid repeated probe timeouts.
+        """
+        if len(self._servers) == 1:
+            return self.client
+
+        import time
+        now = time.monotonic()
+        strategy = self._lb_strategy
+
+        if strategy == "random":
+            import random as _rng
+            healthy = [
+                s for s in self._servers
+                if f"{s['host']}:{s.get('port', 8188)}" not in self._health_cache
+                or (now - self._health_cache[f"{s['host']}:{s.get('port', 8188)}"]) >= self._HEALTH_CACHE_TTL
+            ]
+            if not healthy:
+                healthy = list(self._servers)
+            best_srv = _rng.choice(healthy)
+            logger.debug(
+                "ComfyUI load balancer (random): selected %s:%s",
+                best_srv["host"], best_srv.get("port", 8188),
+            )
+            return self._build_client(best_srv["host"], best_srv["port"], output_dir)
+
+        # --- least_loaded strategy ---
+        async def _probe(srv: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+            key = f"{srv['host']}:{srv.get('port', 8188)}"
+            last_fail = self._health_cache.get(key)
+            if last_fail is not None and (now - last_fail) < self._HEALTH_CACHE_TTL:
+                return (999999, srv)
+            try:
+                probe = self._build_client(srv["host"], srv["port"], output_dir)
+                info = await probe.ping()
+                if info.get("status") != "online":
+                    self._health_cache[key] = now
+                    return (999999, srv)
+                self._health_cache.pop(key, None)
+                depth = info.get("queue_pending", 0) + info.get("queue_running", 0)
+                return (depth, srv)
+            except Exception:
+                self._health_cache[key] = now
+                return (999999, srv)
+
+        results = await asyncio.gather(*[_probe(s) for s in self._servers])
+        best_depth, best_srv = min(results, key=lambda x: x[0])
+
+        if best_depth == 999999:
+            logger.warning(
+                "ComfyUI load balancer: all servers appear offline — "
+                "falling back to primary %s:%s",
+                self._servers[0]["host"], self._servers[0]["port"],
+            )
+            best_srv = self._servers[0]
+
+        logger.debug(
+            "ComfyUI load balancer: selected %s:%s (queue depth %s)",
+            best_srv["host"], best_srv.get("port", 8188),
+            best_depth if best_depth < 999999 else "offline",
+        )
+        return self._build_client(best_srv["host"], best_srv["port"], output_dir)
+
+    async def _client_for_job(
+        self, prompt_id: str, output_dir: Path
+    ) -> "ComfyUIClient":
+        """Return a client for the server that originally handled *prompt_id*.
+
+        Looks up the ``server_url`` stored in the job tracker at submit-time.
+        Falls back to the primary client if no record is found.
+        """
+        server_url = self.job_tracker.get_server_url(prompt_id)
+        if server_url:
+            try:
+                # server_url is stored as "http://host:port"
+                from urllib.parse import urlparse
+                parsed = urlparse(server_url)
+                return self._build_client(
+                    parsed.hostname or self.host,
+                    parsed.port or self.port,
+                    output_dir,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to parse server_url %r for job %s: %s",
+                    server_url, prompt_id, exc,
+                )
+        return self.client  # fallback: primary server
     
     def _resolve_output_dir(self, session_id: str | None = None) -> Path:
         """Resolve output directory, substituting {session_id} if present in template.
@@ -128,12 +306,26 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if "{session_id}" not in self._output_dir_template:
             # No template - return base path
             return self._output_dir_base
-        
+
         if not session_id:
             # Template exists but no session_id provided - use base path
             logger.debug("output_dir template contains {session_id} but no session_id provided, using base path")
             return self._output_dir_base
-        
+
+        # SECURITY: session_id is harness-supplied by convention, but a
+        # tainted value (`..`, `..\Windows`, absolute path) would let
+        # template substitution escape the configured output root and
+        # turn every subsequent file write into an arbitrary-write
+        # primitive. Reject anything that isn't a strict identifier
+        # and fall back to the base dir.
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{1,64}", session_id):
+            logger.warning(
+                "Rejecting suspicious session_id %r; falling back to base output dir",
+                session_id,
+            )
+            return self._output_dir_base
+
         # Substitute session_id into template
         resolved_path = Path(self._output_dir_template.replace("{session_id}", session_id))
         resolved_path.mkdir(parents=True, exist_ok=True)
@@ -157,19 +349,86 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Start cleanup task now that we have an event loop
         if self.cleanup_age_hours > 0 and not self._cleanup_task_started:
             self._cleanup_task_started = True
-            asyncio.create_task(self._cleanup_old_files())
+            self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
         try:
-            server_status = await self.client.ping()
-            if server_status.get("status") == "online":
-                queue_data = await self.client.get_queue()
+            # Aggregate queue across all configured servers so jobs
+            # queued on a non-primary host are not silently flagged
+            # stale by the sync pass.
+            queue_data = await self._get_aggregated_queue()
+            if queue_data is None:
+                logger.debug("No ComfyUI server online, skipping startup sync")
+            else:
                 updated = await self._sync_stale_jobs_with_history(queue_data)
                 if updated > 0:
                     logger.info("Startup sync: updated %d stale jobs", updated)
-            else:
-                logger.debug("ComfyUI server not online, skipping startup sync")
         except Exception as e:
             logger.debug("Failed to sync jobs on startup: %s", e)
+
+    async def _get_aggregated_queue(self) -> dict[str, Any] | None:
+        """Aggregate queue_pending + queue_running across every configured
+        ComfyUI server.
+
+        Returns ``None`` if every server probe fails (caller treats as "no
+        live data — do not touch DB job statuses"). Otherwise returns a
+        dict shaped like ComfyUIClient.get_queue() PLUS a private
+        ``_dead_servers`` set listing URLs whose queue we could not
+        observe. Callers (specifically _sync_stale_jobs_with_history)
+        use that to skip stale-classification of jobs whose owning
+        server is currently unreachable — without it a transient blip
+        on one of N servers would mark every in-flight job on it as
+        failed.
+
+        ``get_stale_job_ids`` ignores unknown keys so the extra field
+        does not affect existing logic.
+        """
+        if len(self._servers) <= 1:
+            try:
+                ping = await self.client.ping()
+                if ping.get("status") != "online":
+                    return None
+                q = await self.client.get_queue()
+                q["_dead_servers"] = set()
+                return q
+            except Exception as e:
+                logger.debug("Primary ComfyUI server unreachable: %s", e)
+                return None
+
+        async def _probe(srv: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+            url = f"http://{srv['host']}:{srv.get('port', 8188)}"
+            try:
+                probe = self._build_client(srv["host"], srv["port"], self.output_dir)
+                ping = await probe.ping()
+                if ping.get("status") != "online":
+                    return (url, None)
+                return (url, await probe.get_queue())
+            except Exception as e:
+                logger.debug(
+                    "ComfyUI server %s:%s unreachable: %s",
+                    srv["host"], srv.get("port", 8188), e,
+                )
+                return (url, None)
+
+        results = await asyncio.gather(*[_probe(s) for s in self._servers])
+        merged_pending: list = []
+        merged_running: list = []
+        dead_servers: set[str] = set()
+        any_alive = False
+        for url, r in results:
+            if r is None:
+                dead_servers.add(url)
+                continue
+            any_alive = True
+            merged_pending.extend(r.get("queue_pending", []))
+            merged_running.extend(r.get("queue_running", []))
+
+        if not any_alive:
+            return None
+        return {
+            "queue_pending": merged_pending,
+            "queue_running": merged_running,
+            "_dead_servers": dead_servers,
+        }
     
     async def _sync_stale_jobs_with_history(self, queue_data: dict[str, Any]) -> int:
         """Sync stale jobs by checking history before marking as failed.
@@ -188,11 +447,45 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if not stale_ids:
             return 0
         
+        # Skip stale-classification of jobs whose owning server is
+        # currently down — _get_aggregated_queue couldn't see that
+        # server's queue, so absence from the merged dict says nothing
+        # about the job. Without this guard a transient blip would
+        # false-fail every in-flight job on the affected server.
+        dead_servers: set[str] = queue_data.get("_dead_servers", set()) if isinstance(queue_data, dict) else set()
+
+        # Instances configured with other servers share this tracker database: their jobs are absent from our queues
+        # without being lost.
+        own_servers = {f"http://{srv['host']}:{srv['port']}" for srv in self._servers}
+
         updated = 0
         for prompt_id in stale_ids:
-            # Check if job is in history (completed or failed)
+            job_server = self.job_tracker.get_server_url(prompt_id)
+            if job_server and job_server not in own_servers:
+                continue
+            if job_server and job_server in dead_servers:
+                logger.debug(
+                    "Skipping stale-check for %s (owning server %s currently unreachable)",
+                    prompt_id, job_server,
+                )
+                continue
+
+            # Check if job is in history (completed or failed). Use the
+            # per-job client so jobs queued on a non-primary server are
+            # probed against THEIR server, not the primary's history.
             try:
-                history = await self.client.get_history(prompt_id)
+                job_client = await self._client_for_job(prompt_id, self.output_dir)
+                history = await job_client.get_history(prompt_id)
+                # comfyui_client.get_history returns {'error': '...'} on
+                # a network failure instead of raising — without this
+                # guard a transient network blip lands in the "truly
+                # lost → mark failed" branch below.
+                if isinstance(history, dict) and "error" in history:
+                    logger.debug(
+                        "Skipping stale-check for %s — get_history error: %s",
+                        prompt_id, history.get("error"),
+                    )
+                    continue
                 if prompt_id in history:
                     # Job completed - check for errors
                     job_data = history[prompt_id]
@@ -222,63 +515,87 @@ class ComfyUIServer(SchemaBasedMCPServer):
     
     async def _cleanup_old_files(self) -> int:
         """Delete output files older than cleanup_age_hours.
-        
+
         Also removes empty directories that are older than cleanup_age_hours.
-        
+
+        The actual filesystem walk runs in a worker thread via
+        ``asyncio.to_thread`` so a large output tree (recursive rglob +
+        per-file stat) doesn't block the event loop for seconds and
+        starve other tool calls.
+
         Returns:
             Number of files deleted
         """
         if self.cleanup_age_hours <= 0:
             return 0
-        
+
         import time
-        
+
         cutoff_time = time.time() - (self.cleanup_age_hours * 3600)
-        deleted_files = 0
-        deleted_dirs = 0
-        
-        try:
-            # First pass: Delete old files
-            for file_path in self.output_dir.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                
-                # Check file age
-                file_mtime = file_path.stat().st_mtime
-                if file_mtime < cutoff_time:
+
+        def _do_cleanup() -> int:
+            deleted_files = 0
+            deleted_dirs = 0
+            try:
+                # First pass: Delete old files
+                for file_path in self.output_dir.rglob('*'):
+                    if not file_path.is_file():
+                        continue
+
+                    # Check file age
+                    file_mtime = file_path.stat().st_mtime
+                    if file_mtime < cutoff_time:
+                        try:
+                            file_path.unlink()
+                            deleted_files += 1
+                            logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {file_path}: {e}")
+
+                # Second pass: Delete empty old directories (bottom-up to handle nested empty dirs)
+                # Sort by depth (deepest first) to delete child dirs before parents
+                all_dirs = [d for d in self.output_dir.rglob('*') if d.is_dir()]
+                all_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+
+                for dir_path in all_dirs:
                     try:
-                        file_path.unlink()
-                        deleted_files += 1
-                        logger.debug(f"Deleted old file: {file_path.name} (age: {(time.time() - file_mtime) / 3600:.1f}h)")
-                    except Exception as e:
-                        logger.warning(f"Failed to delete {file_path}: {e}")
-            
-            # Second pass: Delete empty old directories (bottom-up to handle nested empty dirs)
-            # Sort by depth (deepest first) to delete child dirs before parents
-            all_dirs = [d for d in self.output_dir.rglob('*') if d.is_dir()]
-            all_dirs.sort(key=lambda p: len(p.parts), reverse=True)
-            
-            for dir_path in all_dirs:
-                try:
-                    # Check if directory is empty
-                    if not any(dir_path.iterdir()):
-                        # Check directory age (only delete old empty dirs)
-                        dir_mtime = dir_path.stat().st_mtime
-                        if dir_mtime < cutoff_time:
-                            dir_path.rmdir()
-                            deleted_dirs += 1
-                            logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
-                except Exception:
-                    # Ignore errors (dir might not be empty anymore, race condition, etc.)
-                    pass
-            
-            if deleted_files > 0 or deleted_dirs > 0:
-                logger.info(f"Cleanup: Deleted {deleted_files} files and {deleted_dirs} empty directories older than {self.cleanup_age_hours}h")
-        except Exception as e:
-            logger.error(f"Failed to cleanup old files: {e}")
-        
-        return deleted_files
+                        # Check if directory is empty
+                        if not any(dir_path.iterdir()):
+                            # Check directory age (only delete old empty dirs)
+                            dir_mtime = dir_path.stat().st_mtime
+                            if dir_mtime < cutoff_time:
+                                dir_path.rmdir()
+                                deleted_dirs += 1
+                                logger.debug(f"Deleted empty old directory: {dir_path.name} (age: {(time.time() - dir_mtime) / 3600:.1f}h)")
+                    except Exception:
+                        # Ignore errors (dir might not be empty anymore, race condition, etc.)
+                        pass
+
+                if deleted_files > 0 or deleted_dirs > 0:
+                    logger.info(f"Cleanup: Deleted {deleted_files} files and {deleted_dirs} empty directories older than {self.cleanup_age_hours}h")
+            except Exception as e:
+                logger.error(f"Failed to cleanup old files: {e}")
+
+            return deleted_files
+
+        return await asyncio.to_thread(_do_cleanup)
     
+    async def _cancel_job(self, prompt_id: str) -> dict[str, Any]:
+        """Cancel on the server that runs the job; the tracker follows only what the server confirms.
+
+        ComfyUIClient.cancel answers ``{"status": "error", ...}`` when it failed, and ``already_finished``
+        with the job's real outcome, which the tracker takes over if it still counts the job as active.
+        """
+        job_client = await self._client_for_job(prompt_id, self.output_dir)
+        result = await job_client.cancel(prompt_id)
+        if result.get("status") == "cancelled":
+            self.job_tracker.update_status(prompt_id, "cancelled")
+        elif result.get("status") == "already_finished":
+            job = self.job_tracker.get_job(prompt_id)
+            if job and job["status"] in ACTIVE_STATUSES:
+                self.job_tracker.update_status(prompt_id, result["job_status"], result.get("error"))
+        return result
+
     # =========================================================================
     # MCP Tool: workflow
     # =========================================================================
@@ -329,8 +646,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
         elif operation == "status":
             result = await self._op_status(params)
             if status:
-                job_status = result.get("status", "unknown")
-                await status.end(f"Job status: {job_status}")
+                # Three cases, and only the presence of "status" separates
+                # them: a missing prompt_id and a dead connection come back as
+                # {"error": ...} with NO status (the .get() default turned both
+                # into a green END "Job status: unknown"), while a job that
+                # really failed carries status "failed" AND an error -- keying
+                # on "error" alone would have called that one "unavailable".
+                prompt_id = params.get("prompt_id")
+                job_status = result.get("status")
+                if job_status is None:
+                    await status.error(
+                        f"Job status unavailable: {result.get('error', 'unknown reason')}")
+                elif job_status == "failed":
+                    await status.error(f"Job {prompt_id} failed: {result.get('error')}")
+                else:
+                    await status.end(f"Job {prompt_id}: {job_status}")
             return result
         
         # ===== RESULT =====
@@ -352,6 +682,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # ===== QUEUE =====
         elif operation == "queue":
             queue_data = await self.client.get_queue()
+            # get_queue() reports an unreachable server as {"error": ...} —
+            # counting its (absent) lists would turn that into a healthy,
+            # empty queue and hand the caller status: success.
+            if "error" in queue_data:
+                if status:
+                    await status.error(f"Queue unavailable: {queue_data['error']}")
+                return {"status": "error", "error": queue_data["error"]}
             result = {
                 "status": "success",
                 "pending": len(queue_data.get("queue_pending", [])),
@@ -371,16 +708,28 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 if status:
                     await status.error("Prompt ID is required for cancel operation")
                 return {"error": "prompt_id is required"}
-            
-            result = await self.client.cancel(prompt_id)
-            self.job_tracker.update_status(prompt_id, "cancelled")
+
+            result = await self._cancel_job(prompt_id)
+            cancelled = result.get("status") in ("cancelled", "already_finished")
             if status:
-                await status.end("Job cancelled")
+                # The guard above already knows cancel can fail — the status
+                # line said "Job cancelled" regardless, so a refused interrupt
+                # read as a success while the job kept rendering.
+                if cancelled:
+                    await status.end(f"Job {prompt_id}: {result.get('status')}")
+                else:
+                    await status.error(
+                        f"Job {prompt_id} not cancelled: "
+                        f"{result.get('error') or result.get('status') or 'unknown reason'}")
             return result
         
         # ===== LOAD =====
         elif operation == "load":
             return await self._op_load(params, status)
+
+        # ===== UPLOAD_IMAGE =====
+        elif operation == "upload_image":
+            return await self._op_upload_image(params, status)
         
         if status:
             await status.error(f"Unknown operation: {operation}")
@@ -451,13 +800,35 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 await status.error(f"Failed to load workflow: {e}")
             return {"error": f"Failed to load workflow: {e}"}
         
-        # Inject parameters
+        # Inject parameters — accept JSON string (LLM callers, per schema)
+        # or dict (internal/test callers). String is schema-declared because
+        # Gemini's constrained decoder collapses on freeform objects
+        # (additionalProperties: true) — emitting JSON-as-string sidesteps
+        # MALFORMED_FUNCTION_CALL.
         user_params = params.get("parameters", {})
+        if isinstance(user_params, str):
+            try:
+                user_params = json.loads(user_params) if user_params.strip() else {}
+            except json.JSONDecodeError as e:
+                if status:
+                    await status.error(f"parameters is not valid JSON: {e}")
+                return {"error": f"parameters is not valid JSON: {e}"}
+        if not isinstance(user_params, dict):
+            if status:
+                await status.error("parameters must be a JSON object or JSON string")
+            return {"error": "parameters must be a JSON object or JSON string"}
+        # Pick the execution server BEFORE parameter injection: LoadImage
+        # auto-uploads must land on the server that will run this workflow
+        # (a manual upload_image goes to the primary — desyncs on multi-server).
+        session_id = params.get("_session_id")
+        exec_output_dir = self._resolve_output_dir(session_id)
+        exec_client = await self._pick_client(exec_output_dir)
+
         for param_def in wf_config.get("parameters", []):
             param_name = param_def["name"]
             node_id = param_def.get("node_id")
             field_path = param_def.get("field", "")
-            
+
             # Get value: user-provided or default
             if param_name in user_params:
                 value = user_params[param_name]
@@ -467,35 +838,58 @@ class ComfyUIServer(SchemaBasedMCPServer):
                 return {"error": f"Required parameter missing: {param_name}"}
             else:
                 value = param_def.get("default")
-            
+
             # Inject into workflow
             if node_id and field_path and value is not None:
+                # LoadImage inputs read ComfyUI's INPUT folder only. When the
+                # value resolves to a local file (fresh outputs are downloaded
+                # locally), upload it to the execution server and inject the
+                # server-side name — no manual upload_image round-trip needed.
+                target_node = workflow_json.get(node_id) or {}
+                if (isinstance(value, str) and field_path == "inputs.image"
+                        and str(target_node.get("class_type", "")).startswith("LoadImage")):
+                    uploaded = await self._ensure_image_on_server(value, exec_client, status)
+                    if uploaded:
+                        value = uploaded
                 self._inject_value(workflow_json, node_id, field_path, value)
-        
+
         if status:
             await status.progress(f"Executing workflow: {wf_config.get('name', workflow_id)}")
-        
-        # Queue workflow
-        queue_result = await self.client.queue_prompt(workflow_json)
-        
+
+        queue_result = await exec_client.queue_prompt(workflow_json)
+
         if "error" in queue_result:
+            error_payload: dict[str, Any] = {"error": queue_result["error"]}
+            if queue_result.get("node_errors"):
+                error_payload["node_errors"] = queue_result["node_errors"]
+                # LoadImage validation failure: tell the agent HOW to fix the
+                # call instead of letting it retry the same request blind.
+                node_err_text = json.dumps(queue_result["node_errors"], ensure_ascii=False)
+                if "Invalid image file" in node_err_text:
+                    error_payload["hint"] = (
+                        "The referenced image is not in ComfyUI's input folder and "
+                        "could not be resolved to a local file. Pass the LOCAL path "
+                        "of the image (e.g. the output_path from wait_for_completion) "
+                        "as the image parameter — it will be uploaded automatically."
+                    )
             if status:
                 await status.error(f"Failed to queue workflow: {queue_result['error']}")
-            return {"error": queue_result["error"]}
-        
+            return error_payload
+
         prompt_id = queue_result.get("prompt_id")
         if not prompt_id:
             if status:
                 await status.error("No prompt_id returned from ComfyUI")
             return {"error": "No prompt_id returned from ComfyUI"}
-        
-        # Register job in tracker
+
+        # Register job in tracker (store which server handled it)
         self.job_tracker.register_job(
             prompt_id=prompt_id,
             workflow_id=workflow_id,
             workflow_name=wf_config.get("name", workflow_id),
             parameters=user_params,
-            output_prefix=params.get("output_prefix", "comfy")
+            output_prefix=params.get("output_prefix", "comfy"),
+            server_url=exec_client.base_url,
         )
         
         if status:
@@ -518,8 +912,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
             # for this operation, so no status parameter needed here
             return {"error": "prompt_id is required"}
         
-        # Get live status from ComfyUI
-        live_status = await self.client.get_status(prompt_id)
+        # Get live status from ComfyUI (use the server that handled this job)
+        job_client = await self._client_for_job(prompt_id, self.output_dir)
+        live_status = await job_client.get_status(prompt_id)
         
         # Update tracker if status changed
         if live_status["status"] == "running":
@@ -568,16 +963,29 @@ class ComfyUIServer(SchemaBasedMCPServer):
         if status:
             await status.progress(f"Fetching results for {prompt_id}")
         
-        # Get history from ComfyUI
-        history = await self.client.get_history(prompt_id)
-        
+        # Get history from ComfyUI (use the server that handled this job)
+        job_client = await self._client_for_job(prompt_id, effective_output_dir)
+        history = await job_client.get_history(prompt_id)
+
         if prompt_id not in history:
+            # History only contains *completed* jobs. Distinguish "still running"
+            # (job exists in queue, just not done yet — agent called result too
+            # early) from genuinely "not found" (never queued or already cleared).
+            live = await job_client.get_status(prompt_id)
+            live_state = live.get("status", "unknown")
+            if live_state in ("pending", "running"):
+                msg = f"Job {prompt_id} is still {live_state}, result not available yet"
+                hint = "Use operation='wait_for_completion' (with include_content=true) instead of polling result manually."
+            else:
+                msg = f"Job {prompt_id} not found in queue or history"
+                hint = "The job was never queued, was cleared, or the prompt_id is wrong."
             if status:
-                await status.error(f"Job {prompt_id} not found or not completed")
+                await status.error(msg)
             return {
-                "error": "Job not found or not completed",
+                "error": msg,
                 "prompt_id": prompt_id,
-                "hint": "Use operation='status' to check job state"
+                "live_status": live_state,
+                "hint": hint,
             }
         
         job_data = history[prompt_id]
@@ -619,7 +1027,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         if download:
                             # Download file locally
                             try:
-                                file_data = await self.client.get_file(
+                                file_data = await job_client.get_file(
                                     file_info["filename"],
                                     file_info.get("subfolder", ""),
                                     file_info.get("type", "output")
@@ -704,20 +1112,43 @@ class ComfyUIServer(SchemaBasedMCPServer):
         # Update tracker
         self.job_tracker.update_status(prompt_id, "completed")
         
-        # Cleanup old files after job completion
-        if self.cleanup_age_hours > 0:
-            asyncio.create_task(self._cleanup_old_files())
+        # Cleanup old files after job completion. Single-flight: if a
+        # previous cleanup is still running, skip — otherwise a burst of
+        # concurrent jobs spawns overlapping rglob walks competing on
+        # the same filesystem. Store the reference so the loop can't GC
+        # the task mid-walk.
+        if self.cleanup_age_hours > 0 and (
+            self._cleanup_task is None or self._cleanup_task.done()
+        ):
+            self._cleanup_task = asyncio.create_task(self._cleanup_old_files())
         
-        # Store output paths
+        # Store output paths. A text output that was not saved (download=false,
+        # or the write failed) has neither a local path nor a filename.
+        # A type whose outputs all lack a path is left out: an empty list would
+        # tell operation='load' there are outputs to load.
         output_paths = {
-            k: [f.get("local_path", f["filename"]) for f in v]
-            for k, v in outputs.items() if v
+            k: paths for k, v in outputs.items()
+            if (paths := [p for f in v if (p := f.get("local_path") or f.get("filename"))])
         }
         self.job_tracker.set_outputs(prompt_id, output_paths)
         
         if status:
-            total_files = sum(len(v) for v in outputs.values())
-            await status.end(f"Retrieved {total_files} output file(s)")
+            # Count what actually LANDED: a download failure only writes
+            # save_error into the record, so the raw count could report three
+            # files while none of them is on disk. And name the job.
+            records = [r for files in outputs.values() for r in files]
+            if download:
+                # local_path is only set on the download path; without it
+                # nothing was meant to land, so nothing can have failed.
+                landed = sum(1 for r in records if r.get("local_path"))
+                failed = len(records) - landed
+                await status.end(
+                    f"{landed} output file(s)"
+                    + (f", {failed} failed to save" if failed else "")
+                    + f" -- job {prompt_id}")
+            else:
+                await status.end(
+                    f"{len(records)} output file(s) on the server -- job {prompt_id}")
         
         result: dict[str, Any] = {
             "status": "completed",
@@ -768,23 +1199,21 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "description": f"Generated {content_type}: {filename}"
                     })
         
-        # Add text outputs - include content directly for LLM
+        # Add text outputs. Like files, only with a saved file: an attachment
+        # needs a path, and the text itself is already in outputs["text"].
         for text_record in outputs.get("text", []):
-            # Use full_path for multimodal encoding (needs actual file system path)
             full_path = text_record.get("full_path")
-            content = text_record.get("content", "")
+            if not full_path:
+                continue
             filename = text_record.get("filename", f"text_{text_record.get('node_id', 'unknown')}.txt")
-            
-            text_item: dict[str, Any] = {
+
+            multimodal.append({
                 "type": "text",
+                "path": full_path,
                 "mime_type": "text/plain",
                 "description": f"Generated text: {filename}",
-                "content": content,  # Include text content directly
-            }
-            if full_path:
-                text_item["path"] = full_path
-            
-            multimodal.append(text_item)
+                "content": text_record.get("content", ""),  # Include text content directly
+            })
         
         return multimodal
     
@@ -895,7 +1324,27 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     continue
                 
                 for path in paths:
+                    # Stored paths are bare filenames relative to the
+                    # job's effective_output_dir (set_outputs persists
+                    # `f"{output_prefix}_{filename}"`). Resolve against
+                    # the output dir; otherwise Path(filename).exists()
+                    # evaluates against the process CWD and never matches.
                     path_obj = Path(path)
+                    if not path_obj.is_absolute():
+                        path_obj = effective_output_dir / path_obj
+                    # Defensive containment check — the stored local_path
+                    # is server-set, but resolve anyway in case the output
+                    # dir contains symlinks pointing elsewhere.
+                    try:
+                        resolved = path_obj.resolve()
+                        resolved.relative_to(effective_output_dir.resolve())
+                        path_obj = resolved
+                    except (ValueError, OSError):
+                        logger.warning(
+                            "Stored output path %s escapes output dir %s; skipping",
+                            path_obj, effective_output_dir,
+                        )
+                        continue
                     if path_obj.exists():
                         mime_type = self._guess_mime_type(path_obj.name, content_type)
                         
@@ -938,9 +1387,7 @@ class ComfyUIServer(SchemaBasedMCPServer):
         else:
             # Determine path
             if file_path:
-                path_obj = Path(file_path)
-                if not path_obj.is_absolute():
-                    path_obj = effective_output_dir / path_obj
+                path_obj = effective_output_dir / file_path
             else:
                 # Search by filename
                 path_obj = effective_output_dir / filename
@@ -949,7 +1396,22 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     matches = list(effective_output_dir.rglob(filename))
                     if matches:
                         path_obj = matches[0]
-            
+
+            # SECURITY: contain the resolved path inside the output dir. The
+            # file_path/filename are LLM-controlled; an absolute path or '..'
+            # segments would otherwise escape effective_output_dir and read
+            # arbitrary host files into the model context.
+            try:
+                path_obj = path_obj.resolve()
+                path_obj.relative_to(effective_output_dir.resolve())
+            except ValueError:
+                if status:
+                    await status.error("File path escapes the output directory")
+                return {
+                    "error": "Invalid file path (outside the allowed output directory)",
+                    "searched_in": str(effective_output_dir),
+                }
+
             if not path_obj.exists():
                 if status:
                     await status.error(f"File not found: {file_path or filename}")
@@ -1057,7 +1519,13 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         # Timeout only from plugin config, not from tool params
         timeout = self.timeout
-        poll_interval = params.get("poll_interval", 2)  # Default 2 seconds
+        # Clamp poll_interval to a sane lower bound: it is LLM-controlled and
+        # unbounded in the schema, so poll_interval=0 would busy-loop two HTTP
+        # round-trips per iteration against ComfyUI for the full timeout window.
+        try:
+            poll_interval = max(1, int(params.get("poll_interval", 2)))
+        except (TypeError, ValueError):
+            poll_interval = 2
         include_content = params.get("include_content", False)
         
         # Unknown status threshold - if job stays unknown for this long, fail early
@@ -1096,8 +1564,8 @@ class ComfyUIServer(SchemaBasedMCPServer):
                     "elapsed_seconds": elapsed
                 }
             
-            # Get job status
-            job_status = await self.client.get_status(prompt_id)
+            # Get job status (use the server that handled this job)
+            job_status = await (await self._client_for_job(prompt_id, self.output_dir)).get_status(prompt_id)
             current_status = job_status.get("status", "unknown")
             
             # Track unknown status duration
@@ -1145,11 +1613,9 @@ class ComfyUIServer(SchemaBasedMCPServer):
             
             # Check if completed or failed
             if current_status == "completed":
-                if status:
-                    job_info = self.job_tracker.get_job(prompt_id)
-                    wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
-                    await status.end(f"'{wf_name}' completed ({int(elapsed)}s)")
-                
+                job_info = self.job_tracker.get_job(prompt_id)
+                wf_name = job_info.get("workflow_name", "workflow") if job_info else "workflow"
+
                 # If include_content, fetch results to get multimodal content
                 if include_content:
                     result_params = {
@@ -1159,10 +1625,27 @@ class ComfyUIServer(SchemaBasedMCPServer):
                         "output_prefix": params.get("output_prefix", "comfy"),
                         "_session_id": params.get("_session_id")  # Pass through session_id for isolation
                     }
+                    # The end line used to be published BEFORE this call, which
+                    # runs with status=None: a failed fetch left the green line
+                    # standing and never reported its own error.
                     result = await self._op_result(result_params, None)
                     result["elapsed_seconds"] = elapsed
+                    if status:
+                        if result.get("error"):
+                            await status.error(
+                                f"'{wf_name}' rendered ({int(elapsed)}s) but the "
+                                f"results could not be fetched: {result['error']}")
+                        else:
+                            # total_files, not len(outputs): outputs is a dict
+                            # of lists per category, so len() would count
+                            # categories.
+                            await status.end(
+                                f"'{wf_name}' completed ({int(elapsed)}s), "
+                                f"{result.get('total_files', 0)} output file(s)")
                     return result
-                
+
+                if status:
+                    await status.end(f"'{wf_name}' completed ({int(elapsed)}s)")
                 return {
                     "status": "completed",
                     "prompt_id": prompt_id,
@@ -1213,172 +1696,240 @@ class ComfyUIServer(SchemaBasedMCPServer):
         
         parts = field_path.split(".")
         obj = workflow[node_id]
-        
-        for part in parts[:-1]:
-            if part not in obj:
-                obj[part] = {}
-            obj = obj[part]
-        
-        obj[parts[-1]] = value
-    
-    # =========================================================================
-    # Web UI Router
-    # =========================================================================
-    
-    def get_web_router(self) -> APIRouter:
-        """Get FastAPI router for web monitoring endpoints.
-        
-        Returns:
-            APIRouter with monitoring endpoints
-        """
-        router = APIRouter(prefix=f"/plugins/{self.name}")
-        
-        @router.get("/", response_class=HTMLResponse)
-        async def monitor_panel(request: Request) -> HTMLResponse:
-            """Render the job monitoring panel."""
-            if not self.templates:
-                return HTMLResponse(
-                    "<h1>ComfyUI Monitor</h1><p>Templates not found</p>",
-                    status_code=500
+
+        for idx, part in enumerate(parts[:-1]):
+            if not isinstance(obj, dict) or part not in obj:
+                traversed = ".".join(parts[: idx + 1])
+                logger.warning(
+                    "Workflow field path not present: node %s missing '%s' "
+                    "(field=%s) — check workflow YAML parameter mapping",
+                    node_id, traversed, field_path,
                 )
-            return self.templates.TemplateResponse(
-                request=request,
-                name="monitor.html",
-                context={
-                    "plugin_name": self.name,
-                    "title": f"ComfyUI Monitor - {self.name}",
-                    "host": self.host,
-                    "port": self.port
-                }
+                return
+            obj = obj[part]
+
+        if not isinstance(obj, dict):
+            logger.warning(
+                "Workflow field path not present: node %s parent of '%s' "
+                "is %s, not dict (field=%s)",
+                node_id, parts[-1], type(obj).__name__, field_path,
             )
-        
-        @router.get("/jobs")
-        async def get_jobs() -> JSONResponse:
-            """Get all tracked jobs."""
-            server_status = await self.client.ping()
-            
-            # Sync DB with live queue and history to update stale jobs
-            if server_status.get("status") == "online":
-                queue_data = await self.client.get_queue()
-                # Use history-aware sync to avoid race conditions
-                await self._sync_stale_jobs_with_history(queue_data)
-                
-                # Check live status for all active jobs IN PARALLEL
-                active_jobs = self.job_tracker.get_active_jobs()
-                if active_jobs:
-                    async def check_and_update_job(job: dict) -> None:
-                        """Check live status and update DB if needed."""
-                        prompt_id = job.get("prompt_id")
-                        if not prompt_id:
-                            return
-                        try:
-                            live = await self.client.get_status(prompt_id)
-                            live_status = live.get("status", "unknown")
-                            db_status = job.get("status")
-                            # Update DB if status changed (e.g. queued/running -> completed)
-                            if live_status != db_status and live_status in ["completed", "failed"]:
-                                error_msg = live.get("error") if live_status == "failed" else None
-                                if isinstance(error_msg, list):
-                                    error_msg = str(error_msg)
-                                self.job_tracker.update_status(prompt_id, live_status, error_msg)
-                        except Exception as e:
-                            logger.warning(f"Failed to check status for job {prompt_id}: {e}")
-                    
-                    # Run all status checks in parallel
-                    await asyncio.gather(*[check_and_update_job(job) for job in active_jobs])
-            
-            active = self.job_tracker.get_active_jobs()
-            recent = self.job_tracker.get_recent_completed(limit=10)
-            stats = self.job_tracker.get_stats()
-            
-            return JSONResponse({
-                "status": "success",
-                "server_online": server_status.get("status") == "online",
-                "server_host": f"{self.host}:{self.port}",
-                "queue_pending": server_status.get("queue_pending", 0),
-                "queue_running": server_status.get("queue_running", 0),
-                "jobs": active,
-                "recent_completed": recent,
-                "stats": stats
-            })
-        
-        @router.get("/jobs/{prompt_id}")
-        async def get_job_detail(prompt_id: str) -> JSONResponse:
-            """Get details for a specific job."""
-            job = self.job_tracker.get_job(prompt_id)
-            if not job:
-                raise HTTPException(status_code=404, detail="Job not found")
-            
-            # Also get live status
-            live_status = await self.client.get_status(prompt_id)
-            job["live_status"] = live_status.get("status", "unknown")
-            
-            return JSONResponse({"status": "success", "job": job})
-        
-        @router.post("/jobs/{prompt_id}/cancel")
-        async def cancel_job(prompt_id: str) -> JSONResponse:
-            """Cancel a job."""
-            result = await self.client.cancel(prompt_id)
-            # Only update tracker if cancel was successful
-            if result.get("status") in ("cancelled", "already_finished"):
-                self.job_tracker.update_status(prompt_id, "cancelled")
-            return JSONResponse(result)
-        
-        @router.get("/workflows")
-        async def list_workflows() -> JSONResponse:
-            """List configured workflows."""
-            result = await self._op_list({})
-            return JSONResponse(result)
-        
-        @router.get("/stats")
-        async def get_stats() -> JSONResponse:
-            """Get job statistics."""
-            server_status = await self.client.ping()
-            job_stats = self.job_tracker.get_stats()
-            
-            return JSONResponse({
-                "status": "success",
-                "server": server_status,
-                "jobs": job_stats
-            })
-        
-        return router
-    
-    def get_panels(self) -> list[dict[str, Any]]:
-        """Return UI panel configuration for ComfyUI monitor.
-        
-        Returns:
-            List with panel configuration dict
+            return
+
+        obj[parts[-1]] = value
+
+    @staticmethod
+    def _is_contained(path: Path, root: Path) -> bool:
+        """True if *path* (resolved) is inside *root* (resolved)."""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    def _resolve_local_image_source(self, value: str) -> Path | None:
+        """Resolve an LLM-provided image reference to a local file — safely.
+
+        Accepts a path (absolute or CWD-relative) or a bare filename. Bare
+        filenames are searched inside the upload_source_dirs allowlist (the
+        plugin's own downloaded outputs live there), newest match wins —
+        agents typically reference the file they just generated.
+
+        Same security envelope as _op_upload_image: result must live inside
+        upload_source_dirs and carry an allowed image extension. Returns None
+        when nothing local matches (the value may simply be a filename that
+        already exists in ComfyUI's input folder).
         """
-        return [
-            {
-                "id": "comfyui_monitor",
-                "title": "ComfyUI Monitor",
-                "icon": "🎨",
-                "url": f"/plugins/{self.name}/",
-                "position": "right",
-                "width": "650px",
-                "height": "500px"
-            }
-        ]
-    
-    def get_menu_items(self) -> list[dict[str, Any]]:
-        """Return menu items for ComfyUI.
-        
-        Returns:
-            List of menu item configuration dicts
+        if not value or "\x00" in value or not self._upload_source_dirs:
+            return None
+
+        def _permitted(p: Path) -> bool:
+            if not any(self._is_contained(p, root) for root in self._upload_source_dirs):
+                return False
+            if self._upload_image_extensions and p.suffix.lower() not in self._upload_image_extensions:
+                return False
+            return True
+
+        raw = Path(value)
+        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / value]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if resolved.exists() and resolved.is_file() and _permitted(resolved):
+                return resolved
+
+        # Bare filename: search the allowlisted roots (downloaded outputs,
+        # writer assets). Reject values with separators — those were paths
+        # that simply don't exist, not names to hunt for.
+        if raw.name != value:
+            return None
+        matches: list[Path] = []
+        for root in self._upload_source_dirs:
+            if not root.exists():
+                continue
+            try:
+                matches.extend(p for p in root.rglob(value) if p.is_file() and _permitted(p.resolve()))
+            except OSError as e:
+                logger.debug("rglob failed under %s: %s", root, e)
+        if not matches:
+            return None
+        return max(matches, key=lambda p: p.stat().st_mtime)
+
+    async def _ensure_image_on_server(
+        self, value: str, exec_client: "ComfyUIClient", status: Any
+    ) -> str | None:
+        """Auto-upload for LoadImage parameters — the structural fix for the
+        recurring "Invalid image file" failures.
+
+        Agents referenced freshly generated outputs by filename, but
+        LoadImage only reads ComfyUI's INPUT folder — and even a dutiful
+        manual upload_image lands on the PRIMARY server while execute picks
+        the least-loaded one, so multi-server setups desynced. Uploading the
+        locally downloaded copy to the server that will run THIS workflow
+        removes both failure modes.
+
+        Returns the server-side filename to inject, or None to leave the
+        parameter untouched (e.g. already-uploaded input names).
         """
-        return [
-            {
-                "id": "comfyui_monitor",
-                "menu_id": "tools",
-                "label": "ComfyUI Monitor",
-                "icon": "🎨",
-                "url": f"/plugins/{self.name}/",
-                "order": 50,
-                "target": "_blank"
-            }
-        ]
+        local = self._resolve_local_image_source(value)
+        if local is None:
+            return None
+        try:
+            image_data = local.read_bytes()
+        except OSError as e:
+            logger.warning("Auto-upload: cannot read %s: %s", local, e)
+            return None
+        result = await exec_client.upload_image(
+            image_data=image_data, filename=local.name, overwrite=True)
+        if "error" in result:
+            logger.warning("Auto-upload of %s failed: %s", local.name, result["error"])
+            return None
+        uploaded = result.get("name", local.name)
+        if status:
+            await status.progress(f"Auto-uploaded '{local.name}' to execution server")
+        logger.info("Auto-uploaded %s -> '%s' for LoadImage parameter", local, uploaded)
+        return uploaded
+
+    async def _op_upload_image(self, params: dict[str, Any], status: Any) -> dict[str, Any]:
+        """Upload a local image file to ComfyUI's input folder.
+
+        The returned filename can be used as the ``reference_image`` (or
+        ``image``) parameter in workflows that accept an input image
+        (e.g. ``sdxl_img2img``, ``sdxl_ipadapter``).
+
+        Args:
+            params: Must contain ``file_path`` — path to the local image file.
+
+        Returns:
+            Dict with ``filename`` (ComfyUI-internal name) on success, or
+            ``error`` on failure.
+        """
+        file_path_str = params.get("file_path")
+        if not file_path_str:
+            if status:
+                await status.error("file_path is required for upload_image")
+            return {"error": "file_path is required"}
+
+        # SECURITY: file_path comes from the LLM. Constrain it to the
+        # configured upload_source_dirs allowlist so the tool cannot be
+        # tricked into reading arbitrary host files (e.g. /etc/passwd,
+        # SSH keys, .env). Reject paths with null bytes outright.
+        if "\x00" in file_path_str:
+            err = "file_path contains null bytes"
+            if status:
+                await status.error(err)
+            return {"error": err}
+
+        if not self._upload_source_dirs:
+            err = "upload_image disabled (no upload_source_dirs configured)"
+            if status:
+                await status.error(err)
+            return {"error": err}
+
+        # data/... lands in the data directory (agent_system/paths.py)
+        raw = resolve_data_path(file_path_str)
+        candidates = [raw] if raw.is_absolute() else [raw, Path.cwd() / raw]
+        file_path: Path | None = None
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            if any(self._is_contained(resolved, root) for root in self._upload_source_dirs):
+                file_path = resolved
+                break
+
+        if file_path is None:
+            roots = ", ".join(str(r) for r in self._upload_source_dirs)
+            err = (
+                f"file_path {file_path_str!r} not found inside the configured "
+                f"upload_source_dirs allowlist ({roots})"
+            )
+            if status:
+                await status.error(err)
+            return {"error": err}
+
+        # Defense-in-depth: even if a non-image file (DB, .env, JSON
+        # trace) sits inside an allowed root, refuse to upload it as
+        # an "image". Closes the exfil window that a broad allowlist
+        # would otherwise leave open.
+        if self._upload_image_extensions:
+            ext = file_path.suffix.lower()
+            if ext not in self._upload_image_extensions:
+                allowed_exts = ", ".join(sorted(self._upload_image_extensions))
+                err = (
+                    f"file_path {file_path.name!r} extension {ext!r} not in "
+                    f"the allowed image extensions ({allowed_exts})"
+                )
+                if status:
+                    await status.error(err)
+                return {"error": err}
+
+        try:
+            image_data = file_path.read_bytes()
+        except OSError as e:
+            if status:
+                await status.error(f"Cannot read file: {e}")
+            return {"error": f"Cannot read file: {e}"}
+
+        if status:
+            await status.progress(f"Uploading {file_path.name} to ComfyUI…")
+
+        result = await self.client.upload_image(
+            image_data=image_data,
+            filename=file_path.name,
+            overwrite=True,
+        )
+
+        if "error" in result:
+            if status:
+                await status.error(f"Upload failed: {result['error']}")
+            return result
+
+        filename = result.get("name", file_path.name)
+        if status:
+            await status.end(f"Uploaded as '{filename}'")
+        return {
+            "status": "uploaded",
+            "filename": filename,
+            "subfolder": result.get("subfolder", ""),
+            "message": f"Use filename='{filename}' as reference_image parameter in workflows",
+        }
+
+    # =========================================================================
+    # Web UI
+    # =========================================================================
+
+    def get_web_router(self) -> APIRouter:
+        return ComfyUIWebEndpoints(self).get_web_router()
+
+    def get_static_assets(self) -> Path:
+        """The panel's script and stylesheet, served under /plugins/<name>/static/."""
+        return Path(__file__).parent / "static"
 
 
 # Plugin factory for discovery

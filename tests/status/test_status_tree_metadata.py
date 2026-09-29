@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from agent_system.mcp.status import (
+from agent_system.tools.status import (
     publish_status, StatusPhase, StatusScope,
     _calculate_tree_metadata, get_status_bus
 )
@@ -39,17 +39,44 @@ class TestTreeMetadataCalculation:
         assert depth_level == 2
     
     def test_calculate_tree_metadata_sub_agent(self):
-        """Test tree metadata for sub-agent pattern (with 'sub' keyword)."""
-        # Pattern: parent_seq_sub_subagentid_seq
-        # Example: "abc123_001_sub_xyz789_005"
-        # Parser only recognizes numeric suffixes (_001, _005)
-        # So base_id = "abc123_sub_xyz789", parent = "abc123_sub_xyz789" (for _005)
+        """Sub-agent pattern: suffixes are peeled off the RIGHT edge only.
+
+        The old parser matched _nnn anywhere and mangled the id into
+        "abc123_sub_xyz789" -- a parent request that never existed, under
+        which the frontend then hung a phantom tree."""
         parent_id, depth_level = _calculate_tree_metadata("abc123_001_sub_xyz789_005")
-        
-        # Depth = number of numeric suffixes = 2 (001, 005)
+
+        # Real chain: abc123 -> _001 (tool) -> _sub_xyz789 (sub-agent) -> _005
+        assert depth_level == 3
+        assert parent_id == "abc123_001_sub_xyz789"
+
+    def test_calculate_tree_metadata_sub_agent_leaf(self):
+        """A bare sub-agent id hangs under the tool request that spawned it."""
+        parent_id, depth_level = _calculate_tree_metadata("abc123_001_sub_xyz789")
+
         assert depth_level == 2
-        # Parent of _005 is base_id (abc123_sub_xyz789) with first suffix (001)
-        assert parent_id == "abc123_sub_xyz789_001"
+        assert parent_id == "abc123_001"
+
+    def test_calculate_tree_metadata_covers_all_sub_agent_id_forms(self):
+        """sub_agent_manager mints three more shapes: _sub_cont_<id>
+        (continue), _async_<id> and _minlen_<n> (retry). Each must hang under
+        its parent, not become its own root tree."""
+        cases = {
+            "abc123_001_sub_cont_xy12ab": ("abc123_001", 2),
+            "abc123_001_async_xy12ab": ("abc123_001", 2),
+            "abc123_001_sub_xyz789_minlen_2": ("abc123_001_sub_xyz789", 3),
+        }
+        for request_id, (want_parent, want_depth) in cases.items():
+            parent_id, depth_level = _calculate_tree_metadata(request_id)
+            assert parent_id == want_parent, request_id
+            assert depth_level == want_depth, request_id
+
+    def test_bare_async_id_without_parent_is_a_root(self):
+        """f"async_{short_id()}" (no parent) must not eat itself as suffix."""
+        parent_id, depth_level = _calculate_tree_metadata("async_xy12ab")
+
+        assert parent_id is None
+        assert depth_level == 0
     
     def test_calculate_tree_metadata_none(self):
         """Test tree metadata when request_id is None."""

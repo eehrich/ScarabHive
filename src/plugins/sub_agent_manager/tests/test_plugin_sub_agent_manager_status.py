@@ -1,0 +1,435 @@
+"""An aborted sub-agent run must not leave a green line in the status stream.
+
+Audited 2026-09-02. The create and continue paths ended with "Created/Continued
+sub-agent ..." no matter how the run finished -- an ``error`` or ``cancelled``
+event produced the same END as a successful one, so the only line that stays in
+the WebUI (END replaces the progress line) claimed success for a run that never
+delivered.
+
+The outcome was never missing: ``result_text`` already carries it as
+"Error: ..." / "Cancelled: ...", and the retry gate a few lines above tests for
+exactly that prefix.
+
+Second finding covered here: handlers share ONE StatusScope per tool call, so
+``wait`` calling ``_handle_poll(params)`` let the inner poll close the scope --
+``wait``'s own verdict was silently dropped (``StatusScope.ended``).
+"""
+from __future__ import annotations
+
+import asyncio
+from functools import partial
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.servers.agent.components.session_tracking import SessionTracker
+from agent_system.tools.status import StatusPhase, get_status_bus
+from plugins.sub_agent_manager.manager import SubAgentLimitReached, SubAgentManager
+from plugins.sub_agent_manager.server import SubAgentManagerServer
+
+
+@pytest.fixture
+def system_config():
+    config = Mock(spec=AgentSystemConfig)
+    config.llm_system = Mock()
+    config.llm_system.profiles = {}
+    return config
+
+
+@pytest.fixture
+def server(system_config):
+    return SubAgentManagerServer("test_manager", system_config, ToolServerConfig(
+        type="sub_agent_manager", enabled=True, allowed_agents=["basic_agent"]))
+
+
+def _wire(server, events):
+    """Give the server a sub-agent whose run emits `events`."""
+    agent = Mock()
+    agent.agent_config = Mock()
+    agent.agent_config.llm_profile = "normal"
+    agent.agent_config.default_llm_profile = "normal"
+    agent._session_service = None
+    agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
+    agent._session_tracker.set_session_metadata = Mock()
+
+    async def run_events(*args, **kwargs):
+        for event in events:
+            yield event
+
+    agent.run_events = run_events
+
+    session_service = Mock()
+    session_service.session_manager = Mock()
+    session_service.session_manager.load_session = AsyncMock(side_effect=FileNotFoundError())
+    session_service.session_manager.create_session = AsyncMock()
+    session_service.save_session = AsyncMock()
+
+    manager = Mock()
+    manager.create_sub_session = AsyncMock(return_value="sub_session_1")
+    manager.update_sub_session_metadata = AsyncMock()
+    manager.reopen_sub_session = partial(SubAgentManager.reopen_sub_session, manager)
+    manager._write_sub_agent = manager.update_sub_session_metadata
+    manager.update_sub_agent_activity = AsyncMock()
+    manager._extract_user_id = Mock(return_value="user_1")
+    manager._session_service = session_service
+
+    registry = Mock()
+    registry.get = Mock(return_value=agent)
+    server._extract_registry = Mock(return_value=registry)
+    server._extract_session_service = Mock(return_value=session_service)
+    server._get_manager = Mock(return_value=manager)
+
+
+async def _create(server, task="do the thing"):
+    """One real tool call; returns (result, published events)."""
+    bus = get_status_bus()
+    queue = await bus.subscribe(server="test_manager.manage_sub_agent()")
+    try:
+        result = await server.call_with_status("test_manager_manage_sub_agent", {
+            "operation": "create",
+            "agent_type": "basic_agent",
+            "task": task,
+            "_session_id": "parent_session",
+        })
+    finally:
+        bus.unsubscribe(queue)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert events, "no status events arrived -- the subscription is vacuous"
+    return result, events
+
+
+def _closing(events):
+    closing = [e for e in events if e.phase in (StatusPhase.END, StatusPhase.ERROR)]
+    assert len(closing) == 1, [(e.phase, e.message) for e in events]
+    return closing[0]
+
+
+@pytest.mark.parametrize("event,expected,verdict", [
+    ({"type": "error", "message": "LLM refused the request"}, "LLM refused", "error"),
+    ({"type": "cancelled", "reason": "operator stopped it"}, "operator stopped", "cancelled"),
+])
+async def test_an_aborted_run_closes_with_an_error(server, event, expected, verdict):
+    _wire(server, [{"type": "start"}, event])
+
+    result, events = await _create(server)
+
+    closing = _closing(events)
+    assert closing.phase is StatusPhase.ERROR, closing.message
+    assert expected in closing.message
+    # ... and the answer says the same thing, in the field that carries the
+    # verdict. `status` keeps meaning "the run is over": the caller raises on
+    # a failing status, and it raises before the transport counter runs.
+    assert result["status"] == "completed"
+    assert result["outcome"] == verdict
+    assert result["result"].startswith(("Error:", "Cancelled:"))
+
+
+async def test_a_successful_run_still_ends(server):
+    """Counter-check: the outcome check must not turn good runs into errors."""
+    _wire(server, [{"type": "start"},
+                   {"type": "final", "summary": "here is the answer"}])
+
+    _, events = await _create(server)
+
+    closing = _closing(events)
+    assert closing.phase is StatusPhase.END
+    assert "Created sub-agent" in closing.message
+
+
+# --- what the ending leaves on the instance -----------------------------------
+
+ENDINGS = [
+    ({"type": "error", "message": "LLM refused the request"}, "failed"),
+    ({"type": "cancelled", "reason": "operator stopped it"}, "cancelled"),
+    ({"type": "final", "summary": "here is the answer"}, "active"),
+]
+
+
+def _stored_at_the_end(server) -> dict:
+    """What the ending wrote on the instance: the update that records the run's message count."""
+    calls = [call.kwargs for call in server._get_manager().update_sub_session_metadata.await_args_list
+             if "message_count" in call.kwargs]
+    assert len(calls) == 1, calls
+    return calls[0]
+
+
+@pytest.mark.parametrize("event,stored", ENDINGS)
+async def test_a_blocking_create_stores_how_its_run_ended(server, event, stored):
+    """A background run that aborted stores failed or cancelled; a blocking one stored nothing,
+    stayed "active", and the injected list called it idle -- done, the answer ready. A clean one
+    is open again -- the background rule too."""
+    _wire(server, [{"type": "start"}, event])
+
+    await _create(server)
+
+    assert _stored_at_the_end(server).get("status") == stored
+
+
+@pytest.mark.parametrize("event,stored", ENDINGS)
+async def test_a_blocking_continue_stores_how_its_run_ended(server, event, stored):
+    """The same for continue, which wrote "active" after every run, an aborted one too."""
+    _wire(server, [{"type": "start"}, event])
+    manager = server._get_manager()
+    manager.refresh_sub_context_vars = AsyncMock(return_value={})
+    manager._session_service.session_manager.load_session = AsyncMock(return_value={
+        "agent_name": "basic_agent", "parent_session": {"session_id": "parent_session"}})
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "continue", "instance_id": "sub_session_1", "message": "go on",
+        "_session_id": "parent_session"})
+
+    assert result["status"] == "completed", result
+    assert _stored_at_the_end(server).get("status") == stored
+
+
+async def test_wait_all_rejects_a_string_with_the_type_it_got(server):
+    bus = get_status_bus()
+    queue = await bus.subscribe(server="test_manager.manage_sub_agent()")
+    try:
+        result = await server.call_with_status("test_manager_manage_sub_agent", {
+            "operation": "wait_all",
+            "instance_ids": "sub_1",  # the typical LLM confusion with instance_id
+            "_session_id": "parent_session",
+        })
+    finally:
+        bus.unsubscribe(queue)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    assert result["status"] == "error"
+    closing = _closing(events)
+    assert closing.phase is StatusPhase.ERROR
+    assert "str" in closing.message, closing.message
+
+
+def test_internal_substeps_do_not_inherit_the_scope():
+    """The helper that keeps a sub-step from closing our status scope."""
+    from plugins.sub_agent_manager.server import _without_status
+
+    params = {"_status": object(), "_session_id": "s1", "instance_id": "i1"}
+    stripped = _without_status(params)
+
+    assert "_status" not in stripped
+    assert stripped == {"_session_id": "s1", "instance_id": "i1"}
+    assert "_status" in params, "the caller's own params must stay intact"
+
+
+# --- the verdict a caller reads -------------------------------------------
+#
+# `status` is the lifecycle ("the run is over"), `outcome` is how it ended.
+# They are separate on purpose: agent_caller raises on a failing `status`, and
+# it raises BEFORE the transport-failure counter runs -- so putting the verdict
+# there would switch that counter off. These pin both halves.
+
+@pytest.mark.parametrize(
+    "result_text, expected",
+    [
+        ("Error: Agent execution failed: Error code: 429 - {'error': {...}}", "error"),
+        ("Cancelled: user stopped the run", "cancelled"),
+        ("Here is the answer.", "completed"),
+        # A sub-agent may legitimately WRITE about an error without failing.
+        ("The log shows Error: 429 in line 12.", "completed"),
+        ("", "completed"),
+    ],
+)
+def test_the_verdict_follows_the_text_the_caller_gets(result_text, expected):
+    from plugins.sub_agent_manager.server import _outcome_status
+    assert _outcome_status(result_text) == expected
+
+
+async def test_an_aborted_continuation_reports_the_same_verdict(server):
+    """Continue must not be the softer path: same text, same verdict.
+
+    Every other continue test mocks _handle_continue away, so this return
+    value had no cover at all -- a hardcoded "completed" here would have
+    survived a green suite.
+    """
+    _wire(server, [{"type": "start"}, {"type": "error", "message": "LLM refused it"}])
+    manager = server._get_manager(None, None)
+    manager._session_service.session_manager.load_session = AsyncMock(return_value={
+        "session_id": "sub_session_1",
+        "agent_name": "basic_agent",
+        "messages": [],
+        "metadata": {},
+        "parent_session": {"session_id": "parent_session"},  # ownership is checked
+    })
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "continue",
+        "instance_id": "sub_session_1",
+        "message": "carry on",
+        "_session_id": "parent_session",
+    })
+
+    assert result["status"] == "completed", result
+    assert result["outcome"] == "error", result
+    assert result["result"].startswith("Error:")
+
+
+async def test_an_aborted_async_run_is_not_a_completed_job(server):
+    """`wait_all` counts `status in (failed, error)` for its "Failed: N" line.
+
+    A run that aborts with "Error: ..." as its ANSWER used to be filed as a
+    completed job -- only an exception marked one failed. A fan-out of dead
+    reviewers therefore reported "Completed: 4, Failed: 0".
+    """
+    _wire(server, [{"type": "start"}, {"type": "error", "message": "LLM refused it"}])
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create",
+        "agent_type": "basic_agent",
+        "task": "do the thing",
+        "blocking": False,
+        "_session_id": "parent_session",
+    })
+    assert result["status"] == "running", result
+
+    job = {}
+    for _ in range(300):
+        async with server._async_jobs_lock:
+            job = dict(server._async_jobs.get("sub_session_1") or {})
+        if job.get("status") in ("completed", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert job.get("status") == "failed", job
+    assert job.get("outcome") == "error", job
+    assert job.get("result", "").startswith("Error:"), job
+
+    # ... and it is not left ACTIVE in the parent's record either: the DB
+    # fallback below reads exactly that field once the job leaves memory.
+    manager = server._get_manager(None, None)
+    persisted = [c.kwargs.get("status")
+                 for c in manager.update_sub_session_metadata.call_args_list]
+    assert "failed" in persisted, persisted
+
+
+@pytest.mark.parametrize("persisted_status", ["failed", "cancelled"])
+async def test_a_poll_after_the_job_left_memory_still_says_it_failed(server, persisted_status):
+    """The DB fallback used to answer "completed" for everything it found.
+
+    An aborted run now persists a terminal status, and `list_sub_sessions`
+    keeps only active/interrupted -- so without the second look the same poll
+    would answer "not found", which reads like an instance that never existed.
+    """
+    _wire(server, [])
+    manager = server._get_manager(None, None)
+
+    async def list_sub_sessions(parent_session_id, include_completed=False, creator_plugin=None):
+        if not include_completed:
+            return []          # no longer among the active ones
+        return [{"instance_id": "sub_session_1", "agent_type": "basic_agent",
+                 "status": persisted_status,
+                 "error": "Error: Agent execution failed: 429"}]
+
+    manager.list_sub_sessions = list_sub_sessions
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "poll",
+        "instance_id": "sub_session_1",
+        "_session_id": "parent_session",
+    })
+
+    assert result["status"] == persisted_status, result
+    assert "429" in result["error"], result
+
+
+# --- an ending by exception, a delete while it runs, a reopen refused -----------------------------
+
+def _statuses_written(server) -> list:
+    return [call.kwargs.get("status")
+            for call in server._get_manager().update_sub_session_metadata.await_args_list]
+
+
+async def test_a_blocking_create_that_raises_stores_failed(server):
+    """The background path stores failed for a run that raised; the blocking one returned the
+    error and left the instance "active" -- idle, done, the answer ready."""
+    _wire(server, [{"type": "start"}, {"type": "final", "summary": "here is the answer"}])
+    server._extract_session_service().save_session = AsyncMock(side_effect=OSError("disk full"))
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create", "agent_type": "basic_agent", "task": "do the thing",
+        "_session_id": "parent_session"})
+
+    assert result["status"] == "error"
+    ending = server._get_manager().update_sub_session_metadata.await_args.kwargs
+    assert ending["status"] == "failed" and "disk full" in ending["error"]
+
+
+async def test_a_blocking_continue_that_raises_after_the_reopen_stores_failed(server):
+    """Reopened as "active" before its run, the instance kept that word when the run raised."""
+    _wire(server, [{"type": "start"}, {"type": "final", "summary": "here is the answer"}])
+    manager = server._get_manager()
+    manager.refresh_sub_context_vars = AsyncMock(return_value={})
+    manager._session_service.session_manager.load_session = AsyncMock(return_value={
+        "agent_name": "basic_agent", "parent_session": {"session_id": "parent_session"}})
+    manager._session_service.save_session = AsyncMock(side_effect=OSError("disk full"))
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "continue", "instance_id": "sub_session_1", "message": "go on",
+        "_session_id": "parent_session"})
+
+    assert result["status"] == "error"
+    assert _statuses_written(server) == ["active", "failed"]
+
+
+async def test_a_blocking_create_whose_call_is_cancelled_stores_cancelled(server):
+    _wire(server, [])
+    started = asyncio.Event()
+
+    async def run_events(*args, **kwargs):
+        yield {"type": "start"}
+        started.set()
+        await asyncio.Event().wait()
+
+    server._extract_registry().get().run_events = run_events
+    call = asyncio.create_task(server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create", "agent_type": "basic_agent", "task": "do the thing",
+        "_session_id": "parent_session"}))
+    await asyncio.wait_for(started.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert _statuses_written(server)[-1] == "cancelled"
+
+
+async def test_a_continue_refused_at_a_limit_leaves_the_instance_as_it_was(server):
+    """The reopen takes a place and can be refused. Nothing of the refused run is stored:
+    the instance still says how its last run ended."""
+    _wire(server, [{"type": "start"}, {"type": "final", "summary": "never reached"}])
+    manager = server._get_manager()
+    manager.max_sub_agents_per_session, manager.max_sub_agents_per_type = 10, 1
+    manager.auto_archive_on_limit = False
+    manager._make_room = partial(SubAgentManager._make_room, manager)
+    manager.refresh_sub_context_vars = AsyncMock(return_value={})
+    manager._session_service.session_manager.load_session = AsyncMock(return_value={
+        "agent_name": "basic_agent", "parent_session": {"session_id": "parent_session"},
+        "metadata": {"sub_agents": {
+            "sub_session_1": {"agent_type": "basic_agent", "status": "failed"},
+            "sub_other": {"agent_type": "basic_agent", "status": "active", "created_at": "2026-01-01"}}}})
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "continue", "instance_id": "sub_session_1", "message": "go on",
+        "_session_id": "parent_session"})
+
+    assert result["status"] == "limit_reached" and "of type 'basic_agent'" in result["error"]
+    assert _statuses_written(server) == []
+
+async def test_a_create_at_a_limit_is_refused_as_such(server):
+    """The same answer the refused continue gets -- a limit, not a crash."""
+    _wire(server, [{"type": "start"}, {"type": "final", "summary": "never reached"}])
+    server._get_manager().create_sub_session = AsyncMock(side_effect=SubAgentLimitReached(
+        "Maximum number of active sub-agents of type 'basic_agent' (1) reached. "
+        "Active sub-agents: ['sub_other']"))
+
+    result = await server.call_with_status("test_manager_manage_sub_agent", {
+        "operation": "create", "agent_type": "basic_agent", "task": "do the thing",
+        "_session_id": "parent_session"})
+
+    assert result["status"] == "limit_reached"
+    assert result["error"] == "Maximum number of active sub-agents of type 'basic_agent' (1) reached."

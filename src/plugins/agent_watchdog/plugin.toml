@@ -1,0 +1,10 @@
+# agent_watchdog plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "agent_watchdog"
+version = "0.1.0"
+description = "Watches a running agent: every n steps a separate model judges from a bounded excerpt whether the run still makes progress. Stage 1 logs the verdict and reports status; it does not intervene.\n"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+requires = { agent_system = ">=0.6.0" }

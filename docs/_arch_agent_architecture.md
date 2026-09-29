@@ -7,14 +7,14 @@ The Agent System provides two base classes for building intelligent agents with 
 1. **`Agent`** - Core agent logic for LLM interaction, tool orchestration, and conversation management
 2. **`SchemaBasedAgent`** - Extends Agent with automatic `schema.yaml` loading for declarative tool definitions
 
-This architecture follows the **Single Responsibility Principle** and maintains consistency with the existing `SchemaBasedMCPServer` pattern used for simpler MCP tools.
+This architecture follows the **Single Responsibility Principle** and maintains consistency with the existing `SchemaBasedToolServer` pattern used for simpler tools.
 
 ## Architecture Diagram
 
 ```
-MCPServer (base protocol implementation)
+ToolServer (base protocol implementation)
 │
-├─ SchemaBasedMCPServer (simple schema-based tools)
+├─ SchemaBasedToolServer (simple schema-based tools)
 │  ├─ DateTimeServer
 │  ├─ WebScraperServer
 │  ├─ LLMRouterServer
@@ -125,14 +125,14 @@ tools:
 
 ## Pattern Consistency
 
-### SchemaBasedMCPServer vs SchemaBasedAgent
+### SchemaBasedToolServer vs SchemaBasedAgent
 
 Both follow the same pattern but serve different purposes:
 
-| Feature | SchemaBasedMCPServer | SchemaBasedAgent |
+| Feature | SchemaBasedToolServer | SchemaBasedAgent |
 |---------|---------------------|------------------|
-| **Purpose** | Simple MCP tools | Intelligent agents with LLM |
-| **Base Class** | `MCPServer` | `Agent` (extends `MCPServer`) |
+| **Purpose** | Simple tools | Intelligent agents with LLM |
+| **Base Class** | `ToolServer` | `Agent` (extends `ToolServer`) |
 | **Schema Loading** | `schema.yaml` | `schema.yaml` |
 | **Tool Execution** | Direct handlers | Via Agent orchestration |
 | **LLM Integration** | No | Yes (core feature) |
@@ -141,8 +141,8 @@ Both follow the same pattern but serve different purposes:
 **Example Comparison:**
 
 ```python
-# SchemaBasedMCPServer - Simple tool
-class DateTimeServer(SchemaBasedMCPServer):
+# SchemaBasedToolServer - Simple tool
+class DateTimeServer(SchemaBasedToolServer):
     async def handle_get_current_time(self, arguments: dict) -> str:
         return datetime.now().isoformat()
 
@@ -186,9 +186,9 @@ class ResearchAgent(SchemaBasedAgent):
 
 ### Schema Loading (SchemaBasedMixin)
 
-Both `SchemaBasedMCPServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides common schema loading functionality:
+Both `SchemaBasedToolServer` and `SchemaBasedAgent` inherit from `SchemaBasedMixin`, which provides common schema loading functionality:
 
-**Location:** `src/agent_system/mcp/schema_mixin.py`
+**Location:** `src/agent_system/tools/schema_mixin.py`
 
 **Features:**
 1. **Directory Discovery:** Uses `importlib.util.find_spec()` for robust plugin directory resolution
@@ -218,7 +218,7 @@ class SchemaBasedMixin:
     async def call(tool, params)     # Generic dispatcher
 
 # Used by both:
-class SchemaBasedMCPServer(MCPServer, SchemaBasedMixin):
+class SchemaBasedToolServer(ToolServer, SchemaBasedMixin):
     pass  # Direct tool name → method mapping
 
 class SchemaBasedAgent(Agent, SchemaBasedMixin):
@@ -231,7 +231,7 @@ class SchemaBasedAgent(Agent, SchemaBasedMixin):
 
 The `SchemaBasedMixin.call()` dispatcher automatically routes tool calls to methods:
 
-**For SchemaBasedMCPServer:**
+**For SchemaBasedToolServer:**
 - Tool: `"search_tweets"` → Method: `search_tweets(params)`
 - Direct 1:1 mapping
 
@@ -365,12 +365,12 @@ Both agent types should be tested similarly:
 
 ```python
 import pytest
-from agent_system.config.models import AgentSystemConfig, MCPServerConfig
+from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 
 @pytest.fixture
 def agent(mock_system_config: AgentSystemConfig):
     """Create agent instance for testing."""
-    mcp_config = MCPServerConfig(
+    server_config = ToolServerConfig(
         plugin_name="my_agent",
         instance_name="test_agent",
         enabled=True,
@@ -378,7 +378,7 @@ def agent(mock_system_config: AgentSystemConfig):
     )
     agent = MyAgent(
         system_config=mock_system_config,
-        mcp_config=mcp_config,
+        server_config=server_config,
         registry=None
     )
     return agent
@@ -551,122 +551,130 @@ Both integrate seamlessly with the Agent System's LLM, hooks, and plugin infrast
 
 ---
 
-## LLM Fallback & Automatic Recovery
+## LLM-Fallback und Sperren
 
-The Agent system includes built-in resilience for LLM provider failures through automatic fallback and recovery mechanisms.
+Fällt ein LLM aus, läuft der Agent auf dem nächsten Profil seiner Kette weiter.
+Ob ein LLM **gesperrt** ist, gehört dabei dem LLM, nicht dem Agenten: die
+Sperre gilt für jeden Agenten im Prozess (`src/agent_system/llm/model_health.py`).
 
-### Configuration
+### Konfiguration
 
-Agents can specify fallback LLM profiles in their configuration:
+Fallbacks stehen als **Kette** direkt in `llm_profile` (seit 2026-07:
+Liste = `[primär, fallback1, fallback2, ...]`; der entfernte Schlüssel
+`llm_profile_fallbacks` bricht das Laden der Config ab):
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: "gemini"                    # Primary LLM
-    llm_profile_fallbacks:                   # Fallback chain
-      - "openai"                             # First fallback
-      - "anthropic"                          # Second fallback
-    fallback_recovery_seconds: 1800          # Try primary again after 30min (default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # primär + Fallback-Kette
+    llm_profile_advanced: ["gpt-large", "claude"]    # optional: Advanced-Kette (use_advanced_model / Auto-Eskalation)
+    fallback_recovery_seconds: 1800                  # längste Sperre, die dieser Agent setzt (Default: 3600)
 ```
 
-### Fallback Behavior
+Volle Ketten-Semantik (Advanced-Kette, `llm_params`, Migrationsskript
+`scripts/migrate_llm_profiles.py`): `docs/basic_agent_llm_profiles.md`.
 
-**Triggering Conditions:**
-- `LLMRateLimitError` (HTTP 429) - Temporary rate limit (TPM/RPM/RPD exceeded)
-- `LLMQuotaExhaustedError` - Daily/monthly quota exhausted
+### Was eine Sperre auslöst — und was nicht
 
-**Fallback Activation:**
-1. Primary LLM fails with rate limit or quota error
-2. Agent switches to first fallback profile
-3. Fallback becomes **persistent** across all subsequent requests
-4. Status updates show active profile: `"gemini:fallback"` → `"openai:fallback"`
+| Fehler | Sperre des LLM (für alle Agenten) | Dieser Request |
+|---|---|---|
+| `LLMRateLimitError` (429) | 60 s, verdoppelt bei jedem weiteren Fehlschlag bis `fallback_recovery_seconds`; `retry_after` des Anbieters ist die Untergrenze | nächstes Profil der Kette |
+| `LLMQuotaExhaustedError` | sofort `fallback_recovery_seconds` | nächstes Profil der Kette |
+| HTTP 401/402/403/404 | sofort `fallback_recovery_seconds` | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
+| 5xx, Verbindungsfehler, jeder andere 4xx (400/408/409/413/422 …) | keine | nächstes Profil; war die Basis gescheitert, wird es Basis des Laufs |
+| Fehler im Antwort-Body (HTTP 200 mit `error`) | keine | erst **einmal dasselbe Modell** (pro Modell und Schritt; ein Gateway-Aussetzer trifft selten zweimal), dann nächstes Profil; sofort wechseln ein Content-Filter (`content_filter`, `content_filter_<native>`), weil dasselbe Modell denselben Text wieder sperrt, und ein Fehler, den sein Client mit `retried` markiert (er hat schon selbst mit Backoff wiederholt). War die Basis gescheitert, wird das Profil Basis des Laufs; ist die Kette aufgebraucht, endet der Lauf mit einem `error`-Event |
+| lokal keine Dateideskriptoren mehr (EMFILE) | keine | kein Wechsel, Fehler |
 
-**Automatic Recovery:**
-1. After `fallback_recovery_seconds` elapsed (default: 1 hour)
-2. Next request automatically tries original primary LLM
-3. If successful: switches back to primary profile
-4. If failed: re-activates fallback for another recovery period
+**Ein Burst ist ein Fehlschlag.** Ein 429 auf einen Aufruf, der losging, bevor
+die Sperre gesetzt wurde, verdoppelt sie nicht: sieben Requests, die gerade
+unterwegs sind, wenn das Minutenfenster zugeht, sperren 60 s, nicht eine
+Stunde. Kommt so ein Nachzügler erst nach Ablauf der Sperre an (die Clients
+wiederholen ein 429 selbst, bevor sie es melden), sperrt er gar nichts mehr —
+sonst machte er eine Probe zunichte, die das LLM gerade gesund findet. Ein
+`fallback_recovery_seconds` von 0 sperrt nichts. **Keine Sperre verkürzt eine längere, die noch läuft** — ein Agent mit
+kurzem `fallback_recovery_seconds` kürzt die Kontingent-Sperre eines anderen
+nicht auf seine.
 
-**No Fallback Available:**
-- If all fallbacks exhausted, raises original error to caller
-- Logged as error with full error chain
+Der Schlüssel eines LLM ist **(Endpunkt, Key, Modell)** des Clients:
+- Endpunkt ist die `base_url`; ein Client ohne (SDK-Clients, Batch-Client) ist
+  sein eigener Endpunkt, benannt nach seiner Klasse — ein Batch-Kontingent ist
+  nicht das Sync-Kontingent desselben Modells.
+- Key ist ein Fingerabdruck des API-Keys (nie der Key selbst): ein abgelehnter
+  oder erschöpfter Key sagt nichts über einen anderen.
+- Zwei Profile mit demselben Modell an derselben URL mit demselben Key sind
+  ein LLM, egal welche Client-Klasse sie spricht. Clients ohne eigene URL
+  (SDK, Batch) sind ein Endpunkt je Klasse, egal welchen Server sie erreichen.
 
-### Implementation Details
+Das Provider-Routing gehört nicht dazu — ein 429 von einem OpenRouter-Backend
+sperrt das Modell auch für ein Profil mit anderem Routing.
 
-**State Tracking:**
-```python
-# In Agent class
-self._active_fallback_llm: Optional[Any] = None           # Current fallback LLM instance
-self._active_fallback_profile: Optional[str] = None       # Current fallback profile name
-self._fallback_activated_at: Optional[float] = None       # Unix timestamp of activation
-```
+### Wie ein Schritt sein LLM wählt
 
-**Recovery Check:**
-- Runs at start of each request: `self._check_fallback_recovery()`
-- Compares elapsed time against `fallback_recovery_seconds`
-- Automatically calls `reset_fallback()` when recovery period elapsed
+Vor jedem Schritt, **vor** den Pre-LLM-Hooks:
 
-**Manual Reset:**
-```python
-# Force immediate recovery attempt (for testing/debugging)
-agent.reset_fallback()
-```
+1. Ist das Eskalationsfenster offen und das Advanced-LLM frei, läuft der
+   Schritt darauf. Ist es gesperrt, gilt dieser Schritt als nicht eskaliert
+   (das Fenster bleibt offen) und es geht mit 2. weiter.
+2. Gewünscht ist dann das Override des Requests (`--llm`, Auswahl im Chat),
+   sonst die Basis des Laufs. Ist dessen LLM frei, läuft der Schritt darauf.
+3. Sonst läuft er auf dem ersten freien Profil der Kette.
+4. Ist keines frei, läuft er trotzdem auf dem gewünschten — ein gesperrtes LLM
+   ist besser als keines.
 
-### Use Cases
+Scheitert der Aufruf, versucht der Schritt die übrigen Profile der Kette —
+freie zuerst, dann gesperrte, jedes einmal. Die Basis des Laufs gehört dazu,
+wenn der Schritt nicht auf ihr lief: nach einer gescheiterten Eskalation als
+**erstes** Glied (das Advanced-Modell sagt nichts über die Basis), nach einem
+gescheiterten Weg um eine gesperrte Basis herum als **letztes**. So bricht der
+Lauf nicht ab, solange noch ein LLM übrig ist.
 
-| Scenario | Primary | Fallback | Recovery Time | Reason |
-|----------|---------|----------|---------------|--------|
-| **Cost Optimization** | Gemini Free | OpenAI Paid | 1 hour | Daily quota reset |
-| **Rate Limit Management** | Claude Opus | Gemini Flash | 30 min | TPM limit temporary |
-| **High Availability** | Primary API | Secondary API | 5 min | Service outage |
-| **Development** | Local LLM | Cloud LLM | N/A | Local testing |
+Eine ausdrückliche Wahl ist **keine** Ausnahme: ein gesperrtes LLM bleibt
+gesperrt, auch wenn es im Chat gewählt wird. Ein anderes, freies LLM läuft
+dagegen sofort — die Sperre des einen hält es nicht auf.
 
-### Status Events
+Dauern die Hooks, während eine Sperre gesetzt oder aufgehoben wird, wählt der
+Schritt danach neu (`model_health.version`). Jeder Modellwechsel, auch der
+zurück, entfernt die Reasoning-Artefakte des vorigen Modells aus dem Verlauf.
 
-Agents emit detailed status events for monitoring:
+### Aufheben
+
+- **Eine Antwort hebt die Sperre für alle auf** — sofern der Aufruf nach dem
+  Setzen der Sperre losging. Eine Antwort auf einen älteren Aufruf sagt nichts
+  über das LLM danach.
+- **Nach Ablauf** probiert genau ein Request das LLM; die anderen behandeln es
+  weiter als gesperrt, bis die Probe antwortet (Aufheben) oder mit einem
+  sperrenden Fehler scheitert (neue Sperre: bei 429 doppelt so lang, bei
+  Kontingent oder abgelehntem Key wieder `fallback_recovery_seconds`). Endet
+  die Probe ohne Urteil (5xx, Abbruch), ist das LLM nach 120 s für die nächste
+  frei; erneutes Fragen desselben Requests verlängert diese Frist nicht (nach
+ihrem Ablauf wird die Probe neu vergeben, an wen zuerst fragt). Wählt der Request nach den
+  Hooks doch ein anderes LLM, gibt er die Probe sofort zurück. So laufen nicht
+  zwanzig Agenten gleichzeitig in dasselbe 429.
+
+### Grenzen
+
+- **Pro Prozess.** Die Writer-Job-Worker sind eigene Prozesse mit eigenen
+  Sperren; was die API sperrt, erreicht sie nicht.
+- **Alle Glieder versucht und der Aufruf scheitert:** der Fehler des letzten
+  Versuchs geht an den Aufrufer (beim Fehler im Antwort-Body: ein `error`-Event).
+
+### Statusmeldungen
 
 ```json
 {
   "type": "progress",
-  "message": "Rate limit hit, switching to openai",
-  "meta": {
-    "step": 3,
-    "fallback": "openai",
-    "persistent": true,
-    "recovery_seconds": 1800
-  }
+  "message": "Rate limit hit, switching to openai, retry in 60s",
+  "meta": {"step": 3, "fallback": "openai", "blocked_seconds": 60.0}
 }
 ```
 
-Recovery events:
-```json
-{
-  "type": "info",
-  "message": "Fallback recovery period (1800s) elapsed. Trying original LLM again after 1823s in fallback mode."
-}
-```
+Ein Schritt, der um ein gesperrtes LLM herumläuft, meldet sich als
+`Calling LLM (openai:fallback)`. Im Log:
 
-### Best Practices
-
-✅ **Set appropriate recovery times:**
-- Rate limits (TPM/RPM): 5-30 minutes
-- Daily quota: 1-24 hours (until quota resets)
-- API outages: 1-5 minutes
-
-✅ **Order fallbacks by cost:**
-- Primary: Cheapest/free tier
-- Fallback 1: Mid-tier
-- Fallback 2: Premium/expensive
-
-✅ **Monitor fallback usage:**
-- Check logs for `"Switched to {profile} permanently"`
-- Track recovery success rates
-- Adjust recovery times based on patterns
-
-❌ **Don't set recovery too short:**
-- < 1 minute risks hitting rate limits repeatedly
-- Causes wasted API calls and quota consumption
+- `LLM <model> blocked for 60s for every agent (rate limit hit, seen by <agent>)`
+- `[<agent>] LLM <model> is blocked for 42s more; this step runs on openai`
+- `LLM <model> answers again: unblocked for every agent`
 
 ---
 
@@ -678,18 +686,26 @@ The `Agent` class has been refactored into a modular component-based architectur
 
 ```
 src/agent_system/servers/agent/
-├── server.py (1,421 LOC - core agent orchestration)
+├── server.py (core agent orchestration: request lifecycle, LLM loop, fallback chain)
+├── schema_based.py (SchemaBasedAgent - schema.yaml tool loading)
 ├── components/
-│   ├── session_tracking.py (231 LOC - session & message management)
-│   ├── request_manager.py (169 LOC - request lifecycle & cancellation)
-│   ├── mcp_integration.py (existing - MCP protocol handling)
-│   ├── tool_execution.py (existing - tool call execution)
-│   └── status_forwarding.py (existing - status event streaming)
-├── prompt_strategies.py (prompt rendering)
-├── tool_discovery.py (tool enumeration)
-├── tool_schema_builder.py (tool schema generation)
+│   ├── session_tracking.py (session & message management, session locks, compaction marker)
+│   ├── request_manager.py (request lifecycle & cancellation)
+│   ├── hook_integration.py (hook execution at all lifecycle points, LLM transport hooks)
+│   ├── tool_integration.py (MCP protocol handling, external tool schemas)
+│   ├── tool_execution.py (tool call execution: parallel, cancellable, streaming)
+│   ├── server_resolution.py (shared server/tool-name resolution building blocks)
+│   └── status_forwarding.py (status event streaming)
+├── prompt_strategies.py (prompt rendering, strategy pattern)
+├── tool_discovery.py (tool enumeration & discovery-stage filtering)
+├── tool_schema_builder.py (tool schema generation + THE shared pattern matchers)
+├── loop_detection.py (tool-call loop detection, per-request)
+├── escalation.py (stuck-triggered auto-escalation to advanced profile)
 └── result_utils.py (result extraction & formatting)
 ```
+
+> Architektur-Befunde und offene Verbesserungen: see
+> `docs/agent_package_architecture_review.md`.
 
 ### Core Components
 

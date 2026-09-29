@@ -21,13 +21,15 @@ import asyncio
 import sys
 from pathlib import Path
 
+from agent_system.paths import data_path, resolve_data_path
+
 # Global workdir override (set by CLI --workdir)
 _workdir_override: Path | None = None
 
 
 def get_config() -> dict:
     """Load audio_ops plugin configuration."""
-    import yaml
+    from agent_system.utils import yaml_io
     
     possible_paths = [
         Path.cwd() / "config" / "plugins.yaml",
@@ -46,12 +48,12 @@ def get_config() -> dict:
         sys.exit(1)
     
     with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        config = yaml_io.safe_load(f)
     
     audio_config = config.get("plugins", {}).get("servers", {}).get("audio_ops", {})
     if not audio_config:
         # Return default config
-        return {"storage_path": "data/audio_ops"}
+        return {"storage_path": str(data_path("audio_ops"))}
     
     return audio_config
 
@@ -62,7 +64,49 @@ def get_storage_path() -> Path:
     if _workdir_override is not None:
         return _workdir_override
     config = get_config()
-    return Path(config.get("storage_path", "data/audio_ops"))
+    # Read from the YAML directly, past the loader that moves data/ paths
+    return resolve_data_path(config.get("storage_path") or data_path("audio_ops"))
+
+
+def _safe_join(storage: Path, filename: str) -> Path:
+    """Join filename onto storage, rejecting path traversal.
+
+    Mirrors server.py:_validate_path: reject empty input, embedded NUL bytes,
+    and literal '..' segments, then confirm the resolved path is inside the
+    resolved storage directory. Raises ValueError on violation.
+    """
+    if not filename:
+        raise ValueError("Invalid filename: empty")
+    if "\x00" in filename:
+        raise ValueError(f"Invalid filename: {filename!r} (NUL byte not allowed)")
+    if ".." in Path(filename).parts:
+        raise ValueError(f"Invalid filename: {filename!r} (path traversal not allowed)")
+    resolved = (storage / filename).resolve()
+    try:
+        resolved.relative_to(storage.resolve())
+    except ValueError:
+        raise ValueError(f"Invalid filename: {filename!r} (escapes storage directory)")
+    return resolved
+
+
+def _safe_glob_pattern(pattern: str) -> str:
+    """Validate a glob pattern for cmd_list.
+
+    Path.glob in CPython 3.12+ honours '..' segments and traverses outside
+    the search root, and absolute patterns either raise or escape. Reject
+    both so the CLI matches the same safety envelope as _safe_join.
+    """
+    if not pattern:
+        raise ValueError("Invalid pattern: empty")
+    if "\x00" in pattern:
+        raise ValueError(f"Invalid pattern: {pattern!r} (NUL byte not allowed)")
+    # Reject absolute patterns (POSIX '/' prefix or Windows drive/UNC).
+    p = Path(pattern)
+    if p.is_absolute() or pattern.startswith(("/", "\\")):
+        raise ValueError(f"Invalid pattern: {pattern!r} (absolute paths not allowed)")
+    if ".." in p.parts:
+        raise ValueError(f"Invalid pattern: {pattern!r} (path traversal not allowed)")
+    return pattern
 
 
 async def cmd_info(args: argparse.Namespace) -> int:
@@ -74,21 +118,25 @@ async def cmd_info(args: argparse.Namespace) -> int:
         return 1
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {filepath}", file=sys.stderr)
         return 1
-    
+
     ext = filepath.suffix.lower()
     if ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported format: {ext}", file=sys.stderr)
         return 1
-    
+
     try:
         audio = AudioSegment.from_file(str(filepath), format=ext[1:])
         duration = len(audio) / 1000.0
-        
+
         print(f"File: {filepath.name}")
         print(f"  Format:      {ext[1:].upper()}")
         print(f"  Duration:    {duration:.2f} seconds")
@@ -112,9 +160,13 @@ async def cmd_cut(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    source_path = storage / args.source
-    dest_path = storage / args.dest
+
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     mode = args.mode
     
     if not source_path.exists():
@@ -185,27 +237,35 @@ async def cmd_merge(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    dest_path = storage / args.dest
+
+    try:
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     dest_ext = dest_path.suffix.lower()
-    
+
     if dest_ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported output format: {dest_ext}", file=sys.stderr)
         return 1
-    
+
     source_files = args.sources
     if len(source_files) < 2:
         print("Error: At least 2 source files required", file=sys.stderr)
         return 1
-    
+
     crossfade = args.crossfade
-    
+
     try:
         segments = []
         total_duration = 0.0
-        
+
         for filename in source_files:
-            filepath = storage / filename
+            try:
+                filepath = _safe_join(storage, filename)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
             if not filepath.exists():
                 print(f"Error: File not found: {filepath}", file=sys.stderr)
                 return 1
@@ -264,8 +324,13 @@ async def cmd_list(args: argparse.Namespace) -> int:
     
     pattern = args.pattern
     files: list[Path] = []
-    
+
     if pattern:
+        try:
+            pattern = _safe_glob_pattern(pattern)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
         files.extend(storage.glob(pattern))
     else:
         for ext in [".flac", ".mp3", ".wav"]:
@@ -309,8 +374,12 @@ async def cmd_load(args: argparse.Namespace) -> int:
         return 1
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {args.file}", file=sys.stderr)
         return 1
@@ -343,9 +412,15 @@ async def cmd_load(args: argparse.Namespace) -> int:
         if is_segment:
             start_ms = int(start_time * 1000)
             end_ms = int(end_time * 1000)
+            if end_ms <= start_ms:
+                print(
+                    f"Error: empty segment after clamp (start={start_time:.3f}s, end={end_time:.3f}s, duration={duration:.3f}s)",
+                    file=sys.stderr,
+                )
+                return 1
             segment = audio[start_ms:end_ms]
             segment_duration = len(segment) / 1000.0
-            
+
             output_file = storage / f"_temp_segment_{filepath.stem}.wav"
             segment.export(str(output_file), format="wav")
             
@@ -376,10 +451,14 @@ async def cmd_mix(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    file1_path = storage / args.file1
-    file2_path = storage / args.file2
-    dest_path = storage / args.dest
+
+    try:
+        file1_path = _safe_join(storage, args.file1)
+        file2_path = _safe_join(storage, args.file2)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     
     if not file1_path.exists():
         print(f"Error: File not found: {file1_path}", file=sys.stderr)
@@ -455,14 +534,18 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    source_path = storage / args.source
-    dest_path = storage / args.dest
-    
+
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not source_path.exists():
         print(f"Error: File not found: {source_path}", file=sys.stderr)
         return 1
-    
+
     for path in [source_path, dest_path]:
         ext = path.suffix.lower()
         if ext not in {".flac", ".mp3", ".wav"}:
@@ -475,7 +558,7 @@ async def cmd_volume(args: argparse.Namespace) -> int:
     if gain_db is None and not normalize:
         print("Error: Either --gain or --normalize must be specified", file=sys.stderr)
         return 1
-    
+
     if gain_db is not None and not -60.0 <= gain_db <= 24.0:
         print(f"Error: gain should be between -60 and +24 dB, got {gain_db}", file=sys.stderr)
         return 1
@@ -527,14 +610,18 @@ async def cmd_create(args: argparse.Namespace) -> int:
     
     storage = get_storage_path()
     storage.mkdir(parents=True, exist_ok=True)
-    
-    dest_path = storage / args.dest
-    
+
+    try:
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     ext = dest_path.suffix.lower()
     if ext not in {".flac", ".mp3", ".wav"}:
         print(f"Error: Unsupported format: {ext}", file=sys.stderr)
         return 1
-    
+
     duration_ms = args.duration
     sample_rate = args.sample_rate
     channels = args.channels
@@ -555,9 +642,11 @@ async def cmd_create(args: argparse.Namespace) -> int:
         print(f"Creating {duration_ms}ms silent audio ({channels}ch @ {sample_rate}Hz)")
         
         silent = AudioSegment.silent(duration=duration_ms, frame_rate=sample_rate)
-        
-        if channels == 1:
-            silent = silent.set_channels(1)
+
+        # pydub's AudioSegment.silent() always returns mono; explicitly
+        # upmix to stereo when the user asks for it (channels == 2).
+        if channels == 2:
+            silent = silent.set_channels(2)
         
         dest_format = ext[1:]
         silent.export(str(dest_path), format=dest_format)
@@ -581,12 +670,16 @@ async def cmd_detect_silence(args: argparse.Namespace) -> int:
     import json
     
     storage = get_storage_path()
-    filepath = storage / args.file
-    
+    try:
+        filepath = _safe_join(storage, args.file)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not filepath.exists():
         print(f"Error: File not found: {filepath}", file=sys.stderr)
         return 1
-    
+
     threshold_db = args.threshold
     min_duration = args.min_duration
     
@@ -660,13 +753,17 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     import json
     
     storage = get_storage_path()
-    source_path = storage / args.source
-    dest_path = storage / args.dest
-    
+    try:
+        source_path = _safe_join(storage, args.source)
+        dest_path = _safe_join(storage, args.dest)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not source_path.exists():
         print(f"Error: File not found: {source_path}", file=sys.stderr)
         return 1
-    
+
     max_silence = args.max_silence
     threshold_db = args.threshold
     mp3_bitrate = args.bitrate
@@ -690,10 +787,17 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     
     if not silence_starts:
         print("\nNo silences found, copying file as-is...")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(source_path),
-            "-c", "copy", str(dest_path)
-        ], capture_output=True, check=True)
+        copy_cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        # Only use -c copy when containers match; otherwise transcode and
+        # honour the user-supplied bitrate on the MP3 output (same flags
+        # the main compression branch uses below), so the fast-path
+        # doesn't silently drop --bitrate.
+        if source_path.suffix.lower() == dest_path.suffix.lower():
+            copy_cmd.extend(["-c", "copy"])
+        elif dest_path.suffix.lower() == ".mp3":
+            copy_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
+        copy_cmd.append(str(dest_path))
+        subprocess.run(copy_cmd, capture_output=True, check=True)
         print(f"Copied to: {dest_path.name}")
         return 0
     
@@ -723,10 +827,17 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     
     if not silences_to_compress:
         print(f"\nNo silences exceed {max_silence}s, copying file as-is...")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(source_path),
-            "-c", "copy", str(dest_path)
-        ], capture_output=True, check=True)
+        copy_cmd = ["ffmpeg", "-y", "-i", str(source_path)]
+        # Only use -c copy when containers match; otherwise transcode and
+        # honour the user-supplied bitrate on the MP3 output (same flags
+        # the main compression branch uses below), so the fast-path
+        # doesn't silently drop --bitrate.
+        if source_path.suffix.lower() == dest_path.suffix.lower():
+            copy_cmd.extend(["-c", "copy"])
+        elif dest_path.suffix.lower() == ".mp3":
+            copy_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
+        copy_cmd.append(str(dest_path))
+        subprocess.run(copy_cmd, capture_output=True, check=True)
         print(f"Copied to: {dest_path.name}")
         return 0
     

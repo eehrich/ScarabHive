@@ -28,16 +28,22 @@ tools:
     function:
       name: "{{ name }}_set_context"
       description: |
-        Set runtime context variables for the current session. These variables are used in 
-        prompt templates and precondition checks. For example, set book_id when starting 
-        work on a specific book, so precondition checks can validate the correct book status.
+        Set runtime context variables for the current session. They are stored
+        in the session's template_vars and used in prompt templates and
+        precondition checks (e.g. set an id or phase, then a gate check can
+        validate it).
       parameters:
         type: object
         properties:
-          book_id:
+          vars:
             type: string
-            description: "ID of the book to work on (used in precondition checks)"
-        additionalProperties: true
+            description: |
+              Context variables as a JSON object string, e.g. '{"book_id": 42, "phase": "review"}'.
+              JSON-as-string is deliberate: freeform objects (additionalProperties)
+              are mangled by some provider tool-call serializers.
+        required:
+          - vars
+        additionalProperties: false
 
 
 config:

@@ -1,0 +1,61 @@
+# Live-Testagent für tool_preload: die vorhersagbare Eröffnung — "arbeite an
+# Dokument X" ⇒ store lesen — läuft VOR dem ersten LLM-Call, per Code.
+#
+# Der Beweis gelingt, wenn der Agent den Inhalt nennt, ohne dass in seiner
+# Session ein von IHM ausgelöster Read steht: nur der preload_-Aufruf darf da
+# sein.
+#
+# Zum Nachfahren BEIDE enabled-Flags unten auf true setzen (Store UND Agent),
+# die API neu starten und ein Dokument anlegen:
+#   data/json_store/preload_store/preload-demo/mein-plan.json
+#   {"namespace":"preload-demo","doc":"mein-plan","owner":"x","data":{...}}
+# Rezept für den API-Start: .claude/skills/verify.
+plugins:
+  servers:
+    preload_store:
+      type: json_store
+      enabled: false
+      description: "tool_preload test store"
+
+    tool_preload_test_agent:
+      type: basic_agent
+      # Aus, damit er nicht in der Agentenliste steht. Zum Nachfahren des
+      # Live-Tests auf true setzen und die API neu starten; Rezept in
+      # .claude/skills/verify.
+      enabled: false
+      description: "Test agent: preloading the predictable opening tool call"
+
+      agent_config:
+        llm_profile: [or-deepseek-flash, chat-nostream, gemini-flash]
+        llm_profile_advanced: []
+        max_steps: 6
+
+        tools:
+          allowed:
+            - "preload_store/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            tool_preload.preload:
+              enabled: true
+              rules:
+                # "… Dokument mein-plan …" -> read auf den Store. namespace
+                # fest, damit Vorbereitung und Agenten-Session dasselbe
+                # Dokument sehen (sonst session-gescoped).
+                - match: "Dokument\\s+(?P<doc>[\\w-]+)"
+                  tool: "preload_store_manage_json"
+                  params:
+                    operation: "read"
+                    namespace: "preload-demo"
+                    doc: "{doc}"
+
+        system_prompt: |
+          Du bist ein Testagent. Beantworte Fragen zu Dokumenten aus dem
+          json_store knapp und praezise.
+
+      metadata:
+        visibility: "both"
+        tags:
+          - test
+          - preload

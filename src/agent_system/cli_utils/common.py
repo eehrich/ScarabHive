@@ -10,9 +10,137 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+# STD_OUTPUT_HANDLE / ENABLE_VIRTUAL_TERMINAL_PROCESSING (Windows console API)
+_STD_OUTPUT_HANDLE = -11
+_STD_INPUT_HANDLE = -10
+_ENABLE_VT_PROCESSING = 0x0004
+# Module-level so tests can flip the platform without patching os.name globally
+_IS_WINDOWS = os.name == "nt"
+
+
+@lru_cache(maxsize=1)
+def _enable_windows_vt() -> bool:
+    """Switch ANSI processing on for the attached Windows console, once.
+
+    Only the SetConsoleMode side effect is cached -- not the decision, which
+    still has to re-read sys.stdout (colorama replaces it during startup).
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return False
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & _ENABLE_VT_PROCESSING:
+            return True
+        return bool(kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING))
+    except Exception as e:
+        logger.debug(f"Could not enable ANSI processing on this console: {e}")
+        return False
+
+
+def reassert_vt() -> None:
+    """Re-enable VT processing if a child process switched it off.
+
+    Console modes are per-console, not per-process: a spawned shell (cmd.exe,
+    MSYS bash) inherits the console and resets its mode on startup. After the
+    first terminal.execute() the escapes we keep emitting render literally --
+    so anyone painting ANSI after subprocesses ran has to re-assert the flag.
+    Unlike _enable_windows_vt this is deliberately uncached.
+    """
+    if not _IS_WINDOWS:
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+        if not (mode.value & _ENABLE_VT_PROCESSING):
+            kernel32.SetConsoleMode(handle, mode.value | _ENABLE_VT_PROCESSING)
+    except Exception as e:
+        logger.debug(f"Could not re-assert ANSI processing: {e}")
+
+
+def snapshot_console_input_mode() -> int | None:
+    """Capture the console INPUT mode while it is known-good.
+
+    Child shells don't only reset the output mode -- they also switch the
+    input mode (line input, echo, processed Ctrl-C off). At that point every
+    keystroke at a prompt lands raw: Enter and Backspace stop working and
+    Ctrl-C arrives as a character instead of a signal. Snapshot at REPL start,
+    restore via restore_console_input_mode() before each prompt read.
+    """
+    if not _IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return None
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return None
+        return int(mode.value)
+    except Exception as e:
+        logger.debug(f"Could not snapshot console input mode: {e}")
+        return None
+
+
+def restore_console_input_mode(mode: int | None) -> None:
+    """Put the console input mode back to its snapshot (no-op for None)."""
+    if mode is None or not _IS_WINDOWS:
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return
+        current = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(current)):
+            return
+        if current.value != mode:
+            kernel32.SetConsoleMode(handle, mode)
+    except Exception as e:
+        logger.debug(f"Could not restore console input mode: {e}")
+
+
+def ansi_capable_stdout() -> bool:
+    """Whether stdout can actually render ANSI -- switching it on if it can.
+
+    isatty() alone is not enough on Windows: a console IS a tty but prints
+    escape sequences literally until ENABLE_VIRTUAL_TERMINAL_PROCESSING is set
+    on it. That gap is how raw ESC[90m ended up in the output instead of colour.
+    """
+    try:
+        if not sys.stdout.isatty():
+            return False
+    except Exception as e:
+        logger.debug(f"Failed to check if stdout is a TTY: {e}")
+        return False
+
+    if not _IS_WINDOWS:
+        return True
+    return _enable_windows_vt()
+
 
 # Global color mode (can be set by CLI tools)
 # Supports: 'auto', 'always', 'never', 'ansi', 'html', 'text'
@@ -54,13 +182,12 @@ def get_output_format() -> str:
     if mode in ("ansi", "html", "text", "markdown"):
         return mode
     
-    # Auto mode: ANSI if TTY, otherwise text
+    # Auto mode: ANSI only where it will actually render as colour, and not
+    # when NO_COLOR is set (no-color.org; an explicit --color still wins).
     if mode == "auto":
-        try:
-            return "ansi" if sys.stdout.isatty() else "text"
-        except Exception as e:
-            logger.debug(f"Failed to check if stdout is a TTY: {e}")
+        if os.environ.get("NO_COLOR"):
             return "text"
+        return "ansi" if ansi_capable_stdout() else "text"
     
     # Default fallback
     return "text"
@@ -183,69 +310,6 @@ async def status_subscriber(
         return
     except Exception as e:
         logger.debug(f"Status subscriber loop error: {e}")
-        return
-
-
-async def sse_subscriber(
-    url: str,
-    verbose: bool = False,
-    use_color: bool = True
-) -> None:
-    """Subscribe to SSE (Server-Sent Events) status stream.
-    
-    This is an optional feature for environments where status events
-    are streamed via HTTP SSE.
-    
-    Args:
-        url: SSE stream URL
-        verbose: Whether to show debug messages
-        use_color: Whether to use color formatting
-    """
-    try:
-        try:
-            import aiohttp
-        except ImportError:
-            logger.debug("aiohttp not available, SSE subscriber disabled")
-            return
-            
-        timeout = aiohttp.ClientTimeout(total=None)
-        async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.get(url) as resp:
-                if resp.status != 200:
-                    logger.debug(f"SSE stream returned status {resp.status}")
-                    return
-                    
-                async for line in resp.content:
-                    try:
-                        text = line.decode("utf-8").strip()
-                    except Exception:
-                        continue
-                        
-                    if not text or not text.startswith("data:"):
-                        continue
-                        
-                    payload = text[len("data:"):].strip()
-                    try:
-                        import json
-                        obj = json.loads(payload)
-                    except Exception as e:
-                        if verbose:
-                            logger.debug(f"Failed to parse SSE payload: {e}")
-                        obj = {"raw": payload}
-                    
-                    # Print SSE messages
-                    msg = f"[SSE] {obj.get('server','?')}: {obj.get('message','')}"
-                    if use_color and supports_color():
-                        msg = colorize(msg, "34")
-                    print(msg)
-                    
-    except asyncio.CancelledError:
-        if verbose:
-            logger.debug("SSE subscriber cancelled")
-        return
-    except Exception as e:
-        if verbose:
-            logger.debug(f"SSE subscriber error: {e}")
         return
 
 

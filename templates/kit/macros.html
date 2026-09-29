@@ -1,0 +1,19 @@
+{#- Kit macros. {% from "kit/macros.html" import icon %} -#}
+
+{% macro icon(name, size="", label="") -%}
+<svg class="pk-icon{% if size %} pk-icon--{{ size }}{% endif %}"{% if label %} role="img" aria-label="{{ label }}"{% else %} aria-hidden="true"{% endif %}><use href="/static/kit/icons.svg#{{ name }}"/></svg>
+{%- endmacro %}
+
+{% macro logo(size=24) -%}
+<svg class="pk-logo" width="{{ size }}" height="{{ size }}" role="img" aria-label="ScarabHive"><use href="/static/kit/logo.svg#mark"/></svg>
+{%- endmacro %}
+
+{#- The empty state; the JS twin is emptyState() in panel-kit.js. #}
+{% macro empty(icon_name, title, text="") -%}
+<div class="pk-empty">{{ icon(icon_name) }}<div class="pk-empty-title">{{ title }}</div>{% if text %}<div>{{ text }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{#- Placeholder lines while something loads; the JS twin is skeleton(). #}
+{% macro skeleton(lines=3) -%}
+<div class="pk-stack">{% for _ in range(lines) %}<span class="pk-skeleton"></span>{% endfor %}</div>
+{%- endmacro %}

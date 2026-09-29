@@ -1,0 +1,8 @@
+# The Setup plugin's server entry: its panel (admin category) and the tools a setup agent can be allowed.
+# Picked up by the config's include of ../src/plugins*/*/agents/*.yaml.
+plugins:
+  servers:
+    setup:
+      type: setup
+      enabled: true
+      description: "What this installation still lacks: API keys, the admin password, its own signing key"

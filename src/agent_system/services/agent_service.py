@@ -165,7 +165,11 @@ class AgentService:
             if result_event:
                 return {
                     "result": result_event.get("data", {}).get("result", ""),
-                    "steps": [e for e in events if e.get("type") in ("step", "thought", "tool_call")],
+                    # NOT tool_call: nothing emitted that name until the rename
+                    # of 17.09.2026, so this list has always been step+thought.
+                    # Adding them now would put every call's parameters and
+                    # result into the answer of a caller that never saw them.
+                    "steps": [e for e in events if e.get("type") in ("step", "thought")],
                     "request_id": request_id,
                     "session_id": session_id,
                     "status": "success"
@@ -320,77 +324,6 @@ class AgentService:
             )
             raise RuntimeError(f"Session append failed: {e}") from e
 
-    async def optimize_session(self, session_id: str) -> dict[str, Any]:
-        """Force session optimization (summarization/compression).
-        
-        Args:
-            session_id: Session identifier.
-        
-        Returns:
-            Dictionary with optimization results:
-            - success: Boolean
-            - original_tokens: Token count before optimization
-            - optimized_tokens: Token count after optimization
-            - reduction_percent: Percentage reduction
-            - error: Error message (if failed)
-        """
-        logger.info("Optimizing session: session_id=%s", session_id)
-        
-        try:
-            # Check session exists using component API
-            if not self._agent._session_tracker.has_session(session_id):
-                logger.warning("Cannot optimize non-existent session: session_id=%s", session_id)
-                return {
-                    "success": False,
-                    "error": f"Session {session_id} not found"
-                }
-            
-            # Get token count before
-            session_messages = self._agent._session_tracker.get_session_messages(session_id)
-            original_count = len(session_messages)
-
-            # Trigger optimization
-            if hasattr(self._agent, 'optimize_context'):
-                await self._agent.optimize_context(session_id)
-                logger.debug("Context optimization triggered for session: session_id=%s", session_id)
-            else:
-                logger.warning("Agent does not support context optimization")
-                return {
-                    "success": False,
-                    "error": "Optimization not supported by agent"
-                }
-
-            # Get token count after
-            optimized_messages = self._agent._session_tracker.get_session_messages(session_id)
-            optimized_count = len(optimized_messages)
-
-            reduction = original_count - optimized_count
-            reduction_percent = (reduction / original_count * 100) if original_count > 0 else 0
-
-            logger.info(
-                "Session optimized: session_id=%s, original=%d, optimized=%d, reduction=%.1f%%",
-                session_id,
-                original_count,
-                optimized_count,
-                reduction_percent
-            )
-
-            return {
-                "success": True,
-                "session_id": session_id,
-                "original_messages": original_count,
-                "optimized_messages": optimized_count,
-                "reduction_percent": round(reduction_percent, 1)
-            }
-
-        except Exception as e:
-            logger.exception("Session optimization failed: session_id=%s, error=%s", session_id, e)
-            return {
-                "success": False,
-                "error": str(e),
-                "session_id": session_id
-            }
-
     async def list_sessions(self) -> list[dict[str, Any]]:
         """List all active sessions.
         
@@ -465,7 +398,7 @@ class AgentService:
         logger.debug("Creating multimodal message: task_length=%d, images=%d", len(task), len(images))
         
         try:
-            from agent_system.utils.multimodal_processor import create_multimodal_message, ImageProcessingError
+            from agent_system.utils.multimodal_processor import AttachmentRejected, message_with_attachments
             import tempfile
             from pathlib import Path
             
@@ -479,10 +412,9 @@ class AgentService:
                     temp_path.write_bytes(img_bytes)
                     temp_files.append(str(temp_path))
                 
-                # Create multimodal message
-                message = create_multimodal_message(task, temp_files)
-                logger.debug("Multimodal message created with %d images", len(temp_files))
-                return message
+                # Through the gate every entry point shares: the agent's model
+                # is asked whether it takes images before they are built in.
+                return message_with_attachments(task, {"image": temp_files}, None, self.agent)
                 
             finally:
                 # Cleanup temp files
@@ -492,7 +424,7 @@ class AgentService:
                     except Exception as cleanup_error:
                         logger.warning("Failed to cleanup temp file: %s, error=%s", temp_file, cleanup_error)
                         
-        except ImageProcessingError as e:
+        except AttachmentRejected as e:
             logger.error("Image processing failed: %s", e)
             raise RuntimeError(f"Image processing failed: {e}") from e
         except Exception as e:

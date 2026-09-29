@@ -1,0 +1,37 @@
+# The coder's test runner, taught what a test is for a game.
+#
+# Inherits coder_tester (shell, read-only files, the cheap model chain) and
+# adds the headless Godot tools. Not the editor tools: a tester that could
+# play the game in the user's editor would be a second driver on one wheel,
+# and the orchestrator is the one that playtests.
+plugins:
+  servers:
+
+    gamedev_tester:
+      type: coder_tester
+      enabled: true
+      description: "Godot test runner -- parse-checks the project, runs it headless, runs pytest/GUT suites, reports only the lines that carry the failure"
+
+      self_tool_descriptions:
+        gamedev_tester_execute_task: "Run the given checks on a Godot project (parse check, headless run of a scene, a test suite) and report pass/fail with the error blocks and file:line"
+        gamedev_tester_list_available_tools: "List the shell, read-only file and headless Godot tools available"
+
+      agent_config:
+        system_template: "./prompts/gamedev_tester.md"
+        tools:
+          # Doubled prefix is the house convention: "server/tool" is matched
+          # against server_name + "/" + tool_name, and the tool name already
+          # carries the instance name.
+          allowed:
+            - "+godot/godot_status"
+            - "+godot/godot_check"
+            - "+godot/godot_run"
+            - "+godot/godot_script"
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["gamedev", "godot", "tests"]
+        category: "development"
+        visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell and read access to the whole checkout

@@ -1,0 +1,399 @@
+# Every element of the stategraph format in one machine, in a small story: plan an article, draft its
+# sections, review them five ways at once, let a panel judge it, polish it, have a person approve it, save it.
+# Read it next to the format reference (skills/stategraph-authoring/references/format.md); comments explain
+# the elements that are not obvious from their names.
+#
+# It runs for real with the shipped config: stategraph_example_agent, the json store stategraph_json and
+# the default decision profile. tests/test_plugin_stategraph_showcase.py runs it with every agent, tool and
+# decision mocked, and fails once the format has an element this machine does not use.
+stategraph: 1
+id: showcase
+title: Showcase -- every element
+description: >-
+  Plans, drafts, reviews, polishes and saves a short article, with a person's approval in between.
+  Uses every element of the format once; read it next to the format reference.
+group: stategraph                          # its folder in the panel's machine list
+python: showcase.py                        # companion module: its public names are in scope everywhere
+imports:                                   # submachines from other files
+  critique_round: ./critique_round.yaml
+
+# `agent:` offers the machine as an agent without a config entry -- every process then declares it as it
+# starts. It stays a comment so this example does not add an agent to every installation; the test checks
+# that it would be a valid block.
+# agent:
+#   name: showcase_agent
+#   description: Plans, drafts, reviews and saves a short article.
+#   input: text                            # a caller's message is text ...
+#   task_param: topic                      # ... and fills this param (input json: the message brings them all)
+#   params: {sections: 3}                  # given to every run of the agent
+#   promote: [title]                       # output keys its final event carries at the top
+#   on_wait: ask                           # a wait reaches the caller as a question
+#   visibility: private                    # tool or both: a SAM offers it to its LLM
+
+params:                                    # bound by whoever starts the run
+  topic:     {type: string, required: true, description: What the article is about}
+  sections:  {type: integer, default: 3, description: How many sections to draft}
+  tone:      {type: string, enum: [casual, formal], default: casual}
+  threshold: {type: number, default: 0.7, description: How sure the judges must be}
+  publish:   {type: boolean, default: true, description: Save the approved article}
+  keywords:  {type: array, default: [], description: Words the polish keeps}
+  style:     {type: object, default: {}, description: "Free-form hints; no state reads them"}
+  reviewer:  {type: string, enum: [stategraph_example_agent], default: stategraph_example_agent}
+  note:      {type: any, default: null, description: Anything; any is the default type}
+
+events:                                    # the named events this machine accepts
+  approve: {description: The reviewer accepts (also what the callback URL sends)}
+  reject:
+    description: The reviewer turns the article down.
+    data: {type: object, required: [reason], properties: {reason: {type: string}}}
+  comment:
+    description: A remark while the reviewer reads; the wait goes on.
+    data: {type: object, required: [text], properties: {text: {type: string}}}
+  withdraw: {description: The author withdraws the article while it waits.}
+
+context:                                   # the machine's variables (ctx), plain JSON
+  outline: []
+  notes: []
+  sections: []
+  review: {}
+  rounds: 0
+  reviews: 0
+  comments: []
+  approval_url: null
+  approved: false
+  article: null
+  title: null
+  problem: null
+
+vars_from: stategraph_example_agent        # that agent's configured template_vars ...
+vars:                                      # ... and these, for every agent this machine spawns
+  tone: "{{ params.tone }}"
+  json_namespace: "{{ resources.store }}"  # a prompt or tool rule that renders {{ json_namespace }} gets this
+                                           # run's store (v6 agents do; the example agent has no tools)
+
+limits:
+  max_steps: 200                           # dispatches per frame
+  timeout: 2h                              # the whole run, time spent running only
+  concurrency: 4                           # leaf activities of the whole run at once
+
+resources:                                 # external state per frame (format §14)
+  store:
+    description: The run's json store namespace; save writes the article into it.
+    open: {call: store_namespace, args: {run_id: "{{ run.id }}"}}
+    fork: {call: fork_namespace, args: {source: "{{ fork_source }}", run_id: "{{ run.id }}"}}
+    close: {tool: stategraph_json_manage_json, args: {operation: list, namespace: "{{ resources.store }}"}}
+
+finally:                                   # runs once when the frame ends, however it ends
+  emit: "Showcase ended: {{ ending.reason }}"
+
+machines:                                  # machines inside this file: do: {machine: polisher}
+  polisher:
+    title: Polisher
+    description: Tightens the text, then asks the same agent instance for a title.
+    params:
+      text: {type: string, required: true}
+      keywords: {type: array, default: []}
+    context: {text: null, editor: null, title: null}
+    vars: "{{ {'step': 'polish', 'keywords': params.keywords} }}"   # vars as one template: a whole object
+    initial: tighten
+    states:
+      tighten:
+        do:
+          agent: stategraph_example_agent
+          task: "Tighten this article without changing its meaning{{ '; keep the words ' + ', '.join(params.keywords) if params.keywords else '' }}. Answer with the text only.\n\n{{ params.text }}"
+          parse: strip_fences              # a companion function turns the answer into out
+          advanced: true                   # the agent's advanced model profile, if it has one
+        transitions:
+          - target: name_it
+            effect: |
+              ctx.text = out
+              ctx.editor = activity.instance_id
+      name_it:
+        do:
+          agent: stategraph_example_agent
+          continue: "{{ ctx.editor }}"     # the same instance: it still knows the text
+          task: Give the article a title of at most eight words. Answer with the title only.
+        transitions:
+          - target: done
+            effect: ctx.title = out.strip()
+      done:
+        type: final
+        output: {text: "{{ ctx.text }}", title: "{{ ctx.title }}"}   # the machine's result: out of its caller
+
+initial: route
+
+states:
+  route:                                   # a junction: its guards are checked together with the incoming
+    type: junction                         # transition's, before anything runs
+    description: Refuse an empty topic before any agent is asked.
+    transitions:
+      - target: drafting
+        guard: params.topic.strip() != ""
+      - target: refused
+        guard: else                        # always holds; last of its trigger
+
+  drafting:                                # a composite state: a nested region with its own initial
+    description: Plan, write, review and judge -- one error transition covers them all.
+    initial: plan
+    states:
+      plan:
+        type: state                        # the default
+        description: Two planners race; the first usable outline wins.
+        max_visits: 3                      # the 4th entry raises loop_limit here
+        do:
+          parallel:
+            quick:
+              agent: stategraph_example_agent
+              task: "{{ outline_task(params, ctx, 'quick') }}"
+              schema:                      # the answer is parsed as JSON and validated
+                type: object
+                required: [sections]
+                properties: {sections: {type: array, minItems: 1, items: {type: string}}}
+              timeout: 5m                  # one attempt
+              retry: {attempts: 2, backoff: {initial: 5s, factor: 2, max: 30s}, errors: [agent_failed, schema_invalid, timeout]}
+            thorough:
+              agent: stategraph_example_agent
+              task: "{{ outline_task(params, ctx, 'careful') }}"
+              schema:
+                type: object
+                required: [sections]
+                properties: {sections: {type: array, minItems: 1, items: {type: string}}}
+          join: first                      # the first branch that succeeds ends it; the other is cancelled
+        transitions:
+          - target: check_outline
+            description: whichever planner answered first
+            effect: ctx.outline = out[next(iter(out))]["sections"]
+          - trigger: error                 # errors go inner-first: this one before drafting's
+            guard: error.type == "loop_limit"
+            target: failed
+            effect: ctx.problem = "no usable outline after three tries"
+
+      check_outline:
+        do:
+          call: check_outline              # a companion function; its first parameter sg reads the scope
+          args: {wanted: "{{ params.sections }}"}
+        transitions:
+          - target: write
+            guard: out["ok"]
+            effect: ctx.notes = []
+          - target: plan
+            guard: else
+            effect: ctx.notes = [out["problem"]]
+
+      write:
+        entry: ctx.rounds += 1             # Python statements on entering; exit runs on leaving
+        max_visits: 3
+        do:
+          map: ctx.outline[:params.sections]   # one activity per item
+          as: heading
+          concurrency: 3
+          fail: fast                       # the first failure cancels the other items
+          each:
+            agent: stategraph_example_agent
+            task: "{{ section_task(heading, index, ctx, params) }}"
+            vars: {section: "{{ heading }}"}   # only for this call, over the machine's vars
+            check: long_enough             # a companion check; ValueError is feedback
+            parse_retries: 2               # feedback rounds before check_failed
+        transitions:
+          - target: review
+            effect: ctx.sections = pair_sections(ctx.outline, out)
+
+      review:
+        description: Five opinions at once; a failed one does not stop the others.
+        exit: ctx.reviews += 1
+        do:
+          parallel:
+            critique:                      # an imported submachine
+              machine: critique_round
+              params: {text: "{{ article_text(ctx) }}", strict: "{{ params.tone == 'formal' }}"}
+            facts:                         # a map inside a parallel: section by section, in order ...
+              map: ctx.sections
+              as: section
+              concurrency: 1
+              until: needs_source(out)     # ... until the first section with a claim to source
+              each:
+                agent: "{{ params.reviewer }}"   # the agent comes from a param with an enum
+                task: "List every claim in this section that needs a source, or answer NONE.\n\n{{ section['text'] }}"
+            clarity:
+              decide: score
+              question: How clear is this article for a reader new to the topic?
+              criteria: [unusable, confusing, acceptable, clear, excellent]
+              input: "{{ article_text(ctx) }}"
+            fit:
+              decide: choice
+              question: "Does the tone fit the requested one ({{ params.tone }})?"
+              criteria: {fits: the tone matches, too_formal: stiffer than asked, too_casual: looser than asked}
+              input: "{{ article_text(ctx) }}"
+            tags:
+              decide: questions            # several questions in one call
+              input: "{{ article_text(ctx) }}"
+              questions:
+                technical: {type: noul, question: Does the article assume technical knowledge?}
+                audience:
+                  type: choice
+                  question: Who is the main audience?
+                  criteria: {beginners: new to the topic, practitioners: work with it, experts: research it}
+                length: {type: score, question: How long does it feel?, criteria: [too short, right, too long]}
+          fail: collect                    # every branch runs to its end; out[branch] = {status, out | error}
+        transitions:
+          - target: judge
+            effect: ctx.review = collect_review(out)
+
+      judge:
+        description: Three judges; the first two verdicts decide.
+        do:
+          parallel:
+            editor:
+              decide: noul
+              by: stategraph_example_agent   # an agent judges instead of a decision model
+              advanced: true
+              parse_retries: 2
+              question: Is this article ready to publish?
+              criteria: {"true": "clear, correct and in the requested tone", "false": "needs another round"}
+              input: "{{ {'article': article_text(ctx), 'review': ctx.review} }}"
+            model:                         # a decision model: the configured default profile
+              decide: noul
+              question: Is this article ready to publish?
+              input: "{{ {'article': article_text(ctx), 'review': ctx.review} }}"
+              # profile: <name> would pick one of llm_system.decision_profiles instead
+            reader:
+              decide: noul
+              by: "{{ params.reviewer }}"
+              question: Would a reader new to the topic read this to the end?
+              input: "{{ article_text(ctx) }}"
+          join: {count: 2}                 # the first two that succeed; the third is cancelled
+        transitions:
+          - target: polish
+            guard: mean_verdict(out) >= params.threshold
+          - target: write
+            guard: ctx.rounds < 2
+            effect: ctx.notes = ctx.review["notes"] or ["make it clearer"]
+          - target: give_up
+            guard: else
+
+    transitions:
+      - trigger: error                     # any error inside drafting that its state did not take
+        target: failed
+        effect: |
+          ctx.problem = error.state + ": " + error.type + ": " + error.message
+
+  polish:
+    do:
+      machine: polisher                    # the machine inside this file
+      params: {text: "{{ article_text(ctx) }}", keywords: "{{ params.keywords }}"}
+    transitions:
+      - target: approval
+        effect: |
+          ctx.article = out["text"]
+          ctx.title = out["title"]
+      - trigger: error                     # submachine_failed, error.cause = what failed inside
+        target: failed
+        effect: ctx.problem = error.message
+
+  approval:
+    description: A person approves -- through the callback URL or an event; comments may come first.
+    initial: link
+    finally:                               # once on every exit of this state, however it is left
+      emit: "Approval step left ({{ ending.reason }})"
+    states:
+      link:
+        do:
+          callback: approve                # a URL that sends this event to the run, once
+          expires: 48h
+          frame: "{{ run.frame }}"         # the frame it goes to; default: the one that takes it
+        transitions:
+          - target: announce
+            effect: ctx.approval_url = out["url"]
+      announce:
+        do:
+          emit: "Waiting for approval of {{ ctx.title }}: {{ ctx.approval_url }}"
+        transitions:
+          - target: waiting
+      waiting:                             # a wait state: no do, no completion transition
+        timeout: 48h                       # then wait_timeout is raised here
+        transitions:
+          - trigger: comment               # internal: no target, the wait goes on
+            effect: ctx.comments.append(event.data["text"])
+          - trigger: approve
+            target: approved
+          - trigger: reject                # ends the run: the callback URL stays valid until used or expired,
+            target: rejected               # so a machine that came back to this wait would take an old approve
+            effect: ctx.problem = event.data["reason"]
+          - trigger: error
+            guard: error.type == "wait_timeout"
+            target: expired
+      approved:
+        type: final
+        output: {approved: true}           # a nested final's output is out of the composite's completion
+      expired:
+        type: final
+        output: {approved: false}
+    transitions:
+      - target: publish_gate
+        effect: ctx.approved = out["approved"]
+      - trigger: withdraw                  # offered while any state inside waits
+        target: withdrawn
+      - trigger: error
+        target: failed
+        effect: |
+          ctx.problem = error.type + ": " + error.message
+
+  publish_gate:                            # a choice: its guards see ctx after the incoming effect
+    type: choice
+    transitions:
+      - target: pause
+        guard: ctx.approved and params.publish
+      - target: not_published
+        guard: else
+
+  pause:                                   # a timer state: completes this long after entry
+    after: 1s
+    transitions:
+      - target: save
+
+  save:
+    do:
+      tool: stategraph_json_manage_json    # a tool, called without an LLM through the runner agent
+      args:
+        operation: write
+        namespace: "{{ resources.store }}"
+        doc: article
+        if_exists: replace
+        data: "{{ {'title': ctx.title, 'text': ctx.article, 'topic': params.topic, 'rounds': ctx.rounds} }}"
+      error_if: out.get("doc") != "article"    # true turns the result into tool_failed
+      idempotent: true                     # a write with replace may run again after a crash
+      timeout: 30s
+      retry: {attempts: 3, backoff: 2s, errors: [tool_failed]}
+      description: One document per run, in the run's own namespace.
+    transitions:
+      - target: done
+      - trigger: error
+        target: failed
+        effect: ctx.problem = error.message
+
+  done:
+    type: final
+    status: succeeded                      # the default
+    output: {title: "{{ ctx.title }}", article: "{{ ctx.article }}", rounds: "{{ ctx.rounds }}", comments: "{{ ctx.comments }}"}
+  not_published:
+    type: final
+    description: Approved with publish off, or the approval expired.
+    output: {title: "{{ ctx.title }}", approved: "{{ ctx.approved }}"}
+  rejected:
+    type: final
+    output: {title: "{{ ctx.title }}", rejected: "{{ ctx.problem }}"}
+  withdrawn:
+    type: final
+    output: {withdrawn: true}
+  give_up:
+    type: final
+    status: failed                         # fails the run; a caller gets submachine_failed
+    output: {reason: "not ready after {{ ctx.rounds }} rounds"}
+  refused:
+    type: final
+    status: failed
+    output: {reason: the topic is empty}
+  failed:
+    type: final
+    status: failed
+    output: {problem: "{{ ctx.problem }}"}

@@ -1,27 +1,33 @@
-# AgentSystem
+# ScarabHive
 
-A flexible, plugin-based AI agent framework built on Python and the Model Context Protocol (MCP). AgentSystem enables you to compose LLM-powered agents with modular tool servers, supporting multi-user sessions, real-time streaming, and extensible plugin architectures.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://www.python.org/)
+
+A flexible, plugin-based AI agent framework built on Python using Vibe-Coding. ScarabHive enables you to compose LLM-powered agents with modular tool servers, supporting multi-user sessions, real-time streaming, and extensible plugin architectures.
 
 ## Overview
 
-AgentSystem is designed for developers who need:
-- **Modular agent composition** with pluggable tool servers via MCP
+ScarabHive is designed for developers who need:
+- **Modular agent composition** with pluggable tool servers
 - **Multi-agent orchestration** with persistent sub-agent hierarchies
 - **Real-time streaming** of agent actions and LLM responses via Server-Sent Events
 - **Configuration-driven agents** defined in YAML without writing code
 - **Multi-user support** with JWT/API key authentication and role-based access control
-- **Dual-mode operation** as both MCP client (consuming tools) and MCP server (exposing tools)
+- **MCP client** consuming tools from external MCP servers
 
 ## Key Features
-
-- **Plugin System**: 20+ built-in plugins (web research, terminal, SSH, database, script execution, etc.)
+- **Plugin System**: 60+ built-in plugins (web research, terminal, SSH, database, script execution, media generation, etc.)
 - **Schema-Based Agents**: Define custom agents in YAML with tool filtering, LLM profiles, and prompts
+- **Multi-LLM Support**: OpenAI, Anthropic Claude, Google Gemini, Ollama, OpenRouter, Batch-Support
 - **Sub-Agent Management**: Spawn persistent sub-agents with full conversation context and nested hierarchies
 - **Session Management**: Multi-user sessions with automatic persistence and restore
 - **Context Management**: Intelligent token budget handling with summarization strategies
-- **Vision Support**: Multimodal image input via WebUI and API endpoints
+- **Vision/Audio Support**: Multimodal image and audio input via WebUI and API endpoints
 - **Streaming Architecture**: Zero-overhead SSE streams for real-time updates
+- **Mid-Run Steering**: Inject user messages into a running agent — it picks them up at the next step and reacts (see `docs/mid_run_message_injection.md`)
 - **Security**: Tool access control with allow/deny patterns, authentication, rate limiting
+- **CLI App**: use agent-cli or agent-run to run Agents from CLI instead of WebUI
+- **Powerful WebUI**: analyse your llm requests, context optimizations in the WebUI. Profile Speed and memory consumtion.
 
 ## Architecture
 
@@ -30,17 +36,17 @@ AgentSystem is designed for developers who need:
 │   Web UI    │◄─── SSE Streaming
 └──────┬──────┘
        │
-┌──────▼──────────────────────────────┐
+┌──────▼──────────────────────────────────┐
 │         FastAPI Application             │
 │  ┌────────────┐      ┌───────────────┐  │
 │  │   Agent    │◄────►│ Plugin System │  │
 │  │   Core     │      └───────┬───────┘  │
 │  └─────┬──────┘              │          │
 │        │              ┌──────▼────────┐ │
-│        │              │  MCP Servers  │ │
+│        │              │  Servers      │ │
 │        │              │ (Local/Remote)│ │
 │        │              └───────────────┘ │
-└────────┼─────────────────────────────────┘
+└────────┼────────────────────────────────┘
          │
     ┌────▼────┐
     │   LLM   │ (OpenAI, Anthropic, Google, etc.)
@@ -55,30 +61,42 @@ AgentSystem is designed for developers who need:
 - **Configuration**: [`config/`](config/) - YAML-based system and agent configuration
 - **Tests**: [`tests/`](tests/) - Comprehensive test suite with pytest
 
+## Built-in Plugins
+
+| Category | Plugins |
+|----------|---------|
+| **Agent & Workflow** | basic_agent, sub_agent_manager, agent_continuation, task_switch, sequential_thinking, cognitive_stack,  memory,  todo, lessons_learned |
+| **Web & Search** | web_scraper, duckduckgo_search, tavily_search |
+| **System & Files** | terminal, file_ops, ssh_control, script_interpreter, sqlite_query |
+| **Context** | context_engineer, context_summarizer, context_usage_tracker |
+| **Media** | audio_ops, comfyui |
+| **Monitoring & Debug** | log_viewer, batch_monitor, message_debugger, message_validator, request_logger |
+| **Utilities** | basic_operations, datetime, weather, http_server, markdown_formatter, user_management, llm_router, example |
+
 ## Use Cases
 
 - **AI Research & Experimentation**: Rapid prototyping of agent behaviors with config-based agents
 - **Multi-Step Workflows**: Orchestrate complex tasks across multiple specialized sub-agents
 - **Web Automation**: Web scraping, research, and content extraction with built-in tools
 - **System Administration**: Remote SSH management, terminal execution, log analysis
-- **Trading & Finance**: Market data integration (IBKR, Yahoo Finance plugins)
-- **Content Creation**: Interactive book writing system with writer-specific agents
+- **Media Generation**: Image/audio/video generation via ComfyUI integration
+- **Knowledge Management**: Persistent memory, lessons learned, and context optimization
 
 ## Getting Started
 
 1. **Install**: Follow the [Installation Guide](INSTALLATION.md)
-2. **Configure**: Edit `config/config.yaml` to set your LLM provider API keys
+2. **Configure**: Set your LLM provider API keys as environment variables or in `config/secrets.env` (template: `config/secrets.env.example`); models and profiles live in `config/llm.yaml` and `config/llm_openrouter.yaml`
 3. **Run**: Start the API server with `agent-api` or use the CLI with `agent-cli`
 4. **Explore**: Open `http://localhost:8000` in your browser
 
 ```bash
 # Quick start
-python -m venv .venv
+python -m venv .venv 
 source .venv/Scripts/activate  # Windows Git Bash
-pip install -e .
+pip install -e . # optional [dev,test,gpu]
 
-# Configure LLM provider (example)
-export OPENAI_API_KEY="your-key-here"
+# Configure LLM provider (the shipped default agent, chat_agent, runs on OpenRouter)
+export OPENROUTER_API_KEY="your-key-here"
 
 # Start API
 agent-api
@@ -87,14 +105,18 @@ agent-api
 agent-cli "What is the weather in Berlin?"
 ```
 
+Or with Docker: `docker compose up -d --build` (see [INSTALLATION.md](INSTALLATION.md#docker)).
+
 ## Project Status
 
-AgentSystem is actively developed and used in production for:
-- Interactive book writing workflows (writer plugin suite)
-- Financial market analysis (IBKR integration)
+ScarabHive is actively developed and used in production for:
 - Multi-agent research tasks (web research, sequential thinking)
+- Automated system administration workflows
+- Media generation pipelines (ComfyUI, audio processing)
+- Custom domain-specific agent systems via plugin extensions
+- Automated Content Creation
 
-**Requirements**: Python 3.11+
+**Requirements**: Python 3.11+ (recommended 3.12)
 
 ## Documentation
 
@@ -108,15 +130,12 @@ Core documentation in [`docs/`](docs/):
 
 ## Contributing
 
-1. Follow test-first development (run `pytest -q` before committing)
-2. Update `backlog.md` for feature planning and task tracking
-3. Maintain plugin READMEs when adding/modifying plugins
-4. Use `.prompts/developer_rules.md` for AI-assisted development guidelines
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full license text.
 
-## Contact
+## Author
 
-Enrico Ehrich eehrich@googlemail.com
+Enrico Ehrich

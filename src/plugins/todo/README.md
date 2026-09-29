@@ -23,7 +23,7 @@ The plugin is automatically available when AgentSystem starts. Enable it in `con
 
 ```yaml
 todo:
-  type: mcp_server
+  type: tool_server
   server_config:
     storage_path: data/todos
     max_tasks_per_session: 1000
@@ -376,7 +376,7 @@ python -m plugins.todo delete task_001 --cascade
 
 ```yaml
 todo:
-  type: mcp_server
+  type: tool_server
   server_config:
     storage_path: data/todos           # JSON file directory
     max_tasks_per_session: 1000        # Task limit per session
@@ -499,34 +499,43 @@ for task in orchestrator_tasks["tasks"].values():
 
 ## Automatic Task Injection (Hook)
 
-The TODO plugin automatically injects active tasks into the agent's system prompt before every LLM call, providing seamless task awareness without explicit tool calls.
+The TODO plugin keeps the active tasks in front of the model: before every LLM call the hook appends the list as a `developer` turn at the END of the history, and only when it says something new. It used to insert the list behind the system prompt on every call, where a text that is rebuilt every step invalidates the cached prefix behind it.
 
 ### How It Works
 
 **Pre-LLM Hook:**
 - Executes before each LLM call
 - Queries active tasks from current session
-- Formats as markdown and injects into system messages
+- Formats as markdown and appends it as a `developer` turn; the previous block stays where it is and is superseded by the newer one
 - Agent sees tasks automatically in context
 
 **Configuration:**
 
+For the whole instance, in `config/plugins.yaml`:
+
 ```yaml
-# In config/plugins.yaml
 todo:
   type: todo
   enabled: true
-  
+
+  hook_config:
+    max_tasks: 20
+    filter_status: ["not-started", "in-progress", "blocked"]
+    include_completed: false
+    format: "markdown"
+```
+
+For one agent, in its `config/agents/*.yaml` — these win over the instance:
+
+```yaml
   agent_config:
     hooks:
       enabled: true
       overrides:
         todo.inject_todo_tasks:
           enabled: true
-          max_tasks: 20
-          filter_status: ["not-started", "in-progress", "blocked"]
-          include_completed: false
-          format: "markdown"
+          max_tasks: 5
+          format: "text"
 ```
 
 **Default Behavior:**
@@ -566,6 +575,25 @@ meta_agent:
         todo.inject_todo_tasks:
           enabled: false
 ```
+
+## The panel
+
+**Todos** in the launcher under **Agents & tools**; a session's info button offers it too, opened on that session.
+
+- The task list of the session open in the chat, or of the one the link names (`?session_id=`); with no session open
+  it says so. Auto refresh runs every 5 s.
+- Figures: all tasks, and how many are not started, in progress, blocked, cancelled and completed (with the share
+  completed). Filters by status and priority.
+- Each task shows its status, id, title, priority, age, tags, description, progress, what it depends on and what it
+  blocks; a task not started that waits on another is marked `waiting`. **Start** a task not started that waits on
+  no other, **Complete** one in progress, blocked or waiting, **Delete** one no other task depends on (asks first).
+  What the server refuses -- a task gone meanwhile, a dependent added, a task an agent finished -- is shown as an
+  error, and the list is loaded anew.
+
+Under `/plugins/todo/`: `GET tasks?session_id=`, `POST tasks/{task_id}/start?session_id=` (only a task not started),
+`POST tasks/{task_id}/complete?session_id=` (only one not completed or cancelled), `DELETE tasks/{task_id}?session_id=`,
+`GET /` (the panel). A refusal answers 404 (task not found) or 409 (a task others depend on, or one no longer in a
+status the action takes).
 
 ## Troubleshooting
 

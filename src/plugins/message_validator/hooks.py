@@ -31,7 +31,9 @@ from agent_system.hooks import (
     HookContext,
     HookResult,
 )
+from agent_system.llm.message_roles import INSTRUCTION_ROLES, is_input
 from agent_system.llm.models import ChatMessage
+from agent_system.utils.reasoning_artifacts import invalidate_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -352,11 +354,17 @@ class InternalMessageValidator:
         """Check for problematic message sequences."""
         issues = []
 
-        # Check that first non-system message is 'user'
-        # Gemini requires: user -> assistant (with tool_calls) -> tool responses
+        # Check that the conversation opens on something the model is asked to
+        # act on. Gemini requires: user -> assistant (with tool_calls) -> tool
+        # responses. A developer NOTE is an instruction, not the start of the
+        # conversation -- counting it as one made the repair below delete it.
+        # A developer WAKE is the opposite: it is a woken run's whole task, and
+        # every route that needs a user turn first lowers it to one. `is_input`
+        # tells the two apart, the same question compaction's copy of this rule
+        # asks (context_engineer/compaction._ensure_valid_message_sequence).
         for i, msg in enumerate(messages):
-            if msg.role != "system":
-                if msg.role != "user":
+            if msg.role not in INSTRUCTION_ROLES or is_input(msg):
+                if not is_input(msg):
                     issues.append(ValidationIssue(
                         type="invalid_first_message",
                         severity="error",
@@ -556,18 +564,58 @@ class InternalMessageValidator:
                     merged_multimodal.extend(first_msg.multimodal_content)
                 if getattr(second_msg, 'multimodal_content', None):
                     merged_multimodal.extend(second_msg.multimodal_content)
-                
-                # Create merged message preserving all fields
-                repaired[first_idx] = ChatMessage(
-                    role="assistant",
-                    content=merged_content if merged_content else None,
-                    tool_calls=merged_tool_calls if merged_tool_calls else None,
-                    name=first_msg.name if hasattr(first_msg, 'name') else None,
-                    timestamp=first_msg.timestamp if hasattr(first_msg, 'timestamp') else None,
-                    reasoning_content=merged_reasoning if merged_reasoning else None,
-                    multimodal_content=merged_multimodal if merged_multimodal else None,
-                    content_format=first_msg.content_format or second_msg.content_format
-                )
+
+                # Merge reasoning_details in original order (provider-side
+                # thinking blocks that must round-trip, e.g. Gemini
+                # thought_signature — dropping them causes
+                # MALFORMED_FUNCTION_CALL on the next turn).
+                merged_rd = (list(getattr(first_msg, 'reasoning_details', None) or [])
+                             + list(getattr(second_msg, 'reasoning_details', None) or []))
+
+                # Anthropic thinking blocks: keep only the NEWER turn's
+                # blocks. Anthropic validates the block SEQUENCE of the last
+                # assistant turn verbatim ("never filter, dedupe or reorder",
+                # see llm/models.py) — concatenating two turns' blocks would
+                # send a sequence the model never produced in one turn, which
+                # is exactly the 400 this preservation is meant to avoid.
+                # Model-bound signatures make cross-model concatenation wrong
+                # for the same reason.
+                first_tb = getattr(first_msg, 'thinking_blocks', None)
+                second_tb = getattr(second_msg, 'thinking_blocks', None)
+                first_tm = getattr(first_msg, 'thinking_model', None)
+                second_tm = getattr(second_msg, 'thinking_model', None)
+                if second_tb:
+                    merged_tb, merged_tm = second_tb, second_tm
+                else:
+                    merged_tb, merged_tm = first_tb or None, first_tm
+
+                # model_copy keeps every remaining field (name, timestamp,
+                # injected_by, ...) — the previous full reconstruction here
+                # silently dropped reasoning_details/thinking_blocks.
+                repaired[first_idx] = first_msg.model_copy(update={
+                    "content": merged_content if merged_content else None,
+                    "tool_calls": merged_tool_calls if merged_tool_calls else None,
+                    "reasoning_content": merged_reasoning if merged_reasoning else None,
+                    "multimodal_content": merged_multimodal if merged_multimodal else None,
+                    "content_format": first_msg.content_format or second_msg.content_format,
+                    "reasoning_details": merged_rd if merged_rd else None,
+                    # A broken chain on either side stays broken in the merge.
+                    "rd_orphaned": (getattr(first_msg, 'rd_orphaned', None)
+                                    or getattr(second_msg, 'rd_orphaned', None)),
+                    # Two producers in one merged list match no model, so
+                    # strip_foreign_reasoning_artifacts would reset them. The
+                    # agent loop strips before this hook runs, so today the
+                    # merge only ever sees one producer.
+                    "reasoning_model": "|".join(dict.fromkeys(
+                        m.reasoning_model for m in (first_msg, second_msg)
+                        if getattr(m, 'reasoning_details', None)
+                        and getattr(m, 'reasoning_model', None))) or None,
+                    "thinking_blocks": merged_tb,
+                    "thinking_model": merged_tm if merged_tb else None,
+                    # The later turn's backend is the one holding the cache.
+                    "served_by": (getattr(second_msg, 'served_by', None)
+                                  or getattr(first_msg, 'served_by', None)),
+                })
                 
                 # Mark second message for removal
                 remove_indices.add(second_idx)
@@ -578,13 +626,16 @@ class InternalMessageValidator:
             if 0 <= idx < len(repaired):
                 repaired.pop(idx)
 
-        # Ensure first non-system message is 'user' (loop until valid or empty)
-        # This handles cascading removals where removing first bad message exposes another
+        # Ensure the first non-instruction message is 'user' (loop until valid
+        # or empty). This handles cascading removals where removing the first
+        # bad message exposes another. Instructions (system AND developer) are
+        # skipped, not removed: this loop POPS whatever it finds, so counting a
+        # developer note as the first message deleted it without a word.
         max_iterations = 100  # Safety limit
         for _ in range(max_iterations):
             first_non_system_idx = None
             for i, msg in enumerate(repaired):
-                if msg.role != "system":
+                if msg.role not in INSTRUCTION_ROLES or is_input(msg):
                     first_non_system_idx = i
                     break
             
@@ -592,8 +643,12 @@ class InternalMessageValidator:
                 break  # Only system messages left
             
             first_msg = repaired[first_non_system_idx]
-            if first_msg.role == "user":
-                break  # Valid sequence
+            if is_input(first_msg):
+                # Valid. `is_input`, not the bare role: asking for `user` read a
+                # woken run's wake as missing, and this loop POPS -- it deleted
+                # the run's own assistant and tool messages one by one looking
+                # for a user turn that a woken run need not have.
+                break
             
             # Need to remove this message and related tool messages
             indices_to_remove: Set[int] = {first_non_system_idx}
@@ -638,16 +693,23 @@ class InternalMessageValidator:
             if 0 <= adjusted_idx < len(repaired):
                 msg = repaired[adjusted_idx]
                 if msg.role == "assistant" and msg.tool_calls:
-                    # Create a new message without tool_calls
                     # Preserve content if it exists
                     new_content = msg.content if msg.content else "Tool execution was interrupted"
 
-                    # Create new ChatMessage without tool_calls
-                    repaired[adjusted_idx] = ChatMessage(
-                        role="assistant",
-                        content=new_content,
-                        name=msg.name if hasattr(msg, 'name') else None
-                    )
+                    # Drop ONLY tool_calls; model_copy keeps the remaining
+                    # fields (reasoning_content, reasoning_details,
+                    # thinking_blocks, timestamp, ...) — the previous full
+                    # reconstruction silently dropped them all.
+                    # rd_orphaned: the kept reasoning_details signed the very
+                    # tool_calls we just removed — chain-verified providers
+                    # (reasoning_details_mode=keep_all) must reset instead of
+                    # replaying a signature over mutated content; Gemini
+                    # (keep_last) ignores the flag and keeps its signature.
+                    repaired[adjusted_idx] = msg.model_copy(update={
+                        "content": new_content,
+                        "tool_calls": None,
+                        "rd_orphaned": True,
+                    })
 
         return repaired
 
@@ -709,21 +771,21 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
     Hook definitions and configuration are loaded from schema.yaml.
     """
 
-    def __init__(self, plugin_dir: Path | str, mcp_config: Any = None):
+    def __init__(self, plugin_dir: Path | str, server_config: Any = None):
         """Initialize the message validator plugin.
 
         Args:
             plugin_dir: Directory containing schema.yaml
-            mcp_config: MCP configuration (contains config from plugins.yaml)
+            server_config: tool server configuration (contains config from plugins.yaml)
         """
         super().__init__(plugin_dir)
 
         # Get config from schema defaults
         config = self.get_config()
         
-        # Merge with mcp_config.config if provided (overrides schema defaults)
-        if mcp_config and hasattr(mcp_config, 'config') and mcp_config.config:
-            config.update(mcp_config.config)
+        # Merge with server_config.config if provided (overrides schema defaults)
+        if server_config and hasattr(server_config, 'config') and server_config.config:
+            config.update(server_config.config)
         
         log_level = config.get('log_level', 'warning')
 
@@ -794,6 +856,13 @@ class MessageValidatorPlugin(SchemaBasedPluginHook):
             # The validator always returns repaired messages (even if identical),
             # so we need to explicitly signal when repairs were made.
             actually_modified = modified or bool(result.issues)
+
+            # THE INVARIANT (utils/reasoning_artifacts.py): repairs reorder,
+            # drop or rewrite messages mid-history — provider reasoning chains
+            # (OpenAI encrypted items) over the repaired span become
+            # unverifiable. Invalidate at the mutation site.
+            if actually_modified:
+                invalidate_reasoning_artifacts(result.repaired_messages)
 
             return HookResult(
                 success=True,

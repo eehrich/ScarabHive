@@ -1,0 +1,15 @@
+# llm_common — shared wire-format helpers for the LLM provider plugins.
+# A library, NOT a provider: no `type = ["llm-provider"]` and no `provides`,
+# so the LLM registry skips this package; other plugins packages import
+# it directly (openai_utils, sanitize_schema_for_gemini). The manifest
+# exists so scripts/aggregate_plugin_deps.py and the import-declaration
+# guard (tests/pluginsystem/test_plugin_deps_declared.py) cover this
+# package like every other plugin.
+[plugin]
+name = "llm_common"
+version = "1.0.0"
+description = "Shared OpenAI/Gemini wire-format helpers for LLM provider plugins"
+author = "AgentSystem"
+type = ["library"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

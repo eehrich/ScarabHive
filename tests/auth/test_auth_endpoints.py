@@ -23,7 +23,6 @@ import agent_system.auth.database as auth_db_module
 def reset_global_db():
     """Reset the global database instance before each test."""
     # Store original value
-    original_db = auth_db_module._db
     # Reset to None before test
     auth_db_module._db = None
     yield

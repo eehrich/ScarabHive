@@ -37,6 +37,20 @@ class BatchStatus(str, Enum):
     CANCELLING = "cancelling"    # Cancellation in progress
 
 
+#: A job in one of these states is done. Startup cancellation must skip them
+#: (cancelling a finished job is an API call that fails and logs a warning),
+#: and job recovery must not track them. One definition: each provider
+#: plugin used to carry its own idea of "finished", and Anthropic's only
+#: covered IN_PROGRESS — so a SUBMITTED batch survived shutdown and kept
+#: billing.
+TERMINAL_STATUSES = frozenset({
+    BatchStatus.COMPLETED.value,
+    BatchStatus.FAILED.value,
+    BatchStatus.EXPIRED.value,
+    BatchStatus.CANCELLED.value,
+})
+
+
 @dataclass
 class BatchRequest:
     """Individual request waiting to be batched.
@@ -50,6 +64,7 @@ class BatchRequest:
         max_tokens: Optional max output tokens limit
         thinking_budget: Token budget for thinking (Gemini 2.5 models)
         thinking_level: Thinking intensity level (Gemini 3 models): minimal, low, medium, high
+        safety_settings: Optional Gemini safety settings: {HarmCategory: HarmBlockThreshold}
         session_id: Optional session ID for tracking
         agent_name: Optional agent name for tracking
         created_at: Timestamp when request was created
@@ -63,6 +78,7 @@ class BatchRequest:
     max_tokens: Optional[int] = None
     thinking_budget: Optional[int] = None
     thinking_level: Optional[str] = None
+    safety_settings: Optional[Dict[str, str]] = None
     session_id: Optional[str] = None
     agent_name: Optional[str] = None
     created_at: datetime = field(default_factory=_utc_now)
@@ -158,13 +174,12 @@ class BatchJob:
     
     @property
     def is_terminal(self) -> bool:
-        """Check if job is in a terminal state."""
-        return self.status in (
-            BatchStatus.COMPLETED,
-            BatchStatus.FAILED,
-            BatchStatus.EXPIRED,
-            BatchStatus.CANCELLED,
-        )
+        """Check if job is in a terminal state.
+
+        Same definition the providers use (BatchStatus is a str enum, so the
+        value set matches members too) — one list, not two that drift.
+        """
+        return self.status in TERMINAL_STATUSES
     
     def get_request_by_custom_id(self, custom_id: str) -> Optional[BatchRequest]:
         """Find a request by its custom_id."""

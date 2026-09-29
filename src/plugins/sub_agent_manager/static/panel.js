@@ -1,0 +1,360 @@
+// Sub-Agents: the sub-agents of the session open in the chat (or the one a link names, ?session_id=), whichever
+// manager instance spawned them -- what each is doing, its transcript, and archiving one. Two views of the same
+// session: the map (the whole tree, sub-agents of sub-agents included) and the list (the level right below the
+// session, with the actions).
+import { api, html, render, icon, confirm, session } from '/static/kit/panel-kit.js';
+
+const BASE = new URL('..', import.meta.url).pathname;  // /plugins/<instance>/
+const $ = (id) => document.getElementById(id);
+/** Messages per page loaded above the transcript's tail: fewer once the server has capped a page. */
+let page = 50;
+
+/** The sub-agents listed, or null: no session open, or they could not be loaded. */
+let agents = null;
+let phase = null;
+/** The map: {root, truncated}, {error} when it alone failed, or null with no session open. */
+let map = null;
+/** The session the list shown belongs to: an action acts on it, whatever the chat has switched to since. */
+let shownFor = null;
+let load = 0;
+let busy = false;
+/** The sub-agents an archive is asked or on its way for: their button stays disabled across redraws. */
+const archiving = new Set();
+/** The transcript in the drawer: {id, session, data, messages, start}. Its card gets the focus back on close. */
+let opened = null;
+let opening = 0;
+
+const STATES = {
+  running: { label: 'Running', kind: 'info' },
+  idle: { label: 'Idle', kind: 'ok' },
+  interrupted: { label: 'Interrupted', kind: 'warn' },
+  archived: { label: 'Archived', kind: '' },
+  cancelled: { label: 'Cancelled', kind: '' },
+  failed: { label: 'Failed', kind: 'danger' },
+};
+const OPEN = ['running', 'idle', 'interrupted'];
+
+/** What a sub-agent is doing, as the server reads it for the tool's `list` and the injected list: the same words, by
+ * the same rule, which asks the run itself. The stored status says "active" for running and idle alike. */
+const state = (agent) => agent.state || agent.status;
+
+const described = (name) => STATES[name] || { label: name, kind: '' };
+const number = (value) => Number(value ?? 0).toLocaleString();
+const time = (stamp) => (stamp ? new Date(stamp).toLocaleString() : '–');
+const badge = (kind, content) => html`<span class="pk-badge${kind ? ` pk-badge--${kind}` : ''}">${content}</span>`;
+const empty = (name, title, text = '') =>
+  html`<div class="pk-empty">${icon(name)}<div class="pk-empty-title">${title}</div>${text ? html`<div>${text}</div>` : ''}</div>`;
+const stat = (key, label, value) =>
+  html`<div class="pk-stat" data-stat="${key}"><div class="pk-stat-label">${label}</div><div class="pk-stat-value">${number(value)}</div></div>`;
+
+/** The two figures the list and the map both show, empty where the server does not know one: the messages of its
+ * transcript as of its last save, and the tokens its last LLM call carried as the provider counted them -- with the
+ * share of the window, or said to be from before a compaction. */
+const messages = (agent) => (agent.message_count == null ? '' : `${number(agent.message_count)} messages`);
+function tokens(agent) {
+  if (!agent.context_tokens) return '';
+  const share = agent.context_window ? ` (${Math.round((100 * agent.context_tokens) / agent.context_window)}%)` : '';
+  return `${number(agent.context_tokens)} tokens${agent.context_stale ? ' (compacted since)' : share}`;
+}
+
+function ago(stamp) {
+  if (!stamp) return 'never';
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(stamp)) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// ------------------------------------------------------------------------ data
+
+async function refresh(event) {
+  if (event?.detail?.auto && busy) return;  // a tick while the last answer is on its way would only discard it
+  const id = session.shown;
+  const mine = ++load;
+  if (!id) {
+    busy = false;
+    show(null, null, null, null);
+    render($('stats'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
+    return;
+  }
+  busy = true;
+  const listing = api(`${BASE}sub-agents?session_id=${encodeURIComponent(id)}`, { quiet: true });
+  // asked for at the same time and kept apart: one of the two failing is not both, and each says what happened to it
+  const mapping = api(`${BASE}agent-map?session_id=${encodeURIComponent(id)}`, { quiet: true })
+    .catch((error) => ({ error: error.message }));
+  let answer = null;
+  let failed = null;
+  try {
+    answer = await listing;
+  } catch (error) {
+    failed = error;
+  }
+  // both in, then judged: released earlier, a tick would start over the map still on its way and discard this load;
+  // judged earlier, the answer for a session left behind would be drawn after the one for the session now open
+  const tree = await mapping;
+  if (mine === load) busy = false;
+  if (mine !== load) return;  // another session was asked for since
+  if (failed) {  // nothing of the session shown before stays, as if it were this one's; the map answered for itself
+    show(null, null, null, tree);
+    render($('stats'), empty('circle-alert', 'Sub-agents could not be loaded', failed.message));
+    return;
+  }
+  show(answer.instances, answer.phase, id, tree);
+  const count = (name) => agents.filter((agent) => state(agent) === name).length;
+  render($('stats'), [
+    stat('total', 'Sub-agents', agents.length),
+    stat('running', 'Running', count('running')),
+    stat('idle', 'Idle', count('idle')),
+    stat('interrupted', 'Interrupted', count('interrupted')),
+    stat('closed', 'Failed, cancelled or archived', agents.filter((agent) => !OPEN.includes(state(agent))).length),
+  ]);
+}
+
+function show(list, phaseInfo, sessionId, tree) {
+  agents = list;
+  phase = phaseInfo;
+  map = tree || null;
+  shownFor = sessionId;
+  drawPhase();
+  drawAgents();
+  drawMap();
+}
+
+function drawPhase() {
+  $('phase').hidden = !phase;
+  if (!phase) return;
+  const names = (list) => (list.includes('*') ? 'every registered agent' : list.join(', ') || 'none');
+  const narrowed = names(phase.agents) !== names(phase.allowed_agents);
+  render($('phase'), html`Phase ${badge('accent', phase.current || 'not set')}
+    <span>spawnable: <span class="pk-mono" data-part="agents">${names(phase.agents)}</span></span>
+    ${narrowed ? html`<span>of <span class="pk-mono" data-part="allowed">${names(phase.allowed_agents)}</span></span>` : ''}`);
+}
+
+// ---------------------------------------------------------------------- agents
+
+function card(agent) {
+  const name = state(agent);
+  const { label, kind } = described(name);
+  const id = agent.instance_id;
+  // what the tool archives from; one archived, cancelled or failed has nothing to archive
+  const archivable = agent.status === 'active' || agent.status === 'interrupted';
+  return html`<article class="pk-card sa-agent" data-id="${id}" data-state="${name}">
+    <div class="pk-card-head">
+      ${badge(kind, html`${name === 'running' ? html`<span class="pk-spinner sa-spinner"></span>` : ''}${label}`)}
+      <h3 class="pk-card-title pk-mono pk-grow sa-id">${id}</h3>
+      ${badge('', agent.agent_type)}
+    </div>
+    <div class="pk-row pk-muted sa-meta">
+      ${messages(agent) && html`<span data-part="messages">${messages(agent)}</span>`}
+      ${tokens(agent) && html`<span data-part="tokens">${tokens(agent)}</span>`}
+      <span title="${time(agent.last_used)}">used ${ago(agent.last_used)}</span>
+    </div>
+    ${agent.task_summary ? html`<p class="sa-task">${agent.task_summary}</p>` : ''}
+    ${agent.current_activity ? html`<div class="sa-activity">${icon('activity', { size: 'sm' })}<span>${agent.current_activity}</span></div>` : ''}
+    <div class="pk-row sa-actions">
+      <button type="button" class="pk-btn pk-btn--sm" data-act="transcript" data-id="${id}">${icon('scroll-text', { size: 'sm' })} Transcript</button>
+      ${archivable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="archive" data-id="${id}"
+        ${archiving.has(id) ? 'disabled' : ''}>${icon('trash-2', { size: 'sm' })} Archive</button>` : ''}
+    </div>
+  </article>`;
+}
+
+const button = (act, id) => $('agents').querySelector(`button[data-act="${act}"][data-id="${CSS.escape(id)}"]`);
+
+function drawAgents() {
+  const focused = document.activeElement?.closest?.('#agents button[data-act]');  // drawn anew, it keeps the focus
+  const filter = $('show').value;
+  const listed = (agents || []).filter((agent) => filter === 'all'
+    || (filter === 'running' ? state(agent) === 'running' : OPEN.includes(state(agent))));
+  render($('agents'), !agents ? '' : listed.length ? listed.map(card)
+    : agents.length ? empty('filter', 'No sub-agent matches', `${agents.length} hidden by the filter`)
+      : empty('workflow', 'No sub-agents in this session'));
+  // only when this frame has the focus: gone to the shell, the frame's activeElement is its body
+  if (focused) button(focused.dataset.act, focused.dataset.id)?.focus();
+}
+
+// ------------------------------------------------------------------------- map
+
+/** How long a sub-agent was at it: from its creation to its last use. Empty while one of the two is missing. */
+function span(from, to) {
+  const ms = new Date(to) - new Date(from);
+  if (!(ms >= 0)) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+const nodeBody = (title, meta, doing) => html`<span class="sa-node-body">
+  <span class="sa-node-title">${title}</span>
+  <span class="sa-node-meta">${meta.filter(Boolean).join(' · ')}</span>
+  ${doing ? html`<span class="sa-node-doing">${icon('activity', { size: 'sm' })}${doing}</span>` : ''}
+</span>`;
+
+/** One sub-agent in the map. It carries the session it hangs under: a nested one's is not the one in the chat. */
+const mapNode = (agent) => {
+  const name = state(agent);
+  const { label, kind } = described(name);
+  return html`<button type="button" class="sa-node" data-act="transcript" data-id="${agent.instance_id}"
+    data-session="${agent.parent_session_id}" data-state="${name}">
+    <span class="pk-dot${kind ? ` pk-dot--${kind}` : ''}"></span>
+    ${nodeBody(agent.task_summary || agent.agent_type || agent.instance_id,
+      [agent.agent_type, agent.instance_id, messages(agent), tokens(agent), span(agent.created_at, agent.last_used), label],
+      name === 'running' ? agent.current_activity : '')}
+  </button>`;
+};
+
+const branch = (children) => ((children || []).length
+  ? html`<ul class="sa-kids">${children.map((child) => html`<li>${mapNode(child)}${branch(child.children)}</li>`)}</ul>`
+  : '');
+
+function drawMap() {
+  const focused = document.activeElement?.closest?.('#map button[data-id]');  // drawn anew, it keeps the focus
+  if (!map) {
+    render($('map'), empty('message-square', 'No session open', 'Open a session in the chat to see its sub-agents.'));
+    return;
+  }
+  if (map.error) {
+    render($('map'), empty('circle-alert', 'The map could not be loaded', map.error));
+    return;
+  }
+  const root = map.root;
+  render($('map'), html`<div class="sa-tree">
+      <div class="sa-node sa-root" data-id="${root.instance_id}">
+        <span class="pk-dot"></span>${nodeBody(root.title || root.instance_id, [root.agent_type, root.instance_id])}
+      </div>
+      ${branch(root.children)}
+    </div>
+    ${root.children.length ? '' : html`<div class="pk-muted">No sub-agents in this session</div>`}
+    ${map.truncated ? html`<div class="pk-muted">Not everything below this session is shown:
+      the map stops at what one look may read.</div>` : ''}`);
+  if (focused) $('map').querySelector(`button[data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
+}
+
+// --------------------------------------------------------------------- actions
+
+async function archive(id) {
+  const sessionId = shownFor;  // the session of the card clicked
+  archiving.add(id);
+  drawAgents();  // disabled until answered: a second click would ask again
+  try {
+    if (!await confirm(`Archive the sub-agent “${id}”? Its history stays, and its coordinator can still continue it.`,
+      { title: 'Archive sub-agent', confirmLabel: 'Archive', danger: true })) return;
+    // api() shows a failure; loaded anew either way
+    await api(`${BASE}sub-agents/${encodeURIComponent(id)}?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+      .catch(() => {});
+    await refresh();
+  } finally {
+    archiving.delete(id);
+    drawAgents();
+    // disabled, the button had let go of the focus: back to it, to its card archived, or to the filter with the card gone
+    if (document.hasFocus() && document.activeElement === document.body) (button('archive', id) || button('transcript', id) || $('show')).focus();
+  }
+}
+
+// ------------------------------------------------------------------ transcript
+
+const entry = (message) => html`<div class="sa-message" data-index="${message.index}">
+  <div class="sa-role">${message.role}${message.tool_name ? ` · ${message.tool_name}` : ''}</div>
+  ${message.content ? html`<div class="sa-content">${message.content}</div>` : ''}
+  ${(message.tool_calls || []).map((call) => html`<div class="sa-call">${call.name || '?'}(${call.arguments || ''})</div>`)}
+</div>`;
+
+function drawTranscript() {
+  const { data, messages, start } = opened;
+  $('detailTitle').textContent = data.instance_id;
+  render($('detailBody'), html`<dl class="pk-kv">
+      <dt>Session</dt><dd class="pk-mono">${opened.session}</dd>
+      <dt>Agent</dt><dd>${data.agent_type}</dd>
+      <dt>Status</dt><dd>${described(data.status).label}</dd>
+      <dt>Created</dt><dd>${time(data.created_at)}</dd>
+      <dt>Last used</dt><dd>${time(data.last_used)}</dd>
+      <dt>Task</dt><dd>${data.task_summary || '–'}</dd>
+    </dl>
+    <h3 class="sa-heading">Transcript <span class="pk-muted" data-part="shown">${messages.length < data.message_count
+      ? `the last ${number(messages.length)} of ${number(data.message_count)} messages` : `${number(messages.length)} messages`}</span></h3>
+    ${start ? html`<button type="button" class="pk-btn pk-btn--sm" data-act="earlier">${icon('arrow-up', { size: 'sm' })} Earlier messages</button>` : ''}
+    <div class="pk-stack" data-part="messages">${messages.length ? messages.map(entry) : html`<div class="pk-muted">No messages</div>`}</div>`);
+}
+
+/** ``sessionId``: the session the sub-agent hangs under -- its own parent in the map, the shown one in the list. */
+async function openTranscript(id, sessionId = shownFor) {
+  const mine = ++opening;
+  const scope = session.shown;
+  let data;
+  try {
+    data = await api(`${BASE}sub-agents/${encodeURIComponent(id)}?session_id=${encodeURIComponent(sessionId)}`);
+  } catch {
+    return;  // api() has shown the failure
+  }
+  if (mine !== opening || scope !== session.shown) return;  // another opened since, or the session left
+  opened = { id, session: sessionId, data, messages: data.messages, start: data.window.start_index };
+  drawTranscript();
+  if (!$('detail').open) $('detail').showModal();
+  $('detailBody').scrollTop = $('detailBody').scrollHeight;  // the tail: the newest at the bottom
+}
+
+async function loadEarlier(control) {
+  const mine = opening;
+  const { id, session: sessionId, start } = opened;
+  control.disabled = true;  // once
+  let offset;
+  let data;
+  for (;;) {
+    offset = Math.max(0, start - page);
+    try {
+      data = await api(`${BASE}sub-agents/${encodeURIComponent(id)}?session_id=${encodeURIComponent(sessionId)}&offset=${offset}&limit=${start - offset}`);
+    } catch {
+      if (mine === opening) control.disabled = false;
+      return;
+    }
+    if (mine !== opening) return;  // the drawer shows another one by now
+    const { returned } = data.window;
+    if (!returned || returned >= start - offset) break;
+    page = returned;  // capped by the server's info_max_limit: ask the page that ends where the shown ones start
+  }
+  const body = $('detailBody');
+  const below = body.scrollHeight - body.scrollTop;  // what was read stays where it was
+  opened = { ...opened, messages: [...data.messages, ...opened.messages], start: offset };
+  drawTranscript();
+  body.scrollTop = body.scrollHeight - below;
+  (body.querySelector('[data-act="earlier"]') || body).focus();  // drawn anew, the button had let go of the focus
+}
+
+// ---------------------------------------------------------------------- wiring
+
+document.addEventListener('refresh', refresh);
+// an open transcript stays: it names its session, and closing it would take the focus from the chat
+document.addEventListener('sessionscope', refresh);
+$('show').addEventListener('change', drawAgents);
+// the filter belongs to the list: the map shows the whole session, archived and ended included
+document.addEventListener('tabchange', (event) => { $('show').hidden = event.detail.tab !== 'list'; });
+$('map').addEventListener('click', (event) => {
+  const control = event.target.closest('button[data-act="transcript"]');
+  if (control && event.detail <= 1) openTranscript(control.dataset.id, control.dataset.session);
+});
+$('agents').addEventListener('click', (event) => {
+  const control = event.target.closest('button[data-act]');
+  // not the second click of a double click: on a card drawn anew in between it would hit the button now in its place
+  if (!control || event.detail > 1) return;
+  if (control.dataset.act === 'archive') archive(control.dataset.id);
+  else openTranscript(control.dataset.id);
+});
+$('detailBody').addEventListener('click', (event) => {
+  const control = event.target.closest('button[data-act="earlier"]');
+  if (control) loadEarlier(control);
+});
+// the card or the map node may have been drawn anew meanwhile; the one on the tab not showing cannot take the focus
+$('detail').addEventListener('close', () => {
+  if (opened) [...document.querySelectorAll(`button[data-act="transcript"][data-id="${CSS.escape(opened.id)}"]`)]
+    .find((control) => control.offsetParent)?.focus();
+});
+$('detail').addEventListener('click', (event) => {
+  const drawer = $('detail');
+  const box = drawer.getBoundingClientRect();
+  const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+  if (event.target.closest('[data-close]') || (event.target === drawer && outside)) drawer.close();
+});
+
+refresh();

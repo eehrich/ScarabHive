@@ -25,34 +25,47 @@ The available profiles are configured in the agent's `llm_profile` configuration
 
 Common profiles include:
 
-- `turbo` - Fast, cost-effective model for simple tasks (gpt-5-nano)
+- `turbo` - Fast, lightweight profile (gemini-3.5-flash-lite via OpenRouter)
 - `normal` - Balanced model for standard tasks (gpt-5-mini)
 - `think` - Advanced model for complex reasoning (gpt-5.1) - **Often used as default**
 - `big` - Large context window model (gpt-4.1)
 - `chat` - Fast non-streaming model (deepseek-chat)
 - `code` - Specialized for coding tasks (gpt-5.1-codex)
+- `structured` - Structured building work: workflows, configs, schemas (DeepSeek V4 Flash via OpenRouter)
 
 ### Configuration
 
 #### Plugin Configuration (`config/plugins.yaml`)
 
-The agent's LLM profiles are configured as a list in the `agent_config.llm_profile` field:
+The agent's LLM profiles are configured as **chains** (since 2026-07):
 
 ```yaml
 basic_agent:
   type: basic_agent
   enabled: true
   agent_config:
-    llm_profile: ["think", "normal", "turbo", "chat"]
-    # First element ("think") is the default
-    # Other elements are available as options in the tool
+    llm_profile: [think, normal, turbo]      # chain: [primary, fallback1, fallback2, ...]
+    llm_profile_advanced: [chat]             # advanced chain (use_advanced_model=True)
 ```
 
-**Configuration Rules:**
-- Can be a **string** (single profile, no choices): `llm_profile: "normal"`
-- Can be a **list** (multiple profiles with default): `llm_profile: ["think", "normal", "turbo"]`
-- First element in list = default profile (used when no `llm_profile` parameter provided)
-- Other elements = available options (rendered in schema enum for LLM visibility)
+**Configuration Rules (chain semantics):**
+- `llm_profile`: **[primary, fallback1, fallback2, ...]** — position 0 is the
+  default model; ALL further entries are fallbacks tried in order on rate
+  limits / upstream errors — an LLM blocked for every agent (rate limit, quota,
+  refused key) is skipped while a free one is left, see
+  `docs/_arch_agent_architecture.md`, „LLM-Fallback und Sperren". A **string** means: primary only, no fallbacks.
+- `llm_profile_advanced`: same structure for `use_advanced_model=True` —
+  `[primary_adv, fallback1_adv, ...]`. Empty/missing = no advanced model
+  (`use_advanced_model` is a no-op and runs the normal chain). The chains are
+  each other's **final safety net (symmetric)**: when a run's own chain is
+  exhausted, the retry loop continues with the complete other chain — a run
+  never dead-ends while ANY chain still has a model (deduplicated, active
+  primary excluded).
+- The schema enum (selectable `llm_profile` tool parameter) exposes the union
+  of both chains (`available_llm_profiles`).
+- The legacy field `llm_profile_fallbacks` (old positional `[std, adv]`
+  semantics) was removed and **fails loudly** at config load — migrate with
+  `python scripts/migrate_llm_profiles.py`.
 
 #### LLM System Configuration (`config/llm.yaml`)
 
@@ -72,7 +85,70 @@ llm_system:
       model_ref: gpt-5.1
       description: "Advanced model for complex reasoning"
       max_steps: 100
-```## Implementation Details
+```
+
+#### Per-Agent LLM Parameter Overrides (`agent_config.llm_params`)
+
+Agents can override LLM model parameters (e.g. `thinking_level`, `max_tokens`,
+`service_tier`) on top of the referenced model config — instead of creating a
+separate `llm_system.models` entry for every combination:
+
+```yaml
+my_agent:
+  agent_config:
+    llm_profile: [deepseek-chat]
+    llm_profile_advanced: [or-gpt-terra-unlimited]
+    # Flat form: applies to BOTH chain primaries (same as "*")
+    llm_params:
+      max_tokens: 8000
+```
+
+Different models know different parameter keys (a GPT `thinking_level` would
+break on deepseek). For that, key the params **by profile name** — params
+stick to the *model*, not the slot:
+
+```yaml
+    llm_params:
+      "*":                          # optional: both chain primaries
+        max_tokens: 8000
+      or-gpt-terra-unlimited:       # only when exactly this profile runs
+        thinking_level: high
+      deepseek-chat:
+        include_thoughts: true
+```
+
+**Semantics:**
+- Applied centrally in `resolve_llm_config_for_agent()` over the resolved
+  model config — for the **primary** models (chain position 0: default,
+  `use_advanced_model`, auto-escalation). The shared `llm_system.models`
+  entry is never mutated (a derived config is built per agent).
+- Keyed form resolves per profile as `merge("*", params[profile])` — the
+  specific entry wins. Flat form behaves like a single `"*"` entry. The two
+  forms are auto-detected (flat keys are `LLMModelConfig` field names);
+  mixing them in one dict fails at config load.
+- Valid profile keys: `llm_profile[0]`, `llm_profile_advanced[0]`, `"*"`.
+  A key for a fallback entry (or a typo) would be a silent no-op and is
+  rejected at load.
+- **Type inheritance** (`type: <parent_server>`) deep-merges the parent's
+  `agent_config` into the child, and `null` cannot clear inherited keys. Two
+  traps fail loudly at load with a fix hint: parent *flat* + child *keyed*
+  → mixed-form error (fix: express the parent's flat params as `"*"` — same
+  semantics); parent *keyed to its primaries* + child overriding the chains
+  → stale profile-key error (fix: parent uses `"*"`, or move the keyed
+  params down into the child).
+- **Not** applied to fallback entries of the chains (fallbacks are often a
+  different provider and must run with their own robust tuning — e.g. Gemini
+  rejects `thinking_level: max`) and not to explicit `--llm-profile` request
+  overrides.
+- Allowed keys inside a params dict: all `LLMModelConfig` fields **except**
+  the identity fields `provider`, `model`, `api_key`, `base_url`,
+  `batch_provider`, `ollama_mode`
+  (those define WHICH model — that is what `llm_profile`/`llm.yaml` is for).
+- Validated at config load (unknown keys and invalid values fail fast with a
+  clear error, not at the first LLM call). Setting a key to `null` clears the
+  base model's value.
+
+## Implementation Details
 
 ### Configuration Model (`AgentConfig`)
 
@@ -80,21 +156,16 @@ The `AgentConfig` class in `src/agent_system/config/models.py` supports both str
 
 ```python
 class AgentConfig(BaseModel):
-    llm_profile: str | List[str] = "normal"
+    llm_profile: str | List[str] = "normal"          # [primary, fallback1, ...]
+    llm_profile_advanced: Optional[List[str]] = None  # [primary_adv, fallback1_adv, ...]
 
-    @property
-    def default_llm_profile(self) -> str:
-        """Get the default LLM profile (first in list if list)."""
-        if isinstance(self.llm_profile, list):
-            return self.llm_profile[0] if self.llm_profile else "normal"
-        return self.llm_profile
-
-    @property
-    def available_llm_profiles(self) -> List[str]:
-        """Get all available LLM profiles."""
-        if isinstance(self.llm_profile, list):
-            return self.llm_profile
-        return [self.llm_profile]
+    # default_llm_profile        → llm_profile[0]
+    # advanced_llm_profile       → llm_profile_advanced[0] or None
+    # fallback_profiles          → llm_profile[1:]
+    # fallback_chain(advanced)   → retry order (symmetric safety net):
+    #                              normal:   llm_profile[1:] + full advanced chain
+    #                              advanced: llm_profile_advanced[1:] + full normal chain
+    # available_llm_profiles     → union of both chains (schema enum / validation)
 ```
 
 ### Schema Rendering
@@ -106,10 +177,14 @@ def get_template_vars(self) -> dict:
     vars = super().get_template_vars()
     if self.agent_config:
         vars['llm_profiles'] = self.agent_config.available_llm_profiles
+        # True only for a REAL upgrade (advanced exists and differs from default)
+        vars['has_advanced'] = bool(
+            self.agent_config.advanced_llm_profile
+            and self.agent_config.advanced_llm_profile != self.agent_config.default_llm_profile)
     return vars
 ```
 
-The `schema.yaml` uses Jinja2 to conditionally render the property:
+The `schema.yaml` uses Jinja2 to conditionally render the properties:
 
 ```yaml
 properties:
@@ -120,10 +195,13 @@ properties:
     type: string
     description: "Optional LLM profile to use..."
     enum: {{ llm_profiles | tojson }}
+  {% endif %}{% if has_advanced %}use_advanced_model:
+    type: boolean
+    description: "Use the agent's advanced LLM profile..."
   {% endif %}
 ```
 
-**Token Optimization**: The `llm_profile` property is only included when multiple profiles are configured. With a single profile (or string config), the property is omitted entirely, saving tokens.
+**Token Optimization**: The `llm_profile` property is only included when multiple profiles are configured. With a single profile (or string config), the property is omitted entirely, saving tokens. `use_advanced_model` is only advertised as an upgrade when an advanced chain exists (`has_advanced`); without one it stays in the schema (callers may always pass it) but its description says it has no effect.
 
 **Examples:**
 
@@ -146,7 +224,7 @@ llm_profile: "think"
 2. Validated against `agent_config.available_llm_profiles` (agent-level validation)
 3. Validated against `system_config.llm_system.profiles` (system-level validation)
 4. A temporary `AgentConfig` is created with the requested profile
-5. An LLM client override is created using `resolve_llm_config_for_agent()` and `make_llm()`
+5. An LLM client override is created using `create_llm_from_profile()` (resolver + provider registry)
 6. The override is passed to `run_events()` via the `llm_override` parameter
 
 ### Error Handling
@@ -176,6 +254,38 @@ When using a custom profile, status updates include the profile information:
 ```
 Using LLM profile: think:openai_httpx/gpt-5.1
 ```
+
+## Auto-escalation when stuck
+
+An agent can escalate itself from the standard to the advanced `llm_profile`
+**mid-run** when the run loop objectively observes it is stuck — without the
+agent having to admit it (weak models rarely do). Signals (no self-assessment):
+
+- the tool-call **loop detector** fires (same call/sequence repeated), or
+- **`escalate_error_streak`** consecutive steps whose tool calls ALL returned an
+  error (catches near-loops the exact-match detector misses).
+
+Escalation is time-boxed and budget-capped, not sticky-until-end: each trigger
+opens a window of `escalate_rounds` steps on the advanced model, then the agent
+drops back and only re-escalates on a fresh signal, until `escalate_max_calls`
+advanced calls have been spent this run.
+
+```yaml
+agent_config:
+  llm_profile: [normal]            # normal chain
+  llm_profile_advanced: [think]    # escalation target = advanced chain primary
+  auto_escalate_on_stuck: true
+  escalate_rounds: 2             # advanced steps per trigger
+  escalate_max_calls: 6          # total advanced calls per run (budget)
+  escalate_error_streak: 2       # trigger after N all-error tool steps
+```
+
+No-op unless `llm_profile_advanced` has an entry (distinct from the default
+profile) and the run isn't already advanced (`use_advanced_model`). Each escalated step logs a warning and a status
+line (`advanced — escalated: stuck`) — visible, never silent. Note this is
+complementary to orchestrator escalation (`use_advanced_model` on a
+`continue`): the orchestrator judges *between* runs, auto-escalation intervenes
+*within* one.
 
 ## Example Use Cases
 

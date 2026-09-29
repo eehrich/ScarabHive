@@ -18,20 +18,107 @@ Rule Types
   or regex patterns if ``regex: true`` is set.
 * **min_length** — continue if response shorter than threshold.
 * **step_check** — continue if current step below minimum.
+
+Required spawns
+---------------
+``required_spawns`` is checked before any strategy: a final answer from an
+agent that never spawned a required sub-agent is sent back with a message
+naming the missing ones. The list is a Jinja expression over the session's
+template vars, so it can depend on the task (``aufgabe``) the agent works on.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from jinja2.sandbox import SandboxedEnvironment
+
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
+from agent_system.llm.message_roles import opens_a_turn
 from agent_system.llm.models import ChatMessage
 
 logger = logging.getLogger(__name__)
+
+#: Fallback when nothing configures a threshold: "whichever the model thinks
+#: is more likely", which is the only value that needs no justification.
+_DEFAULT_THRESHOLD = 0.5
+#: Every strategy this hook knows. Mirrors the enum in schema.yaml, which
+#: nothing enforces at load time.
+_STRATEGIES = frozenset({"rules", "llm", "decision", "hybrid"})
+#: Judges `hybrid` may hand over to. Mirrors the enum in schema.yaml, which
+#: nothing enforces at load time.
+_HYBRID_FALLBACKS = frozenset({"llm", "decision"})
+
+#: injected_by of a scripted follow-up message — how the plugin counts them.
+FOLLOWUP_MARKER = "agent_continuation.followup"
+#: injected_by of the message that asks for a missing required spawn.
+REQUIRED_SPAWNS_MARKER = "agent_continuation.required_spawns"
+
+_EXPRESSIONS = SandboxedEnvironment()
+
+
+def _context_vars(context: HookContext) -> Dict[str, Any]:
+    """The agent's template_vars with the session's vars on top — the values
+    the agent's own prompt was rendered with."""
+    agent = context.agent
+    out: Dict[str, Any] = dict(
+        getattr(getattr(agent, "agent_config", None), "template_vars", None) or {})
+    tracker = getattr(agent, "_session_tracker", None)
+    if tracker is not None and context.session_id:
+        out.update(tracker.get_session_template_vars(context.session_id) or {})
+    return out
+
+
+def _arguments(call: Any) -> Dict[str, Any]:
+    fn = (call or {}).get("function") or {}
+    raw = fn.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _creates(tool_calls: Any, tool: str) -> Dict[str, str]:
+    """call id -> agent_type of every create through ``tool``. The manager
+    infers ``create`` when only ``agent_type`` is given, so a call without
+    ``operation`` counts too."""
+    out: Dict[str, str] = {}
+    for call in tool_calls or []:
+        if ((call or {}).get("function") or {}).get("name") != tool:
+            continue
+        args = _arguments(call)
+        operation = args.get("operation") or ("create" if args.get("agent_type") else None)
+        if operation == "create" and args.get("agent_type") and call.get("id"):
+            out[call["id"]] = str(args["agent_type"])
+    return out
+
+
+def _failed_calls(messages: List[Any], call_ids: set) -> set:
+    """The creates whose result is still visible and says the spawn did not
+    happen: no instance, or a run that ended in error or was cancelled. A
+    result compaction replaced by a reference proves nothing either way."""
+    failed = set()
+    for msg in messages:
+        call_id = getattr(msg, "tool_call_id", None)
+        if call_id not in call_ids:
+            continue
+        try:
+            result = json.loads(getattr(msg, "content", None) or "")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(result, dict) or result.get("type") in ("tool_result_ref", "archived_ref"):
+            continue
+        if not result.get("instance_id") or result.get("outcome") in ("error", "cancelled"):
+            failed.add(call_id)
+    return failed
 
 
 class AgentContinuationPlugin(SchemaBasedPluginHook):
@@ -40,14 +127,14 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
     def __init__(
         self,
         plugin_dir: Path | str,
-        mcp_config: Any = None,
+        server_config: Any = None,
     ) -> None:
         super().__init__(plugin_dir)
 
         # Merge schema defaults with runtime config from plugins.yaml
         config = self.get_config()
-        if mcp_config and hasattr(mcp_config, "config") and mcp_config.config:
-            config.update(mcp_config.config)
+        if server_config and hasattr(server_config, "config") and server_config.config:
+            config.update(server_config.config)
 
         self._max_continuations: int = int(config.get("max_continuations", 10))
         self._default_continue_message: str = str(
@@ -61,11 +148,29 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         self._llm_prompt_template: str = str(config.get("llm_prompt", ""))
         self._agent_rules: Dict[str, Any] = dict(config.get("agent_rules", {}))
 
+        # Decision-model evaluator. Empty profile = whatever
+        # llm_system.default_decision_profile names.
+        self._decision_profile: str = str(config.get("decision_profile", "") or "")
+        self._decision_question: str = str(config.get("decision_question", ""))
+        self._decision_final_means: str = str(config.get("decision_final_means", ""))
+        self._decision_continue_means: str = str(config.get("decision_continue_means", ""))
+        self._decision_threshold: float = self._parse_threshold(
+            config.get("decision_threshold"), _DEFAULT_THRESHOLD, "plugin config")
+        self._hybrid_fallback: str = str(config.get("hybrid_fallback", "llm"))
+
         # Per-request continuation counter  request_id → count
         self._continuation_counts: Dict[str, int] = {}
+        # session_id -> {call id: agent_type} of every create the hook saw the
+        # agent issue. Compaction may later drop those calls from the history
+        # the hook is shown; this record is why required_spawns still knows.
+        self._seen_creates: Dict[str, Dict[str, str]] = {}
 
         # Cached evaluator LLM instance (lazy)
         self._evaluator_llm: Any = None
+        # Cached decision-model client (lazy), keyed by the profile that built
+        # it: an agent may override the profile, and one cache slot would hand
+        # the first agent's judge to every other agent.
+        self._decision_clients: Dict[str, Any] = {}
 
         logger.info(
             f"[AgentContinuation] Initialized: strategy={self._strategy}, "
@@ -94,6 +199,7 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                   enabled: true
                   strategy: "rules"
                   default: "continue"
+                  max_continuations: 20
                   continue_message: "Keep working!"
                   rules:
                     - type: keyword_final
@@ -105,6 +211,122 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
 
         # 2. Fall back to agent_rules from plugins.yaml
         return self._agent_rules.get(context.agent_name, {})
+
+    def _resolve_max_continuations(
+        self, agent_cfg: Dict[str, Any], agent_name: str
+    ) -> int:
+        """Continuation budget for this agent: its own value, else the plugin's.
+
+        An agent that drives a long autonomous loop needs a different ceiling
+        than a reviewer that should answer in three turns, and it configures
+        that next to its rules. Before this resolution the key was accepted and
+        ignored, so twenty agents carried a number that did nothing — including
+        two asking for MORE than the plugin default and silently getting less.
+
+        A non-numeric or non-positive value falls back to the plugin value: a
+        budget of 0 would disable the whole hook through a typo, which is not
+        what someone writing ``max_continuations`` means.
+        """
+        raw = agent_cfg.get("max_continuations")
+        if raw is None:
+            return self._max_continuations
+        # bool before int(): YAML turns `true` into True and int(True) is 1,
+        # so a typo would silently buy exactly one continuation.
+        if isinstance(raw, bool):
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%r is a boolean — "
+                "using the plugin value %d",
+                agent_name, raw, self._max_continuations)
+            return self._max_continuations
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%r is not a "
+                "number — using the plugin value %d",
+                agent_name, raw, self._max_continuations)
+            return self._max_continuations
+        if value < 1:
+            logger.warning(
+                "[AgentContinuation] '%s': max_continuations=%d is below 1 — "
+                "using the plugin value %d",
+                agent_name, value, self._max_continuations)
+            return self._max_continuations
+        return value
+
+    @staticmethod
+    def _parse_threshold(raw: Any, fallback: float, where: str) -> float:
+        """A probability, or the value one level up.
+
+        Guarded the way max_continuations above is guarded, and for a sharper
+        reason. ``decision_threshold: 70`` -- meant as a percentage, and
+        invited by a description that says "raise it" -- is a perfectly good
+        float, so a type check alone lets it through. Every probability is
+        then below it, every response "continues", and each one pays for a
+        decision call until the budget runs out. A config typo that spends
+        money in a loop has to be refused, not rounded.
+
+        The schema declares minimum/maximum, but nothing enforces those at
+        load time (config_defaults_from_schema reads only `default`), so this
+        is the only place the range is real.
+        """
+        if raw is None:
+            return fallback
+        # bool before float(): YAML turns `yes` into True and float(True) is
+        # 1.0, a threshold that continues on everything but a certain answer.
+        if isinstance(raw, bool):
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%r is a boolean — "
+                "using %s", where, raw, fallback)
+            return fallback
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%r is not a "
+                "number — using %s", where, raw, fallback)
+            return fallback
+        if not 0.0 <= value <= 1.0:
+            logger.warning(
+                "[AgentContinuation] %s: decision_threshold=%s is not a "
+                "probability (0.0-1.0) — using %s. A percentage does not "
+                "belong here: 70 would continue on every answer.",
+                where, value, fallback)
+            return fallback
+        return value
+
+    @staticmethod
+    def _text(cfg: Dict[str, Any], key: str, fallback: str) -> str:
+        """A configured text, where an EMPTY one is an answer, not a gap.
+
+        `.get(key, fallback)` rather than `cfg.get(key) or fallback`: an agent
+        writing `decision_continue_means: ""` to drop that criterion means it,
+        and the `or` form would hand it the plugin-wide text instead -- while
+        the same "" at plugin level does work. A key written with no value at
+        all (`decision_question:` -> None) is a slip, not a choice, and still
+        inherits.
+        """
+        raw = cfg.get(key, fallback)
+        return str(fallback if raw is None else raw)
+
+    @staticmethod
+    def _followups_on_continue(agent_cfg: Dict[str, Any], agent_name: str) -> bool:
+        """``followups_on_continue``: only a real boolean counts.
+
+        A quoted ``"false"`` is a string, and a string compared with ``is False``
+        silently leaves the option on — a continued session would then get the
+        follow-up. Anything but a boolean keeps the default and says so.
+        """
+        raw = agent_cfg.get("followups_on_continue")
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        logger.warning(
+            "[AgentContinuation] '%s': followups_on_continue=%r is not a boolean — "
+            "follow-ups stay on for continued requests",
+            agent_name, raw)
+        return True
 
     # ------------------------------------------------------------------
     # Hook handler (must match name in schema.yaml)
@@ -118,6 +340,8 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         tool_calls = assistant.get("tool_calls")
         content: str = assistant.get("content") or ""
 
+        if tool_calls:
+            self._remember_creates(context, tool_calls)
         if tool_calls or not content.strip():
             # Has tool calls (loop continues anyway) or empty → skip
             logger.debug(
@@ -132,20 +356,68 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
         # Note: no agent gating here — the hook registry already ensures
         # this only fires for agents that opt-in via hooks.overrides.
 
+        # Resolve the per-agent config BEFORE the budget check: the budget is
+        # one of the keys an agent may override, and a check against the
+        # plugin-wide value would ignore it.
+        agent_cfg = self._get_agent_config(context)
+        max_continuations = self._resolve_max_continuations(agent_cfg, agent_name)
+
         # Budget check — use request_id for per-request tracking
         request_id = context.request_id
         count = self._continuation_counts.get(request_id, 0)
-        if count >= self._max_continuations:
+        if count >= max_continuations:
+            # Also the ceiling for follow-ups: none is offered past it, so a
+            # history that lost its markers cannot replay them forever.
             logger.warning(
-                f"[AgentContinuation] Max continuations ({self._max_continuations}) "
+                f"[AgentContinuation] Max continuations ({max_continuations}) "
                 f"reached for request {request_id}"
             )
             self._continuation_counts.pop(request_id, None)
+            self._seen_creates.pop(context.session_id or "", None)
             return HookResult(success=True, modified=False)
 
+        # Before any strategy: a missing required spawn is not a judgement
+        # call, and no keyword may declare such an answer final.
+        missing = self._missing_spawns(agent_cfg, context)
+        if missing:
+            self._continuation_counts[request_id] = count + 1
+            spec = agent_cfg["required_spawns"]
+            message = str(spec.get("message") or
+                          "Required sub-agents were never spawned: {missing}. "
+                          "Spawn them and finish the step they belong to.")
+            message = message.replace("{missing}", ", ".join(missing))
+            logger.info(
+                f"[AgentContinuation] '{agent_name}' answered without spawning "
+                f"{missing} — sent back (#{count + 1})"
+            )
+            return HookResult(
+                success=True,
+                modified=False,
+                metadata={
+                    "continue": True,
+                    "continue_message": message,
+                    "continue_injected_by": REQUIRED_SPAWNS_MARKER,
+                    "continuation_count": count + 1,
+                    "continuation_reason": f"required spawns missing: {missing}",
+                },
+            )
+
         # Pick strategy (per-agent overrides global)
-        agent_cfg = self._get_agent_config(context)
         strategy = agent_cfg.get("strategy") or self._strategy
+
+        if strategy not in _STRATEGIES:
+            # Silently inert since the plugin was written -- no branch below
+            # matches, so the hook answers FINAL forever and looks switched
+            # off. Worth a word now that there are four names and one of them,
+            # "decision", is a letter away from the config key, the plugin
+            # directory and the plural somebody will type. The BEHAVIOUR stays
+            # inert on purpose: quietly running the rules instead would let a
+            # keyword continue a loop nobody configured.
+            logger.warning(
+                f"[AgentContinuation] '{agent_name}': unknown strategy="
+                f"{strategy!r} (known: {sorted(_STRATEGIES)}) — nothing is "
+                f"evaluated, every response counts as final"
+            )
 
         logger.debug(
             f"[AgentContinuation] Evaluating '{agent_name}' step {context.step}, "
@@ -164,19 +436,45 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             should_continue, reason = await self._evaluate_llm(
                 content, agent_name, context, agent_cfg
             )
+        elif strategy == "decision":
+            should_continue, reason = await self._evaluate_decision(
+                content, agent_name, context, agent_cfg
+            )
         elif strategy == "hybrid":
             should_continue, reason, matched = self._evaluate_rules(
                 content, agent_name, context
             )
             if not matched:
-                # No keyword matched — let LLM decide
+                # No keyword matched — let the configured judge decide. Which
+                # one matters more here than it looks: the decision model is
+                # billed per call, so running the free rules first is the
+                # point of hybrid, not a detail of it.
+                fallback = str(
+                    (agent_cfg or {}).get("hybrid_fallback") or self._hybrid_fallback
+                ).strip()
+                if fallback not in _HYBRID_FALLBACKS:
+                    # Nothing enforces the schema's enum, and the plural
+                    # "decisions" is one letter from the strategy name, the
+                    # config key and the plugin directory. Silently routing to
+                    # the other judge would bill a model the log did not name.
+                    logger.warning(
+                        f"[AgentContinuation] '{agent_name}': unknown "
+                        f"hybrid_fallback={fallback!r} (known: "
+                        f"{sorted(_HYBRID_FALLBACKS)}) — using 'llm'"
+                    )
+                    fallback = "llm"
                 logger.info(
                     f"[AgentContinuation] No keyword matched for '{agent_name}' "
-                    f"— falling back to LLM evaluation"
+                    f"— falling back to {fallback} evaluation"
                 )
-                should_continue, reason = await self._evaluate_llm(
-                    content, agent_name, context, agent_cfg
-                )
+                if fallback == "decision":
+                    should_continue, reason = await self._evaluate_decision(
+                        content, agent_name, context, agent_cfg
+                    )
+                else:
+                    should_continue, reason = await self._evaluate_llm(
+                        content, agent_name, context, agent_cfg
+                    )
 
         logger.debug(
             f"[AgentContinuation] Decision for '{agent_name}': "
@@ -199,14 +497,148 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
                 metadata={
                     "continue": True,
                     "continue_message": continue_msg,
+                    # Marked, or follow-up counting would take it for a
+                    # message a person wrote and start the list again.
+                    "continue_injected_by": "agent_continuation",
                     "continuation_count": count + 1,
                     "continuation_reason": reason,
                 },
             )
 
+        # A final answer — unless a scripted follow-up is still due.
+        followup = self._next_followup(context, agent_cfg)
+        if followup is not None:
+            index, message = followup
+            self._continuation_counts[request_id] = count + 1
+            logger.info(
+                f"[AgentContinuation] Follow-up {index + 1} for '{agent_name}'"
+            )
+            return HookResult(
+                success=True,
+                modified=False,
+                metadata={
+                    "continue": True,
+                    "continue_message": message,
+                    "continue_injected_by": FOLLOWUP_MARKER,
+                    "continuation_count": count + 1,
+                    "continuation_reason": f"follow-up {index + 1}",
+                },
+            )
+
         # Final answer — clean up counter
         self._continuation_counts.pop(request_id, None)
+        self._seen_creates.pop(context.session_id or "", None)
         return HookResult(success=True, modified=False)
+
+    # ------------------------------------------------------------------
+    # Required spawns
+    # ------------------------------------------------------------------
+
+    def _remember_creates(self, context: HookContext, tool_calls: Any) -> None:
+        spec = self._get_agent_config(context).get("required_spawns")
+        if not isinstance(spec, dict) or not spec.get("tool") or not context.session_id:
+            return
+        creates = _creates(tool_calls, str(spec["tool"]))
+        if creates:
+            self._seen_creates.setdefault(context.session_id, {}).update(creates)
+
+    def _missing_spawns(self, agent_cfg: Dict[str, Any], context: HookContext) -> List[str]:
+        """Required agent types this session never spawned, in configured order.
+
+        ``required_spawns: {agents: <jinja expression>, tool: <tool name>,
+        message: <text with {missing}>}``. The expression sees the template
+        vars the agent's prompt sees, so the list follows the task. Every
+        misconfiguration answers "nothing missing" with a warning: this gate
+        may only ever cost a continuation, never block an answer by accident.
+        """
+        spec = agent_cfg.get("required_spawns")
+        if not spec:
+            return []
+        name = context.agent_name
+        if not isinstance(spec, dict) or not spec.get("agents") or not spec.get("tool"):
+            logger.warning(
+                f"[AgentContinuation] '{name}': required_spawns needs 'agents' "
+                f"and 'tool' — gate off")
+            return []
+        try:
+            required = _EXPRESSIONS.compile_expression(str(spec["agents"]))(
+                **_context_vars(context))
+        except Exception as e:  # noqa: BLE001 - a broken expression must not sink the answer
+            logger.warning(
+                f"[AgentContinuation] '{name}': required_spawns expression "
+                f"{spec['agents']!r} failed ({e}) — gate off")
+            return []
+        if isinstance(required, str):
+            required = [required]
+        if not isinstance(required, (list, tuple)):
+            if required:
+                logger.warning(
+                    f"[AgentContinuation] '{name}': required_spawns expression "
+                    f"gave {type(required).__name__}, not a list — gate off")
+            return []
+        messages = list(context.messages or [])
+        creates = dict(self._seen_creates.get(context.session_id or "", {}))
+        for msg in messages:
+            creates.update(_creates(getattr(msg, "tool_calls", None), str(spec["tool"])))
+        failed = _failed_calls(messages, set(creates))
+        spawned = {agent_type for call_id, agent_type in creates.items() if call_id not in failed}
+        return [str(a) for a in required if str(a) not in spawned]
+
+    # ------------------------------------------------------------------
+    # Scripted follow-ups
+    # ------------------------------------------------------------------
+
+    def _next_followup(
+        self, context: HookContext, agent_cfg: Dict[str, Any]
+    ) -> Tuple[int, str] | None:
+        """(index, message) of the follow-up due after this final answer, or None.
+
+        No state: the follow-ups already sent are the messages marked
+        FOLLOWUP_MARKER after the HEAD of the current request
+        (``message_roles.opens_a_turn``) -- what a person wrote, or the wake of
+        a woken run, which opens its turn with an unmarked ``developer``
+        message. A new request starts the list again; a cancelled run leaves
+        nothing behind.
+
+        Asking for ``role == "user"`` here walked straight past a wake into the
+        request before it: the follow-ups of THAT one were counted as this
+        one's, which either sent the wrong entry of the list or none at all,
+        and ``request_start`` then pointed so far back that
+        ``followups_on_continue: false`` read a continued request as a
+        session's first one and fired anyway.
+
+        ``followups_on_continue: false`` limits the list to the first request
+        of a session: when an assistant answer precedes that user message, the
+        request continues an earlier one (a pipeline asking a scorer to
+        re-check or to assign ids) and gets no follow-up. The evidence is the
+        history the hook sees: once a summarizer or pruning has replaced the
+        earlier answers, a continued request looks like a first one.
+        """
+        raw = agent_cfg.get("followups") or []
+        if isinstance(raw, str):
+            # A single message written without the list dash: iterating the
+            # string would send every character as its own follow-up.
+            raw = [raw]
+        followups = [str(item).strip() for item in raw if str(item).strip()]
+        if not followups:
+            return None
+        messages = list(context.messages or [])
+        sent = 0
+        request_start = 0
+        for pos in range(len(messages) - 1, -1, -1):
+            msg = messages[pos]
+            if opens_a_turn(msg):
+                request_start = pos
+                break
+            if getattr(msg, "injected_by", None) == FOLLOWUP_MARKER:
+                sent += 1
+        if not self._followups_on_continue(agent_cfg, context.agent_name) and any(
+            getattr(msg, "role", None) == "assistant" for msg in messages[:request_start]
+        ):
+            return None
+        if sent >= len(followups):
+            return None
+        return sent, followups[sent]
 
     # ------------------------------------------------------------------
     # Rule engine
@@ -393,6 +825,128 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             logger.warning(f"[AgentContinuation] LLM evaluation failed: {e}")
             return False, f"LLM evaluation error: {e}"
 
+    async def _evaluate_decision(
+        self,
+        content: str,
+        agent_name: str,
+        context: HookContext,
+        agent_cfg: Dict[str, Any] | None = None,
+    ) -> Tuple[bool, str]:
+        """Ask a decision model the one question that decides this.
+
+        Different from the LLM evaluator in the thing that matters: the answer
+        is a PROBABILITY, not a word. "FINAL" from a chat model says nothing
+        about how close the call was; 0.83 and 0.51 are both "final" and only
+        one of them deserves to be trusted. The number is logged for that
+        reason, and `decision_threshold` is where a run says how sure it wants
+        to be before it stops -- 0.5 means "whichever the model thinks is more
+        likely", which is the honest default.
+
+        Every failure resolves to FINAL, like the LLM path: a judge that
+        cannot answer must not put the loop into another turn.
+        """
+        cfg = agent_cfg or {}
+        question = self._text(cfg, "decision_question", self._decision_question).strip()
+        if not question:
+            logger.warning(
+                f"[AgentContinuation] No decision_question configured for "
+                f"'{agent_name}' — defaulting to FINAL"
+            )
+            return False, "no decision_question configured"
+
+        client = self._get_decisions_client(context, cfg)
+        if client is None:
+            return False, "no decisions client available"
+
+        # .strip(): a folded YAML scalar ends in a newline, and every one of
+        # those is a token paid for on every call.
+        criteria = {
+            "true": self._text(cfg, "decision_final_means",
+                               self._decision_final_means).strip(),
+            "false": self._text(cfg, "decision_continue_means",
+                                self._decision_continue_means).strip(),
+        }
+        # An empty half is worse than none: it would tell the model that this
+        # case means nothing. Send the pair only when both sides say something.
+        if not (criteria["true"] and criteria["false"]):
+            criteria = None
+        threshold = self._parse_threshold(
+            cfg.get("decision_threshold"), self._decision_threshold,
+            f"agent {agent_name!r}")
+
+        question_body: Dict[str, Any] = {"type": "noul", "instructions": question}
+        if criteria:
+            question_body["criteria"] = criteria
+
+        try:
+            result = await client.decide(
+                # A mapping, not one glued string: the model is told which part
+                # is the agent and which is its answer. Measured to be accepted.
+                {"agent": agent_name, "response": content[:3000]},
+                {"final_answer": question_body},
+                cancellation_token=context.cancellation_token,
+                session_id=context.session_id,
+            )
+            probability = float(result["final_answer"].value)
+        except Exception as e:
+            # A user cancel is NOT caught here: CancelledError is a
+            # BaseException, so it travels on rather than being turned into a
+            # verdict of any kind. (Swallowed, it would read as FINAL -- and
+            # on the follow-up path below, FINAL is what still injects the
+            # next scripted message.) Today the token is None for
+            # POST_LLM_CALL anyway: execute_post_llm_hooks does not take one,
+            # so a cancel arriving DURING the call cannot happen yet. Passed
+            # on regardless, so this path is right when it does.
+
+            logger.warning(f"[AgentContinuation] Decision evaluation failed: {e}")
+            return False, f"decision error: {e}"
+
+        should_continue = probability < threshold
+        logger.info(
+            f"[AgentContinuation] Decision model says "
+            f"{'CONTINUE' if should_continue else 'FINAL'} for '{agent_name}' "
+            f"(p(final)={probability}, threshold={threshold}, "
+            f"cost={result.cost}, model={result.model})"
+        )
+        return should_continue, (
+            f"decision model: p(final)={probability} < {threshold}"
+            if should_continue
+            else f"decision model: p(final)={probability} >= {threshold}"
+        )
+
+    def _get_decisions_client(
+        self, context: HookContext, agent_cfg: Dict[str, Any]
+    ) -> Any:
+        """Lazily build the decision-model client for this agent's profile."""
+        profile = str(agent_cfg.get("decision_profile")
+                      or self._decision_profile or "")
+        if profile in self._decision_clients:
+            return self._decision_clients[profile]
+
+        if not context.agent or not hasattr(context.agent, "system_config"):
+            logger.warning(
+                "[AgentContinuation] No system_config — cannot create decisions client"
+            )
+            return None
+        try:
+            from agent_system.llm.decisions import create_decisions_from_profile
+
+            # No profile name = llm_system.default_decision_profile decides.
+            client = create_decisions_from_profile(
+                context.agent.system_config, profile or None)
+        except Exception as e:
+            logger.error(
+                f"[AgentContinuation] Failed to create decisions client "
+                f"(profile={profile or 'default'}): {e}"
+            )
+            return None
+        self._decision_clients[profile] = client
+        logger.info(
+            f"[AgentContinuation] Created decisions client "
+            f"(profile='{profile or 'default'}', model={client.model})"
+        )
+        return client
+
     def _get_evaluator_llm(self, context: HookContext) -> Any:
         """Lazily create a lightweight LLM for evaluation."""
 
@@ -406,36 +960,16 @@ class AgentContinuationPlugin(SchemaBasedPluginHook):
             return None
 
         try:
-            from agent_system.llm.factory import resolve_llm_config_for_agent
-            from agent_system.llm.clients import make_llm
-            from agent_system.config.models import AgentConfig
+            # create_llm_from_profile forwards EVERY resolved field. Listing the
+            # factory arguments by hand (pre-registry make_llm) dropped thinking_level, max_tokens,
+            # safety_settings, service_tier and provider_routing - harmless for
+            # the profile configured today, silently wrong the moment this points
+            # at an OpenRouter profile. It also gets batch wrapping right, which
+            # the hand-rolled call never did.
+            from agent_system.llm.factory import create_llm_from_profile
 
-            temp_cfg = AgentConfig(
-                default_llm_profile=self._llm_profile,
-                max_steps=1,
-            )
-            kw = resolve_llm_config_for_agent(
-                context.agent.system_config, temp_cfg
-            )
-
-            ssl_verify = None
-            try:
-                ssl_verify = context.agent.system_config.network.ssl_verify
-            except Exception:
-                pass
-
-            self._evaluator_llm = make_llm(
-                kw["provider"],
-                kw["model"],
-                kw["api_key"],
-                kw["base_url"],
-                kw["context_window"],
-                kw["ollama_mode"],
-                kw["request_timeout"],
-                ssl_verify=ssl_verify,
-                httpx_timeouts=kw.get("httpx_timeouts"),
-                capabilities=kw.get("capabilities"),
-            )
+            self._evaluator_llm = create_llm_from_profile(
+                context.agent.system_config, self._llm_profile)
             model_name = getattr(
                 self._evaluator_llm, "model_name", "unknown"
             )

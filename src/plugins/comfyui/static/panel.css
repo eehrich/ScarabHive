@@ -1,0 +1,13 @@
+/* ComfyUI: only what the kit has no component for. Tokens only. */
+
+.cu-updated { font-size: var(--text-xs); }
+.cu-servers:empty { display: none; }
+.cu-heading { font-size: var(--text-sm); font-weight: 600; margin: 0; }
+.cu-error { color: var(--danger); font-size: var(--text-xs); max-width: 18rem; }
+.cu-output { white-space: nowrap; }
+.cu-output + .cu-output { margin-left: var(--space-2); }
+#jobs { display: flex; flex-direction: column; gap: var(--space-4); }
+#jobs .pk-table td { vertical-align: middle; }
+#jobs .pk-table td.pk-num, #jobs .pk-table td.pk-mono, .cu-time, .pk-badge { white-space: nowrap; }
+#jobs .pk-table td.cu-workflow { min-width: 8rem; overflow-wrap: anywhere; }
+#stats:empty { display: none; }

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from agent_system.services.session_service import SessionService
 from agent_system.services.session_manager import SessionManager
-from agent_system.mcp.base import MCPRegistry
+from agent_system.tools.base import ToolServerRegistry
 from plugins.sub_agent_manager.manager import SubAgentManager
 
 
@@ -46,7 +46,7 @@ class MockAgent:
 @pytest.fixture
 def mock_registry():
     """Create mock registry with multiple agent types."""
-    registry = MagicMock(spec=MCPRegistry)
+    registry = MagicMock(spec=ToolServerRegistry)
 
     def create_mock_agent(name, llm_profile="normal"):
         return MockAgent(name, llm_profile)
@@ -295,9 +295,9 @@ async def test_e2e_max_nesting_depth_enforcement(sub_agent_manager, session_serv
     parent_agent = MockAgent("meta_agent", "normal")
     params = {"_user_id": user_id, "_agent": parent_agent}
 
-    # Create nested chain up to max_depth - 1
+    # Create nested chain up to the full budget
     current_parent = root_session_id
-    for depth in range(1, sub_agent_manager.max_nesting_depth):
+    for depth in range(1, sub_agent_manager.max_nesting_depth + 1):
         sub_id = await sub_agent_manager.create_sub_session(
             parent_session_id=current_parent,
             agent_type="web_research_agent",

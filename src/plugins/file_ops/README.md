@@ -2,12 +2,12 @@
 
 ## Overview
 
-The **File Operations Plugin** provides secure, powerful file system access for AgentSystem. It offers comprehensive tools for file management, search, and content manipulation with built-in security protections, background indexing, and atomic write guarantees.
+The **File Operations Plugin** provides secure, powerful file system access for AgentSystem. It offers comprehensive tools for file management, search, and content manipulation with built-in security protections, index-free search, and atomic write guarantees.
 
 **Key Features:**
 - ✅ **File Operations**: Read, create, edit, delete, move, rename files and directories
 - 🔒 **Security-First Design**: Path traversal protection, symlink validation, allowed directory whitelist
-- ⚡ **Background Indexing**: Fast file search with automatic index rebuilding
+- ⚡ **Index-Free Search**: Glob and grep walk the disk on demand, pruning `.gitignore`d and excluded directories — no index to wait for
 - 💾 **Atomic Writes**: Temp file + rename pattern prevents corruption
 - 📄 **Pagination Support**: Efficient handling of large files with offset/limit
 - 🎯 **Advanced Search**: Glob patterns, regex, context lines, and filtering
@@ -29,8 +29,6 @@ plugins:
         - data/workspace
       max_file_size_mb: 10
       search:
-        enable_indexing: true
-        auto_reindex_interval: 300
         exclude_patterns:
           - "**/.git/**"
           - "**/__pycache__/**"
@@ -83,6 +81,7 @@ Unified file/directory management: create, delete, move, rename.
 - `content` (string, conditional): File content (required for `create`)
 - `destination` (string, conditional): Destination path (required for `move`)
 - `new_name` (string, conditional): New name without path (required for `rename`)
+- `overwrite` (boolean, optional): Replace an existing file whole (for `create`, default: false)
 - `recursive` (boolean, optional): Allow recursive deletion of non-empty directories (default: false)
 
 **Create Example:**
@@ -99,7 +98,8 @@ Unified file/directory management: create, delete, move, rename.
 {
   "status": "success",
   "file_path": "/project/tmp/output.txt",
-  "bytes_written": 18
+  "bytes_written": 18,
+  "replaced": false
 }
 ```
 
@@ -171,52 +171,14 @@ Unified file/directory management: create, delete, move, rename.
 ```
 
 **Behavior Notes:**
-- `create`: Fails if file exists, auto-creates parent directories
+- `create`: Fails if the file exists unless `overwrite: true`, which replaces it whole in one call; auto-creates parent directories. A path that is a directory is refused.
 - `delete`: Fails for non-empty directories unless `recursive: true`
 - `move`: Fails if destination exists, auto-creates parent directories
 - `rename`: Fails if target name exists, keeps file in same directory
 
 ---
 
-### 3. `file_ops_create_file`
-
-Create a new file with atomic write guarantee. *(Legacy - prefer `file_ops_manage` with `operation: create`)*
-
-**Parameters:**
-- `file_path` (string, required): Absolute path for new file
-- `content` (string, required): File content
-- `overwrite` (boolean, optional): Allow overwriting existing file (default: false)
-- `create_dirs` (boolean, optional): Create parent directories (default: true)
-- `encoding` (string, optional): Text encoding (default: "utf-8")
-
-**Example:**
-```json
-{
-  "file_path": "/project/tmp/output.txt",
-  "content": "Hello World\nLine 2",
-  "overwrite": true,
-  "create_dirs": true
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "file_path": "/project/tmp/output.txt",
-  "bytes_written": 18,
-  "encoding": "utf-8"
-}
-```
-
-**Atomic Write Behavior:**
-- File is written to a temporary file first
-- Atomic rename ensures no corruption on failure
-- Original file preserved if write fails
-
----
-
-### 4. `file_ops_replace_string_in_file`
+### 3. `file_ops_replace_string_in_file`
 
 Replace exact string match in a file (VSCode/Copilot-style precise string replacement).
 
@@ -247,13 +209,14 @@ Replace exact string match in a file (VSCode/Copilot-style precise string replac
 ```
 
 **Notes:**
-- `oldString` must match exactly including whitespace
+- `oldString` must match exactly including whitespace, and exactly **once**: several matches are refused with `error_type: AmbiguousMatchError` and the count, nothing is written
 - Include 3+ lines of context to ensure unique match
-- Supports CRLF/LF line ending flexibility
+- `\n` in `oldString` also matches a CRLF file, and the file keeps its line endings
+- This is the only edit primitive — there are no line-number edits: line numbers go stale after the first edit above them
 
 ---
 
-### 5. `file_ops_list_directory`
+### 4. `file_ops_list_directory`
 
 List directory contents with optional filtering and recursion.
 
@@ -262,6 +225,10 @@ List directory contents with optional filtering and recursion.
 - `recursive` (boolean, optional): Recursive listing (default: false)
 - `pattern` (string, optional): Glob filter pattern (e.g., "*.py")
 - `include_hidden` (boolean, optional): Include hidden files (default: false)
+- `max_results` (integer, optional): Maximum entries, files + directories (default: 200, at most 1000)
+- `include_ignored` (boolean, optional): Also list ignored, excluded and hidden entries (default: false)
+
+A recursive listing uses the same pruning walk as the searches: `.gitignore`d and excluded directories are not entered, and `skipped` says so. A cut-off listing has `truncated: true`.
 
 **Example:**
 ```json
@@ -279,30 +246,31 @@ List directory contents with optional filtering and recursion.
   "status": "success",
   "dir_path": "/project/src",
   "files": [
-    "main.py",
-    "utils.py",
-    "models/user.py"
+    "/project/src/main.py",
+    "/project/src/models/user.py"
   ],
   "directories": [
-    "models",
-    "services"
+    "/project/src/models"
   ],
-  "total_files": 3,
-  "total_directories": 2,
-  "recursive": true,
-  "pattern": "*.py"
+  "total_files": 2,
+  "total_directories": 1,
+  "truncated": false,
+  "skipped": {"filters_active": ["..."], "notes": ["..."]}
 }
 ```
 
 ---
 
-### 6. `file_ops_search_files`
+### 5. `file_ops_search_files`
 
-Search for files by name using glob patterns. Uses background-indexed file name index for fast results.
+Search for files by glob pattern. Walks the allowed directories on demand — see [Search Architecture](#search--indexing-architecture).
 
 **Parameters:**
-- `pattern` (string, required): Glob pattern (e.g., `*.py`, `**/*.yaml`)
+- `pattern` (string, required): Glob pattern (e.g., `*.py`, `**/*.yaml`, `src/**/models/*.py`)
 - `max_results` (integer, optional): Maximum results to return (default: 50)
+- `include_ignored` (boolean, optional): Also search what `.gitignore`, `exclude_patterns` and the hidden-file rule hide (default: false)
+
+**Pattern rules:** a pattern without `/` matches the file name at any depth (`*.py`). A pattern with `/` is matched against the path relative to the allowed directory, also with an implicit `**/` in front (`hooks/*.py` works from above). `**/` means zero or more directories, `*` never crosses a `/`. Matching ignores case; `./` and backslashes are accepted.
 
 **Example:**
 ```json
@@ -316,20 +284,25 @@ Search for files by name using glob patterns. Uses background-indexed file name 
 ```json
 {
   "status": "success",
-  "pattern": "**/*.py",
-  "matches": [
+  "files": [
     "/project/src/main.py",
     "/project/src/utils.py",
     "/project/tests/test_main.py"
   ],
   "total_found": 3,
-  "index_enabled": true
+  "truncated": false,
+  "skipped": {
+    "filters_active": [".gitignore and .ignore files", "7 configured exclude patterns", "hidden files"],
+    "notes": ["Filters active: ... (include_ignored=true searches them too)."]
+  }
 }
 ```
 
+`skipped` is there so an empty result can be read correctly: when nothing matched while filters were active, the note says so instead of letting it look like absence.
+
 ---
 
-### 7. `file_ops_grep_search`
+### 6. `file_ops_grep_search`
 
 Search file contents for text/regex patterns with context lines.
 
@@ -340,6 +313,9 @@ Search file contents for text/regex patterns with context lines.
 - `case_sensitive` (boolean, optional): Case-sensitive search (default: false)
 - `max_results` (integer, optional): Maximum number of matches to return (default: 100)
 - `context_lines` (integer, optional): Number of context lines before/after match (default: 2)
+- `include_ignored` (boolean, optional): Also search ignored, excluded and hidden files (default: false)
+
+Binary files (decided by content, not extension) and files above `max_file_size_for_indexing_kb` are skipped and counted in `skipped.notes`.
 
 **Example (literal search):**
 ```json
@@ -365,8 +341,6 @@ Search file contents for text/regex patterns with context lines.
 ```json
 {
   "status": "success",
-  "query": "TODO",
-  "is_regex": false,
   "matches": [
     {
       "file_path": "/project/src/main.py",
@@ -376,24 +350,36 @@ Search file contents for text/regex patterns with context lines.
       "context_after": ["    pass"]
     }
   ],
-  "total_matches": 1
+  "total_matches": 1,
+  "total_files": 12,
+  "truncated": false,
+  "skipped": {"filters_active": ["..."], "notes": ["..."]}
 }
 ```
 
 ---
 
-### 8. `file_ops_semantic_search`
+### 7. `file_ops_semantic_search`
 
-AI-powered semantic code search using ChromaDB embeddings. Finds files by meaning, not just keywords.
+Finds code by meaning instead of by wording. Every hit is a **symbol** — a
+function, a class, a heading section — with its file, its line and its
+signature.
 
 **What makes it semantic?**
-- Understands context: "authentication logic" finds login/verify functions
+- Understands context: "how a run is cancelled" finds `_handle_cancel()`
 - Language-independent: Finds concepts across different naming conventions
 - Fuzzy matching: Finds related code even with different terminology
 
+**Why symbols and not files** (measured 18.09.2026 on this repository): the
+embedding model reads 256 tokens and drops the rest silently. A whole file as
+one document is therefore indexed by its module head alone — which is why the
+old version answered code questions with READMEs. A 50-line window is no
+better (95 % of them exceed 256 tokens; at 30 lines still 81 %). A symbol has
+a median of 59 tokens, so what the index holds is what the model read.
+
 **Parameters:**
 - `query` (string, required): Natural language search query
-- `max_results` (integer, optional): Maximum results to return (default: 10)
+- `max_results` (integer, optional): Maximum symbols to return (default: 10)
 - `filter_pattern` (string, optional): Glob pattern to filter results (e.g., "*.py")
 
 **Example:**
@@ -414,6 +400,8 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
     {
       "file_path": "/project/src/auth.py",
       "filename": "auth.py",
+      "line": 42,
+      "symbol": "def verify_credentials(username, password)",
       "similarity_score": 0.5263,
       "distance": 0.8999,
       "size_bytes": 2048,
@@ -422,6 +410,8 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
     {
       "file_path": "/project/src/session.py",
       "filename": "session.py",
+      "line": 17,
+      "symbol": "class SessionStore()",
       "similarity_score": 0.4102,
       "distance": 1.4378,
       "size_bytes": 1536,
@@ -442,20 +432,30 @@ AI-powered semantic code search using ChromaDB embeddings. Finds files by meanin
   - Formula: similarity = 1 / (1 + distance)
 
 **Requirements:**
-- Requires ChromaDB: `pip install chromadb`
-- Automatic indexing must be enabled (`enable_semantic_search: true`)
-- First search triggers index build (may take time for large codebases)
+- Requires ChromaDB: `pip install chromadb` (Windows falls back to sqlite-vec)
+- Off unless configured (`search.enable_semantic_search: true`); a disabled instance answers with `error_type: SemanticSearchDisabled`, not with an empty result
+- The first search never waits for the index. While the background build is
+  running the answer is `error_type: IndexNotReady` and names `grep_search` —
+  an empty result would read as a verdict about the code
+- A build that fails (no embedding model, say) is retried every minute; until
+  one succeeds, `IndexNotReady` names the last failure's cause instead of
+  promising the index "in a minute"
 
-**Performance:**
-- Initial indexing: ~50-100 files/second (depends on file size)
-- Search: ~100-500ms (cached in ChromaDB)
-- Index stored in: `data/cache/file_ops_chromadb/`
+**Performance** (measured on this repository, the coder instance's four roots):
+- 3.295 indexable files → 51.730 documents, 288 MB of store
+- First build 423 s, in the background; an incremental pass over the same tree
+  takes 0.4 s, and a restart reads the state file instead of rebuilding
+- Search: ~100-500 ms
+- Index stored in `data/cache/file_ops_chromadb/`, one collection per instance
+  (`file_ops_<instance>`) plus a `<collection>_state.json` next to it
 
 **Tips:**
 - Use specific queries: "database connection pooling" > "database"
 - Combine with filter_pattern for faster results
 - Similarity > 0.4 usually indicates good match
 - Results sorted by similarity (best first)
+- `grep_search` is better whenever you know the word the code uses; this tool
+  is for when you do not
 
 ## Configuration Reference
 
@@ -483,11 +483,14 @@ file_ops:
   # File size limit (prevents reading huge files)
   max_file_size_mb: 10
   
-  # Search/indexing configuration
+  # Search configuration
   search:
-    enable_indexing: true                # Enable background indexing
-    auto_reindex_interval: 300           # Rebuild index every 5 minutes
-    exclude_patterns:                    # Patterns to exclude from index
+    search_hidden: false                 # Also search dotfiles/dot-directories
+    enable_semantic_search: false        # Semantic index (ChromaDB); off by default
+    enable_indexing: true                # false = read an index another instance builds
+    collection_name: file_ops_<instance> # Share it to share one index over one tree
+    auto_reindex_interval: 300           # Semantic index refresh, seconds
+    exclude_patterns:                    # Pruned by search and index, relative to each allowed dir
       - "**/.git/**"
       - "**/__pycache__/**"
       - "**/node_modules/**"
@@ -566,50 +569,48 @@ All file writes use atomic operations:
 
 ## Search & Indexing Architecture
 
-### Background Indexing
+### Glob and grep: no index
 
-When `enable_indexing: true`, the plugin maintains two in-memory indexes:
+`search_files` and `grep_search` walk the allowed directories on every call (`textsearch.py`). There is no index to build or to go stale, so a file written a second ago is found.
 
-1. **Filename Index** (`file_name_index`)
-   - Maps: `lowercase_filename` → `[full_paths]`
-   - Used by: `search_files` tool
-   - Supports: Fast glob pattern matching
+What keeps that affordable on a large tree:
 
-2. **Text Content Index** (`text_index`)
-   - Maps: `word` → `[(file_path, line_numbers)]`
-   - Used by: `grep_search` tool
-   - Tokenization: Words 3+ characters
+- **Pruning, not filtering.** Directories matched by `exclude_patterns` or by the root's `.gitignore`/`.ignore` are never entered. On this repository (152,664 files) a glob or grep over the whole tree answers in about a second.
+- **Overlapping roots collapse.** `[., src, data/workspace]` is walked once, as `.`.
+- **Configured roots stay visible.** An allowed directory is never hidden by a filter of an allowed directory above it — `.gitignore`, hidden-name rule or exclude pattern (`data/workspace/` is gitignored by the repository, and still searchable when both are allowed). One the filters do not hide is searched under the parent's rules as usual.
+- **Symlinks.** Symlinked files are found when their target lies inside an allowed directory; symlinked directories and junctions are not entered.
+- **Case.** Search patterns ignore case; exclude patterns do not.
+- **Off the event loop.** The walk runs in a worker thread, so a long search does not stall the server's other tool calls.
 
-**Index Lifecycle:**
-```
-[Start] → Build initial index → Background task runs
-           ↓                      ↓
-     Serve requests ←────── Auto-rebuild every 5min
-```
+`include_ignored: true` lifts `.gitignore`, `exclude_patterns` and the hidden-file rule (`.git` stays pruned) — complete, but a full walk: minutes for a grep over a large tree. Every answer lists the active filters in `skipped`.
 
-**Performance:**
-- Index rebuild: ~1000 files/second
-- Search: O(1) filename lookup, O(log n) text search
-- Memory: ~1KB per file indexed
+There is deliberately one implementation. A ripgrep backend was built and measured: it answered differently (globs relative to the process directory, binary matches, a different regex dialect) for speed the walker does not need.
 
-**Excluded from Indexing:**
-- Files > 1MB (configurable via `max_file_size_mb`)
-- Patterns in `exclude_patterns` config
-- Binary files (auto-detected)
+### Semantic index
 
-### Indexing Configuration
+Only `semantic_search` uses an index, and it holds one document per **symbol**
+(`symbols.py`: Python functions and classes via `ast`, Markdown heading
+sections, overlapping line windows for everything else), walked with the same
+pruning rules. Files above `max_file_size_for_indexing_kb` and binary files are
+not indexed.
 
-Disable for testing/CLI:
-```yaml
-search:
-  enable_indexing: false
-```
+The build runs in the **background**, started by the first `semantic_search`
+call and repeated incrementally by file mtime (`auto_reindex_interval`). The
+search itself never waits for it. What each file contributed is written next to
+the vectors (`<collection>_state.json`), so a restart picks the index up
+instead of paying for the whole tree again — and a state file that disagrees
+with its collection, or was written for another document format, is dropped
+rather than trusted. (Format 2, 28.09.2026: a document names its file relative
+to the indexed directory; an index built before is rebuilt once.)
 
-Adjust rebuild frequency:
-```yaml
-search:
-  auto_reindex_interval: 600  # 10 minutes
-```
+Each instance owns its collection (`file_ops_<instance>`), because two
+instances are two trees: with one shared name the second instance's full
+rebuild cleared the first one's index. Instances that deliberately share a tree
+set the same `collection_name` and switch `enable_indexing: false` on all but
+one of them — that one builds, the others only read (this is what the coder
+harness does with `coder_fs` and `coder_fs_ro`).
+
+### Configuration
 
 Add custom exclusions:
 ```yaml
@@ -629,50 +630,26 @@ Run commands directly from the command line for testing:
 source .venv/Scripts/activate
 
 # Read a file
-python -m plugins.file_ops.cli read /path/to/file.txt
+python -m plugins.file_ops read /path/to/file.txt
 
 # Read with pagination
-python -m plugins.file_ops.cli read /path/to/file.txt --offset 10 --limit 50
-
-# Create a file
-python -m plugins.file_ops.cli create /path/to/new.txt "Hello World" --overwrite
-
-# Edit file (append)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode append --content "\nNew line"
-
-# Edit file (replace)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode replace \
-  --old-string "old text" --new-string "new text"
-
-# Edit file (insert)
-python -m plugins.file_ops.cli edit /path/to/file.txt --mode insert \
-  --line-number 5 --content "import logging"
-
-# Delete a file
-python -m plugins.file_ops.cli delete /path/to/file.txt --confirm
+python -m plugins.file_ops read /path/to/file.txt --offset 10 --limit 50
 
 # List directory
-python -m plugins.file_ops.cli list /path/to/dir --recursive --pattern "*.py"
-
-# Check existence
-python -m plugins.file_ops.cli exists /path/to/file.txt
-
-# Get file info
-python -m plugins.file_ops.cli info /path/to/file.txt
+python -m plugins.file_ops list /path/to/dir --recursive --pattern "*.py"
 
 # Search files by name
-python -m plugins.file_ops.cli search "*.py" --search-dir /project/src --max-results 50
+python -m plugins.file_ops search "*.py" --search-dir /project/src --max-results 50
 
 # Grep search (literal)
-python -m plugins.file_ops.cli grep "TODO" --context 2 --include-pattern "**/*.py"
+python -m plugins.file_ops grep "TODO" --context 2 --include-pattern "**/*.py"
 
 # Grep search (regex)
-python -m plugins.file_ops.cli grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
+python -m plugins.file_ops grep "def\s+\w+\(" --regex --include-pattern "src/**/*.py"
 ```
 
 **CLI Notes:**
 - CLI automatically allows the parent directory of target files
-- Indexing is disabled by default for CLI to avoid delays
 - JSON output suitable for piping to `jq` or other tools
 
 ## Error Handling
@@ -706,24 +683,11 @@ All tools return structured error responses:
 **Problem:** `search_files` or `grep_search` returns no results for known files.
 
 **Solutions:**
-1. Check if file is excluded:
-   ```yaml
-   search:
-     exclude_patterns:
-       - "**/.git/**"      # Git files excluded
-       - "**/node_modules/**"  # NPM packages excluded
-   ```
+1. Read `skipped` in the answer: it names the active filters (`.gitignore`, exclude patterns, hidden files) and counts binary and oversized files.
 
-2. Verify indexing is enabled:
-   ```yaml
-   search:
-     enable_indexing: true
-   ```
+2. Repeat with `include_ignored: true` — it lifts `.gitignore`, `exclude_patterns` and the hidden-file rule.
 
-3. Manually rebuild index (during development):
-   ```python
-   await server.search_engine.rebuild_index()
-   ```
+3. To search dotfiles on every call, set `search.search_hidden: true`.
 
 ### Security Errors for Valid Paths
 
@@ -765,21 +729,6 @@ All tools return structured error responses:
 
 3. Split large files into chunks externally before processing
 
-### Index Out of Date
-
-**Problem:** New files not appearing in search results.
-
-**Solutions:**
-1. Wait for auto-rebuild (default: 5 minutes)
-
-2. Reduce rebuild interval:
-   ```yaml
-   search:
-     auto_reindex_interval: 60  # Rebuild every minute
-   ```
-
-3. Restart agent to force immediate rebuild
-
 ## Best Practices
 
 ### Security
@@ -789,27 +738,23 @@ All tools return structured error responses:
 - ❌ Don't add `/` or `/home` to allowed directories
 
 ### Performance
-- ✅ Enable indexing for frequent searches
 - ✅ Use pagination for large files
-- ✅ Exclude unnecessary directories from indexing
-- ❌ Don't index binary/generated files
+- ✅ Exclude generated directories (`**/dist/**`, `**/build/**`) — they are pruned, not filtered
 
 ### Reliability
-- ✅ Use `create_file` with `overwrite: false` for safety
-- ✅ Check `file_exists` before operations
 - ✅ Handle error responses gracefully
 - ❌ Don't assume write operations succeeded without checking response
 
 ## Known Limitations
 
 ### Result Limits
-- **grep_search**: Maximum 100 results (configurable via `max_results`)
-- **search_files**: Maximum 100 results (configurable via `max_results`)
-- **semantic_search**: Maximum 50 results (configurable via `max_results`)
-- **Reason**: Prevents memory overflow with large codebases
+- **grep_search**: default 100, at most 500 (`max_results`)
+- **search_files**: default 50, at most 500 (`max_results`)
+- **semantic_search**: default 10, at most 50 (`max_results`)
+- A cut-off answer says so: `truncated: true` plus a note
 
 ### File Size Limits
-- **Default**: Files > 1MB excluded from indexing
+- **Default**: Files > 1MB are skipped by grep and the semantic index (`max_file_size_for_indexing_kb`), and counted in `skipped`
 - **Maximum read**: Files > 100MB may cause memory issues
 - **Workaround**: Use pagination (`offset`/`limit`) for large files
 
@@ -823,22 +768,15 @@ All tools return structured error responses:
   - Short files (< 50 words) may have low similarity scores
   - Not suitable for config files or data-only files
   
-- **search_files**: Filename-only matching
+- **search_files**: Path matching only
   - No content searching (use grep_search instead)
-  - Pattern must match full path (use `**/` prefix for subdirs)
+  - See the pattern rules under the tool description
 
-### Indexing Limitations
-- **Auto-rebuild interval**: Minimum 60 seconds recommended
-  - Too frequent rebuilds impact performance
-  - File changes not immediately searchable
-  
-- **Excluded by default**: 
-  - `.git`, `__pycache__`, `node_modules`, `.venv`
-  - Binary files (not auto-detected, only by extension)
-  - Files > 1MB
-  
-- **No incremental updates**: Full rebuild on every cycle
-  - Large codebases (10k+ files) may take 10-30 seconds
+### Excluded by Default
+- `.git`, `__pycache__`, `node_modules`, `.venv`, `*.pyc`, `*.min.js`, `*.min.css`, `*.map`
+- Whatever the allowed directory's `.gitignore`/`.ignore` lists
+- Hidden files and directories
+- Binary files (by content) and files > 1MB, for grep and the semantic index
 
 ### Semantic Search Specifics
 - **ChromaDB dependency**: Requires `pip install chromadb`
@@ -854,13 +792,10 @@ All tools return structured error responses:
   - Scores depend on file content richness
 
 ### Performance Considerations
-- **Concurrent searches**: Not optimized for parallel requests
-  - Multiple simultaneous searches may queue
-  - Background indexing blocks search temporarily
-  
-- **Memory usage**: Proportional to indexed file count
-  - ~1KB per file in memory index
-  - ChromaDB adds ~10-50KB per file on disk
+- **Search cost**: proportional to the files that survive pruning, not to the tree
+  - `include_ignored: true` walks everything except `.git` — measured on this repository with the coder roots: glob 17 s, grep 8.5 min. Keep the pattern or `include_pattern` narrow.
+- **Semantic index**: one document per symbol -- measured on the coder roots,
+  3.295 files became 51.730 documents and 288 MB of store
 
 ### Platform-Specific
 - **Windows**: Path separators auto-converted (`/` → `\\`)
@@ -890,10 +825,12 @@ file_ops/
 ├── plugin.yaml          # Plugin metadata
 ├── schema.yaml          # Tool definitions
 ├── plugin.py            # Factory export
-├── server.py            # Main MCP server (273 lines)
+├── server.py            # Main tool server (273 lines)
 ├── security.py          # PathValidator (100 lines)
 ├── operations.py        # FileOperations (457 lines)
-├── search.py            # FileSearchEngine (355 lines)
+├── search.py            # FileSearchEngine: search seam + semantic index
+├── symbols.py           # What the index stores: one document per symbol
+├── textsearch.py        # Index-free glob/grep: pruning walk, gitignore, skip report
 ├── cli.py               # CLI interface (370 lines)
 └── __main__.py          # CLI entry point
 ```
@@ -901,15 +838,16 @@ file_ops/
 **Component Responsibilities:**
 - `PathValidator`: Security validation, path resolution
 - `FileOperations`: CRUD operations, atomic writes
-- `FileSearchEngine`: Indexing, search, background tasks
-- `FileOperationsServer`: MCP tool interface, error handling
+- `FileSearchEngine`: Search entry points, semantic index
+- `symbols`: Cuts a file into the documents the index holds
+- `textsearch`: Walking, glob semantics, ignore rules, what was skipped
+- `FileOperationsServer`: tool interface, error handling
 
 ## Version History
 
 ### v1.0.0 (Current)
 - Initial release with 9 tools
 - Security-first design with path validation
-- Background indexing for fast search
 - Atomic write guarantees
 - Comprehensive test coverage (17 tests, 100% pass rate)
 
@@ -918,4 +856,3 @@ file_ops/
 For issues or questions:
 - Check this README's troubleshooting section
 - Review test files: `tests/test_plugin_file_ops_basic.py`
-- Check design docs: `docs/file_ops_plugin_design.md`

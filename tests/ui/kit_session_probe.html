@@ -1,0 +1,15 @@
+<!doctype html>
+<html class="pk-root">
+<head><meta charset="utf-8"><link rel="stylesheet" href="/static/kit/kit.css"></head>
+<body>
+<!-- A panel's toolbar, both forms of the session control: what a link that pins one does to it. -->
+<pk-session all id="withChoice"></pk-session>
+<pk-session id="plain"></pk-session>
+<script type="module">
+  import { session } from '/static/kit/panel-kit.js';
+
+  window.probeChat = () => session.id;  // null until the shell has answered the handshake
+  window.probeSession = session;
+</script>
+</body>
+</html>

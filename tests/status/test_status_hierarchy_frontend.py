@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 
-from agent_system.mcp.status import (
+from agent_system.tools.status import (
     StatusEvent, StatusBus, SSEStatusHandler, StatusPhase
 )
 from agent_system.utils.tree_hierarchy import get_tree_builder

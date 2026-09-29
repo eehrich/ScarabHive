@@ -1,6 +1,6 @@
 # Installation and Configuration Guide
 
-Complete setup guide for AgentSystem - from installation to production deployment.
+Complete setup guide for ScarabHive - from installation to production deployment.
 
 ## Table of Contents
 
@@ -8,7 +8,7 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 - [Installation](#installation)
   - [Quick Install](#quick-install)
   - [Development Install](#development-install)
-  - [Docker Install](#docker-install)
+  - [Docker](#docker)
 - [Configuration](#configuration)
   - [Configuration Structure](#configuration-structure)
   - [LLM Provider Setup](#llm-provider-setup)
@@ -27,13 +27,12 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 - **Operating System**: Windows, Linux, or macOS
 - **Shell**: Git Bash recommended on Windows, any bash-compatible shell on Linux/macOS
 - **Memory**: Minimum 2GB RAM (4GB+ recommended for multi-agent workflows)
-- **Disk Space**: ~500MB for base installation + space for session storage
+- **Disk Space**: several GB (the dependencies include PyTorch and embedding models) + space for session storage
+- **Build tools on Linux/macOS**: the cairo headers for `pycairo` -- `sudo apt-get install libcairo2-dev pkg-config` (Debian/Ubuntu), `brew install cairo pkg-config` (macOS)
 
 ### Optional Dependencies
 
 - **Git**: For development and version control
-- **Docker**: For containerized deployment
-- **PostgreSQL**: For production session storage (SQLite used by default)
 
 ---
 
@@ -44,9 +43,9 @@ Complete setup guide for AgentSystem - from installation to production deploymen
 For basic usage with default configuration:
 
 ```bash
-# Clone the repository (if not already done)
-git clone https://github.com/your-org/AgentSystem.git
-cd AgentSystem
+# Clone the repository
+git clone https://github.com/eehrich/ScarabHive.git
+cd ScarabHive
 
 # Create virtual environment
 python -m venv .venv
@@ -63,9 +62,12 @@ pip install -U pip
 pip install -e .
 
 # Verify installation
-agent-cli --version
-pytest -q  # Run tests
+agent-cli --help
 ```
+
+To run tests, read [CONTRIBUTING.md](CONTRIBUTING.md#tests) first: run the tests for what you
+changed (the full suite takes 20+ minutes). pytest ends only the processes its own session
+started, and orphans of test sessions that provably ended.
 
 ### Development Install
 
@@ -73,41 +75,37 @@ For development with additional tools (linting, type checking, testing utilities
 
 ```bash
 # After basic installation above
-pip install -e '.[dev]'
+pip install -e '.[dev,test]'
 
-# Install pre-commit hooks (optional)
-pre-commit install
-
-# Run linting and type checking
-ruff check src --fix
-mypy src --show-traceback
+# Run linting and type checking, as CI does
+ruff check .
+mypy src/agent_system src/plugins
 ```
 
-### Docker Install
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) for the tests to run and the conventions.
 
-For production deployments:
+### Docker
+
+The image runs the API server (`agent-api`) with the configuration from your checkout.
 
 ```bash
-# Build image
-docker build -t agent-system:latest .
+# API keys go into config/secrets.env (template: config/secrets.env.example)
+test -f config/secrets.env || cp config/secrets.env.example config/secrets.env
 
-# Run container
-docker run -d \
-  -p 8000:8000 \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/data:/app/data \
-  -e OPENAI_API_KEY="your-key-here" \
-  agent-system:latest
-
-# Check logs
-docker logs -f <container-id>
+docker compose up -d --build
+docker compose logs -f scarabhive
 ```
+
+The web UI is then at `http://127.0.0.1:8000`, published on the loopback interface only.
+`config/` is mounted read-only; sessions, `users.db`, plugin data, logs and downloaded models
+live in named volumes. Build arguments (CPU/CUDA PyTorch, extra system packages, the container
+user's ids) are described in [docker-compose.yml](docker-compose.yml) and the [Dockerfile](Dockerfile).
 
 ---
 
 ## Configuration
 
-AgentSystem uses a hierarchical YAML configuration system in the `config/` directory.
+ScarabHive uses a hierarchical YAML configuration system in the `config/` directory.
 
 ### Configuration Structure
 
@@ -115,13 +113,14 @@ AgentSystem uses a hierarchical YAML configuration system in the `config/` direc
 config/
 ├── config.yaml              # Main config with includes
 ├── llm.yaml                 # LLM provider settings
+├── llm_openrouter.yaml      # OpenRouter models and profiles
 ├── plugins.yaml             # Plugin configuration
 ├── mcp_servers.yaml         # External MCP servers
-├── mcp_server_mode.yaml     # MCP server mode settings
+├── secrets.env.example      # Template for secrets.env (API keys, loaded at startup)
 └── agents/                  # Config-based agents (YAML files)
-    ├── meta_agent.yaml
-    ├── coding_agent.yaml
-    └── web_research_agent.yaml
+    ├── agents.yaml          # base agents (multi_turn_agent, skills_agent, chat_agent)
+    ├── sysadmin_agent.yaml
+    └── okf_agent.yaml
 ```
 
 ### LLM Provider Setup
@@ -201,18 +200,21 @@ export GEMINI_API_KEY="AIza..."
 
 #### Using Models in Agents
 
-Reference model names in agent configuration:
+Agents reference a **profile**, and a profile points at a model via `model_ref`:
 ```yaml
+llm_system:
+  profiles:
+    gpt-4-turbo:
+      model_ref: gpt-4-turbo   # key under llm_system.models
+
 plugins:
   servers:
     my_agent:
       agent_config:
-        llm_profile: gpt-4-turbo  # or claude-sonnet, gemini-pro, etc.
+        llm_profile: gpt-4-turbo  # a name under llm_system.profiles
 ```
 
-**Important**: The `${ENV_VAR}` syntax does NOT work in `llm.yaml`. Instead:
-- **Recommended**: Omit `api_key` field → automatic `os.getenv()` fallback
-- **Alternative**: Hardcode the API key directly (not recommended for production)
+**API keys**: `${ENV_VAR}` placeholders are expanded in every config file, `llm.yaml` included (`api_key: ${OPENAI_API_KEY}`); an unset variable becomes empty and is named in a startup warning. Variables can also be put in `config/secrets.env` (template: `config/secrets.env.example`), which is loaded at startup without overriding the real environment. Omitting `api_key` falls back to the provider's environment variable as described above.
 
 ### Plugin Configuration
 
@@ -233,79 +235,63 @@ plugins:
       enabled: true
       description: "Utility tools for testing"
     
+    # Where settings go is per plugin: these three read them directly on the
+    # entry, others (e.g. context_engineer) under a `config:` key
     terminal:
       type: terminal
       enabled: true
-      config:
-        timeout: 30
-        max_output_length: 10000
-        security:
-          enabled: true
-          blacklist:
-            - "rm -rf"
-            - "format"
+      security:
+        blacklist:
+          - "rm -rf /"
+          - "mkfs"
+      limits:
+        max_output_size_kb: 60
+        default_timeout_seconds: 300
     
     web_scraper:
       type: web_scraper
       enabled: true
-      config:
-        max_content_length: 100000
-        timeout: 30
-        user_agent: "AgentSystem/1.0"
+      cache_ttl: 1800
+      user_agent: "ScarabHive/1.0"
     
     ssh_control:
       type: ssh_control
-      enabled: false  # Disabled by default for security
-      config:
-        timeout: 30
-        max_hosts: 10
+      enabled: false  # false is the default; config/agents/sysadmin_agent.yaml ships an enabled entry
+      defaults:  # applied to every entry under machines:
+        connection_timeout: 10
+        command_timeout: 300
 ```
 
 ### Agent Configuration
 
 Create custom agents in `config/agents/*.yaml` without writing code:
 
-**Example: `config/agents/research_agent.yaml`**
+**Example: the research agent, a config-only plugin** (`src/plugins/research/agents/research_agent.yaml`, picked up by the `../src/plugins*/*/agents/*.yaml` include)
 ```yaml
 plugins:
   servers:
     research_agent:
-      type: basic_agent
+      type: multi_turn_agent   # inherits the base agent from config/agents/agents.yaml
       enabled: true
-      description: "Web research specialist"
-      
+      description: "Web research with cited sources"
+
       agent_config:
-        llm_profile: claude-sonnet
-        max_steps: 25
-        system_template: "config/prompts/research_prompt.yaml"  # or inline system_prompt
-        
+        llm_profile: [or-deepseek-flash, deepseek-chat]
+        max_steps: 40
+        system_template: "./prompts/research_agent.md"   # next to the YAML
+        skills:
+          always: ["web-research"]                       # from the plugin's skills/
         tools:
-          allowed:
-            - "web_scraper/*"
-            - "duckduckgo_search/*"
-            - "basic_operations/*"
-          blocked:
-            - "terminal/*"  # No terminal access
-      
+          allowed:                                       # "+" adds to the inherited list
+            - "+tavily_search/*"
+            - "+duckduckgo_search/*"
+            - "+web_scraper/*"
+
       metadata:
         visibility: "both"  # or "ui", "tool"
 ```
 
-**Example: `config/agents/financial_analyst.yaml`**
-```yaml
-plugins:
-  servers:
-    financial_analyst:
-      type: basic_agent
-      enabled: true
-      
-      agent_config:
-        llm_profile: gpt-4-turbo
-        tools:
-          allowed:
-            - "yahoo_finance/*"
-            - "ibkr/*"
-```
+See the existing agents in `config/agents/` for more examples.
 
 ---
 
@@ -316,11 +302,12 @@ plugins:
 Start the FastAPI server for web UI and API access:
 
 ```bash
-# Development mode (auto-reload)
+# Host/port from config/config.yaml (network.host/port, default 127.0.0.1:8000), HOST/PORT env override
 agent-api
 
-# Production mode (with Uvicorn workers)
-uvicorn agent_system.app:build_app --factory --host 0.0.0.0 --port 8000 --workers 4
+# Via uvicorn directly - single worker: run state (cancellation, mid-run messages, status streams) is per process
+uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000
+# (bind 0.0.0.0 only after changing auth.secret_key and auth.default_admin_password)
 
 # With specific log level
 AGENT_LOG_LEVEL=debug agent-api
@@ -339,14 +326,11 @@ agent-cli chat
 # Single query
 agent-cli "What is the weather in Berlin?"
 
-# With specific agent
-agent-cli --agent research_agent "Research quantum computing"
+# With specific agent (run options follow the task)
+agent-cli run "Research quantum computing" --agent research_agent
 
-# List available agents
-agent-cli agents list
-
-# View plugin status
-agent-cli plugins status
+# Plugins, agents among them as instances
+agent-cli plugins list
 ```
 
 ### VS Code Tasks
@@ -358,7 +342,7 @@ Use predefined VS Code tasks (`.vscode/tasks.json`):
 3. Choose:
    - `AgentSystem: Run API` - Start API server
    - `AgentSystem: Run API with Debug Output` - Debug mode
-   - `Python: Run all tests (venv)` - Run test suite
+   - `Python: Run all tests (venv)` - The whole suite (20+ minutes; see [Testing](#testing))
    - `Python: Ruff (check & fix)` - Lint code
    - `Python: Mypy (type check)` - Type checking
 
@@ -366,7 +350,7 @@ Use predefined VS Code tasks (`.vscode/tasks.json`):
 
 ## Authentication Setup
 
-Enable multi-user authentication (optional, disabled by default):
+Enable multi-user authentication (optional; `auth.enabled` defaults to `false`, the shipped `config/config.yaml` sets it to `true`):
 
 ### 1. Enable Authentication
 
@@ -400,16 +384,21 @@ openssl rand -hex 32
 export AUTH_SECRET_KEY="your-generated-secret"
 ```
 
+The server checks the key at startup: an empty one (for example an unset
+`AUTH_SECRET_KEY`) or one shorter than 32 characters stops it; a published
+key -- the shipped development key, the built-in default -- is logged as an
+error. Set `auth.reject_default_secret_key: true` to refuse starting with one.
+
 ### 3. Create Admin User
 
-On first startup with auth enabled, a default admin user is created:
+On first startup with auth enabled (and no users in the database), a default admin user is created:
 
 ```
 Username: admin
-Password: admin
+Password: admin123
 ```
 
-**Important**: Change the default password immediately! The default credentials are set in `config/config.yaml` under `auth.default_admin_username` and `auth.default_admin_password`.
+**Important**: Change the default password immediately! The default credentials are set in `config/config.yaml` under `auth.default_admin_username` and `auth.default_admin_password`. Without `default_admin_password`, a random password is generated and printed in the startup log.
 
 ### 4. User Management
 
@@ -417,22 +406,22 @@ Password: admin
 # List users
 agent-cli users list
 
-# Create new user
-agent-cli users create --username alice --email alice@example.com --role USER
+# Create new user (prompts for the password unless -p is given)
+agent-cli users create alice alice@example.com --role user
 
 # Generate API key for automation
-agent-cli users generate-api-key --username alice
+agent-cli users generate-api-key alice
 
 # Update user
-agent-cli users update --username alice --role ADMIN
+agent-cli users update alice --role admin
 
 # Delete user
-agent-cli users delete --username alice
+agent-cli users delete alice
 ```
 
 ### 5. Using Authentication
 
-**Web UI**: Login form appears at `/` - use username/password
+**Web UI**: Opening `/` redirects to the login form at `/login` - use username/password
 
 **API**: Include JWT token in requests:
 ```bash
@@ -458,51 +447,28 @@ curl http://localhost:8000/agents \
 
 ### Context Management
 
-Context management is configured per agent in their YAML files:
+Context management is done by the hook plugins `context_engineer` (layered compaction) and `context_summarizer` (LLM summaries), configured on their entries in `config/plugins.yaml`. There is no `agent_config.context_management` block — `agent_config` rejects unknown keys.
 
 ```yaml
 plugins:
   servers:
-    my_agent:
-      agent_config:
-        context_management:
-          max_tokens: 100000
-          warning_threshold: 0.7
-          strategy: SMART_COMPRESSION  # or TRUNCATE_OLDEST, SUMMARIZE_OLDEST, SLIDING_WINDOW
-          summarization:
-            max_summary_length: 500
-            preserve_system_prompt: true
+    context_engineer:
+      type: context_engineer
+      enabled: true
+      config:
+        layer1_threshold: 140000  # start reversible compaction
+        layer2_threshold: 170000  # start archiving old turns with summaries
+        layer3_threshold: 200000  # start dropping old messages
+        target_tokens: 70000      # target after compaction
+    context_summarizer:
+      type: context_summarizer
+      enabled: true
+      config:
+        llm_profile: or-deepseek-flash
+        summarization_trigger_percentage: 0.8
 ```
 
-See agent examples in `config/agents/` for reference.
-
-### MCP Server Mode
-
-Expose AgentSystem as an MCP server for external clients.
-
-Edit `config/mcp_server_mode.yaml`:
-
-```yaml
-server_mode:
-  enabled: true
-  endpoint: "/mcp"
-  
-  # Expose specific plugins or all
-  expose_plugins:
-    - "*"  # All plugins
-    # OR specific: ["datetime", "web_scraper"]
-  
-  authentication:
-    required: true
-    methods:
-      - jwt
-      - api_key
-  
-  rate_limit:
-    enabled: true
-    requests_per_minute: 60
-    requests_per_hour: 1000
-```
+Per agent, hooks are switched on or off with `agent_config.hooks.overrides` (see `docs/plugin_hooks.md`).
 
 ### External MCP Servers
 
@@ -515,7 +481,7 @@ external_servers:
   remote_servers:
     weather_service:
       url: "https://api.weather.com/mcp"
-      transport_type: "http"
+      transport: "http"  # streamable HTTP (default "streaming"); also "sse", "stdio"
       enabled: true
       auth:
         type: "api_key"
@@ -527,7 +493,7 @@ external_servers:
 
 Session storage is handled automatically. Sessions are stored in `data/sessions/{user_id}/` by default. The storage path is managed by the system and doesn't require explicit configuration in `config.yaml`.
 
-For custom storage locations, you can set environment variables or modify the session service initialization in the code.
+For a custom storage location, set the `AGENT_SESSION_STORAGE_PATH` environment variable.
 
 ### Logging Configuration
 
@@ -542,7 +508,7 @@ logging:
   file_api: logs/api.log
 ```
 
-Note: Log rotation and format are handled by the logging system. The config only specifies enable/level/file paths.
+Note: Log format is handled by the logging system. Rotation is configured with `rotation_enabled`, `max_bytes` and `backup_count` (defaults: on, `10MB`, 5 backups).
 
 ---
 
@@ -577,7 +543,7 @@ export OPENAI_API_KEY="sk-..."
 llm_system:
   models:
     your_model:
-      api_key: "sk-..."  # Direct value, not ${ENV_VAR} syntax
+      api_key: "sk-..."  # or ${OPENAI_API_KEY}
 ```
 
 #### 3. Plugin Loading Failures
@@ -589,25 +555,23 @@ llm_system:
 # List available plugins
 agent-cli plugins list
 
-# Check plugin status
-agent-cli plugins status
+# Details of one plugin, including ENABLED
+agent-cli plugins info PLUGIN_NAME
 
 # Verify plugin directories in config/plugins.yaml
 plugins:
   plugin_dirs:
     - src/plugins
-    - src/plugins_writer
-    - src/plugins_trading
 ```
 
 #### 4. Port Already in Use
 
-**Error**: `Address already in use: 0.0.0.0:8000`
+**Error**: `[Errno 98] error while attempting to bind on address ('127.0.0.1', 8000): [errno 98] address already in use` (Errno 48 on macOS)
 
 **Solution**:
 ```bash
-# Use different port
-agent-api --port 8001
+# Use different port (or set network.port in config/config.yaml)
+PORT=8001 agent-api
 
 # Or kill existing process
 lsof -ti:8000 | xargs kill -9  # Linux/macOS
@@ -632,8 +596,8 @@ chmod 755 data/sessions
 Enable verbose logging:
 
 ```bash
-# CLI
-agent-cli --debug "your query"
+# CLI (progress messages and tool call details)
+agent-cli -v --show-tools "your query"
 
 # API
 AGENT_LOG_LEVEL=debug agent-api
@@ -645,27 +609,26 @@ logging:
 
 ### Testing
 
-Run tests to verify installation:
+Run the tests for what you changed -- the full suite takes 20+ minutes; details, including
+which processes pytest ends, in [CONTRIBUTING.md](CONTRIBUTING.md#tests):
 
 ```bash
-# All tests
-pytest -q
+# The tests need the [test] extra: pip install -e '.[test]'
 
 # Specific test suite
 pytest tests/agent/ -v
 pytest tests/plugins/ -v
 
-# With coverage report
-pytest --cov=agent_system --cov-report=html
+# With coverage report (pytest-cov comes with the [test] extra)
+pytest tests/agent/ --cov=agent_system --cov-report=html
 ```
 
 ### Getting Help
 
-1. **Check logs**: `logs/agent.log`, `logs/api.log`, `logs/cli.log`
+1. **Check logs**: `logs/api.log` (agent-api), `logs/cli.log` (agent-cli); names set by `logging.file_api` / `file_cli` in `config/config.yaml`
 2. **Review documentation**: `docs/` directory
-3. **Search backlog**: `backlog.md` for known issues
-4. **Enable debug mode**: Set `AGENT_LOG_LEVEL=debug`
-5. **Run tests**: `pytest -q` to verify system integrity
+3. **Enable debug mode**: Set `AGENT_LOG_LEVEL=debug`
+4. **Run tests**: the suites for the area you changed (see [Testing](#testing))
 
 ---
 
@@ -673,10 +636,10 @@ pytest --cov=agent_system --cov-report=html
 
 After successful installation:
 
-1. **Explore Plugins**: Browse `src/plugins/`, `src/plugins_writer/`, and `src/plugins_trading/` for plugin READMEs
+1. **Explore Plugins**: Browse `src/plugins/` for plugin READMEs and examples
 2. **Create Custom Agent**: Add your agent definition as `config/agents/your_agent.yaml`
 3. **Read Architecture Docs**: Understand the system design in `docs/`
 4. **Try Examples**: Explore example workflows in plugin documentation
 5. **Develop Plugins**: Follow `docs/plugin_authoring.md` to create custom tools
 
-For production deployments, see deployment guides in `docs/` directory.
+For production deployments, see the deployment view in `docs/_arch_agent_system_architecture.md` (section 9).

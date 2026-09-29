@@ -14,11 +14,11 @@ from .server import HTTPServer
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the HTTP server CLI."""
     parser = argparse.ArgumentParser(
-        description="HTTP Server MCP Plugin - FastAPI-based HTTP adapter for MCP servers",
+        description="HTTP Server Tool plugin - FastAPI-based HTTP adapter for tool servers",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start HTTP server for a specific MCP server
+  # Start HTTP server for a specific tool server
   python -m plugins.http_server --server-name llm_router --host 0.0.0.0 --port 8000
 
   # Start with default settings
@@ -29,7 +29,7 @@ Examples:
     parser.add_argument(
         "--server-name",
         required=True,
-        help="Name of the MCP server to wrap with HTTP interface"
+        help="Name of the tool server to wrap with HTTP interface"
     )
 
     parser.add_argument(
@@ -99,7 +99,7 @@ def cli_main() -> None:
     http_server = HTTPServer("http_server", http_config, ssl_verify=not args.no_ssl_verify)
     http_server.wrap_server(target_server)
 
-    print(f"Starting HTTP server for MCP server '{args.server_name}' on {args.host}:{args.port}")
+    print(f"Starting HTTP server for tool server '{args.server_name}' on {args.host}:{args.port}")
     print(f"Health endpoint: http://{args.host}:{args.port}/health")
     print(f"Call endpoint: http://{args.host}:{args.port}/call")
     print("Press Ctrl+C to stop")

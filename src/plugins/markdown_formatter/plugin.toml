@@ -1,0 +1,15 @@
+# markdown_formatter plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "markdown_formatter"
+version = "1.0.0"
+description = "Formats LLM output as Markdown and converts to HTML. Injects system prompt to guide LLM to generate Markdown output. Converts Markdown responses to HTML for frontend display.\n"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+requires = { agent_system = ">=0.6.0" }
+
+# Python package requirements owned by this plugin.
+dependencies = ["markdownify>=0.11.0"]

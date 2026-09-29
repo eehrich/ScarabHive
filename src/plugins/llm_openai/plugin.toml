@@ -1,0 +1,17 @@
+# llm_openai — official OpenAI SDK provider for the LLM registry.
+# Also the delegation target of llm_ollama's openai_compat mode.
+[plugin]
+name = "llm_openai"
+version = "1.0.0"
+description = "OpenAI LLM provider (official SDK client) and files/batch backend"
+author = "AgentSystem"
+type = ["llm-provider"]
+provides = ["openai"]
+# Same name as the client it belongs to: `batch_provider: openai` pairs this
+# SDK client with this backend. The /v1/batches implementation itself lives
+# in llm_openai_compat (it is plain httpx, no SDK) and is reached through the
+# registry — see provider.make_batch_backend.
+provides_batch = ["openai"]
+default_base_url = { openai = "https://api.openai.com/v1" }
+requires = { agent_system = ">=0.6.0" }
+dependencies = ["openai>=1.37.0"]

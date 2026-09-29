@@ -1,0 +1,38 @@
+# Tool instances for the research plugin.
+#
+# Search and reading come from the shared instances in config/plugins.yaml
+# (tavily_search, duckduckgo_search, web_scraper). The one instance that is
+# this plugin's own is the sub-agent manager below: it lets the research
+# agent fork itself for a WIDE question -- a comparison, several products,
+# several independent claims -- so the parts are researched in parallel and
+# only their answers come back into the parent's context. A single question
+# is faster and cheaper done directly; the prompt says so.
+plugins:
+  servers:
+
+    research_sam:
+      type: sub_agent_manager
+      enabled: true
+      description: "research: parallel sub-researchers for a question with independent parts"
+      # It spawns research_worker, which owns no manager -- so a branch cannot
+      # branch again, and that holds by construction rather than by a counter.
+      # This depth is therefore only an outer bound and stays at the framework
+      # default.
+      max_nesting_depth: 5
+      # Each branch carries the full prompt and skill; four in parallel is the
+      # widest a question needs, and it caps the cost.
+      max_sub_agents_per_type: 4
+      max_sub_agents_per_session: 8
+      max_message_history: 50
+      # A sub-research is a few searches and pages, minutes not hours.
+      default_wait_timeout: 900
+      auto_archive_on_limit: true
+      allowed_agents:
+        - research_worker
+      hook_config:
+        enabled: true
+        inject_sub_agent_context:
+          enabled: true
+          max_sub_agents_shown: 4
+          show_completed: false
+          format: markdown

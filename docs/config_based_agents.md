@@ -30,7 +30,7 @@ agents:
     agent_config:
       llm_profile: "turbo"
       max_steps: 20
-      system_template: "config/prompts/financial_analyst_prompt.yaml"
+      system_template: "config/prompts/financial_analyst_prompt.md"
       tools:
         allowed:
           - "yahoo_finance/*"
@@ -54,28 +54,27 @@ agents:
 
 Create the prompt file referenced in `system_template`:
 
-**File:** `config/prompts/financial_analyst_prompt.yaml`
+**File:** `config/prompts/financial_analyst_prompt.md`
 
-```yaml
-system_prompt: |
-  You are a professional financial analyst with expertise in:
-  - Stock market analysis and trends
-  - Company financials and valuation
-  - Market research and data interpretation
-  - Risk assessment and investment strategies
-  
-  Your analysis should be:
-  - Data-driven and factual
-  - Balanced and objective
-  - Clear and actionable
-  - Based on current market information
-  
-  Available tools:
-  - Yahoo Finance for stock data
-  - Web scraping for research
-  - DuckDuckGo search for information gathering
-  
-  Always cite your sources and provide timestamp for data.
+```markdown
+You are a professional financial analyst with expertise in:
+- Stock market analysis and trends
+- Company financials and valuation
+- Market research and data interpretation
+- Risk assessment and investment strategies
+
+Your analysis should be:
+- Data-driven and factual
+- Balanced and objective
+- Clear and actionable
+- Based on current market information
+
+Available tools:
+- Yahoo Finance for stock data
+- Web scraping for research
+- DuckDuckGo search for information gathering
+
+Always cite your sources and provide a timestamp for data.
 ```
 
 ### 3. Validate and Use Your Agent
@@ -110,9 +109,10 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `llm_profile` | string | Yes | - | LLM profile from `config/llm.yaml` |
-| `llm_profile_fallbacks` | list[string] | No | [] | Fallback profiles on rate limit/quota errors |
-| `fallback_recovery_seconds` | integer | No | 3600 | Seconds before retrying original LLM after fallback (1 hour default) |
+| `llm_profile` | list[string] | Yes | - | Profile CHAIN from `config/llm.yaml`: `[primary, fallback1, ...]` |
+| `llm_profile_advanced` | list[string] | No | [] | Same chain shape for the advanced model |
+| `inherit_parent_llm` | boolean | No | false | Als Sub-Agent auf dem LLM laufen, auf das der aufrufende Lauf umgestellt wurde (siehe unten) |
+| `fallback_recovery_seconds` | integer | No | 3600 | Längste Sperre, die der Agent auf ein LLM setzt (siehe unten) |
 | `max_steps` | integer | Yes | 20 | Maximum reasoning steps |
 | `system_prompt` | string | No* | - | Inline system prompt text |
 | `system_template` | string | No* | - | Path to prompt template file |
@@ -122,48 +122,110 @@ python -m agent_system.agent_cli run my_financial_analyst "Analyze AAPL stock pe
 
 \* Either `system_prompt` or `system_template` must be provided, but not both.
 
+### Das LLM des Aufrufers erben (`inherit_parent_llm`)
+
+Ein Sub-Agent läuft normalerweise auf seiner eigenen Kette — dafür hat er
+eine. Manche erledigen aber die Arbeit ihres Aufrufers und sollen auf dessen
+Modell laufen: ein Skills- oder Coding-Helfer, der sonst als einziger Teil
+des Jobs auf dem schwächeren Modell bliebe. Die schalten das ein:
+
+```yaml
+skills_agent:
+  agent_config:
+    inherit_parent_llm: true
+```
+
+Was dann gilt:
+
+1. **Nur ein Umschalten wird weitergegeben.** Wurde der aufrufende Lauf auf
+   ein anderes Profil als das eigene gestellt — `llm_profile` der API, der
+   Modell-Wähler im Web-Chat (er schickt immer ein Profil), `--llm` der CLI,
+   `/model` im Chat, `use_advanced_model` —, läuft der Sub-Agent auf diesem
+   Profil. Läuft der Aufrufer auf seiner eigenen Kette oder nur mit anderen
+   Parametern auf seinem eigenen Primär-Profil (`--llm-params` allein),
+   läuft der Sub-Agent auf seiner.
+2. **Er bleibt er selbst.** Seine `llm_params` für dieses Profil gelten
+   (Denkstufe, Kontextfenster …); seine Kette bleibt der Fallback, ihr
+   Primär-Profil zuerst.
+3. **Eine Wahl für genau diesen Lauf gewinnt.** Ein Override, das der
+   Sub-Agent-Start selbst mitgibt, oder `use_advanced_model` bei einem Agenten
+   mit Advanced-Kette. Ohne Advanced-Kette ist `use_advanced_model` keine Wahl,
+   dann erbt er.
+4. **Weiter nach unten nur, wenn jede Ebene will.** Ein Enkel erbt vom
+   Sub-Agenten, nicht vom Großeltern-Lauf. Läuft der Sub-Agent auf seiner
+   eigenen Kette, hat der Enkel nichts zu erben.
+5. **Ein Profil, das die Config nicht kennt**, lässt den Sub-Agenten auf
+   seiner Kette (mit Warnung im Log) statt den Aufruf scheitern zu lassen.
+
+**Unabhängig davon, wer den Sub-Agenten startet.** Das Profil steckt nicht in
+einer Schnittstelle des `sub_agent_manager`, sondern im Lauf selbst
+(`agent_system/llm/caller_llm.py`): der Agent-Loop führt jeden Tool-Aufruf in
+einem eigenen Kontext aus, der das Profil des Laufs trägt. Jedes Plugin, das
+in einem Tool-Aufruf einen Agenten startet — abgewartet oder als eigener
+Task —, gibt es damit weiter, ohne davon zu wissen.
+
+**Grenzen:**
+
+- Ein Lauf, der später in einem **anderen Prozess** startet (ein Weckruf, ein
+  Job-Worker), bekommt nichts mit und läuft auf seiner Kette.
+- Der Sub-Agent baut das Profil aus der Config, mit der er gestartet wurde —
+  wie seine Fallback-Kette und sein Advanced-Modell. Ein Profil, das erst ein
+  Config-Reload hinzugefügt hat, kennt er bis zum Neustart nicht; dann gilt
+  Punkt 5.
+- Die Advanced-Sperren des `sub_agent_manager` (`allow_advanced_model`,
+  `advanced_create_only_agents`) filtern nur das Argument
+  `use_advanced_model`. Ein erbender Sub-Agent folgt einem Aufrufer, der auf
+  ein teures Profil umgestellt wurde, trotzdem dorthin.
+- Tools, die ein Hook oder ein Befehl außerhalb der Tool-Aufrufe des Loops
+  startet (`tool_preload`), sehen, womit der Lauf selbst gestartet wurde (das
+  Profil seines Aufrufers), nicht das, was er seinen Tool-Aufrufen mitgibt.
+
+**Vererbung der Config beachten:** Ein Agent mit `type: <anderer Agent>` erbt
+den Schalter mit. `skills_agent_multimodal` setzt ihn deshalb ausdrücklich auf
+`false` — er braucht ein Modell, das Medien liest, egal was der Aufrufer fährt.
+
 ### LLM Profile Fallbacks
 
-When the primary LLM profile hits rate limits (HTTP 429) or quota exhaustion, the agent automatically switches to fallback profiles in order:
+Fällt das LLM eines Schritts aus, läuft der Agent auf dem nächsten Profil der
+Kette weiter:
 
 ```yaml
 my_agent:
   type: basic_agent
   agent_config:
-    llm_profile: "gemini"              # Primary profile
-    llm_profile_fallbacks:             # Tried in order on rate limit
-      - "openai"                       # First fallback
-      - "anthropic"                    # Second fallback
-    fallback_recovery_seconds: 1800    # Try primary again after 30min (default: 3600)
+    llm_profile: ["gemini", "openai", "anthropic"]   # Kette: primär, dann Fallbacks
+    fallback_recovery_seconds: 1800                  # längste Sperre (Default: 3600)
 ```
 
-**Behavior:**
-1. Agent tries primary `llm_profile` first
-2. On `LLMRateLimitError` or `LLMQuotaExhaustedError`, tries next fallback profile
-3. Fallback becomes **persistent** - all subsequent requests use fallback LLM
-4. After `fallback_recovery_seconds` elapsed, agent tries original profile again
-5. If recovery succeeds, switches back to primary profile
-6. If recovery fails, re-activates fallback for another recovery period
-7. If all fallbacks exhausted, raises the original error
+Läuft der Lauf auf einem anderen Profil als dem eigenen (API-`llm_profile`,
+`/model`, geerbt vom Aufrufer), ist das Primär-Profil der eigenen Kette sein
+erster Fallback, danach der Rest der Kette.
 
-**Automatic Recovery:**
-- **Default:** Retries original profile after 1 hour (3600 seconds)
-- **Configurable:** Set `fallback_recovery_seconds` to custom value
-- **Use Cases:**
-  - Rate limits (TPM/RPM/RPD) - temporary, recovers automatically
-  - Quota exhausted - persistent until daily/monthly reset
-  - API outages - retries when service restored
+> `llm_profile_fallbacks` was **removed**. The positional `[standard, advanced]`
+> reading is gone; a chain lives in `llm_profile` itself, and the advanced model
+> gets its own chain in `llm_profile_advanced`. A config that still sets
+> `llm_profile_fallbacks` is rejected at load with a migration hint rather than
+> run with `llm_profile[1]` silently meaning something else.
 
-**Status Updates:**
-- Shows active profile: `gemini:fallback`, `openai:fallback`
-- Recovery info: `"Switched to openai (rate limit hit, retry in 60min)"`
-- Auto-recovery: `"Fallback recovery period elapsed. Trying original LLM again."`
+**Sperren gehören dem LLM, nicht dem Agenten.** Ein 429, ein erschöpftes
+Kontingent oder ein abgelehnter Key (401/402/403/404) sperrt das LLM für
+**jeden** Agenten im Prozess:
 
-**Use Cases:**
-- Gemini free tier (250 requests/day) → OpenAI fallback
-- Primary API down → Secondary provider
-- Cost optimization (cheaper primary, expensive fallback)
-- Rate limit management (temporary TPM/RPM limits)
+1. Ein 429 sperrt 60 s, jede weitere Ablehnung verdoppelt die Pause bis
+   `fallback_recovery_seconds`; Kontingent und abgelehnter Key sperren sofort
+   so lange.
+2. Jeder Schritt nimmt das gewünschte LLM (Eskalation, Auswahl im Chat,
+   Config), wenn es frei ist, sonst das erste freie Profil der Kette, sonst
+   trotzdem das gewünschte.
+3. Eine ausdrückliche Wahl eines gesperrten LLM ist keine Ausnahme; ein
+   anderes, freies LLM läuft sofort.
+4. Die erste Antwort des LLM hebt die Sperre für alle auf.
+5. 5xx, Verbindungsfehler und request-förmige Fehler (400/413/422) sperren
+   nichts — sie retten nur den laufenden Request über die Kette.
+6. Ist die Kette aufgebraucht, geht der Fehler des letzten Versuchs an den Aufrufer.
+
+Details, Probe nach Ablauf und Grenzen: `docs/_arch_agent_architecture.md`,
+Abschnitt „LLM-Fallback und Sperren".
 
 ### Tools Configuration
 
@@ -190,7 +252,23 @@ When an agent inherits from another agent via `type:`, lists are **replaced by d
 |--------|----------|---------|
 | `+item` | Append item to parent list | `+new_tool/*` |
 | `!pattern` | Remove matching items from parent | `!old_tool/*` |
-| `item` (no prefix) | In merge mode: also appended | `regular_tool/*` |
+| `item` (no prefix) | Replace mode — the list replaces the parent's | `regular_tool/*` |
+
+A list is either **merged** or a **replacement**, never both. Mixing prefixed and
+unprefixed entries in one list raises a `ValueError` at config load, naming the
+key and the offending entries:
+
+```yaml
+tools:
+  allowed:
+    - "linear_book/*"   # ERROR: '+' forgotten -- this reads as "replace"
+    - "+v4_sam/*"       #        while this one reads as "add"
+```
+
+The mix is almost always a forgotten `+`, and it cannot be resolved by guessing:
+read as "replace", only the prefixed entries survive; read as "merge", the bare
+one silently joins the inherited list. Both are defensible, so the config has to
+say which it means.
 
 **Example:**
 
@@ -229,7 +307,8 @@ tools:
     - "only_this_tool/*"  # Replaces entire parent list
 ```
 
-This syntax works for **any list** in the config, not just tools - including `template_vars`, `llm_profile_fallbacks`, etc.
+This syntax works for **any list** in the config, not just tools — including
+`llm_profile`, `blocked`, `allowed_agents`, etc.
 
 ### self_tool_descriptions Configuration
 
@@ -277,37 +356,43 @@ agent_config:
 
 ### Template Files
 
-For complex, reusable prompts:
+For complex, reusable prompts, put the prompt in a **markdown file**. The whole
+file is the system prompt and is rendered with Jinja2 (`{{ current_date }}`,
+`{{ tools }}`, `{{ max_steps }}`, etc.). (The old multi-section YAML format —
+`system_prompt` / `tools_prompt` / `general_instructions_prompt` keys — has been
+removed; use one markdown file.)
 
-**config/prompts/my_prompt.yaml:**
+**HTML comments never reach the model.** `<!-- ... -->` in a template — and in
+every `{% include %}` partial — is stripped before rendering, so it is the place
+for notes to whoever edits the prompt (why a rule exists, which run it came
+from). A comment that fills its line takes the line with it. Text that arrives
+through a variable (a chapter, a document) is left as it is.
 
-```yaml
-system_prompt: |
-  You are a {role} with expertise in {domain}.
-  
-  Your responsibilities:
-  - {responsibility_1}
-  - {responsibility_2}
-  
-  Guidelines:
-  - {guideline_1}
-  - {guideline_2}
+**config/prompts/my_prompt.md:**
 
-# Optional: Template variables (if using Jinja2 templating)
-variables:
-  role: "Code Reviewer"
-  domain: "Python and TypeScript"
-  responsibility_1: "Review code for bugs and security issues"
-  responsibility_2: "Suggest improvements and best practices"
-  guideline_1: "Be constructive and specific"
-  guideline_2: "Provide code examples when helpful"
+```markdown
+You are a {{ role }} with expertise in {{ domain }}.
+
+Your responsibilities:
+- Review code for bugs and security issues
+- Suggest improvements and best practices
+
+## Tools
+Available Tools: {% if tools %}{{ tools | join(', ') }}{% else %}(none){% endif %}
+
+## Context
+- Current date: {{ current_date }}
+- You have at most {{ max_steps }} steps
 ```
 
-Reference in agent config:
+Reference in agent config (per-agent variables via `template_vars`):
 
 ```yaml
 agent_config:
-  system_template: "config/prompts/my_prompt.yaml"
+  system_template: "config/prompts/my_prompt.md"
+  template_vars:
+    role: "Code Reviewer"
+    domain: "Python and TypeScript"
 ```
 
 ### Template Variables (Jinja2)
@@ -351,10 +436,10 @@ The following variables are automatically available in all templates:
 |----------|-------------|
 | `tools` | List of available tool names |
 | `max_steps` | Maximum reasoning steps configured |
-| `current_step` | Current step number (1-indexed) |
+| `current_step` | Current step number (1-indexed) — **changes every call, see below** |
 | `current_date` | Current date (YYYY-MM-DD) |
-| `current_time` | Current time (HH:MM:SS) |
-| `current_datetime` | ISO format datetime |
+| `current_time` | Current time (HH:MM:SS) — **changes every call, see below** |
+| `current_datetime` | ISO format datetime — **changes every call, see below** |
 | `current_timezone` | Configured timezone |
 | `current_location` | Configured location |
 | `current_weekday` | Day name (e.g., "Monday") |
@@ -362,6 +447,46 @@ The following variables are automatically available in all templates:
 | `current_year` | Year (e.g., 2025) |
 
 Custom `template_vars` are merged with these built-in variables. **Custom variables take precedence** if there's a name conflict.
+
+#### Was installiert ist: `tools`, `has_tool()`, `plugins`, `mcp_servers`
+
+Ein Prompt kann danach verzweigen, was vorhanden ist:
+
+| Variable | Inhalt |
+|----------|--------|
+| `tools` | Was **dieser Agent** aufrufen darf, nach Allow- und Block-Mustern: Server-Namen, Tool-Namen und `server.tool` für Tools externer MCP-Server |
+| `has_tool(muster)` | `tools` per fnmatch-Muster gefragt, Groß-/Kleinschreibung zählt. Tool-Namen tragen den Instanznamen (`coder_sam_manage_sub_agent`), darum Muster: `has_tool('*_manage_sub_agent')`, `has_tool('github.*')` |
+| `plugins` | Plugin-Typen, die installiert **und** eingeschaltet sind (mindestens eine Instanz mit `enabled: true`) — unabhängig davon, ob dieser Agent sie benutzen darf |
+| `mcp_servers` | Externe MCP-Server mit `enabled: true` in `config/mcp_servers.yaml` (nur, wenn das `mcp_client`-Plugin läuft) |
+
+```jinja
+{% if has_tool('*_manage_sub_agent') %}
+Große Teilaufgaben gibst du an Sub-Agents ab.
+{% else %}
+Du arbeitest allein; teile große Aufgaben in Schritte.
+{% endif %}
+{% if 'writer_pipeline_v4' in plugins %}Das Buch-System ist installiert.{% endif %}
+```
+
+Die **Plugin-ID ist der Plugin-Typ** — der Ordnername, derselbe, der in
+`plugins.yaml` unter `type:` steht. Kommt ein Typ in zwei Plugin-Verzeichnissen
+vor, gewinnt der erste, und der Start meldet es.
+
+`plugins` und `mcp_servers` kommen aus der Konfiguration, nie aus einem
+Live-Zustand: ein MCP-Server, der gerade nicht verbunden ist, steht trotzdem in
+`mcp_servers`. Sonst änderte sich der System-Prompt zwischen zwei Schritten und
+mit ihm der Cache-Prefix. `tools` wird einmal pro Lauf ermittelt und hält
+innerhalb des Laufs still; die Tools eines MCP-Servers, der beim Start des Laufs
+nicht verbunden war, fehlen darin — `has_tool('github.*')` fragt also, ob der
+Agent sie **jetzt** hat, `'github' in mcp_servers`, ob sie vorgesehen sind.
+
+**Keep the system prompt stable.** It is re-rendered before every step and is the
+start of the prompt the provider caches; a value that differs from one call to
+the next re-bills the whole conversation behind it, on every call. So no
+`current_step`, `current_time`, `current_datetime` or `unix_timestamp` in a
+system prompt (`tests/config/test_prompts_have_no_ticking_clock.py` enforces
+it). `current_date` changes once a day and is fine; an agent that needs the
+exact time has the `datetime` tool.
 
 #### Using with Template Files
 
@@ -384,7 +509,7 @@ You are a specialized assistant for **{{ project_name }}**.
 
 ## Current Context
 Today is {{ current_weekday }}, {{ current_date }}.
-You are on step {{ current_step }} of {{ max_steps }}.
+You have at most {{ max_steps }} steps.
 ```
 
 **config/agents/my_agent.yaml:**
@@ -574,7 +699,7 @@ agents:
     agent_config:
       llm_profile: "deepseek"
       max_steps: 15
-      system_template: "config/prompts/code_reviewer_prompt.yaml"
+      system_template: "config/prompts/code_reviewer_prompt.md"
       tools:
         allowed:
           - "script_interpreter/*"
@@ -605,7 +730,7 @@ agents:
     agent_config:
       llm_profile: "turbo"
       max_steps: 30
-      system_template: "config/prompts/research_assistant_prompt.yaml"
+      system_template: "config/prompts/research_assistant_prompt.md"
       tools:
         allowed:
           - "duckduckgo_search/*"
@@ -669,7 +794,7 @@ Description:  Professional financial analyst for stock market analysis
 Base Type:    agent
 LLM Profile:  turbo
 Max Steps:    20
-Template:     config/prompts/financial_analyst_prompt.yaml
+Template:     config/prompts/financial_analyst_prompt.md
 
 Tools:
   Allowed:  yahoo_finance/*, web_scraper/*, duckduckgo_search/*, basic_operations/wait_for
@@ -750,7 +875,7 @@ GET /api/config-agents/{agent_name}
   "base_type": "agent",
   "llm_profile": "turbo",
   "max_steps": 20,
-  "system_template": "config/prompts/financial_analyst_prompt.yaml",
+  "system_template": "config/prompts/financial_analyst_prompt.md",
   "has_inline_prompt": false,
   "tools": {
     "allowed": ["yahoo_finance/*", "web_scraper/*"],
@@ -988,7 +1113,7 @@ Keep plugin if your agent:
 ## See Also
 
 - [Plugin Authoring Guide](plugin_authoring.md) - For custom agents needing code
-- [MCP Configuration](mcp_configuration.md) - MCP server configuration
+- [Tool server configuration](server_configuration.md) - tool server configuration
 - [Architecture Review](architecture_review_refactoring.md) - System architecture
 - [Service Layer](service_layer_implementation.md) - Service layer details
 

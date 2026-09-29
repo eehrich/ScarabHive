@@ -1,0 +1,33 @@
+plugins:
+  servers:
+    # OKF Knowledge Agent — curate and query Open Knowledge Format bundles
+    # (curated markdown knowledge graphs). Uses the okf plugin's tool surface.
+    okf_agent:
+      type: basic_agent
+      enabled: true
+      description: "Curates and queries Open Knowledge Format (OKF) knowledge bundles — search, read, graph-traverse, write and validate curated markdown knowledge"
+
+      agent_config:
+        llm_profile: [normal]
+        llm_profile_advanced: []
+        max_steps: 60
+        system_template: "./prompts/okf_agent_prompt.md"
+
+        tools:
+          allowed:
+            - "okf/*"
+            - "datetime/*"          # for log dates (YYYY-MM-DD)
+            - "basic_operations/*"
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["okf", "knowledge", "wiki", "curation"]
+        category: "knowledge"
+        visibility: "ui"

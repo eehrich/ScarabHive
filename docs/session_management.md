@@ -12,11 +12,15 @@ The AgentSystem now supports persistent conversation sessions with multi-user su
 data/sessions/
   ├── {user_id}/
   │   ├── {session_id}.json
-  │   ├── {session_id}.json
+  │   ├── index.json                             (top-level sessions)
+  │   ├── .subs.{parent_id}.index.json           (one partition per parent)
   │   └── .backup_{session_id}_{timestamp}.json  (deleted sessions)
   └── anonymous/
       └── {session_id}.json
 ```
+
+Old conversation trees move out of here into `data/session_archive/` and can be
+restored from there — see `docs/session_archive.md` (German).
 
 ### Session Schema
 
@@ -71,8 +75,20 @@ Each message in the `messages` array includes:
 | `tool_call_id` | string | ID reference for tool responses (optional) |
 | `timestamp` | string | ISO 8601 timestamp (optional) |
 | `reasoning_content` | string | Chain-of-thought reasoning (optional) |
+| `request_id` | string | Auf der ersten Nachricht eines Laufs dessen Request-ID (optional; nie an einen Provider). |
+| `tool_request_ids` | object | Auf einer Assistant-Nachricht mit Tool-Calls: je Call-ID die Request-ID, unter der sein Tool läuft — gestempelt, sobald die Tools starten, also schon, während der Aufruf noch wartet (optional; nie an einen Provider). Ein Lauf, den ein Tool startet, trägt diese ID als Präfix (`<id>_async_…`, `<id>_sub_…`). |
+| `step` | int | Auf einer Assistant-Nachricht: der Schritt der Loop, aus dem sie kommt, so nummeriert wie die Live-Ereignisse des Laufs — auch ein Schritt, der nichts gespeichert hat, zählt mit (optional; nie an einen Provider). |
 
 The `estimated_tokens` field is computed when the session is saved using `~4 chars/token` for text and `~1000 tokens` for images.
+
+Die Zeile einer Sub-Session in `.subs.{parent_id}.index.json` trägt zusätzlich
+`runs`: die Request-IDs, mit denen ihre Läufe geöffnet wurden (jede Nachricht
+mit `request_id`), abgeleitet bei jedem Speichern und bei jedem Neuaufbau des
+Index. `GET
+/api/sessions/{id}/children` gibt sie mit; der Chat hängt damit nach einem
+Reload jeden Lauf eines Sub-Agents unter den Aufruf, der ihn gestartet hat
+(`docs/webui_konzept.md` § 5.4). Top-Level-Zeilen in `index.json` haben kein
+`runs`.
 ```
 
 ## API Endpoints
@@ -233,6 +249,12 @@ await manager.update_session_metadata(
 )
 ```
 
+`save_session` schreibt die Kopie des Aufrufers — bei den Metadaten aber gewinnt, was
+die Datei schon hat: `update_session_metadata` schreibt sie auch (etwa die Sub-Agents,
+die der Sub-Agent-Manager einträgt), und eine Kopie, die vor diesem Schreiben geladen
+wurde, nähme es sonst zurück. Einen Schlüssel, den die Datei noch nicht hat, übernimmt
+`save_session` aus der Kopie; einen vorhandenen ändert man mit `update_session_metadata`.
+
 ## UI Integration
 
 ### Session Sidebar
@@ -272,7 +294,28 @@ Sessions are automatically restored after page refresh via localStorage.
 
 - All writes use temp file + atomic replace pattern
 - Prevents corruption from interrupted writes
-- Thread-safe with asyncio.Lock
+- Within one process, `asyncio.Lock` serialises the manager's own tasks
+
+### Several Processes
+
+The API and any number of `agent-cli` runs write the same user's sessions,
+each with its own `SessionManager`. The asyncio lock says nothing about the
+other processes, so two more rules hold:
+
+- **Every index edit goes through `_edit_index`**, which holds an OS file lock
+  on that partition (`.index.json.mutex`, `..subs.<parent>.index.json.mutex`)
+  for one read and one write. Not `*.lock`: in a user directory every
+  `*.lock` is a session presence lock. Measured before (21.09.2026, 8
+  processes x 25 sessions): 35 and 116 sessions on disk were in no index.
+  After, with 8 and 16 processes: none.
+- **Every read retries `PermissionError`** (`_read_json_retrying`). Windows
+  refuses to open a file another process is replacing; the writers retried
+  that already, the readers did not, and `create_session` died on it.
+- A rebuild of a lost index scans for minutes and only **fills in** rows it
+  found: whatever another process wrote meanwhile is newer and stays.
+
+`tests/session/test_session_index_across_processes.py` drives real parallel
+processes.
 
 ### Security
 
@@ -284,7 +327,7 @@ Sessions are automatically restored after page refresh via localStorage.
 
 - Lazy loading (metadata only for list view)
 - Efficient JSON serialization
-- No global index (directory structure serves as index)
+- Listing reads index files (`index.json` plus one partition per parent with sub-agents), not the session files
 
 ## Migration
 

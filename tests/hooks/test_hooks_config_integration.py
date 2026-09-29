@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import pytest
-import tempfile
-from pathlib import Path
 
-from agent_system.hooks import HooksConfig
+from agent_system.config.settings import load_settings
+from agent_system.hooks import HooksConfig, load_hooks_config
 from agent_system.hooks.registry import HookRegistry
 from agent_system.plugins.discovery import register_plugin_hooks
 from tests.plugins.test_plugin_hook_discovery import MockHookPlugin
@@ -183,8 +182,8 @@ async def test_global_config_no_override_uses_plugin_defaults(clean_registry):
 
 
 @pytest.mark.asyncio
-async def test_global_config_from_yaml_integration(clean_registry):
-    """Test loading hooks config from YAML and applying to plugins."""
+async def test_global_config_from_yaml_integration(clean_registry, tmp_path, monkeypatch):
+    """Hooks config from YAML, through load_settings, applied to plugins."""
     yaml_content = """
 hooks:
   enabled: true
@@ -197,37 +196,32 @@ hooks:
         before: ["end"]
         after: ["begin"]
 """
+    (tmp_path / "config.yaml").write_text("includes:\n  - plugins.yaml\n", encoding="utf-8")
+    (tmp_path / "plugins.yaml").write_text(yaml_content, encoding="utf-8")
+    monkeypatch.delenv("AGENT_CONFIG_PATH", raising=False)
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-        f.write(yaml_content)
-        temp_path = f.name
+    hooks_config = load_hooks_config(load_settings(str(tmp_path / "config.yaml")))
 
-    try:
-        hooks_config = HooksConfig.from_yaml(temp_path)
+    plugin = MockHookPlugin("test_plugin")
+    metadata = {
+        'hooks': [
+            {
+                'name': 'test_hook',
+                'type': 'pre_llm_call',
+                'enabled': True,
+                'timeout': 30.0
+            }
+        ]
+    }
 
-        plugin = MockHookPlugin("test_plugin")
-        metadata = {
-            'hooks': [
-                {
-                    'name': 'test_hook',
-                    'type': 'pre_llm_call',
-                    'enabled': True,
-                    'timeout': 30.0
-                }
-            ]
-        }
+    await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
 
-        await register_plugin_hooks("test_plugin", plugin, metadata, clean_registry, hooks_config)
-
-        hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
-        assert hook_info is not None
-        assert hook_info['enabled'] is False  # From YAML override
-        assert hook_info['timeout'] == 10.0   # From YAML override
-        assert hook_info['order']['before'] == ['end']
-        assert hook_info['order']['after'] == ['begin']
-
-    finally:
-        Path(temp_path).unlink()
+    hook_info = clean_registry.get_hook_info('test_plugin.test_hook')
+    assert hook_info is not None
+    assert hook_info['enabled'] is False  # From YAML override
+    assert hook_info['timeout'] == 10.0   # From YAML override
+    assert hook_info['order']['before'] == ['end']
+    assert hook_info['order']['after'] == ['begin']
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,2824 @@
+{
+  "description": "JSON Schema for the AgentSystem main configuration (config/config.yaml, pre-include-merge). GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
+  "properties": {
+    "name": {
+      "default": "AgentSystem",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "default": "0.0.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "description": {
+      "default": "Scarab Flexible AI Agent System",
+      "title": "Description",
+      "type": "string"
+    },
+    "includes": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Includes"
+    },
+    "paths": {
+      "$ref": "#/$defs/PathsConfig"
+    },
+    "context": {
+      "$ref": "#/$defs/ContextConfig"
+    },
+    "status": {
+      "$ref": "#/$defs/StatusConfig"
+    },
+    "vision": {
+      "$ref": "#/$defs/VisionConfig"
+    },
+    "session_presence": {
+      "$ref": "#/$defs/SessionPresenceConfig"
+    },
+    "session_archive": {
+      "$ref": "#/$defs/SessionArchiveConfig"
+    },
+    "network": {
+      "$ref": "#/$defs/NetworkConfig"
+    },
+    "default_agent": {
+      "default": "basic_agent",
+      "title": "Default Agent",
+      "type": "string"
+    },
+    "logging": {
+      "$ref": "#/$defs/LoggingConfig"
+    },
+    "auth": {
+      "$ref": "#/$defs/AuthConfig"
+    },
+    "skills": {
+      "$ref": "#/$defs/SkillsSystemConfig"
+    },
+    "llm_system": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LLMSystemConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "plugins": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "external_servers": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MCPServersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "hooks": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GlobalHooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "Main Configuration Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "AgentConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for individual agent instances (matches type comment in mcp.yaml)",
+      "properties": {
+        "llm_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "default": "normal",
+          "title": "Llm Profile"
+        },
+        "llm_profile_advanced": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llm Profile Advanced"
+        },
+        "inherit_parent_llm": {
+          "default": false,
+          "title": "Inherit Parent Llm",
+          "type": "boolean"
+        },
+        "llm_profile_fallbacks": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llm Profile Fallbacks"
+        },
+        "llm_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llm Params"
+        },
+        "fallback_recovery_seconds": {
+          "default": 3600,
+          "title": "Fallback Recovery Seconds",
+          "type": "integer"
+        },
+        "max_steps": {
+          "default": 20,
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "tools": {
+          "$ref": "#/$defs/ToolConfig"
+        },
+        "hooks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HooksConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "system_template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Template"
+        },
+        "system_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt"
+        },
+        "skills": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "$ref": "#/$defs/SkillsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "template_vars": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template Vars"
+        },
+        "timeouts": {
+          "$ref": "#/$defs/TimeoutConfig"
+        },
+        "loop_detection": {
+          "$ref": "#/$defs/LoopDetectionConfig"
+        },
+        "reasoning_loop": {
+          "$ref": "#/$defs/ReasoningLoopConfig"
+        },
+        "auto_escalate_on_stuck": {
+          "default": false,
+          "title": "Auto Escalate On Stuck",
+          "type": "boolean"
+        },
+        "escalate_rounds": {
+          "default": 2,
+          "title": "Escalate Rounds",
+          "type": "integer"
+        },
+        "escalate_max_calls": {
+          "default": 6,
+          "title": "Escalate Max Calls",
+          "type": "integer"
+        },
+        "escalate_error_streak": {
+          "default": 2,
+          "title": "Escalate Error Streak",
+          "type": "integer"
+        },
+        "output_cap_notes": {
+          "default": 0,
+          "title": "Output Cap Notes",
+          "type": "integer"
+        }
+      },
+      "title": "AgentConfig",
+      "type": "object"
+    },
+    "AgentMetadata": {
+      "description": "Metadata for agent configuration.\n\nProvides additional information about agents for discoverability,\ncategorization, and visibility control.",
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Author"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tags"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "visibility": {
+          "default": "private",
+          "enum": [
+            "ui",
+            "tool",
+            "both",
+            "private"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        },
+        "min_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "guest",
+                "user",
+                "admin"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Role"
+        }
+      },
+      "title": "AgentMetadata",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "AnonymousAccessConfig": {
+      "description": "Configuration for anonymous (unauthenticated) access.\n\nWhen auth.enabled=true but anonymous_access.enabled=true,\nunauthenticated users can access certain endpoints with\na limited guest role.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "role": {
+          "default": "guest",
+          "title": "Role",
+          "type": "string"
+        },
+        "allowed_endpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Endpoints",
+          "type": "array"
+        },
+        "rate_limit_multiplier": {
+          "default": 0.5,
+          "title": "Rate Limit Multiplier",
+          "type": "number"
+        }
+      },
+      "title": "AnonymousAccessConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "AuthConfig": {
+      "description": "Authentication and authorization configuration.\n\nMulti-layered security configuration for the AgentSystem.\n\nSecurity Layers:\n1. Transport: HTTPS (handled externally by reverse proxy)\n2. Rate Limiting: Per-IP request limiting\n3. Authentication: JWT tokens / API keys\n4. Authorization: Role-based access control\n5. Request Context: User context in agent execution",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "secret_key": {
+          "default": "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION",
+          "title": "Secret Key",
+          "type": "string"
+        },
+        "reject_default_secret_key": {
+          "default": false,
+          "title": "Reject Default Secret Key",
+          "type": "boolean"
+        },
+        "registration": {
+          "$ref": "#/$defs/RegistrationConfig"
+        },
+        "algorithm": {
+          "default": "HS256",
+          "title": "Algorithm",
+          "type": "string"
+        },
+        "access_token_expire_minutes": {
+          "default": 30,
+          "title": "Access Token Expire Minutes",
+          "type": "integer"
+        },
+        "refresh_token_expire_days": {
+          "default": 30,
+          "title": "Refresh Token Expire Days",
+          "type": "integer"
+        },
+        "database_path": {
+          "default": "data/users.db",
+          "title": "Database Path",
+          "type": "string"
+        },
+        "rate_limit_enabled": {
+          "default": true,
+          "title": "Rate Limit Enabled",
+          "type": "boolean"
+        },
+        "requests_per_minute": {
+          "default": 60,
+          "title": "Requests Per Minute",
+          "type": "integer"
+        },
+        "security_headers_enabled": {
+          "default": true,
+          "title": "Security Headers Enabled",
+          "type": "boolean"
+        },
+        "cors_enabled": {
+          "default": true,
+          "title": "Cors Enabled",
+          "type": "boolean"
+        },
+        "cors_origins": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cors Origins",
+          "type": "array"
+        },
+        "cors_credentials": {
+          "default": false,
+          "title": "Cors Credentials",
+          "type": "boolean"
+        },
+        "cors_methods": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cors Methods",
+          "type": "array"
+        },
+        "cors_headers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cors Headers",
+          "type": "array"
+        },
+        "trusted_hosts": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trusted Hosts"
+        },
+        "default_admin_username": {
+          "default": "admin",
+          "title": "Default Admin Username",
+          "type": "string"
+        },
+        "default_admin_password": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Admin Password"
+        },
+        "default_admin_email": {
+          "default": "admin@localhost",
+          "title": "Default Admin Email",
+          "type": "string"
+        },
+        "anonymous_access": {
+          "$ref": "#/$defs/AnonymousAccessConfig"
+        },
+        "endpoint_security": {
+          "$ref": "#/$defs/EndpointSecurityConfig"
+        },
+        "llm_security": {
+          "$ref": "#/$defs/LLMSecurityConfig"
+        },
+        "plugin_security": {
+          "$ref": "#/$defs/PluginSecurityConfig"
+        }
+      },
+      "title": "AuthConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "BatchProviderConfig": {
+      "description": "Configuration for a specific batch provider (Gemini/OpenAI).\n\nBatch APIs provide 50% cost reduction and separate rate limits\nfor non-time-critical workloads. Requests are collected, submitted\nas batch jobs, and results are polled asynchronously.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "collection_window_seconds": {
+          "default": 10.0,
+          "title": "Collection Window Seconds",
+          "type": "number"
+        },
+        "max_requests_per_batch": {
+          "default": 100,
+          "title": "Max Requests Per Batch",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "default": 10.0,
+          "title": "Poll Interval Seconds",
+          "type": "number"
+        },
+        "max_wait_hours": {
+          "default": 24.0,
+          "title": "Max Wait Hours",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 3,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "cancel_on_startup": {
+          "default": true,
+          "title": "Cancel On Startup",
+          "type": "boolean"
+        },
+        "fallback_to_sync": {
+          "default": false,
+          "title": "Fallback To Sync",
+          "type": "boolean"
+        }
+      },
+      "title": "BatchProviderConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "BatchSystemConfig": {
+      "description": "Global batch system configuration.\n\nCentralized configuration for batch processing. Models with\nprovider='batch' reference this config via their batch_provider field.",
+      "properties": {
+        "storage_path": {
+          "default": "data/batch_jobs",
+          "title": "Storage Path",
+          "type": "string"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BatchProviderConfig"
+          },
+          "title": "Providers",
+          "type": "object"
+        }
+      },
+      "title": "BatchSystemConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "CancellationConfig": {
+      "description": "Configuration for the cancellation system",
+      "properties": {
+        "cleanup_timeout": {
+          "default": 10.0,
+          "title": "Cleanup Timeout",
+          "type": "number"
+        },
+        "monitor_interval": {
+          "default": 1.0,
+          "title": "Monitor Interval",
+          "type": "number"
+        }
+      },
+      "title": "CancellationConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ContextConfig": {
+      "description": "Context information configuration",
+      "properties": {
+        "auto_datetime": {
+          "default": true,
+          "title": "Auto Datetime",
+          "type": "boolean"
+        },
+        "timezone": {
+          "default": "Europe/Berlin",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "location": {
+          "default": "Germany",
+          "title": "Location",
+          "type": "string"
+        }
+      },
+      "title": "ContextConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "DecisionModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual decision model configuration.\n\nA decision model answers NAMED QUESTIONS about a piece of content with a\ntyped value and a probability — no message list, no prose, no tool calls\n(TypeSafe's Jev behind OpenRouter's ``/api/alpha/decisions`` is the first).\nIt therefore does not belong in ``models``: nothing here can serve\n``chat()``, and an entry there would be offered to every agent as a chat\nmodel and checked for a per-token price it does not have. OpenRouter's\nanswer carries its cost; one that carries none (a local Laya, TypeSafe\ndirect) is priced by the usage tracker from llm_pricing.yaml, by model.\n\nThe shape of ``TTSModelConfig`` minus its voice, for the same reason: a\nnon-chat client needs a connection and nothing from the chat knobs.",
+      "properties": {
+        "provider": {
+          "default": "openrouter_decisions",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "request_timeout": {
+          "default": 60,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "DecisionModelConfig",
+      "type": "object"
+    },
+    "DecisionProfile": {
+      "additionalProperties": false,
+      "description": "Named decision profile that references a decision model.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "DecisionProfile",
+      "type": "object"
+    },
+    "EndpointSecurityConfig": {
+      "description": "Endpoint-level security configuration.\n\nWhen auth.enabled=true, this config controls which endpoints\nrequire authentication and what role is needed.",
+      "properties": {
+        "default_policy": {
+          "default": "require_auth",
+          "enum": [
+            "require_auth",
+            "allow_anonymous"
+          ],
+          "title": "Default Policy",
+          "type": "string"
+        },
+        "audit_enabled": {
+          "default": true,
+          "title": "Audit Enabled",
+          "type": "boolean"
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/EndpointSecurityRule"
+          },
+          "title": "Rules",
+          "type": "array"
+        }
+      },
+      "title": "EndpointSecurityConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "EndpointSecurityRule": {
+      "description": "Security rule for an endpoint pattern.\n\nPatterns support:\n- Exact match: \"GET /agents\"\n- Wildcard: \"/admin/*\", \"* /sessions/*\"\n- Method prefix: \"POST /run\", \"GET /events\"",
+      "properties": {
+        "pattern": {
+          "title": "Pattern",
+          "type": "string"
+        },
+        "policy": {
+          "default": "require_auth",
+          "enum": [
+            "require_auth",
+            "allow_anonymous"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "min_role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Role"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "title": "EndpointSecurityRule",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ExternalServerCacheConfig": {
+      "description": "Configuration for external server caching",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "tool_list_ttl": {
+          "default": 30.0,
+          "title": "Tool List Ttl",
+          "type": "number"
+        },
+        "max_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Size"
+        }
+      },
+      "title": "ExternalServerCacheConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ExternalServerConnectionConfig": {
+      "description": "Configuration for external server connections",
+      "properties": {
+        "timeout": {
+          "default": 5.0,
+          "title": "Timeout",
+          "type": "number"
+        },
+        "parallel_connect": {
+          "default": true,
+          "title": "Parallel Connect",
+          "type": "boolean"
+        }
+      },
+      "title": "ExternalServerConnectionConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "GlobalHooksConfig": {
+      "additionalProperties": false,
+      "description": "Global hook settings: the top-level ``hooks:`` section of\nconfig/plugins.yaml or any included file, merged by load_settings like\n``plugins:``. Not the per-agent ``agent_config.hooks``.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "default": true,
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_timeout": {
+          "anyOf": [
+            {
+              "default": 30.0,
+              "exclusiveMinimum": 0,
+              "title": "Default Timeout",
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/HookOverrideConfig"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": "Overrides",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "GlobalHooksConfig",
+      "type": "object"
+    },
+    "HTTPXTimeoutConfig": {
+      "description": "HTTPX timeout configuration",
+      "properties": {
+        "connect": {
+          "default": 10.0,
+          "title": "Connect",
+          "type": "number"
+        },
+        "read": {
+          "default": 180.0,
+          "title": "Read",
+          "type": "number"
+        },
+        "write": {
+          "default": 10.0,
+          "title": "Write",
+          "type": "number"
+        },
+        "pool": {
+          "default": 5.0,
+          "title": "Pool",
+          "type": "number"
+        }
+      },
+      "title": "HTTPXTimeoutConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "HookOrderConfig": {
+      "additionalProperties": false,
+      "description": "Where a hook runs relative to others (names, or the virtual begin/end).",
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "Before",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "title": "After",
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "HookOrderConfig",
+      "type": "object"
+    },
+    "HookOverrideConfig": {
+      "additionalProperties": false,
+      "description": "Operator override for one hook. Only the fields that are set apply.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookOrderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "HookOverrideConfig",
+      "type": "object"
+    },
+    "HooksConfig": {
+      "description": "Hook system configuration for individual agents.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "overrides": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Overrides",
+          "type": "object"
+        }
+      },
+      "title": "HooksConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LLMModelConfig": {
+      "additionalProperties": false,
+      "description": "Individual LLM model configuration",
+      "properties": {
+        "provider": {
+          "default": "ollama",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "context_window": {
+          "default": 32768,
+          "title": "Context Window",
+          "type": "integer"
+        },
+        "ollama_mode": {
+          "default": "openai_compat",
+          "enum": [
+            "openai_compat",
+            "native"
+          ],
+          "title": "Ollama Mode",
+          "type": "string"
+        },
+        "request_timeout": {
+          "default": 120,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "stream_silence_timeout": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stream Silence Timeout"
+        },
+        "parallel_tool_calls": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": true,
+          "title": "Parallel Tool Calls"
+        },
+        "httpx_timeouts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HTTPXTimeoutConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCapabilitiesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "include_thoughts": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Thoughts"
+        },
+        "enable_prompt_caching": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enable Prompt Caching"
+        },
+        "thinking_budget": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Budget"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
+        },
+        "modalities": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modalities"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "safety_settings": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Settings"
+        },
+        "tool_schema_dialect": {
+          "anyOf": [
+            {
+              "enum": [
+                "json_schema",
+                "gemini_function_declarations"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Schema Dialect"
+        },
+        "assistant_reasoning_field": {
+          "anyOf": [
+            {
+              "enum": [
+                "omit",
+                "reasoning_content"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assistant Reasoning Field"
+        },
+        "thinking_request_shape": {
+          "anyOf": [
+            {
+              "enum": [
+                "budget",
+                "adaptive"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Request Shape"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "prompt_cache_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Key"
+        },
+        "prompt_cache_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "multi_turn",
+                "task_sequence",
+                "one_shot",
+                "off"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Mode"
+        },
+        "prompt_cache_marker_style": {
+          "anyOf": [
+            {
+              "enum": [
+                "openai",
+                "anthropic",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Marker Style"
+        },
+        "provider_routing": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Routing"
+        },
+        "provider_affinity_minutes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Affinity Minutes"
+        },
+        "reasoning_details_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "keep_last",
+                "keep_all",
+                "strip"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Details Mode"
+        },
+        "plugins": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugins"
+        },
+        "prompt_cache_options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Options"
+        },
+        "safety_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safety Identifier"
+        },
+        "batch_provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Batch Provider"
+        }
+      },
+      "title": "LLMModelConfig",
+      "type": "object"
+    },
+    "LLMProfile": {
+      "description": "LLM usage profile that references a model",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Steps"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "LLMProfile",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LLMSecurityConfig": {
+      "description": "Security configuration for LLM API calls.\n\nThese settings ensure that LLM requests (which cost money)\nare properly authorized and audited.",
+      "properties": {
+        "require_valid_user": {
+          "default": true,
+          "title": "Require Valid User",
+          "type": "boolean"
+        },
+        "validate_session_ownership": {
+          "default": true,
+          "title": "Validate Session Ownership",
+          "type": "boolean"
+        },
+        "audit_llm_requests": {
+          "default": true,
+          "title": "Audit Llm Requests",
+          "type": "boolean"
+        },
+        "max_tokens_per_request_anonymous": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens Per Request Anonymous"
+        },
+        "max_requests_per_hour_anonymous": {
+          "default": 0,
+          "title": "Max Requests Per Hour Anonymous",
+          "type": "integer"
+        }
+      },
+      "title": "LLMSecurityConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LLMSystemConfig": {
+      "description": "Complete LLM system configuration",
+      "properties": {
+        "httpx_timeouts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HTTPXTimeoutConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "openrouter_routing": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Openrouter Routing"
+        },
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchSystemConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LLMModelConfig"
+          },
+          "default": {},
+          "title": "Models",
+          "type": "object"
+        },
+        "profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LLMProfile"
+          },
+          "default": {},
+          "title": "Profiles",
+          "type": "object"
+        },
+        "default_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "normal",
+          "title": "Default Profile"
+        },
+        "tts_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TTSModelConfig"
+          },
+          "default": {},
+          "title": "Tts Models",
+          "type": "object"
+        },
+        "tts_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TTSProfile"
+          },
+          "default": {},
+          "title": "Tts Profiles",
+          "type": "object"
+        },
+        "decision_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionModelConfig"
+          },
+          "default": {},
+          "title": "Decision Models",
+          "type": "object"
+        },
+        "decision_profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DecisionProfile"
+          },
+          "default": {},
+          "title": "Decision Profiles",
+          "type": "object"
+        },
+        "default_decision_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Decision Profile"
+        }
+      },
+      "title": "LLMSystemConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LoggingConfig": {
+      "description": "Logging configuration",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "level": {
+          "default": "DEBUG",
+          "title": "Level",
+          "type": "string"
+        },
+        "file": {
+          "default": "logs/agent.log",
+          "title": "File",
+          "type": "string"
+        },
+        "file_cli": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Cli"
+        },
+        "file_api": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Api"
+        },
+        "cancellation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CancellationConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rotation_enabled": {
+          "default": true,
+          "title": "Rotation Enabled",
+          "type": "boolean"
+        },
+        "max_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "10MB",
+          "title": "Max Bytes"
+        },
+        "backup_count": {
+          "default": 5,
+          "title": "Backup Count",
+          "type": "integer"
+        }
+      },
+      "title": "LoggingConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "LoopDetectionConfig": {
+      "description": "Configuration for tool call loop detection.\n\nPrevents agents from getting stuck in infinite loops calling\nthe same tool(s) repeatedly with identical arguments.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "history_size": {
+          "default": 20,
+          "title": "History Size",
+          "type": "integer"
+        },
+        "exact_match_threshold": {
+          "default": 3,
+          "title": "Exact Match Threshold",
+          "type": "integer"
+        },
+        "sequence_threshold": {
+          "default": 2,
+          "title": "Sequence Threshold",
+          "type": "integer"
+        },
+        "block_after_threshold": {
+          "default": 5,
+          "title": "Block After Threshold",
+          "type": "integer"
+        },
+        "auto_unblock_after_steps": {
+          "default": 3,
+          "title": "Auto Unblock After Steps",
+          "type": "integer"
+        }
+      },
+      "title": "LoopDetectionConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "MCPAuthConfig": {
+      "description": "Authentication configuration for tool servers",
+      "properties": {
+        "type": {
+          "default": "none",
+          "title": "Type",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "api_key_header": {
+          "default": "Authorization",
+          "title": "Api Key Header",
+          "type": "string"
+        },
+        "bearer_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bearer Token"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "password": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Password"
+        },
+        "max_retries": {
+          "default": 3,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "retry_delay": {
+          "default": 1.0,
+          "title": "Retry Delay",
+          "type": "number"
+        }
+      },
+      "title": "MCPAuthConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "MCPServersConfig": {
+      "description": "Configuration for external MCP servers (matches config/mcp_servers.yaml)",
+      "properties": {
+        "connection": {
+          "$ref": "#/$defs/ExternalServerConnectionConfig"
+        },
+        "cache": {
+          "$ref": "#/$defs/ExternalServerCacheConfig"
+        },
+        "remote_servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RemoteMCPConfig"
+          },
+          "title": "Remote Servers",
+          "type": "object"
+        }
+      },
+      "title": "MCPServersConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ModelCapabilitiesConfig": {
+      "additionalProperties": false,
+      "description": "What a model can take and produce.\n\nTHE definition — llm.capabilities.ModelCapabilities derives from this\nclass instead of repeating it. It used to be a second copy, field for\nfield, and a new capability had to be added twice.",
+      "properties": {
+        "tools": {
+          "default": true,
+          "title": "Tools",
+          "type": "boolean"
+        },
+        "function_calling": {
+          "default": true,
+          "title": "Function Calling",
+          "type": "boolean"
+        },
+        "image_input": {
+          "default": false,
+          "title": "Image Input",
+          "type": "boolean"
+        },
+        "audio_input": {
+          "default": false,
+          "title": "Audio Input",
+          "type": "boolean"
+        },
+        "video_input": {
+          "default": false,
+          "title": "Video Input",
+          "type": "boolean"
+        },
+        "streaming": {
+          "default": true,
+          "title": "Streaming",
+          "type": "boolean"
+        },
+        "json_mode": {
+          "default": false,
+          "title": "Json Mode",
+          "type": "boolean"
+        },
+        "structured_output": {
+          "default": false,
+          "title": "Structured Output",
+          "type": "boolean"
+        },
+        "supported_api_types": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supported Api Types"
+        },
+        "default_api_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Api Type"
+        },
+        "max_image_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Image Size"
+        },
+        "max_image_resolution": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Image Resolution"
+        },
+        "min_image_resolution": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Image Resolution"
+        },
+        "supported_image_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Image Formats",
+          "type": "array"
+        },
+        "image_detail_control": {
+          "default": false,
+          "title": "Image Detail Control",
+          "type": "boolean"
+        },
+        "max_audio_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Audio Size"
+        },
+        "max_audio_duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Audio Duration"
+        },
+        "supported_audio_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Audio Formats",
+          "type": "array"
+        },
+        "max_video_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Video Size"
+        },
+        "max_video_duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Video Duration"
+        },
+        "supported_video_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Video Formats",
+          "type": "array"
+        },
+        "supports_files_api": {
+          "default": false,
+          "title": "Supports Files Api",
+          "type": "boolean"
+        },
+        "supports_file_uploads": {
+          "default": false,
+          "title": "Supports File Uploads",
+          "type": "boolean"
+        },
+        "developer_role": {
+          "anyOf": [
+            {
+              "enum": [
+                "developer",
+                "system",
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Developer Role"
+        }
+      },
+      "title": "ModelCapabilitiesConfig",
+      "type": "object"
+    },
+    "NetworkConfig": {
+      "description": "Network configuration for the application",
+      "properties": {
+        "ssl_verify": {
+          "default": false,
+          "title": "Ssl Verify",
+          "type": "boolean"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8000,
+          "title": "Port",
+          "type": "integer"
+        },
+        "remote_paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Paths"
+        },
+        "disable_cache": {
+          "default": true,
+          "title": "Disable Cache",
+          "type": "boolean"
+        },
+        "http_connection_limit": {
+          "default": 10,
+          "title": "Http Connection Limit",
+          "type": "integer"
+        },
+        "http_connection_limit_per_host": {
+          "default": 5,
+          "title": "Http Connection Limit Per Host",
+          "type": "integer"
+        },
+        "cli_request_timeout": {
+          "default": 5.0,
+          "title": "Cli Request Timeout",
+          "type": "number"
+        }
+      },
+      "title": "NetworkConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "PathsConfig": {
+      "description": "Where the system keeps what it writes (agent_system/paths.py).\n\n``data_dir`` moves the whole data directory: every relative ``data/...``\npath -- in this configuration, in plugin schema defaults, in the code --\nthen lands in it. Relative values are relative to the project; the\nenvironment variable AGENT_DATA_DIR wins over this. Only the master config\ncan set it, and changing it needs a restart.",
+      "properties": {
+        "data_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Dir"
+        }
+      },
+      "title": "PathsConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "PluginSecurityConfig": {
+      "description": "Security configuration for plugin web endpoints.\n\nControls how plugin-provided HTTP endpoints are secured.\nBy default, all plugin endpoints require authentication.",
+      "properties": {
+        "default_policy": {
+          "default": "require_auth",
+          "enum": [
+            "require_auth",
+            "allow_anonymous"
+          ],
+          "title": "Default Policy",
+          "type": "string"
+        },
+        "default_min_role": {
+          "default": "user",
+          "title": "Default Min Role",
+          "type": "string"
+        },
+        "plugin_overrides": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Plugin Overrides",
+          "type": "object"
+        },
+        "endpoint_rules": {
+          "items": {
+            "$ref": "#/$defs/EndpointSecurityRule"
+          },
+          "title": "Endpoint Rules",
+          "type": "array"
+        }
+      },
+      "title": "PluginSecurityConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "PluginsConfig": {
+      "description": "Configuration for local plugins (matches config/plugins.yaml)",
+      "properties": {
+        "plugin_dirs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Plugin Dirs",
+          "type": "array"
+        },
+        "default_config": {
+          "$ref": "#/$defs/ToolServerConfig"
+        },
+        "servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolServerConfig"
+          },
+          "title": "Servers",
+          "type": "object"
+        }
+      },
+      "title": "PluginsConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ReasoningLoopConfig": {
+      "description": "Configuration for reasoning loop detection.\n\nCatches a model that is stuck inside its own THINKING and keeps paying\nfor it — measured: one run spent 65.535 reasoning tokens over 20 minutes\nrepeating a single sentence. The run loop aborts such a call and retries\nthe same model once.\n\nOnly the two knobs worth turning live here. The measurement geometry\n(window size, check interval, compared piece length) stays in\n``servers/agent/reasoning_loop.py``: those three were calibrated TOGETHER\nwith the threshold, so changing one here would quietly make the threshold\nmean something else.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "repetition_threshold": {
+          "default": 0.5,
+          "title": "Repetition Threshold",
+          "type": "number"
+        }
+      },
+      "title": "ReasoningLoopConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RegistrationConfig": {
+      "additionalProperties": false,
+      "description": "Self-registration through POST /auth/register, which is reachable without login.\n\nThe defaults keep what the endpoint always did: open, the account active at once,\nrole user.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "require_approval": {
+          "default": false,
+          "title": "Require Approval",
+          "type": "boolean"
+        },
+        "default_role": {
+          "default": "user",
+          "enum": [
+            "guest",
+            "user"
+          ],
+          "title": "Default Role",
+          "type": "string"
+        }
+      },
+      "title": "RegistrationConfig",
+      "type": "object"
+    },
+    "RemoteMCPConfig": {
+      "description": "Configuration for a remote MCP server",
+      "properties": {
+        "url": {
+          "default": "",
+          "title": "Url",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "transport": {
+          "default": "streaming",
+          "title": "Transport",
+          "type": "string"
+        },
+        "initialization_options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initialization Options"
+        },
+        "features": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "boolean"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Features"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        },
+        "env": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Env"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MCPAuthConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "RemoteMCPConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "SessionArchiveConfig": {
+      "description": "Old conversations move out of data/sessions into zips (services/session_archive.py).\n\nThe unit is a whole tree -- a root session and its sub-agent sessions -- and\nit moves only when every session in it is older than ``retention_days`` and\nnone of them is running. Changing these values needs a restart.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "retention_days": {
+          "default": 30,
+          "minimum": 1,
+          "title": "Retention Days",
+          "type": "integer"
+        },
+        "sweep_interval_hours": {
+          "default": 24.0,
+          "exclusiveMinimum": 0,
+          "title": "Sweep Interval Hours",
+          "type": "number"
+        },
+        "first_sweep_delay_seconds": {
+          "default": 300.0,
+          "minimum": 0,
+          "title": "First Sweep Delay Seconds",
+          "type": "number"
+        },
+        "max_trees_per_sweep": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Max Trees Per Sweep",
+          "type": "integer"
+        },
+        "archive_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archive Path"
+        }
+      },
+      "title": "SessionArchiveConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "SessionPresenceConfig": {
+      "description": "Which sessions run right now, and waking idle ones (core/session_presence.py).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_wake_depth": {
+          "default": 3,
+          "title": "Max Wake Depth",
+          "type": "integer"
+        }
+      },
+      "title": "SessionPresenceConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "SkillsConfig": {
+      "description": "Which packaged skills an agent gets (see docs/skills_design.md).\n\n``always`` skills are appended to the system prompt at render time — the\nagent HAS the knowledge, it does not have to ask for it. Deterministic and\ncache-friendly (part of the stable prefix).\n\nAccepts a bare list as shorthand, so both forms work::\n\n    skills: [\"house-style\"]              # == always: [\"house-style\"]\n    skills:\n      always: [\"house-style\"]\n\n``on_demand`` skills are NOT put in the prompt — only a one-line index of\nthem is, so the agent knows they exist and can pull the body (and any\nbundled ``reference/`` files) with the ``skills`` plugin's tools. Use it for\nmaterial that is large and only occasionally needed; anything the agent\nneeds most of the time belongs in ``always``, where it cannot be forgotten.",
+      "properties": {
+        "always": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Always",
+          "type": "array"
+        },
+        "on_demand": {
+          "items": {
+            "type": "string"
+          },
+          "title": "On Demand",
+          "type": "array"
+        }
+      },
+      "title": "SkillsConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "SkillsSystemConfig": {
+      "description": "Where packaged skills are discovered (matches the ``skills:`` block).\n\nMirrors ``plugins.plugin_dirs``: several roots, each of whose immediate\nsubdirectories may be a skill. Relative paths resolve like plugin dirs\n(config-folder first, then repo root). The first root defining a name wins.\n\nEmpty means \"use the defaults\" (``skills/`` and ``.claude/skills/``, or\n``$AGENT_SKILL_DIRS``), so an existing config without this block keeps\nworking. Note the inverse: a config that DOES list roots replaces the\ndefaults entirely — listing only ``skills`` hides ``.claude/skills``.",
+      "properties": {
+        "skill_dirs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Skill Dirs",
+          "type": "array"
+        }
+      },
+      "title": "SkillsSystemConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "StatusConfig": {
+      "description": "Status message system configuration",
+      "properties": {
+        "queue_maxsize": {
+          "default": 1000,
+          "title": "Queue Maxsize",
+          "type": "integer"
+        },
+        "drop_oldest_when_full": {
+          "default": true,
+          "title": "Drop Oldest When Full",
+          "type": "boolean"
+        },
+        "sse_keepalive_interval": {
+          "default": 15.0,
+          "title": "Sse Keepalive Interval",
+          "type": "number"
+        },
+        "llm_heartbeat_interval": {
+          "default": 5.0,
+          "title": "Llm Heartbeat Interval",
+          "type": "number"
+        }
+      },
+      "title": "StatusConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "TTSModelConfig": {
+      "description": "Individual TTS model configuration.\n\nDefines a TTS backend (e.g. Gemini TTS) with its connection and\ngeneration parameters.",
+      "properties": {
+        "provider": {
+          "default": "gemini_tts",
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Voice"
+        },
+        "request_timeout": {
+          "default": 300,
+          "title": "Request Timeout",
+          "type": "integer"
+        },
+        "max_retries": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "TTSModelConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "TTSProfile": {
+      "description": "Named TTS profile that references a TTS model.\n\nNo voice here: the default voice lives on the MODEL entry\n(TTSModelConfig.voice) — a profile-level default_voice existed once,\nwas read by nobody, and only looked like configuration.",
+      "properties": {
+        "model_ref": {
+          "title": "Model Ref",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "model_ref"
+      ],
+      "title": "TTSProfile",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "TimeoutConfig": {
+      "description": "Timeout configuration for agent execution to prevent deadlocks.",
+      "properties": {
+        "status_queue_put_timeout": {
+          "default": 5.0,
+          "title": "Status Queue Put Timeout",
+          "type": "number"
+        },
+        "llm_task_max_iterations": {
+          "default": 864000,
+          "title": "Llm Task Max Iterations",
+          "type": "integer"
+        },
+        "session_lock_timeout": {
+          "default": 5.0,
+          "title": "Session Lock Timeout",
+          "type": "number"
+        },
+        "tool_cleanup_timeout": {
+          "default": 30.0,
+          "title": "Tool Cleanup Timeout",
+          "type": "number"
+        }
+      },
+      "title": "TimeoutConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ToolConfig": {
+      "description": "Tool access control configuration",
+      "properties": {
+        "allowed": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Allowed"
+        },
+        "blocked": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Blocked"
+        }
+      },
+      "title": "ToolConfig",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ToolServerConfig": {
+      "additionalProperties": true,
+      "description": "tool server configuration (matches type comment in mcp.yaml for default_config)",
+      "properties": {
+        "type": {
+          "default": "basic_agent",
+          "title": "Type",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "self_tool_descriptions": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Self Tool Descriptions"
+        },
+        "agent_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ToolServerConfig",
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "VisionConfig": {
+      "description": "Vision/image processing configuration",
+      "properties": {
+        "image_warn_size_mb": {
+          "default": 10.0,
+          "title": "Image Warn Size Mb",
+          "type": "number"
+        },
+        "image_max_size_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image Max Size Mb"
+        }
+      },
+      "title": "VisionConfig",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+}

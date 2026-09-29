@@ -1,0 +1,12 @@
+# tool_approval plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest.
+[plugin]
+name = "tool_approval"
+version = "0.1.0"
+description = "Approvals before tool calls: allow/deny rules per agent, and in ask mode a question to the person watching the run (allow once, for the session, or deny)."
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks", "web"]
+category = "security"
+tags = ["hooks", "approval", "security", "tools"]
+requires = { agent_system = ">=0.7.0" }

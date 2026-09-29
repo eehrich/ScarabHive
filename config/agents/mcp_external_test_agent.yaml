@@ -1,0 +1,40 @@
+plugins:
+  servers:
+    # Rauchtest fuer EXTERNE MCP-Server: der einzige Agent, der Tools eines
+    # fremden Servers rufen darf. Existiert, damit "externes MCP geht noch"
+    # eine Frage ist, die man in einem Lauf beantworten kann -- analog zu
+    # file_ops_test_agent fuer die lokale Dateiebene.
+    #
+    # Braucht `everything` in config/mcp_servers.yaml auf enabled: true.
+    # Der steht dort bewusst auf false; fuer einen Test kurz umschalten.
+    mcp_external_test_agent:
+      type: basic_agent
+      enabled: true
+      description: "Test agent for external MCP servers - may only call tools of the 'everything' reference server"
+
+      agent_config:
+        llm_profile: [normal]
+        llm_profile_advanced: []
+        max_steps: 10
+        system_template: "config/prompts/system_prompt.md"
+
+        tools:
+          allowed:
+            # Punkt, nicht Slash: externe Tools heissen server.tool, lokale
+            # Plugins plugin/tool. Der Punkt entscheidet zur Laufzeit, ob ein
+            # Aufruf in ein Plugin geht oder nach draussen.
+            - "everything.*"
+            # Zweite Installationsform desselben Servers (external/mcp statt
+            # npx). Der Agent deckt beide ab, damit ein Rauchtest nicht davon
+            # abhaengt, welche gerade eingeschaltet ist.
+            - "everything_local.*"
+            # Slash, nicht Punkt: die Verwaltungstools des mcp_client-Plugins
+            # selbst -- damit sind auch /mcp, /mcp-connect usw. im Chat da.
+            - "mcp_client/*"
+
+      metadata:
+        author: "Enrico Ehrich"
+        version: "1.0.0"
+        tags: ["test", "mcp", "external", "development"]
+        category: "development"
+        visibility: "ui"

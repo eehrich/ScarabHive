@@ -12,20 +12,16 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import Optional
-from agent_system.plugins.cache import PluginCache
+from agent_system.plugins.cache import PluginCache, default_cache_root
 
 
 def find_cache_root() -> Path:
-    """Find the project cache root directory."""
-    # Look for project root by finding pyproject.toml
-    current_path = Path.cwd()
-    while current_path.parent != current_path:
-        if (current_path / "pyproject.toml").exists():
-            return current_path / ".cache"
-        current_path = current_path.parent
-    
-    # Fallback to current directory
-    return Path.cwd() / ".cache"
+    """The cache root PluginCache actually writes to (<project>/data/cache).
+
+    Used to re-derive the path independently (as <project>/.cache from cwd),
+    which never matched the real cache -- every command reported "no cache".
+    """
+    return default_cache_root()
 
 
 async def show_cache_info(plugin_name: Optional[str] = None):
@@ -42,7 +38,7 @@ async def show_cache_info(plugin_name: Optional[str] = None):
             print(f"No cache found for plugin: {plugin_name}")
             return
         
-        cache = PluginCache(plugin_name, cache_root.parent)
+        cache = PluginCache(plugin_name, cache_root)
         info = cache.get_cache_info()
         print_cache_info(info)
     else:
@@ -55,7 +51,7 @@ async def show_cache_info(plugin_name: Optional[str] = None):
         
         for plugin_dir in cache_root.iterdir():
             if plugin_dir.is_dir():
-                cache = PluginCache(plugin_dir.name, cache_root.parent)
+                cache = PluginCache(plugin_dir.name, cache_root)
                 info = cache.get_cache_info()
                 
                 total_files += info.get('total_files', 0)
@@ -88,7 +84,7 @@ async def cleanup_cache(plugin_name: str):
         print(f"No cache found for plugin: {plugin_name}")
         return
     
-    cache = PluginCache(plugin_name, cache_root.parent)
+    cache = PluginCache(plugin_name, cache_root)
     deleted_count = await cache.cleanup_expired()
     
     print(f"Cleaned up {deleted_count} expired cache entries for {plugin_name}")
@@ -108,7 +104,7 @@ async def clear_cache(plugin_name: Optional[str] = None, all_plugins: bool = Fal
         
         for plugin_dir in cache_root.iterdir():
             if plugin_dir.is_dir():
-                cache = PluginCache(plugin_dir.name, cache_root.parent)
+                cache = PluginCache(plugin_dir.name, cache_root)
                 deleted_count = await cache.clear()
                 total_deleted += deleted_count
                 print(f"Cleared {deleted_count} cache files for {plugin_dir.name}")
@@ -121,7 +117,7 @@ async def clear_cache(plugin_name: Optional[str] = None, all_plugins: bool = Fal
             print(f"No cache found for plugin: {plugin_name}")
             return
         
-        cache = PluginCache(plugin_name, cache_root.parent)
+        cache = PluginCache(plugin_name, cache_root)
         deleted_count = await cache.clear()
         
         print(f"Cleared {deleted_count} cache files for {plugin_name}")

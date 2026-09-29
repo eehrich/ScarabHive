@@ -36,7 +36,15 @@ class TextFileProcessingError(Exception):
 
 
 # Supported file types
-SUPPORTED_IMAGE_FORMATS = {'jpeg', 'jpg', 'png', 'gif', 'webp', 'bmp', 'tiff'}
+#
+# The image set carries the other spellings of formats it already names --
+# jfif and jpe are JPEG, tif is TIFF. Only detect_file_type reads this set;
+# validate_image_file never looks at the extension, it opens the file with
+# PIL. So a `screenshot.jfif` (what Chrome's "save image as" produces) built
+# a perfectly good `data:image/jpeg` message while the detector called it
+# unknown, and `scan.tiff` was an image where `scan.tif` was not.
+SUPPORTED_IMAGE_FORMATS = {'jpeg', 'jpg', 'jfif', 'jpe', 'png', 'gif', 'webp',
+                           'bmp', 'tiff', 'tif'}
 SUPPORTED_AUDIO_FORMATS = {'mp3', 'wav', 'ogg', 'flac', 'm4a', 'webm', 'aac'}
 SUPPORTED_TEXT_EXTENSIONS = {
     '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm',
@@ -494,6 +502,42 @@ def create_multimodal_message_extended(
                 raise AudioProcessingError(f"Unexpected error processing {audio_path}: {e}") from e
     
     return ChatMessage(role="user", content=content_list)  # type: ignore[arg-type]
+
+
+class AttachmentRejected(ValueError):
+    """The attachments cannot go out with this run: the model cannot take
+    them, or a file could not be read. The message says which; each entry
+    point turns it into its own answer (HTTP 400, exit 1, "Not sent")."""
+
+
+def message_with_attachments(text: str, kinds: dict, llm_override: object,
+                             agent: object) -> Union[str, ChatMessage]:
+    """*text* plus the sorted attachments as one message, *text* alone without any.
+
+    *kinds* maps "image", "audio" and "text" to paths (the shape
+    sort_attachments returns; a missing key is empty). Checked against the
+    model the attachments will reach -- the per-request override wins over
+    the agent's default, one rule for the HTTP API, the chat and both
+    command-line entry points. Raises AttachmentRejected.
+    """
+    from ..llm.capabilities import capability_model_name, ensure_model_supports
+
+    images, audio, texts = (list(kinds.get(kind) or []) for kind in ("image", "audio", "text"))
+    if not (images or audio or texts):
+        return text
+    problem = ensure_model_supports(capability_model_name(llm_override, agent),
+                                    images=len(images), audio=len(audio))
+    if problem:
+        raise AttachmentRejected(problem)
+    try:
+        message = create_multimodal_message_extended(
+            text=text, image_paths=images or None, audio_paths=audio or None,
+            text_file_paths=texts or None)
+    except (ImageProcessingError, AudioProcessingError, TextFileProcessingError) as e:
+        raise AttachmentRejected(str(e)) from e
+    logger.info("Attachments: %d image(s), %d audio(s), %d text file(s)",
+                len(images), len(audio), len(texts))
+    return message
 
 
 def detect_file_type(file_path: Path | str) -> str:

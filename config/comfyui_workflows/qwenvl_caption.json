@@ -1,0 +1,43 @@
+{
+  "1": {
+    "inputs": {
+      "image": "input.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load image to caption"
+    }
+  },
+  "2": {
+    "inputs": {
+      "model_name": "Qwen3-VL-8B-Instruct-FP8",
+      "quantization": "None (FP16)",
+      "attention_mode": "auto",
+      "preset_prompt": "🖼️ Detailed Description",
+      "custom_prompt": "Describe what is actually depicted in this image. Cover the following on separate lines:\n\nPEOPLE: For each person, list gender (girl/boy/woman/man/etc), approximate age, hair (colour + style), clothing (colours + items), and any distinctive accessories. End with \"total person count: N\". If there are no people, write \"no people\".\n\nOBJECTS: List the prominent objects and props visible (e.g. backpack, teapot, bench, sword, book) with their colour/material.\n\nSETTING: One short sentence describing the location (forest, kitchen, beach, dungeon, etc.) and time of day / lighting mood.\n\nNOTABLE: Anything else that stands out (text, watermarks, logos, blood, deformed body parts, weird artifacts). If none, write \"none\".\n\nBe concise but specific. Do not invent details that aren't visible.",
+      "max_tokens": 512,
+      "keep_model_loaded": true,
+      "seed": 1,
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "AILab_QwenVL",
+    "_meta": {
+      "title": "Qwen3-VL caption"
+    }
+  },
+  "3": {
+    "inputs": {
+      "text": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "TextOutput",
+    "_meta": {
+      "title": "Capture caption text"
+    }
+  }
+}

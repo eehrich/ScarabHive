@@ -2,27 +2,26 @@ tools:
   - type: function
     function:
       name: "{{ name }}_web_search"
-      description: Search the web using DuckDuckGo search engine. Returns search results with titles, URLs, and snippets.
+      description: "Search the web with DuckDuckGo. Returns titles, URLs and snippets; no account needed. Snippets are short -- read a promising page with the scraper afterwards."
       parameters:
         type: object
         properties:
           query:
             type: string
-            description: "Search query terms"
+            description: "Search terms. Keywords work better than full sentences."
           max_results:
             type: integer
             minimum: 1
             maximum: 20
             default: 10
-            description: "Maximum number of search results to return"
           ignore_cache:
             type: boolean
             default: false
-            description: "If true, bypass cache and fetch fresh results"
+            description: "Bypass the cache and query DuckDuckGo again"
           cache_ttl:
             type: integer
             minimum: 0
-            description: "Custom cache TTL in seconds (overrides default)"
+            description: "Cache lifetime for this result in seconds (default from config)"
         required: [query]
         additionalProperties: false
 

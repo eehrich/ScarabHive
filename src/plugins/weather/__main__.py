@@ -8,7 +8,7 @@ from typing import Any
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="plugins.weather", description="Weather MCP Server")
+    parser = argparse.ArgumentParser(prog="plugins.weather", description="Weather Tool Server")
 
     # Core weather parameters
     parser.add_argument("--location", help="Location name (city, address, coordinates)")
@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-radiation", action="store_true", help="Include estimated solar radiation data")
 
     # Server mode options
-    parser.add_argument("--server", action="store_true", help="Run in server mode (MCP server)")
+    parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on when in server mode")
 
     # Misc
@@ -36,18 +36,18 @@ async def async_main():
 
     # Lazy imports
     from .plugin import PLUGIN_FACTORY
-    from agent_system.config.models import AgentSystemConfig, MCPConfig
-    from agent_system.servers.http_server import serve_mcp_server
+    from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+    from agent_system.servers.http_server import serve_tool_server
 
     # Create minimal config for CLI usage
     system_config = AgentSystemConfig()
-    mcp_config = MCPConfig(type="weather", enabled=True)
+    server_config = ToolServerConfig(type="weather", enabled=True)
     
-    server = PLUGIN_FACTORY("weather", system_config, mcp_config)
+    server = PLUGIN_FACTORY("weather", system_config, server_config)
 
     if args.server:
-        print(f"Starting Weather MCP Server on port {args.port}")
-        await serve_mcp_server(server, port=args.port)
+        print(f"Starting Weather Tool Server on port {args.port}")
+        await serve_tool_server(server, port=args.port)
     else:
         # Direct test (async)
         if not args.location:
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # For tests, print a concise summary showing that the parser accepted the args.
     summary: dict[str, Any] = {
-        "description": "Weather MCP Server",
+        "description": "Weather Tool Server",
         "location": args.location,
         "source": args.source,
         "days": args.days,
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> None:
         "port": args.port,
     }
 
-    print("Weather MCP Server")
+    print("Weather Tool Server")
     print(json.dumps(summary))
 
 

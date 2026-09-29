@@ -111,14 +111,14 @@ async def get_session_manager(request: Request):
     return manager
 
 
-async def get_mcp_registry(request: Request):
+async def get_tool_registry(request: Request):
     """
-    Get the MCP registry from application state.
+    Get the tool registry from application state.
     
     Args:
         request: FastAPI request containing app state
         
     Returns:
-        MCP registry instance or None if not available
+        tool registry instance or None if not available
     """
-    return getattr(request.app.state, 'mcp_registry', None)
+    return getattr(request.app.state, 'tool_registry', None)
