@@ -161,9 +161,14 @@ async function saveLayout(changes) {
   }
 }
 
+/** A stored line style as the canvas draws it: one no longer offered is right-angled, like anything but 'straight'. */
+function lineStyle(style) {
+  return style && !LINE_STYLES.includes(style) ? 'orthogonal' : style;
+}
+
 /** The line styles the layout gives single transitions: {key (lineKeys): style}. */
 function lineStyles() {
-  return S.machine?.layout?.lines || {};
+  return Object.fromEntries(Object.entries(S.machine?.layout?.lines || {}).map(([key, style]) => [key, lineStyle(style)]));
 }
 
 /** The one line style these transitions share ('' for the machine's), undefined when they differ. */
@@ -185,12 +190,12 @@ function setLines(ids, style) {
   return saveLayout({ lines });
 }
 
-const LINE_NAMES = { auto: 'ELK\'s route, straight once moved', straight: 'Straight', orthogonal: 'Right-angled' };
+const LINE_NAMES = { orthogonal: 'Right-angled', straight: 'Straight' };
 
 /** A select of line styles: `inherit` offers the machine's as the first choice (''), `mixed` a first line that
  * says the selection has several. */
 function lineChoices(chosen, { inherit = false, mixed = false } = {}) {
-  const machine = S.machine?.layout?.line || 'auto';
+  const machine = lineStyle(S.machine?.layout?.line) || 'orthogonal';
   return [
     mixed ? html`<option value="" selected disabled>Several styles</option>` : '',
     inherit ? html`<option value="" ${!mixed && !chosen ? 'selected' : ''}>As the machine: ${LINE_NAMES[machine]}</option>` : '',
@@ -971,7 +976,7 @@ function machineOverview() {
       <dl class="pk-kv"><dt>initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
         <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd></dl>
       <div class="sg-fields"><label for="machine-line">Lines</label>
-        <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(m.layout?.line || 'auto')}</select></div>
+        <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(lineStyle(m.layout?.line))}</select></div>
       <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
         Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box the states in it: drag
         one to move them all, Delete removes them, Group puts the states into a new composite.</p>

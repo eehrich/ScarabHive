@@ -21,9 +21,8 @@ const LANE_GAP = 12;
 const CROWD_GAP = 20;
 /** The least run of a right-angled line out of a box and into one before it bends. */
 const RUN = 16;
-/** A transition's line: ELK's route while both its states are where ELK put them, then straight (auto); straight;
- * or right-angled. */
-export const LINE_STYLES = ['auto', 'straight', 'orthogonal'];
+/** A transition's line: right-angled (the default) or straight. Moving a state never changes it. */
+export const LINE_STYLES = ['orthogonal', 'straight'];
 
 export const ROOT_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -324,48 +323,73 @@ export function edgeRoute(route, source, target, moved, lane = null) {
 /**
  * A right-angled route between two boxes, as a person draws one: out of the side that faces the other box, one bend
  * half way, in through the side that faces back (a Z; a straight line when both are level). Along the other axis when
- * the facing sides leave no room; null when the boxes overlap both ways. Its `lane` (lanes) moves it to the right of
- * its way and bends lanes apart, so transitions between the same two states neither cover nor cross each other; a
- * lane's label goes beside the middle segment, on the side its lane bends to (`side`).
+ * the facing sides leave no room; with room on neither, an L: out of a side, in through the top or bottom (or the
+ * other way round), its label on the level leg (`span`); with no room for its legs either, a straight line across
+ * where the two face each other. null when the boxes overlap or all but meet corner to corner. Its `lane` (lanes)
+ * moves it to the right of its way and bends lanes apart, so transitions between the same two states neither cover
+ * nor cross each other; a lane's label goes beside the middle segment, on the side its lane bends to (`side`).
  */
 export function orthogonalRoute(source, target, lane = null) {
   const offset = lane?.offset || 0;
   const s = [source.x + source.w / 2, source.y + source.h / 2];
   const t = [target.x + target.w / 2, target.y + target.h / 2];
-  const sideways = Math.abs(t[0] - s[0]) >= Math.abs(t[1] - s[1]);
-  for (const u of sideways ? [0, 1] : [1, 0]) {  // the way out: through a left or right side (x), or top or bottom (y)
-    const v = 1 - u;
-    const [low, size] = u === 0 ? ['x', 'w'] : ['y', 'h'];
+  const order = Math.abs(t[0] - s[0]) >= Math.abs(t[1] - s[1]) ? [0, 1] : [1, 0];  // sideways first, or up or down
+  const crowd = lane?.crowd ? { at: lane.at } : null;
+  const axis = (u) => (u === 0 ? ['x', 'w'] : ['y', 'h']);
+  const ends = (u) => {  // along u (x or y): which way, where a line leaves the source, where it meets the target
+    const [low, size] = axis(u);
     const dir = Math.sign(t[u] - s[u]) || 1;
-    const out = dir > 0 ? source[low] + source[size] : source[low];
-    const into = dir > 0 ? target[low] : target[low] + target[size];
+    return [dir, dir > 0 ? source[low] + source[size] : source[low], dir > 0 ? target[low] : target[low] + target[size]];
+  };
+  const place = (u) => (along, across) => (u === 0 ? [along, across] : [across, along]);
+  const level = (u, dir, out, into, across) => {  // a straight line along u, labelled as one
+    const right = u === 0 ? [0, dir] : [-dir, 0];
+    return { points: [place(u)(out, across), place(u)(into, across)], label: null,
+      ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
+  };
+  for (const u of order) {  // a Z: out through a left or right side (x), or top or bottom (y)
+    const v = 1 - u;
+    const [dir, out, into] = ends(u);
     if ((into - out) * dir < 2 * (RUN + Math.abs(offset))) continue;
     const shift = (u === 0 ? dir : -dir) * offset;  // to the right of the way
     const [sv, tv] = [s[v] + shift, t[v] + shift];
+    if (Math.abs(tv - sv) < 1) return level(u, dir, out, into, sv);
     // the lanes bend in the order they lie in, seen on the canvas (whichever way each goes): none crosses another
     const bend = (out + into) / 2 - shift * dir * (Math.sign(tv - sv) || 1);
-    const at = (along, across) => (u === 0 ? [along, across] : [across, along]);
-    const crowd = lane?.crowd ? { at: lane.at } : null;
-    if (Math.abs(tv - sv) < 1) {  // level: a straight line, labelled as one
-      const right = u === 0 ? [0, dir] : [-dir, 0];
-      return { points: [at(out, sv), at(into, sv)], label: null,
-        ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
-    }
+    const at = place(u);
     const outward = Math.sign(bend - (out + into) / 2);
     return { points: [at(out, sv), at(bend, sv), at(bend, tv), at(into, tv)], label: null,
       ...(crowd || (outward ? { side: at(outward, 0) } : {})) };
   }
+  for (const u of order) {  // an L: the first leg along u, the second along v
+    const v = 1 - u;
+    const [du, out] = ends(u);
+    const [dv, , into] = ends(v);
+    const leg = s[v] + (u === 0 ? du : -du) * offset;  // each leg to the right of its way
+    const corner = t[u] + (u === 0 ? -dv : dv) * offset;
+    if ((corner - out) * du < RUN || (into - leg) * dv < RUN) continue;
+    const at = place(u);
+    const points = [at(out, leg), at(corner, leg), at(corner, into)];
+    return { points, label: null, span: u === 0 ? points.slice(0, 2) : points.slice(1),
+      ...(crowd || (offset ? { side: [0, (u === 0 ? du : dv) * Math.sign(offset)] } : {})) };
+  }
+  for (const u of order) {  // straight across, in the middle of where the two face each other: no bend, no run
+    const [low, size] = axis(1 - u);
+    const [dir, out, into] = ends(u);
+    const [from, to] = [Math.max(source[low], target[low]), Math.min(source[low] + source[size], target[low] + target[size])];
+    const across = (from + to) / 2 + (u === 0 ? dir : -dir) * offset;
+    if ((into - out) * dir > 0 && across > from && across < to) return level(u, dir, out, into, across);
+  }
   return null;
 }
 
-/** A transition drawn in its line `style` (LINE_STYLES): ELK's route while both ends are where ELK put them (auto,
- * orthogonal), else straight (auto, straight) or right-angled (orthogonal; straight where no right angle fits). */
+/** A transition drawn in its line `style` (LINE_STYLES): straight, or right-angled -- ELK's route while both ends
+ * are where ELK put them, else ours (straight where no right angle fits). Anything but 'straight' is right-angled. */
 export function transitionRoute(style, route, source, target, moved, lane) {
-  const routed = Boolean(route?.points.length) && !moved;
-  if (style === 'orthogonal' && !routed) {  // a self-transition fits no right angle: edgeRoute draws its loop
-    return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
-  }
-  return edgeRoute(route, source, target, style === 'straight' || !routed, lane);
+  if (style === 'straight') return edgeRoute(null, source, target, true, lane);
+  if (route?.points.length && !moved) return edgeRoute(route, source, target, false, lane);
+  // a self-transition fits no right angle: edgeRoute draws its loop
+  return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
 }
 
 /** The key of each transition's line style in the layout: the way it goes, "source→target". A style belongs to the
@@ -395,7 +419,8 @@ export function renamedLines(lines, old, name) {
  * `side`, clear of the line going back. */
 export function labelSpot(drawn, width) {
   if (drawn.label) return [drawn.label.x + 4, drawn.label.y + 12];
-  const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];  // a right angle's: on its middle segment
+  // a Z's: on its middle segment; an L's: on its level leg (span)
+  const [a, b] = drawn.span || [drawn.points[0], drawn.points[drawn.points.length - 1]];
   const at = drawn.at ?? 0.5;
   const [mx, my] = [a[0] + (b[0] - a[0]) * at, a[1] + (b[1] - a[1]) * at];
   if (!drawn.side) return [mx - width / 2, my - 6];
@@ -743,7 +768,7 @@ export class Canvas {
         const source = nodes[initialId(region)];
         const target = nodes[stateId(initial)];
         if (!source || !target) continue;
-        const drawn = edgeRoute(route, source, target, moved.has(initialId(region)) || moved.has(stateId(initial)));
+        const drawn = transitionRoute(this.lines.line, route, source, target, moved.has(initialId(region)) || moved.has(stateId(initial)));
         el('path', { d: pathData(drawn.points), class: 'sg-edge sg-edge--initial', 'marker-end': 'url(#sg-arrow-plain)' },
           this.edgeLayer);
       }
@@ -755,7 +780,7 @@ export class Canvas {
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
       const route = this.auto.edges[edgeId(transition.id)];
-      const style = this.lines.lines?.[keys[transition.id]] || this.lines.line || 'auto';
+      const style = this.lines.lines?.[keys[transition.id]] || this.lines.line || 'orthogonal';
       const drawn = transitionRoute(style, route, source, target,
         moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)), lanesOf[transition.id]);
       this.drawEdge(transition, drawn);

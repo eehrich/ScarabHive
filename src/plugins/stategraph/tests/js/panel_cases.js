@@ -789,8 +789,9 @@ const CASES = {
 
   async a_transition_back_between_two_states_is_drawn_beside_the_other() {
     const there = MACHINE.graph.transitions.find((t) => t.source === 'write' && t.target === 'review');
-    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
-      { ...there, id: 'review#9', source: 'review', target: 'write', index: 9, path: 'states.review.transitions[9]' }] } };
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, line: 'straight' },  // straight lanes; right-angled: graph_tests
+      graph: { ...MACHINE.graph, transitions: [...MACHINE.graph.transitions,
+        { ...there, id: 'review#9', source: 'review', target: 'write', index: 9, path: 'states.review.transitions[9]' }] } };
     await boot('?machine=review');
     const middle = (id) => {
       const d = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id).querySelector('.sg-edge').getAttribute('d');
@@ -810,7 +811,7 @@ const CASES = {
     check(off < 0.5, `a transition without one back is drawn ${off} beside the middle line`);
   },
 
-  async a_transitions_line_is_set_at_once_in_its_inspector_and_drawn_right_angled() {
+  async a_moved_states_transition_stays_right_angled_and_its_line_is_set_at_once_in_its_inspector() {
     await boot('?machine=review');
     const points = (id) => {
       const d = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id).querySelector('.sg-edge').getAttribute('d');
@@ -818,53 +819,93 @@ const CASES = {
       return numbers.reduce((out, n, i) => (i % 2 ? out : [...out, [n, numbers[i + 1]]]), []);
     };
     const square = (ps) => ps.slice(1).every((p, i) => p[0] === ps[i][0] || p[1] === ps[i][1]);
-    check(!square(points('review#0')), `review → done is drawn straight across at first: ${JSON.stringify(points('review#0'))}`);
+    check(points('review#0').length === 4 && square(points('review#0')), `review → done (done moved) is not right-angled at first: ${JSON.stringify(points('review#0'))}`);
     await $('canvas').fire('pointerdown', { button: 0, target: $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'review#0'),
       clientX: 10, clientY: 10, pointerId: 1 });
     await settle();
     check($('side-inspect').innerHTML.includes('data-line="review#0"'), 'the transition inspector offers no line style');
+    check($('side-inspect').innerHTML.includes('As the machine: Right-angled'), 'the machine\'s default is not named right-angled');
     const select = element('select', { 'data-line': 'review#0' });
     element('form', { 'data-transition': 'review#0' }).appendChild(select);  // in the transition's form, as drawn
-    select.value = 'orthogonal';
+    select.value = 'straight';
     await $('side-inspect').fire('input', { target: select });
     check(!DIRTY, 'choosing a line style made a draft to apply');
     await $('side-inspect').fire('change', { target: select });
     await settle();
     const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout;
-    check(JSON.stringify(saved?.lines) === JSON.stringify({ 'review→done': 'orthogonal' })
+    check(JSON.stringify(saved?.lines) === JSON.stringify({ 'review→done': 'straight' })
       && JSON.stringify(saved.positions) === JSON.stringify(MACHINE.layout.positions), `saved ${JSON.stringify(saved)}`);
-    check(points('review#0').length === 4 && square(points('review#0')), `not right-angled: ${JSON.stringify(points('review#0'))}`);
+    check(points('review#0').length === 2 && !square(points('review#0')), `not straight: ${JSON.stringify(points('review#0'))}`);
     select.value = '';
     await $('side-inspect').fire('change', { target: select });
     await settle();
-    check(!square(points('review#0')), 'the machine\'s style (auto) is not back');
+    check(points('review#0').length === 4 && square(points('review#0')), 'the machine\'s style (right-angled) is not back');
+  },
+
+  async the_start_line_stays_right_angled_when_its_composite_grows() {
+    load((await import('./paths.js')).ELK_PATH);  // ELK draws the start lines: the grid has none
+    // review is the start state; a state placed deep inside it grows it, and the start dot stays where ELK put it
+    reviewAnswer = { ...MACHINE, graph: { ...MACHINE.graph, initial: 'review' },
+      layout: { ...MACHINE.layout, positions: { ...MACHINE.layout.positions, verdict: { x: 20, y: 400 } } } };
+    await boot('?machine=review');
+    await settle();
+    const lines = $('canvas').querySelectorAll('.sg-edge--initial').map((line) => line.getAttribute('d'));
+    const square = (d) => {
+      const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      const ps = n.reduce((out, v, i) => (i % 2 ? out : [...out, [v, n[i + 1]]]), []);
+      return ps.slice(1).every((p, i) => p[0] === ps[i][0] || p[1] === ps[i][1]);
+    };
+    check(lines.length === 2 && lines.every(square), `a start line is not right-angled: ${JSON.stringify(lines)}`);
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line-default': '' }), { value: 'straight' }) });
+    await settle();
+    const straight = $('canvas').querySelectorAll('.sg-edge--initial').map((line) => line.getAttribute('d'));
+    check(straight.some((d) => !square(d)), `the start lines do not follow the machine's straight line: ${JSON.stringify(straight)}`);
+  },
+
+  async a_stored_line_style_no_longer_offered_is_named_right_angled_as_drawn() {
+    reviewAnswer = { ...MACHINE, layout: { ...MACHINE.layout, line: 'auto', lines: { 'review→done': 'auto', 'write→review': 'orthogonal' } } };
+    await boot('?machine=review');
+    check($('side-inspect').innerHTML.includes('value="orthogonal" selected'), 'the machine\'s line is not shown right-angled');
+    await $('canvas').fire('pointerdown', { button: 0, target: $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'review#0'),
+      clientX: 10, clientY: 10, pointerId: 1 });
+    await settle();
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('As the machine: Right-angled') && shown.includes('value="orthogonal" selected'),
+      `the transition's line is not shown right-angled: ${shown.slice(shown.indexOf('data-line='), shown.indexOf('data-line=') + 400)}`);
+    const other = $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === 'write#0');
+    await $('canvas').fire('pointerdown', { button: 0, target: other, ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: other, clientX: 10, clientY: 10 });
+    await settle();
+    const both = $('side-inspect').innerHTML;
+    check(both.includes('data-line="*"') && both.includes('value="orthogonal" selected') && !both.includes('Several styles'),
+      'with a right-angled one, it is not one right-angled style');
   },
 
   async the_machines_line_and_a_selections_lines_are_set_from_the_inspector() {
     await boot('?machine=review');
     check($('side-inspect').innerHTML.includes('data-line-default'), 'the machine overview offers no line style');
     const layouts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).map(([, , json]) => json.layout);
-    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line-default': '' }), { value: 'orthogonal' }) });
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line-default': '' }), { value: 'straight' }) });
     await settle();
-    check(layouts().pop()?.line === 'orthogonal', `machine line: ${JSON.stringify(layouts())}`);
+    check(layouts().pop()?.line === 'straight', `machine line: ${JSON.stringify(layouts())}`);
     const link = (id) => $('canvas').querySelectorAll('.sg-link').find((l) => l.dataset.transition === id);
     const d = link('review#0').querySelector('.sg-edge').getAttribute('d');
-    check((d.match(/L/g) || []).length === 3, `review → done is not drawn right-angled by the machine's line: ${d}`);
+    check((d.match(/L/g) || []).length === 1, `review → done is not drawn straight by the machine's line: ${d}`);
     await $('canvas').fire('pointerdown', { button: 0, target: link('write#0'), clientX: 10, clientY: 10, pointerId: 1 });
     await $('canvas').fire('pointerdown', { button: 0, target: link('write#1'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
     await $('canvas').fire('pointerup', { target: link('write#1'), clientX: 10, clientY: 10 });
     await settle();
     check($('side-inspect').innerHTML.includes('data-line="*"'), 'a selection of transitions offers no line style');
-    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line': '*' }), { value: 'straight' }) });
+    await $('side-inspect').fire('change', { target: Object.assign(element('select', { 'data-line': '*' }), { value: 'orthogonal' }) });
     await settle();
     const last = layouts().pop();
-    check(JSON.stringify(last?.lines) === JSON.stringify({ 'write→review': 'straight', 'write→failed': 'straight' }) && last.line === 'orthogonal',
+    check(JSON.stringify(last?.lines) === JSON.stringify({ 'write→review': 'orthogonal', 'write→failed': 'orthogonal' }) && last.line === 'straight',
       `selection lines: ${JSON.stringify(last)}`);
     ANSWERS.confirm = true;
     await $('autoLayout').fire('click', {});
     await settle();
     const laid = layouts().pop();
-    check(JSON.stringify(laid?.positions) === '{}' && laid.line === 'orthogonal' && Object.keys(laid.lines || {}).length === 2,
+    check(JSON.stringify(laid?.positions) === '{}' && laid.line === 'straight' && Object.keys(laid.lines || {}).length === 2,
       `auto layout dropped the line styles: ${JSON.stringify(laid)}`);
   },
 
