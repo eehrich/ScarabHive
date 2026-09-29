@@ -41,6 +41,8 @@ SHOTS = {
                             "panel_app", "/plugins/context_summarizer/?session_id=s-1", (980, 380))],
     "lessons_learned": [("panel.png", "plugins.lessons_learned.tests.test_plugin_lessons_learned_panel", "panel_app",
                          "/plugins/lessons_learned/", (1100, 820))],
+    "context_usage_tracker": [("panel.png", "plugins.context_usage_tracker.tests.test_plugin_context_usage_tracker_panel",
+                               "panel_app", "/plugins/context_usage_tracker/?session_id=s-1", (1000, 760))],
 }
 
 

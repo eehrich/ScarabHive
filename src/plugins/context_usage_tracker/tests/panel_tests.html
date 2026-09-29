@@ -87,12 +87,12 @@
     const all = chart.data.labels.length === 60 && chart.data.datasets.map((set) => set.label).join() === 'total,prompt,output,cached,cost ¢'
       && chart.data.datasets[0].data[0] === 10 && chart.data.datasets.every((set) => String(set.borderColor).startsWith('rgb'));
     const select = $('#chartAgent');
-    select.value = 'writer';
+    select.value = 'reviewer';
     select.dispatchEvent(new Event('change'));
-    const writer = chart.data.labels.length === 2 && series().join('|') === '1200,1800|1000,1500|200,300|800,0|0.2,0.3';
+    const reviewer = chart.data.labels.length === 2 && series().join('|') === '1200,1800|1000,1500|200,300|800,0|0.2,0.3';
     select.value = '';
     select.dispatchEvent(new Event('change'));
-    return all && writer;
+    return all && reviewer;
   });
 
   await check('a line hidden in the legend stays hidden when the chart draws anew', async () => {
@@ -114,7 +114,7 @@
     await redrawn('the chart drawn by a refresh');
     const afterRefresh = visible() === 'total,,output,cached,cost ¢';
     const select = $('#chartAgent');
-    select.value = 'writer';
+    select.value = 'reviewer';
     select.dispatchEvent(new Event('change'));
     const afterAgent = visible() === 'total,,output,cached,cost ¢';
     select.value = '';
@@ -135,19 +135,22 @@
     headOf('agents', 'Calls').click();
     const byCalls = names();
     const share = (name) => cells(rows('agents').find((row) => cells(row)[0] === name))[5].replace(/^[\d,.\s]+/, '');
-    // all-time: writer's paired counts give 800 of 2,500; the archivist's calls predate the pair
-    const allTime = share('writer') === '(32%)' && share('archivist') === '(–)';
+    // all-time: reviewer's paired counts give 800 of 2,500; the archivist's calls predate the pair
+    const allTime = share('reviewer') === '(32%)' && share('archivist') === '(–)';
+    // the coder's one call has no price: no cost, not 0.000¢
+    const costAt = [...doc().querySelectorAll('#agents th')].findIndex((th) => th.textContent.trim() === 'Σ Cost');
+    const unpriced = cells(rows('agents').find((row) => cells(row)[0] === 'coder'))[costAt] === '–';
     $('[data-scope="session"]').click();
     await until('the agents of s-1', () => statValue('calls') === '3' && rows('agents').length === 2);
-    const inSession = share('writer') === '(32%)';  // the session's own calls, summed
-    return byCost.startsWith('writer,helper') && byCostUp.at(-1) === 'writer' && byCostUp.at(-2) === 'helper'
+    const inSession = share('reviewer') === '(32%)';  // the session's own calls, summed
+    return byCost.startsWith('reviewer,helper') && byCostUp.at(-1) === 'reviewer' && byCostUp.at(-2) === 'helper'
       && headOf('agents', 'Calls').getAttribute('aria-sort') === 'descending'
-      && byCalls.slice(0, 3).join() === 'bulk,archivist,writer' && allTime && inSession;
+      && byCalls.slice(0, 3).join() === 'bulk,archivist,reviewer' && allTime && unpriced && inSession;
   });
 
   await check('a failed load shows the error and nothing of what was shown before, and keeps the agent chosen', async () => {
     const agent = $('#callAgent');
-    agent.value = 'writer';
+    agent.value = 'reviewer';
     agent.dispatchEvent(new Event('change'));
     document.cookie = 'cu_usage=fails; path=/';
     try {
@@ -158,7 +161,7 @@
       document.cookie = 'cu_usage=; path=/; max-age=0';
       $('pk-refresh [data-act="now"]').click();
       await until('the calls again', () => statValue('calls') === '3');
-      const kept = agent.value === 'writer' && rows('calls').length === 2;
+      const kept = agent.value === 'reviewer' && rows('calls').length === 2;
       agent.value = '';
       agent.dispatchEvent(new Event('change'));
       return nothingLeft && kept;
@@ -191,22 +194,29 @@
       && cheap[6] === '~0.050¢' && cheap[8] === '300 ms' && rows('llms').map(cells)[0][0] === 'm-bulk';
   });
 
+  await check('p95 is the nearest rank: of 20 latencies the 19th, not the slowest', async () => {
+    await fetch('/__stub/latencies', { method: 'POST' });
+    $('pk-refresh [data-act="now"]').click();
+    const row = await until('m-p95 listed', () => rows('llms').map(cells).find((cells) => cells[0] === 'm-p95'));
+    return row[1] === '20' && row[9] === '1.90 s';
+  });
+
   await check("calls filter by agent, mark a sub-agent's call and open in the drawer", async () => {
     $('[data-scope="session"]').click();
     await until('the calls of s-1 again', () => statValue('calls') === '3');
     tab('calls');
     const marked = rows('calls').filter((row) => row.textContent.includes('↳')).map((row) => cells(row)[1]);
     const select = $('#callAgent');
-    select.value = 'writer';
+    select.value = 'reviewer';
     select.dispatchEvent(new Event('change'));
-    const writerOnly = rows('calls').length === 2 && $('#callsShown').textContent === '2 of 2';
+    const reviewerOnly = rows('calls').length === 2 && $('#callsShown').textContent === '2 of 2';
     rows('calls')[0].click();  // the newest: 0.3¢
     await until('the drawer', () => $('#detail').open);
     const facts = Object.fromEntries([...doc().querySelectorAll('#detailBody dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
     $('#detail [data-close]').click();
     select.value = '';
     select.dispatchEvent(new Event('change'));
-    return marked.length === 1 && marked[0].includes('helper') && writerOnly && facts.Agent === 'writer'
+    return marked.length === 1 && marked[0].includes('helper') && reviewerOnly && facts.Agent === 'reviewer'
       && facts.Cost === '0.3000¢' && facts.Request === 'r-1' && !$('#detail').open;
   });
 

@@ -191,8 +191,8 @@ class UsageTracker:
             latency_ms=latency_ms,
         )
 
-        # One transaction: the snapshot, the agent's totals and clearing the
-        # session's stale flag. Accumulation happens IN SQL, so two processes
+        # One transaction: the snapshot, the agent's totals and, for a call
+        # that carried a conversation, clearing the session's stale flag. Accumulation happens IN SQL, so two processes
         # recording at the same moment add up instead of overwriting each other.
         self.db.record(asdict(snapshot))
 
@@ -226,7 +226,8 @@ class UsageTracker:
             history_list = [s for s in history_list if s.get("agent_id") == agent_id]
 
         if last_n is not None:
-            history_list = history_list[-last_n:]
+            # [-0:] is the whole list: asked for none, answer none.
+            history_list = history_list[-last_n:] if last_n > 0 else []
 
         return history_list
 
@@ -406,7 +407,9 @@ class UsageTracker:
         agent-api and agent-writer-worker are restarted together: reproduced
         with three simultaneous starts, the history landed twice.
         """
-        if not self.storage_path.exists():
+        # is_file, not exists: a storage_path without suffix ("data/usage") IS
+        # the database's folder, which would be read as a legacy file on every start.
+        if not self.storage_path.is_file():
             return
         if not db.claim_once(self._LEGACY_MARKER):
             return  # another process owns it, or it already ran

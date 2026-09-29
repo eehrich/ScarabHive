@@ -213,6 +213,12 @@ def test_tracker_history(plugin):
     assert history_last_3[-1]["agent_id"] == "agent-4"
 
 
+def test_history_of_the_last_zero_calls_is_empty(plugin):
+    """last_n=0 asks for no calls; a slice [-0:] would answer with the whole window."""
+    plugin.tracker.record_usage("a", "coder", "s", total_tokens=10, context_window=8000)
+    assert plugin.tracker.get_history(last_n=0) == []
+
+
 def test_tracker_persistence(tmp_path):
     """Test that tracker persists and loads history correctly."""
     storage_path = tmp_path / "tracker_persist.json"
@@ -490,6 +496,32 @@ def test_tracker_invalidate_session(tmp_path):
     assert latest_fresh is not None
     assert latest_fresh["prompt_tokens"] == 35000
     assert "is_stale" not in latest_fresh
+
+
+def test_a_call_without_a_context_leaves_the_stale_flag(tmp_path):
+    """A decision or synthesis call on the session (context_window 0) is not a new reading of the conversation:
+    after a compaction, the snapshot from before it must stay stale until the conversation is measured again."""
+    tracker = UsageTracker(max_history=10, storage_path=tmp_path / "usage.json")
+    tracker.record_usage("agent-1", "coder", "s", total_tokens=9000, prompt_tokens=8000,
+                         completion_tokens=1000, context_window=10000)
+    tracker.invalidate_session("s", "compaction")
+
+    tracker.record_usage("llm", "llm", "s", total_tokens=50, prompt_tokens=40, completion_tokens=10,
+                         context_window=0)
+
+    latest = tracker.get_latest(session_id="s")
+    assert latest["prompt_tokens"] == 8000
+    assert latest.get("is_stale") is True
+
+
+def test_a_storage_path_without_suffix_is_no_legacy_file(tmp_path, caplog):
+    """storage_path "usage" puts the database in the folder "usage" -- the very path the legacy import looks at.
+    A folder is no legacy file: opening the store must not try to read it as one."""
+    tracker = UsageTracker(storage_path=tmp_path / "usage")
+    with caplog.at_level("WARNING", logger="plugins.context_usage_tracker.tracker"):
+        tracker.record_usage("a", "coder", "s", total_tokens=10, context_window=8000)
+    assert (tmp_path / "usage" / "usage.db").is_file()
+    assert "Failed to migrate" not in caplog.text
 
 
 def test_tracker_invalidate_session_isolation(tmp_path):

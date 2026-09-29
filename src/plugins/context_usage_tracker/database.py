@@ -313,9 +313,14 @@ class UsageDatabase:
                     1 if latency is not None else 0,
                 ))
 
-                # A new snapshot means fresh data for this session.
-                conn.execute("DELETE FROM session_invalidations WHERE session_id = ?",
-                             (snapshot.get("session_id", ""),))
+                # A new snapshot of the CONVERSATION means fresh data for this
+                # session. A call without one (context_window 0: a decision, a
+                # synthesis) is never what get_latest answers with, so it must
+                # not clear the flag either -- it would declare the snapshot
+                # from before the compaction fresh again.
+                if (snapshot.get("context_window") or 0) > 0:
+                    conn.execute("DELETE FROM session_invalidations WHERE session_id = ?",
+                                 (snapshot.get("session_id", ""),))
         except sqlite3.Error as e:
             # Telemetry must never sink the call it measures.
             logger.error(f"Failed to record usage snapshot: {e}")
