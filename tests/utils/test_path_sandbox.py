@@ -288,7 +288,8 @@ class TestBothPluginsShareOneResolution:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a UNC path is a host only on Windows")
 @pytest.mark.parametrize("hostile", [r"\\evil.example\share\x.txt", "//evil.example/share/x.txt",
-                                     r"\\?\UNC\evil.example\share\x.txt"])
+                                     r"\\?\UNC\evil.example\share\x.txt", r"\??\UNC\evil.example\share\x.txt",
+                                     "/??/UNC/evil.example/share/x.txt"])
 def test_a_host_path_is_refused_before_anything_opens_it(tmp_path, monkeypatch, hostile):
     """Resolving a share path makes Windows connect and sign in (NTLM) -- before containment could refuse it."""
     touched = []

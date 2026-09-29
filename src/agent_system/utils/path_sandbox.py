@@ -75,6 +75,9 @@ def remote_outside(path: str, base: Path, roots: Iterable[Path]) -> bool:
     calls on the host per refused path). ``abspath`` and ``commonpath`` only
     compute, so nothing here is opened. A share that is itself a root is allowed.
     """
+    # \??\ is the NT object namespace: no drive to pathlib, yet \??\UNC\host\share reaches the host too
+    if path.replace("/", "\\").startswith("\\??\\"):
+        return True
     if not PureWindowsPath(path).drive.startswith("\\\\"):
         return False
     target = os.path.normcase(os.path.abspath(os.path.join(base, path)))
