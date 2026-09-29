@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import contextlib
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,6 +55,16 @@ SHOTS = {
           cell.textContent = cell.closest('#facts, [data-table="facts"], table')?.querySelector('th')?.textContent
             .includes('Category') ? 'Keep the public API stable' : 'coder';
         }""")],
+    "log_viewer": [("panel.png", "plugins.log_viewer.tests.test_plugin_log_viewer_panel", "panel_app",
+                    "/plugins/log_viewer/", (1000, 680), """
+        // the seed's markup test entry is no sight; the folded traceback is shown open
+        await new Promise((done) => setTimeout(done, 1500));
+        for (const line of document.querySelectorAll('.lv-message')) {
+          if (line.textContent.includes('<img')) line.textContent = 'agent_system.api Loaded the tool servers';
+        }
+        document.querySelector('details.lv-message')?.setAttribute('open', '');
+        const log = document.getElementById('log');
+        log.scrollTop = log.scrollHeight;""")],
     "debate_forum": [("panel.png", "plugins.debate_forum.tests.test_plugin_debate_forum_panel", "panel_app",
                       "/plugins/debate_forum/", (1000, 680), """
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;
@@ -143,7 +154,8 @@ def main(plugins: list[str]) -> None:
                 app = build(*[Path(data)][:len(params)], *([patch] if "monkeypatch" in params else []))
                 if script:
                     app = with_script(app, page, script[0])
-                with serve(app) as port:
+                # the folder is also the working directory, as in the panel tests: seeded names may be relative
+                with serve(app) as port, contextlib.chdir(data):
                     url = f"http://127.0.0.1:{port}{page}"
                     # the browser takes a picture of an error page as well: a page that fails keeps the old one
                     with urllib.request.urlopen(url, timeout=30) as answer:

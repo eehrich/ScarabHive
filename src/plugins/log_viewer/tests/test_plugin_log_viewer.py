@@ -155,3 +155,70 @@ def test_lines_are_read_backwards_across_chunks(tmp_path, monkeypatch):
     path = tmp_path / "x.log"
     path.write_bytes("first line\r\nsecond ünïcode line\r\n\r\nlast without newline".encode())
     assert list(endpoints.lines_backwards(path)) == ["last without newline", "", "second ünïcode line", "first line"]
+
+
+# ------------------------------------------------------------------------- the tools
+
+def tool(plugin, name, **params):
+    import asyncio
+
+    return asyncio.run(plugin.call_tool(f"log_viewer_{name}", params))
+
+
+@pytest.fixture
+def tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "a.log").write_text("".join(f"line {n} ERROR x\n" for n in range(10)))
+    (tmp_path / "logs" / "b.log").write_text("ERROR in b\n")
+    (tmp_path / "logs" / "secret.log").write_text("ERROR secret\n")
+    return make_plugin(["logs/a.log", "logs/missing.log", "logs/b.log"])
+
+
+def test_tool_descriptions_name_the_instance(tools):
+    described = str(tools.get_tools())
+    assert "log_viewer_list names it" in described and "{{" not in described
+
+
+def test_tail_returns_the_newest_lines_and_refuses_a_count_below_one(tools):
+    answer = tool(tools, "tail", log_file="logs/a.log", lines=3)
+    assert answer["lines"] == ["line 7 ERROR x", "line 8 ERROR x", "line 9 ERROR x"] and answer["total_lines"] == 10
+    assert tool(tools, "tail", log_file="logs/a.log", lines=50)["returned_lines"] == 10
+    for lines in (0, -3, "3", True):
+        assert "lines must be a whole number" in tool(tools, "tail", log_file="logs/a.log", lines=lines)["error"]
+
+
+def test_tail_refuses_an_unconfigured_or_missing_file(tools):
+    assert "not in allowed list" in tool(tools, "tail", log_file="logs/secret.log")["error"]
+    assert "not found" in tool(tools, "tail", log_file="logs/missing.log")["error"]
+    assert tool(tools, "tail")["error"] == "Missing required parameter: log_file"
+
+
+def test_search_refuses_a_named_file_it_would_not_read(tools):
+    assert "not in allowed list" in tool(tools, "search", pattern="error", log_file="logs/secret.log")["error"]
+    assert "not found" in tool(tools, "search", pattern="error", log_file="logs/missing.log")["error"]
+
+
+def test_search_stops_at_max_results_and_counts_the_files_it_read(tools):
+    everything = tool(tools, "search", pattern="ERROR")
+    assert (everything["total_matches"], everything["files_searched"], everything["truncated"]) == (11, 2, False)
+    first = tool(tools, "search", pattern="error", max_results=3)
+    assert [r["line_number"] for r in first["results"]] == [1, 2, 3]
+    assert (first["files_searched"], first["truncated"]) == (1, True)  # b.log was never opened
+    for max_results in (0, -1):
+        assert "max_results must be" in tool(tools, "search", pattern="x", max_results=max_results)["error"]
+
+
+def test_search_an_unreadable_file_uses_up_no_result(tools, monkeypatch):
+    real_open = open
+
+    def failing_open(path, *args, **kwargs):
+        if str(path).endswith("a.log"):
+            raise PermissionError("locked")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+    answer = tool(tools, "search", pattern="error", max_results=1)
+    assert answer["results"][0]["error"] == "Failed to read file: locked"
+    assert answer["results"][1]["line"] == "ERROR in b" and answer["total_matches"] == 1
+    assert answer["files_searched"] == 1  # only b.log was read

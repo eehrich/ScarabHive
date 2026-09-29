@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOG_FILES = ['logs/api.log', 'logs/cli.log', 'logs/profiling.log', 'logs/security.log']
 
 
+def _positive_int(value: Any) -> bool:
+    """A count a model passed: an int of at least 1 (a bool is no count)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 class LogViewerToolServer(SchemaBasedToolServer):
     """tool server component for log viewer plugin"""
     
@@ -102,10 +107,13 @@ class LogViewerToolServer(SchemaBasedToolServer):
 
         log_file = params.get("log_file")
         lines = params.get("lines", 500)
-        
+
         if not log_file:
-            raise ValueError("Missing required parameter: log_file")
-        
+            return {"error": "Missing required parameter: log_file"}
+        # 0 sliced as [-0:] returned the whole file, a negative number cut the head off
+        if not _positive_int(lines):
+            return {"error": f"lines must be a whole number of at least 1, not {lines!r}"}
+
         if log_file not in self.log_files:
             return {"error": f"Log file {log_file} not in allowed list"}
         
@@ -116,8 +124,8 @@ class LogViewerToolServer(SchemaBasedToolServer):
         try:
             with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
                 all_lines = f.readlines()
-                tail_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-                
+                tail_lines = all_lines[-lines:]
+
                 return {
                     "log_file": log_file,
                     "lines": [line.rstrip('\n\r') for line in tail_lines],
@@ -134,27 +142,38 @@ class LogViewerToolServer(SchemaBasedToolServer):
         max_results = params.get("max_results", 100)
         
         if not pattern:
-            raise ValueError("Missing required parameter: pattern")
-        
+            return {"error": "Missing required parameter: pattern"}
+        # 0 or less still returned the first match
+        if not _positive_int(max_results):
+            return {"error": f"max_results must be a whole number of at least 1, not {max_results!r}"}
+        # a named file is refused like tail refuses it: skipped in silence, an unconfigured
+        # file answered "0 matches in 1 file(s)" -- as if it had been searched
+        if log_file:
+            if log_file not in self.log_files:
+                return {"error": f"Log file {log_file} not in allowed list"}
+            if not Path(log_file).exists():
+                return {"error": f"Log file {log_file} not found"}
+
         import re
         try:
             regex = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
             return {"error": f"Invalid regex pattern: {str(e)}"}
-        
+
         results = []
+        matches = 0
+        files_searched = 0  # the files really read, not those that merely exist
         search_files = [log_file] if log_file else self.log_files
-        
+
         for file_path in search_files:
-            if file_path not in self.log_files:
-                continue  # Skip files not in allowed list
-                
             log_path = Path(file_path)
             if not log_path.exists():
                 continue
-                
+            if matches >= max_results:
+                break
             try:
                 with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                    files_searched += 1  # opened: a file that fails to open was not searched
                     for line_num, line in enumerate(f, 1):
                         if regex.search(line):
                             results.append({
@@ -163,25 +182,23 @@ class LogViewerToolServer(SchemaBasedToolServer):
                                 "line": line.rstrip('\n\r'),
                                 "match": True
                             })
-                            
-                            if len(results) >= max_results:
+                            matches += 1
+                            if matches >= max_results:
                                 break
-                    
-                    if len(results) >= max_results:
-                        break
-                        
+
             except Exception as e:
+                # a file that cannot be read is reported, but is no match: it must not use up max_results
                 results.append({
                     "file": file_path,
                     "error": f"Failed to read file: {str(e)}"
                 })
-        
+
         return {
             "pattern": pattern,
             "results": results,
-            "total_matches": len([r for r in results if r.get("match")]),
-            "files_searched": len([f for f in search_files if Path(f).exists()]),
-            "truncated": len(results) >= max_results
+            "total_matches": matches,
+            "files_searched": files_searched,
+            "truncated": matches >= max_results
         }
     
     def _get_available_logs(self) -> List[Dict[str, Any]]:
