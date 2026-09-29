@@ -32,6 +32,8 @@ from tests.ui.browser import _browsers_die_with_this_process, find_browser  # no
 SHOTS = {
     "todo": [("panel.png", "plugins.todo.tests.test_plugin_todo_panel", "panel_app",
               "/plugins/todo/?session_id=s-1", (1000, 700))],
+    "memory": [("panel.png", "plugins.memory.tests.test_plugin_memory_panel", "panel_app",
+                "/plugins/memory/?session_id=s-1", (1000, 480))],
 }
 
 

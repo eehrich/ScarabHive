@@ -71,8 +71,8 @@ config:
   max_memories_per_session:
     type: integer
     default: 5000
-    description: "Maximum memories allowed per session"
-    minimum: 10
+    description: "Maximum memories kept per session; a store beyond it removes the least important, oldest one. 0: no cap"
+    minimum: 0
     maximum: 10000
 
   auto_extract_keywords:
@@ -90,11 +90,11 @@ config:
     maximum: 20
 
   # When enabled, inject_memory_context hook uses vector similarity to find relevant memories
-  # When disabled, injects most recently accessed memories
+  # When disabled, the most important memories, the most recently accessed first among equals
   use_semantic_injection:
     type: boolean
     default: true
-    description: "Use semantic search to inject relevant memories (vs just recent)"
+    description: "Choose the memories the hook names by meaning (vs by importance, then last access)"
 
 tools:
   - type: function
@@ -113,8 +113,8 @@ tools:
               Operations:
               - store: Save a new memory with title and content
               - recall: Get memory by ID (also updates access count)
-              - search: Semantic search by query string (returns results with similarity score 0.0-1.0, 1.0 = perfect match)
-              - list: Show all memories
+              - search: Semantic search by query string (similarity: 1.0 = the same meaning, unrelated text about 0.5)
+              - list: Show the memories, 50 at a time (limit, offset, sort_by, sort_order)
               - delete: Remove a memory
               - update: Edit an existing memory (partial update supported - only provide fields to change)
 
@@ -137,14 +137,13 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Keywords for categorization (optional for store/update, auto-extracted if not provided)"
+            description: "Keywords for categorization (optional; a store without them gets up to ten taken from title and content)"
 
           importance:
             type: integer
             minimum: 1
             maximum: 10
-            default: 5
-            description: "Importance level 1-10 (optional for store/update, default: 5)"
+            description: "Importance level 1-10 (optional; a store without it is 5, an update without it keeps it)"
 
           tags:
             type: array
@@ -171,8 +170,7 @@ tools:
             type: integer
             minimum: 1
             maximum: 20
-            default: 3
-            description: "Number of search results to return (for search operation)"
+            description: "Number of search results to return (for search operation; default: the server's search_n_results, 5)"
 
           # For list operation
           limit:

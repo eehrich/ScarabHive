@@ -595,12 +595,10 @@ async def test_call_tool_invalid_operation(server: MemoryServer, mock_context: D
 @pytest.mark.asyncio
 async def test_call_tool_missing_operation(server: MemoryServer, mock_context: Dict[str, Any]):
     """Test tool call without operation"""
-    with pytest.raises(ValidationError) as exc_info:
-        await server.execute({
-            "session_id": mock_context["session_id"]
-        })
-    
-    assert "operation" in str(exc_info.value).lower()
+    # answered with what to send, not an exception
+    result = await server.execute({"session_id": mock_context["session_id"]})
+
+    assert "operation" in result["error"]
 
 
 # =============================================================================
