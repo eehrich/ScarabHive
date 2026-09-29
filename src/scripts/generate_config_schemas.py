@@ -262,7 +262,9 @@ def build_config_part_schema() -> dict:
             "JSON Schema for a config file pulled in by config/config.yaml's "
             "includes: (agent configs, mcp_servers.yaml). Any section but paths, "
             "auth, includes and files, which config.yaml sets; config/local.yaml "
-            "may set paths and auth too. " + _GENERATED_NOTE
+            "may set paths and auth too, and an include config.yaml names by its "
+            "path auth's route rules (config/security.yaml, which this schema "
+            "does not describe). " + _GENERATED_NOTE
         ),
         "type": "object",
         "additionalProperties": False,

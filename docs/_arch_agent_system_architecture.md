@@ -322,7 +322,7 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 - **`external_servers:`** - External MCP server connections
 - **`agents*/*.yaml`, `src/plugins*/*/agents/*.yaml`** - Config-based agent definitions (as `plugins.servers` entries; there is no top-level `agents:` section)
 
-Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`auth`, `network`, `logging`, ...) is read from `config.yaml` only; in an included file it is silently ignored.
+Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`network`, `logging`, ...) an include sets over what came before; `paths`, `auth`, `includes` and `files` are read from `config.yaml` only, and an include setting them is warned about and ignored. The exception is auth's route rules (`endpoint_security`, `llm_security`, `plugin_security`): an include `config.yaml` names by its own path -- never one a glob matched -- may set them, and `config/security.yaml` does. A file `config.yaml` names by its path must exist and load, or the start fails. `config/local.yaml` is read after all includes and may set every section but `includes` and `files`; it may be missing, but where it is there it must load, or the start fails (it names the machine's own signing key).
 
 **Datenverzeichnis (`agent_system/paths.py`):** Alles, was das System schreibt —
 Sessions, Datenbanken, Caches, die Bücher des Writers — liegt unter einem

@@ -378,7 +378,11 @@ def listed_error(answer, name: str) -> str:
 def test_without_any_profile_every_chain_member_is_a_problem(db, tree, tmp_path, llm):
     path = tmp_path / "config/llm.yaml"
     if llm is None:
-        path.unlink()  # no llm_system at all (an empty file would count as an empty one)
+        # no llm_system at all: the master names no llm.yaml (a file it names must be there -- settings fails the
+        # start without it -- and an empty one would count as an empty llm_system)
+        tree.write_text(tree.read_text(encoding="utf-8").replace("  - llm.yaml\n", ""), encoding="utf-8")
+        assert "llm.yaml" not in tree.read_text(encoding="utf-8"), "fixture: the master still names llm.yaml"
+        path.unlink()
     else:
         path.write_text(llm, encoding="utf-8")
     assert (load_settings(str(tree)).llm_system is None) is (llm is None)

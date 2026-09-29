@@ -173,7 +173,13 @@ auth:
       - "GET /login"
       - "POST /auth/login"
     rate_limit_multiplier: 0.5  # 50% of normal rate limit
-  
+```
+
+The route rules are in `config/security.yaml`, which `config/config.yaml` includes. Edit them there: rules
+written into `config.yaml` are replaced by that file's.
+
+```yaml
+auth:
   # ============================================================
   # Endpoint Security Rules (NEW in v0.5.1)
   # ============================================================
@@ -874,7 +880,7 @@ web_ui:
 Plugins contribute panels to the web UI. The shell loads the panel catalogue from `GET /api/ui/catalog`: the core panels plus the `web_ui.panel` block of every registered web plugin, filtered by the viewer's role. The launcher, the command palette and the context links in the chat all read this list.
 
 - **Account Menu**: the avatar in the header opens a menu with the user's name and role, Settings, System and Log out
-- **Role-Based Filtering**: a plugin panel is listed for the roles that may open its endpoint -- the same rules in `config/config.yaml` that guard the plugin's routes decide, app-wide `auth.endpoint_security` and `auth.plugin_security` together, so an admin-only route (like the `endpoint_rules` entry for `/plugins/user_management/*`) is an admin-only panel. With authentication disabled the viewer counts as admin and sees every panel
+- **Role-Based Filtering**: a plugin panel is listed for the roles that may open its endpoint -- the same rules in `config/security.yaml` (included by `config/config.yaml`) that guard the plugin's routes decide, app-wide `auth.endpoint_security` and `auth.plugin_security` together, so an admin-only route (like the `endpoint_rules` entry for `/plugins/user_management/*`) is an admin-only panel. With authentication disabled the viewer counts as admin and sees every panel
 
 ### Authentication Flow in Web UI
 

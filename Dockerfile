@@ -118,7 +118,7 @@ USER scarab
 EXPOSE 8000
 
 # /api/health is answered without authentication by the shipped
-# config/config.yaml (endpoint_security rule "GET /api/health"). Proxies are
+# config/security.yaml (endpoint_security rule "GET /api/health"). Proxies are
 # bypassed so an HTTP(S)_PROXY in the environment cannot break the check.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/api/health', timeout=5)"]

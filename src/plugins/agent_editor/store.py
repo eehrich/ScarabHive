@@ -332,7 +332,7 @@ class Store:
                 text = raw.decode("utf-8")
                 names |= set(PLACEHOLDER.findall(text))
                 read.append((path, raw, yaml_io.safe_load(text) or {}))
-            except Exception as error:  # the loader skips such a file as well
+            except Exception as error:  # a file a glob matched the loader skips; one the master names fails the load
                 errors.append(f"{self.rel(path)}: {error}")
         # before the load: its error may quote a value the files name
         self._names = names
@@ -342,7 +342,7 @@ class Store:
             raise StoreError(500, f"The config on disk does not load:\n{error_text(error)}")
         for path, raw, parsed in read:
             if not isinstance(parsed, dict):
-                errors.append(f"{self.rel(path)}: not a mapping, the loader skips it")
+                errors.append(f"{self.rel(path)}: not a mapping -- the loader skips it where a glob matched it")
                 continue
             data[path], versions[path] = parsed, version_of(raw)
             for name in servers_of(parsed):

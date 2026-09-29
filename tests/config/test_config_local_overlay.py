@@ -28,6 +28,7 @@ def config_dir(tmp_path):
     write(folder / "config.yaml", {"includes": ["plugins.yaml", "extra.yaml"],
                                    "network": {"host": "127.0.0.1", "port": 8123}})
     write(folder / "plugins.yaml", {"plugins": {"servers": {"forge": {"type": "forge", "enabled": True}}}})
+    write(folder / "extra.yaml", {})  # named, so it must be there; a test writes what it sets
     return folder
 
 
@@ -64,7 +65,8 @@ def test_the_local_layer_sets_auth_and_paths_which_an_include_cannot(config_dir,
         config = load_settings(str(config_dir / "config.yaml"))
     assert (config.auth.enabled, config.auth.secret_key) == (True, "from-the-local-layer-" * 2)
     assert master_data_dir(str(config_dir / "config.yaml")) == "mine"
-    assert "extra.yaml: 'auth' is read from config.yaml only" in caplog.text, caplog.text
+    # extra.yaml is named by its path: it may set the route rules, and nothing else of auth
+    assert "extra.yaml: auth.secret_key is read from config.yaml only" in caplog.text, caplog.text
     assert "extra.yaml: 'paths' is read from config.yaml only" in caplog.text, caplog.text
 
 
@@ -91,12 +93,12 @@ def test_a_utf16_local_layer_loads(config_dir):
 
 @pytest.mark.parametrize("data", [b"network: [unclosed\n", "network:\n  host: wert-mit-\u00fc\n".encode("cp1252")],
                          ids=["broken-yaml", "no-text"])
-def test_a_local_layer_that_does_not_load_is_named_and_the_rest_loads(config_dir, caplog, data):
+def test_a_local_layer_that_does_not_load_fails_the_start(config_dir, data):
+    """It names this machine's own signing key: skipped, the start signed every login with the public one."""
     (config_dir / "local.yaml").write_bytes(data)
-    with caplog.at_level(logging.ERROR):
-        config = load_settings(str(config_dir / "config.yaml"))
-    assert config.network.host == "127.0.0.1"
-    assert "local.yaml not loaded" in caplog.text, caplog.text
+    with pytest.raises(ValueError, match="local.yaml does not load"):
+        load_settings(str(config_dir / "config.yaml"))
+    assert master_data_dir(str(config_dir / "config.yaml")) is None  # a process without settings: no crash either
 
 
 def test_an_empty_hooks_key_in_the_local_layer_sets_nothing(config_dir):
@@ -107,12 +109,10 @@ def test_an_empty_hooks_key_in_the_local_layer_sets_nothing(config_dir):
     assert (config.hooks.enabled, config.hooks.default_timeout) == (False, 7)
 
 
-def test_a_broken_local_layer_is_named_and_the_rest_loads(config_dir, caplog):
-    (config_dir / "local.yaml").write_text("network: [unclosed\n", encoding="utf-8")
-    with caplog.at_level(logging.ERROR):
-        config = load_settings(str(config_dir / "config.yaml"))
-    assert config.network.host == "127.0.0.1"
-    assert "local.yaml not loaded" in caplog.text, caplog.text
+def test_a_local_layer_that_is_no_mapping_fails_the_start(config_dir):
+    (config_dir / "local.yaml").write_text("- a\n- list\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a mapping"):
+        load_settings(str(config_dir / "config.yaml"))
 
 
 @pytest.fixture

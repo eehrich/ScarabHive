@@ -71,7 +71,7 @@ web_ui:
 | `contexts` | | Einstiege aus dem Zusammenhang: `session` (Info-Knopf einer Session, Klick auf den Session-Titel im Kopf) und `request` (Request-ID unter einer Antwort). Die URL **muss mit `endpoint` beginnen**; `{session_id}` bzw. `{request_id}` setzt die Shell URL-kodiert ein. Nur eintragen, wenn das Panel den Parameter wirklich liest. **Ein `session`-Kontext heftet ein Panel an, das sonst dem Chat folgt** — es folgt ihm dann nicht mehr, bis der Nutzer die Anheftung löst. Wer ihn einträgt, zeigt die angeheftete Session deshalb sichtbar und wieder lösbar: mit `<pk-session>` in der Toolbar, oder in einem Feld, das man leeren kann (so macht es `message_debugger`). Stumm anheften ist der Fehler. |
 
 **Wer das Panel sieht, steht nicht im Block:** der Katalog zeigt es den Rollen,
-die beide Schichten der Route-Security in `config/config.yaml` den `endpoint`
+die beide Schichten der Route-Security in `config/security.yaml` den `endpoint`
 öffnen lassen: `auth.endpoint_security` (app-weit) und `auth.plugin_security`.
 Soll ein Panel nur für
 Admins sein, gehört eine Regel für seine Routen in die Konfiguration — dann

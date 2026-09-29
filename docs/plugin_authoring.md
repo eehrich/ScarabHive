@@ -766,7 +766,7 @@ not parse is left out of the catalogue with an error log.
   only if the panel reads that parameter
 
 Who sees the panel is not declared here: the catalogue lists it for the roles both
-layers of route security in `config/config.yaml` let open its `endpoint` -- the
+layers of route security in `config/security.yaml` (included by `config/config.yaml`) let open its `endpoint` -- the
 app-wide `auth.endpoint_security` rules and `auth.plugin_security`. An admin-only
 route is an admin-only panel.
 

@@ -11,6 +11,7 @@ import copy
 import hashlib
 import logging
 import re
+import time
 from typing import Any, Optional
 from pathlib import Path
 import os
@@ -322,6 +323,11 @@ def _expand_includes(master: dict, cfg_path: Path) -> list[str]:
 #: includes are not followed.
 MASTER_ONLY_SECTIONS = ("paths", "auth", "includes", "files")
 
+#: What of auth an include may set after all: the route rules (config/security.yaml). Only an include the master
+#: names by its own path, never one a glob matched -- the globs take in every plugin's agents/*.yaml, and a plugin
+#: must not open routes by shipping a file. The rest of auth (enabled, the signing key, ...) stays the master's.
+AUTH_RULE_SECTIONS = ("endpoint_security", "llm_security", "plugin_security")
+
 #: This machine's own layer beside the master config, never in the repository (.gitignore). Read after every
 #: include, so it wins, and -- unlike an include -- it may set auth and paths too: the Setup panel and the install
 #: scripts point auth.secret_key at the machine's own key here, never in a tracked file.
@@ -329,19 +335,17 @@ LOCAL_CONFIG = "local.yaml"
 
 
 def local_layer(cfg_path: Path) -> dict:
-    """The local layer beside *cfg_path*; {} where there is none, or where it does not load -- a start goes on without
-    it then, and says so."""
+    """The local layer beside *cfg_path*; {} where there is none. Raises ValueError where it is there and does not
+    load: it names this machine's own signing key, and a start without it would sign with the public one."""
     path = cfg_path.parent / LOCAL_CONFIG
     if not path.is_file():
         return {}
     try:
         part = yaml_io.safe_load(local_text(path)) or {}
     except (OSError, ValueError, yaml.YAMLError) as error:  # ValueError: no text
-        logger.error("Config file %s not loaded: %s", path, error)
-        return {}
+        raise ValueError(f"Config file {path} does not load: {error}") from error
     if not isinstance(part, dict):
-        logger.error("Config file %s not loaded: not a mapping", path)
-        return {}
+        raise ValueError(f"Config file {path} does not load: not a mapping")
     # A section with every line commented out sets nothing; in hooks, an empty key neither (as in an include).
     return {key: strip_empty_yaml_keys(value) if key == "hooks" and isinstance(value, dict) else value
             for key, value in part.items() if value is not None}
@@ -350,8 +354,22 @@ def local_layer(cfg_path: Path) -> dict:
 def local_text(path: Path) -> str:
     """A file of the local layer as text: UTF-8, with a BOM or without, or UTF-16 with one -- what PowerShell 5.1's
     `>` writes, which the install guide has the reader do. Raises OSError, or UnicodeDecodeError (a ValueError)."""
-    data = path.read_bytes()
+    data = read_config_bytes(path)
     return data.decode("utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig")
+
+
+def read_config_bytes(path: Path) -> bytes:
+    """A config file's bytes. Windows refuses a read while another process replaces the file (os.replace: the Agent
+    Editor saving, the Setup panel writing): tried again for up to a second before it counts as unreadable -- a file
+    the master names fails the start then. A denial that lasts (POSIX rights) costs that second."""
+    for attempt in range(20):
+        try:
+            return path.read_bytes()
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.05)
+    raise AssertionError("unreachable")
 
 
 def master_section(cfg_path: Path, name: str, default: Any = None) -> Any:
@@ -367,6 +385,31 @@ def master_section(cfg_path: Path, name: str, default: Any = None) -> Any:
     section = master.get(name)
     return deep_merge(section, local[name]) if isinstance(section, dict) and isinstance(local[name], dict) \
         else local[name]
+
+
+def _named_includes(master: dict) -> set[str]:
+    """The includes the master names by their own path, not by a glob."""
+    includes = master.get("includes") or master.get("files") or []
+    return {inc for inc in ([includes] if isinstance(includes, str) else includes)
+            if isinstance(inc, str) and not any(char in inc for char in "*?[")}
+
+
+def _merge_auth_rules(data: dict, section: dict, source: str, master_name: str) -> None:
+    """The route rules of an include the master names, over the master's (AUTH_RULE_SECTIONS); every other key of
+    its auth section is refused by name."""
+    refused = sorted(str(key) for key in section if key not in AUTH_RULE_SECTIONS)
+    if refused:
+        logger.warning("%s: auth.%s is read from %s only -- ignored here (an include sets only %s)", source,
+                       ", auth.".join(refused), master_name, ", ".join(AUTH_RULE_SECTIONS))
+    auth = data.get("auth")
+    auth = dict(auth) if isinstance(auth, dict) else {}
+    for key in AUTH_RULE_SECTIONS:
+        if section.get(key) is None:
+            continue  # absent, or every line commented out: sets nothing
+        current = auth.get(key)
+        auth[key] = deep_merge(current, section[key]) if isinstance(current, dict) and isinstance(section[key], dict) \
+            else section[key]
+    data["auth"] = auth
 
 
 def config_files(config_path: Optional[str] = None) -> list[Path]:
@@ -462,6 +505,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
 
         includes = _expand_includes(master, cfg_path)
         logger.debug(f"Config includes {len(includes)} files from glob patterns")
+        named = _named_includes(master)
 
         local_path = cfg_path.parent / LOCAL_CONFIG
 
@@ -474,7 +518,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                 continue  # a master that still names the local layer: it comes last, below
             if inc_path.exists():
                 try:
-                    part = yaml_io.safe_load(inc_path.read_text(encoding="utf-8")) or {}
+                    part = yaml_io.safe_load(read_config_bytes(inc_path).decode("utf-8")) or {}
                     if isinstance(part, dict):
                         # A section with every line commented out sets nothing: a
                         # null `plugins:` failed the whole file in deep_merge.
@@ -540,6 +584,9 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     for key, value in part.items():
                         if key in ("llm_system", "plugins", "external_servers", "hooks"):
                             continue  # merged above
+                        if key == "auth" and inc in named and isinstance(value, dict):
+                            _merge_auth_rules(data, value, inc_path.name, cfg_path.name)
+                            continue
                         if key in MASTER_ONLY_SECTIONS:
                             logger.warning("%s: '%s' is read from %s only -- ignored here", inc_path.name, key,
                                            cfg_path.name)
@@ -549,13 +596,21 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                                      else value)
 
                 except yaml.YAMLError as e:
+                    if inc in named:
+                        raise ValueError(f"Failed to parse included configuration file '{inc_path}': {e}") from e
                     # Log YAML syntax errors and continue (allows other configs to load)
                     logger.error(f"YAML syntax error in included config '{inc_path}': {e}")
                     logger.warning(f"Skipping malformed config file: {inc_path}")
                 except Exception as e:
+                    if inc in named:
+                        raise ValueError(f"Failed to load included configuration file '{inc_path}': {e}") from e
                     # Log other parsing errors but continue loading
                     logger.error(f"Failed to load included config '{inc_path}': {e}", exc_info=True)
                     logger.warning(f"Skipping problematic config file: {inc_path}")
+            elif inc in named and not _is_local(inc_path, local_path):  # the local layer is optional, named or not
+                # The master names this file by its path: the route rules (security.yaml) among them. Skipped, the
+                # start would go on with the models' defaults -- every plugin panel open to any user.
+                raise ValueError(f"Included configuration file '{inc_path}' is named in {cfg_path.name} but missing")
 
         # This machine's own layer, over everything: every section but another include list.
         local = local_layer(cfg_path)

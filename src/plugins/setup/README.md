@@ -57,7 +57,7 @@ the signing key into this machine's own layer (`config/local.env`,
   `config/local.env` and points `auth.secret_key` at it in
   `config/local.yaml`; a restart applies it, and every login then ends.
 
-`/plugins/setup/*` is admin only by its rule in `config.yaml`, which also keeps
+`/plugins/setup/*` is admin only by its rule in `config/security.yaml`, which also keeps
 the panel out of other users' launcher; `/state`, `/probe`, `/key` and `/signing-key` check for an admin
 themselves (`require_admin_viewer`: without authentication the one user is the
 owner). `/probe`, `/key` and `/signing-key` take JSON only, so a page elsewhere

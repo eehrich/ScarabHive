@@ -12,7 +12,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
@@ -173,13 +172,14 @@ def test_the_page_is_the_kit_panel_with_the_categories_the_log_knows(users):
 
 
 def test_the_shipped_route_rules_refuse_the_page_to_non_admins_before_the_route(users):
-    shipped = yaml.safe_load((REPO / "config" / "config.yaml").read_text(encoding="utf-8"))
-    rules = [EndpointSecurityRule(**rule) for rule in shipped["auth"]["endpoint_security"]["rules"]]
+    from agent_system.config.settings import load_settings
+    # as the API gets them: config.yaml with its include config/security.yaml
+    rules = load_settings(str(REPO / "config" / "config.yaml")).auth.endpoint_security.rules
     client = TestClient(make_app(auth_config(rules=rules, default_policy="require_auth")))
 
     for url in (PAGE, DATA):
         refused = client.get(url, headers=token(users, "bob"))
-        # the middleware's wording, not require_admin's: the rule in config.yaml refused it
+        # the middleware's wording, not require_admin's: the shipped rule (config/security.yaml) refused it
         assert (refused.status_code, refused.json()["detail"]) == (403, "Insufficient permissions. Required role: admin"), url
         assert client.get(url, headers=token(users, "root")).status_code == 200
     assert client.get(PAGE).status_code == 401

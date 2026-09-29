@@ -1,7 +1,7 @@
 """
 Tests for the EndpointSecurityMiddleware (ASGI middleware).
 
-Tests the middleware that enforces endpoint_security rules from config.yaml
+Tests the middleware that enforces endpoint_security rules from config/security.yaml
 by checking JWT tokens and validating user roles.
 """
 

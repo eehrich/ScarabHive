@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config Part Schema",
-  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml). Any section but paths, auth, includes and files, which config.yaml sets; config/local.yaml may set paths and auth too. GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
+  "description": "JSON Schema for a config file pulled in by config/config.yaml's includes: (agent configs, mcp_servers.yaml). Any section but paths, auth, includes and files, which config.yaml sets; config/local.yaml may set paths and auth too, and an include config.yaml names by its path auth's route rules (config/security.yaml, which this schema does not describe). GENERATED from agent_system.config.models by src/scripts/generate_config_schemas.py — do not edit by hand.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

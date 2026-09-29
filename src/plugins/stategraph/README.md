@@ -151,7 +151,7 @@ machine's last params.
 Machines contain Python that runs in the API process with the rights of plugin code,
 and they run agents and tools. Therefore:
 
-- **Routes** `/plugins/stategraph/*` require the admin role (`config/config.yaml`,
+- **Routes** `/plugins/stategraph/*` require the admin role (`config/security.yaml`,
   `auth.plugin_security`).
 - **Callback URLs** (`callback` activity) are bearer keys: whoever holds one sends its one event
   to its run once, until it expires (at most 30 days). runs.db keeps only the token's hash, but the

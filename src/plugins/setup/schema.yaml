@@ -47,7 +47,7 @@ web_ui:
     keywords: [setup, install, keys, api key, openrouter, admin, password, first start, onboarding]
     window: {width: 900, height: 720}
 
-  # /plugins/setup/* is admin only by its rule in config.yaml (plugin_security); the data endpoints check
+  # /plugins/setup/* is admin only by its rule in config/security.yaml (plugin_security); the data endpoints check
   # for an admin themselves as well (require_admin_viewer). The page carries no data.
   endpoints:
     - path: "/"
