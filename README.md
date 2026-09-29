@@ -16,7 +16,7 @@ ScarabHive is designed for developers who need:
 - **MCP client** consuming tools from external MCP servers
 
 ## Key Features
-- **Plugin System**: 30+ built-in plugins (web research, terminal, SSH, database, script execution, media generation, etc.)
+- **Plugin System**: 60+ built-in plugins (web research, terminal, SSH, database, script execution, media generation, etc.)
 - **Schema-Based Agents**: Define custom agents in YAML with tool filtering, LLM profiles, and prompts
 - **Multi-LLM Support**: OpenAI, Anthropic Claude, Google Gemini, Ollama, OpenRouter, Batch-Support
 - **Sub-Agent Management**: Spawn persistent sub-agents with full conversation context and nested hierarchies
@@ -85,7 +85,7 @@ ScarabHive is designed for developers who need:
 ## Getting Started
 
 1. **Install**: Follow the [Installation Guide](INSTALLATION.md)
-2. **Configure**: Edit `config/config.yaml` to set your LLM provider API keys
+2. **Configure**: Set your LLM provider API keys as environment variables or in `config/secrets.env` (template: `config/secrets.env.example`); models and profiles live in `config/llm.yaml` and `config/llm_openrouter.yaml`
 3. **Run**: Start the API server with `agent-api` or use the CLI with `agent-cli`
 4. **Explore**: Open `http://localhost:8000` in your browser
 
@@ -95,8 +95,8 @@ python -m venv .venv
 source .venv/Scripts/activate  # Windows Git Bash
 pip install -e . # optional [dev,test,gpu]
 
-# Configure LLM provider (example)
-export OPENAI_API_KEY="your-key-here"
+# Configure LLM provider (the shipped default agent, chat_agent, runs on OpenRouter)
+export OPENROUTER_API_KEY="your-key-here"
 
 # Start API
 agent-api
@@ -104,6 +104,8 @@ agent-api
 # Or use CLI
 agent-cli "What is the weather in Berlin?"
 ```
+
+Or with Docker: `docker compose up -d --build` (see [INSTALLATION.md](INSTALLATION.md#docker)).
 
 ## Project Status
 
@@ -128,8 +130,7 @@ Core documentation in [`docs/`](docs/):
 
 ## Contributing
 
-1. Follow test-first development (run `pytest -q` before committing)
-2. Maintain plugin READMEs when adding/modifying plugins
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

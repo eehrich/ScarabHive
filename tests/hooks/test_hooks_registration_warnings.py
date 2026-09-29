@@ -22,27 +22,39 @@ async def test_a_hook_without_its_own_timeout_gets_the_configured_default():
     assert registry.get_hook_info("test_plugin.test_hook")["timeout"] == 7.0
 
 
-@pytest.mark.parametrize("hook_type", ["pre_tool_call", "post_tool_call"])
-async def test_a_tool_hook_is_reported_as_never_firing(hook_type, caplog):
+@pytest.mark.parametrize("hook_type", ["pre_llm_call", "pre_tool_call", "post_tool_call"])
+async def test_a_hook_of_a_type_that_fires_registers_without_a_warning(hook_type, caplog):
+    """The tool hooks fire since the tool loop calls them; registering one used
+    to warn that it never would."""
     registry = HookRegistry(default_timeout=30.0)
-    plugin = MockHookPlugin("test_plugin")
-    metadata = {"hooks": [{"name": "tool_hook", "type": hook_type}]}
-
-    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
-        await register_plugin_hooks("test_plugin", plugin, metadata, registry, HooksConfig())
-
-    assert any("never fires" in r.getMessage() and "tool_hook" in r.getMessage() for r in caplog.records)
-
-
-async def test_a_pre_llm_hook_is_not_reported_as_never_firing(caplog):
-    registry = HookRegistry(default_timeout=30.0)
-    metadata = {"hooks": [{"name": "llm_hook", "type": "pre_llm_call"}]}
+    metadata = {"hooks": [{"name": "some_hook", "type": hook_type}]}
 
     with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
         await register_plugin_hooks("test_plugin", MockHookPlugin("test_plugin"), metadata,
                                     registry, HooksConfig())
 
-    assert not any("never fires" in r.getMessage() for r in caplog.records)
+    assert registry.get_hook_info("test_plugin.some_hook")["type"] == hook_type
+    assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize("hook_type, on_error, warned", [
+    ("pre_tool_call", "block", False),
+    ("pre_tool_call", "Block", True),
+    ("post_tool_call", "block", True),
+])
+async def test_an_on_error_that_has_no_effect_is_reported(hook_type, on_error, warned, caplog):
+    """on_error: block makes a failing pre_tool_call hook block its call; any
+    other spelling reads as the default and lets the call through a policy
+    hook without a word."""
+    registry = HookRegistry(default_timeout=30.0)
+    metadata = {"hooks": [{"name": "policy", "type": hook_type, "on_error": on_error}]}
+
+    with caplog.at_level(logging.WARNING, logger="agent_system.plugins.discovery"):
+        await register_plugin_hooks("test_plugin", MockHookPlugin("test_plugin"), metadata,
+                                    registry, HooksConfig())
+
+    assert registry.get_hook_info("test_plugin.policy")["metadata"]["on_error"] == on_error
+    assert any("on_error" in r.getMessage() for r in caplog.records) is warned
 
 
 CONFIG = """

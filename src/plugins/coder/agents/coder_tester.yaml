@@ -40,9 +40,25 @@ plugins:
             - "+coder_shell/*"
             - "+coder_fs_ro/*"
 
+        hooks:
+          overrides:
+            # The project's AGENTS.md: how this project runs its checks.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+            # Its shell calls are named in the checkpoint of the coder's turn
+            # that started it (file_checkpoints) -- what they changed is not
+            # recorded, but a rewind says they ran.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
+
       metadata:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["coding", "tests", "mutation"]
         category: "development"
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell and read access to the whole checkout

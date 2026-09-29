@@ -1309,7 +1309,7 @@ class TestBearerApiKey:
     wrong user.
     """
 
-    SECRET = "test-secret-key-12345"
+    SECRET = "test-secret-key-for-bearer-api-keys-0123"  # set_jwt_config refuses keys under 32 characters
 
     @pytest.fixture
     def middleware(self):

@@ -1425,12 +1425,25 @@ class MyAgent(SchemaBasedAgent):
         context = params.get("context", "")
         prompt = f"{task}\n\nContext: {context}" if context else task
 
+        # Never on the caller's session: on one of this agent's own below it
+        # (tool_session). Refused -- nothing ran -- when it is another user's
+        # ("foreign_session"), when this agent runs above the call already
+        # ("recursive_call"), or when it cannot be stored with the caller's
+        # sub-agent budget ("tool_session_unavailable"). A session that cannot be
+        # read at all raises, as any other failure of the call.
+        session_id, refusal = await self.tool_session(params)
+        if refusal:
+            return {"status": "error", **refusal}  # "error" and "error_type"
+
         # Runs the agent loop (LLM + allowed tools) and returns the final result
         result = await collect_final_result(
             self, prompt,
             request_id=params.get("request_id") or params.get("_request_id"),
-            session_id=params.get("_session_id"),
+            session_id=session_id,
         )
+        if result.get("refused"):  # refused at its start: another call runs on the session
+            return {"status": "error", "error": (result.get("errors") or ["refused"])[-1],
+                    "error_type": result["refused"]}
         return {"status": "success", "result": result}
 
     # Tool "{name}_list_available_tools" -> method list_available_tools
@@ -1512,6 +1525,44 @@ An agent instance is a server entry (see the example under
 - **`enabled: true`** — the default is `false`, and it is checked on the entry itself, not inherited.
 - **`metadata.visibility`** — `private` (default: neither tool nor UI), `tool`
   or `both` (callable as a tool by other agents), `ui` or `both` (listed in the UI).
+  Display only: it hides an agent, it does not stop anyone who knows its name.
+  Called as a tool, an agent runs on a session of its own per caller session
+  (`Agent.tool_session`: `<caller session>--<agent>-<digest>`), not on the caller's:
+  it remembers its earlier calls in that caller session, is saved under the call's
+  user below the caller's session (hidden from the session list, like a sub-agent's),
+  and a throwaway caller's is never saved and leaves memory with the caller's session
+  (if the agent starts sub-agents, the sub-agent manager files it as the listed
+  "Coordinator Session" it makes for any parent it does not find). A call to an
+  agent that runs above it already -- itself, directly or through other agents called
+  as tools -- is refused with `error_type: "recursive_call"`; across a SAM or
+  stategraph hop the sub-agent nesting budget bounds it instead (a stategraph agent
+  activity only where a SAM above set one). A call whose session cannot be stored
+  with the caller's sub-agent budget is refused (`"tool_session_unavailable"`). A
+  session the person deleted (`DELETE /sessions/<id>`) is forgotten: the next call
+  starts it afresh. An `execute_task` of your own gets that session, or the
+  refusal, from `await self.tool_session(params)` (see the example above); a run
+  refused at its start -- a second call while the first still runs on the session
+  -- comes back from `collect_final_result` with `refused` set to its error_type,
+  and is answered as an error with it, as `Agent.call` does.
+- **`metadata.min_role`** — `guest`, `user` or `admin`: the lowest account role that
+  may *run* the agent, on every path (HTTP, SAM, agent as a tool, stategraph, wakes,
+  each of its `<name>_*` tools); absent = no gate. Give `admin` to every agent that
+  carries a shell, a coding CLI, SSH, a tool that runs arbitrary code
+  (`blender_execute`, `godot_script`), or file access to the checkout or above, to
+  `config/`, to `data/` itself (the user store and every user's sessions live there;
+  a folder of its own below it, such as `data/workspace`, is fine) or write access to
+  `src/` (the code that runs). Details:
+  [agent_visibility.md](agent_visibility.md#wer-darf-einen-agent-ausführen-metadatamin_role).
+  - **No identity:** a run without a registered request owner or session user is
+    judged as `anonymous` -- refused unless anonymous access is enabled with a
+    sufficient role; the SAM and the agent's own tools refuse it outright. Unknown
+    or inactive accounts are refused. `cli_user` counts as the local operator only
+    inside `agent-cli`/`agent-run`, never in the API.
+  - **Inherited through `type:`:** `metadata` is deep-merged along the type chain, so an
+    agent based on a gated one is gated too. `min_role: null` does **not** lift an
+    inherited value -- set a lower role explicitly (`guest`/`user`).
+  - Without `auth.enabled` there are no roles; the server logs the gates it cannot
+    enforce at start.
 - **`agent_config.tools.allowed`** — the tools this agent may call; empty means none.
 - **`self_tool_descriptions`** — server level, not inside `agent_config`
   (`agent_config` rejects unknown keys at load).
@@ -1522,7 +1573,10 @@ An agent instance is a server entry (see the example under
    the instance name listed there (exact name or fnmatch glob).
 2. `visibility` other than `private`, or the agent is missing from that list.
 3. The caller allows the SAM instance: `tools.allowed: ["<sam instance>/*"]`.
-4. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
+4. The calling run's user passes the sub-agent's `metadata.min_role`, if it has one;
+   otherwise `create`/`continue` answer `error_type: "agent_role_gate"` before any
+   sub-session exists.
+5. SAM settings (`allowed_agents`, `blocked_agents`, `allow_advanced_model`, …)
    are **top-level keys** of the SAM server entry, not under `config:`.
 
 **Servers a plugin offers without a config entry.** A plugin factory may carry
@@ -2797,7 +2851,8 @@ In addition to tool plugins, AgentSystem supports **hooks-only plugins** that in
 5. **FORMAT_OUTPUT** - Display formatting only, never history
 6. **SESSION_END** - After saving; no effect
 7. **PRE_LLM_REQUEST** / 8. **POST_LLM_RESPONSE** - At LLM client level, read-only
-9. **PRE_TOOL_CALL** / 10. **POST_TOOL_CALL** - Defined, but nothing calls them: they never fire (registration logs a warning)
+9. **PRE_TOOL_CALL** - Before each tool call of the model (and of a tool_script script); may change the arguments or block the call
+10. **POST_TOOL_CALL** - After the call ran, before its result joins the history; may change the result
 
 Each hook gets a deep copy of the context. Changes count only with
 `modified=True`; `success=False` discards context and metadata.

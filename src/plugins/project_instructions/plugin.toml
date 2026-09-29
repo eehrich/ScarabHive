@@ -1,0 +1,15 @@
+# project_instructions plugin manifest — metadata + Python requirements in one file.
+# Read by agent_system.plugins.plugin_manifest; pip requirements (if any)
+# go in a `dependencies = [...]` line and are aggregated into the build by
+# scripts/aggregate_plugin_deps.py.
+[plugin]
+name = "project_instructions"
+version = "0.1.0"
+description = "Puts the project's AGENTS.md in front of the model: read once per session from the root the agent's file tools work in"
+author = "Enrico Ehrich"
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["hooks"]
+category = "prompt"
+tags = ["hooks", "prompt", "agents-md", "project"]
+requires = { agent_system = ">=0.6.0" }
+dependencies = []

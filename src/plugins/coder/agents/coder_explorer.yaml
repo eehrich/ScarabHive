@@ -38,9 +38,24 @@ plugins:
           allowed:
             - "+coder_fs_ro/*"
 
+        hooks:
+          overrides:
+            # The project's AGENTS.md: where things live, as the project says it.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+            # Read-only, so nothing to record -- switched on so that the coder's
+            # checkpoint does not name its spawn as one that records nothing.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
+
       metadata:
         author: "Enrico Ehrich"
         version: "1.0.0"
         tags: ["coding", "search", "read-only"]
         category: "development"
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): reads the whole checkout, config/secrets.env and data/users.db included

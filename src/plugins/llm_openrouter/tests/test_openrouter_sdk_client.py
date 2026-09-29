@@ -8,6 +8,7 @@ our fields, or a typed result model that swallows ``usage``.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import sys
@@ -24,6 +25,11 @@ from plugins.llm_openrouter.openrouter_sdk_client import (
     OpenRouterSDKClient,
     build_openrouter_sdk_client,
 )
+
+#: The classes below that send a request go through the openrouter SDK, a declared dependency of this plugin
+#: (plugin.toml) the client imports only when it sends. Without it installed they have nothing to test.
+needs_the_sdk = pytest.mark.skipif(importlib.util.find_spec("openrouter") is None,
+                                   reason="the openrouter SDK (llm_openrouter's declared dependency) is not installed")
 
 MESSAGES = [ChatMessage(role="user", content="hi")]
 #: The shape the agent server actually builds (nested "function").
@@ -115,6 +121,7 @@ async def _noop():
     return None
 
 
+@needs_the_sdk
 class TestTheRequestTravelsThroughTheSdk:
     @pytest.mark.asyncio
     async def test_it_reaches_the_responses_endpoint(self, route):
@@ -235,6 +242,7 @@ class TestTheRequestTravelsThroughTheSdk:
         assert "safety_settings" not in route.bodies[0]
 
 
+@needs_the_sdk
 class TestTheAnswerIsReadFromTheRawBody:
     @pytest.mark.asyncio
     async def test_usage_survives(self, route):
@@ -306,6 +314,7 @@ class TestTheAnswerIsReadFromTheRawBody:
         assert "OPAQUE-BLOB" in json.dumps(result["assistant"]["reasoning_details"])
 
 
+@needs_the_sdk
 class TestTheInheritedLoopStillOwnsTheRetries:
     @pytest.mark.asyncio
     async def test_a_429_on_flex_drops_the_tier_and_retries(self, route):
@@ -364,6 +373,7 @@ class TestItIsDistinguishableFromTheHttpxRoute:
         assert OpenRouterSDKClient._PROVIDER == "openrouter_sdk"
         assert OpenAIResponsesClient._PROVIDER == "openai_responses"
 
+    @needs_the_sdk
     @pytest.mark.asyncio
     async def test_the_hooks_see_the_sdk_route(self, route):
         seen: list[dict] = []
@@ -481,3 +491,35 @@ class TestThisRouteDoesNotStream:
             capabilities={"streaming": True})
 
         assert sibling.supports_streaming() is True
+
+
+@needs_the_sdk
+class TestStructuredOutputTravelsThroughTheSdk:
+    """``text.format`` is built by the inherited Responses builder; the SDK's typed ``text``
+    parameter has to carry it to the wire, all three of its fields intact."""
+
+    @pytest.mark.asyncio
+    async def test_the_schema_arrives_as_text_format(self, route):
+        from agent_system.config.models import ModelCapabilitiesConfig
+        from agent_system.llm.structured_output import ResponseFormat
+
+        schema = {"type": "object", "properties": {"city": {"type": "string"}},
+                  "required": ["city"], "additionalProperties": False}
+        client = _client(capabilities=ModelCapabilitiesConfig(structured_output=True))
+        await client.chat_tools(MESSAGES, TOOLS,
+                                response_format=ResponseFormat(schema=schema, name="place", strict=True))
+        assert route.bodies[0]["text"] == {"format": {"type": "json_schema", "name": "place",
+                                                      "schema": schema, "strict": True}}
+
+    @pytest.mark.asyncio
+    async def test_json_mode_arrives_and_a_model_without_the_capability_sends_nothing(self, route):
+        from agent_system.config.models import ModelCapabilitiesConfig
+        from agent_system.llm.structured_output import JSON_OBJECT, ResponseFormat, StructuredOutputUnsupported
+
+        await _client(capabilities=ModelCapabilitiesConfig(structured_output=True)).chat_tools(
+            MESSAGES, TOOLS, response_format=ResponseFormat(type=JSON_OBJECT))
+        assert route.bodies[0]["text"] == {"format": {"type": "json_object"}}
+        with pytest.raises(StructuredOutputUnsupported):
+            await _client(capabilities=ModelCapabilitiesConfig(json_mode=True)).chat_tools(
+                MESSAGES, TOOLS, response_format=ResponseFormat(type=JSON_OBJECT))
+        assert len(route.requests) == 1

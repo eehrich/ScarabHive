@@ -13,7 +13,8 @@ plugins:
       enabled: true                      # default false
       description: "One line for humans and the SAM list."
       metadata:
-        visibility: tool                 # ui | tool | both | private (default)
+        visibility: tool                 # ui | tool | both | private (default); display only
+        min_role: admin                  # guest | user | admin; who may RUN it; absent = no gate
       agent_config:                      # extra="forbid": a typo fails the load
         llm_profile: [primary, fallback]
         llm_profile_advanced: []         # explicit, else inherited from default_config
@@ -37,6 +38,39 @@ plugins:
   `default_config` sets `config/prompts/system_prompt.md` for every agent.
 - Prompt language: English outside `src/plugins_writer/`.
 - Visibility: `tool`/`both` → callable as a tool by other agents; `ui`/`both` → in the UI.
+  It only hides; it does not stop a run by name.
+- Called as a tool, an agent runs on a session of its own per caller session
+  (`Agent.tool_session` → `tool_session_id(caller, name)`), never on the caller's:
+  it remembers its calls in that caller session, is saved under the call's user
+  below the caller's session (hidden like a SAM sub-session), and a throwaway
+  caller's is never saved (if the agent starts sub-agents, the SAM files it as the
+  listed "Coordinator Session" it makes for any missing parent). A call to an
+  agent that runs above it already (itself, directly or through agents called as
+  tools) is refused: `error_type: "recursive_call"`; across a SAM or stategraph hop
+  the nesting budget bounds it (stategraph only where a SAM above set one). A session
+  that cannot be stored with the caller's budget: `"tool_session_unavailable"`. A
+  deleted one is forgotten; the next call starts it afresh. A custom
+  `execute_task` takes it from
+  `session_id, refusal = await self.tool_session(params)` and answers a refusal
+  with `{"status": "error", **refusal}` (and a `collect_final_result` whose
+  `refused` is set with that error_type) -- passing `params["_session_id"]` to the
+  run writes the agent's transcript into the caller's session file.
+- `min_role` gates who may run the agent on every path -- HTTP (answered like an
+  unknown agent, except `/run`/`/events` for the default agent with no name and
+  `POST /api/sessions`: 403), SAM (`error_type: "agent_role_gate"`), agent as a tool, stategraph, wakes,
+  and each `<name>_*` tool (`src/agent_system/auth/agent_access.py`).
+  - No identity (no registered request owner, no session user): judged as
+    `anonymous` -- refused unless anonymous access is enabled with a sufficient
+    role; the SAM and the agent's tools refuse it outright. `cli_user` is the local
+    operator only in `agent-cli`/`agent-run`.
+  - **Inheritance trap:** `metadata` is deep-merged along `type:` -- an agent based on
+    a gated one inherits the gate, and `min_role: null` does NOT lift it. Set a lower
+    role explicitly (`guest`/`user`) and check with `load_settings` +
+    `get_tool_server_config`.
+  - Gate (admin) anything with a shell, a coding CLI, SSH, a tool that runs arbitrary
+    code (`blender_execute`, `godot_script`), or file access to the checkout or above,
+    to `config/`, to `data/` itself (user store, every user's sessions -- a folder of
+    its own like `data/workspace` is fine) or write access to `src/`.
 
 ### Prompt traps
 
@@ -112,6 +146,9 @@ There is no global registry. **All four** must hold:
 4. **`metadata.visibility` is not `private`** (the default) — a private agent is
    missing from the "Available" list, so the model never learns its name. Use `tool`
    (or `both`).
+5. **The calling run's user passes its `metadata.min_role`** (if set) — otherwise
+   `error_type: "agent_role_gate"`, before a sub-session exists. The caller is the
+   registered owner of `_request_id`, else `_user_id`; neither known → refused.
 
 SAM knobs are **top-level** keys on the SAM entry (not under `config:`):
 `allowed_agents`, `blocked_agents`, `allow_advanced_model` (default true; false drops
@@ -155,6 +192,12 @@ dependencies = ["my-sdk>=1.0"]
 - Shared helpers live in `llm_common`; delegation via `get_provider("openai")`.
 - **No provider tables**: no `if google`, no alias dicts, no name heuristics. Mappings
   come from config or gateway data.
+- **Structured output** (`agent_system/llm/structured_output.py`): a client that wires it
+  lists `response_format_kinds` (the kinds its WIRE has a field for), takes
+  `response_format=` on `chat_tools`/`chat_tools_streaming` and calls
+  `self._require_response_format(...)` before anything goes out. Whether a model honours it
+  is `capabilities.structured_output` on the model entry (`json_mode` is not read). A client without the
+  kinds is never handed a format; one that has them must never drop it silently.
 - Report usage in OpenAI semantics: `prompt_tokens` **including** cache, details as a
   subset (example `llm_anthropic/anthropic_utils.usage_to_openai`).
 - `config/llm*.yaml` belongs to the user — don't change it on your own.

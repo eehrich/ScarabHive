@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Dict, List
 
@@ -26,9 +27,67 @@ import yaml
 # sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+def _forget_modules_from(workspace: Path, before: dict[str, object]) -> None:
+    """Take the modules discovery loaded from ``workspace`` out of sys.modules.
+
+    The copied plugins sit in a directory named ``plugins``, so discovery loads
+    them under the real package names (``plugins.log_viewer.plugin``) -- a new
+    module per file, by design -- and a copy took the real module's place for
+    the rest of the session. The next discovery of the real tree then loaded
+    that plugin a second time: log_viewer's discovery test found a factory that
+    was not the one it had imported. A module that was there before comes back.
+    """
+    roots = {str(workspace), str(workspace.resolve())}
+
+    def loaded_from_workspace(module: object) -> bool:
+        # A module whose __getattr__ answers every name (torch.classes) hands back an object for
+        # __file__ and __path__: only strings are places, and what is not iterable is no path.
+        # Else the teardown raised, and the copies stayed in sys.modules for the whole session.
+        file = getattr(module, "__file__", None)
+        places = [file] if isinstance(file, str) else []
+        try:
+            places += [entry for entry in getattr(module, "__path__", None) or [] if isinstance(entry, str)]
+        except TypeError:
+            pass
+        return any(place == root or place.startswith(root + os.sep)
+                   for place in places for root in roots)
+
+    # Two passes: reading a namespace package's __path__ looks its parent up in
+    # sys.modules, so no entry may go while others are still being asked.
+    loaded = [name for name, module in list(sys.modules.items())
+              if module is not None and loaded_from_workspace(module)]
+    for name in loaded:
+        if name in before:
+            sys.modules[name] = before[name]
+        else:
+            del sys.modules[name]
+
+
+class _AnswersEveryName(types.ModuleType):
+    """Like torch.classes: every attribute it lacks is a module, and a module is not iterable."""
+
+    def __getattr__(self, name: str) -> types.ModuleType:
+        return types.ModuleType(name)
+
+
+def test_forgetting_the_workspace_survives_a_module_that_answers_every_name(tmp_path, monkeypatch):
+    before = dict(sys.modules)
+    answers_everything = _AnswersEveryName("fake_answers_every_name")
+    copied = types.ModuleType("fake_copied_plugin")
+    copied.__file__ = str(tmp_path / "plugins" / "fake_copied_plugin.py")
+    monkeypatch.setitem(sys.modules, "fake_answers_every_name", answers_everything)
+    monkeypatch.setitem(sys.modules, "fake_copied_plugin", copied)
+
+    _forget_modules_from(tmp_path, before)
+
+    assert sys.modules["fake_answers_every_name"] is answers_everything
+    assert "fake_copied_plugin" not in sys.modules, "the module from the workspace was not forgotten"
+
+
 @pytest.fixture
 def temp_workspace():
     """Create a temporary workspace for integration testing."""
+    modules_before = dict(sys.modules)
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
@@ -52,7 +111,10 @@ def temp_workspace():
         # Create test configuration files
         create_test_config(temp_path)
 
-        yield temp_path
+        try:
+            yield temp_path
+        finally:
+            _forget_modules_from(temp_path, modules_before)
 
 
 def create_test_config(workspace_path: Path):

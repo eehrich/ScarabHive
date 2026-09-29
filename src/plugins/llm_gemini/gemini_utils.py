@@ -1248,6 +1248,23 @@ def adjust_thinking_for_retry(
     return adjusted_budget, adjusted_level
 
 
+def response_format_fields(response_format: Any) -> Dict[str, Any]:
+    """The generationConfig fields of a structured answer, as the REST API names them.
+
+    ``responseMimeType`` alone is JSON mode; with ``responseJsonSchema`` the answer is held to
+    the schema. That field takes JSON Schema as it is -- NOT the OpenAPI subset of the older
+    ``responseSchema`` and the function declarations, so the caller's schema goes unsanitised
+    (sanitize_schema_for_gemini would drop what the caller's validation still checks).
+    The SDK client maps the same two to its snake_case config attributes.
+    """
+    from agent_system.llm.structured_output import JSON_SCHEMA
+
+    fields: Dict[str, Any] = {"responseMimeType": "application/json"}
+    if response_format.type == JSON_SCHEMA:
+        fields["responseJsonSchema"] = response_format.schema
+    return fields
+
+
 def build_thinking_config(
     include_thoughts: Optional[bool],
     thinking_budget: Optional[int],

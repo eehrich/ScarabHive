@@ -40,7 +40,10 @@ class BasicAgent(SchemaBasedAgent):
             return {"status": "error", "error": "Missing required parameter 'task'"}
 
         request_id = params.get("request_id") or params.get("requestId") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        # The session: never a plain ``session_id`` from the model's arguments (it could
+        # name another user's session of this agent, whose approvals would hold instead of
+        # its caller's), and not the caller's own -- one of this agent's below it, from the
+        # injected ``_session_id`` (Agent.tool_session, as Agent.call).
         status = params.get("_status")
         llm_profile_name = params.get("llm_profile")
         use_advanced_model = params.get("use_advanced_model", False)
@@ -98,7 +101,22 @@ class BasicAgent(SchemaBasedAgent):
                     "error": f"Failed to initialize LLM profile '{llm_profile_name}': {str(e)}"
                 }
 
+        # Dispatched with a _user_id but without a request that names a user (a
+        # plugin command): an id of its own for the injected _user_id, as
+        # Agent.call does -- else the run would be nobody's (see there).
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
+
         try:
+            session_id, refusal = await self.tool_session(params, request_id=request_id)
+            # Another user's session, this agent running above the call already, or a session that cannot be
+            # stored with its caller's sub-agent budget (Agent.tool_session): nothing ran.
+            if refusal:
+                if status:
+                    await status.error(refusal["error"])
+                return {"status": "error", **refusal, "request_id": request_id}
+
             if status:
                 await status.progress(f"Starting basic agent task: {task[:100]}...")
 
@@ -156,7 +174,10 @@ class BasicAgent(SchemaBasedAgent):
                     return {
                         "status": "error",
                         "error": error_msg,
-                        "request_id": request_id
+                        "request_id": request_id,
+                        # the error's own error_type, whatever the run's error was -- a refusal before the run
+                        # (Agent.run_events: REFUSED_BEFORE_THE_RUN) says which, as Agent.call's answer does
+                        **({"error_type": event["error_type"]} if event.get("error_type") else {}),
                     }
 
             if status:
@@ -187,6 +208,10 @@ class BasicAgent(SchemaBasedAgent):
                 "error": str(e),
                 "request_id": request_id
             }
+        finally:
+            if own_request_id:
+                from agent_system.core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
 
     async def list_available_tools(self, params: Dict[str, Any]) -> list[Dict[str, Any]]:
         """List all available tools for this agent.

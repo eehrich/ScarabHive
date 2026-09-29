@@ -226,7 +226,7 @@ class EnhancedSearchServer(SchemaBasedToolServer, PluginHook):
         return HookResult(success=True, modified=False, context=context)
 ```
 
-**Note:** `pre_tool_call` / `post_tool_call` hooks can be declared but never fire: nothing calls `execute_pre_tool_hooks` / `execute_post_tool_hooks` (`servers/agent/components/hook_integration.py`). Registering one logs a warning. Tool-level interception has to happen elsewhere.
+**Note:** `pre_tool_call` / `post_tool_call` fire around every tool call of the model (`ToolExecutionManager.execute_tools_streaming`) and of a tool_script script (`Agent.dispatch_tool_call(hook_source=...)`). A pre hook may change the arguments or block the call (`metadata["block"]`); a post hook may change the result before it joins the history. Contract: `docs/plugin_hooks.md`.
 
 **Use Cases:**
 - Tools that need lifecycle awareness (context engineering, sequential thinking)
@@ -301,6 +301,7 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 
 **Responsibilities:**
 - Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins`, `src/plugins_writer`, `src/plugins_trading`) plus the `agent_system.tool_plugins` entry point group
+- A plugin dir's name is its package name (`plugins.<name>`). Two plugin dirs with the same name (`src/plugins`, `external/plugins`) share it: a plugin or shared module the first one has is not loaded from the second -- whether the first one's loads or not -- and the second logs a warning: both would be the same module
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
 - Register hooks declared in plugin schemas (`register_plugin_hooks`)
@@ -447,10 +448,10 @@ plugins:
 | `format_output` | Before returning to user | Format `output` (MD, HTML, etc.) |
 | `session_start` | Session begins | Initialize session state |
 | `session_end` | Session ends | Cleanup, save state |
-| `pre_tool_call` | Defined, **never fired** | — |
-| `post_tool_call` | Defined, **never fired** | — |
+| `pre_tool_call` | Before each tool call of the model / a tool_script script | Change arguments, block the call |
+| `post_tool_call` | After the call ran, before its result joins the history | Change the result |
 
-The enum is `HookType` in `hooks/plugin_hook.py`. No code calls `execute_pre_tool_hooks` / `execute_post_tool_hooks`, so tool hooks registered today do nothing.
+The enum is `HookType` in `hooks/plugin_hook.py`.
 
 ### 6.2 Hook Context
 

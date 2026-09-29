@@ -131,12 +131,27 @@ async def test_another_user_is_refused_a_session_a_run_of_this_agent_holds(setup
     assert agent._session_tracker.get_session_metadata("s-run") is metadata
 
 
+async def test_a_run_of_this_agent_keeps_its_session_whatever_in_use_said(setup):
+    """in_use comes from a look the caller took earlier; a run of this agent that took the session since has its
+    lock, and what the tracker holds is that run's -- not read over from disk, whoever asks."""
+    agent, manager, service = setup
+    await _stored(manager, "alice", "s-run", [{"role": "user", "content": "earlier"}], {})
+    metadata = await _run_has(agent, "s-run")
+    before = list(agent._session_tracker.get_session_messages("s-run"))
+
+    assert await service.open_for_run(agent, "alice", "s-run", "turbo", in_use=False) is True
+
+    assert agent._session_tracker.get_session_messages("s-run") == before
+    assert agent._session_tracker.get_session_metadata("s-run") is metadata
+
+
 @pytest.mark.parametrize("in_use, locked", [(True, False), (False, True)],
                          ids=["in use elsewhere", "locked by the opener"])
 async def test_a_session_no_run_of_this_agent_holds_for_another_is_read_as_usual(setup, in_use, locked):
     """In use without this agent's lock -- a run on another agent, or a job whose run has let go of the lock,
-    which it does after its last save -- this agent's tracker holds no run's state the disk has not. And the lock without in_use is the opener's own (an API turn takes
-    it before it opens the session). Both read the session from disk as usual."""
+    which it does after its last save -- this agent's tracker holds no run's state the disk has not. And a lock the
+    opener says is its own (``holding``: an API turn takes it before it opens the session). Both read the session
+    from disk as usual."""
     agent, manager, service = setup
     await _stored(manager, "alice", "s-run", [{"role": "user", "content": "on disk"}], {"workflow_phase": "drafting"})
     tracker = agent._session_tracker
@@ -144,7 +159,8 @@ async def test_a_session_no_run_of_this_agent_holds_for_another_is_read_as_usual
     if locked:
         assert await tracker.acquire_session_lock("s-run", "the_opener"), "fixture: the lock was not taken"
 
-    existed = await service.open_for_run(agent, "alice", "s-run", "turbo", in_use=in_use)
+    existed = await service.open_for_run(agent, "alice", "s-run", "turbo", in_use=in_use,
+                                         holding="the_opener" if locked else None)
 
     assert existed is True
     assert [m.content for m in tracker.get_session_messages("s-run")] == ["on disk"]

@@ -88,3 +88,78 @@ def test_an_admin_cannot_create_one_either(temp_db):
     with pytest.raises(ValueError, match="reserved"):
         temp_db.create_user(UserCreate(username="cli_user", email="c@example.com",
                                        password="password123", role=UserRole.ADMIN))
+
+
+# --- auth.registration: off, approval, default role ----------------------------------------------
+
+def _registration(client, **settings):
+    from agent_system.api.auth_endpoints import registration_settings
+    from agent_system.config.models import RegistrationConfig
+
+    client.app.dependency_overrides[registration_settings] = lambda: RegistrationConfig(**settings)
+    return client
+
+
+def test_registration_switched_off_creates_nobody(client, temp_db):
+    response = _registration(client, enabled=False).post("/auth/register", json=NEW_USER)
+
+    assert response.status_code == 403, response.text
+    assert temp_db.get_user_by_username("newbie") is None
+
+
+def test_a_registration_awaiting_approval_is_inactive_and_cannot_log_in(client, temp_db):
+    response = _registration(client, require_approval=True).post("/auth/register", json=NEW_USER)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["is_active"] is False
+    assert temp_db.get_user_by_username("newbie").is_active is False
+    login = client.post("/auth/login", json={"username": NEW_USER["username"], "password": NEW_USER["password"]})
+    assert login.status_code == 403, login.text
+
+
+def test_the_default_role_of_a_registration_can_be_guest(client, temp_db):
+    _registration(client, default_role="guest").post("/auth/register", json=NEW_USER)
+
+    assert temp_db.get_user_by_username("newbie").role == UserRole.GUEST
+
+
+def test_no_configuration_makes_a_registration_an_admin():
+    from pydantic import ValidationError
+
+    from agent_system.config.models import RegistrationConfig
+
+    with pytest.raises(ValidationError):
+        RegistrationConfig(default_role="admin")
+
+
+@pytest.mark.parametrize("typo", [{"enable": False}, {"require_aproval": True}])
+def test_a_misspelled_registration_switch_is_refused_not_ignored(typo):
+    # Dropped without a word, `enable: false` would leave registration open.
+    from pydantic import ValidationError
+
+    from agent_system.config.models import AuthConfig
+
+    with pytest.raises(ValidationError):
+        AuthConfig(registration=typo)
+
+
+def test_the_running_app_s_registration_setting_is_the_one_applied(temp_db):
+    from agent_system.config.models import AgentSystemConfig
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: temp_db
+    app.state.config = AgentSystemConfig(auth={"registration": {"enabled": False}})
+
+    assert TestClient(app).post("/auth/register", json=NEW_USER).status_code == 403
+    assert temp_db.get_user_by_username("newbie") is None
+
+
+def test_the_shipped_config_holds_a_self_registered_account_for_approval(monkeypatch):
+    from agent_system.config import settings
+
+    monkeypatch.setattr(settings, "_load_secrets_file", lambda path: None)  # keys stay out of this process
+    shipped = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+    registration = settings.load_settings(str(shipped)).auth.registration
+
+    assert registration.enabled and registration.require_approval and registration.default_role == "user"

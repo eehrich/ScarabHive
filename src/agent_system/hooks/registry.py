@@ -12,7 +12,7 @@ import copy
 import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .exceptions import CircularDependencyError
 from .plugin_hook import HookContext, HookResult, HookType, PluginHook
@@ -156,7 +156,9 @@ class HookRegistry:
         hook_type: HookType,
         context: HookContext,
         timeout: Optional[float] = None,
-        hook_filter: Optional[callable] = None
+        hook_filter: Optional[callable] = None,
+        stop_when: Optional[Callable[[HookContext], bool]] = None,
+        on_failure: Optional[Callable[[str, Dict[str, Any], HookContext, str], None]] = None,
     ) -> HookContext:
         """
         Execute all registered hooks for a specific type in dependency order.
@@ -166,13 +168,21 @@ class HookRegistry:
             context: Hook context to pass to hooks
             timeout: Optional timeout override (seconds)
             hook_filter: Optional filter function(hook_name: str) -> bool to skip hooks
+            stop_when: Optional predicate over the context a successful hook
+                left; true ends the chain there and no later hook runs (a
+                blocked tool call is final -- no later hook may lift it)
+            on_failure: Optional callback(hook_name, hook metadata, context,
+                reason) for a hook that failed (timeout, exception, invalid
+                result, success=False); it may change the context, and
+                stop_when is asked again afterwards
 
         Returns:
             Modified context after all hooks executed
 
         Note:
             Hooks are executed sequentially in dependency order.
-            Errors in individual hooks are logged but do not stop execution.
+            Errors in individual hooks are logged but do not stop execution
+            -- unless on_failure changes the context so that stop_when holds.
             Context modifications are accumulated across hooks.
             hook_filter allows agent-specific hook filtering (e.g., disabled_hooks)
         """
@@ -284,6 +294,9 @@ class HookRegistry:
                         extra={"hook_name": hook_name, "hook_type": hook_type.value}
                     )
                     self._update_stats(hook_name, success=False, exec_time=exec_time)
+                    if self._report_failure(on_failure, stop_when, hook_name, metadata,
+                                            current_context, "returned an invalid result"):
+                        break
                     continue
 
                 # Update statistics
@@ -317,11 +330,17 @@ class HookRegistry:
                         if result.metadata:
                             current_context.metadata.update(result.metadata)
                         logger.debug(f"Hook '{hook_name}' executed successfully (no modifications)")
+                    if stop_when is not None and stop_when(current_context):
+                        logger.debug(f"Hook '{hook_name}' ended the {hook_type.value} chain")
+                        break
                 else:
                     logger.warning(
                         f"Hook '{hook_name}' failed: {result.error}",
                         extra={"hook_name": hook_name, "hook_type": hook_type.value}
                     )
+                    if self._report_failure(on_failure, stop_when, hook_name, metadata,
+                                            current_context, f"reported a failure: {result.error}"):
+                        break
 
             except asyncio.TimeoutError:
                 logger.error(
@@ -329,6 +348,9 @@ class HookRegistry:
                     extra={"hook_name": hook_name, "hook_type": hook_type.value, "timeout": hook_timeout}
                 )
                 self._update_stats(hook_name, success=False, exec_time=hook_timeout)
+                if self._report_failure(on_failure, stop_when, hook_name, metadata,
+                                        current_context, f"timed out after {hook_timeout}s"):
+                    break
 
             except Exception as e:
                 logger.error(
@@ -337,8 +359,20 @@ class HookRegistry:
                     extra={"hook_name": hook_name, "hook_type": hook_type.value}
                 )
                 self._update_stats(hook_name, success=False, exec_time=0.0)
+                if self._report_failure(on_failure, stop_when, hook_name, metadata,
+                                        current_context, f"raised {type(e).__name__}"):
+                    break
 
         return current_context
+
+    @staticmethod
+    def _report_failure(on_failure, stop_when, hook_name: str, metadata: Dict[str, Any],
+                        context: HookContext, reason: str) -> bool:
+        """Hand a failed hook to ``on_failure``; whether the chain ends there."""
+        if on_failure is None:
+            return False
+        on_failure(hook_name, metadata, context, reason)
+        return stop_when is not None and bool(stop_when(context))
 
     async def _execute_hook_method(
         self,

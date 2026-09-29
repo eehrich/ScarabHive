@@ -11,6 +11,7 @@ from plugins.sub_agent_manager.manager import SubAgentManager
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 from plugins.sub_agent_manager import server as sam_server
 from agent_system.config import AgentSystemConfig, ToolServerConfig
+from agent_system.servers.agent.components.session_tracking import SessionTracker
 
 
 @pytest.fixture
@@ -810,7 +811,7 @@ class TestAsyncExecution:
         mock_agent = AsyncMock()
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.default_llm_profile = "normal"
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
         
         # Mock run_events to hang so we can cancel it
@@ -1424,7 +1425,7 @@ class TestAdvancedCreateOnlyAgents:
 
         agent = Mock()
         agent.agent_config.default_llm_profile = "normal"
-        agent._session_tracker = Mock()
+        agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         agent.run_events = run_events
         registry = Mock()
         registry.get = Mock(return_value=agent)
@@ -1502,7 +1503,7 @@ class SlowAgent:
 
     def __init__(self, answer="done"):
         self.agent_config = Mock(default_llm_profile="normal")
-        self._session_tracker = Mock()
+        self._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         self.answer = answer
         self.live = {}  # request_id -> set by a cancel
         self.requests = []
@@ -3479,7 +3480,7 @@ class TestWhatEveryRunSetsUpAndReports:
         before it left behind."""
         made = Mock()
         made.agent_config = Mock(default_llm_profile="normal")
-        made._session_tracker = Mock()
+        made._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         made._session_service = "whatever the last run left here"
         return made
 

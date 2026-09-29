@@ -13,11 +13,61 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ....hooks import get_hook_registry, HookContext, HookType
 from ....llm.models import ChatMessage
+from .tool_execution import drop_runtime_params, tool_result_is_error
 
 if TYPE_CHECKING:
     from ..server import Agent
 
 logger = logging.getLogger(__name__)
+
+
+def _blocks(metadata: Dict[str, Any]) -> bool:
+    """Whether a hook blocked the call: it set ``block`` to anything but None or
+    False. An empty text blocks too -- a hook passing on a person's empty
+    comment on a "no" must not let the call run."""
+    block = metadata.get("block")
+    return block is not None and block is not False
+
+
+def _block_on_error(hook_name: str, metadata: Dict[str, Any], context: HookContext, reason: str) -> None:
+    """A pre_tool_call hook registered with ``on_error: block`` failed: the call
+    must not run on that account -- a policy hook that times out or crashes
+    would otherwise let through what it exists to stop."""
+    if metadata.get("on_error") == "block" and not _blocks(context.metadata):
+        context.metadata["block"] = (
+            f"The call did not run: the check '{hook_name}' that must pass first failed "
+            f"({reason}). Tell the user; do not send the same call again.")
+
+
+def _blocked_call_reason(block: Any, tool_name: Optional[str]) -> str:
+    """What the model reads for a call a pre_tool_call hook blocked: the hook's
+    own text, or a default for a hook that only said ``block: True``."""
+    if isinstance(block, str) and block.strip():
+        return block.strip()
+    return (f"The call to '{tool_name}' was blocked before it ran; it did not "
+            "execute. Do not send the same call again.")
+
+
+def _override_or_default(hooks_config: Any, hook_name: str, default_enabled: bool) -> Any:
+    """The agent's own ``overrides[hook_name].enabled`` when it sets one (it wins
+    over everything else), else the hook's registered default."""
+    overrides = getattr(hooks_config, "overrides", None) if hooks_config else None
+    if overrides and hook_name in overrides:
+        override = overrides[hook_name]
+        if 'enabled' in override:
+            return override.get('enabled', True)
+    return default_enabled
+
+
+def hook_runs_for(hooks_config: Any, hook_name: str, default_enabled: bool) -> bool:
+    """Whether the hook ``hook_name`` runs for an agent whose ``agent_config.hooks``
+    is ``hooks_config`` -- the rule HookIntegrationManager applies to its own
+    agent (``is_enabled`` and ``is_hook_enabled``), for an agent one only has
+    the config of: a hook deciding about a sub-agent it is about to start
+    (tool_approval). ``default_enabled`` is the registry's state of the hook."""
+    if hooks_config is not None and not getattr(hooks_config, "enabled", True):
+        return False
+    return bool(_override_or_default(hooks_config, hook_name, default_enabled))
 
 
 #: System messages that are compacted CONVERSATION, not prompt. The agent's own
@@ -102,15 +152,7 @@ class HookIntegrationManager:
         Returns:
             True if hook should execute, False otherwise
         """
-        # Check for agent-specific override (highest priority)
-        if self._hooks_config and hook_name in self._hooks_config.overrides:
-            override = self._hooks_config.overrides[hook_name]
-            if 'enabled' in override:
-                # Agent has explicit override - use it regardless of global state
-                return override.get('enabled', True)
-        
-        # No override - use global enabled state from metadata
-        return default_enabled
+        return _override_or_default(self._hooks_config, hook_name, default_enabled)
 
     def user_of(self, session_id: str, request_id: str) -> Optional[str]:
         """Whose call this is: the user the session's run was opened for (the
@@ -386,18 +428,24 @@ class HookIntegrationManager:
             return modified_context.llm_response, modified_context.metadata
         return llm_response, {}
     
-    def wants_llm_progress(self) -> bool:
-        """Whether any llm_progress hook would run for this agent.
+    def wants_hooks(self, hook_type: HookType) -> bool:
+        """Whether any hook of this type would run for this agent.
 
-        Checked before a streaming call, so an agent that watches nothing does
-        not collect its thinking for hooks that are all switched off.
+        Asked before building a context the hooks would need, so an agent no
+        hook of the type runs for pays nothing: no thinking collected for
+        llm_progress, no tool call or result copied for the tool hooks.
         """
         if not self.is_enabled():
             return False
-        for name, _hook, _order, metadata in self.registry._hooks[HookType.LLM_PROGRESS]:
+        for name, _hook, _order, metadata in self.registry._hooks.get(hook_type, ()):
             if self.is_hook_enabled(name, metadata.get("enabled", True)):
                 return True
         return False
+
+    def wants_llm_progress(self) -> bool:
+        """Whether any llm_progress hook would run for this agent (checked
+        before a streaming call)."""
+        return self.wants_hooks(HookType.LLM_PROGRESS)
 
     async def execute_llm_progress_hooks(
         self,
@@ -440,23 +488,45 @@ class HookIntegrationManager:
         tool_call: Dict[str, Any],
         step: int,
         request_id: str,
-        session_id: str
-    ) -> Dict[str, Any]:
+        session_id: str,
+        cancellation_token: Optional[Any] = None,
+    ) -> Tuple[Any, Optional[str]]:
         """
-        Execute pre-tool hooks.
-        
+        Execute pre-tool hooks for one tool call, before it runs.
+
+        Callers ask ``wants_hooks(HookType.PRE_TOOL_CALL)`` first.
+
         Args:
-            tool_call: Tool call information
-            step: Current execution step
+            tool_call: ``{"id", "name", "server", "arguments", "source"}`` --
+                the provider's call id (None outside the model's loop), the
+                tool name the model called, the server that runs it (for an
+                external MCP tool ``"<server>.<tool>"``), the arguments as they
+                were sent, and who made the call ("model", or the in-process
+                caller acting for it, e.g. "tool_script")
+            step: Current execution step (0 outside the model's loop)
             request_id: Request identifier
             session_id: Session identifier
-            
+            cancellation_token: The run's token -- a hook that waits (for a
+                person, say) stops waiting when the run is cancelled
+
         Returns:
-            Potentially modified tool call
+            (arguments, block). ``arguments``: what the call runs with -- a
+            hook changes them by writing ``tool_call["arguments"]`` (a dict)
+            and returning ``modified=True``; the name and id are read-only.
+            ``block``: the text the model reads in place of a result when a
+            hook blocked the call with ``metadata={"block": "<what to do>"}``
+            (``True`` gets a default text), else None. The first hook that
+            blocks ends the chain: a later one neither runs nor lifts it.
         """
+        arguments = tool_call.get("arguments")
+        name = tool_call.get("name")
         if not self.is_enabled():
-            return tool_call
-        
+            return arguments, None
+
+        tools_schema = None
+        if hasattr(self.agent, "get_live_tools_schema"):
+            tools_schema = self.agent.get_live_tools_schema(session_id)
+
         context = HookContext(
             hook_type=HookType.PRE_TOOL_CALL,
             request_id=request_id,
@@ -465,44 +535,79 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             tool_call=tool_call,
+            tools_schema=tools_schema,
             step=step,
+            cancellation_token=cancellation_token,
         )
-        
+
         modified_context = await self.registry.execute_hooks(
-            HookType.PRE_TOOL_CALL, 
+            HookType.PRE_TOOL_CALL,
             context,
-            hook_filter=self.is_hook_enabled
+            hook_filter=self.is_hook_enabled,
+            stop_when=lambda ctx: _blocks(ctx.metadata),
+            on_failure=_block_on_error,
         )
-        
-        # Return modified tool call if hooks changed it
-        if modified_context.tool_call is not None:
-            return modified_context.tool_call
-        return tool_call
-    
+
+        if _blocks(modified_context.metadata):
+            return arguments, _blocked_call_reason(modified_context.metadata["block"], name)
+
+        changed = (modified_context.tool_call or {}).get("arguments", arguments)
+        if changed is arguments:
+            return arguments, None
+        if not isinstance(changed, dict):
+            logger.warning(
+                "pre_tool_call hooks left arguments of type %s for %s; "
+                "the call runs with the arguments it was sent with",
+                type(changed).__name__, name)
+            return arguments, None
+        # A hook passes values on; the runtime params stay the framework's.
+        changed, dropped = drop_runtime_params(changed)
+        if dropped:
+            logger.warning("Dropping runtime param(s) %s a pre_tool_call hook put into %s", dropped, name)
+        return changed, None
+
     async def execute_post_tool_hooks(
         self,
         tool_call: Dict[str, Any],
-        tool_result: Dict[str, Any],
+        tool_result: Any,
         step: int,
         request_id: str,
-        session_id: str
-    ) -> Dict[str, Any]:
+        session_id: str,
+        cancellation_token: Optional[Any] = None,
+        started_at: Optional[float] = None,
+        finished_at: Optional[float] = None,
+    ) -> Any:
         """
-        Execute post-tool hooks.
-        
+        Execute post-tool hooks for one call that ran.
+
+        Callers ask ``wants_hooks(HookType.POST_TOOL_CALL)`` first.
+
         Args:
-            tool_call: Tool call information
-            tool_result: Tool execution result
-            step: Current execution step
+            tool_call: The call as it ran (see execute_pre_tool_hooks)
+            tool_result: What the caller reads: in the model's loop the
+                content of the result message, decoded -- the tool's result,
+                or the error the framework put in its place (failed,
+                cancelled); for tool_script the tool's return value
+            step: Current execution step (0 outside the model's loop)
             request_id: Request identifier
             session_id: Session identifier
-            
+            cancellation_token: The run's token
+            started_at: When the call itself started (``time.time()``), None
+                if the caller did not measure it
+            finished_at: When it ended, likewise. In the model's loop the post
+                hooks run once ALL calls of the step are done, so the hook's
+                own clock says when the step ended, not when this call did.
+
         Returns:
-            Potentially modified tool result
+            The result the caller reads. The hooks see
+            ``context.tool_result = {"result": <value>, "is_error": <bool>,
+            "started_at": <float|None>, "finished_at": <float|None>}``;
+            a hook changes the result by writing ``tool_result["result"]`` and
+            returning ``modified=True`` -- the other keys are read-only.
         """
         if not self.is_enabled():
             return tool_result
-        
+
         context = HookContext(
             hook_type=HookType.POST_TOOL_CALL,
             request_id=request_id,
@@ -511,20 +616,21 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             tool_call=tool_call,
-            tool_result=tool_result,
+            tool_result={"result": tool_result, "is_error": tool_result_is_error(tool_result),
+                         "started_at": started_at, "finished_at": finished_at},
             step=step,
+            cancellation_token=cancellation_token,
         )
-        
+
         modified_context = await self.registry.execute_hooks(
-            HookType.POST_TOOL_CALL, 
+            HookType.POST_TOOL_CALL,
             context,
             hook_filter=self.is_hook_enabled
         )
-        
-        # Return modified tool result if hooks changed it
-        if modified_context.tool_result is not None:
-            return modified_context.tool_result
-        return tool_result
+
+        if modified_context is context or not isinstance(modified_context.tool_result, dict):
+            return tool_result
+        return modified_context.tool_result.get("result", tool_result)
     
     async def execute_format_output_hooks(
         self,
@@ -624,11 +730,14 @@ class HookIntegrationManager:
         session_id: str,
         request_id: str,
         messages: Optional[List[ChatMessage]] = None,
-        persisted: bool = False
+        persisted: bool = False,
+        cancelled: bool = False,
+        errors: Optional[List[str]] = None,
+        completed: Optional[bool] = None,
     ) -> None:
         """
         Execute session-end hooks.
-        
+
         Args:
             session_id: Session identifier
             request_id: Request identifier
@@ -637,10 +746,14 @@ class HookIntegrationManager:
                 file. A hook that counts what the request carried as delivered
                 may only do so when it did -- what an unsaved run was told is
                 gone with it. False unless the caller knows better.
+            cancelled: Whether the run's cancellation token was cancelled
+            errors: The error messages the run reported, in order
+            completed: Whether the run reached a final answer; None when the
+                caller cannot tell
         """
         if not self.is_enabled():
             return
-        
+
         context = HookContext(
             hook_type=HookType.SESSION_END,
             request_id=request_id,
@@ -649,7 +762,8 @@ class HookIntegrationManager:
             agent=self.agent,
             agent_name=self.agent.name,
             messages=messages,
-            metadata={"persisted": persisted},
+            metadata={"persisted": persisted, "cancelled": cancelled,
+                      "errors": list(errors or []), "completed": completed},
         )
         
         await self.registry.execute_hooks(

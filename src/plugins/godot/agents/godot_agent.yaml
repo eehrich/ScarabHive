@@ -66,3 +66,4 @@ plugins:
         tags: ["godot", "gamedev", "editor", "playtest"]
         category: "development"
         visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): write access to the whole checkout

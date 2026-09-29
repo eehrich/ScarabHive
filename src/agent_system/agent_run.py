@@ -117,6 +117,9 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         llm_override: Optional LLM client to override agent's default
         llm_profile_info: Optional profile info string for status display
     """
+    from .utils.id import short_id
+
+    request_id = short_id()
     try:
         # Log request info (handle both string and ChatMessage)
         request_preview = request if isinstance(request, str) else f"<multimodal message with {len(request.content)} parts>"
@@ -127,6 +130,7 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
         result = await collect_final_result(
             agent,
             request,
+            request_id=request_id,
             session_id=session_id,  # Pass session_id for conversation history
             llm_override=llm_override,
             llm_profile_info_override=llm_profile_info
@@ -137,6 +141,12 @@ async def run_agent_request(agent: Agent, request: str | "ChatMessage", session_
     except Exception as e:
         logger.error(f"Failed to execute agent request: {e}", exc_info=True)
         raise
+    finally:
+        # Named here so it can be let go of: what the run registered under it
+        # (a tool call, a preloaded tool, a sub-agent) goes with the run, as the
+        # API lets go of its request tree when the request ends.
+        from .core.request_context import release_request_user_tree
+        release_request_user_tree(request_id)
 
 
 async def main_async(request: str, agent_name: str | None = None, llm_profile: str | None = None, show_status: bool = True,
@@ -166,8 +176,9 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             from .core.session_presence import sessions_dir
             from .services.session_manager import SessionManager
 
-            # The rule every process uses: this listing ignored
-            # AGENT_SESSION_STORAGE_PATH and read the checkout's sessions.
+            # The store every run uses (AGENT_SESSION_STORAGE_PATH, else the
+            # data directory's sessions): this listing used to ignore the
+            # variable and read the checkout's sessions.
             session_manager = SessionManager(storage_path=str(sessions_dir()))
 
             # Every session, pipeline runs included: which agents the chat
@@ -349,8 +360,10 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
             # can, and notes it for the run it held around.
             stopped = True
 
-        # Save session after successful request execution (skip if cancelled)
-        if not result.get("cancelled", False):
+        # Save session after successful request execution (skip if cancelled, or refused before it ran:
+        # the agent's role gate, another user's session, another run's lock -- it ran nothing, and a save
+        # only rewrote the record with this entry agent and profile, its updated_at moved)
+        if not result.get("cancelled", False) and not result.get("refused"):
             try:
                 # Use the actual agent name that was requested (from parameter or config.default_agent)
                 # instead of agent.agent_name which may not exist or be "default"
@@ -431,6 +444,17 @@ async def main_async(request: str, agent_name: str | None = None, llm_profile: s
 
 
 def main() -> None:
+    """The agent-run entry point: a local process, run by whoever operates the
+    installation -- so the agent role gate takes its default user, cli_user,
+    for the local operator (auth/agent_access.local_operator_trusted). The
+    API process never does."""
+    from .auth.agent_access import local_operator_trusted
+
+    with local_operator_trusted():
+        _main()
+
+
+def _main() -> None:
     """Main entry point for the agent-run CLI tool."""
     # Same as agent-cli: run from the repository whatever directory this was
     # started in, and keep where the person started for the paths they typed.

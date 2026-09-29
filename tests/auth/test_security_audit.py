@@ -45,6 +45,11 @@ def users(tmp_path, monkeypatch):
                                   is_active=active))
     audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
     monkeypatch.setattr(audit_logger, "handlers", [])  # set up anew, under tmp_path
+    # The audit leaves its logger non-propagating, and pytest hangs its capture
+    # handlers on every non-propagating logger when a test phase starts. A handler
+    # on the logger takes the file's place (security_audit_logger), so without this
+    # every test after the first wrote no security.log.
+    monkeypatch.setattr(audit_logger, "propagate", True)
     monkeypatch.setattr(SecurityAuditMiddleware, "_instance", None)
     yield db
     for handler in audit_logger.handlers:

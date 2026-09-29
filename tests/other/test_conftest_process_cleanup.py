@@ -188,6 +188,16 @@ def pretend_unreadable(monkeypatch, pid):
     monkeypatch.setattr(psutil.Process, "environ", environ)
 
 
+def pretend_marked(monkeypatch, pid, token):
+    original = psutil.Process.environ
+
+    def environ(self):
+        env = original(self)
+        return {**env, MARKER: token} if self.pid == pid else env
+
+    monkeypatch.setattr(psutil.Process, "environ", environ)
+
+
 # --- selection ------------------------------------------------------------
 
 def test_the_end_of_a_session_selects_only_its_own_children(root_conftest, helpers):
@@ -196,14 +206,20 @@ def test_the_end_of_a_session_selects_only_its_own_children(root_conftest, helpe
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX only: no resource tracker on Windows")
-def test_the_end_of_a_session_spares_its_own_resource_tracker(root_conftest):
+def test_the_end_of_a_session_spares_its_own_resource_tracker(root_conftest, monkeypatch):
     """The tracker lives as long as this process. Killed at the end of the
     session, Python relaunched it at shutdown with a "resources might leak"
-    warning, and the atexit sweep killed the relaunched one."""
+    warning, and the atexit sweep killed the relaunched one. Its marker is
+    pretended: Python starts one tracker per process, lazily, with the
+    environment of that moment, and an earlier test may have had the marker
+    out of it then."""
     resource_tracker.ensure_running()
     tracker_pid = resource_tracker._resource_tracker._pid
-    assert psutil.Process(tracker_pid).environ()[MARKER] == root_conftest._SESSION_TOKEN, \
-        "the tracker does not carry the marker -- nothing to spare"
+    pretend_marked(monkeypatch, tracker_pid, root_conftest._SESSION_TOKEN)
+    with monkeypatch.context() as unspared:
+        unspared.setattr(root_conftest, "_own_resource_tracker_pid", lambda: None)
+        assert tracker_pid in root_conftest._pids(root_conftest._find_session_leftovers()), \
+            "the tracker is no candidate at all -- nothing to spare"
 
     assert tracker_pid not in root_conftest._pids(root_conftest._find_session_leftovers())
 

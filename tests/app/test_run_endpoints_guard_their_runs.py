@@ -92,7 +92,7 @@ def _client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-async def test_another_users_run_can_be_neither_read_nor_stopped_nor_written_to(app, user, admin):
+async def test_another_users_run_can_be_neither_read_nor_stopped_nor_written_to(app, user, admin, monkeypatch):
     request_id, done = await _a_waiting_job(owner=f"not-{user[1]}")
     stopped = []
     manager = get_background_job_manager()
@@ -101,6 +101,7 @@ async def test_another_users_run_can_be_neither_read_nor_stopped_nor_written_to(
         stopped.append(rid)
         return True
 
+    monkeypatch.setattr(manager, "cancel_job", recording_cancel)
     try:
         async with _client(app) as client:
             status = await client.get(f"/api/requests/{request_id}/status", headers=_headers(user))
@@ -112,6 +113,7 @@ async def test_another_users_run_can_be_neither_read_nor_stopped_nor_written_to(
         assert (status.status_code, cancel.status_code, append.status_code) == (403, 403, 403), \
             (status.text, cancel.text, append.text)
         assert as_admin.status_code == 200 and as_admin.json()["status"] == "running", as_admin.text
+        assert stopped == [], "a refused cancel still reached the job manager"
     finally:
         done.set()
 

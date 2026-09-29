@@ -21,6 +21,9 @@ from .store import MANAGER_TYPE, PROMPT_SUFFIXES, Snapshot, Store, catalog_for, 
 #: agent_config keys whose changes are reported one level down (`tools.allowed`).
 NESTED_KEYS = ("tools", "hooks", "skills")
 
+#: Keys outside agent_config that a reload changes on a running agent, as live_state names them.
+RELOADABLE_ENTRY_KEYS = ("metadata.min_role",)
+
 
 def reloadable_fields() -> list[str]:
     """What POST /admin/reload-config changes on a running agent; everything else needs a restart.
@@ -113,8 +116,9 @@ def changed_keys(live: dict, disk: dict) -> list[str]:
 def live_state(name: str, resolved: Optional[ToolServerConfig], enabled: bool, state: Any) -> dict:
     """How the disk entry relates to what the app runs. Without a runtime in the app there is nothing to compare.
 
-    The running side is the declaration, with the agent_config of the built instance when there is one: a config
-    reload changes that one. Only a built agent the reload reaches can take the reloadable fields without a restart.
+    The running side is the declaration, with the agent_config and the role gate (metadata.min_role) of the built
+    instance when there is one: a config reload changes those. Only a built agent the reload reaches can take the
+    reloadable fields without a restart.
     """
     result: dict[str, Any] = {"state": None, "changed": [], "reload_fields": [], "restart": False}
     runtime = getattr(state, "runtime", None)
@@ -133,8 +137,12 @@ def live_state(name: str, resolved: Optional[ToolServerConfig], enabled: bool, s
     live = decl.server_config.model_dump(mode="json")
     if isinstance(instance, agent_server.Agent):
         live["agent_config"] = instance.agent_config.model_dump(mode="json") if instance.agent_config else None
+        # The role gate is the instance's as well: a reload moves it (Agent.reload_config), the declaration stays.
+        if (live.get("metadata") or {}).get("min_role") != instance.min_role:
+            live["metadata"] = {**(live.get("metadata") or {}), "min_role": instance.min_role}
     changed = changed_keys(live, resolved.model_dump(mode="json"))
-    reload_fields = [key for key in changed if key in reloadable_fields()] if built and reload_reaches(name) else []
+    reload_fields = ([key for key in changed if key in reloadable_fields() or key in RELOADABLE_ENTRY_KEYS]
+                     if built and reload_reaches(name) else [])
     return {"state": "changed" if changed else "in_sync", "changed": changed, "reload_fields": reload_fields,
             "restart": len(reload_fields) < len(changed)}
 

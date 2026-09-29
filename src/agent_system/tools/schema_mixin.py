@@ -9,7 +9,7 @@ For non-tool components (hooks, web UI), use SchemaBasedHookMixin or SchemaBased
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 from typing import Any, TYPE_CHECKING
 
@@ -189,6 +189,15 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
         # Convert tool name to method name
         method_name = self._get_method_name(tool)
 
+        # A private method is no tool: no schema names one, and reached by name
+        # ("<server>__<method>" strips to "_<method>") it would skip whatever
+        # the public entry checks before it calls the helper.
+        if method_name.startswith("_"):
+            raise ValueError(
+                f"Tool '{tool}' not found in {self.name}. "
+                f"Available tools: {self._get_available_tool_names()}."
+            )
+
         # Check if the tool method exists
         if not hasattr(self, method_name):
             available = self._get_available_tool_names()
@@ -206,8 +215,19 @@ class SchemaBasedToolMixin(SchemaBaseMixin):
                 f"Tool '{tool}' exists but is not callable in {self.name}"
             )
 
-        # Call the tool method (support both sync and async)
-        if asyncio.iscoroutinefunction(method):
-            return await method(params)
-        else:
-            return method(params)
+        # An agent's role gate (metadata.min_role) covers every tool it serves,
+        # not only the runs Agent.call and run_events guard: `<agent>_list_available_tools`
+        # answers what GET /agents/{name}/tools refuses. The calling run's user is asked.
+        if getattr(self, "min_role", None) is not None:
+            from ..servers.agent.server import Agent
+            if isinstance(self, Agent):
+                denial = self._tool_call_denial(params)
+                if denial:
+                    return {"status": "error", "error": denial}
+
+        # Call the tool method; an awaitable result is awaited (async methods, and
+        # an object with an async __call__, which no coroutine-function check sees)
+        result = method(params)
+        if inspect.isawaitable(result):
+            result = await result
+        return result

@@ -81,6 +81,10 @@ class ServerView:
     #: True when the answer came from an instance, False when from a
     #: declaration. Provenance, so a test can tell the two paths apart.
     built: bool
+    #: The lowest role that may run this agent (``AgentMetadata.min_role``,
+    #: auth/agent_access.py); None is no gate -- and always None for a
+    #: server that is not an agent.
+    min_role: Optional[str] = None
 
 
 @dataclass
@@ -332,24 +336,30 @@ class Runtime:
         instance = self.registry._servers.get(name)
         if instance is not None:
             from .servers.agent.server import Agent
+            is_agent = isinstance(instance, Agent)
             return ServerView(
                 name=name,
-                is_agent=isinstance(instance, Agent),
+                is_agent=is_agent,
                 tool_public=bool(getattr(instance, "_tool_public", True)),
                 tool_visible=bool(getattr(instance, "_tool_visible", True)),
                 built=True,
+                # The instance's, not the declaration's: a config reload
+                # refreshes it there (Agent.reload_config).
+                min_role=instance.min_role if is_agent else None,
             )
 
         decl = self._decls.get(name)
         if decl is None or not decl.lazy:
             return None
         visibility = decl.visibility
+        metadata = decl.server_config.metadata
         return ServerView(
             name=name,
             is_agent=True,
             tool_public=visibility in ("ui", "both"),
             tool_visible=visibility in ("tool", "both"),
             built=False,
+            min_role=metadata.min_role if metadata else None,
         )
 
     def validate(self) -> list[str]:

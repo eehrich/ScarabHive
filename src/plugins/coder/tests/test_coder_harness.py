@@ -408,3 +408,39 @@ def test_one_relative_path_names_one_file_in_the_shell_and_the_file_tools(config
     relative = "data/workspace/some_project/app.py"
 
     assert Path(shell.executor.initial_cwd) / relative == files.validator.validate_path(relative)
+
+
+# ── The project's AGENTS.md ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("agent", HARNESS_AGENTS)
+def test_every_harness_agent_reads_the_projects_agents_md(config, agent):
+    """Both ways this fails are silent: an override key that is not the
+    registered full name does nothing (startup only logs it), and a root
+    outside what the agent's file tools reach makes the hook read nothing.
+    Dropping "." from coder_fs -- which its own comment offers -- is the
+    second one. And the withdraw hook must run too, or compaction handles the
+    note as an old message."""
+    from plugins.file_ops.plugin import PLUGIN_FACTORY as FILE_OPS
+    from plugins.project_instructions.hooks import choose_root
+    from plugins.project_instructions.plugin import PLUGIN_FACTORY as PROJECT_INSTRUCTIONS
+
+    instance = config.plugins.servers["project_instructions"]
+    assert instance.enabled and instance.type == "project_instructions"
+    overrides = _agent_config(config, agent).hooks.overrides
+    # Every hook of the plugin runs for the agent: the one that is off by
+    # default is switched on, the one that is on (withdrawing the note before
+    # compaction) is not switched off.
+    for hook in PROJECT_INSTRUCTIONS(server_config=instance).get_hooks():
+        found = overrides.get(f"project_instructions.{hook['name']}") or {}
+        assert found.get("enabled", hook["enabled"]) is True, f"{agent}: {hook['name']} does not run"
+    override = overrides["project_instructions.inject_project_instructions"]
+
+    allowed = _agent_config(config, agent).tools.allowed
+    roots = [root
+             for name in ("coder_fs", "coder_fs_ro")
+             if tool_matches_patterns(f"{name}_read_file", name, allowed)
+             for root in FILE_OPS(name=name, system_config=config,
+                                  server_config=config.plugins.servers[name]).file_access_roots()]
+    assert roots, f"fixture: {agent} has no file tools"
+    root, problem = choose_root(roots, override.get("root") or "")
+    assert root is not None, problem

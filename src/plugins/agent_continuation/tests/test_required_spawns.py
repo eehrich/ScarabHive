@@ -168,17 +168,20 @@ class TestRequiredSpawns:
         assert not result.metadata.get("continue")
 
 
+@pytest.fixture(scope="module")
+def panel():
+    """The panel's agent config through the real loader -- loaded once. A class-scoped fixture
+    written as a method is deprecated in pytest 9 (its instance attributes never reach the tests)."""
+    from agent_system.config.settings import get_tool_server_config, load_settings
+    cfg = get_tool_server_config("v6_story_panel", load_settings())
+    assert cfg is not None, "v6_story_panel not in the loaded config"
+    return cfg.agent_config
+
+
 class TestTheRealPanelConfig:
     """The panel YAML through the real loader: the gate and the prompt read the
     same review_map, and the configured expression names the tool the panel's
     manager really registers."""
-
-    @pytest.fixture(scope="class")
-    def panel(self):
-        from agent_system.config.settings import get_tool_server_config, load_settings
-        cfg = get_tool_server_config("v6_story_panel", load_settings())
-        assert cfg is not None, "v6_story_panel not in the loaded config"
-        return cfg.agent_config
 
     def _hooks(self, panel):
         hooks = panel.hooks if isinstance(panel.hooks, dict) else panel.hooks.model_dump()

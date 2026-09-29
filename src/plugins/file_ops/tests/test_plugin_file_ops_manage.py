@@ -195,7 +195,110 @@ async def test_manage_create_puts_the_old_mode_on_the_replacement(file_ops_serve
     })
 
     assert result["status"] == "success"
-    assert seen == [("deploy.sh.tmp", mode)]
+    [(name, carried)] = seen
+    assert name.startswith(".deploy.sh.") and name.endswith(".tmp") and carried == mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX mode bits to carry over")
+@pytest.mark.asyncio
+async def test_an_edit_keeps_the_mode_of_the_file_it_changes(file_ops_server, tmp_allowed_dir):
+    """An edit writes a new file too: a script lost its executable bit."""
+    script = tmp_allowed_dir / "deploy.sh"
+    script.write_text("#!/bin/sh\necho old\n")
+    script.chmod(0o750)
+
+    result = await file_ops_server.replace_string_in_file({
+        "filePath": str(script), "oldString": "echo old", "newString": "echo new"})
+
+    assert result["status"] == "success", result
+    assert script.stat().st_mode & 0o777 == 0o750
+
+
+@pytest.mark.asyncio
+async def test_a_file_named_like_a_temp_file_survives_the_writes_beside_it(file_ops_server, tmp_allowed_dir):
+    """The writes went through `<name>.tmp` and deleted a file of that name
+    the person kept -- a file no checkpoint of the write names."""
+    notes = tmp_allowed_dir / "notes.md"
+    notes.write_text("old")
+    (tmp_allowed_dir / "notes.md.tmp").write_text("the person's scratch")
+
+    created = await file_ops_server.manage({
+        "operation": "create", "path": str(notes), "content": "new", "overwrite": True})
+    edited = await file_ops_server.replace_string_in_file({
+        "filePath": str(notes), "oldString": "new", "newString": "newer"})
+
+    assert created["status"] == "success" and edited["status"] == "success", (created, edited)
+    assert (tmp_allowed_dir / "notes.md.tmp").read_text() == "the person's scratch"
+    assert sorted(p.name for p in tmp_allowed_dir.iterdir()) == ["notes.md", "notes.md.tmp"], (
+        "a temp file was left behind")
+    assert notes.read_text() == "newer"
+
+
+@pytest.mark.asyncio
+async def test_a_temp_name_taken_after_all_is_refused_and_left_alone(file_ops_server, tmp_allowed_dir, monkeypatch):
+    """Twelve random hex digits make it unlikely, not impossible: the write
+    fails then -- and must not delete the file that has that name."""
+    from plugins.file_ops import operations
+
+    monkeypatch.setattr(operations.secrets, "token_hex", lambda n: "0" * (2 * n))
+    notes = tmp_allowed_dir / "notes.md"
+    notes.write_text("old")
+    taken = tmp_allowed_dir / ".notes.md.000000000000.tmp"
+    taken.write_text("somebody's")
+
+    result = await file_ops_server.manage({
+        "operation": "create", "path": str(notes), "content": "new", "overwrite": True})
+
+    assert result["status"] == "error", result
+    assert taken.read_text() == "somebody's"
+    assert notes.read_text() == "old"
+
+
+@pytest.mark.asyncio
+async def test_a_write_cancelled_while_it_opens_leaves_no_temp_file(tmp_allowed_dir, monkeypatch):
+    """The temp is opened in the thread pool; a cancel that came meanwhile left
+    it behind -- with random names, one more per cancel."""
+    import asyncio
+    import time
+
+    from aiofiles import threadpool
+    from plugins.file_ops import operations
+
+    real_open = threadpool.sync_open
+
+    def slow_open(*args, **kwargs):
+        time.sleep(0.3)          # a slow disk, a network mount
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(threadpool, "sync_open", slow_open)
+    target = tmp_allowed_dir / "notes.md"
+    target.write_text("old")
+
+    task = asyncio.create_task(operations._write_through_temp(target, "new", "utf-8", keep_mode=True))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.5)     # the thread's open has finished by now
+
+    assert sorted(p.name for p in tmp_allowed_dir.iterdir()) == ["notes.md"]
+    assert target.read_text() == "old"
+
+
+@pytest.mark.asyncio
+async def test_a_name_near_the_limit_can_still_be_written(file_ops_server, tmp_allowed_dir):
+    """The temp name is not longer than a long name itself: 243 characters
+    went through before temp names carried a random part, and must still."""
+    long_file = tmp_allowed_dir / ("n" * 239 + ".txt")
+    long_file.write_text("old")
+
+    created = await file_ops_server.manage({
+        "operation": "create", "path": str(long_file), "content": "new", "overwrite": True})
+    edited = await file_ops_server.replace_string_in_file({
+        "filePath": str(long_file), "oldString": "new", "newString": "newer"})
+
+    assert created["status"] == "success" and edited["status"] == "success", (created, edited)
+    assert long_file.read_text() == "newer"
 
 
 @pytest.mark.asyncio

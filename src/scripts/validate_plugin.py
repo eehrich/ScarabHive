@@ -490,6 +490,12 @@ class PluginValidator:
                     f"Hook '{hook_name}' missing description - highly recommended"
                 )
 
+            if "on_error" in hook and (hook["on_error"] != "block" or hook_type != "pre_tool_call"):
+                self.errors.append(
+                    f"Hook '{hook_name}' on_error must be 'block', and only on a pre_tool_call "
+                    f"hook -- anything else lets a failing hook's call run"
+                )
+
             # Validate order if present
             if "order" in hook:
                 self._validate_hook_order(hook_name, hook["order"])

@@ -1,4 +1,4 @@
-"""Command execution with persistent sessions."""
+"""Command execution: every command in its own ``bash -c``."""
 
 import asyncio
 import logging
@@ -28,207 +28,8 @@ def _restore_console_mode() -> None:
         logger.debug("Could not restore console mode", exc_info=True)
 
 
-class PersistentTerminal:
-    """
-    Persistent bash terminal session (like GitHub Copilot's run_in_terminal).
-
-    Key Features:
-    - Environment variables persist across commands
-    - Working directory changes persist (cd commands)
-    - Activated virtual environments stay active
-    - Output from multiple commands accumulates
-    """
-
-    def __init__(
-        self,
-        bash_path: str,
-        initial_cwd: Optional[str] = None,
-        max_output_kb: int = 60,
-        sandbox: Optional[ProcessSandbox] = None,
-    ):
-        """
-        Initialize persistent terminal.
-
-        Args:
-            bash_path: Path to bash executable
-            initial_cwd: Initial working directory (defaults to current directory)
-            max_output_kb: Maximum output size in KB (default: 60, like GitHub Copilot)
-        """
-        self.bash_path = bash_path
-        self.sandbox = sandbox or ProcessSandbox()
-        self.cwd = initial_cwd or os.getcwd()
-        self.env = os.environ.copy()
-        self.max_output_kb = max_output_kb
-        self.process: Optional[asyncio.subprocess.Process] = None
-        self._output_buffer: list[str] = []
-        self._lock = asyncio.Lock()
-        self._reader_task: Optional[asyncio.Task] = None
-
-    async def start(self):
-        """Start persistent bash session."""
-        if self.process is not None:
-            logger.warning("Terminal already started")
-            return
-
-        logger.info(f"Starting persistent terminal with bash: {self.bash_path}")
-
-        # The whole session is confined, not each command: everything the
-        # session spawns inherits the cage, which is the point.
-        # Off-loop: the first confine() probes the sandbox backend with a
-        # synchronous subprocess.run (up to 10s) -- that must not freeze the
-        # event loop. Later calls hit the cached backend and are cheap.
-        confined = await asyncio.to_thread(
-            self.sandbox.confine, [self.bash_path], cwd=self.cwd)
-        self.process = await asyncio.create_subprocess_exec(
-            *confined.argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout for interleaved output
-            cwd=self.cwd,
-            env=self.env
-        )
-
-        # Start output reader task
-        self._reader_task = asyncio.create_task(self._read_output())
-        logger.info(f"Persistent terminal started (PID: {self.process.pid})")
-        # bash start resets the inherited console's VT flag
-        _restore_console_mode()
-
-    async def execute(
-        self,
-        command: str,
-        timeout: Optional[float] = None,
-        is_background: bool = False
-    ) -> Dict:
-        """
-        Execute command in persistent session.
-
-        Args:
-            command: Command to execute
-            timeout: Timeout in seconds (None = no timeout)
-            is_background: If True, don't wait for completion
-
-        Returns:
-            dict: Execution result with status, output, exit_code, etc.
-        """
-        if self.process is None:
-            await self.start()
-
-        async with self._lock:
-            start_time = time.time()
-
-            # Clear previous output buffer
-            self._output_buffer.clear()
-
-            # Send command to bash with completion marker
-            command_with_marker = f"{command}\necho '__CMD_DONE__'\n"
-            self.process.stdin.write(command_with_marker.encode('utf-8'))
-            await self.process.stdin.drain()
-
-            if is_background:
-                # Don't wait, return immediately
-                return {
-                    "status": "success",
-                    "background": True,
-                    "command": command,
-                    "message": "Command sent to background terminal session"
-                }
-
-            # Wait for completion marker or timeout
-            try:
-                output = await asyncio.wait_for(
-                    self._wait_for_completion(),
-                    timeout=timeout
-                )
-
-                execution_time = time.time() - start_time
-
-                # Check for output size limit
-                truncated = len(output) > (self.max_output_kb * 1024)
-                if truncated:
-                    output = output[:self.max_output_kb * 1024]
-                    output += "\n... [OUTPUT TRUNCATED - exceeded 60KB limit. Use filters like 'head', 'tail', 'grep' to limit output]"
-
-                return {
-                    "status": "success",
-                    "exit_code": 0,  # TODO: Determine by checking $? in future impl
-                    "stdout": output,
-                    "stderr": "",  # Merged into stdout
-                    "execution_time": execution_time,
-                    "truncated": truncated,
-                    "cwd": self.cwd,
-                    "command": command
-                }
-
-            except asyncio.TimeoutError:
-                partial_output = "".join(self._output_buffer)
-                return {
-                    "status": "error",
-                    "error": f"Command timed out after {timeout}s",
-                    "error_type": "TimeoutError",
-                    "partial_output": partial_output,
-                    "command": command
-                }
-
-    async def _read_output(self):
-        """Continuously read output from bash process."""
-        while True:
-            try:
-                line = await self.process.stdout.readline()
-                if not line:
-                    break
-                decoded = line.decode('utf-8', errors='replace')
-                self._output_buffer.append(decoded)
-            except Exception as e:
-                logger.error(f"Error reading terminal output: {e}")
-                break
-
-    async def _wait_for_completion(self) -> str:
-        """
-        Wait for command completion marker.
-
-        Returns:
-            str: Command output (without completion marker)
-        """
-        output_lines = []
-        while True:
-            if self._output_buffer:
-                line = self._output_buffer.pop(0)
-                if '__CMD_DONE__' in line:
-                    # Remove the marker line
-                    break
-                output_lines.append(line)
-            await asyncio.sleep(0.01)
-
-        return ''.join(output_lines)
-
-    async def get_output(self) -> str:
-        """
-        Get accumulated output from terminal.
-
-        Returns:
-            str: Current output buffer contents
-        """
-        return "".join(self._output_buffer)
-
-    async def cleanup(self):
-        """Clean up terminal session."""
-        if self.process:
-            try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                self.process.kill()
-                await self.process.wait()
-            except Exception as e:
-                logger.error(f"Error cleaning up terminal: {e}")
-
-        if self._reader_task:
-            self._reader_task.cancel()
-
-
 class CommandExecutor:
-    """Manages command execution with persistent terminals and security validation."""
+    """Runs each command in its own ``bash -c``, after CommandExecutor.refusal has passed it."""
 
     def __init__(
         self,
@@ -254,7 +55,44 @@ class CommandExecutor:
         # danger-full-access by default: confine() then returns the argv
         # untouched, so an unconfigured deployment behaves exactly as before.
         self.sandbox = sandbox or ProcessSandbox()
-        self.default_terminal: Optional[PersistentTerminal] = None
+
+    def refusal(self, command: str, cwd: Optional[str] = None,
+                env: Optional[Dict[str, str]] = None) -> Optional[Dict]:
+        """Why *command* may not be spawned as asked, or None.
+
+        Every spawn asks it (execute, execute_background): no entry into the
+        server reaches a process without passing here. Asked earlier as well
+        by a caller that would otherwise change something first.
+
+        With a whitelist the command also runs in the configured working
+        directory and environment. A whitelist checks the command string and
+        nothing else, while the directory decides which files the command
+        reads and writes and the environment how it runs (PYTHONPATH,
+        PYTHONSTARTUP, PATH, LD_PRELOAD all put code of the caller's choosing
+        into the one allowed command). Taken from the model, they would undo
+        what the whitelist is for.
+        """
+        is_safe, msg = self.security.validate_command(command)
+        if not is_safe:
+            return {
+                "status": "error",
+                "error": msg,
+                "error_type": "SecurityError",
+                "command": command
+            }
+        if self.security.whitelist_patterns:
+            given = [name for name, value in (("cwd", cwd), ("env_vars", env)) if value]
+            if given:
+                named = " and ".join(given)
+                return {
+                    "status": "error",
+                    "error": (f"This terminal runs only the commands its configuration allows, in its "
+                              f"configured working directory and environment -- {named} cannot be set "
+                              f"here. Send the command again without {named}."),
+                    "error_type": "ConfiguredOnly",
+                    "command": command
+                }
+        return None
 
     async def execute(
         self,
@@ -265,7 +103,7 @@ class CommandExecutor:
         is_background: bool = False
     ) -> Dict:
         """
-        Execute command (simplified - use subprocess instead of persistent terminal for now).
+        Execute command in its own ``bash -c``.
 
         Args:
             command: Command to execute
@@ -277,27 +115,19 @@ class CommandExecutor:
         Returns:
             dict: Execution result
         """
-        # Validate security
-        is_safe, msg = self.security.validate_command(command)
-        if not is_safe:
-            return {
-                "status": "error",
-                "error": msg,
-                "error_type": "SecurityError",
-                "command": command
-            }
+        refused = self.refusal(command, cwd, env)
+        if refused:
+            return refused
 
         try:
-            # For now, use simple subprocess execution instead of persistent terminal
-            # This avoids the complexity of marker-based completion detection
-            
             # Prepare environment
             exec_env = os.environ.copy()
             if env:
                 exec_env.update(env)
 
             # Create subprocess
-            # to_thread: first call probes the backend synchronously (see start())
+            # to_thread: the first confine() probes the sandbox backend with a
+            # synchronous subprocess.run (up to 10s); that must not freeze the loop.
             confined = await asyncio.to_thread(
                 self.sandbox.confine,
                 [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
@@ -396,7 +226,7 @@ class CommandExecutor:
         env: Optional[Dict[str, str]] = None
     ) -> Dict:
         """
-        Execute command as a separate background process (not in persistent terminal).
+        Execute command as a separate background process, in its own ``bash -c``.
 
         Args:
             command: Command to execute
@@ -406,15 +236,9 @@ class CommandExecutor:
         Returns:
             dict: Process information with process handle
         """
-        # Validate security
-        is_safe, msg = self.security.validate_command(command)
-        if not is_safe:
-            return {
-                "status": "error",
-                "error": msg,
-                "error_type": "SecurityError",
-                "command": command
-            }
+        refused = self.refusal(command, cwd, env)
+        if refused:
+            return refused
 
         try:
             # Prepare environment
@@ -423,7 +247,8 @@ class CommandExecutor:
                 exec_env.update(env)
 
             # Create subprocess
-            # to_thread: first call probes the backend synchronously (see start())
+            # to_thread: the first confine() probes the sandbox backend with a
+            # synchronous subprocess.run (up to 10s); that must not freeze the loop.
             confined = await asyncio.to_thread(
                 self.sandbox.confine,
                 [self.bash_path, "-c", command], cwd=cwd or self.initial_cwd)
@@ -465,8 +290,3 @@ class CommandExecutor:
                 "error_type": type(e).__name__,
                 "command": command
             }
-
-    async def cleanup(self):
-        """Clean up all resources."""
-        if self.default_terminal:
-            await self.default_terminal.cleanup()

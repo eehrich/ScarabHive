@@ -146,6 +146,10 @@ async def collect_final_result(
             
             elif event_type == "error":
                 result.setdefault("errors", []).append(event.get("message"))
+                from .server import refused_before_the_run
+
+                if refused_before_the_run(event):  # it ran nothing: its caller saves nothing after it
+                    result["refused"] = event["error_type"]
     
     except (KeyboardInterrupt, Exception) as e:
         # Handle cancellation gracefully

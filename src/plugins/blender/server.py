@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
 from agent_system.paths import data_path
@@ -178,7 +178,10 @@ class BlenderServer(SchemaBasedToolServer):
         """
         candidate = (self._out_dir / filename).resolve()
         root = self._out_dir.resolve()
-        if candidate != root and root not in candidate.parents:
+        # A drive or share (C:/..., \\server\share) is absolute wherever it is written: on
+        # POSIX it read as a folder named "C:" below the output directory, and was written there.
+        if (PureWindowsPath(filename).drive and not Path(filename).is_absolute()) or (
+                candidate != root and root not in candidate.parents):
             raise ValueError(
                 f"'{filename}' resolves outside the output directory ({root}); "
                 "pass a plain name or a path below it"

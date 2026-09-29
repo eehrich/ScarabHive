@@ -1,11 +1,12 @@
 """Terminal Tool Server implementation.
 
-This module provides secure bash command execution with persistent sessions,
-background process management, and output capture.
+This module provides bash command execution -- every command in its own
+`bash -c` -- background process management, and output capture.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,11 @@ _CMD_DISPLAY_LIMIT = 70
 #: max_output_size_kb (60 KB) -- half of that each keeps the recorded one in the
 #: same order of magnitude instead of writing a whole build log to disk.
 _RECORDED_STREAM_CAP = 30_000
+
+
+def _yaml_quoted_fragment(text: str) -> str:
+    """``text`` as the inside of a double-quoted YAML (= JSON-escaped) string."""
+    return json.dumps(text)[1:-1]
 
 
 def _short_cmd(command: str, limit: int = _CMD_DISPLAY_LIMIT) -> str:
@@ -69,7 +75,7 @@ def _output_size(result: dict[str, Any]) -> str:
 
 
 class TerminalServer(SchemaBasedToolServer):
-    """Terminal tool server for executing shell commands with persistent sessions.
+    """Terminal tool server for executing shell commands, each in its own ``bash -c``.
 
     This server provides:
     - execute_command: Execute commands and wait for completion
@@ -200,8 +206,21 @@ class TerminalServer(SchemaBasedToolServer):
         return {
             "name": self.name,
             "max_timeout": self.max_timeout,
-            "default_timeout": self.default_timeout
+            "default_timeout": self.default_timeout,
+            # A whitelisted terminal offers no cwd and no env_vars (CommandExecutor.refusal).
+            "whitelisted": self._whitelisted(),
+            # Rendered once with the schema, so the same text on every request:
+            # the prompt cache survives, and the model learns the cage (and a
+            # partial one as partial) before its first command, not per result.
+            # Escaped for the double-quoted YAML string it lands in -- a
+            # workspace path may hold a quote or a backslash.
+            "sandbox_note": _yaml_quoted_fragment(
+                " " + note if (note := self.sandbox.describe_for_model()) else ""),
         }
+
+    def _whitelisted(self) -> bool:
+        security = getattr(self, "security", None)
+        return bool(getattr(security, "whitelist_patterns", None))
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -374,6 +393,13 @@ class TerminalServer(SchemaBasedToolServer):
         cwd = params.get("cwd")
         env_vars = params.get("env_vars")
         custom_process_id = params.get("process_id")
+        # Refused before the takeover below changes anything: taking over a
+        # finished process's id drops its recorded outcome, and a command that
+        # will not run must not cost that. The spawn asks the same again.
+        refused = self.executor.refusal(command, cwd, env_vars)
+        if refused:
+            await params["_status"].error(refused["error"][:140])
+            return refused
         # Before the process is spawned, not after: replacing the entry of a
         # running process would leave it running with nobody able to read its
         # output or kill it. A FINISHED entry is a different thing: the tool
@@ -418,7 +444,7 @@ class TerminalServer(SchemaBasedToolServer):
 
         await status.progress(f"Starting background process: {_short_cmd(command)}")
 
-        # Execute in background (creates separate process, not persistent terminal)
+        # Execute in background (a separate process of its own)
         result = await self.executor.execute_background(
             command=command,
             cwd=cwd,
@@ -651,7 +677,6 @@ class TerminalServer(SchemaBasedToolServer):
     async def cleanup(self):
         """Clean up all resources."""
         logger.info(f"Cleaning up terminal server '{self.name}'")
-        await self.executor.cleanup()
         await self.process_manager.cleanup()
 
     async def stop_plugin(self) -> None:
@@ -659,7 +684,7 @@ class TerminalServer(SchemaBasedToolServer):
 
         ``cleanup()`` waits for the capture tasks and cancels what is left, but
         nothing reached it: ``plugins/capabilities.stop_plugin`` is the only
-        shutdown hook the adapter knows (tool_adapter.py:361), and it looks for
+        shutdown hook the adapter knows (tool_adapter.py:364, :381), and it looks for
         THIS name. Every background process therefore outlived the run that
         started it, with its capture task still attached.
         """

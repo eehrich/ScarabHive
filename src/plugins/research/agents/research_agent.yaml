@@ -54,6 +54,7 @@ plugins:
             - "+web_scraper/*"         # read a page, list links, download a file
             - "+datetime/*"            # "as of when" matters for research
             - "+research_sam/*"        # fork itself for a WIDE question (agents/tools.yaml)
+            - "+ask_user/*"            # narrow an ambiguous question with the person in the chat
 
         hooks:
           enabled: true

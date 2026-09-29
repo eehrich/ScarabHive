@@ -31,6 +31,7 @@ except ImportError:
                 raise StopAsyncIteration
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.servers.agent.components.session_tracking import SessionTracker
 from plugins.sub_agent_manager.manager import SubAgentManager
 from plugins.sub_agent_manager.server import SubAgentManagerServer
 
@@ -114,7 +115,7 @@ class TestSubAgentManagerCreateOperation:
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.llm_profile = "normal"
         mock_agent._session_service = None
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
 
         # Mock run_events to return async generator
@@ -179,7 +180,7 @@ class TestSubAgentManagerCreateOperation:
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.llm_profile = "normal"
         mock_agent._session_service = None
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
 
         # Mock run_events
@@ -244,7 +245,7 @@ class TestSubAgentManagerContinueOperation:
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.llm_profile = "normal"
         mock_agent._session_service = None
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
 
         # Track use_advanced_model parameter
@@ -312,7 +313,7 @@ class TestSubAgentManagerContinueOperation:
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.llm_profile = "normal"
         mock_agent._session_service = None
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
 
         received_use_advanced = None
@@ -393,7 +394,7 @@ class TestSubAgentManagerUseCases:
         mock_agent.agent_config = Mock()
         mock_agent.agent_config.llm_profile = ["normal", "think"]
         mock_agent._session_service = None
-        mock_agent._session_tracker = Mock()
+        mock_agent._session_tracker = Mock(wraps=SessionTracker())  # the real locks, calls recorded
         mock_agent._session_tracker.set_session_metadata = Mock()
         mock_agent.run_events = mock_run_events
         mock_registry.get = Mock(return_value=mock_agent)

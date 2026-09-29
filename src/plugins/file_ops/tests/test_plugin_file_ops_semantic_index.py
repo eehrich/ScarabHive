@@ -100,6 +100,29 @@ async def test_a_hit_is_a_symbol_with_its_line(tmp_path, tree):
     await server.search_engine.stop()
 
 
+async def test_a_document_names_its_file_relative_to_the_indexed_directory(
+        tmp_path, tree, monkeypatch):
+    """The absolute path put the same prefix in front of every document --
+    home directory, checkout, temp dir -- and the ranking came to depend on
+    where the tree lies: under the macOS temp path the test above ranked the
+    class first."""
+    from plugins.file_ops import search, symbols
+
+    named = []
+    real_documents = symbols.documents
+
+    def recording(path, text):
+        named.append(path)
+        return real_documents(path, text)
+
+    monkeypatch.setattr(search.symbols, "documents", recording)
+    server = build_server(tmp_path, tree)
+    await server.search_engine.rebuild_index(incremental=False)
+    await server.search_engine.stop()
+
+    assert sorted(map(str, named)) == ["README.md", "auth.py", "tea.py"]
+
+
 async def test_the_first_search_is_what_starts_the_build(tmp_path, tree):
     """The only line in the whole plugin that ever starts an index.
 
@@ -417,6 +440,50 @@ async def test_a_state_file_that_does_not_match_its_store_is_not_trusted(
     assert second.search_engine.file_mtimes == {}, \
         "a state that disagrees with the store must be dropped, not used"
     await second.search_engine.stop()
+
+
+async def test_a_store_of_another_document_format_is_rebuilt(tmp_path, tree):
+    """Only the files that change are embedded again: without this, documents
+    of the old format would stay next to the new ones for good. Two links: the
+    state of the old format is not trusted, and the first background pass is
+    then a full one, which clears the store before it fills it."""
+    from agent_system.utils.vector_store import compute_embeddings
+
+    server = build_server(tmp_path, tree)
+    engine = server.search_engine
+    await engine.rebuild_index(incremental=False)
+    built = engine._vector_store.count(engine._collection_name)
+    # A document of the old format, booked in the state like any other.
+    engine._vector_store.add(collection=engine._collection_name, ids=["old#1"],
+                             documents=[f"{tree / 'auth.py'}\nclass SessionStore()"],
+                             embeddings=compute_embeddings(["class SessionStore()"]),
+                             metadatas=[{"file_path": str(tree / "auth.py")}])
+    state = engine._state_path
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    del payload["format"]  # as a state written before the format was named
+    payload["files"][str(tree / "auth.py")]["ids"].append("old#1")
+    state.write_text(json.dumps(payload), encoding="utf-8")
+    await engine.stop()
+
+    second = build_server(tmp_path, tree).search_engine
+    second._init_vector_store()
+    assert second.file_mtimes == {}, "a store of the old format was trusted"
+
+    indexer = asyncio.create_task(second._background_indexer())
+    try:
+        for _ in range(600):
+            if second._index_built:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        indexer.cancel()
+        await asyncio.gather(indexer, return_exceptions=True)
+
+    assert second._index_built, "the first background pass did not finish"
+    assert second._vector_store.count(second._collection_name) == built, \
+        "the old document stayed next to the new ones"
+    assert json.loads(state.read_text(encoding="utf-8"))["format"] == 2
+    await second.stop()
 
 
 async def test_deleted_code_stops_being_found(tmp_path, tree):

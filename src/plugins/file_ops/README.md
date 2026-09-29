@@ -599,7 +599,9 @@ call and repeated incrementally by file mtime (`auto_reindex_interval`). The
 search itself never waits for it. What each file contributed is written next to
 the vectors (`<collection>_state.json`), so a restart picks the index up
 instead of paying for the whole tree again — and a state file that disagrees
-with its collection is dropped rather than trusted.
+with its collection, or was written for another document format, is dropped
+rather than trusted. (Format 2, 28.09.2026: a document names its file relative
+to the indexed directory; an index built before is rebuilt once.)
 
 Each instance owns its collection (`file_ops_<instance>`), because two
 instances are two trees: with one shared name the second instance's full

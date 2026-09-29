@@ -281,6 +281,27 @@ class TestGenericCallDispatcher:
         assert 'greet' in error_msg  # available tool
     
     @pytest.mark.asyncio
+    async def test_a_private_method_is_no_tool(self, system_config, server_config):
+        """No schema names a private method, and reached by name it would skip what the public entry
+        checks before it calls the helper -- as SchemaBasedToolMixin.call refuses it too."""
+        helped = []
+
+        class HelperServer(SimpleToolServer):
+            async def greet(self, params):
+                return await self._helper(params)
+
+            async def _helper(self, params):
+                helped.append(params)
+                return "hi"
+
+        server = HelperServer('helper', system_config, server_config)
+
+        with pytest.raises(ValueError, match="not found"):
+            await server.call('_helper', {})
+        assert helped == [], "the private method ran"
+        assert await server.call('greet', {}) == "hi"
+
+    @pytest.mark.asyncio
     async def test_missing_method_error(self, system_config, server_config):
         """Test error when tool declared but method not implemented."""
         server = MissingMethodServer('missing', system_config, server_config)
@@ -766,3 +787,17 @@ class TestToolDef:
         assert tool.description == "A test tool"
         assert tool.input_schema["type"] == "object"
         assert "param" in tool.input_schema["properties"]
+
+
+class _AsyncCallableGreet:
+    """A tool that is an object with an async __call__. No coroutine-function
+    check recognises it, and a dispatcher that asked one handed back the
+    un-awaited coroutine as the tool's result."""
+
+    async def __call__(self, params):
+        return f"Hello, {params['name']}!"
+
+
+async def test_a_tool_whose_call_is_async_is_awaited(simple_server):
+    simple_server.greet = _AsyncCallableGreet()
+    assert await simple_server.call('greet', {'name': 'Ada'}) == "Hello, Ada!"

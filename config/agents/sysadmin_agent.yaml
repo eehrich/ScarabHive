@@ -94,6 +94,7 @@ plugins:
             - "+terminal/*"            
             - "+ssh_control/*"
             - "+okf/*"                    # durable infra knowledge base (runbooks, known issues, hosts)
+            - "+ask_user/*"               # ask the person in the chat before a choice that is theirs
 
         hooks:
           enabled: true
@@ -120,3 +121,4 @@ plugins:
         tags: ["ssh", "server", "Administrator", "security"]
         category: "it"
         visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): commands on the configured SSH hosts and a local shell

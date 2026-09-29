@@ -94,6 +94,7 @@ plugins:
           
       metadata:
         visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal)
         tags:
           - skills
 
@@ -117,6 +118,7 @@ plugins:
 
       metadata:
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell on the server (terminal), inherited from skills_agent
 
     # simple chat agent
     chat_agent:

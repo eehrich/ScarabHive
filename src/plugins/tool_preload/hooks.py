@@ -449,15 +449,20 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
         """
         from agent_system.servers.agent.components.tool_execution import ToolDispatchError
 
-        # HookContext carries no user_id, but the request does — and without it
-        # inject_runtime_params leaves _user_id unset, so a preloaded call runs
-        # with less identity than the same call from the LLM. Same source the
-        # agent itself uses when it stamps the session metadata.
+        # HookContext carries no user_id -- and without one inject_runtime_params
+        # leaves _user_id unset, so a preloaded call ran with less identity than
+        # the same call from the LLM. The agent's own answer for its tool calls
+        # (Agent.tool_user): the registered owner of the request, else the
+        # session's stored user. The request alone is not enough: agent-cli
+        # registers none, and an agent reached with no user stored "anonymous"
+        # as its session's user and refused the run's next call as another user.
+        # With the user, inject_runtime_params registers the request for it, as
+        # for the model's own calls.
         user_id = None
         try:
-            from agent_system.core.request_context import get_request_user
-            if context.request_id:
-                user_id = get_request_user(context.request_id, default=None)
+            tool_user = getattr(context.agent, "tool_user", None)
+            if callable(tool_user):
+                user_id = tool_user(context.request_id, context.session_id)
         except Exception as e:  # noqa: BLE001 - identity is best-effort here
             logger.debug(f"tool_preload: could not resolve user_id: {e}")
 

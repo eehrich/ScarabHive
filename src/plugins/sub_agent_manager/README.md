@@ -44,6 +44,17 @@ on the fly from `_agent` in the tool params — and that is why a missing
 `_agent` is a hard error rather than a default: without the parent's agent name
 and profile the session metadata would be silently wrong.
 
+The parent is the session of the run that calls the manager. For an agent
+called as a tool by another agent that is its own session below the caller's
+(`Agent.tool_session_id`), not the caller's: the sub-agents it starts hang
+below that one. The caller does not see them in its injected sub-agent list,
+cannot `poll` them, and a `wake_when_done` of theirs wakes nobody (a sub-agent's
+session is never woken; the agent that started them takes their answers).
+Below a throwaway caller that session has no record (it is never saved), and
+the manager makes one as for any parent it does not find: a listed
+"Coordinator Session", as it makes one for a throwaway session that starts
+sub-agents itself. Only an openai_api stateless turn deletes it again.
+
 ## Context vars: inherited once, refreshed on continue
 
 A sub-agent inherits the coordinator's `context_vars` when its session is
@@ -183,7 +194,11 @@ spawn workers that cannot spawn anything themselves, `5` allows five levels
 below the caller. Each sub-session inherits the remaining budget, and every
 manager further down takes the smaller of that budget and its own knob — so a
 strict manager bounds its entire subtree, and it goes on working unchanged
-when its own agent is somebody else's sub-agent.
+when its own agent is somebody else's sub-agent. An agent called as a tool
+counts from its caller: its session carries the caller's budget, not one level
+less (it ran on the caller's session before it got one of its own). The budget
+is written with the session's first record; when that write fails -- or the
+caller's budget cannot be read -- the call does not run.
 
 Two more that are not limits but guards:
 
@@ -193,7 +208,15 @@ Two more that are not limits but guards:
   woken coordinator continues from a process of its own, while the job it
   continues may still run in the API. `continue` asks the lock beside the
   sub-session (`core/session_presence.py`) as `list` does, and refuses — two
-  runs on one transcript each saved their own, the later over the other. A
+  runs on one transcript each saved their own, the later over the other. A run
+  of THIS process that the slots do not know — a chat on the sub-agent's
+  session in the web UI, a run still finishing — has the agent's session lock:
+  `continue` takes that lock first, under the request id its run takes it by,
+  and is refused with "Sub-agent '<id>' is running in another request of this
+  process right now. Wait for it before you continue it." — before it refreshes
+  the vars, reopens the instance or prepares the agent. The save after a
+  sub-agent's run leaves a session somebody holds by then
+  (`save_session(after_run=True)`). A
   refusal of a busy, missing or foreign instance is the caller's mistake and
   logged at INFO; a slot no running task holds is a leak and logged as an error.
 * **The manager writes a parent's sub-agent entries one at a time.** An entry
@@ -219,8 +242,11 @@ Two more that are not limits but guards:
   session's limit was checked first, archived the oldest of any type, and with
   the type still full a second one.
 * **A finished run answers with its own words, job or no job.** The background
-  job holds the result text only until somebody reads it, and after a restart
-  or an archiving there is none at all. `poll` then reads the last thing the
+  job holds the result text only until somebody reads it — or, if nobody
+  does, for an hour after the job ended (`FINISHED_JOB_RETENTION_SECONDS`),
+  a day if its ending could not be stored; never while its bell still rings —
+  and
+  after a restart or an archiving there is none at all. `poll` then reads the last thing the
   run said from its transcript, instead of a fixed sentence about a persisted
   session that a model reads as the answer. An archived instance is found too:
   making room at a limit happens behind the caller's back, and its poll used to

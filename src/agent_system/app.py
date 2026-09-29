@@ -16,6 +16,7 @@ from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import anyio
 import uvicorn
 from fastapi import FastAPI, Request, Query, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -77,7 +78,22 @@ from .core.request_context import (  # noqa: E402
     register_request_user,
     request_user_map as _request_user_map,  # noqa: F401 - re-export for tests/importers
     release_request_user_tree,
+    release_run_attended,
+    set_run_attended,
 )
+
+
+def _asks_a_person(attended: bool, current_user: Any, auth_enabled: bool) -> bool:
+    """Whether a run may put questions to the person who started it: the client
+    says it shows them (``attended``), and that person can answer -- signed in,
+    or authentication is off. Nobody signed in with authentication on cannot (an
+    anonymous visitor, an endpoint that let the request through without a user):
+    the answer route takes a sign-in, so a question would only time out."""
+    if not attended:
+        return False
+    if not auth_enabled:
+        return True
+    return current_user is not None and getattr(current_user, "is_authenticated", True) is not False
 
 
 #: Longest line /chat/resolve will look at. A chat line is a chat line; the
@@ -334,27 +350,60 @@ def _build_entry_agent(entry_name: str, config, registry, session_service):
     return agent
 
 
+def _default_config_path() -> str:
+    """The config the API loads when none is passed: AGENT_CONFIG_PATH, else the
+    project's config/config.yaml -- the variable agent-cli and agent-run honour too."""
+    from .paths import PROJECT_ROOT
+
+    return os.environ.get("AGENT_CONFIG_PATH") or str(PROJECT_ROOT / "config" / "config.yaml")
+
+
+def _gated_agent_names(config) -> list[str]:
+    """The enabled servers whose MERGED config declares a role gate (metadata.min_role), sorted.
+
+    Merged, because the gate is inherited along the ``type:`` chain like the
+    rest of the metadata: an agent that sets nothing itself can still carry one.
+    """
+    from .config.settings import get_tool_server_config
+
+    names = []
+    for name, server in ((config.plugins.servers or {}).items() if config.plugins else ()):
+        if not server.enabled:
+            continue
+        try:
+            merged = get_tool_server_config(name, config)
+        except Exception:  # noqa: BLE001 - a start-up warning must not stop the start
+            continue
+        if merged is not None and merged.metadata is not None and merged.metadata.min_role is not None:
+            names.append(name)
+    return sorted(names)
+
+
 def build_app(config_path: Optional[str] = None) -> FastAPI:
     """Build and configure the FastAPI application."""
-    from pathlib import Path
-
     # Initialize ConfigService and load configuration
-    if not config_path:
-        cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
-    else:
-        cfg_path = config_path
+    cfg_path = config_path or _default_config_path()
 
     # Setup early logging BEFORE config loading so YAML errors are captured
-    # This ensures config parsing errors appear in the log file
-    early_log_file = Path(__file__).parents[2] / "logs" / "api.log"
-    early_log_file.parent.mkdir(parents=True, exist_ok=True)
+    # This ensures config parsing errors appear in the log file: the one the
+    # shipped config names (logging.file_api), relative to the working
+    # directory as setup_role_logging resolves it -- not the source tree, which
+    # a server or test started elsewhere would otherwise write into.
+    # A working directory the server cannot write to (a service unit without
+    # WorkingDirectory) keeps the console only: a config that writes nothing
+    # relative to it (logging off; auth off or an absolute auth.database_path)
+    # would otherwise not start for want of a file it never asked for.
+    early_handlers: list[logging.Handler] = [logging.StreamHandler()]
+    early_log_file = Path("logs") / "api.log"
+    try:
+        early_log_file.parent.mkdir(parents=True, exist_ok=True)
+        early_handlers.insert(0, logging.FileHandler(str(early_log_file), encoding="utf-8"))
+    except OSError:
+        pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",  # Match Uvicorn format
-        handlers=[
-            logging.FileHandler(str(early_log_file), encoding="utf-8"),
-            logging.StreamHandler()
-        ],
+        handlers=early_handlers,
         force=True  # Override any existing config
     )
     early_logger = logging.getLogger(__name__)
@@ -654,8 +703,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Re-read a session another process continued while this one had it
         loaded but not yet held.
 
-        SessionManager says whether the file moved since this process last read
-        or wrote it. Where it has no stamp -- its cache is bounded -- the longer
+        SessionManager says whether the file moved since this process last wrote
+        it or read it into a tracker -- not since the web UI last showed it, a
+        load that puts nothing in memory. Where it has no stamp -- it is bounded with its cache -- the longer
         conversation wins: re-reading unasked undoes a run of this process whose
         save is still to come, and that run's answer is nowhere else.
         """
@@ -736,12 +786,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         return types.SimpleNamespace(put=feed.put_nowait, close=lambda: feed.put_nowait(None))
 
-    def _refused_at_the_lock(event: dict) -> bool:
-        """Whether a run event says the run was refused at the agent's session lock (Agent.run_events): another
-        run of this process has the session, and nothing of this request may be saved to it."""
-        from .servers.agent.server import SESSION_LOCKED
+    def _refused_before_the_run(event: dict) -> bool:
+        """Whether a run event says the run was refused before it started (Agent.run_events): at the agent's
+        session lock (another run of this process has the session), by its role gate, or because the session is
+        another user's. Nothing of this request may be saved to it."""
+        from .servers.agent.server import refused_before_the_run
 
-        return event.get("type") == "error" and event.get("error_type") == SESSION_LOCKED
+        return refused_before_the_run(event)
 
     def _let_go(target_agent: Any, sid: Optional[str], user_id: str) -> None:
         """Let go of a held session; input that came in for it wakes it."""
@@ -880,6 +931,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         logging.getLogger(__name__).info("Logging initialized, file=%s", log_file)
     apply_ssl_verify_to_environment(config)
 
+    # The JWT signing key, before any tool server starts -- a key the server
+    # refuses (auth.security.check_secret_key) stops it here, not after the
+    # whole bootstrap, which a service manager repeats on every restart --
+    # and after the role logging, so a published key's error reaches logs/api.log.
+    if config.auth and config.auth.enabled:
+        from .auth.security import set_jwt_config
+
+        set_jwt_config(
+            secret_key=config.auth.secret_key,
+            algorithm=config.auth.algorithm,
+            expire_minutes=config.auth.access_token_expire_minutes,
+            refresh_expire_days=config.auth.refresh_token_expire_days,
+            reject_default_key=config.auth.reject_default_secret_key,
+        )
+
     # Bootstrap tool servers and plugin registry using InitializationService
     # This handles bootstrap_servers() and session_service injection
     # Note: Batch queue manager is created lazily by LLMFactory when first needed
@@ -947,7 +1013,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
     # reload`): the service + path let the endpoint re-parse the on-disk config.
     app.state.config_service = _config_service
     app.state.config_path = cfg_path
+    # The auth this process enforces -- the enforcer and the middleware were built
+    # from it, and a reload (which replaces app.state.config) does not rebuild
+    # them. Routers outside this function judge the agent role gate by it.
+    app.state.auth_config = config.auth
     logger.info("Default agent, registry, and config stored in app.state for dependency injection")
+
+    # The agent role gate (metadata.min_role) compares account roles; with auth
+    # off there are none, and every gate stays open. Said once, at start.
+    if not config.auth.enabled:
+        gated_agents = _gated_agent_names(config)
+        if gated_agents:
+            logger.warning(
+                "auth is disabled: the role gate (metadata.min_role) of %d agent(s) is not "
+                "enforced, anyone who reaches the API may run them: %s",
+                len(gated_agents), ", ".join(gated_agents))
 
     # Store registry globally
     global _app_registry
@@ -973,18 +1053,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # Setup auth database and configuration
         from .auth.database import setup_database
-        from .auth.security import set_jwt_config
         from .auth.middleware import configure_cors, configure_security_middleware
         from .auth.models import UserCreate, UserRole
         from pathlib import Path as AuthPath
-
-        # Configure JWT settings
-        set_jwt_config(
-            secret_key=config.auth.secret_key,
-            algorithm=config.auth.algorithm,
-            expire_minutes=config.auth.access_token_expire_minutes,
-            refresh_expire_days=config.auth.refresh_token_expire_days
-        )
 
         # Setup database
         db_path = AuthPath(config.auth.database_path)
@@ -1091,8 +1162,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         agent_config = {}
         try:
-            agent_config_path = Path(__file__).parents[2] / "config" / "config.yaml"
-            with open(agent_config_path, 'r', encoding='utf-8') as f:
+            with open(cfg_path, 'r', encoding='utf-8') as f:  # the config this app was built from
                 agent_config = yaml_io.safe_load(f) or {}
         except Exception as e:
             logger.debug(f"Failed to load config for health check: {e}")
@@ -1193,12 +1263,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         except SessionPermissionError as e:
             raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
 
-    def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None):
+    def _gate_refuses(target: Any, who: Any) -> bool:
+        """Whether *who* may not run *target* under its role gate (metadata.min_role).
+
+        *who* is what the endpoint resolved: an account, an AnonymousUser, or None.
+        Judged against the auth this process enforces -- the start config the
+        enforcer and the middleware were built from, not a reloaded one: a reload
+        that switched auth off would otherwise open every gated agent to callers
+        the middleware still makes sign in.
+
+        The reason is logged here and goes no further: every endpoint answers a
+        refusal exactly as it answers an agent that does not exist, so the answer
+        does not tell a caller which agents are there behind a gate.
+        """
+        from .auth.agent_access import agent_run_denial
+
+        reason = agent_run_denial(getattr(target, "min_role", None), who, config.auth)
+        if reason:
+            logger.info("Refused agent '%s' to %s: %s", getattr(target, "name", None) or "?",
+                        getattr(who, "username", None) or "an unidentified caller", reason)
+        return bool(reason)
+
+    def _agent_not_found(agent_name: str) -> HTTPException:
+        """POST /run's and /events' answer for an agent name nothing is registered under."""
+        return HTTPException(
+            status_code=404,
+            detail=(
+                f"agent_not_found:{agent_name}. "
+                "Check the plugin name (registered tool server name, not "
+                "the agent yaml filename) and that the plugin is loaded."
+            ),
+        )
+
+    def _get_agent_with_overrides(agent_name: Optional[str] = None, llm_profile: Optional[str] = None,
+                                  *, requester: Any):
         """Get agent instance with optional overrides.
 
         Args:
             agent_name: Name of agent to use (None = use default global agent)
             llm_profile: LLM profile to use (None = use agent's configured profile)
+            requester: the caller the endpoint resolved; an agent it may not run
+                (its role gate) is answered as an unknown agent (404), the default
+                agent -- which has a name only the server knows -- with a 403.
+                Keyword and required: a run started without asking is the hole.
 
         Returns:
             Tuple of (agent_instance, llm_override, llm_profile_info)
@@ -1232,20 +1339,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     "Agent '%s' not found — returning 404 (no silent fallback)",
                     agent_name,
                 )
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"agent_not_found:{agent_name}. "
-                        "Check the plugin name (registered tool server name, not "
-                        "the agent yaml filename) and that the plugin is loaded."
-                    ),
-                )
+                raise _agent_not_found(agent_name)
             except HTTPException:
                 # The deliberate 400 ("'x' is not an agent") must keep its
                 # status — the generic handler below turned it into a 500.
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
+
+        # The role gate, for the named agent and the default one alike -- before
+        # an LLM client is built for a run that is not going to happen.
+        if _gate_refuses(selected_agent, requester):
+            if agent_name:
+                raise _agent_not_found(agent_name)
+            raise HTTPException(status_code=403, detail="Permission denied")
 
         # Create LLM override if profile specified. Resolved against the LIVE
         # config -- a profile added by a reload was "not found" here and fell
@@ -1278,18 +1385,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         return _live_config().model_dump()
 
-    @app.get("/agents")
-    def list_agents(response: Response):
-        """List registered agent-like servers that are publicly visible (UI dropdown).
+    def _public_agents() -> tuple[list[str], dict[str, str]]:
+        """The registered agents GET /agents lists, and the role gate of those that carry one.
 
-        Returns agents with _tool_public=True OR agents without _tool_public attribute (backward compat).
-        Agents with visibility='tool' or 'private' (_tool_public=False) are excluded.
+        Plain code on purpose: the endpoint runs it in the thread pool, as it ran the
+        whole endpoint while that was a plain ``def`` -- the walk and the details read
+        the config of every server, and on the event loop that stalls every stream.
         """
-        # Without this the browser may serve the list from its HTTP cache on a
-        # normal reload — newly registered agents then only appear after a
-        # force reload (observed: agent missing from the dropdown until Ctrl+F5).
-        response.headers["Cache-Control"] = "no-store"
         agents = []
+        #: name -> min_role of every listed agent that carries a gate
+        gated: dict[str, str] = {}
         try:
             for name in _app_registry.list():  # type: ignore[attr-defined]
                 try:
@@ -1304,6 +1409,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     if isinstance(view, ServerView):
                         if view.is_agent and view.tool_public:
                             agents.append(name)
+                            if view.min_role is not None:
+                                gated[name] = view.min_role
                         elif view.is_agent:
                             logger.debug(f"Skipping agent '{name}' in UI list (_tool_public=False)")
                         continue
@@ -1321,15 +1428,49 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                                 continue
                         # else: No _tool_public attribute → show in UI (backward compat)
                         agents.append(name)
+                        if srv.min_role is not None:
+                            gated[name] = srv.min_role
                 except Exception as e:
                     logger.debug(f"Failed to check agent {name}: {e}")
                     continue
         except Exception as e:
             logger.debug(f"Failed to list agents: {e}")
+        return agents, gated
+
+    @app.get("/agents")
+    async def list_agents(request: Request, response: Response):
+        """List registered agent-like servers that are publicly visible (UI dropdown).
+
+        Returns agents with _tool_public=True OR agents without _tool_public attribute (backward compat).
+        Agents with visibility='tool' or 'private' (_tool_public=False) are excluded.
+
+        Only agents the caller may run are listed (their role gate, metadata.min_role),
+        and ``default`` names the entry agent only if the caller may run it: an
+        entry the caller can pick is one /run refuses with a 403.
+        """
+        # Without this the browser may serve the list from its HTTP cache on a
+        # normal reload — newly registered agents then only appear after a
+        # force reload (observed: agent missing from the dropdown until Ctrl+F5).
+        response.headers["Cache-Control"] = "no-store"
+        from starlette.concurrency import run_in_threadpool
+
+        agents, gated = await run_in_threadpool(_public_agents)
         # The agent /run actually uses without agent_name is this object --
         # not config.default_agent, which a reload can move without moving
         # the entry agent with it.
-        return {"agents": sorted(agents), "details": _agent_details(sorted(agents)), "default": agent.name}
+        default: Optional[str] = agent.name
+        entry_gate = getattr(agent, "min_role", None)
+        if (gated or entry_gate is not None) and config.auth.enabled:
+            # Asked only when a gate is in play: an installation without gates
+            # answers exactly as before, without resolving anybody.
+            from .auth.agent_access import may_run_agent
+            caller = await _enforce_endpoint_security(request)
+            agents = [name for name in agents
+                      if may_run_agent(gated.get(name), caller, config.auth)]
+            if not may_run_agent(entry_gate, caller, config.auth):
+                default = None
+        details = await run_in_threadpool(_agent_details, sorted(agents))
+        return {"agents": sorted(agents), "details": details, "default": default}
 
     def _hostname(base_url: Optional[str]) -> Optional[str]:
         """The host a model's requests go to; a malformed URL ("http://[fe80::1") names none rather than ending the list."""
@@ -1389,9 +1530,23 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             "default": default_profile or "normal"
         }
 
+    async def _gate_refuses_caller(request: Request, target: Any) -> bool:
+        """_gate_refuses for an endpoint that has not resolved its caller.
+
+        The caller is resolved only when a gate is in play, so an ungated agent
+        is answered exactly as before.
+        """
+        if getattr(target, "min_role", None) is None or not config.auth.enabled:
+            return False
+        return _gate_refuses(target, await _enforce_endpoint_security(request))
+
     @app.get("/agents/{agent_name}/allowed-tools")
-    async def get_agent_allowed_tools(agent_name: str):
-        """Return the effective allowed tools list for an agent after pattern filtering."""
+    async def get_agent_allowed_tools(request: Request, agent_name: str):
+        """Return the effective allowed tools list for an agent after pattern filtering.
+
+        An agent the caller may not run answers as one that does not exist: what
+        a gated agent can reach is part of what the gate keeps from them.
+        """
         try:
             srv = _app_registry.get(agent_name)  # type: ignore[attr-defined]
         except Exception as e:
@@ -1400,6 +1555,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         from .servers.agent.server import Agent as _Agent
         if not isinstance(srv, _Agent):
             return {"error": "not an agent", "agent": agent_name}
+        if await _gate_refuses_caller(request, srv):
+            return {"error": "agent not found", "agent": agent_name}
         try:
             available, allowed_patterns, blocked_patterns = await srv.list_usable_tools()
             patterns = srv.agent_config.tools.allowed if srv.agent_config.tools else None
@@ -1424,10 +1581,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         tools themselves and /tools said "only in the terminal".
 
         User role, like its neighbour, not admin like the debug twin: any
-        agent_name is allowed here because /run already is -- an authenticated
-        user can RUN any registered agent by name (_get_agent_with_overrides
-        checks that it is an agent, not who may see it), so reading the tool
-        names of one discloses nothing that running it would not.
+        agent_name the caller may RUN is allowed here, because /run allows it
+        too -- reading the tool names of such an agent discloses nothing that
+        running it would not. An agent behind a role gate the caller does not
+        pass (metadata.min_role) answers as one that does not exist, as in /run.
 
         No filter parameter on purpose: the terminal filters the list it
         already holds, and a server that returns only the matches also
@@ -1449,6 +1606,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not isinstance(srv, _Agent):
             raise HTTPException(status_code=400,
                                 detail=f"'{agent_name}' is a tool server, not an agent")
+        if await _gate_refuses_caller(request, srv):
+            raise HTTPException(status_code=404, detail=f"agent '{agent_name}' not found")
 
         try:
             tools = await srv._list_usable_tools_with_details({})
@@ -1596,7 +1755,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """Run agent with optional multimodal input (text + images).
 
         This handler accepts either:
-        - multipart/form-data with fields 'task' and repeated 'files' entries, or
+        - multipart/form-data with fields 'task' and repeated 'files' entries
+          (and 'attended': the client shows the run's questions to the person
+          who started it -- the answer streams back, as on /events), or
         - application/json with {"task": "..."}, or
         - query param ?task=... (fallback used by some clients)
 
@@ -1634,6 +1795,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # Optional client-supplied request id — collected from body/form/
         # query below, validated + applied after parsing.
         client_request_id: Optional[str] = None
+        # The client shows the run's questions to the person who started it
+        # (form field ``attended``; the chat sends it with files). Only a run
+        # streamed back to that client can be: the text-only run is not.
+        attended = False
 
         # JSON body: {"task": "...", "session_id": "...", "agent_name": "...", "llm_profile": "...", "request_id": "..."}
         if content_type.startswith('application/json'):
@@ -1684,6 +1849,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             if 'request_id' in form:
                 client_request_id = form.get('request_id')
             force = force or str(form.get('force') or "").lower() in ("1", "true", "yes")
+            attended = str(form.get('attended') or "").lower() in ("1", "true", "yes")
             # Collect UploadFile instances - use getlist() for repeated fields
             if hasattr(form, 'getlist'):
                 files_list = form.getlist('files')
@@ -1724,7 +1890,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                    llm_profile or "default", user_id)
 
         # Get agent with LLM override
-        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+        selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
 
         # A run without a session creates one, as with files and on /events. The text-only run goes through
         # collect_final_result, which takes a missing id for a stateless call: a throwaway session, never saved.
@@ -1771,7 +1937,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
                 def on_event(event: dict) -> Any:
                     _carry_title(selected_agent, event, session_title)
-                    if _refused_at_the_lock(event):
+                    if _refused_before_the_run(event):
                         refused.append(event)
                     return mirror.put(event)
 
@@ -1800,7 +1966,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         # Keep original markdown on error
 
                 # Save session after execution (if session_id was provided or created) --
-                # not one the run was refused: another run of this process has it.
+                # not one the run was refused, nor one somebody holds after it
+                # (after_run): another run of this process, or an append saving it.
                 if session_id and _session_service and not refused:
                     effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
                     was_new_session = not session_exists
@@ -1810,7 +1977,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         session_id,
                         selected_agent.name,
                         effective_llm_profile,
-                        was_new_session
+                        was_new_session,
+                        after_run=True,
                     )
 
                 return result
@@ -1914,10 +2082,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield f"data: {json.dumps({'type': 'error', 'message': refusal}, ensure_ascii=False)}\n\n"
                     return
 
+                # tool_approval may ask the person reading this stream (released below)
+                set_run_attended(request_id, _asks_a_person(attended, current_user, _live_config().auth.enabled))
                 try:
                     async for event in selected_agent.run_events(multimodal_msg, request_id=request_id, session_id=actual_session_id, llm_override=llm_override, llm_profile_info_override=llm_profile_info):
                         event_type = event.get("type")
-                        refused = refused or _refused_at_the_lock(event)
+                        refused = refused or _refused_before_the_run(event)
 
                         # Capture session_id from start event (created on first call)
                         if event_type == "start" and event.get("session_id"):
@@ -1955,34 +2125,45 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     yield "event: error\n"
                     yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
                 finally:
-                    # Save session after completion -- not one the run was refused:
-                    # another run of this process has it.
-                    if _session_service and actual_session_id and not refused:
-                        # Use actual agent name and effective llm_profile (respecting overrides)
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                        await _session_service.save_session(
-                            selected_agent,
-                            user_id,
-                            actual_session_id,
-                            selected_agent.name,
-                            effective_llm_profile,
-                            was_new_session
-                        )
-
-                    _let_go(selected_agent, held, user_id)
-                    # Cleanup: release request + derived sub-request ids
-                    release_request_user_tree(request_id)
-
-                    # Cleanup temp files after streaming completes
-                    for temp_file in temp_files:
-                        try:
-                            temp_file.unlink()
-                        except Exception as e:
-                            logger.warning("Failed to delete temp file %s: %s", temp_file, e)
                     try:
-                        temp_dir.rmdir()
-                    except Exception as e:
-                        logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
+                        # Save session after completion -- not one the run was refused, nor
+                        # one somebody holds after it (after_run): another run of this
+                        # process, an append saving it, or this run itself, not done (a
+                        # stream left at a yield) -- its own end saves it. Shielded: a
+                        # client that leaves cancels the stream's whole scope, the run in
+                        # it and its last save too, and here every await was cancelled
+                        # again -- nothing saved, and the steps below skipped.
+                        if _session_service and actual_session_id and not refused:
+                            # Use actual agent name and effective llm_profile (respecting overrides)
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                            with anyio.CancelScope(shield=True):
+                                await _session_service.save_session(
+                                    selected_agent,
+                                    user_id,
+                                    actual_session_id,
+                                    selected_agent.name,
+                                    effective_llm_profile,
+                                    was_new_session,
+                                    after_run=True,
+                                )
+                    finally:
+                        # Whatever became of the save: skipped, the session stayed held
+                        # for the life of the process (presence refuses every later run).
+                        _let_go(selected_agent, held, user_id)
+                        # Cleanup: release request + derived sub-request ids
+                        release_request_user_tree(request_id)
+                        release_run_attended(request_id)
+
+                        # Cleanup temp files after streaming completes
+                        for temp_file in temp_files:
+                            try:
+                                temp_file.unlink()
+                            except Exception as e:
+                                logger.warning("Failed to delete temp file %s: %s", temp_file, e)
+                        try:
+                            temp_dir.rmdir()
+                        except Exception as e:
+                            logger.warning("Failed to delete temp dir %s: %s", temp_dir, e)
 
             stream_owns_cleanup = True
             return _sse_response(event_stream(), media_type="text/event-stream")
@@ -2038,10 +2219,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request_id: Optional[str] = None,
         force: bool = False,
         session_title: Optional[str] = None,
+        attended: bool = False,
     ):
         """Shared implementation for GET/POST /events endpoints.
 
-        Streams agent SSE events for a task.
+        Streams agent SSE events for a task. ``attended``: the client shows the
+        run's questions to the person who started it, who can answer them (the
+        web chat); a new run records it, a reconnect keeps what its start said.
         """
         logger = logging.getLogger(__name__)
 
@@ -2153,7 +2337,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         # NORMAL PATH: For new requests, do full setup
         try:
-            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile)
+            selected_agent, llm_override, llm_profile_info = _get_agent_with_overrides(agent_name, llm_profile, requester=current_user)
             session_exists = await _open_session_for_run(selected_agent, user_id, session_id, llm_profile)
         except HTTPException:
             # Registered above for the status stream; no run follows to release it.
@@ -2186,14 +2370,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # Create new background job (reconnects use the fast path above)
             async def agent_runner():
                 """Run the agent and yield events"""
-                async for ev in selected_agent.run_events(
-                    task, request_id, actual_session_id, 
-                    llm_override=llm_override, llm_profile_info_override=llm_profile_info
-                ):
-                    # Here, not where the stream is read: the run waits at this
-                    # event until it is passed on, so no save of it comes first.
-                    _carry_title(selected_agent, ev, session_title)
-                    yield ev
+                # Whether a person can be asked while it runs (tool_approval), for as
+                # long as it runs: set by the run itself, so a request refused under
+                # the same id (a duplicate) never touches a live run's mark.
+                set_run_attended(request_id, _asks_a_person(attended, current_user, _live_config().auth.enabled))
+                try:
+                    async for ev in selected_agent.run_events(
+                        task, request_id, actual_session_id, 
+                        llm_override=llm_override, llm_profile_info_override=llm_profile_info
+                    ):
+                        # Here, not where the stream is read: the run waits at this
+                        # event until it is passed on, so no save of it comes first.
+                        _carry_title(selected_agent, ev, session_title)
+                        yield ev
+                finally:
+                    release_run_attended(request_id)
             
             try:
                 job = await job_manager.create_job(
@@ -2229,7 +2420,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             def take_the_session(ev: dict) -> None:
                 """The run's own stream holds a session the run creates, from its start event."""
                 nonlocal actual_session_id, held, refused
-                refused = refused or _refused_at_the_lock(ev)
+                refused = refused or _refused_before_the_run(ev)
                 if ev.get("type") == "start" and ev.get("session_id"):
                     actual_session_id = ev["session_id"]
                     if not held:
@@ -2270,27 +2461,34 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # NOTE: We do NOT cancel the job here! The job continues running in background.
                 # The job will be cancelled only via explicit /cancel endpoint.
                 
-                # Persist session if job is completed -- not one its run was refused:
-                # another run of this process has it, and the tracker holds that run's
-                # live state (a tool call without its result, say).
-                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
-                    if actual_session_id and _session_service:
-                        effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
-                        await _session_service.save_session(
-                            selected_agent,
-                            user_id,
-                            actual_session_id,
-                            selected_agent.name,
-                            effective_llm_profile,
-                            was_new_session
-                        )
+                # Persist session if job is completed -- not one its run was refused,
+                # nor one somebody holds after it (after_run): another run of this
+                # process has it, and the tracker holds that run's live state (a tool
+                # call without its result, say), or an append that saves it itself.
+                try:
+                    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED) and not refused:
+                        if actual_session_id and _session_service:
+                            effective_llm_profile = llm_profile or selected_agent.agent_config.default_llm_profile
+                            # Shielded: a client that leaves cancels the stream's scope,
+                            # and the save was cancelled again at its first await.
+                            with anyio.CancelScope(shield=True):
+                                await _session_service.save_session(
+                                    selected_agent,
+                                    user_id,
+                                    actual_session_id,
+                                    selected_agent.name,
+                                    effective_llm_profile,
+                                    was_new_session,
+                                    after_run=True,
+                                )
+                finally:
+                    # Whatever became of the save: skipped, the session stayed held.
+                    _let_go(selected_agent, held, user_id)
 
-                _let_go(selected_agent, held, user_id)
-
-                # Cleanup: release ownership only if job is done (a running
-                # job's stream may reconnect and must keep its mapping)
-                if job.status != JobStatus.RUNNING:
-                    release_request_user_tree(request_id)
+                    # Cleanup: release ownership only if job is done (a running
+                    # job's stream may reconnect and must keep its mapping)
+                    if job.status != JobStatus.RUNNING:
+                        release_request_user_tree(request_id)
 
         return _sse_response(
             event_stream(),
@@ -2309,6 +2507,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         request_id: Optional[str] = Query(default=None),
         force: bool = Query(default=False),
         session_title: Optional[str] = Query(default=None),
+        attended: bool = Query(default=False),
     ):
         """Stream agent events for a task (GET).
 
@@ -2321,6 +2520,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
+        - attended: the client shows the run's questions to the person who
+          started it (tool_approval asks there); default false
 
         Note: For long task texts, prefer POST /events to avoid URL length limits.
         """
@@ -2335,6 +2536,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             request_id=request_id,
             force=force,
             session_title=session_title,
+            attended=attended,
         )
 
     @app.post("/events")
@@ -2350,6 +2552,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         - request_id: Optional request ID — reconnects if it matches a
           running job, otherwise the new run is keyed under it (parity
           with POST /run; the guards of _validate_client_request_id apply)
+        - attended: true when the client shows the run's questions to the
+          person who started it (tool_approval asks there); default false
 
         This endpoint avoids URL length limits that affect GET /events
         when sending long task texts.
@@ -2367,6 +2571,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             request_id=body.get("request_id"),
             force=bool(body.get("force")),
             session_title=body.get("session_title"),
+            attended=body.get("attended") is True,
         )
 
     async def _refuse_foreign_request(request_id: str, current_user: Any, *, reaches_below: bool = False) -> None:
@@ -2597,11 +2802,13 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="Missing 'content' in body")
 
         if session_id:
-            # Ownership check before mutating someone else's session (IDOR).
-            await _verify_session_owner(session_id, current_user)
+            owner_agent = await _session_owner_agent(request, session_id, user_id)
+            # Ownership check before mutating someone else's session (IDOR) -- against the tracker the append
+            # writes, not the entry agent's (a session without an owner on disk passes there for anybody).
+            await _verify_session_owner(session_id, current_user, owner_agent._session_tracker)
             # Append directly to persisted session using agent method
             logger.debug("Appending to session %s: %.120s", session_id, content)
-            if not await _append_and_persist(agent, session_id, content, user_id, force):
+            if not await _append_and_persist(owner_agent, session_id, content, user_id, force):
                 raise HTTPException(status_code=404, detail="Session not found")
             return {"status": "appended", "session_id": session_id}
 
@@ -2643,15 +2850,70 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
         raise HTTPException(status_code=404, detail="Request not found or already completed")
 
+    @asynccontextmanager
+    async def _beside_the_runs(target_agent: Any, sid: str):
+        """The agent's session lock for a write no run makes -- an append, /undo's cut -- from before it reads the
+        session until its save is done. Yields None while it holds it, else the request id of the run that has the
+        session ("" when it cannot be named): the lock refuses at once while one owns it.
+
+        Beside the runs, such a write raced what a run of this process does with the session after its own end:
+        openai_api's AgentTurn puts back a turn its client never got and drops the conversation from the tracker
+        -- over the write, or between the write and its save, which then found nothing to write -- and a run that
+        took the session meanwhile had it read back from under it. Session presence does not keep them apart
+        (holds nest inside a process), and it may be off.
+
+        Taken as a writer: a run, a turn's put back or another write that asks
+        for the lock meanwhile waits for it instead of being refused.
+        """
+        tracker = target_agent._session_tracker
+        writer = f"write_{short_id()}"
+        if not await tracker.acquire_session_lock(sid, writer, timeout=5.0, writer=True):
+            yield tracker.check_session_locked(sid)[1] or ""
+            return
+        try:
+            yield None
+        finally:
+            await tracker.release_session_lock(sid, writer)
+
+    def _settling_agent(request: Request, sid: str) -> Any:
+        """The agent with a turn settling the session (openai_api's AgentTurn watches for appends while it does),
+        or None. It comes before the record, which names the agent of the last SAVED run: a turn whose run saved
+        nothing -- it failed on its way in -- puts back its own copy over whatever another agent's tracker took."""
+        registry = getattr(request.app.state, "tool_registry", None) or _app_registry
+        try:
+            names = list(registry.list()) if registry is not None else []
+        except Exception as e:  # noqa: BLE001 - no registry to ask, the record decides
+            logging.getLogger(__name__).debug("No agents to ask about %s: %s", sid, e)
+            names = []
+        for name in names:
+            candidate = _chat_agent(request, name)
+            if candidate is not None and candidate._session_tracker.watches_appends(sid):
+                return candidate
+        return None
+
+    async def _session_owner_agent(request: Request, sid: str, user_id: str) -> Any:
+        """The agent whose SessionTracker holds a stored session -- every agent carries its own, and a
+        conversation of openai_api runs on the agent its model names. Written through another agent's tracker, a
+        message was read back into a copy no run of the session looks at, and put back or saved over by the one
+        that does. The agent of a turn settling it (_settling_agent), else the one the record names, else the entry
+        agent: a session without a record, or whose agent is gone."""
+        settling = _settling_agent(request, sid)
+        if settling is not None:
+            return settling
+        ran_with = await _session_agent_name(sid, user_id)
+        return (_chat_agent(request, ran_with) if ran_with else None) or agent
+
     async def _append_and_persist(owner_agent: Any, sid: str, content: str, user_id: str,
                                   force: bool = False) -> bool:
         """Append a user message to a session no request of this process runs, and save it.
 
         The session is held for the append (session presence,
-        core/session_presence.py), and its copy in memory is re-read only when
+        core/session_presence.py), and its copy in memory is re-read when
         another process wrote the file -- a run woken by a direct message
         continues the session from disk, while re-reading unasked would undo
-        what a run of this process has not saved yet.
+        what a run of this process has not saved yet -- or when there is none:
+        a session this process saved and let go of. From reading it to its
+        save, the append holds the agent's session lock (_beside_the_runs).
 
         A session a run of THIS process has is not written beside the run: the
         message goes to the run, which reads it at its next step -- or, when the
@@ -2662,7 +2924,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """
         job_manager = get_background_job_manager()
         running = (await job_manager.active_sessions()).get(sid)
-        if running and running.get("request_id"):
+        # Another append or /undo holding the session is no run: waited for below (_beside_the_runs).
+        if running and running.get("request_id") and not owner_agent._session_tracker.held_by_a_writer(sid):
             run_id = running["request_id"]
             # `agent`, not owner_agent: a job on "default" runs on the app's default agent,
             # and owner_agent is the agent of the request the caller named -- its last run.
@@ -2679,20 +2942,43 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if refusal:
             raise HTTPException(status_code=409, detail=refusal)
         try:
-            if not await owner_agent.append_to_session(sid, content):
-                return False
-            if _session_service:
-                metadata = owner_agent._session_tracker.get_session_metadata(sid) or {}
-                await _session_service.save_session(
-                    owner_agent,
-                    user_id,
-                    sid,
-                    metadata.get("agent_name", owner_agent.name),
-                    metadata.get("llm_profile", owner_agent.agent_config.default_llm_profile),
-                    was_new_session=False
-                )
-                logging.getLogger(__name__).debug("Session %s persisted to disk after append", sid)
-            return True
+            async with _beside_the_runs(owner_agent, sid) as running:
+                if running is not None:
+                    # A run of this agent took the session since it was asked above: the message is its.
+                    if running and await owner_agent.append_user_message(running, content):
+                        return True
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Session {sid} is running -- what it saves would drop the message. "
+                               f"Try again once it is done.")
+                tracker = owner_agent._session_tracker
+                if not tracker.has_session(sid) and _session_service:
+                    # Not in memory, and the file unmoved since this process wrote it, so the claim read nothing: a
+                    # session this process saved and let go of (a settled openai_api turn does). Appended to
+                    # nothing, the conversation on screen was "not found".
+                    await _session_service.load_and_restore_session(owner_agent, user_id, sid)
+                if not await owner_agent.append_to_session(sid, content):
+                    return False
+                appended = tracker.get_session_messages(sid)[-1]
+                if _session_service:
+                    metadata = tracker.get_session_metadata(sid) or {}
+                    saved = await _session_service.save_session(
+                        owner_agent,
+                        user_id,
+                        sid,
+                        metadata.get("agent_name", owner_agent.name),
+                        metadata.get("llm_profile", owner_agent.agent_config.default_llm_profile),
+                        was_new_session=False
+                    )
+                    if not saved:
+                        # Answered "appended", the message was not on disk -- and left in memory, the next run's
+                        # save wrote it after all, beside the copy a client that heard the failure sent again.
+                        tracker.set_session_messages(
+                            sid, [message for message in tracker.get_session_messages(sid) if message is not appended])
+                        raise HTTPException(
+                            status_code=500, detail=f"Session {sid} could not be saved; the message was not appended.")
+                    logging.getLogger(__name__).debug("Session %s persisted to disk after append", sid)
+                return True
         finally:
             _let_go(owner_agent, held, user_id)
 
@@ -2716,9 +3002,22 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         """The agent a stored session ran with, or None while it has none.
 
         Read off the record, which is where a session's agent lives
-        (cli_utils/session_defaults.py says the same for the terminal).
+        (cli_utils/session_defaults.py says the same for the terminal) -- and
+        without taking it as seen (SessionManager.peek_session): the callers
+        claim the session next, and the claim re-reads the copy in memory only
+        when the file holds what this process has not seen. Loaded here, what
+        another process wrote meanwhile counted as seen: /undo cut the stale
+        copy's last exchange, an append was written onto it, and both saved it
+        over the other process's turn.
         """
-        return (await _session_record(sid, user_id)).get("agent_name") or None
+        if not _session_service or not _session_service.session_manager:
+            return None
+        try:
+            record = await _session_service.session_manager.peek_session(user_id, sid)
+        except Exception as e:  # noqa: BLE001 - a record that does not read names no agent, as _session_record
+            logging.getLogger(__name__).debug("No record for %s: %s", sid, e)
+            return None
+        return record.get("agent_name") or None
 
     async def _session_held(sid: str, user_id: str, system_config: Any) -> Optional[str]:
         """What holds *sid* ("running", ...), or None while nothing does.
@@ -2734,46 +3033,103 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         running = await get_background_job_manager().active_sessions()
         return "running" if sid in running else None
 
-    async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
-                                              force: bool = False) -> Any:
-        """Take the last exchange out of a session, and save what is left.
-
-        The mirror of _append_and_persist, claim and save included -- and the
-        cut itself is chat_actions.split_off_last_exchange, the one the
-        terminal chat uses, so both surfaces end a turn in the same place.
+    @asynccontextmanager
+    async def _held_for_a_write(owner_agent: Any, sid: str, user_id: str, force: bool, why: str):
+        """A session held for a write no run makes -- /undo's cut, a rewind of
+        the files its turns changed. Yields the conversation as the agent holds
+        it; ``why`` finishes the refusal ("what it is writing would ...").
 
         A session that is RUNNING is refused before anything is touched.
         _claim_session alone does not do it: holds nest inside a process, so a
         run of THIS process lets the claim through -- and then writes its whole
-        message list back when it finishes, putting the dropped exchange
-        straight back while the browser shows it gone.
+        message list back when it finishes (putting a dropped exchange straight
+        back while the browser shows it gone), or writes files while they are
+        put back.
         """
-        from .chat_actions import split_off_last_exchange
-
         held = await _session_held(sid, user_id, getattr(owner_agent, "system_config", None))
         if held and not force:
             raise HTTPException(
                 status_code=409,
-                detail=f"Session {sid} is {held} -- what it is writing "
-                       f"would put the exchange back. Try again once it is done.")
+                detail=f"Session {sid} is {held} -- {why}. Try again once it is done.")
 
         refusal, held = await _claim_session(owner_agent, sid, user_id, force)
         if refusal:
             raise HTTPException(status_code=409, detail=refusal)
         try:
+            async with _beside_the_runs(owner_agent, sid) as running:
+                if running is not None:
+                    # A run of this agent has it (session presence off, or it took the session since the check
+                    # above).
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Session {sid} is running -- {why}. Try again once it is done.")
+                tracker = owner_agent._session_tracker
+                messages = list(tracker.get_session_messages(sid) or [])
+                if not messages and _session_service:
+                    # The copy in memory can be empty although the record is not:
+                    # _claim_session re-reads only when the FILE moved, and a
+                    # session this process wrote and no longer holds looks
+                    # unchanged to it. Cutting that would answer "nothing to take
+                    # back" about a conversation that is plainly on screen.
+                    await _session_service.load_and_restore_session(owner_agent, user_id, sid)
+                    messages = list(tracker.get_session_messages(sid) or [])
+                yield messages
+        finally:
+            _let_go(owner_agent, held, user_id)
+
+    def _file_rewinder_or_503() -> Any:
+        from .file_rewind import file_rewinder
+
+        rewinder = file_rewinder()
+        if rewinder is None:
+            raise HTTPException(
+                status_code=503,
+                detail="File checkpoints are off: the file_checkpoints plugin is not loaded.")
+        return rewinder
+
+    def _rewind_refusal(report: dict) -> None:
+        """Raise what a rewind that changed nothing -- or not everything -- says."""
+        from .file_rewind import PARTIAL, REFUSED, UNKNOWN_CHECKPOINT
+
+        status = report.get("status")
+        if status == UNKNOWN_CHECKPOINT:
+            raise HTTPException(status_code=404, detail=report.get("text") or "No such checkpoint")
+        if status == REFUSED:
+            raise HTTPException(status_code=409, detail=report.get("text") or "Files not rewound")
+        if status == PARTIAL:
+            raise HTTPException(status_code=500, detail=report.get("text") or "Files partly rewound")
+
+    async def _drop_last_exchange_and_persist(owner_agent: Any, sid: str, user_id: str,
+                                              force: bool = False, files: Optional[dict] = None
+                                              ) -> tuple[Any, Optional[dict]]:
+        """Take the last exchange out of a session, and save what is left.
+        Returns (the question dropped or None, the file rewind's report or None).
+
+        The mirror of _append_and_persist, claim and save included -- and the
+        cut itself is chat_actions.split_off_last_exchange, the one the
+        terminal chat uses, so both surfaces end a turn in the same place.
+
+        ``files`` (``{"overwrite": bool}``) puts back the files the exchange
+        changed FIRST, under the same hold: a rewind that is refused (files
+        changed outside the agent) or goes only partly through leaves the
+        exchange where it is, so the person can look and try again.
+        """
+        from .chat_actions import split_off_last_exchange
+
+        rewinder = _file_rewinder_or_503() if files is not None else None
+        async with _held_for_a_write(owner_agent, sid, user_id, force,
+                                     "what it is writing would put the exchange back") as messages:
             tracker = owner_agent._session_tracker
-            messages = tracker.get_session_messages(sid) or []
-            if not messages and _session_service:
-                # The copy in memory can be empty although the record is not:
-                # _claim_session re-reads only when the FILE moved, and a
-                # session this process wrote and no longer holds looks
-                # unchanged to it. Cutting that would answer "nothing to take
-                # back" about a conversation that is plainly on screen.
-                await _session_service.load_and_restore_session(owner_agent, user_id, sid)
-                messages = tracker.get_session_messages(sid) or []
             kept, dropped = split_off_last_exchange(messages)
             if dropped is None:
-                return None
+                return None, None
+            report = None
+            if rewinder is not None:
+                report = await rewinder.rewind(
+                    user_id=user_id, session_id=sid, messages=messages, checkpoint=None,
+                    registry=getattr(owner_agent, "registry", None),
+                    overwrite=bool(files.get("overwrite")))
+                _rewind_refusal(report)
             tracker.set_session_messages(sid, kept)
             if _session_service:
                 metadata = tracker.get_session_metadata(sid) or {}
@@ -2781,7 +3137,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 # read defensively: Agent.agent_config may be None (the agent
                 # guards it itself), and reaching through it eagerly turns a
                 # /undo into a 500.
-                await _session_service.save_session(
+                saved = await _session_service.save_session(
                     owner_agent,
                     user_id,
                     sid,
@@ -2791,9 +3147,16 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                         "default_llm_profile", None) or "default",
                     was_new_session=False,
                 )
-            return dropped
-        finally:
-            _let_go(owner_agent, held, user_id)
+                if not saved:
+                    # Answered with the exchange gone while the record still has it -- and the cut left in
+                    # memory for the next save to write after all.
+                    tracker.set_session_messages(sid, messages)
+                    put_back = (report or {}).get("restored") or (report or {}).get("removed")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Session {sid} could not be saved; the exchange was not taken back"
+                               + (" -- its files WERE put back." if put_back else "."))
+            return dropped, report
 
     @app.post("/sessions")
     async def create_session():
@@ -2826,10 +3189,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
             logger.debug("Session append request for session_id=%s: %.120s", session_id, content)
 
-            # Ownership check before mutating someone else's session (IDOR).
-            await _verify_session_owner(session_id, current_user)
+            owner_agent = await _session_owner_agent(request, session_id, user_id)
+            # Ownership check before mutating someone else's session (IDOR) -- against the tracker the append
+            # writes, not the entry agent's (a session without an owner on disk passes there for anybody).
+            await _verify_session_owner(session_id, current_user, owner_agent._session_tracker)
 
-            if not await _append_and_persist(agent, session_id, content, user_id, force):
+            if not await _append_and_persist(owner_agent, session_id, content, user_id, force):
                 raise HTTPException(status_code=404, detail="Session not found")
 
             return {"status": "appended", "session_id": session_id}
@@ -3047,6 +3412,20 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             return None
         return candidate if isinstance(candidate, _Agent) else None
 
+    async def _chat_agent_the_caller_may_run(request: Request, agent_name: Optional[str]):
+        """_chat_agent, or None for an agent behind a role gate the caller does not pass.
+
+        Its plugin commands are derived from its tool allowlist -- what a gated
+        agent reaches, which the gate keeps from the caller as /agents/{name}/tools
+        does. The caller is resolved only when a gate is in play.
+        """
+        target = _chat_agent(request, agent_name)
+        if target is None or getattr(target, "min_role", None) is None or not config.auth.enabled:
+            return target
+        from .auth.agent_access import may_run_agent
+        caller = await _enforce_endpoint_security(request)
+        return target if may_run_agent(target.min_role, caller, config.auth) else None
+
     def _plugin_commands_for(agent) -> list:
         """What *agent* may run, empty for anything that cannot be asked."""
         if agent is None:
@@ -3086,7 +3465,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             logging.getLogger(__name__).warning("Could not list skills: %s", e)
             skills = []
 
-        plugin_commands = _plugin_commands_for(_chat_agent(request, agent))
+        plugin_commands = _plugin_commands_for(await _chat_agent_the_caller_may_run(request, agent))
         return {
             "commands": [
                 {"name": c.name, "aliases": list(c.aliases), "summary": c.summary,
@@ -3147,7 +3526,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         # The agent decides which plugin commands exist at all, so an
         # unnamed one leaves "/compact" the unknown command it was before.
         plugin_commands = _plugin_commands_for(
-            _chat_agent(request, (body or {}).get("agent_name")))
+            await _chat_agent_the_caller_may_run(request, (body or {}).get("agent_name")))
 
         result = resolve_line(line, skill_names, plugin_commands)
         payload = {"kind": result.kind, "name": result.name, "payload": result.payload}
@@ -3330,6 +3709,10 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         agent = _chat_agent(request, body.get("agent_name"))
         if agent is None:
             raise HTTPException(status_code=404, detail="no such agent")
+        # Its tools run with this agent's authorization, so its role gate holds
+        # here as it holds for /run -- answered as an agent that does not exist.
+        if _gate_refuses(agent, current_user):
+            raise HTTPException(status_code=404, detail="no such agent")
         match = match_plugin_command(name.lstrip("/"), _plugin_commands_for(agent))
         if match is None:
             raise HTTPException(
@@ -3341,6 +3724,32 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             session_id=session_id,
             user_id=getattr(current_user, "username", None))
         return {"name": match.qualified, "text": text}
+
+    async def _session_agent_for(request: Request, session_id: str, user_id: str,
+                                 agent_name: Optional[str], current_user: Any) -> Any:
+        """The agent whose tracker holds the session, the owner checked against it.
+
+        The agent the SESSION ran with, before the one the caller names:
+        every agent carries its own SessionTracker, so cutting the wrong one
+        leaves the exchange standing in the right one -- and its next save
+        writes it back. The caller's name is the fallback for a session that
+        has no record yet. A turn settling the session first, though: its
+        agent holds the copy that turn puts back (_settling_agent).
+
+        The owner is checked against the tracker the caller is about to write,
+        not the entry agent's: a session that is not persisted yet has no owner
+        on disk, and the default tracker does not know it either -- so that
+        check passes for anybody (the IDOR _verify_session_owner documents).
+        """
+        target_agent = _settling_agent(request, session_id)
+        if target_agent is None:
+            ran_with = await _session_agent_name(session_id, user_id)
+            target_agent = _chat_agent(request, ran_with or agent_name)
+        if target_agent is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        await _verify_session_owner(session_id, current_user,
+                                    getattr(target_agent, "_session_tracker", None))
+        return target_agent
 
     @app.post("/chat/undo")
     async def chat_undo(request: Request, force: bool = Query(default=False)):
@@ -3355,6 +3764,12 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         it in the input). Whether it carried a file is said, not sent: the
         browser attaches from the viewer's disk, and a data URL handed back
         would be a second, silent upload.
+
+        ``"files": true`` (`/undo files`) also puts back the files the
+        exchange changed, before it is dropped; ``"overwrite": true`` puts
+        back files changed outside the agent since as well. A rewind that is
+        refused answers 409 with what stands in the way, and the exchange
+        stays.
         """
         from .chat_actions import message_text, message_role
 
@@ -3369,26 +3784,14 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if not session_id or not isinstance(session_id, str):
             raise HTTPException(status_code=400, detail="'session_id' is required")
 
-        # The agent the SESSION ran with, before the one the caller names:
-        # every agent carries its own SessionTracker, so cutting the wrong
-        # one leaves the exchange standing in the right one -- and its next
-        # save writes it back. The caller's name is the fallback for a session
-        # that has no record yet.
-        ran_with = await _session_agent_name(session_id, user_id)
-        target_agent = _chat_agent(request, ran_with or body.get("agent_name"))
-        if target_agent is None:
-            raise HTTPException(status_code=404, detail="no such agent")
-        # Against the tracker this endpoint is about to write, not the entry
-        # agent's: a session that is not persisted yet has no owner on disk,
-        # and the default tracker does not know it either -- so that check
-        # passes for anybody (the IDOR _verify_session_owner documents).
-        await _verify_session_owner(session_id, current_user,
-                                    getattr(target_agent, "_session_tracker", None))
+        target_agent = await _session_agent_for(request, session_id, user_id, body.get("agent_name"),
+                                                current_user)
 
-        dropped = await _drop_last_exchange_and_persist(
-            target_agent, session_id, user_id, force)
+        files = {"overwrite": body.get("overwrite") is True} if body.get("files") is True else None
+        dropped, report = await _drop_last_exchange_and_persist(
+            target_agent, session_id, user_id, force, files=files)
         if dropped is None:
-            return {"session_id": session_id, "dropped": None}
+            return {"session_id": session_id, "dropped": None, "files": None}
         content = getattr(dropped, "content", None)
         return {
             "session_id": session_id,
@@ -3397,7 +3800,61 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                 "text": message_text(dropped),
                 "had_attachments": isinstance(content, list) and len(content) > 1,
             },
+            "files": report,
         }
+
+    @app.get("/chat/checkpoints")
+    async def chat_checkpoints(request: Request, session_id: str = Query(...),
+                               agent_name: Optional[str] = Query(default=None)):
+        """The file checkpoints of a session -- bare `/rewind`.
+
+        One per turn that changed files through the agent's file tools (the
+        file_checkpoints plugin records them), oldest first and numbered: the
+        number is what `/rewind <n>` takes. Read off the conversation as the
+        record has it, which is what the browser shows.
+        """
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        rewinder = _file_rewinder_or_503()
+        await _session_agent_for(request, session_id, user_id, agent_name, current_user)
+        record = await _session_record(session_id, user_id)
+        listing = await rewinder.checkpoints(user_id=user_id, session_id=session_id,
+                                             messages=record.get("messages") or [])
+        return {"session_id": session_id, **listing}
+
+    @app.post("/chat/rewind")
+    async def chat_rewind(request: Request, force: bool = Query(default=False)):
+        """Put the files back as they were before a checkpoint -- `/rewind <n>`.
+
+        Files only: the conversation stays as it is (`/undo files` takes the
+        last exchange and its files together). Body ``{"session_id",
+        "checkpoint": <n from /chat/checkpoints>, "overwrite": false}``. Held
+        like /undo's cut: refused while the session runs, since a run could
+        write files while they are put back. 409 when files were changed
+        outside the agent since (``overwrite`` puts them back anyway), 404 for
+        a number that names no checkpoint.
+        """
+        current_user = await _enforce_endpoint_security(request)
+        user_id = current_user.username if current_user else "anonymous"
+        body = await _parse_json_body(request)
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        session_id = body.get("session_id")
+        if not session_id or not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="'session_id' is required")
+        checkpoint = body.get("checkpoint")
+        if isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 1:
+            raise HTTPException(status_code=400, detail="'checkpoint' is required: a number /rewind lists")
+        rewinder = _file_rewinder_or_503()
+        target_agent = await _session_agent_for(request, session_id, user_id, body.get("agent_name"),
+                                                current_user)
+        async with _held_for_a_write(target_agent, session_id, user_id, force,
+                                     "it may write files while they are put back") as messages:
+            report = await rewinder.rewind(
+                user_id=user_id, session_id=session_id, messages=messages, checkpoint=checkpoint,
+                registry=getattr(target_agent, "registry", None), overwrite=body.get("overwrite") is True)
+        _rewind_refusal(report)
+        return {"session_id": session_id, **report}
 
     @app.get("/chat/context")
     async def chat_context(request: Request, session_id: str = Query(...),
@@ -3660,8 +4117,7 @@ def run() -> None:
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
     # Build the application (loads config internally)
-    cfg_path = str(Path(__file__).parents[2] / "config" / "config.yaml")
-    app_obj = build_app(cfg_path)
+    app_obj = build_app()
 
     # Get config from global ConfigService (already loaded in build_app)
     config = _config_service.get_config()

@@ -829,15 +829,49 @@
    * cosmetic -- the messages on screen are what the viewer would otherwise
    * keep reading as still being there.
    */
+  /**
+   * The words after /undo, /retry and /rewind -- chat_commands.parse_undo, the
+   * terminal's reading: "files", "overwrite", "force", for /rewind a number;
+   * a leading "--" is allowed. Unknown words come back in `errors`.
+   */
+  function parseUndoWords(payload, rewind) {
+    const request = { files: false, overwrite: false, force: false, checkpoint: null, errors: [] };
+    const allowed = rewind ? ['overwrite', 'force'] : ['files', 'overwrite', 'force'];
+    (payload || '').trim().split(/\s+/).filter(Boolean).forEach(function (token) {
+      let word = token.toLowerCase();
+      // "--files" is a word with dashes; "-1" is not checkpoint 1.
+      if (/^-{1,2}[a-z]+$/.test(word)) word = word.replace(/^-+/, '');
+      if (rewind && /^[0-9]+$/.test(word) && request.checkpoint === null) {
+        request.checkpoint = parseInt(word, 10);
+      } else if (allowed.indexOf(word) !== -1) {
+        request[word] = true;
+      } else {
+        request.errors.push(token);
+      }
+    });
+    if (rewind && request.checkpoint === null && request.overwrite) {
+      request.errors.push('overwrite needs a checkpoint number');
+    }
+    if (!rewind && request.overwrite && !request.files) request.errors.push('overwrite goes with files');
+    return request;
+  }
+
   async function cmdUndo(container, payload, retry) {
+    const name = retry ? '/retry' : '/undo';
     if (!currentSessionId) {
       addNote(container, 'Nothing to take back -- this chat has no session yet.');
+      return;
+    }
+    const words = parseUndoWords(payload, false);
+    if (words.errors.length) {
+      addNote(container, name + ' takes files, overwrite (with files) and force: ' +
+        name + ' files puts back the files the exchange changed too.');
       return;
     }
     // "force" the way agent-cli's --force means it: for a lock a crashed
     // process left behind. The server refuses a session that is running, and
     // without this there would be no way past a leftover.
-    const forced = (payload || '').trim().toLowerCase() === 'force';
+    const forced = words.force;
     // The session cut is this one, whatever the chat opens while the request runs.
     const cut = currentSessionId;
     let answer;
@@ -847,11 +881,19 @@
         // The session's own agent wins on the server; this is the fallback
         // for one that has no record yet.
         agent_name: currentAgentName() || null,
+        // The files the exchange changed are put back first; a rewind that is
+        // refused keeps the exchange, and the note says why.
+        files: words.files,
+        overwrite: words.overwrite,
       });
     } catch (e) {
+      if (e && e.status === 409 && words.files) {
+        addNote(container, e.message + '\n  The exchange stays.');
+        return;
+      }
       if (e && e.status === 409 && !forced) {
         addNote(container, e.message +
-          '\n  /undo force takes it anyway -- only for a lock a crashed process left behind: ' +
+          '\n  ' + name + ' force takes it anyway -- only for a lock a crashed process left behind: ' +
           'a live run writes the exchange back.');
         return;
       }
@@ -867,17 +909,19 @@
     const selector = window.selectorModule;
     const chosen = selector && selector.getCurrentLLMProfile();
     const asked = answer.dropped.text || '';
+    // What the file rewind reports (files put back, or why not), under either note.
+    const filesNote = answer.files && answer.files.text ? '\n' + answer.files.text : '';
     // null: another click overtook this reload -- a session opened, or one still
     // loading -- and the chat is no longer this one's to fill.
     const shown = currentSessionId === cut ? await window.sessionManager.loadSession(cut) : null;
     if (shown === null || currentSessionId !== cut) {
       // Its profile stands, and a question put back into its input would be asked there.
-      addNote(container, 'Dropped from ' + cut + ': ' + oneLine(asked, 70) +
+      addNote(container, 'Dropped from ' + cut + ': ' + oneLine(asked, 70) + filesNote +
         (retry ? '\n  Not put back into the input -- the chat has moved on meanwhile.' : ''));
       return;
     }
     if (chosen && selector.getCurrentLLMProfile() !== chosen) selector.setLLMProfile(chosen);
-    addNote(container, 'Dropped: ' + oneLine(asked, 70));
+    addNote(container, 'Dropped: ' + oneLine(asked, 70) + filesNote);
     if (!retry) return;
     // The text goes back into the input rather than being sent: a file that
     // came with it lives on the viewer's disk, and only they can attach it
@@ -893,6 +937,51 @@
     addNote(container, answer.dropped.had_attachments
       ? 'Ask it again with Ctrl+Enter -- the file it carried has to be attached again.'
       : 'Ask it again with Ctrl+Enter.');
+  }
+
+  /**
+   * `/rewind [n] [overwrite]` -- the files only, the conversation stays.
+   *
+   * Bare lists the checkpoints the server numbers (one per turn that changed
+   * files); a number puts the files back as they were before it. The text is
+   * the server's, the same lines agent-cli prints.
+   */
+  async function cmdRewind(container, payload) {
+    if (!currentSessionId) {
+      addNote(container, 'No session yet -- nothing has been recorded.');
+      return;
+    }
+    const words = parseUndoWords(payload, true);
+    if (words.errors.length) {
+      addNote(container, 'Usage: /rewind lists the checkpoints, /rewind <n> puts the files back as ' +
+        'they were before checkpoint n, /rewind <n> overwrite also the files changed outside the agent ' +
+        '(force: past a lock a crashed process left).');
+      return;
+    }
+    const agent = currentAgentName();
+    if (words.checkpoint === null) {
+      const listing = await getJSON('/chat/checkpoints?session_id=' +
+        encodeURIComponent(currentSessionId) +
+        (agent ? '&agent_name=' + encodeURIComponent(agent) : ''));
+      addNote(container, listing.text || 'No file changes are recorded for this session.');
+      return;
+    }
+    let answer;
+    try {
+      answer = await postJSON('/chat/rewind' + (words.force ? '?force=true' : ''), {
+        session_id: currentSessionId,
+        agent_name: agent || null,
+        checkpoint: words.checkpoint,
+        overwrite: words.overwrite,
+      });
+    } catch (e) {
+      if (e && (e.status === 409 || e.status === 404)) {
+        addNote(container, e.message);
+        return;
+      }
+      throw e;
+    }
+    addNote(container, answer.text || 'Files rewound.');
   }
 
   /**
@@ -1338,6 +1427,7 @@
       last: function () { return cmdLast(container); },
       undo: function () { return cmdUndo(container, payload, false); },
       retry: function () { return cmdUndo(container, payload, true); },
+      rewind: function () { return cmdRewind(container, payload); },
       export: function () { return cmdExport(container, payload); },
       model: function () { return cmdModel(container, payload); },
       copy: function () { return cmdCopy(container); },
@@ -2344,6 +2434,7 @@
       registerNode(parentId, null, virtualParent, depthLevel - 1);
     }
     
+    let row = null;  // the row this line went to, for a question's buttons (syncQuestionActions)
     if (ev.phase === 'start') {
       if (activeOperations.has(operationKey)) {
         const existing = activeOperations.get(operationKey);
@@ -2351,6 +2442,7 @@
         const time = existing.querySelector('.progress-time');
         if (msg) msg.textContent = ev.message || 'Starting...';
         if (time) time.textContent = formatTime(ev.timestamp);
+        row = existing;
       } else {
         const operationDiv = createTreeOperationDiv(operationKey, ev, depthLevel, parentId);
         
@@ -2362,6 +2454,7 @@
         if (requestId) {
           registerNode(requestId, parentId, operationDiv, depthLevel);
         }
+        row = operationDiv;
       }
     } else if (ev.phase === 'progress') {
       let operationDiv = activeOperations.get(operationKey);
@@ -2383,6 +2476,7 @@
         if (messageSpan) messageSpan.textContent = ev.message || 'In progress...';
         if (timeSpan) timeSpan.textContent = formatTime(ev.timestamp);
       }
+      row = operationDiv;
     } else if (ev.phase === 'end') {
       let operationDiv = activeOperations.get(operationKey);
       // If END arrives before START was processed, create the operation now
@@ -2403,6 +2497,7 @@
       operationDiv.classList.add('completed');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up completed operations
+      row = operationDiv;
     } else if (ev.phase === 'error') {
       let operationDiv = activeOperations.get(operationKey);
       // If ERROR arrives before START was processed, create the operation now
@@ -2423,7 +2518,211 @@
       operationDiv.classList.add('error');
       activeOperations.delete(operationKey);
       // Keep tree structure intact for folding - don't clean up errored operations
+      row = operationDiv;
     }
+    syncQuestionActions(row, ev);
+  }
+
+  /**
+   * The answer a question needs, on the row that asks it.
+   *
+   * A run asks the person watching it with a status line whose meta names the question
+   * and where the answer goes: `meta.tool_approval` (a pre_tool_call hook asks whether a
+   * call may run) or `meta.ask_user` (the model asks something). The box stands while the
+   * row asks; the row's last line (end or error: answered, denied, timed out) takes it
+   * down, in every tab that shows the run. The asker sends the question again now and
+   * then, so a page reloaded mid-question gets its box back with the next line.
+   *
+   * The answer goes to the URL the line names -- a plugin's answer route on this server,
+   * nothing else -- with the page's own sign-in, as every other request of the chat.
+   */
+  function syncQuestionActions(row, ev) {
+    if (!row) return;
+    const open = row.querySelector(':scope > .question-actions');
+    if (ev.phase === 'end' || ev.phase === 'error') {
+      if (open) open.remove();
+      return;
+    }
+    if (open || !ev.meta) return;
+    for (const [key, build] of [['tool_approval', approvalBox], ['ask_user', askUserBox]]) {
+      const ask = ev.meta[key];
+      // A plugin's answer route and nothing else: `/plugins/../api/…` would reach any route.
+      if (!ask || typeof ask.id !== 'string' || typeof ask.answer_url !== 'string'
+          || !/^\/plugins\/[A-Za-z0-9_-]+\/answer$/.test(ask.answer_url)) continue;
+      row.appendChild(build(ask));
+      return;
+    }
+  }
+
+  /**
+   * Post the answer to a question. The controls stay off once it was taken, or once
+   * nothing waits for it any more (404); any other refusal leaves them for a second try.
+   */
+  function sendAnswer(ask, body, controls, note, label) {
+    controls.forEach((c) => { c.disabled = true; });
+    note.textContent = 'Sending…';
+    return Promise.resolve()
+      .then(() => postJSON(ask.answer_url, Object.assign({ question_id: ask.id }, body)))
+      .then(() => { note.textContent = `Answered: ${label}`; }, (err) => {
+        note.textContent = `Not taken: ${(err && err.message) || String(err)}`;
+        if (!err || err.status !== 404) controls.forEach((c) => { c.disabled = false; });
+      });
+  }
+
+  /** tool_approval's box: the call's arguments, a reason for Deny, the decisions offered. */
+  function approvalBox(ask) {
+    const box = document.createElement('div');
+    box.className = 'question-actions approval-actions';
+    if (typeof ask.warning === 'string' && ask.warning) {
+      // what allowing gives up: a spawn whose calls no approval reaches
+      const warning = document.createElement('div');
+      warning.className = 'approval-warning';
+      warning.textContent = ask.warning;
+      box.appendChild(warning);
+    }
+    if (ask.arguments_cut) {
+      // every argument is there by name; only long values lost their middle
+      const warn = document.createElement('div');
+      warn.className = 'approval-cut';
+      warn.textContent = 'Long values are shortened in the middle -- check what the call writes before you allow it.';
+      box.appendChild(warn);
+    }
+    if (ask.arguments) {
+      const args = document.createElement('pre');
+      args.className = 'approval-arguments';
+      args.textContent = ask.arguments;  // what the model chose: data, never markup
+      box.appendChild(args);
+    }
+    const bar = document.createElement('div');
+    bar.className = 'approval-bar';
+    const reason = document.createElement('input');
+    reason.type = 'text';
+    reason.className = 'pk-input approval-reason';
+    reason.maxLength = 1000;
+    reason.placeholder = 'Why not (sent to the agent with Deny)';
+    const note = document.createElement('span');
+    note.className = 'approval-note';
+    // the answers the question offers: a script is allowed call by call, never for the session
+    const offered = Array.isArray(ask.decisions) ? ask.decisions : ['allow_once', 'allow_session', 'deny'];
+    const choices = [['allow_once', 'Allow once'], ['allow_session', 'Allow for this session'], ['deny', 'Deny']]
+      .filter(([decision]) => offered.includes(decision));
+    const buttons = choices.map(([decision, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `pk-btn pk-btn--sm${decision === 'deny' ? ' pk-btn--danger' : (decision === 'allow_once' ? ' pk-btn--primary' : '')} approval-${decision}`;
+      button.textContent = label;
+      button.addEventListener('click', () => sendAnswer(
+        ask, { decision, reason: reason.value || '' }, [...buttons, reason], note, label));
+      bar.appendChild(button);
+      return button;
+    });
+    bar.append(reason, note);
+    box.appendChild(bar);
+    return box;
+  }
+
+  /**
+   * ask_user's box: the model's question, its options -- a click sends one, boxes to tick
+   * where several may be picked -- and a field for an answer in one's own words, which
+   * goes along with a picked option too.
+   */
+  function askUserBox(ask) {
+    const box = document.createElement('div');
+    box.className = 'question-actions ask-user-actions';
+    const question = document.createElement('div');
+    question.className = 'ask-user-question';
+    question.textContent = typeof ask.question === 'string' ? ask.question : '';  // the model's text: data, never markup
+    box.appendChild(question);
+    const options = Array.isArray(ask.options) ? ask.options.filter((o) => typeof o === 'string') : [];
+    const multi = ask.multi_select === true && options.length > 0;
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.className = 'pk-input ask-user-text';
+    text.maxLength = 4000;
+    text.placeholder = options.length ? 'Or answer in your own words' : 'Your answer';
+    const note = document.createElement('span');
+    note.className = 'approval-note';
+    const controls = [text];
+    const ticks = [];
+    const send = (choices, label) => sendAnswer(ask, { choices, text: text.value.trim() }, controls, note, label);
+    if (options.length) {
+      const list = document.createElement('div');
+      list.className = 'ask-user-options';
+      options.forEach((option) => {
+        if (multi) {
+          const label = document.createElement('label');
+          label.className = 'ask-user-option';
+          const tick = document.createElement('input');
+          tick.type = 'checkbox';
+          tick.value = option;
+          const caption = document.createElement('span');
+          caption.textContent = option;
+          label.append(tick, caption);
+          ticks.push(tick);
+          controls.push(tick);
+          list.appendChild(label);
+        } else {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'pk-btn pk-btn--sm ask-user-option';
+          button.textContent = option;
+          button.addEventListener('click', () => send([option], option));
+          controls.push(button);
+          list.appendChild(button);
+        }
+      });
+      box.appendChild(list);
+    }
+    const bar = document.createElement('div');
+    bar.className = 'approval-bar';
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'pk-btn pk-btn--sm pk-btn--primary ask-user-send';
+    submit.textContent = 'Send';
+    submit.addEventListener('click', () => {
+      const picked = ticks.filter((t) => t.checked).map((t) => t.value);
+      const typed = text.value.trim();
+      if (!picked.length && !typed) {
+        note.textContent = multi ? 'Tick an option or write an answer.' : 'Write an answer first.';
+        return undefined;
+      }
+      return send(picked, picked.concat(typed ? [typed] : []).join(', '));
+    });
+    // Enter sends what is typed (and ticked), as the Send button does
+    text.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      if (!submit.disabled) submit.click();
+    });
+    controls.push(submit);
+    bar.append(text, submit, note);
+    box.appendChild(bar);
+    return box;
+  }
+
+  /**
+   * A tool call that failed without a line of its own: a pre_tool_call hook blocked it,
+   * or the framework refused it (unknown tool, arguments that are no JSON). Such a call
+   * opens no status scope and sends no tool_call event, so without this line it was
+   * nowhere on the page while the run went on -- only a reload showed it, as a stored
+   * result. A call that ran and raised has its row already (its scope ended in an
+   * error, and the event names the row's request id): nothing is added to it.
+   */
+  function toolErrorLine(view, data) {
+    if (data.request_id && chatContainer
+        && chatContainer.querySelector(`.operation-progress[data-request-id="${CSS.escape(data.request_id)}"]`)) return;
+    const host = statusBodyFor(view);
+    if (!host) return;
+    const line = createTreeOperationDiv('', {
+      server: data.tool || 'tool', message: `${data.blocked ? 'blocked' : 'failed'}: ${data.error || ''}`,
+      timestamp: new Date().toISOString(),
+    }, 0, null);
+    const icon = line.querySelector('.progress-icon');
+    if (icon) icon.innerHTML = '<div class="error-mark">✕</div>';
+    line.classList.add('error');
+    // why a hook stopped the call is what the reader needs: shown whole, not cut to a row
+    if (data.blocked) line.classList.add('blocked');
+    host.appendChild(line);
   }
 
   function formatTime(ts) {
@@ -2572,6 +2871,9 @@
       const operationDiv = activeOperations.get(key);
       if (!operationDiv) return;
       activeOperations.delete(key);
+      // a question whose last line never came waits for nobody any more
+      const asking = operationDiv.querySelector(':scope > .question-actions');
+      if (asking) asking.remove();
       const iconSpan = operationDiv.querySelector('.progress-icon');
       const line = operationDiv.querySelector('.progress-line');
       if (iconSpan) iconSpan.innerHTML = '<div class="open-mark">⋯</div>';
@@ -3067,6 +3369,9 @@
         break;
       case 'tool_result':
         toolDetail(view, data, 'result', data.result, true);
+        break;
+      case 'tool_error':
+        toolErrorLine(view, data);
         break;
       case 'final': {
         // The answer is here, so no call is in flight any more: what the run says while
@@ -3606,6 +3911,7 @@
       case 'reasoning_delta':
       case 'tool_call':
       case 'tool_result':
+      case 'tool_error':
         renderRunEvent(blk, data);
         break;
       case 'thinking_delta':
@@ -3997,6 +4303,8 @@
         if (selectedLLMProfile) {
           formData.append('llm_profile', selectedLLMProfile);
         }
+        // A person reads this run and can answer what it asks (syncQuestionActions).
+        formData.append('attended', 'true');
         
         // Add current session ID if exists (to continue existing session)
         if (currentSessionId) {
@@ -4082,6 +4390,8 @@
       }
       if (selectedAgent) postBody.agent_name = selectedAgent;
       if (selectedLLMProfile) postBody.llm_profile = selectedLLMProfile;
+      // A person reads this run and can answer what it asks (syncQuestionActions).
+      postBody.attended = true;
 
       let lost = false;  // the connection broke before the run's end
       // `stop` ENDS the connection, where letting go of a finished run only stops

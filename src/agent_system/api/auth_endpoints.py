@@ -31,6 +31,7 @@ from agent_system.auth.models import (
     APIKeyResponse,
 )
 from agent_system.auth.database import get_db, PasswordChangedMeanwhile, UserDatabase
+from agent_system.config.models import RegistrationConfig
 # Module import on purpose: the expiry values are rebound by
 # set_jwt_config() at startup. A from-import copies the value at import
 # time, so tokens were issued with the module DEFAULTS (7d/30d) instead of
@@ -98,13 +99,22 @@ class MessageResponse(BaseModel):
     detail: Optional[str] = None
 
 
+def registration_settings(request: Request) -> RegistrationConfig:
+    """auth.registration of the running app; the defaults when it carries no config."""
+    auth = getattr(getattr(request.app.state, "config", None), "auth", None)
+    settings = getattr(auth, "registration", None)
+    return settings if isinstance(settings, RegistrationConfig) else RegistrationConfig()
+
+
 @router.post("/register", response_model=User, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserRegister,
     db: UserDatabase = Depends(get_db),
+    settings: RegistrationConfig = Depends(registration_settings),
 ) -> User:
     """
-    Register a new user -- always a plain, active ``user``.
+    Register a new user, as auth.registration says: refused when it is disabled,
+    created inactive when an admin has to approve it, with its default role.
 
     Reachable without login, so the caller chooses nothing about its own
     privileges: role and is_active are not part of the request (422).
@@ -112,9 +122,13 @@ async def register(
     Raises:
         HTTPException: If username or email already exists
     """
+    if not settings.enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Self-registration is disabled on this server")
     try:
         user_in_db = db.create_user(UserCreate(
-            **user_data.model_dump(), role=UserRole.USER, is_active=True))
+            **user_data.model_dump(), role=UserRole(settings.default_role),
+            is_active=not settings.require_approval))
         logger.info(f"User registered: {user_in_db.username}")
 
         # Convert to User (remove sensitive data)
@@ -182,7 +196,7 @@ async def login(
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive"
+            detail="User account is inactive -- a new account may still need an administrator's activation"
         )
 
     # Create access token

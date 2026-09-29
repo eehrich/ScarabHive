@@ -41,7 +41,18 @@ class ModelCapabilitiesConfig(BaseModel):
     audio_input: bool = False
     video_input: bool = False
     streaming: bool = True
+    # JSON mode ("any JSON object"). NOT READ: structured output sends native JSON
+    # mode only to a model declaring structured_output below -- the catalogue's
+    # json_mode values were never verified, and Gemini before 3 refuses JSON mode
+    # beside tools just as it refuses a schema there.
     json_mode: bool = False
+    # The backend constrains the answer to a caller's JSON schema, and takes plain
+    # JSON mode -- ALSO in a request that carries tools, since an agent asks with
+    # its tools on every step (Gemini before 3 refuses that combination: leave it
+    # false there). Unset means no: a structured request to this model fails with
+    # StructuredOutputUnsupported, or falls back to prompt + validation if the
+    # caller allows it (openai_api always does).
+    structured_output: bool = False
 
     # API type support (OpenAI specific)
     supported_api_types: Optional[List[str]] = None  # e.g. ['chat_completions', 'realtime']
@@ -951,6 +962,16 @@ class AgentMetadata(BaseModel):
     # - "both": Visible in UI AND available as tool
     # - "private": Neither UI nor tool (for testing/experimental agents)
 
+    # Role gate: the lowest account role that may RUN this agent -- from the UI,
+    # POST /run and /events, as a sub-agent (SAM), as another agent's tool, from a
+    # stategraph machine. None (the default) is no gate, exactly as before.
+    # Enforced only while auth is enabled (auth/agent_access.py): without
+    # accounts there is no role to compare. Inside agent-cli and agent-run
+    # (agent_access.local_operator_trusted) their default user "cli_user" passes
+    # every gate while no account holds that name; in the API process it is
+    # refused like any name without an account.
+    min_role: Optional[Literal["guest", "user", "admin"]] = None
+
 
 class ToolServerConfig(BaseModel):
     """tool server configuration (matches type comment in mcp.yaml for default_config)"""
@@ -1320,6 +1341,21 @@ class PluginSecurityConfig(BaseModel):
     ])
 
 
+class RegistrationConfig(BaseModel):
+    """Self-registration through POST /auth/register, which is reachable without login.
+
+    The defaults keep what the endpoint always did: open, the account active at once,
+    role user."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # New accounts start inactive until an admin activates them (the user management
+    # panel, POST /admin/users/{id}/activate, agent-cli users update NAME --activate).
+    require_approval: bool = False
+    # Never admin: whoever reaches the endpoint chooses nothing about their privileges.
+    default_role: Literal["guest", "user"] = "user"
+
+
 class AuthConfig(BaseModel):
     """Authentication and authorization configuration.
     
@@ -1334,6 +1370,10 @@ class AuthConfig(BaseModel):
     """
     enabled: bool = False  # Master switch for authentication system
     secret_key: str = "CHANGE_THIS_SECRET_KEY_IN_PRODUCTION"
+    # A published signing key (this default, the development key the repository ships) logs an
+    # error at startup; true refuses to start with it. Empty and short keys are always refused.
+    reject_default_secret_key: bool = False
+    registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30  # Refresh token valid for 30 days

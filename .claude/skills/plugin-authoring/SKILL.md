@@ -86,8 +86,8 @@ Every link must hold; almost every one fails **silently**:
    Patterns: `instance/*`, `instance`, `instance/<full tool name>`, fnmatch.
    **The tool name carries the instance prefix:** `coder_fs/coder_fs_semantic_search`
    — `coder_fs/semantic_search` silently matches nothing.
-4. A second instance (`workspace_file_ops`, `type: file_ops`) has **different tool
-   names** and needs its own allowlist entry.
+4. A second instance (`workspace_file_ops`, `type: file_ops`, shipped disabled) has
+   **different tool names** and needs its own allowlist entry.
 5. Lists: without prefixes they replace the inherited list, `+x`/`!x` merge,
    mixing both → ValueError.
 

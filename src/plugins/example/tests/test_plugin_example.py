@@ -541,7 +541,6 @@ class TestModernPattern:
     @pytest.mark.asyncio
     async def test_method_names_match_tools(self, example_server):
         """Test that all tool methods follow naming convention with prefix stripping."""
-        import asyncio
         tools = example_server.get_tools()
         
         for tool in tools:
@@ -557,5 +556,5 @@ class TestModernPattern:
             assert callable(method)
             
             # Should be async
-            assert asyncio.iscoroutinefunction(method), \
+            assert inspect.iscoroutinefunction(method), \
                 f"Method {method_name} should be async"

@@ -8,6 +8,7 @@ It provides a clean interface for session restoration and persistence.
 import asyncio
 import logging
 import weakref
+from uuid import uuid4
 from typing import List, Dict, Any, Optional
 
 from agent_system.services.session_manager import SessionDeletedError, SessionPermissionError, SessionNotFoundError
@@ -107,6 +108,16 @@ def is_ephemeral_session(session_id: Optional[str]) -> bool:
     return bool(session_id) and str(session_id).startswith(EPHEMERAL_SESSION_PREFIX)
 
 
+def _runs_below(tracker: Any, session_id: str) -> Optional[str]:
+    """The session *session_id* runs below, for the save that makes its record -- the run's own or a checkpoint --
+    or None. An agent called as a tool runs on a session of its own below its caller's (Agent.tool_session_id; its
+    metadata names the caller's), and such a record is filed below it, as a sub-agent manager's sub-session is:
+    hidden from the session list, never woken."""
+    metadata = tracker.get_session_metadata(session_id) if hasattr(tracker, "get_session_metadata") else None
+    parent = metadata.get("parent_session_id") if isinstance(metadata, dict) else None
+    return parent if isinstance(parent, str) and parent else None
+
+
 class SessionService:
     """Service for managing session loading, restoration, and saving."""
 
@@ -152,17 +163,16 @@ class SessionService:
         try:
             session_data = await self.session_manager.load_session(user_id, session_id)
 
-            if not session_data.get("messages"):
-                logger.debug(f"[SESSION] Session {session_id} found but has no messages")
-                return True, 0
-
+            # A record with no messages is read in like any other -- its metadata and vars included. Left out,
+            # a copy in memory that another process emptied since (/undo down to nothing) stayed, and the next
+            # save wrote it back.
             # Convert dict messages to ChatMessage objects
             from agent_system.llm.models import ChatMessage
             messages_objects = []
 
             from agent_system.utils.json_utils import history_safe_tool_calls
 
-            for msg_dict in session_data["messages"]:
+            for msg_dict in session_data.get("messages") or []:
                 try:
                     # Sanitize on restore: invalid arguments JSON in persisted
                     # tool calls poisons every later request of the session.
@@ -202,6 +212,12 @@ class SessionService:
                             agent._session_tracker.set_session_template_vars(session_id, default_vars)
                             logger.debug(f"[SESSION] Initialized session template_vars from agent config defaults: {list(default_vars.keys())}")
 
+            # In the tracker now: what the load read is what this process has (changed_on_disk). Not allowed
+            # to turn the restore into a failure: open_for_run would take the session for a new one and drop it.
+            try:
+                self.session_manager.mark_seen(session_id)
+            except Exception as e:  # noqa: BLE001 - a stamp missed means a guess by length at the next claim
+                logger.warning("[SESSION] Could not mark %s as seen: %s", session_id, e)
             logger.debug(f"[SESSION] Loaded session {session_id} with {len(messages_objects)} messages")
             return True, len(messages_objects)
 
@@ -218,7 +234,7 @@ class SessionService:
             return False, 0
 
     async def open_for_run(self, agent, user_id: str, session_id: str, llm_profile: str,
-                           in_use: bool = False) -> bool:
+                           in_use: bool = False, holding: str | None = None) -> bool:
         """Ready *session_id* on *agent* for a run; returns whether it existed.
 
         A stored session is restored (conversation, its context_vars). A new
@@ -246,14 +262,34 @@ class SessionService:
         One step for /run, /events, agent-cli and agent-run. Written out per
         entry point, a new session got the agent's template_vars in three of
         five. Raises SessionPermissionError for another user's session.
+
+        The read and what it puts into the tracker happen under the agent's
+        session lock, taken as a writer (acquire_session_lock(writer=True)): an
+        append or /undo that saves meanwhile is waited for, and one that comes
+        after waits for this -- read between them, the file lacked the
+        appended message and the restore put the tracker back over it, for the
+        run's save to write. A run of this agent that has the lock refuses it:
+        the session is that run's, whatever the caller's *in_use* said.
+        *holding*: the request id under which the caller holds the lock itself
+        (openai_api's AgentTurn takes it before it opens).
         """
         tracker = agent._session_tracker
-        if in_use and tracker.check_session_locked(session_id)[0]:
-            owner = await self.session_manager._find_session_owner_async(session_id)
-            if owner is not None and owner != user_id:
-                raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
-            tracker.mark_opened(session_id)
-            return True
+        opener = None
+        if holding is None or tracker.check_session_locked(session_id) != (True, holding):
+            opener = f"open_{uuid4().hex[:12]}"
+            if not await tracker.acquire_session_lock(session_id, opener, timeout=5.0, writer=True):
+                owner = await self.session_manager._find_session_owner_async(session_id)
+                if owner is not None and owner != user_id:
+                    raise SessionPermissionError(f"User {user_id} doesn't own session {session_id}")
+                tracker.mark_opened(session_id)
+                return True
+        try:
+            return await self._open(agent, tracker, user_id, session_id, llm_profile, in_use)
+        finally:
+            if opener is not None:
+                await tracker.release_session_lock(session_id, opener)
+
+    async def _open(self, agent, tracker, user_id: str, session_id: str, llm_profile: str, in_use: bool) -> bool:
         exists, _ = await self.load_and_restore_session(agent, user_id, session_id)
         if not exists and not in_use:
             # A title the first run was given and never wrote (it saved nothing):
@@ -287,11 +323,27 @@ class SessionService:
         return lock
 
     async def save_session(self, agent, user_id: str, session_id: str, agent_name: str, llm_profile: str,
-                           was_new_session: bool, title: Optional[str] = None) -> bool:
-        """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written."""
+                           was_new_session: bool, title: Optional[str] = None,
+                           after_run: bool = False) -> bool:
+        """_save_session, one write of the session at a time (save_lock). An ephemeral session is not written.
+
+        ``after_run``: a save that follows a run the caller started (the API's save after /run and /events,
+        openai_api's kept turn, a sub-agent manager's after its sub-agent). The run saves at its end and then
+        lets go of the agent's session lock; whoever holds it now -- another run, whose live state the tracker
+        holds (an assistant tool call without its result), an append or /undo that saves itself, or the run
+        itself, not finished yet (a client that left mid-stream) -- is left the session, and nothing is written
+        (False). Asked under the save lock, right before the messages are read: a run that takes the session
+        later finds this save's state, not the other way round. Not for a save made under the lock by the one
+        who holds it -- a run's own, a put back, an append: it turns every holder away, the caller too."""
         if is_ephemeral_session(session_id):
             return False
         async with self.save_lock(session_id):
+            if after_run:
+                locked, owner = agent._session_tracker.check_session_locked(session_id)
+                if locked:
+                    logger.info("[SESSION] %s is held by request %s; the save after a run leaves it to that one",
+                                session_id, owner)
+                    return False
             return await self._save_session(agent, user_id, session_id, agent_name, llm_profile,
                                             was_new_session, title)
 
@@ -374,7 +426,8 @@ class SessionService:
                         user_id=actual_user_id,
                         title=title,
                         agent_name=agent_name,
-                        llm_profile=llm_profile
+                        llm_profile=llm_profile,
+                        parent_session_id=_runs_below(agent._session_tracker, session_id),
                     )
                 except ValueError as create_err:
                     if "already exists" in str(create_err):
@@ -558,6 +611,7 @@ class SessionService:
                         title=title,
                         agent_name=agent_name,
                         llm_profile=llm_profile,
+                        parent_session_id=_runs_below(tracker, session_id),
                     )
                 except ValueError:
                     # Race: session was created in the meantime — fall back to load
@@ -590,17 +644,25 @@ class SessionService:
             logger.debug(f"[CHECKPOINT] Failed for session {session_id}: {e}")
             return False
 
-    def start_checkpoint_loop(self, agent, user_id: str, session_id: str) -> None:
+    def start_checkpoint_loop(self, agent, user_id: str, session_id: str) -> Optional[asyncio.Task]:
         """Start a background task that periodically checkpoints this session.
 
         Idempotent: a second call for the same session_id is a no-op as long as
         the previous loop is still running.
+
+        Returns the loop THIS call started, or None -- the one its caller stops
+        (``stop_checkpoint_loop(..., started=...)``). Stopped by the session id
+        alone, a run stopped whichever loop stood there: a run nested in another
+        on the same session (an agent called as a tool ran on its caller's
+        session until it got one of its own, Agent.tool_session_id) ended by
+        stopping the outer run's loop, which then checkpointed nothing for the
+        rest of its run.
         """
         if self.checkpoint_interval_seconds <= 0:
-            return
+            return None
         existing = self._checkpoint_tasks.get(session_id)
         if existing is not None and not existing.done():
-            return
+            return None
 
         interval = self.checkpoint_interval_seconds
 
@@ -616,17 +678,29 @@ class SessionService:
             task = asyncio.create_task(_loop(), name=f"session-checkpoint-{session_id}")
         except RuntimeError:
             # No running event loop (e.g. unit test in sync context)
-            return
+            return None
         self._checkpoint_tasks[session_id] = task
+        return task
 
-    async def stop_checkpoint_loop(self, session_id: str, final_checkpoint_agent=None, final_checkpoint_user_id: Optional[str] = None) -> None:
+    async def stop_checkpoint_loop(self, session_id: str, final_checkpoint_agent=None,
+                                   final_checkpoint_user_id: Optional[str] = None,
+                                   started: Optional[asyncio.Task] = None) -> None:
         """Stop the background checkpoint loop for this session.
+
+        ``started``: the loop a caller started (``start_checkpoint_loop``'s
+        answer) -- only that one is stopped, and the session's entry only while
+        it still is that one. Without it, whatever loop runs for the session.
 
         If ``final_checkpoint_agent`` is provided, runs one last checkpoint
         synchronously after cancelling the loop — useful to flush the final
         pre-save state when a request is winding down.
         """
-        task = self._checkpoint_tasks.pop(session_id, None)
+        if started is None:
+            task = self._checkpoint_tasks.pop(session_id, None)
+        else:
+            task = started
+            if self._checkpoint_tasks.get(session_id) is started:
+                del self._checkpoint_tasks[session_id]
         if task is not None and not task.done():
             task.cancel()
             try:

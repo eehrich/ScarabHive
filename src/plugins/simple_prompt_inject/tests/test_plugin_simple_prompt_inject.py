@@ -644,6 +644,24 @@ class TestTemplateRendering:
         assert injected[0].content == "Bad syntax {% if %}"
 
     @pytest.mark.asyncio
+    async def test_a_text_without_template_syntax_is_the_same_with_and_without_vars(
+            self, make_plugin, make_context, mock_agent_with_session):
+        """Without session vars the text skips Jinja; with them it is rendered.
+        For a text without template syntax both must give the text itself,
+        trailing newline included -- `prompt_text: |` ends in one, and a text
+        that changed when the first variable appeared moved the head behind
+        the system prompt mid-session."""
+        text = "Line one.\nLine two.\n"
+        p = make_plugin(text, position="after_system", role="system")
+
+        without = await p.inject_prompt(make_context())
+        with_vars = await p.inject_prompt(make_context(agent=mock_agent_with_session))
+
+        rendered = [[m.content for m in result.context.messages if m.injected_by == "simple_prompt_inject"]
+                    for result in (without, with_vars)]
+        assert rendered == [[text], [text]], rendered
+
+    @pytest.mark.asyncio
     async def test_plain_text_no_vars_injected_as_is(self, plugin, make_context):
         """Plain text without Jinja2 syntax still works (no agent → no vars)."""
         ctx = make_context()

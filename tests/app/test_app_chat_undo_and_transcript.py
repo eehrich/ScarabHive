@@ -169,6 +169,96 @@ class TestUndo:
         assert "running" in response.text
         assert len(await _messages_on_disk(api)) == 2
 
+    async def test_a_session_a_run_of_this_agent_has_is_refused_by_its_lock(self, api):
+        """Refused by session presence only, a run of this process that did not
+        show there -- presence off, or a run that took the session after the
+        check -- had the exchange cut beside it, and its save put it back."""
+        await _stored(api, messages=_turn("frage", "antwort"))
+        tracker = api.app.state.agent._session_tracker
+        assert await tracker.acquire_session_lock("s1", "run_1")   # as a run holds it
+        try:
+            async with _client(api.app) as client:
+                response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                             timeout=30.0)
+        finally:
+            await tracker.release_session_lock("s1", "run_1")
+
+        assert response.status_code == 409, response.text
+        assert "running" in response.text
+        assert len(await _messages_on_disk(api)) == 2
+
+    async def test_a_cut_that_is_not_saved_is_taken_back(self, api, monkeypatch):
+        """Answered with the exchange gone while the record still had it -- and
+        the cut left in memory for whatever saved the session next."""
+        from agent_system import app as app_mod
+
+        await _stored(api, messages=_turn("frage", "antwort"))
+
+        async def fails(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(app_mod._session_service, "save_session", fails)
+        async with _client(api.app) as client:
+            response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                         timeout=30.0)
+
+        assert response.status_code == 500, response.text
+        messages = api.app.state.agent._session_tracker.get_session_messages("s1")
+        assert [m.content for m in messages] == ["frage", "antwort"], "the cut stayed in memory"
+
+    async def test_what_another_process_wrote_meanwhile_is_read_before_the_cut(self, api):
+        """The agent's name was read off the record by a LOAD, which counts the
+        file as seen: the claim then took what another process had written for
+        this process's own and cut the stale copy in memory -- its last
+        exchange, the wrong one -- and saved that over the other's turn."""
+        from agent_system.llm.models import ChatMessage
+
+        await _stored(api, messages=_turn("frage", "antwort"))
+        api.app.state.agent._session_tracker.set_session_messages(
+            "s1", [ChatMessage(role="user", content="frage"),
+                   ChatMessage(role="assistant", content="antwort")])
+        import asyncio
+        await asyncio.sleep(0.05)  # file times on Windows advance in ~16 ms steps
+        woken = SessionManager(storage_path=str(api.manager.storage_path))
+        record = await woken.load_session(USER, "s1")
+        record["messages"] += _turn("noch eine frage", "die antwort des geweckten laufs")
+        await woken.save_session(record)
+
+        async with _client(api.app) as client:
+            response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                         timeout=30.0)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["dropped"]["text"] == "noch eine frage"
+        assert [m["content"] for m in await _messages_on_disk(api)] == ["frage", "antwort"]
+
+    async def test_the_agent_of_a_turn_settling_the_session_does_the_cutting(self, api, monkeypatch):
+        """The record names the agent of the last SAVED run. An API turn on another
+        agent whose run saved nothing puts its copy back over the session: cut in
+        the record's agent's tracker, the exchange came back with it."""
+        from test_app_session_presence import _another_agent
+
+        from agent_system import app as app_mod
+
+        coder = _another_agent("coder")
+        registry = api.app.state.tool_registry
+        get, names = registry.get, registry.list
+        monkeypatch.setattr(registry, "get", lambda name: coder if name == "coder" else get(name))
+        monkeypatch.setattr(registry, "list", lambda: [*names(), "coder"])
+        await _stored(api, messages=_turn("frage", "antwort") + _turn("noch eine", "die zweite"))
+        await app_mod._session_service.load_and_restore_session(coder, USER, "s1")
+        seen = coder._session_tracker.watch_appends("s1")  # a turn of coder settles it
+        try:
+            async with _client(api.app) as client:
+                response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                             timeout=30.0)
+        finally:
+            coder._session_tracker.unwatch_appends("s1", seen)
+
+        assert response.status_code == 200, response.text
+        assert [m.content for m in coder._session_tracker.get_session_messages("s1")] == [
+            "frage", "antwort"], "not cut where the settling turn looks"
+
     async def test_the_agent_that_RAN_the_session_does_the_cutting(self, api):
         """Every agent carries its own SessionTracker. Cutting the one a
         selector happens to show leaves the exchange standing in the one that

@@ -597,6 +597,18 @@ async def test_setup_that_times_out_importing_is_not_a_success(server, project):
     assert "timed out" in line
 
 
+@pytest.mark.parametrize("field, value", [
+    ("name", 'Evil"\n[autoload]\nX="*res://x.gd'),
+    ("main_scene", 'main.tscn"\nrun/x="y'),
+    ("name", "back\\slash"),
+])
+async def test_setup_refuses_a_value_that_would_rewrite_project_godot(server, project, field, value):
+    """A quote or a line break closes the quoted string and adds lines of its own."""
+    result, line = await run_tool(server, "godot_setup", {"project": "fresh", field: value})
+    assert result["status"] == "error" and field in result["error"], result
+    assert not (project.parent / "fresh" / "project.godot").exists()
+
+
 async def test_setup_refuses_to_guess_the_engine_version(server, project):
     """A binary that cannot answer --version must not produce a project.godot
     with a made-up feature tag."""
@@ -926,6 +938,21 @@ def test_clip_bounds_a_dict_with_no_list_to_halve():
     assert len(json.dumps(items)) <= MAX_RESULT_CHARS and "entries omitted" in note
     small, note = GodotServer._clip({"a": [1, 2, 3]})
     assert small == {"a": [1, 2, 3]} and note == ""
+
+
+def test_res_path_passes_a_file_system_path_through_only(tmp_path):
+    """A leading "/" is the project's root (the schema asks for res:// or project-relative); a path that
+    is there, or one with a drive or share, is the file system's -- on POSIX both are rooted at "/"."""
+    from plugins.godot.server import GodotServer
+    script = tmp_path / "tool.gd"
+    script.write_text("extends Node\n", encoding="utf-8")
+    assert GodotServer._res_path(str(script)) == script.as_posix()
+    new_scene = tmp_path / "levels_dir_is_there" / "new_level.tscn"  # saved there next, not there yet
+    new_scene.parent.mkdir()
+    assert GodotServer._res_path(str(new_scene)) == new_scene.as_posix()
+    assert GodotServer._res_path("C:/game/tool.gd") == "C:/game/tool.gd"
+    assert GodotServer._res_path("/no_such_folder_here/tool.gd") == "res://no_such_folder_here/tool.gd"
+    assert GodotServer._res_path("/main.tscn") == "res://main.tscn"  # its folder would be "/"
 
 
 def test_res_path_keeps_a_leading_dot_in_a_name():

@@ -7,6 +7,7 @@ talks to foreign servers through the official SDK.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import ABC
 from dataclasses import dataclass
@@ -125,6 +126,12 @@ class ToolServer(ABC):
             If get_tools() returns a tool named "search_tweets",
             this will call self.search_tweets(params)
         """
+        # A private method is no tool: no schema names one, and reached by name it
+        # would skip whatever the public entry checks before it calls the helper
+        # (SchemaBasedToolMixin.call refuses the same).
+        if tool.startswith("_"):
+            raise ValueError(f"Tool '{tool}' not found in {self.name}. Available tools: {self._get_available_tool_names()}")
+
         # Check if the tool method exists
         if not hasattr(self, tool):
             raise ValueError(f"Tool '{tool}' not found in {self.name}. Available tools: {self._get_available_tool_names()}")
@@ -135,13 +142,13 @@ class ToolServer(ABC):
         if not callable(method):
             raise ValueError(f"Tool '{tool}' exists but is not callable in {self.name}")
         
-        # Call the tool method
-        # Support both sync and async methods
-        import asyncio
-        if asyncio.iscoroutinefunction(method):
-            return await method(params)
-        else:
-            return method(params)
+        # Call the tool method; what it returns is awaited when it is awaitable --
+        # async methods, and callables no coroutine-function check recognises
+        # (an object with an async __call__)
+        result = method(params)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
     
     def _get_available_tool_names(self) -> list[str]:
         """Helper to get list of available tool names for error messages."""

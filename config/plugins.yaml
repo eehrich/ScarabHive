@@ -813,9 +813,12 @@ plugins:
           - "**/*.min.css"
           - "**/*.map"
 
+    # The whole checkout -- config/secrets.env, data/users.db, the sessions of
+    # every user -- for any agent that is given it. No shipped agent is. Enable
+    # it only for trusted agents, ideally with narrower allowed_directories.
     workspace_file_ops:
       type: file_ops
-      enabled: true
+      enabled: false
       allowed_directories:
         - .
       max_file_size_mb: 200
@@ -1007,6 +1010,20 @@ plugins:
       type: request_logger
       enabled: false
 
+    # OpenTelemetry traces for agent runs, LLM calls and tool calls
+    # (src/plugins/otel/README.md). Off by default. Endpoint and service name
+    # come from the standard OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME
+    # unless set here. Prompts, answers and tool arguments/results stay in the
+    # process unless capture_content is switched on.
+    otel:
+      type: otel
+      enabled: false
+      config:
+        exporter: otlp          # otlp | console | none
+        # endpoint: "http://localhost:4317"
+        capture_content: false
+        metrics: false
+
     message_validator:
       type: message_validator
       enabled: true
@@ -1070,6 +1087,36 @@ plugins:
         # make it at system role, else the llm is confused about injections
         role: "system"
 
+    # The project's AGENTS.md in front of the model, read once per session
+    # from the root the agent's file tools work in (Claude Code, Codex and
+    # Gemini CLI do the same). Registered here, OFF for every agent: an agent
+    # switches it on with
+    #   hooks.overrides["project_instructions.inject_project_instructions"].enabled: true
+    # The coder harness does. A new version of the file takes effect in a new
+    # session, or after `/vars unset project_instructions`.
+    project_instructions:
+      type: project_instructions
+      enabled: true
+      config:
+        filenames: ["AGENTS.md"]
+        max_bytes: 32768
+
+    # Checkpoints for FILES (/undo files, /rewind): how each file looked
+    # before the agent changed it through file_ops or media_ops, per turn.
+    # Registered here -- that is what the chat commands reach -- and OFF for
+    # every agent: an agent switches on BOTH hooks,
+    #   hooks.overrides["file_checkpoints.record_before_change"].enabled: true
+    #   hooks.overrides["file_checkpoints.record_after_change"].enabled: true
+    # The coder harness does. Shell commands are not recorded, only named.
+    # Records live in data/file_checkpoints/<user>/<session>/, bounded per
+    # session; nothing is deleted by age unless retention_days says so.
+    file_checkpoints:
+      type: file_checkpoints
+      enabled: true
+      config:
+        max_checkpoints: 50
+        retention_days: 0
+
     # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
     # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
     # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen
@@ -1111,6 +1158,44 @@ plugins:
       config:
         llm_profile: "or-deepseek-flash"
 
+    # Approvals before tool calls (#091): allow/deny rules, and in ask mode a
+    # question to the person watching the run. The hook is off for every
+    # agent; an agent switches it on with
+    #   hooks.overrides:
+    #     tool_approval.check_tool_call:
+    #       enabled: true
+    #       mode: ask            # ask | auto | "off"
+    #       allow: ["file_ops/*_read_*"]
+    #       deny: [{tool: "terminal/*", arguments: {command: "\\brm\\b.*\\s-{1,2}[a-zA-Z-]*[rR]|--recursive|\\bfind\\b.*-delete"}}]
+    #   (a regex on a shell command stops the obvious, it is no boundary: to keep
+    #    an agent out of the shell, deny "terminal/*")
+    # The rules below hold for every agent that switches the hook on; its own
+    # are added to them. See src/plugins/tool_approval/README.md.
+    tool_approval:
+      type: tool_approval
+      enabled: true
+      config:
+        mode: ask
+        ask_timeout: 300
+        unattended: block
+        # ask_user only puts a question to the same person: approving it first
+        # would ask twice, and a run nobody watches would get this hook's block
+        # instead of ask_user's own "decide yourself".
+        allow: ["ask_user/*"]
+        deny: []
+
+    # The model asks the person watching the run (F12): a question with 2-4
+    # options or free text, answered in the web chat. A run nobody watches
+    # gets an error at once ("decide yourself"). Agents get it through their
+    # allowlist ("ask_user/*"). See src/plugins/ask_user/README.md.
+    ask_user:
+      type: ask_user
+      enabled: true
+      config:
+        ask_timeout: 300          # seconds a question waits; the only limit on the wait
+        reask_seconds: 20
+        gone_after_seconds: 15
+
 
     terminal:
       type: terminal
@@ -1118,7 +1203,8 @@ plugins:
 
       # Security settings
       security:
-        # Whitelist: If set, only these patterns are allowed
+        # Whitelist: only these patterns, one command per call, no cwd/env_vars.
+        # This example is a convenience filter, not a boundary (patterns: terminal README).
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"
@@ -1135,7 +1221,7 @@ plugins:
           - "mkfs"
           - "chmod 777"
 
-        # Allow chained commands (&&, ||, ;)
+        # false: one command per shell line (no ;, &&, ||, |, &, line break, substitution); a whitelist implies it
         allow_command_chains: true
 
         # Extra regex patterns added to the built-in hand-brake list

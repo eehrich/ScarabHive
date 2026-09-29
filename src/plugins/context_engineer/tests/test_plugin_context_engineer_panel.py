@@ -15,6 +15,7 @@ sessions the hook holds open. GET /__stub/asked counts the calls per kind (``his
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -264,6 +265,8 @@ def test_a_store_created_but_without_its_table_yet_holds_nothing(tmp_path):
     assert _table_totals(tmp_path / "tool_results.db", "tool_results") == {"count": 0, "tokens": 0}
 
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="a UNC path to a local file (\\\\localhost\\C$\\...) exists on Windows only")
 def test_a_store_on_a_network_share_is_read(tmp_path):
     """Storage on a share (or a mapped drive, which resolves to one): the store is opened by its UNC path."""
     import sqlite3

@@ -3,6 +3,7 @@ Cancellation System for Agent Tools
 Provides graceful and forced cancellation for tool execution.
 """
 import asyncio
+import inspect
 import logging
 import time
 from typing import Dict, Set, Optional, Callable
@@ -62,10 +63,9 @@ class CancellationToken:
         """Execute all cleanup callbacks."""
         for callback in self._cleanup_callbacks:
             try:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback()
-                else:
-                    callback()
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
             except Exception as e:
                 logger.error("Cleanup callback failed: %s", e)
     

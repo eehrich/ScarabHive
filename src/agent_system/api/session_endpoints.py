@@ -224,9 +224,35 @@ class SessionResponse(BaseModel):
     tags: List[str] = []
 
 
+def _refuse_gated_agent(http_request: Request, agent_name: str, who: Any) -> None:
+    """403 when *who* may not run *agent_name* under its role gate (metadata.min_role).
+
+    A session stores the agent it is for, and whatever runs the session later --
+    a wake runs it through agent-cli, as its user -- runs that agent. Refused here,
+    the record never names an agent its owner may not run.
+    """
+    from agent_system.auth.agent_access import agent_min_role, agent_run_denial
+
+    state = http_request.app.state
+    registry = getattr(state, "tool_registry", None)
+    min_role = agent_min_role(registry, agent_name) if registry is not None else None
+    if min_role is None:
+        return
+    # The auth the process enforces (app.state.auth_config, see build_app); the
+    # live config only where an app was built without it.
+    auth = getattr(state, "auth_config", None)
+    if auth is None:
+        auth = getattr(getattr(state, "config", None), "auth", None)
+    reason = agent_run_denial(min_role, who, auth)
+    if reason:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Agent '{agent_name}' may not be run: {reason}")
+
+
 @session_router.post("", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: CreateSessionRequest,
+    http_request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     session_manager=Depends(get_session_manager),
 ):
@@ -235,6 +261,9 @@ async def create_session(
 
     # Determine user_id: use username if authenticated, otherwise "anonymous"
     user_id = current_user.username if current_user else "anonymous"
+    # The session's user is who will run its agent: the account, or "anonymous".
+    _refuse_gated_agent(http_request, request.agent_name,
+                        current_user if current_user is not None else user_id)
 
     try:
         session = await session_manager.create_session(
@@ -635,6 +664,10 @@ async def get_session(
             tracker = session_agent._session_tracker
             try:
                 is_running, owner_request_id = tracker.check_session_locked(session_id)
+                if is_running and getattr(tracker, "held_by_a_writer", lambda _: False)(session_id):
+                    # An append or /undo holds it for a moment: no run, and whatever live state the
+                    # session has left is a finished run's -- a turn put back since came back with it.
+                    is_running, owner_request_id = False, None
                 if not is_running:
                     running = (await get_background_job_manager().active_sessions()).get(session_id) or {}
                     if (running.get("attachable")
@@ -986,6 +1019,9 @@ async def delete_session(
             create_backup=create_backup
         )
         cancelled = await get_background_job_manager().cancel_session(session_id)
+        # The person's decision takes the session's file checkpoints with it (file_rewind).
+        from agent_system.file_rewind import forget_session_files
+        await forget_session_files(user_id, session_id)
 
         return {"status": "deleted", "session_id": session_id, "cancelled_requests": cancelled}
 

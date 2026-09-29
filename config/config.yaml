@@ -98,6 +98,10 @@ auth:
   enabled: true  # Disabled for development - set to true for production
   secret_key: "published-signing-key-replace-with-your-own-0000000000"
   algorithm: "HS256"
+  # The key above is published (it is in the repository): anyone can sign an
+  # admin token with it. The server logs an error at startup; true refuses to
+  # start instead. An empty or short key (under 32 characters) always does.
+  reject_default_secret_key: false
   access_token_expire_minutes: 5256000  # ~10 years - essentially unlimited for dev
   refresh_token_expire_days: 3650    # 10 years (not used when access token is this long)
 
@@ -138,6 +142,14 @@ auth:
   default_admin_username: "admin"
   default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@example.com"
+
+  # Self-registration (POST /auth/register, reachable without login): a new
+  # account starts inactive until an admin activates it (user management panel,
+  # agent-cli users update NAME --activate). enabled: false turns it off.
+  registration:
+    enabled: true
+    require_approval: true
+    default_role: "user"
 
   # ============================================================
   # Anonymous Access Configuration (NEW)
@@ -413,6 +425,20 @@ auth:
         policy: "require_auth"
         min_role: "admin"
         description: "writer_admin plugin (DB inspector + queue debug) requires admin role"
+
+      # The logs carry every user's prompts, names, IPs and session ids (the
+      # API logs each task at INFO): one user must not read another's.
+      - pattern: "/plugins/log_viewer/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "Log viewer requires admin role"
+
+      # ssh_control runs commands on the configured hosts with the server's
+      # keys, and adds hosts: operator work.
+      - pattern: "/plugins/ssh_control/*"
+        policy: "require_auth"
+        min_role: "admin"
+        description: "SSH machine panel requires admin role"
 
       # Example: Allow anonymous access to specific plugin endpoint
       # - pattern: "GET /plugins/todo/panel"

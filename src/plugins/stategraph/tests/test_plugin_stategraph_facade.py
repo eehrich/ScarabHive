@@ -447,3 +447,108 @@ async def test_a_cancelled_request_whose_run_no_process_runs_ends_it_with_its_fi
     finals = [r for r in env.server.run_store.rows("r9_sgdead1", kinds=("activity",))
               if r["key"] == "end.cancelled.finally"]
     assert [r["data"]["out"] for r in finals] == ["cancelled"], "the machine's finally ran"
+
+
+async def test_a_gated_machine_refuses_a_plain_users_run_before_it_starts(env, tmp_path, monkeypatch):
+    """The role gate (metadata.min_role) -- asked by this run_events itself, which does not call
+    Agent.run_events: a plain user's request starts no run, an admin's does."""
+    from agent_system.auth import database
+    from agent_system.auth.models import UserCreate, UserRole
+    from agent_system.config.models import AgentMetadata, AuthConfig
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    users = database.UserDatabase(tmp_path / "users.db")
+    monkeypatch.setattr(database, "_db", users)
+    for name, role in (("root", UserRole.ADMIN), ("bob", UserRole.USER)):
+        users.create_user(UserCreate(username=name, email=f"{name}@example.com", password="correct-horse", role=role))
+    agent = env.fresh_agent(metadata=AgentMetadata(min_role="admin"))
+    agent.system_config.auth = AuthConfig(enabled=True, database_path=str(tmp_path / "absent.db"))
+
+    register_request_user("rq_bob", "bob")
+    register_request_user("rq_root", "root")
+    try:
+        refused = [event async for event in agent.run_events("Nachtzug", request_id="rq_bob", session_id="s_bob")]
+        assert [event["type"] for event in refused] == ["error", "end"], refused
+        assert refused[0]["error_type"] == "agent_role_gate", refused
+        assert env.runs() == [], "a refused request started a machine run"
+        assert "rq_bob" not in agent._request_manager._active_requests, "the refused request stayed registered"
+
+        answer = final_of([event async for event in agent.run_events("Nachtzug", request_id="rq_root",
+                                                                      session_id="s_root")])
+    finally:
+        release_request_user_tree("rq_bob")
+        release_request_user_tree("rq_root")
+    assert answer["type"] == "final", answer
+    assert len(env.runs()) == 1
+
+
+async def test_a_run_in_a_session_held_for_another_user_starts_no_machine_run(env):
+    """The session metadata can be what an earlier run under the same id left: a run whose registered owner
+    is not that user is refused before it starts anything (Agent._foreign_session). The check looks at no
+    role -- this env runs with auth off, so "root" is just another name here."""
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    agent = env.fresh_agent()
+    agent._session_tracker.set_session_metadata("s_held", {"user_id": "alice", "agent_name": agent.name})
+    register_request_user("rq_owner", "root")
+    try:
+        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_owner", session_id="s_held")]
+    finally:
+        release_request_user_tree("rq_owner")
+
+    assert [event["type"] for event in events] == ["error", "end"], events
+    assert events[0]["error_type"] == "foreign_session", events
+    assert env.runs() == []
+
+
+async def test_a_run_refused_at_the_session_lock_says_so(env):
+    """Another request has the session's lock: refused before anything ran, with the error_type the callers
+    read (SESSION_LOCKED) -- they save nothing after such a refusal."""
+    agent = env.fresh_agent()
+    assert await agent._session_tracker.acquire_session_lock("s_busy", "rq_other"), "fixture: no lock"
+    try:
+        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_busy", session_id="s_busy")]
+    finally:
+        await agent._session_tracker.release_session_lock("s_busy", "rq_other")
+
+    assert [(event["type"], event.get("error_type")) for event in events] == [("error", "session_locked"),
+                                                                             ("end", None)], events
+    assert env.runs() == []
+
+
+async def test_a_registered_owners_run_in_a_session_held_for_anonymous_starts_no_machine_run(env):
+    """"anonymous" is what a run with no registered owner wrote: another user's session like any other."""
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    agent = env.fresh_agent()
+    agent._session_tracker.set_session_metadata("s_unowned", {"user_id": "anonymous", "agent_name": agent.name})
+    register_request_user("rq_unowned", "root")
+    try:
+        events = [event async for event in agent.run_events("Nachtzug", request_id="rq_unowned",
+                                                            session_id="s_unowned")]
+    finally:
+        release_request_user_tree("rq_unowned")
+
+    assert [event["type"] for event in events] == ["error", "end"], events
+    assert env.runs() == []
+
+
+async def test_the_machine_run_stays_the_owners_when_the_sessions_metadata_is_rewritten(env):
+    """The session's metadata is state of the session id, shared by every run of it -- here rewritten after the
+    start event, when the run asks for its user. The registered owner is this run's."""
+    from agent_system.core.request_context import register_request_user, release_request_user_tree
+
+    agent = env.fresh_agent()
+    agent._session_tracker.set_session_metadata("s_run", {"user_id": "root", "agent_name": agent.name})
+    register_request_user("rq_run", "root")
+    events = []
+    try:
+        async for event in agent.run_events("Nachtzug", request_id="rq_run", session_id="s_run"):
+            events.append(event)
+            if event["type"] == "start":
+                agent._session_tracker.set_session_metadata("s_run", {"user_id": "alice", "agent_name": agent.name})
+    finally:
+        release_request_user_tree("rq_run")
+
+    assert final_of(events)["type"] == "final", events
+    assert [row["user_id"] for row in env.runs()] == ["root"]

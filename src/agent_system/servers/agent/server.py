@@ -5,10 +5,12 @@ Supports multiple tool calls per conversation turn for better efficiency
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import errno
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
@@ -31,6 +33,13 @@ import httpx
 from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
 from ...llm.model_health import model_health
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from ...llm import schema_worker
+from ...llm.structured_output import (
+    JSON_OBJECT, STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
+    InvalidResponseFormat, ResponseFormat,
+    SchemaCheckerError, check_answer, instruction_text, prepare_response_format, repair_text,
+    supports_response_format, unsupported_message,
+)
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...tools.status import (
     status_scope,
@@ -39,7 +48,7 @@ from ...tools.status import (
     current_request_id
 )
 from .components.tool_integration import ToolIntegrationManager
-from .components.tool_execution import ToolExecutionManager
+from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
 from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
@@ -56,8 +65,85 @@ logger = logging.getLogger(__name__)
 
 #: ``error_type`` of the error a run ends with when another request of this process holds its session's lock.
 #: It ran nothing and has nothing to save -- its caller must not save the session either: what the tracker holds
-#: is the other run's live state (app.py /run and /events).
+#: is the other run's live state (see REFUSED_BEFORE_THE_RUN for who asks).
 SESSION_LOCKED = "session_locked"
+#: ``error_type`` of the error a run ends with when its caller may not run this agent (metadata.min_role).
+AGENT_ROLE_GATE = "agent_role_gate"
+#: ``error_type`` of the error a run ends with when its session is held for another user (_foreign_session).
+FOREIGN_SESSION = "foreign_session"
+#: The refusals a run ends with before it has started: it ran nothing and wrote nothing, and its caller must
+#: not save the session after it either. Asked by app.py (/run, /events and their jobs), the openai_api turn
+#: (its put back, its answer), agent-cli (the one-shot run, via collect_final_result's ``refused``), its chat,
+#: agent-run and the sub-agent manager (create, continue, the background job); Agent.call answers with it.
+REFUSED_BEFORE_THE_RUN = frozenset({SESSION_LOCKED, AGENT_ROLE_GATE, FOREIGN_SESSION})
+#: ``error_type`` of the answer an agent called as a tool gives when it runs above the call already -- it
+#: would call itself, directly or through other agents called as tools (Agent._open_tool_session). Not across
+#: a sub-agent manager's or a stategraph run's hop: the chain above a call ends at such a session, and the
+#: sub-agent nesting budget bounds that (a stategraph run only by a budget a manager above it set). An answer of the tool
+#: call, not an event of a run: no run started and no session was opened, so it is none of
+#: REFUSED_BEFORE_THE_RUN. When the agent ran on its caller's session, such a call waited at that session's
+#: lock and ended with SESSION_LOCKED; on a session of its own below it, nothing is locked, and asking to
+#: wait for the other request would be wrong -- that request waits for this call.
+RECURSIVE_CALL = "recursive_call"
+#: ``error_type`` of the answer an agent called as a tool gives when its session could not be made ready with the
+#: caller's sub-agent budget (Agent._file_tool_session): the caller's budget could not be read, or the session's
+#: record could not be written with it. Nothing ran -- run without it, a manager below counted from its own
+#: maximum. An answer of the tool call as RECURSIVE_CALL is, none of REFUSED_BEFORE_THE_RUN.
+TOOL_SESSION_UNAVAILABLE = "tool_session_unavailable"
+#: The longest id tool_session_id gives. Every level below a caller adds the agent's name and a digest to
+#: the id; uncut, a few levels of long names made file names the file system refuses (``<id>.json``, and
+#: ``.subs.<id>.index.json`` with its lock and temporary files, SessionManager).
+TOOL_SESSION_ID_MAX = 128
+
+
+class _ToolSessionUnavailable(RuntimeError):
+    """The session of an agent called as a tool could not be made ready with its caller's sub-agent budget
+    (Agent._file_tool_session); answered as TOOL_SESSION_UNAVAILABLE."""
+
+
+def refused_before_the_run(event: dict[str, Any]) -> bool:
+    """Whether a run event is such a refusal (REFUSED_BEFORE_THE_RUN): the run ran and wrote nothing."""
+    return event.get("type") == "error" and event.get("error_type") in REFUSED_BEFORE_THE_RUN
+
+
+def tool_session_id(caller_session_id: str, agent_name: str) -> str:
+    """The session an agent called as a tool runs on: one of its own per caller session and agent.
+
+    It ran on its caller's session id before: it saved its own transcript into the caller's
+    session file (a new one it created, with its own agent name and a title from the
+    sub-task; a stored one it replaced until the caller's next save), and its tracker kept
+    every caller session for the life of the process. Now it keeps its own conversation
+    with that caller -- a second call in the same caller session sees the first one's turn
+    -- stored under the caller's user and below the caller's session, like a sub-agent
+    manager's sub-session.
+
+    From the framework's injected ``_session_id`` and the agent's own name only, never from
+    what a model passes. Readable -- the caller's id, then the agent's name -- and apart per
+    pair: the name is cut to what a session id may hold (``[A-Za-z0-9_-]``,
+    SessionManager._validate_session_id), and a digest of both keeps two names that cut to
+    the same text apart. It starts with the caller's id, so a throwaway caller
+    (EPHEMERAL_SESSION_PREFIX) gives a throwaway session.
+
+    At most TOOL_SESSION_ID_MAX long: where the caller's id and the name would not fit, the
+    caller's id is cut to its start (the throwaway prefix stays) and a longer digest of the
+    whole of it keeps the id apart. Only what it is called from counts -- the same caller's
+    id and name give the same id, in every process.
+    """
+    import hashlib
+    import re
+
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", agent_name)[:40] or "agent"
+    digest = hashlib.sha1(f"{caller_session_id}\0{agent_name}".encode("utf-8")).hexdigest()
+    session_id = f"{caller_session_id}--{name}-{digest[:8]}"
+    if len(session_id) <= TOOL_SESSION_ID_MAX:
+        return session_id
+    tail = f"--{name}-{digest[:16]}"
+    return caller_session_id[:TOOL_SESSION_ID_MAX - len(tail)] + tail
+
+#: STRUCTURED_OUTPUT_UNSUPPORTED and STRUCTURED_OUTPUT_INVALID (imported above) are the
+#: ``error_type``s of a structured run's error events; llm/structured_output.py says when.
+#: ``injected_by`` of the note that describes a run's structured output to the model.
+FORMAT_NOTE = "agent.structured_output"
 
 # llm_progress hooks fire every this many characters of thinking. A hook sets
 # its own, coarser interval on top; this only bounds how often the loop pays
@@ -200,6 +286,12 @@ class Agent(ToolServer):
     - list_usable_tools() = what I CAN USE (internal execution)
     """
 
+    #: The lowest account role that may run this agent (``metadata.min_role``,
+    #: auth/agent_access.py), None for no gate. Set per instance in __init__
+    #: and by reload_config; the class default answers for an instance built
+    #: without __init__.
+    min_role: Optional[str] = None
+
     def __init__(self, name: str, system_config: AgentSystemConfig, server_config: ToolServerConfig,
                  registry: ToolServerRegistry | None = None,
                  llm: LLMClient | None = None, llm_factory: Any = None,
@@ -245,6 +337,10 @@ class Agent(ToolServer):
         # Default both to False for config agents, can be overridden based on metadata
         self._tool_public = False
         self._tool_visible = False
+
+        # Role gate, from THIS instance's merged config: the direct `type: agent`
+        # gets no Runtime post-processing (apply_to), so the agent reads it itself.
+        self.min_role = self._declared_min_role(server_config)
 
         # Allow dependency injection of an LLM client or a factory that
         # creates one. This makes testing and runtime wiring explicit.
@@ -377,19 +473,24 @@ class Agent(ToolServer):
         self._request_manager = AgentRequestManager(self.name)
         # Session tracker shares the same _active_requests dict for coordination
         self._session_tracker = SessionTracker(self._request_manager._active_requests)
+        self._session_tracker.agent_name = self.name  # the parent_agent of the sessions its tool calls run on
+        # session id -> [the lock one opening of that tool session holds, how many hold or wait] (_opening_of)
+        self._tool_session_openings: dict[str, list[Any]] = {}
         self._tool_integration_manager = ToolIntegrationManager(self.system_config, self.agent_config)
-        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
-        self._tool_execution_manager = ToolExecutionManager(
-            self.registry,
-            self
-        )
 
         # Context management now handled by hook plugins via HookIntegrationManager
 
         # Initialize hook integration manager
         from .components.hook_integration import HookIntegrationManager
         self._hook_manager = HookIntegrationManager(self)
-        
+
+        # Note: StatusEventForwarder is now created per-request (not shared) to prevent race conditions
+        self._tool_execution_manager = ToolExecutionManager(
+            self.registry,
+            self,
+            hook_manager=self._hook_manager,
+        )
+
         # Wire LLM-client-level hooks (pre_llm_request / post_llm_response)
         if self.llm is not None:
             self._hook_manager.wire_llm_hooks(self.llm)
@@ -462,12 +563,29 @@ class Agent(ToolServer):
 
         Returns the fields that actually changed ({} if none), so the caller
         can report exactly what took effect.
+
+        The role gate (``metadata.min_role``) is refreshed too, on THIS instance:
+        the entries that read it from the instance (every HTTP check, the SAM and
+        the backstop in run_events, through ``Runtime.view``) apply the new gate
+        from the next run on. Not reached by a reload, and keeping the value
+        they started with until a restart: an agent the reload does not walk to
+        (it walks the plugin registry, so a direct ``type: agent`` entry), a lazy
+        agent that is still unbuilt (its declaration answers, and it is built
+        from that later), the wake check and the start-up warning (both read the
+        process's config, not a reloaded one).
         """
+        changes: dict[str, dict] = {}
+        new_min_role = self._declared_min_role(server_config)
+        if new_min_role != self.min_role:
+            changes["min_role"] = {"old": self.min_role, "new": new_min_role}
+            self.min_role = new_min_role
+
         new_agent_cfg = getattr(server_config, "agent_config", None)
         if new_agent_cfg is None or self.agent_config is None:
-            return {}
+            if changes:
+                logger.info("[%s] config reload applied: %s", self.name, changes)
+            return changes
 
-        changes: dict[str, dict] = {}
         for field in self._RELOADABLE_AGENT_FIELDS:
             if not hasattr(new_agent_cfg, field):
                 continue
@@ -481,6 +599,403 @@ class Agent(ToolServer):
         if changes:
             logger.info("[%s] config reload applied: %s", self.name, changes)
         return changes
+
+    @staticmethod
+    def _declared_min_role(server_config: Any) -> Optional[str]:
+        """``metadata.min_role`` of a server config; None when it declares none."""
+        metadata = getattr(server_config, "metadata", None)
+        return metadata.min_role if metadata is not None else None
+
+    def _run_denial(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not start under the agent's role gate, or None.
+
+        The caller is the owner of the request id when one is registered, else
+        the user the SESSION names when it already has metadata, else "anonymous".
+
+        The request owner first: only framework code writes it -- the API for
+        its caller, tool execution and the SAM for the calling run's user, the
+        stategraph backend for the run's -- and a caller cannot pick the id it
+        runs under (tool execution strips a model's request ids). A session id,
+        in contrast, can reach a run from where the caller chose it, and this
+        agent's tracker keeps the metadata of every session it ran, other users'
+        sub-sessions included; asked first, it let a user's run pass as the
+        admin whose session it named. On every trusted path the two agree, and
+        where they do not, _foreign_session refuses the run as well -- the order
+        then only decides which reason it is refused with.
+
+        The session answers where no request is registered: agent-cli and
+        agent-run (SessionService.open_for_run), so a woken run answers to its
+        session's user, not to the local operator it runs as.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        who: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        tracker = getattr(self, "_session_tracker", None)
+        if who is None and session_id and tracker is not None:
+            stored = tracker.get_session_metadata(session_id)
+            if stored:
+                who = stored.get("user_id") or None
+        if who is None:
+            who = "anonymous"
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        logger.warning("[%s] run refused for %r (request %s, session %s): %s",
+                       self.name, who, request_id, session_id, reason)
+        return f"Agent '{self.name}' may not be run by '{who}': {reason}"
+
+    def _tool_call_denial(self, params: Dict[str, Any]) -> Optional[str]:
+        """Why the run calling one of this agent's tools may not use it under the role gate, or None.
+
+        For the tools a schema-based agent serves beside its runs
+        (SchemaBasedToolMixin.call). The caller is the one the framework names:
+        the registered owner of the call's request id, else the injected
+        ``_user_id`` -- never a session's stored user -- and without either the
+        call is unidentified and refused.
+        """
+        min_role = self.min_role
+        if min_role is None:
+            return None
+        from ...auth.agent_access import agent_run_denial
+        from ...core.request_context import get_request_user
+
+        request_id = params.get("_request_id") or params.get("request_id")
+        injected = params.get("_user_id")
+        who = ((get_request_user(str(request_id), default=None) if request_id else None)
+               or (injected.strip() if isinstance(injected, str) and injected.strip() else None))
+        reason = agent_run_denial(min_role, who, getattr(self.system_config, "auth", None))
+        if reason is None:
+            return None
+        caller = f"'{who}'" if who else "an unidentified caller"
+        logger.warning("[%s] tool call refused to %s: %s", self.name, caller, reason)
+        return f"Agent '{self.name}' may not be used by {caller}: {reason}"
+
+    def tool_user(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """The user this run's tool calls run for -- injected as ``_user_id``, and the
+        owner their request ids are registered under (tool_execution.py). THE one
+        answer for every way a run dispatches a tool: the LLM's calls, and calls
+        made for the run beside the model (tool_preload).
+
+        The run's registered owner first: only framework code registers it (the
+        API, tool execution, the SAM, the stategraph backend). The session's
+        stored user answers where nothing is registered (agent-cli). Where an
+        owner is registered the stored user is the same one at the start of the
+        run (_foreign_session refuses another); asked first, the owner stays the
+        tools' user whatever the session's metadata says later in the run: the
+        metadata is state of the session id, shared by every run of it, and the
+        registered owner is this run's.
+        """
+        from ...core.request_context import get_request_user
+
+        user_id: Optional[str] = get_request_user(request_id, default=None) if request_id else None
+        if user_id is not None:
+            logger.debug(f"[TOOL_EXEC] user_id='{user_id}' from the owner of request {request_id}")
+            return user_id
+        tracker = getattr(self, "_session_tracker", None)
+        if not tracker:
+            logger.warning("[TOOL_EXEC] No _session_tracker available")
+            return None
+        session_meta = tracker.get_session_metadata(session_id) if session_id else None
+        if session_meta:
+            user_id = session_meta.get("user_id")
+            logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
+        else:
+            logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
+        return user_id
+
+    def _refusal_event(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[dict[str, Any]]:
+        """The error a run refused before it starts ends with, or None: the role gate (AGENT_ROLE_GATE) or a
+        session held for another user (FOREIGN_SESSION), each with its ``error_type`` for the callers that
+        must tell a refusal from a run that failed (REFUSED_BEFORE_THE_RUN)."""
+        denial, error_type = self._run_denial(request_id, session_id), AGENT_ROLE_GATE
+        if not denial:
+            denial, error_type = self._foreign_session(request_id, session_id), FOREIGN_SESSION
+        if not denial:
+            return None
+        return {"type": "error", "message": denial, "request_id": request_id, "error_type": error_type}
+
+    async def tool_session(self, params: dict[str, Any], request_id: Optional[str] = None
+                           ) -> tuple[Optional[str], Optional[dict[str, str]]]:
+        """(the session a tool call of this agent runs on, why it may not run -- or None).
+
+        For every tool that runs this agent -- Agent.call, BasicAgent.execute_task, an
+        ``execute_task`` of your own: never the caller's session, but one of this agent's own
+        below it, from the injected ``_session_id`` (never a model's) and this agent's name
+        (tool_session_id), opened for the call (_open_tool_session). *request_id*: the id the
+        run goes under, when it is not the call's own (_request_for_injected_user). No
+        caller session: (None, None) -- the run starts a session of its own.
+
+        The refusal is ``{"error": <what to tell the caller>, "error_type": FOREIGN_SESSION,
+        RECURSIVE_CALL or TOOL_SESSION_UNAVAILABLE}``, for the tool's answer as it is: nothing ran.
+        It raises when the session cannot be read (SessionService.open_for_run) -- a failure, as
+        any other of the call.
+        """
+        caller_session_id = params.get("_session_id")
+        if not caller_session_id:
+            return None, None
+        session_id = tool_session_id(caller_session_id, self.name)
+        if request_id is None:
+            request_id = params.get("request_id") or params.get("_request_id")
+        task = params.get("task") or params.get("query") or params.get("prompt") or ""
+        return session_id, await self._open_tool_session(
+            request_id, caller_session_id, session_id, caller_agent=params.get("_agent_name"), title=str(task))
+
+    async def _open_tool_session(self, request_id: Optional[str], caller_session_id: str, session_id: str, *,
+                                 caller_agent: Optional[str] = None, title: str = "") -> Optional[dict[str, str]]:
+        """Ready the sub-session this agent runs on when called as a tool (tool_session_id); why not
+        (tool_session's refusal), or None.
+
+        Refused first when this agent runs above the call already (RECURSIVE_CALL): it would
+        call itself, directly or through other agents called as tools. On its caller's session such a call
+        waited at that session's lock; on a session of its own below it, every level gets a
+        new one, and nothing stopped it (_runs_above).
+
+        Its user is the call's registered owner (the tool user), as a sub-agent
+        manager's sub-session is its caller's. Held in this process since an earlier
+        call, it runs on what the tracker holds -- if it is that user's
+        (_foreign_session). Otherwise a stored one is read back (SessionService.open_for_run,
+        which refuses another user's), and a new one is filed right away (_file_tool_session):
+        a sub-agent manager this agent calls in its first step files its sub-agents in that
+        record, and found none, made one of its own at the top of the session list, with no
+        nesting budget. Filed with the caller's budget or not at all: failing that, the call is
+        refused (TOOL_SESSION_UNAVAILABLE), and a caller's session of another user refuses it
+        (FOREIGN_SESSION). A throwaway one (below a throwaway caller) is never saved.
+
+        One this process deleted (SessionManager.is_deleted: the person deleted it, DELETE
+        /sessions/<id>) is forgotten and made afresh -- its id is the same for every call in the
+        caller's session, and tombstoned, it was never stored again: with a caller's budget no call
+        ran any more. The copy in the tracker goes with it, and the delete's tombstone, when no run
+        has the session (while one does, the delete stands, and that run is refused its saves;
+        _forget_deleted). One opening of a session at a time (_opening_of). Either way
+        the metadata names the caller's session and agent as its parent: it leaves this
+        agent's tracker when the caller's session leaves the caller's
+        (SessionTracker.discard_session), and the calls below it find the chain above them
+        (session_chain). Held already, it is named again -- a session read back meanwhile
+        (SessionService.load_and_restore_session) got metadata without it -- and by the agent
+        that calls now.
+        """
+        above = self._runs_above(caller_session_id)
+        if above:
+            logger.warning("[%s] call from session %s refused: it runs above it, in session %s",
+                           self.name, caller_session_id, above)
+            return {"error": f"{self.name} is running above this call already (in session {above}): an agent "
+                             f"does not call itself, directly or through other agents called as tools",
+                    "error_type": RECURSIVE_CALL}
+        # One opening of the session at a time: two calls of the caller's session at once (parallel tool
+        # calls) both find it new. The second found the first's half-opened copy in the tracker -- no parent,
+        # not filed yet -- ran on it, and its save made the record without the caller's budget, before the
+        # first's filing met "already exists". Waited for, it finds the session held, filed and named.
+        async with self._opening_of(session_id):
+            return await self._ready_tool_session(request_id, caller_session_id, session_id,
+                                                  caller_agent=caller_agent, title=title)
+
+    @contextlib.asynccontextmanager
+    async def _opening_of(self, session_id: str):
+        """The lock one opening of a tool session holds (_open_tool_session); kept while anybody holds or waits
+        for it, so nothing grows with the sessions of the process."""
+        openings = self._tool_session_openings
+        entry = openings.setdefault(session_id, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if not entry[1]:
+                openings.pop(session_id, None)
+
+    async def _ready_tool_session(self, request_id: Optional[str], caller_session_id: str, session_id: str, *,
+                                  caller_agent: Optional[str], title: str) -> Optional[dict[str, str]]:
+        """_open_tool_session, one opening of the session at a time."""
+        from ...core.request_context import get_request_user
+        from ...services.session_manager import SessionPermissionError
+        from ...services.session_service import is_ephemeral_session
+
+        tracker = self._session_tracker
+        service = getattr(self, "_session_service", None)
+        sessions = getattr(service, "session_manager", None) if service is not None else None
+        if sessions is not None and sessions.is_deleted(session_id) is True:
+            await self._forget_deleted(service, sessions, session_id)
+        parent = {"parent_session_id": caller_session_id}
+        if caller_agent:
+            parent["parent_agent"] = caller_agent
+        held = tracker.get_session_metadata(session_id)
+        if held:
+            foreign = self._foreign_session(request_id, session_id)
+            if foreign:
+                return {"error": foreign, "error_type": FOREIGN_SESSION}
+            tracker.set_session_metadata(session_id, {**held, **parent})
+            return None
+        owner = (get_request_user(str(request_id), default=None) if request_id else None) or "anonymous"
+        profile = self.agent_config.default_llm_profile if self.agent_config else "normal"
+        if sessions is not None:
+            try:
+                exists = await service.open_for_run(self, owner, session_id, profile)
+            except SessionPermissionError:
+                return {"error": f"Session {session_id} belongs to another user", "error_type": FOREIGN_SESSION}
+            if not exists and not is_ephemeral_session(session_id):
+                try:
+                    await self._file_tool_session(sessions, owner, caller_session_id, session_id, profile, title)
+                except BaseException as exc:
+                    # Opened in the tracker, it would be the next call's to run on -- unfiled, without the budget
+                    # (discard_session leaves one a run has, until it lets go)
+                    tracker.discard_session(session_id)
+                    if isinstance(exc, SessionPermissionError):
+                        return {"error": str(exc), "error_type": FOREIGN_SESSION}
+                    if isinstance(exc, _ToolSessionUnavailable):
+                        return {"error": str(exc), "error_type": TOOL_SESSION_UNAVAILABLE}
+                    raise
+        tracker.set_session_metadata(session_id, {
+            "user_id": owner, "agent_name": self.name, "llm_profile": profile,
+            "parent_session_id": caller_session_id, "parent_agent": caller_agent})
+        return None
+
+    async def _forget_deleted(self, service: Any, sessions: Any, session_id: str) -> None:
+        """A tool session this process deleted, forgotten (_open_tool_session): the tracker's copy goes, and the
+        delete's tombstone -- unless a run has it. Under the session's save lock (SessionService.save_lock), the
+        one the saves no run lock covers take -- the API's save after a run, a compaction's: one that read the
+        deleted history before the delete writes it now, into the tombstone, or after, into nothing."""
+        from .components.session_tracking import a_run_has
+
+        save_lock = getattr(service, "save_lock", None)
+        async with (save_lock(session_id) if save_lock is not None else contextlib.nullcontext()):
+            if sessions.is_deleted(session_id) is True and not a_run_has(session_id):
+                self._session_tracker.discard_session(session_id)
+                sessions.lift_tombstone(session_id)
+
+    def _runs_above(self, caller_session_id: str) -> Optional[str]:
+        """The session above a tool call from *caller_session_id* -- that one or one of the sessions it runs
+        below (session_chain) -- that a run of this agent has right now (SessionTracker.run_has), or None.
+
+        Who runs, not who called: a session's metadata names the agent that called it there last
+        (``parent_agent``), which need not run now -- nor is a caller that injects no ``_agent_name`` named at
+        all. The run's lock says who runs, and it is what refused such a call when it ran on its caller's
+        session. Not any holder of the lock: an append or an opening that writes such a session is no run of
+        this agent, and the call is none to itself."""
+        from .components.session_tracking import session_chain
+
+        tracker = self._session_tracker
+        return next((session_id for session_id in session_chain(caller_session_id)
+                     if tracker.run_has(session_id)), None)
+
+    async def _file_tool_session(self, sessions: Any, owner: str, caller_session_id: str, session_id: str,
+                                 profile: str, title: str) -> None:
+        """The record of a new tool session, before its run: below the caller's session (hidden from the
+        session list, never woken -- a sub-agent's session), and at the caller's place in a sub-agent
+        tree. Its nesting budget is the caller's own, not one level less: the agent ran on the caller's
+        session before, where a sub-agent manager it called counted from the caller -- so a strict manager
+        above keeps bounding the whole subtree across the hop (SubAgentManager._create_sub_session).
+        ``depth`` is one more, for where it is shown.
+
+        Written once, with the budget (create_session). Without it -- the caller has none (a new session,
+        one at the top) -- this is best effort: the run's first save files it below the caller as well.
+        With one it is not: a record made later (by that save, or by a sub-agent manager that finds no
+        parent) has no budget, and a manager below counted from its own maximum. So when the caller's
+        budget cannot be read, or the record cannot be written with it, this raises
+        (_ToolSessionUnavailable), and the call does not run (TOOL_SESSION_UNAVAILABLE)."""
+        from ...services.session_manager import SessionNotFoundError, SessionPermissionError
+
+        try:
+            caller = await sessions.load_session(owner, caller_session_id)
+        except SessionNotFoundError:  # no stored caller (a new one): no tree above to count from
+            caller = {}
+        except SessionPermissionError as exc:  # another user's: _open_tool_session refuses the call as such
+            raise SessionPermissionError(f"Session {caller_session_id} belongs to another user") from exc
+        except Exception as exc:
+            raise _ToolSessionUnavailable(f"the sub-agent budget of session {caller_session_id} could not be "
+                                          f"read, and {self.name} does not run without it: {exc}") from exc
+        depth, budget = caller.get("depth"), caller.get("depth_budget")
+        place: dict[str, int] = {}
+        if isinstance(depth, int) or isinstance(budget, int):
+            place["depth"] = (depth if isinstance(depth, int) else 1) + 1
+            if isinstance(budget, int):
+                place["depth_budget"] = budget
+        try:
+            await sessions.create_session(
+                user_id=owner, session_id=session_id, title=(title or self.name)[:50], agent_name=self.name,
+                llm_profile=profile, parent_session_id=caller_session_id, **place)
+            return
+        except ValueError as exc:
+            if "already exists" in str(exc):
+                # Made meanwhile -- by a run of another process, say. Without the budget it is not this
+                # call's to run on either.
+                await self._budget_on_record(sessions, owner, session_id, place)
+                return
+            failure: Exception = exc
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            failure = exc
+        if "depth_budget" in place:
+            raise _ToolSessionUnavailable(f"the session of {self.name} below {caller_session_id} could not be "
+                                          f"stored with its caller's sub-agent budget, and it does not run "
+                                          f"without it: {failure}") from failure
+        logger.warning("[%s] tool session %s could not be filed: %s", self.name, session_id, failure)
+
+    async def _budget_on_record(self, sessions: Any, owner: str, session_id: str, place: dict[str, int]) -> None:
+        """A tool session's record found made meanwhile (_file_tool_session): with the caller's budget on it.
+        Written when it lacks it -- only the two keys (SessionManager.set_session_place), in turn with the
+        session's saves (SessionService.save_lock): a whole record written back took with it what a save wrote
+        since it was read. When it cannot be read or written, the call does not run (_ToolSessionUnavailable), as
+        when the filing failed. Another user's record refuses it (SessionPermissionError)."""
+        from ...services.session_manager import SessionPermissionError
+
+        if "depth_budget" not in place:
+            return
+        service = getattr(self, "_session_service", None)
+        save_lock = getattr(service, "save_lock", None) if service is not None else None
+        async with (save_lock(session_id) if save_lock is not None else contextlib.nullcontext()):
+            try:
+                record = await sessions.load_session(owner, session_id)
+            except SessionPermissionError as exc:
+                raise SessionPermissionError(f"Session {session_id} belongs to another user") from exc
+            except Exception as exc:
+                raise _ToolSessionUnavailable(f"the session of {self.name} ({session_id}) could not be read for "
+                                              f"its caller's sub-agent budget, and it does not run without it: "
+                                              f"{exc}") from exc
+            if all(record.get(key) == value for key, value in place.items()):
+                return
+            try:
+                await sessions.set_session_place(owner, session_id, **place)
+            except Exception as exc:
+                raise _ToolSessionUnavailable(f"the session of {self.name} ({session_id}) could not be stored with "
+                                              f"its caller's sub-agent budget, and it does not run without it: "
+                                              f"{exc}") from exc
+
+    def _foreign_session(self, request_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
+        """Why this run may not go on in *session_id*: this agent holds it for another user.
+
+        The metadata below is written only where none is, so a session this agent
+        already holds keeps its user -- and its conversation. An agent called as a
+        tool runs on a sub-session derived from its caller's (tool_session_id); a second
+        user's run that reaches
+        the same id would continue the first user's conversation, and its lock,
+        checkpoints and saves go to the first user's session (they read the stored
+        user, and a session already on disk is saved into the folder it is in).
+        Refused whenever the run's registered owner and the stored user differ --
+        an admin's run too, and "anonymous" as the stored user too: POST /run
+        refuses another user's session the same way, whether auth is on or off
+        (SessionManager.load_session). The API, the SAM and the stategraph
+        backend write the owner into the metadata right before the run; an agent
+        called as a tool writes it here from its request, which Agent.call
+        registers for the injected ``_user_id`` where the caller registered none
+        (a plugin command) -- without that, such a call stored
+        "anonymous" and the same user's next call was refused as another user.
+        So this refuses a session id that reached the run for somebody else.
+        """
+        if not request_id or not session_id:
+            return None
+        from ...core.request_context import get_request_user
+        owner = get_request_user(request_id, default=None)
+        tracker = getattr(self, "_session_tracker", None)
+        stored = (tracker.get_session_metadata(session_id) or {}) if tracker is not None else {}
+        holder = stored.get("user_id")
+        if not owner or not holder or holder == owner:
+            return None
+        logger.warning("[%s] run of %r refused: session %s is held for %r", self.name, owner, session_id, holder)
+        return f"Session {session_id} belongs to another user"
 
     def _create_loop_detector(self) -> ToolCallLoopDetector:
         """Create a fresh loop detector for a single request.
@@ -522,11 +1037,7 @@ class Agent(ToolServer):
             data = json.loads(content)
         except (ValueError, TypeError):
             return False
-        if not isinstance(data, dict):
-            return False
-        if data.get("status") == "error":
-            return True
-        return "status" not in data and bool(data.get("error"))
+        return tool_result_is_error(data)
 
     def llm_for_session(self, session_id: Optional[str]) -> Optional[LLMClient]:
         """The client answering the session's running step, else the agent's own.
@@ -838,7 +1349,10 @@ class Agent(ToolServer):
     async def dispatch_tool_call(self, tool_name: str, params: Dict[str, Any], *,
                                  session_id: Optional[str] = None,
                                  user_id: Optional[str] = None,
-                                 request_id: Optional[str] = None) -> Any:
+                                 request_id: Optional[str] = None,
+                                 hook_source: Optional[str] = None,
+                                 cancellation_token: Optional[Any] = None,
+                                 injected_params: Optional[Dict[str, Any]] = None) -> Any:
         """Execute one tool call programmatically with THIS agent's authorization.
 
         The in-process counterpart of the LLM tool path: same server resolution,
@@ -850,13 +1364,33 @@ class Agent(ToolServer):
         Used by the tool_script plugin ("scripted tool chains"); any future
         in-process caller (hooks, schedulers) should go through here as well.
 
+        ``hook_source`` names a caller that acts for the model -- tool_script
+        runs a script the model wrote. Given, the pre_tool_call and
+        post_tool_call hooks fire as for the model's own calls, with
+        ``tool_call["source"] = hook_source``: a call the hooks would stop
+        must not get past them inside a script. None (the default) fires
+        none: the caller is the framework or a person (slash commands,
+        preloads, state machines), not the model. ``cancellation_token`` is
+        the caller's; the hooks get it, so one that waits stops on a cancel.
+        With a hook_source, a tool that raises is handed on the way the model's
+        own loop hands a failure on: as an error result
+        (``{"status": "error", ...}``), which passes the post_tool_call hooks
+        -- a redacting hook sees a failure's text too.
+
+        ``injected_params`` are values the caller's configuration adds
+        (tool_script's ``inject_params``: secrets the model never wrote). They
+        are merged after the pre_tool_call hooks, over what those left, and no
+        hook sees them -- a hook that logs a call or shows it to a person must
+        not expose them.
+
         Raises ToolDispatchError with an agent-actionable message for unknown
-        tools, unsupported tool types and authorization failures. Tool-level
-        errors are returned as the tool's normal result (callers interpret the
-        status convention themselves).
+        tools, unsupported tool types, authorization failures and calls a
+        pre_tool_call hook blocked. Tool-level errors are returned as the tool's
+        normal result (callers interpret the status convention themselves).
         """
+        from ...hooks.plugin_hook import HookType
         from .components.tool_execution import (
-            FRAMEWORK_REQUEST_ID_KEYS, ToolDispatchError, inject_runtime_params)
+            ToolDispatchError, drop_runtime_params, inject_runtime_params)
 
         # External tools (dotted names) take a different execution branch
         # (MCP client sessions) that programmatic dispatch does not replicate.
@@ -881,12 +1415,33 @@ class Agent(ToolServer):
         # verbatim; a script could otherwise pass _session_id to impersonate
         # another agent and defeat json_store's owner-based write protection.
         # request_id/requestId likewise: status and cancellation route by them.
-        forged = [k for k in params if k.startswith("_") or k in FRAMEWORK_REQUEST_ID_KEYS]
+        params, forged = drop_runtime_params(params)
         if forged:
             logger.warning(
                 "Dropping caller-supplied runtime param(s) %s from programmatic "
                 "dispatch of %s", forged, tool_name)
-            params = {k: v for k, v in params.items() if k not in forged}
+
+        hooks = getattr(self, "_hook_manager", None) if hook_source else None
+        tool_call = {"id": None, "name": tool_name, "server": server_name,
+                     "arguments": params, "source": hook_source}
+        if hooks is not None and hooks.wants_hooks(HookType.PRE_TOOL_CALL):
+            params, block = await hooks.execute_pre_tool_hooks(
+                tool_call, step=0, request_id=request_id or "", session_id=session_id or "",
+                cancellation_token=cancellation_token)
+            # The loop's own calls check the run's token right before they
+            # start; a script call must too -- a hook that waited for a person
+            # returns (or fails) on the cancel, and the call must not run then.
+            if cancellation_token is not None and getattr(cancellation_token, "is_cancelled", False):
+                raise ToolDispatchError("Request cancelled — the call did not run.")
+            if block is not None:
+                raise ToolDispatchError(block)
+            tool_call = {**tool_call, "arguments": params}
+        if injected_params:
+            extra, dropped = drop_runtime_params(dict(injected_params))
+            if dropped:
+                logger.warning("Dropping runtime param(s) %s injected into programmatic "
+                               "dispatch of %s", dropped, tool_name)
+            params = {**params, **extra}
 
         params = inject_runtime_params(
             params, session_id=session_id, user_id=user_id,
@@ -896,12 +1451,30 @@ class Agent(ToolServer):
 
         logger.info("Invoking tool %s via programmatic dispatch (agent=%s)",
                     tool_name, self.name)
-        if hasattr(server, 'call_with_status'):
-            result = await server.call_with_status(tool_name, params)
-        else:
-            result = await server.call(tool_name, params)
+        started_at = time.time()
+        try:
+            if hasattr(server, 'call_with_status'):
+                result = await server.call_with_status(tool_name, params)
+            else:
+                result = await server.call(tool_name, params)
+        except Exception as exc:
+            if hook_source is None:
+                raise
+            logger.exception("Tool %s failed via programmatic dispatch", tool_name)
+            result = {"status": "error", "error": f"Tool '{tool_name}' execution failed: {exc}",
+                      "type": type(exc).__name__}
+        finished_at = time.time()
         logger.info("Tool %s returned (programmatic dispatch): %s",
                     tool_name, str(result)[:500])
+        if hooks is not None and hooks.wants_hooks(HookType.POST_TOOL_CALL):
+            try:
+                result = await hooks.execute_post_tool_hooks(
+                    tool_call, result, step=0, request_id=request_id or "", session_id=session_id or "",
+                    cancellation_token=cancellation_token, started_at=started_at, finished_at=finished_at)
+            except Exception:
+                # The call ran; raising now would report a done job as failed.
+                logger.exception("post_tool_call hooks failed for %s; the result stays as "
+                                 "the tool returned it", tool_name)
 
         # A tool may stage a rewritten history via set_compacted_messages
         # (the summarizer's manual path does). During a run the request's own
@@ -954,6 +1527,36 @@ class Agent(ToolServer):
     _STEP_BUDGET_NOTE_MIN_STEPS = 5
     #: The note rides on this many of the last steps.
     _STEP_BUDGET_NOTE_LAST_STEPS = 2
+
+    @staticmethod
+    def _structured_output_note(text: str, marker: str) -> ChatMessage:
+        """What the run tells a model about its structured answer: the format (to a model that
+        does not get it as a field), or what is wrong with the answer it gave. The RUN speaks, as
+        for the step budget, and injected_by keeps it from counting as a turn."""
+        return ChatMessage(role=DEVELOPER, content=text, timestamp=datetime.now(timezone.utc),
+                           injected_by=marker)
+
+    @staticmethod
+    async def _check_structured_answer(content: str, response_format: ResponseFormat, request_id: str) -> Any:
+        """The answer's check, in the schema worker's process under its deadline (structured_output.
+        check_answer), in the lane of the run's user: the schema is the caller's, and this process never
+        runs jsonschema or regex on it."""
+        from ...core.request_context import get_request_user
+
+        return await check_answer(content, response_format, owner=get_request_user(request_id))
+
+    @staticmethod
+    def _structured_output_unavailable(checked: Any) -> dict:
+        """The error event of a run whose answer the checker could not look at (busy, broken): no verdict."""
+        return {"type": "error", "error_type": STRUCTURED_OUTPUT_UNAVAILABLE,
+                "message": "Structured output: the answer could not be checked, the checker is not available: "
+                           + "; ".join(checked.errors)}
+
+    @staticmethod
+    def _structured_output_failure(errors: List[str], *, corrected: bool) -> str:
+        when = " after one correction" if corrected else ""
+        return (f"Structured output: the final answer does not match the requested format{when}: "
+                + "; ".join(errors))
 
     @staticmethod
     def _output_cap_note(completion_tokens: Optional[int]) -> ChatMessage:
@@ -1411,7 +2014,8 @@ class Agent(ToolServer):
         session_id: Optional[str] = None,
         llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
-        use_advanced_model: bool = False
+        use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Run the agent and yield structured events for UI streaming.
 
@@ -1422,11 +2026,31 @@ class Agent(ToolServer):
             llm_override: Optional LLM client to use instead of self.llm (for per-request profile overrides)
             llm_profile_info_override: Optional profile info string for status display (e.g., "turbo:openai_httpx/gpt-5-nano")
             use_advanced_model: If True and llm_override not set, use best available LLM profile
+            response_format: Optional structured output for this run's FINAL answer (the step without
+                tool calls): sent as the provider's field on every step of the run where the step's
+                LLM takes it, described in the conversation where it does not and the format allows
+                the prompt fallback, refused otherwise. The final answer is validated, and sent back
+                once for correction; its ``final`` event carries it unformatted (content_format "json").
         """
+        if response_format is not None and not isinstance(response_format, ResponseFormat):
+            # A dict would pass for "no field" at every client and then fail deep in the loop.
+            raise TypeError(f"response_format must be a ResponseFormat, not {type(response_format).__name__}")
 
         # Generate request ID if not provided
         if request_id is None:
             request_id = short_id()
+
+        # Role gate (metadata.min_role) -- before anything of the run is written:
+        # the metadata below, the request registration, the session lock. The
+        # endpoints refuse earlier with a 403; this is the backstop for every
+        # path that reaches an agent without one (SAM, agent as a tool,
+        # stategraph, agent-cli woken for a session). Refused the way the lock
+        # refusal in _run_events is: an error, then the end.
+        refusal = self._refusal_event(request_id, session_id)
+        if refusal:
+            yield refusal
+            yield {"type": "end"}
+            return
 
         # Track if this is a newly generated session
         was_new_session = not session_id
@@ -1528,21 +2152,6 @@ class Agent(ToolServer):
         if llm_override is not None and hasattr(llm_override, 'set_app_title'):
             llm_override.set_app_title(self.name)
 
-        # Start a background checkpoint loop so long-running tool calls don't
-        # leave the session unsaved on disk. The loop persists messages up to
-        # the last consistent tool_call/tool_result boundary, so the file is
-        # always reload-safe (orphan-free).
-        checkpoint_session_id: Optional[str] = None
-        checkpoint_user_id: Optional[str] = None
-        if self._session_service and session_id and self._session_tracker is not None:
-            try:
-                meta = self._session_tracker.get_session_metadata(session_id) or {}
-                checkpoint_user_id = meta.get("user_id", "anonymous")
-                self._session_service.start_checkpoint_loop(self, checkpoint_user_id, session_id)
-                checkpoint_session_id = session_id
-            except Exception as e:
-                logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
-
         # The run sets its request id and its user in the context it runs in -- the
         # caller's: this generator runs in whoever iterates it. Its cleanup resets
         # them once a conversation context was built; a setup that failed before, or
@@ -1567,6 +2176,7 @@ class Agent(ToolServer):
                 llm_profile_info_override=llm_profile_info_override,
                 status_forwarder=status_forwarder,
                 use_advanced_model=use_advanced_model,
+                response_format=response_format,
             ):
                 # Before the yield: the consumer of a sub-run can stop reading at its
                 # end, error or cancel (sub_agent_manager does), and the event it
@@ -1593,11 +2203,6 @@ class Agent(ToolServer):
                 await status_forwarder.stop_forwarding()
             except Exception as e:
                 logger.debug(f"Failed to stop status_forwarder for {request_id}: {e}")
-            if checkpoint_session_id and self._session_service:
-                try:
-                    await self._session_service.stop_checkpoint_loop(checkpoint_session_id)
-                except Exception as e:
-                    logger.debug(f"Failed to stop checkpoint loop for {checkpoint_session_id}: {e}")
             current_request_id.set(request_before)
             current_run_user.set(user_before)
 
@@ -1842,6 +2447,25 @@ class Agent(ToolServer):
             self._set_live_messages(session_id, messages.copy())
         return messages
 
+    def _start_checkpoint_loop(self, session_id: str) -> Optional[asyncio.Task]:
+        """Start a background checkpoint loop so long-running tool calls don't
+        leave the session unsaved on disk. The loop persists messages up to
+        the last consistent tool_call/tool_result boundary, so the file is
+        always reload-safe (orphan-free).
+
+        The loop this run started, or None when one runs for the session already
+        (another run of this process on the same session, a nested one say):
+        _finalize_request stops this one and no other."""
+        if not (self._session_service and session_id and self._session_tracker is not None):
+            return None
+        try:
+            meta = self._session_tracker.get_session_metadata(session_id) or {}
+            return self._session_service.start_checkpoint_loop(
+                self, meta.get("user_id", "anonymous"), session_id)
+        except Exception as e:
+            logger.debug(f"Could not start checkpoint loop for session {session_id}: {e}")
+            return None
+
     async def _finalize_request(
         self,
         request_id: str,
@@ -1851,7 +2475,8 @@ class Agent(ToolServer):
         context: Optional[ConversationContext],
         messages: Optional[List[ChatMessage]],
         results: Dict[str, Any],
-        step: int
+        step: int,
+        checkpoint_loop: Optional[asyncio.Task] = None,
     ) -> None:
         """Finalize request and clean up resources.
 
@@ -1877,46 +2502,73 @@ class Agent(ToolServer):
             messages: Final conversation messages
             results: Execution results dictionary
             step: Final step number
+            checkpoint_loop: The checkpoint loop this run started (_start_checkpoint_loop)
         """
         # First, before anything that awaits: a cancellation there would leave the
         # finished run's model registered for the session's next /compact.
         self._step_llms.pop(session_id, None)
 
-        # Flush injected user messages that arrived too late to be processed
-        # (e.g. during the very last LLM call) into the conversation so they
-        # persist with the final save instead of being dropped with the request
-        # entry. They are answered by the next run on this session.
-        if messages is not None:
-            try:
-                messages = await self._take_in_late_messages(request_id, session_id, messages)
-            except Exception as e:
-                logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
-
-        # Clean up cancellation token
-        cancellation_manager = get_cancellation_manager()
-        cancellation_manager.unregister_request(request_id)
-
-        # Clean up request tracking but preserve session data
-        self._request_manager.unregister_active_request(request_id)
-        logger.debug("Cleaned up request tracking for %s", request_id)
-
-        # The session lock is let go of after the save below, not before it.
+        # The session this run holds, looked up first.
         sid = self._session_tracker.get_session_for_request(request_id)
 
+        # Stop the background checkpoint loop BEFORE the final save. The loop
+        # does its own load-modify-save every ~30s; if it overlaps the final
+        # save it can resume after we persist and write its older, trimmed
+        # snapshot over the newer one (silent message loss). Cancelling and
+        # awaiting the task here guarantees any in-flight checkpoint write has
+        # completed, so the final save below writes last and wins.
+        # The loop this run started and no other: a run nested in another on the
+        # same session would otherwise stop that one's. And first,
+        # before anything else awaits: stop_checkpoint_loop cancels it and takes
+        # it out of the registry before its own first await, so no cancel landing
+        # later leaves it running.
+        if checkpoint_loop is not None and self._session_service:
+            try:
+                await self._session_service.stop_checkpoint_loop(sid or session_id, started=checkpoint_loop)
+            except Exception as e:
+                logger.debug(f"Failed to stop checkpoint loop for {session_id} before final save: {e}")
+
+        # The session lock is let go of after the save below, not before it -- and
+        # in the finally, whatever cuts the steps up to it short: skipped, the
+        # session would stay owned by a run that is gone and refuse every later
+        # request on it until restart.
         persisted = False
+        cancelled = False
         try:
-            # Stop the background checkpoint loop BEFORE the final save. The loop
-            # does its own load-modify-save every ~30s; if it overlaps the final
-            # save it can resume after we persist and write its older, trimmed
-            # snapshot over the newer one (silent message loss). Cancelling and
-            # awaiting the task here guarantees any in-flight checkpoint write has
-            # completed, so the final save below writes last and wins. Idempotent:
-            # the outer run_events finally also calls stop_checkpoint_loop.
-            if sid and self._session_service:
+            # Flush injected user messages that arrived too late to be processed
+            # (e.g. during the very last LLM call) into the conversation so they
+            # persist with the final save instead of being dropped with the request
+            # entry. They are answered by the next run on this session.
+            if messages is not None:
                 try:
-                    await self._session_service.stop_checkpoint_loop(sid)
+                    messages = await self._take_in_late_messages(request_id, session_id, messages)
                 except Exception as e:
-                    logger.debug(f"Failed to stop checkpoint loop for {sid} before final save: {e}")
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+            elif sid:
+                # No conversation: the run failed on its way in, after its request was registered. A
+                # message handed to it meanwhile went with the request entry -- answered "appended",
+                # and gone. Into the session as the tracker holds it, and saved with it.
+                try:
+                    held = list(self._session_tracker.get_session_messages(sid))
+                    taken = await self._take_in_late_messages(request_id, session_id, list(held))
+                    if len(taken) > len(held):
+                        messages = taken
+                except Exception as e:  # noqa: BLE001 - as the flush above: nothing here may keep the lock
+                    logger.debug("Failed to flush appended messages for %s: %s", request_id, e)
+
+            # Clean up cancellation token -- read first: the session end hooks
+            # are told whether the run was cancelled, and after this the token
+            # is gone. A crash recorded the state from before it cancelled the
+            # token itself.
+            cancellation_manager = get_cancellation_manager()
+            run_token = cancellation_manager.get_token(request_id)
+            cancelled = (bool(results["cancelled"]) if "cancelled" in results
+                         else bool(run_token is not None and run_token.is_cancelled))
+            cancellation_manager.unregister_request(request_id)
+
+            # Clean up request tracking but preserve session data
+            self._request_manager.unregister_active_request(request_id)
+            logger.debug("Cleaned up request tracking for %s", request_id)
 
             # Persist session messages and keep the request->session mapping for a while.
             # Under the session lock: let go of before this save, a request of this
@@ -1966,9 +2618,13 @@ class Agent(ToolServer):
         # cancelled would take the message with it and nothing would re-deliver
         # it. They read the conversation, none of them writes it, so running
         # them after the save changes nothing else.
+        # How the run ended goes with it: an observer (telemetry) cannot see
+        # the run's events, only the hooks.
         try:
             await self._hook_manager.execute_session_end_hooks(
-                session_id, request_id, messages=messages, persisted=persisted
+                session_id, request_id, messages=messages, persisted=persisted,
+                cancelled=cancelled, errors=list(results.get("errors") or []),
+                completed="summary" in results,
             )
         except Exception as e:
             logger.warning(f"Session end hooks failed: {e}", exc_info=True)
@@ -2024,6 +2680,7 @@ class Agent(ToolServer):
         status_scope: Optional[StatusScope] = None,
         watch_reasoning: bool = True,
         on_reasoning_progress=None,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -2041,12 +2698,16 @@ class Agent(ToolServer):
             status_scope: Optional status scope for LLM to report progress (batch status, etc.)
             on_reasoning_progress: Optional ``async (text, chars, previous_chars)``,
                 awaited every _REASONING_PROGRESS_TICK characters of thinking
+            response_format: The structured output to put on the wire, only ever one the LLM said it
+                takes. Handed on only when set: a call without one is the call it always was, and a
+                client that never wired the keyword is never given it.
 
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
             - {"type": "status", ...}
             - {"type": "thinking_complete", "assistant": {...}}
         """
+        wire_format = {"response_format": response_format} if response_format is not None else {}
         if llm.supports_streaming():
             # Streaming LLM: zero-overhead real-time tokens
             accumulated_content = []
@@ -2072,7 +2733,8 @@ class Agent(ToolServer):
             async for chunk in llm.chat_tools_streaming(
                 messages, tools_schema,
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ):
                 chunk_type = chunk.get("type")
 
@@ -2185,7 +2847,8 @@ class Agent(ToolServer):
             llm_task = asyncio.create_task(llm.chat_tools(
                 messages, tools_schema, 
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ))
 
             # Poll for status events while waiting
@@ -2258,6 +2921,7 @@ class Agent(ToolServer):
         llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
         use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Execute the main LLM conversation loop with tool execution.
 
@@ -2333,6 +2997,50 @@ class Agent(ToolServer):
         # until a 120k cap must not be sent back for two more rounds of it.
         consecutive_cut_off = 0
         max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
+        # Structured output (response_format): a final answer that does not match is sent back
+        # once. The note that describes the format to a model without the field is looked for
+        # before every call, not remembered: a compaction may have taken it out of the history.
+        format_repaired = False
+
+        def _takes_format(client: Any) -> bool:
+            """Whether *client* may answer a step of this run. Any client, when the run has no
+            format or allows the prompt fallback; else only one that puts the field on the wire.
+            Asked where the run CHOOSES another model -- an escalation, a walk around a blocked
+            LLM, a failover: that choice must not end the run over a format the chosen model
+            cannot take while another one could."""
+            return (response_format is None or response_format.prompt_fallback
+                    or supports_response_format(client, response_format))
+
+        # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
+        # its schema goes through the worker's subset before anything runs, and the run works with
+        # what the worker made of it.
+        if response_format is not None and not response_format.checked:
+            from ...core.request_context import get_request_user
+
+            try:
+                response_format = await prepare_response_format(response_format, owner=get_request_user(request_id))
+            except (InvalidResponseFormat, SchemaCheckerError) as bad:
+                unavailable = isinstance(bad, SchemaCheckerError)  # busy or broken: no verdict on the format
+                error_msg = (f"Structured output: the format could not be checked, the checker is not available: {bad}"
+                             if unavailable else f"Structured output: the requested format cannot be used: {bad}")
+                logger.warning("[%s] %s", self.name, error_msg)
+                results.setdefault("errors", []).append(error_msg)
+                yield {"type": "error", "message": error_msg,
+                       "error_type": STRUCTURED_OUTPUT_UNAVAILABLE if unavailable else STRUCTURED_OUTPUT_INVALID}
+                return
+
+        # The run's own model decides at the start, not at the first step that lands on it: a
+        # walk around it while it is blocked would otherwise end the run mid-way, after its tool
+        # steps, once the block lifts and the next step goes back to it.
+        if not _takes_format(active_llm):
+            error_msg = unsupported_message(active_llm, response_format)
+            logger.warning("[%s] %s", self.name, error_msg)
+            results.setdefault("errors", []).append(error_msg)
+            yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+            return
+        # The description as it goes into the history: a note that is there under its marker but
+        # says something else (a compaction's placeholder) does not count as there.
+        format_note_text = instruction_text(response_format) if response_format is not None else None
 
         # Create a request-scoped loop detector.
         # Each request gets its own detector so concurrent requests on the
@@ -2468,10 +3176,12 @@ class Agent(ToolServer):
                     active_profile_override = llm_profile_info_override.split(":", 1)[0]
                 if escalate:
                     escalation_llm = self._get_escalation_llm()
-                    if escalation_llm is None:
+                    if escalation_llm is None or not _takes_format(escalation_llm):
                         # Advanced client couldn't be built — ran on standard.
                         # Disable escalation for this run so we don't retry the
                         # build every step (the window would never close).
+                        # Same for one that cannot take the run's structured
+                        # output: it will not learn to within the run.
                         escalate = False
                         escalator.disable()
                     elif model_health.available(escalation_llm, request_id):
@@ -2520,7 +3230,10 @@ class Agent(ToolServer):
                     blocked = getattr(llm, "model", "?")
                     for index, profile in enumerate(profiles):
                         client = self._fallback_client(profile)
-                        if client is not None and model_health.available(client, request_id):
+                        # _takes_format first: asking model_health makes this
+                        # request the prober of an LLM it would then not call.
+                        if (client is not None and _takes_format(client)
+                                and model_health.available(client, request_id)):
                             logger.info(
                                 f"[{self.name}] LLM {blocked} is blocked for "
                                 f"{model_health.remaining(llm):.0f}s more; this step runs on {profile}")
@@ -2558,7 +3271,7 @@ class Agent(ToolServer):
                         continue
                     if client is None:
                         client = self._fallback_client(label)
-                    if client is None or client is current_llm:
+                    if client is None or client is current_llm or not _takes_format(client):
                         fallback_taken.add(index)
                         continue
                     if model_health.available(client, request_id):
@@ -2724,6 +3437,39 @@ class Agent(ToolServer):
                 # For tools that size the context themselves (compact, summarize):
                 # the model answering this session's step, see llm_for_session.
                 self._step_llms[session_id] = current_llm
+                # Structured output, decided per CALL: a fallback within the step is another
+                # model. The field goes on every call of the run, the tool steps included --
+                # constant through the run, it keeps the cached prefix (OpenAI puts the schema
+                # into the rendered context, Anthropic invalidates the cache when it changes);
+                # a field on the last call only would miss the cache exactly there.
+                wire_format = None
+                if response_format is not None:
+                    if supports_response_format(current_llm, response_format):
+                        wire_format = response_format
+                    elif not response_format.prompt_fallback:
+                        # Unreachable while every switch of model asks _takes_format (and the run's
+                        # own model is asked at the start): the guard that keeps a switch added
+                        # later from sending the request without its field.
+                        model_health.drop_probe(current_llm, request_id)
+                        error_msg = unsupported_message(current_llm, response_format)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg,
+                               "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+                        return
+                    # A schema-less JSON mode says nothing about the shape, and a model without
+                    # the field hears of the format only here. Once, as long as it stays in the
+                    # history, and before this step's budget note, which has to stay the last
+                    # thing the model reads.
+                    if (wire_format is None or response_format.type == JSON_OBJECT) and not any(
+                            getattr(m, "injected_by", None) == FORMAT_NOTE and m.content == format_note_text
+                            for m in messages):
+                        note = self._structured_output_note(format_note_text, FORMAT_NOTE)
+                        if budget_note is not None and messages and messages[-1] is budget_note:
+                            messages.insert(len(messages) - 1, note)
+                        else:
+                            messages.append(note)
+                        context.messages = messages
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
                 health_asked_at = model_health.now()
@@ -2740,6 +3486,7 @@ class Agent(ToolServer):
                         on_reasoning_progress=(_reasoning_progress
                                                if self._hook_manager.wants_llm_progress()
                                                else None),
+                        response_format=wire_format,
                     ):
                         event_type = event.get("type")
 
@@ -3190,8 +3937,13 @@ class Agent(ToolServer):
             # Format content for display (markdown -> HTML for web UI)
             formatted_content = content
             content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
+            # A structured run's answer is JSON, not markdown: rendered to HTML it would be neither
+            # what the caller asked for nor parseable (<p>{<br>"a": 1</p>).
+            structured_answer = response_format is not None and not tool_calls
+            if structured_answer:
+                content_format = "json"
             try:
-                if content and self._hook_manager:
+                if content and self._hook_manager and not structured_answer:
                     formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
                         output=content,
                         request_id=request_id or "unknown",
@@ -3396,6 +4148,25 @@ class Agent(ToolServer):
                                 elif content and content.strip():
                                     # What is left is a text answer on the final
                                     # call: delivered like the no-tool answer below.
+                                    if response_format is not None:
+                                        # No step is left to ask for a correction in.
+                                        checked = await self._check_structured_answer(
+                                            content, response_format, request_id)
+                                        if checked.checker_failed:
+                                            event = self._structured_output_unavailable(checked)
+                                            results.setdefault("errors", []).append(event["message"])
+                                            yield event
+                                            return
+                                        if not checked.ok:
+                                            error_msg = self._structured_output_failure(
+                                                checked.errors, corrected=format_repaired)
+                                            logger.warning("[%s] %s", self.name, error_msg)
+                                            results.setdefault("errors", []).append(error_msg)
+                                            yield {"type": "error", "message": error_msg,
+                                                   "error_type": STRUCTURED_OUTPUT_INVALID}
+                                            return
+                                        content = formatted_content = assistant_msg.content = checked.text
+                                        content_format = assistant_msg.content_format = "json"
                                     results["summary"] = content
                                     self._set_live_messages(session_id, messages.copy())
                                     final_event = {"type": "final", "summary": formatted_content,
@@ -3418,17 +4189,7 @@ class Agent(ToolServer):
                 tool_messages = []
                 tool_results = []
 
-                # Extract user_id from session metadata for multi-user tool isolation
-                user_id: Optional[str] = None
-                if self._session_tracker:
-                    session_meta = self._session_tracker.get_session_metadata(session_id)
-                    if session_meta:
-                        user_id = session_meta.get("user_id")
-                        logger.debug(f"[TOOL_EXEC] Extracted user_id='{user_id}' from session_metadata for session {session_id}")
-                    else:
-                        logger.warning(f"[TOOL_EXEC] No session_metadata found for session {session_id}")
-                else:
-                    logger.warning("[TOOL_EXEC] No _session_tracker available")
+                user_id = self.tool_user(request_id, session_id)
 
                 # CRITICAL: Pass per-request status_forwarder as parameter to avoid race conditions
                 # when multiple requests share the same agent instance (e.g., parent + sub-agent)
@@ -3466,9 +4227,14 @@ class Agent(ToolServer):
                 # Stuck signal: a step whose tool calls ALL returned an error.
                 # Catches the near-loops the exact-match detector misses (same
                 # tool retried with slightly varied wrong args). N in a row →
-                # open an escalation window.
-                if tool_messages and all(
-                        self._tool_message_is_error(m) for m in tool_messages):
+                # open an escalation window. Only calls that ran count: a call a
+                # hook blocked (a policy, a person saying no) is no sign that a
+                # stronger model is needed -- a step of nothing but blocked calls
+                # neither grows the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                if tool_messages and not ran_messages:
+                    prev_step_all_errored = True
+                elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):
                     consecutive_tool_error_steps += 1
                     prev_step_all_errored = True  # keep the streak alive next step
                     if consecutive_tool_error_steps >= escalate_error_streak and not final_call:
@@ -3666,6 +4432,40 @@ class Agent(ToolServer):
 
             # If we have content AND it's not just whitespace, treat as final answer
             if content and content.strip():
+                if response_format is not None:
+                    checked = await self._check_structured_answer(content, response_format, request_id)
+                    if checked.checker_failed:
+                        event = self._structured_output_unavailable(checked)
+                        logger.warning("[%s] %s", self.name, event["message"])
+                        results.setdefault("errors", []).append(event["message"])
+                        yield event
+                        return
+                    if not checked.ok and not checked.schema_failed and not format_repaired and not final_call:
+                        # Once: the model sees its answer and what is wrong with it, and
+                        # writes it again. Appended like every loop note, so the cached
+                        # prefix stays; its answer stays too, the note refers to it.
+                        format_repaired = True
+                        logger.warning("[%s] Final answer does not match the requested format, asking "
+                                       "once for a correction: %s", self.name, "; ".join(checked.errors))
+                        messages.append(self._structured_output_note(
+                            repair_text(checked.errors), "agent.structured_output_repair"))
+                        context.messages = messages
+                        self._set_live_messages(session_id, messages.copy())
+                        await status_worker.progress(
+                            "final answer does not match the JSON format -- asked once to correct it",
+                            meta={"step": step + 1})
+                        consecutive_no_tool_calls = 0
+                        continue
+                    if not checked.ok:
+                        error_msg = self._structured_output_failure(checked.errors, corrected=format_repaired)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                        return
+                    # Delivered as checked: a fence around the whole answer is gone, in the
+                    # session too -- the caller parses what the session keeps (openai_api).
+                    content = formatted_content = assistant_msg.content = checked.text
+                    content_format = assistant_msg.content_format = "json"
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
@@ -3685,6 +4485,13 @@ class Agent(ToolServer):
             # which the error after the loop reports, not an empty success.
             if consecutive_no_tool_calls >= max_consecutive_no_tools and not final_call:
                 logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
+                if response_format is not None:
+                    # An empty answer is no JSON: not a final one for a structured run.
+                    error_msg = self._structured_output_failure(
+                        schema_worker.parse_answer(content)[2], corrected=format_repaired)
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                    return
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
                 self._set_live_messages(session_id, messages.copy())
@@ -3735,6 +4542,7 @@ class Agent(ToolServer):
         llm_profile_info_override: Optional[str] = None,
         status_forwarder: Optional[StatusEventForwarder] = None,
         use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
@@ -3764,6 +4572,7 @@ class Agent(ToolServer):
         step = 0
         context = None
         messages = None
+        checkpoint_loop: Optional[asyncio.Task] = None
         results: Dict[str, Any] = {"task": task, "calls": []}
 
         # Register this request BEFORE emitting start event so appends work immediately
@@ -3797,12 +4606,43 @@ class Agent(ToolServer):
 
         # Emit start event BEFORE opening status_scope contexts
         # This ensures frontend has currentRequestId set before any status events arrive
-        yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+        started = False
+        try:
+            yield {"type": "start", "task": task, "request_id": request_id, "session_id": session_id}
+            started = True
+        finally:
+            if not started:
+                # Closed at its first event (a client gone at once): nothing below runs, the
+                # finally that ends a run included, and the session stayed held for good by a
+                # run that never ran. Let go of it as a refused request does.
+                self._request_manager.unregister_active_request(request_id)
+                self._session_tracker.unregister_request(request_id)
 
-        # Now open status_scope contexts - their START events will arrive AFTER the start event
-        async with status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id) as status_coordinator, \
-                   status_scope(status_bus, f"{self.name}_worker", worker_request_id) as status_worker:
+        # Now open status_scope contexts - their START events will arrive AFTER the start event.
+        # Entered before the block they cover, and guarded like the start event: entering one
+        # publishes, and a cancel or an error there came before the try whose finally ends a run
+        # -- the request stayed registered and its session held for good.
+        scopes = contextlib.AsyncExitStack()
+        try:
+            status_coordinator = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_coordinator", coordinator_request_id))
+            status_worker = await scopes.enter_async_context(
+                status_scope(status_bus, f"{self.name}_worker", worker_request_id))
+        except BaseException as error:
+            self._request_manager.unregister_active_request(request_id)
+            self._session_tracker.unregister_request(request_id)  # lets go of the session's lock too
+            # A scope already open is told why it ends, as `async with` would tell it
+            await scopes.__aexit__(type(error), error, error.__traceback__)
+            raise
+        async with scopes:
             try:
+                # The checkpoint loop: started with the session held, first thing in the
+                # try whose finally (_finalize_request) stops it -- this one, the loop this
+                # run started. Started before the lock (in run_events, as it was), a
+                # request refused there registered a loop of its own between two runs,
+                # and the run after it went without one once that request cleaned up.
+                checkpoint_loop = self._start_checkpoint_loop(session_id)
+
                 # Session presence: held from here on, not from the first LLM
                 # call -- whoever lets go of the endpoint's hold meanwhile (a
                 # client that disconnects) would leave the session looking idle
@@ -3822,6 +4662,7 @@ class Agent(ToolServer):
                     )
                 except RuntimeError as e:
                     # LLM not available - emit error and end stream
+                    results.setdefault("errors", []).append(str(e))
                     yield {"type": "error", "message": str(e), "request_id": request_id}
                     yield {"type": "end"}
                     return
@@ -3856,9 +4697,24 @@ class Agent(ToolServer):
                     llm_override=llm_override,
                     llm_profile_info_override=llm_profile_info_override,
                     use_advanced_model=use_advanced_model,
+                    response_format=response_format,
                 )
 
                 async for event in loop_generator:
+                    # Track step from events that contain step info
+                    # This ensures we report accurate step count in completion message
+                    if "step" in event:
+                        step = event.get("step", step)
+
+                    # Capture summary and errors from events -- before the yield:
+                    # a consumer may stop reading at an error (sub_agent_manager
+                    # and stategraph do), and the finalize, its status line and
+                    # the session end hooks must still know of it.
+                    if event.get("type") == "final" and "summary" in event:
+                        results["summary"] = event["summary"]
+                    elif event.get("type") == "error":
+                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
+
                     yield event
 
                     # Yield any pending status events after each main event
@@ -3870,19 +4726,19 @@ class Agent(ToolServer):
                     if context:
                         messages = context.messages
 
-                    # Track step from events that contain step info
-                    # This ensures we report accurate step count in completion message
-                    if "step" in event:
-                        step = event.get("step", step)
-                    
-                    # Capture summary and errors from events
-                    if event.get("type") == "final" and "summary" in event:
-                        results["summary"] = event["summary"]
-                    elif event.get("type") == "error":
-                        results.setdefault("errors", []).append(event.get("message", "Unknown error"))
-
             except Exception as e:
                 logger.exception("Agent execution failed with exception:")
+                # Into the results like every error event of the loop, and before
+                # the yield (a consumer may stop reading there): unrecorded, the
+                # finalize reported the crashed run "completed" and the session
+                # end hooks saw no error.
+                results.setdefault("errors", []).append(f"Agent execution failed: {e}")
+                # Whether the run had been cancelled, read before the
+                # cancel_request below: it cancels the run's own token too (its
+                # tools and background work stop on it), and the finalize would
+                # then report every crash a consumer reads past as a cancel.
+                crash_token = get_cancellation_manager().get_token(request_id)
+                results["cancelled"] = bool(crash_token is not None and crash_token.is_cancelled)
                 yield {"type": "error", "message": f"Agent execution failed: {e}"}
                 
                 # CRITICAL: Cancel all sub-requests when parent agent fails
@@ -3904,7 +4760,8 @@ class Agent(ToolServer):
                         context=context,
                         messages=messages if messages else (context.messages if context else None),
                         results=results,
-                        step=step
+                        step=step,
+                        checkpoint_loop=checkpoint_loop,
                     )
                 finally:
                     # Session presence: after the save, so input still waiting
@@ -3945,11 +4802,44 @@ class Agent(ToolServer):
                 "error": "Missing required parameter: 'task', 'query', or 'prompt'"
             }
 
-        # Extract session context from injected params (populated by ToolExecutionManager)
+        # Extract session context from injected params (populated by ToolExecutionManager).
+        # The session only from the injected ``_session_id``, never a plain
+        # ``session_id``: no agent tool schema offers one, and tool execution strips
+        # a model's ``_*`` and request-id keys, not that one -- so the model could
+        # name ANY session this agent holds, another user's sub-session included,
+        # and the run would continue it with its history, its user and that
+        # session's approvals instead of its caller's. And not the caller's session
+        # itself: a sub-session of this agent's own below it (tool_session_id).
         request_id = params.get("request_id") or params.get("_request_id")
-        session_id = params.get("session_id") or params.get("_session_id")
+        caller_session_id = params.get("_session_id")
+        session_id = tool_session_id(caller_session_id, self.name) if caller_session_id else None
+
+        # A call that brings a ``_user_id`` but no request naming a user --
+        # dispatched without a request id: a plugin command (run_plugin_command)
+        # -- runs under an id of its own registered for that user, as
+        # MachineAgent.call does. Unregistered, the run stored "anonymous" as
+        # the session's user and ran its tools as anonymous, and the same user's
+        # next call in the session was refused as somebody else's. A dispatch
+        # that brings a request id and a user registered the request itself
+        # (inject_runtime_params); one that brings no user injects none.
+        own_request_id = self._request_for_injected_user(request_id, params.get("_user_id"))
+        if own_request_id:
+            request_id = own_request_id
 
         try:
+            # The role gate and the session's user, asked here as well as in
+            # run_events: refused there, the run's error would come back inside a
+            # "success" answer -- the calling model should read a refusal as one.
+            refusal = self._refusal_event(request_id, session_id)
+            if refusal:
+                return {"status": "error", "agent": self.name, "task": task, "error": refusal["message"],
+                        "error_type": refusal["error_type"]}
+            if session_id:
+                refusal = await self._open_tool_session(request_id, caller_session_id, session_id,
+                                                        caller_agent=params.get("_agent_name"), title=str(task))
+                if refusal:
+                    return {"status": "error", "agent": self.name, "task": task, **refusal}
+
             # Execute the task using this agent
             logger.info("Agent %s executing task: %s", self.name, task[:100])
             from .result_utils import collect_final_result, extract_summary
@@ -3959,6 +4849,13 @@ class Agent(ToolServer):
                 request_id=request_id,
                 session_id=session_id
             )
+            if result.get("refused"):
+                # Refused at its start -- another call of the same caller session has the session (its lock):
+                # the calling model reads a refusal as one, not a "success" with the error inside.
+                errors = result.get("errors") or []
+                return {"status": "error", "agent": self.name, "task": task,
+                        "error": errors[-1] if errors else "the run was refused before it started",
+                        "error_type": result["refused"]}
 
             # Wrap result with agent metadata
             return {
@@ -3977,6 +4874,32 @@ class Agent(ToolServer):
                 "task": task,
                 "error": str(e)
             }
+        finally:
+            if own_request_id:
+                # What this call registered goes with it, as the API lets go of
+                # its request tree when the request ends.
+                from ...core.request_context import release_request_user_tree
+                release_request_user_tree(own_request_id)
+
+    @staticmethod
+    def _request_for_injected_user(request_id: Optional[str], injected_user: Any) -> Optional[str]:
+        """A request id registered for *injected_user*, or None when none is needed.
+
+        None where the call's request id already names a user (the owner wins) or
+        no user is injected. Otherwise an id of its own: derived from the caller's
+        (so cancel and status stay under its prefix) or new, registered for the
+        user -- the framework's injected ``_user_id``, which a model cannot set
+        (tool execution strips ``_*`` keys from its arguments).
+        """
+        from ...core.request_context import get_request_user, register_request_user
+
+        if not isinstance(injected_user, str) or not injected_user.strip():
+            return None
+        if request_id and get_request_user(str(request_id), default=None) is not None:
+            return None
+        own = f"{request_id}_{short_id(6)}" if request_id else short_id()
+        register_request_user(own, injected_user.strip())
+        return own
 
     def get_schema(self) -> dict[str, Any]:
         """

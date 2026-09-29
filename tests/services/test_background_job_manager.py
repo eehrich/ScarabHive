@@ -1056,3 +1056,61 @@ async def test_a_reader_waiting_for_the_next_event_is_woken_by_it(job_manager):
     finally:
         hold.set()
         await reader.aclose()
+
+
+class TestUnreadFor:
+    """How long nobody has read a job: tool_approval asks a person only while
+    one reads the run, and allows a reload its moment without a reader."""
+
+    async def _job(self, manager, request_id):
+        done = asyncio.Event()
+
+        async def runner():
+            yield {"type": "status", "message": "working"}
+            await done.wait()
+
+        await manager.create_job(request_id=request_id, user_id="u", agent_name="a",
+                                 session_id=None, agent_runner=runner)
+        return done
+
+    async def test_the_clock_runs_from_the_moment_the_last_reader_left(self, job_manager):
+        done = await self._job(job_manager, "unread1")
+        try:
+            await job_manager.increment_sse_client("unread1")
+            assert job_manager.unread_for("unread1") == 0.0
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread1")
+            assert job_manager.unread_for("unread1") < 0.1, "the clock ran while the job was read"
+            await asyncio.sleep(0.2)
+            assert job_manager.unread_for("unread1") >= 0.2
+        finally:
+            done.set()
+
+    async def test_a_reader_who_came_back_restarts_the_clock(self, job_manager):
+        """A reload, and later the tab is closed: the grace counts from the close,
+        not from the reload."""
+        done = await self._job(job_manager, "unread2")
+        try:
+            await job_manager.increment_sse_client("unread2")
+            await job_manager.decrement_sse_client("unread2")   # the reload leaves ...
+            await asyncio.sleep(0.2)
+            await job_manager.increment_sse_client("unread2")   # ... and comes back
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread2")   # the tab is closed
+            assert job_manager.unread_for("unread2") < 0.1
+        finally:
+            done.set()
+
+    async def test_an_extra_leave_does_not_restart_the_clock(self, job_manager):
+        done = await self._job(job_manager, "unread3")
+        try:
+            await job_manager.increment_sse_client("unread3")
+            await job_manager.decrement_sse_client("unread3")
+            await asyncio.sleep(0.2)
+            await job_manager.decrement_sse_client("unread3")
+            assert job_manager.unread_for("unread3") >= 0.2
+        finally:
+            done.set()
+
+    def test_a_run_without_a_job_has_no_clock(self, job_manager):
+        assert job_manager.unread_for("nojob") is None

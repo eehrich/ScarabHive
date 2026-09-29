@@ -3,23 +3,23 @@
 **Document Type:** Software Architecture Document (SAD)  
 **Component:** AgentSystem Core Architecture  
 **Version:** 1.0  
-**Last Updated:** 2025-01-15  
+**Last Updated:** 2026-09-28  
 **Status:** Active
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Architectural Goals](#architectural-goals)
-3. [System Context](#system-context)
-4. [Component Architecture](#component-architecture)
-5. [Key Design Decisions](#key-design-decisions)
-6. [Data Flow](#data-flow)
-7. [Technology Stack](#technology-stack)
-8. [Quality Attributes](#quality-attributes)
-9. [Deployment View](#deployment-view)
-10. [Related Documents](#related-documents)
+1. [Overview](#1-overview)
+2. [Architectural Goals](#2-architectural-goals)
+3. [System Context](#3-system-context)
+4. [Component Architecture](#4-component-architecture)
+5. [Key Design Decisions](#5-key-design-decisions)
+6. [Data Flow](#6-data-flow)
+7. [Technology Stack](#7-technology-stack)
+8. [Quality Attributes](#8-quality-attributes)
+9. [Deployment View](#9-deployment-view)
+10. [Related Documents](#10-related-documents)
 
 ---
 
@@ -68,7 +68,7 @@ This document describes the core architecture of AgentSystem, including:
 
 - Distributed agent execution (single-process architecture)
 - Built-in LLM training or fine-tuning
-- GUI-based configuration (YAML/API only)
+- GUI-based configuration beyond agents (the `agent_editor` panel edits agent YAML; the rest is YAML/API)
 - Real-time collaboration between multiple users on same session
 
 ---
@@ -120,15 +120,19 @@ This document describes the core architecture of AgentSystem, including:
 └──────────────┘   └───────────────┘   └──────────────────┘
 ```
 
+The diagram is conceptual: the CLI runs agents in its own process (it calls the
+API only for `reload`), and the "Agent Service" box is the agents' own run loop
+(`Agent.run_events()`) -- `services/agent_service.py` is an unused stub (4.2.2).
+
 ### 3.2 External Systems
 
 | System | Protocol | Purpose |
 |--------|----------|---------|
 | **LLM Providers** | HTTP/HTTPS | AI model inference (OpenAI, Ollama, etc.) |
-| **External MCP servers** | HTTP/SSE | External tool integration (Context7, Memory, etc.) |
+| **External MCP servers** | HTTP/SSE/stdio | External tool integration (Context7, Memory, etc.) |
 | **File System** | Local I/O | Configuration, sessions, cache storage |
 | **Web Browsers** | HTTP/SSE | Web UI access, real-time updates |
-| **CLI Clients** | HTTP | Command-line interface |
+| **CLI Clients** | In-process (HTTP only for `agent-cli reload`) | Command-line interface |
 
 ---
 
@@ -180,16 +184,20 @@ This document describes the core architecture of AgentSystem, including:
 - CORS, authentication, rate limiting
 
 **Key Files:**
-- `src/agent_system/app.py` - Application factory
-- `src/agent_system/api/endpoints.py` - API routes
-- `src/agent_system/api/streaming.py` - SSE endpoints
+- `src/agent_system/app.py` - Application factory (`build_app`), most routes and the SSE endpoints
+- `src/agent_system/api/` - Routers for auth, admin, sessions, debug, health/version
 
 **Dependencies:**
 - FastAPI framework
 - Uvicorn ASGI server
 - Pydantic models
 
-#### 4.2.2 Agent Service (`services/agent_service.py`)
+#### 4.2.2 Agent Service (`services/agent_service.py`) -- unused stub
+
+Not wired in: `app.py` keeps `_agent_service = None`, and
+`services/__init__.py` lists it as "STUB - TODO". `/run` and `/events` call
+`Agent.run_events()` on the selected agent directly; agent-cli runs agents
+in-process. The interface below is what the stub declares.
 
 **Responsibilities:**
 - Agent execution orchestration
@@ -200,12 +208,12 @@ This document describes the core architecture of AgentSystem, including:
 **Key Interfaces:**
 ```python
 class AgentService:
-    async def run_agent_stream(
-        request_id: str,
-        agent_name: str,
+    async def execute_task(
         task: str,
-        session_id: str
-    ) -> AsyncGenerator[dict, None]
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        images: Optional[list[bytes]] = None
+    ) -> AsyncIterator[dict[str, Any]]
 ```
 
 #### 4.2.3 Agent (`servers/agent/server.py`)
@@ -215,6 +223,15 @@ class AgentService:
 - Tool discovery and execution
 - LLM interaction
 - Context management
+- As a tool of another agent (`Agent.call`, `<name>_execute_task`): a session of its
+  own per caller session (`Agent.tool_session`, `tool_session_id`, at most
+  `TOOL_SESSION_ID_MAX` long), stored under the call's user below the caller's
+  session like a sub-agent manager's sub-session, and dropped from every agent's
+  tracker with the caller's session (`SessionTracker.discard_session`). A call to an
+  agent that runs above it already -- itself, directly or through other agents called
+  as tools -- is refused (`RECURSIVE_CALL`, `Agent._runs_above`); across a SAM or
+  stategraph hop the sub-agent nesting budget bounds it (a stategraph agent activity
+  only where a SAM above set one)
 
 **Key Interfaces:**
 ```python
@@ -236,20 +253,20 @@ class Agent(ToolServer):
 - Coordinate with tool integration to avoid duplicate initialization via `servers_bootstrapped` flag
 
 **Key Capabilities:**
-- Works with both `ToolServerRegistry` (CLI) and `PluginToolRegistry` (API singleton)
+- Works with the `ToolServerRegistry` every entry point builds (the API included); plugin instances are also kept in the `PluginToolRegistry` singleton for the web/UI side
 - Injects shared services (currently `session_service`, future dependencies via `agent_injection` helpers)
 - Provides specialized helpers (`initialize_for_api`, `initialize_for_cli`, `bootstrap_and_inject`)
 - Ensures consistent dependency graph for sub-agent management and hooks
 
-#### 4.2.5 Plugin Registry (`plugins/registry.py`)
+#### 4.2.5 Plugin Registry (`plugins/discovery.py`, `plugins/tool_adapter.py`, `runtime.py`)
 
 **Responsibilities:**
 - Plugin discovery (filesystem + config)
-- Factory registration and instantiation
-- Metadata management
+- Instantiation: `Runtime` (`runtime.py`) builds every declared server from the discovered factories into the `ToolServerRegistry`; `PluginToolRegistry` (`plugins/tool_adapter.py`) keeps the built plugin instances for the web/UI side
+- Metadata management (`plugin.toml`, `plugins/plugin_manifest.py`)
 
 **Key Features:**
-- Auto-discovery from `src/plugins/`
+- Auto-discovery from the `plugins.plugin_dirs` in `config/plugins.yaml` (and Python entry points)
 - Config-based agent registration
 - Lazy initialization support
 
@@ -280,10 +297,10 @@ class Agent(ToolServer):
 - `llm_progress` - During a streaming LLM call (no messages attached)
 - `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
-- `pre_tool_call` / `post_tool_call` - declared but **never fire**: nothing calls
-  `execute_pre_tool_hooks` / `execute_post_tool_hooks`
-  (`servers/agent/components/hook_integration.py`); registering one logs a warning
-  (`plugins/discovery.py`)
+- `pre_tool_call` / `post_tool_call` - around every tool call of the model
+  (`components/tool_execution.py`) and of a tool_script script
+  (`Agent.dispatch_tool_call(hook_source=...)`): pre may change the arguments or
+  block the call, post may change the result (`docs/plugin_hooks.md`)
 
 Each hook runs under its own timeout (`asyncio.wait_for` in `hooks/registry.py`); a
 timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
@@ -303,9 +320,9 @@ timed-out hook is logged and skipped. Global `hooks.overrides` accept an exact
 - **`llm_system:`** - LLM profiles and model configurations
 - **`plugins:`** - Plugin discovery, default configs, and server configurations
 - **`external_servers:`** - External MCP server connections
-- **`agents:`** - Config-based agent definitions
+- **`agents*/*.yaml`, `src/plugins*/*/agents/*.yaml`** - Config-based agent definitions (as `plugins.servers` entries; there is no top-level `agents:` section)
 
-All configuration sections can be defined in the main config or in separate files that are included via the `includes:` list. The system uses deep-merge to combine configurations from multiple files.
+Files listed under `includes:` contribute `llm_system`, `plugins` and `hooks` (deep-merged) and `external_servers` (the last file that has it wins). Every other top-level section (`auth`, `network`, `logging`, ...) is read from `config.yaml` only; in an included file it is silently ignored.
 
 **Datenverzeichnis (`agent_system/paths.py`):** Alles, was das System schreibt —
 Sessions, Datenbanken, Caches, die Bücher des Writers — liegt unter einem
@@ -363,7 +380,7 @@ Arbeitsverzeichnis) und die `ReadWritePaths` der systemd-Units.
 - Clear separation of concerns
 - Minimal inheritance (composition over inheritance)
 - Supports pure tool plugins, pure hook plugins, and hybrids
-- Standard MCP protocol for tools
+- Built-in tools run in-process via `ToolServer`; the MCP protocol only for external servers (`mcp_client` plugin)
 
 **Status:** Accepted
 
@@ -417,7 +434,7 @@ Arbeitsverzeichnis) und die `ReadWritePaths` der systemd-Units.
 |-----------|-----------|-----------|
 | **Web Framework** | FastAPI | Async, type hints, OpenAPI |
 | **ASGI Server** | Uvicorn | Performance, HTTP/2, WebSockets |
-| **LLM Client** | LiteLLM | Multi-provider support |
+| **LLM Client** | Provider plugins (`src/plugins/llm_*`): openai, anthropic, google-genai, openrouter SDKs + httpx | Multi-provider support |
 | **Validation** | Pydantic | Type safety, validation, serialization |
 | **Config Format** | YAML | Human-readable, comments, nesting |
 | **Session Storage** | JSON files | Simple, inspectable, version-controllable |
@@ -434,10 +451,7 @@ Arbeitsverzeichnis) und die `ReadWritePaths` der systemd-Units.
 User Request (HTTP/CLI)
          │
          ▼
-   FastAPI Endpoint
-         │
-         ▼
-   Agent Service
+   FastAPI /run, /events  (or agent-cli, in-process)
          │
      ├─► Ensure InitializationService bootstrapped registry & injections
      │      │
@@ -457,7 +471,11 @@ User Request (HTTP/CLI)
          │      ▼
          │   Tool Execution Manager
          │      │
-         │      ├─► Execute Tool (Plugin/MCP)   (no tool hooks fire)
+         │      ├─► Hook: pre_tool_call    (per call, in call order, before any
+         │      │                           call starts; may change arguments or block)
+         │      ├─► Execute Tool (Plugin/MCP)
+         │      ├─► Hook: post_tool_call   (per call, in call order, once all are
+         │      │                           done; may change the result)
          │      ▼
          │   Tool Results
          │
@@ -506,14 +524,14 @@ System Startup
    ▼
 Filesystem Discovery
    │
-   ├─► Scan src/plugins/*/plugin.py
-   ├─► Load plugin.yaml metadata
+   ├─► Scan plugin_dirs/*/ for the entrypoint (plugin.toml `entrypoint`, default plugin.py:PLUGIN_FACTORY)
+   ├─► Load plugin.toml metadata
    ├─► Register factories in registry
    │
    ▼
 Config-Based Agent Discovery
    │
-   ├─► Load agents.yaml
+   ├─► Load agent YAMLs from the includes (config/agents*/*.yaml, src/plugins*/*/agents/*.yaml)
    ├─► Validate agent definitions
    ├─► Create factories dynamically
    ├─► Register alongside plugins
@@ -538,20 +556,21 @@ Ready
 ```yaml
 runtime:
   language: Python 3.11+
-  framework: FastAPI 0.109+
+  framework: FastAPI 0.115.6
   server: Uvicorn
 
 dependencies:
   web:
     - fastapi
     - uvicorn[standard]
-    - pydantic >= 2.0
+    - pydantic >= 2.11
     - python-multipart
   
-  llm:
-    - litellm
+  llm:  # declared by the provider plugins (src/plugins/llm_*/plugin.toml)
     - openai
     - anthropic
+    - google-genai
+    - openrouter
   
   data:
     - pyyaml
@@ -561,7 +580,7 @@ dependencies:
   utilities:
     - httpx
     - python-jose[cryptography]
-    - passlib[bcrypt]
+    - bcrypt
 ```
 
 ### 7.2 Development Stack
@@ -576,11 +595,6 @@ development:
   code_quality:
     - ruff
     - mypy
-    - black
-  
-  documentation:
-    - mkdocs
-    - mkdocs-material
 ```
 
 ---
@@ -592,7 +606,7 @@ development:
 | Metric | Target | Current | Notes |
 |--------|--------|---------|-------|
 | **Agent Response Time** | < 30s | ~10-20s | Depends on LLM latency |
-| **Tool Execution** | Parallel | Parallel | asyncio.gather() |
+| **Tool Execution** | Parallel | Parallel | asyncio.create_task() + asyncio.wait() |
 | **Concurrent Users** | 50+ | Tested: 20 | Limited by LLM rate limits |
 | **Session Load Time** | < 100ms | ~50ms | JSON file I/O |
 | **Tool Cache Hit Rate** | > 80% | ~85% | 30s TTL |
@@ -614,9 +628,9 @@ development:
 | **Authentication** | ✅ JWT + API Keys | Optional, configurable |
 | **Authorization** | ✅ User-based sessions | Per-user isolation |
 | **Input Validation** | ✅ Pydantic models | All API inputs validated |
-| **Rate Limiting** | ✅ Token bucket | Configurable per-user |
-| **CORS** | ✅ Configurable | Default: localhost only |
-| **Secrets Management** | ✅ Env vars | No secrets in config files |
+| **Rate Limiting** | ✅ Sliding 1-minute window | Per client IP (`auth.requests_per_minute`); only with `auth.enabled` and `auth.rate_limit_enabled` (off in the shipped config) |
+| **CORS** | ✅ Configurable | `auth.cors_origins` (default and shipped value `*`); applied only with `auth.enabled` and `auth.cors_enabled` (on by default) |
+| **Secrets Management** | ✅ Env vars / `config/secrets.env` | Provider keys referenced as `${VAR}` in the YAML; `auth.secret_key` and `auth.default_admin_password` are literals in the shipped config and must be changed |
 
 ### 8.4 Maintainability
 
@@ -650,7 +664,7 @@ development:
 │  │   File System                │  │
 │  │   - config/                  │  │
 │  │   - data/sessions/           │  │
-│  │   - .cache/                  │  │
+│  │   - data/cache/              │  │
 │  │   - logs/                    │  │
 │  └──────────────────────────────┘  │
 └─────────────────────────────────────┘
@@ -681,19 +695,22 @@ Internet
 ### 9.3 Environment Variables
 
 ```bash
-# Required
+# Provider keys - only those the configured models use (also settable in config/secrets.env)
+OPENROUTER_API_KEY=sk-or-...   # the shipped default agent runs on OpenRouter
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional
 AGENT_LOG_LEVEL=info
-AGENT_CACHE_DIR=/var/cache/agent_system
-AGENT_SESSION_DIR=/var/data/agent_system/sessions
-AGENT_CONFIG_PATH=/etc/agent_system/config.yaml
+AGENT_SESSION_STORAGE_PATH=/var/data/agent_system/sessions
+AGENT_CONFIG_PATH=/etc/agent_system/config.yaml   # agent-api, agent-run, agent-cli without --config; secrets.env is read next to it
+                                                  # outside <checkout>/config/: make plugin_dirs, skill_dirs and includes absolute;
+                                                  # agent-api resolves other relative paths (a system_template not starting with ./, auth.database_path, logs) against its cwd
+HOST=0.0.0.0                                      # overrides network.host
+PORT=8000                                         # overrides network.port
 
 # Development
-AGENT_DEBUG=1
-AGENT_RELOAD=1
+AGENT_ENABLE_PROFILING=1   # debug/profiling endpoints
 ```
 
 ---
@@ -702,8 +719,8 @@ AGENT_RELOAD=1
 
 ### 10.1 Architecture Documents
 
-- [Plugin Architecture](plugin_architecture.md) - Plugin system design
-- [Tool Server Integration](server_configuration.md) - External MCP servers
+- [Plugin Architecture](_arch_plugin_architecture.md) - Plugin system design
+- [External MCP Servers](_arch_external_mcpservers.md) - External MCP servers
 - [Hook System](plugin_hooks.md) - Lifecycle hooks
 - [Tool Execution](tool_execution.md) - Tool execution flow
 
@@ -717,8 +734,8 @@ AGENT_RELOAD=1
 ### 10.3 User Guides
 
 - [Plugin Authoring](plugin_authoring.md) - How to create plugins
-- [Configuration Guide](../config/README.md) - Configuration reference
-- [API Documentation](../README.md#api) - REST API reference
+- [Configuration Guide](../INSTALLATION.md#configuration) - Configuration reference
+- API reference: the OpenAPI UI of a running server at `/docs` (`/openapi.json`); design notes in [_arch_app_architecture.md](_arch_app_architecture.md), partly outdated
 - [CLI Reference](cli_reference.md) - Command-line usage
 
 ---

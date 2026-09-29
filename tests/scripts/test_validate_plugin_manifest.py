@@ -505,6 +505,24 @@ class TestTheHookVocabulary:
         """The other way: the list is derived, not abandoned."""
         assert self._with_hook_type(hook_plugin, "pre_llm_teatime") != []
 
+    @pytest.mark.parametrize("hook_type, on_error, accepted", [
+        ("pre_tool_call", "block", True),
+        ("pre_tool_call", "Block", False),      # read as the default: the call would run
+        ("post_tool_call", "block", False),     # nothing left to block after the call
+    ])
+    def test_on_error_is_block_on_a_pre_tool_call_hook_or_an_error(self, hook_plugin, hook_type,
+                                                                   on_error, accepted):
+        """A policy hook whose on_error is misspelt fails open without a word."""
+        pristine = (REPO / "src" / "plugins" / "simple_prompt_inject"
+                    / "schema.yaml").read_text(encoding="utf-8")
+        (hook_plugin / "schema.yaml").write_text(
+            pristine.replace("type: PRE_LLM_CALL", f"type: {hook_type}\n    on_error: {on_error}"),
+            encoding="utf-8")
+
+        errors = [e for e in _validate(hook_plugin).errors if "on_error" in e]
+
+        assert (errors == []) is accepted, errors
+
 
 class TestTheWebUiSection:
     """web_ui is judged by the panel catalogue's own parser: a panel the

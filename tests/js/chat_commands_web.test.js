@@ -870,6 +870,20 @@ test('a waiting title is dropped with a word when the chat goes elsewhere first'
   assert.ok(note.includes('This session has no title yet.'), 'it was kept: ' + note);
 });
 
+test('a run the chat starts says a person reads it, both ways out', async () => {
+  // tool_approval asks a person only where one can answer: the client that starts
+  // the run says so, and only this one does (a program reading /events does not).
+  const text = load([], { answers: {
+    '/events': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await text.send('hallo');
+  assert.strictEqual(text.bodies[0].attended, true, JSON.stringify(text.bodies[0]));
+  const withFile = load([], { files: true, answers: {
+    '/run': { sse: [{ type: 'start', request_id: 'r1', session_id: 'new1' }] } } });
+  await withFile.send('lies das');
+  assert.strictEqual(withFile.calls[0], '/run');
+  assert.strictEqual(withFile.bodies[0].attended, 'true', JSON.stringify(withFile.bodies[0]));
+});
+
 test('a first message with a file takes the waiting title along too', async () => {
   // Sent as a form to /run, not as JSON to /events: the other of the two ways out.
   const { chatModule, bodies, calls, send } = load([], { files: true, answers: {
@@ -1287,6 +1301,106 @@ test('/retry says when the file it carried cannot come along', async () => {
   });
   await chatModule.runCommand('retry', '');
   assert.ok(notesOf(container).join('\n').includes('has to be attached again'));
+});
+
+// /undo files, /rewind: the words are chat_commands.parse_undo's, the lines the
+// server's (the plugin renders them for both surfaces). What is left here: what
+// the browser sends, that a refusal keeps the exchange on screen, and that a
+// word it does not know sends nothing.
+test('/undo files asks the server to put the files back and says what it did', async () => {
+  const { chatModule, container, calls, bodies, acted } = load([], {
+    session: 'sid7',
+    answers: { '/chat/undo': { dropped: { text: 'schreib die routine' },
+                               files: { status: 'rewound', text: 'Files rewound to before the last turn: 1 put back, 0 removed.' } } },
+  });
+  await chatModule.runCommand('undo', 'files');
+  assert.deepStrictEqual(calls, ['/chat/undo']);
+  assert.strictEqual(bodies[0].files, true);
+  assert.strictEqual(bodies[0].overwrite, false);
+  assert.deepStrictEqual(acted, ['load:sid7']);
+  assert.ok(notesOf(container).join('\n').includes('1 put back'), notesOf(container).join('\n'));
+});
+
+test('/undo files refused keeps the exchange and says why -- not the lock hint', async () => {
+  const { chatModule, container, acted } = load([], {
+    session: 'sid7',
+    answers: { '/chat/undo': { fails: 'Files not rewound: b.txt was changed since', status: 409 } },
+  });
+  await chatModule.runCommand('undo', 'files');
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('b.txt was changed since') && note.includes('The exchange stays'), note);
+  assert.ok(!note.includes('/undo force'), note);
+  assert.deepStrictEqual(acted, [], 'it reloaded a conversation nothing was taken from');
+});
+
+test('/undo --files overwrite sends both words', async () => {
+  const { chatModule, bodies } = load([], {
+    session: 'sid7', answers: { '/chat/undo': { dropped: { text: 'q' }, files: { text: 'ok' } } },
+  });
+  await chatModule.runCommand('undo', '--files overwrite');
+  assert.strictEqual(bodies[0].files, true);
+  assert.strictEqual(bodies[0].overwrite, true);
+});
+
+test('/undo with a word it does not know sends nothing', async () => {
+  const { chatModule, container, calls } = load([], { session: 'sid7' });
+  await chatModule.runCommand('undo', 'fils');
+  assert.deepStrictEqual(calls, []);
+  assert.ok(notesOf(container).join('\n').includes('/undo files'));
+});
+
+test('/rewind lists the checkpoints the server numbers', async () => {
+  const { chatModule, container, calls } = load([], {
+    session: 'sid7', agent: 'coder',
+    answers: { '/chat/checkpoints': { checkpoints: [], text: 'File checkpoints -- /rewind <n> puts ...' } },
+  });
+  await chatModule.runCommand('rewind', '');
+  assert.deepStrictEqual(calls, ['/chat/checkpoints?session_id=sid7&agent_name=coder']);
+  assert.ok(notesOf(container).join('\n').includes('File checkpoints'));
+});
+
+test('/rewind <n> overwrite asks for that checkpoint', async () => {
+  const { chatModule, container, calls, bodies } = load([], {
+    session: 'sid7', answers: { '/chat/rewind': { status: 'rewound', text: 'Files rewound to before checkpoint 2.' } },
+  });
+  await chatModule.runCommand('rewind', '2 overwrite');
+  assert.deepStrictEqual(calls, ['/chat/rewind']);
+  assert.strictEqual(bodies[0].checkpoint, 2);
+  assert.strictEqual(bodies[0].overwrite, true);
+  assert.strictEqual(bodies[0].session_id, 'sid7');
+  assert.ok(notesOf(container).join('\n').includes('before checkpoint 2'));
+});
+
+test('/rewind says what the server refused', async () => {
+  const { chatModule, container } = load([], {
+    session: 'sid7', answers: { '/chat/rewind': { fails: 'There is no checkpoint 9', status: 404 } },
+  });
+  await chatModule.runCommand('rewind', '9');
+  const note = notesOf(container).join('\n');
+  assert.ok(note.includes('There is no checkpoint 9'), note);
+  assert.ok(!note.includes('failed'), note);
+});
+
+test('/rewind -1 is not checkpoint 1', async () => {
+  const { chatModule, container, calls } = load([], { session: 'sid7' });
+  await chatModule.runCommand('rewind', '-1');
+  assert.deepStrictEqual(calls, [], 'it rewound to checkpoint 1');
+  assert.ok(notesOf(container).join('\n').includes('Usage: /rewind'));
+});
+
+test('/rewind <n> force asks past a leftover lock', async () => {
+  const { chatModule, calls } = load([], {
+    session: 'sid7', answers: { '/chat/rewind': { status: 'rewound', text: 'ok' } },
+  });
+  await chatModule.runCommand('rewind', '3 force');
+  assert.deepStrictEqual(calls, ['/chat/rewind?force=true']);
+});
+
+test('/rewind overwrite without a number sends nothing', async () => {
+  const { chatModule, container, calls } = load([], { session: 'sid7' });
+  await chatModule.runCommand('rewind', 'overwrite');
+  assert.deepStrictEqual(calls, []);
+  assert.ok(notesOf(container).join('\n').includes('Usage: /rewind'));
 });
 
 test('/export downloads the markdown the server rendered', async () => {

@@ -85,6 +85,9 @@ plugins:
             # plugins.servers.forge; none configured -> no tools, and the
             # prompt's section on them is not rendered.
             - "+forge/*"
+            # Ask the person in the chat when a choice is theirs to make
+            # (plugin ask_user); a run nobody watches gets "decide yourself".
+            - "+ask_user/*"
 
           # semantic_search is ON since 18.09.2026 and no longer blocked here:
           # the index stores one document per symbol, so a hit is a function
@@ -152,6 +155,29 @@ plugins:
             # dies at the context limit instead of compacting.
             context_engineer.engineer_context:
               enabled: true
+            # The project's AGENTS.md -- the file every other coding agent
+            # reads. Unlike the three hooks switched off above it does not
+            # churn: it is read once per session and stands behind the system
+            # prompt unchanged until the session ends. `root: "."` is
+            # coder_fs's own "." -- the directory the command was started in
+            # -- so a harness started in another project reads THAT project's
+            # file; derived, the four coder_fs roots would be ambiguous there.
+            # The three sub-agents switch it on the same way and inherit this
+            # session's version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+            # Checkpoints for files: /undo files and /rewind put back what
+            # coder_fs wrote. Both switches -- the second records what a call
+            # left, which is how a file changed by hand since is told apart.
+            # coder_shell's changes are not recorded, only named. The three
+            # sub-agents switch them on too: the tester's shell calls are named
+            # in the coder's turn, and a spawn of an agent without them would
+            # be named as one whose changes are not recorded.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"
@@ -159,3 +185,4 @@ plugins:
         tags: ["coding", "harness", "review", "tests"]
         category: "development"
         visibility: "both"
+        min_role: "admin"  # role gate (auth/agent_access.py): a shell, Claude Code and write access to the whole checkout

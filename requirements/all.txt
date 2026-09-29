@@ -4,7 +4,7 @@
 # the root pyproject.toml reads this file via [tool.setuptools.dynamic].
 aiofiles>=24.1.0
 aiohttp>=3.12
-anthropic>=0.40.0
+anthropic>=0.77.0
 anyio>=4.0
 asyncssh>=2.13.0
 bcrypt>=5.0.0
@@ -38,6 +38,9 @@ numpy>=1.26
 onnxruntime>=1.20.0
 openai>=1.37.0
 openrouter>=1.1.108
+opentelemetry-api>=1.30
+opentelemetry-exporter-otlp-proto-grpc>=1.30
+opentelemetry-sdk>=1.30
 pathspec>=0.12
 Pillow>=10.0.0
 prompt_toolkit>=3.0
@@ -51,6 +54,8 @@ python-jose[cryptography]>=3.3.0
 python-multipart>=0.0.9
 pytz>=2024.1
 pyyaml>=6.0
+referencing>=0.28.4
+regex>=2022.1.18
 rembg[cpu]>=2.0.60
 reportlab[pycairo]>=4.0
 requests>=2.28

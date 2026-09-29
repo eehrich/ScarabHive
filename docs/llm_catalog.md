@@ -30,6 +30,52 @@ wired for provider=…"). Die letzten beiden Zeilen haben diesen Wächter nicht.
 Ein unbekannter **Wert** lässt den Bau in allen Fällen scheitern. Beides mit Absicht: still ignoriert zu werden ist der
 Fall, den man erst Wochen später am Rechnungsbetrag merkt.
 
+## Structured Output: die Route hat das Feld, der Eintrag sagt, ob das Modell es kann
+
+Ein Aufrufer, der die Schlussantwort als JSON will (`ResponseFormat`,
+`agent_system/llm/structured_output.py`), bekommt das native Feld nur, wenn
+**beides** stimmt: die Route hat ein Feld dafür (`response_format_kinds` am
+Client) und der Modelleintrag erklärt es.
+
+| Route | Feld | JSON-Schema | JSON-Objekt |
+|---|---|---|---|
+| `openai`, `openai_httpx` (auch `ollama` im `openai_compat`-Modus) | `response_format` | ja | ja |
+| `openai_responses`, `openrouter_sdk` | `text.format` | ja | ja |
+| `anthropic` | `output_config.format` | ja | – (die Messages-API hat keinen JSON-Modus) |
+| `gemini`, `gemini_sdk` | `responseMimeType` + `responseJsonSchema` | ja | ja (nur der MIME-Typ) |
+| `ollama` nativ | `format` | ja | ja (`"json"`) |
+| Batch, Realtime | – | – | – |
+
+- `capabilities.structured_output: true` heißt: das Modell hält sich an ein
+  Schema — **auch in einem Request mit Tools**, denn ein Agent schickt das Feld
+  auf jedem Schritt. Gemini vor 3 lehnt diese Kombination ab: dort nicht setzen.
+  Über OpenRouter hat es jedes Modell einzeln (`supported_parameters` enthält
+  `structured_outputs`).
+- `capabilities.json_mode` wird nicht gelesen. Natives „irgendein
+  JSON-Objekt" bekommt nur ein Modell mit `structured_output: true`: die
+  `json_mode`-Werte in den Katalogdateien las bis F11 niemand und sind
+  ungeprüft (Claude-Einträge tragen `true`, obwohl die Anthropic-Route gar
+  keinen JSON-Modus hat). Ein Modell nur mit `json_mode` bekommt das Format
+  als Hinweis im Gespräch, die Antwort wird geprüft wie jede andere.
+- Das Schema geht so raus, wie es die strikte Teilmenge durchlaufen hat
+  (`agent_system/llm/schema_worker.py`: Schlüsselwort-Whitelist, `$ref` nur
+  auf `#/$defs/…`, Annotationen wie `default` entfernt). Gemini bekommt es als
+  `responseJsonSchema` (JSON Schema), nicht durch den Sanitizer der Function
+  Declarations. Anthropic und OpenAI im `strict`-Modus lehnen Schemas ab,
+  deren Objekte kein `additionalProperties: false` haben — laut, als 400,
+  statt still umgeschrieben.
+- Warum das Feld auf jedem Schritt steht und nicht nur auf dem letzten: OpenAI
+  rendert das Schema in den gecachten Kontext, Anthropic verwirft den Cache des
+  Gesprächs, wenn sich `output_config.format` ändert. Konstant über den Lauf
+  bleibt der Präfix gleich (gemessen am Payload:
+  `tests/agent/test_agent_structured_output.py`); nur auf dem letzten Call
+  wäre genau dieser Call ein Cache-Fehlgriff.
+
+Stand 29.09.2026 erklärt kein Eintrag in `config/llm*.yaml`
+`structured_output`. Bis ein Betreiber das tut, läuft jeder strukturierte
+Aufruf — Schema wie JSON-Objekt — über den Fallback (Hinweis im Gespräch +
+Prüfung) oder scheitert, wenn der Aufrufer keinen Fallback erlaubt.
+
 ## Wie lange ein Stream nur Keep-alives schicken darf
 
 OpenRouter hält einen wartenden Stream mit Kommentarzeilen offen, etwa alle

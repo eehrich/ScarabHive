@@ -97,6 +97,97 @@ def refuse_client_tools(body: dict[str, Any]) -> None:
         raise ApiError(400, "tools: not supported -- the agent brings its own tools", param="tools")
 
 
+# ------------------------------------------------------------------ structured output
+
+def _format(shape: Any, where: str, fields: Any, fields_at: str) -> Any:
+    """A ResponseFormat from one wire shape, or None for plain text.
+
+    ``fields`` holds name, schema, strict and description: one level down in Chat Completions
+    (``json_schema``), beside ``type`` in Responses. Every format is asked for with the prompt
+    fallback: the agent's model may not take the field, and then the format is described in the
+    conversation -- the answer is validated against the schema either way.
+    """
+    from agent_system.llm.structured_output import InvalidResponseFormat, ResponseFormat
+
+    if shape is None:
+        return None
+    if not isinstance(shape, dict):
+        raise _invalid_type(where, "an object", shape)
+    kind = shape.get("type")
+    if kind not in ("text", "json_object", "json_schema"):
+        raise ApiError(400, f"Invalid value: {kind!r}. Supported values are: 'text', 'json_object', and "
+                            "'json_schema'.", param=f"{where}.type", code="invalid_value")
+    if kind == "text":
+        return None
+    if kind == "json_object":
+        return ResponseFormat(type="json_object", prompt_fallback=True)
+    if fields is None:
+        raise ApiError(400, f"Missing required parameter: '{fields_at}'.", param=fields_at,
+                       code="missing_required_parameter")
+    if not isinstance(fields, dict):
+        raise _invalid_type(fields_at, "an object", fields)
+    for required in ("name", "schema"):
+        if fields.get(required) is None:
+            raise ApiError(400, f"Missing required parameter: '{fields_at}.{required}'.",
+                           param=f"{fields_at}.{required}", code="missing_required_parameter")
+    # The wrong KIND of value is OpenAI's invalid_type; a value of the right kind that is still wrong (a name
+    # with spaces, a schema that is not one) its invalid_value, below.
+    for key, kinds, expected in (("name", (str,), "a string"), ("schema", (dict,), "an object"),
+                                 ("strict", (bool, type(None)), "a boolean"),
+                                 ("description", (str, type(None)), "a string")):
+        if not isinstance(fields.get(key), kinds):
+            raise _invalid_type(f"{fields_at}.{key}", expected, fields.get(key))
+    try:
+        return ResponseFormat(type="json_schema", name=fields["name"], schema=fields["schema"],
+                              strict=fields.get("strict"), description=fields.get("description"),
+                              prompt_fallback=True)
+    except InvalidResponseFormat as bad:
+        raise ApiError(400, f"Invalid '{fields_at}.{bad.field}': {bad}", param=f"{fields_at}.{bad.field}",
+                       code="invalid_value") from None
+
+
+async def prepare_format(structured: Any, fields_at: str, user: str) -> Any:
+    """The format with its schema checked by the schema worker -- the strict subset, in a process of its own
+    under a deadline, in the user's lane (agent_system/llm/structured_output.py). A schema outside it is a 400
+    naming the keyword; a checker that is busy or broke a retryable 503."""
+    if structured is None:
+        return None
+    from agent_system.llm.structured_output import InvalidResponseFormat, SchemaCheckerError, prepare_response_format
+
+    try:
+        return await prepare_response_format(structured, owner=user)
+    except InvalidResponseFormat as bad:
+        raise ApiError(400, f"Invalid '{fields_at}.{bad.field}': {bad}", param=f"{fields_at}.{bad.field}",
+                       code="invalid_value") from None
+    except SchemaCheckerError as broken:
+        raise ApiError(503, f"the schema checker is not available: {broken}", type_="server_error",
+                       code="structured_output_unavailable") from None
+
+
+def _invalid_type(param: str, expected: str, value: Any) -> ApiError:
+    return ApiError(400, f"Invalid type for '{param}': expected {expected}, but got {type(value).__name__} instead.",
+                    param=param, code="invalid_type")
+
+
+def chat_response_format(body: dict[str, Any]) -> Any:
+    """Chat Completions ``response_format``: text (None), json_object, or json_schema with its ``json_schema``."""
+    shape = body.get("response_format")
+    fields = shape.get("json_schema") if isinstance(shape, dict) else None
+    return _format(shape, "response_format", fields, "response_format.json_schema")
+
+
+def responses_text_format(body: dict[str, Any]) -> Any:
+    """Responses ``text.format``: the same kinds, name and schema beside the type. The rest of ``text``
+    (verbosity) is a sampling knob, ignored like temperature."""
+    text = body.get("text")
+    if text is None:
+        return None
+    if not isinstance(text, dict):
+        raise _invalid_type("text", "an object", text)
+    shape = text.get("format")
+    return _format(shape, "text.format", shape, "text.format")
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 

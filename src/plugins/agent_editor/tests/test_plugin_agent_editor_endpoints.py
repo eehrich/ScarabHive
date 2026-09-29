@@ -560,6 +560,25 @@ def test_a_built_agent_the_reload_does_not_reach_needs_a_restart(db, tree, tmp_p
     assert (writer["changed"], writer["reload_fields"], writer["restart"]) == (["max_steps"], [], True)
 
 
+def test_a_role_gate_takes_the_reload_and_the_running_gate_is_the_instances(db, tree, tmp_path, reload_reaches):
+    """metadata.min_role is refreshed on a running agent by a reload (Agent.reload_config), not only by a restart;
+    the declaration keeps the start value, so the running gate is read from the instance."""
+    state = started_app(tree)
+    web = make_client(tree, state)
+    running = built_agent(state.config, "writer")
+    state.tool_registry.register("writer", running)
+    reload_reaches("writer", running)
+    entry = detail(web, "writer")["own"]
+    entry.setdefault("metadata", {})["min_role"] = "admin"
+    assert put(web, "writer", entry, version_of(team(tmp_path).read_bytes())).status_code == 200
+    writer = detail(web, "writer")
+    assert (writer["state"], writer["changed"], writer["reload_fields"], writer["restart"]) == (
+        "changed", ["metadata.min_role"], ["metadata.min_role"], False)
+
+    running.min_role = "admin"  # what the reload does to the instance
+    assert detail(web, "writer")["state"] == "in_sync"
+
+
 def test_every_part_of_the_entry_counts_but_enabled(web, tmp_path):
     entry = detail(web, "writer")["own"]
     entry.update(description="Changed", api_hint="other", config={"depth": 2})

@@ -7,6 +7,7 @@ layered compaction strategies to optimize context usage.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import hashlib
 import json
 import logging
@@ -1187,7 +1188,7 @@ class ContextEngineerPlugin(SchemaBasedPluginHook):
 
                 # Save history to disk (support both sync and async callbacks)
                 if self.history_callback is not None:
-                    if asyncio.iscoroutinefunction(self.history_callback):
+                    if inspect.iscoroutinefunction(self.history_callback):
                         await self.history_callback()
                     else:
                         # Run sync callback in thread pool to avoid blocking

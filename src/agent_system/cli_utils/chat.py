@@ -575,6 +575,11 @@ async def run_chat_turn(
                 message = str(ev.get("message") or "unknown error")
                 result["errors"].append(message)
                 renderer.error_line(f"ERROR: {message}")
+                from ..servers.agent.server import refused_before_the_run
+
+                if refused_before_the_run(ev):  # it ran nothing: the chat saves nothing after it
+                    # in the state too: a Ctrl-C that cancels the turn drops this result (_cancel_turn)
+                    result["refused"] = state["refused"] = ev["error_type"]
             elif t == "cancelled":
                 result["cancelled"] = True
             elif t == "end":
@@ -650,6 +655,7 @@ from agent_system.chat_commands import (  # noqa: E402
     group_tools_by_server,
     needs_escape as _needs_escape,
     parse_chat_command,
+    parse_undo,
     parse_vars,
     resolve as resolve_chat_input,
     runnable_skill_names,
@@ -1960,6 +1966,80 @@ def _drop_last_exchange(ctx: "_ChatContext") -> Optional[Any]:
     return dropped
 
 
+def _run_to_the_end(loop: asyncio.AbstractEventLoop, coro: Any) -> Any:
+    """Run *coro*; a Ctrl-C waits for it instead of leaving it half done.
+
+    For a rewind: it puts files back in a worker thread that a cancel does not
+    stop, so reporting it "cancelled" would be a lie about the disk. A second
+    Ctrl-C leaves it to finish unseen.
+    """
+    task = loop.create_task(coro)
+    try:
+        return loop.run_until_complete(task)
+    except KeyboardInterrupt:
+        print("\n(finishing -- files are being put back; Ctrl-C again to stop waiting)", file=sys.stderr)
+        return loop.run_until_complete(task)
+
+
+def _file_rewinder_or_say() -> Any:
+    from agent_system.file_rewind import file_rewinder
+
+    rewinder = file_rewinder()
+    if rewinder is None:
+        print("File checkpoints are off -- the file_checkpoints plugin is not loaded.")
+    return rewinder
+
+
+def _rewind_last_turn(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext", overwrite: bool) -> bool:
+    """`/undo files`: put back the files the last exchange changed, BEFORE it is
+    dropped. False when the exchange has to stay -- nothing to take back, no
+    rewinder, or a rewind that was refused or only partly went through (what
+    it says is printed): the person looks, and tries again."""
+    from agent_system.file_rewind import NOTHING, REWOUND
+
+    messages = _session_messages(ctx)
+    if split_off_last_exchange(messages)[1] is None:
+        print("Nothing to take back in this session yet.")
+        return False
+    rewinder = _file_rewinder_or_say()
+    if rewinder is None:
+        return False
+    report = _run_to_the_end(loop, rewinder.rewind(
+        user_id=ctx.session_user, session_id=ctx.session_id, messages=messages, checkpoint=None,
+        registry=getattr(ctx.agent, "registry", None), overwrite=overwrite))
+    print(report["text"])
+    if report["status"] not in (REWOUND, NOTHING):
+        print("(the exchange stays -- /undo without 'files' drops it and leaves the files)")
+        return False
+    return True
+
+
+def _rewind_command(loop: asyncio.AbstractEventLoop, ctx: "_ChatContext", payload: str) -> None:
+    """`/rewind` lists the file checkpoints, `/rewind <n> [overwrite]` puts the
+    files back as they were before checkpoint n. The conversation stays."""
+    request = parse_undo(payload, rewind=True)
+    # force is the browser's word for a lock a crashed process left; this chat holds its session itself.
+    if request.errors or request.force:
+        print("Usage: /rewind lists the checkpoints, /rewind <n> puts the files back as they were "
+              "before checkpoint n, /rewind <n> overwrite also the files changed outside the agent.")
+        return
+    rewinder = _file_rewinder_or_say()
+    if rewinder is None:
+        return
+    if request.checkpoint is None:
+        finished, listing = _run_interruptible(loop, rewinder.checkpoints(
+            user_id=ctx.session_user, session_id=ctx.session_id, messages=_session_messages(ctx)),
+            "/rewind")
+        if finished:
+            print(listing["text"])
+        return
+    report = _run_to_the_end(loop, rewinder.rewind(
+        user_id=ctx.session_user, session_id=ctx.session_id, messages=_session_messages(ctx),
+        checkpoint=request.checkpoint, registry=getattr(ctx.agent, "registry", None),
+        overwrite=request.overwrite))
+    print(report["text"])
+
+
 def _export_transcript(ctx: "_ChatContext", payload: str) -> None:
     """Write the conversation to a markdown file.
 
@@ -3184,6 +3264,7 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     # session stops it all the same.
     from ..utils.id import short_id
     state: dict[str, Any] = {"editor": editor, "request_id": short_id()}
+    named = state["request_id"]
     claimed = _claim_turn(ctx, state["request_id"])
     turn = loop.create_task(run_chat_turn(
         ctx.agent, task, ctx.session_id, renderer,
@@ -3215,6 +3296,12 @@ def _execute_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
         _stop_typing(loop, reader, poller, renderer, state)
         if claimed is not None:
             claimed.release(ctx.session_id, ctx.session_user)
+        # What the turn registered under its request id (a tool call, a
+        # preloaded tool, a sub-agent) goes with it, as the API lets go of its
+        # request tree when the request ends.
+        from ..core.request_context import release_request_user_tree
+        for request_id in {named, state.get("request_id")} - {None, ""}:
+            release_request_user_tree(request_id)
     for key in ("typed_queue", "typed_partial"):
         if state.get(key):
             result[key] = state[key]
@@ -3308,9 +3395,9 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
     except Exception:
         logger.debug("Turn unwind failed", exc_info=True)
     renderer.close()
-    # The turn's own result is gone with it; its usage lives on in the state.
+    # The turn's own result is gone with it; its usage lives on in the state, and a refusal before the run.
     return {"summary": None, "cancelled": True, "errors": [],
-            "usage": state.get("usage") or {}}
+            "usage": state.get("usage") or {}, **({"refused": state["refused"]} if state.get("refused") else {})}
 
 
 def _render_answer(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
@@ -3662,7 +3749,17 @@ def run_chat_loop(
                 if command == "export":
                     _export_transcript(ctx, payload)
                     continue
+                if command == "rewind":
+                    _rewind_command(loop, ctx, payload)
+                    continue
                 if command in ("undo", "retry"):
+                    undo = parse_undo(payload)
+                    if undo.errors or undo.force:
+                        print(f"/{command} takes 'files' and 'overwrite' (with files): "
+                              f"/{command} files puts back the files the exchange changed too.")
+                        continue
+                    if undo.files and not _rewind_last_turn(loop, ctx, undo.overwrite):
+                        continue
                     dropped = _drop_last_exchange(ctx)
                     if dropped is None:
                         print("Nothing to take back in this session yet.")
@@ -3777,8 +3874,10 @@ def run_chat_loop(
                     # names the session only when one happened -- said nothing
                     # at all. Reported from real use: "then I don't even know
                     # what the session id is". The turn is over here, nothing
-                    # of it is still running, so this is an ordinary save.
-                    _save_now(loop, ctx)
+                    # of it is still running, so this is an ordinary save --
+                    # not for a turn refused before it ran: nothing of it to save.
+                    if not result.get("refused"):
+                        _save_now(loop, ctx)
                     continue
 
                 pending.extend(queued)
@@ -3798,7 +3897,8 @@ def run_chat_loop(
                                                result.get("context_window"))
                                       if context_fill else None), "90"))
 
-                _save_now(loop, ctx)
+                if not result.get("refused"):  # refused before it ran: nothing of it to save
+                    _save_now(loop, ctx)
             except KeyboardInterrupt:
                 renderer.close()
                 print("\n(interrupted)", file=sys.stderr)

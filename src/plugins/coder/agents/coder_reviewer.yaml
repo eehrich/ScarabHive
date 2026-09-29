@@ -62,6 +62,17 @@ plugins:
             # transcript, and re-readable through its own tool.
             sequential_thinking.inject_active_sessions:
               enabled: false
+            # The project's AGENTS.md: the conventions a change is judged by.
+            # Inherited from the coder's session, so both work by one version.
+            project_instructions.inject_project_instructions:
+              enabled: true
+              root: "."
+            # Read-only, so nothing to record -- switched on so that the coder's
+            # checkpoint does not name its spawn as one that records nothing.
+            file_checkpoints.record_before_change:
+              enabled: true
+            file_checkpoints.record_after_change:
+              enabled: true
 
       metadata:
         author: "Enrico Ehrich"
@@ -69,3 +80,4 @@ plugins:
         tags: ["coding", "review", "read-only", "adversarial"]
         category: "development"
         visibility: "tool"
+        min_role: "admin"  # role gate (auth/agent_access.py): reads the whole checkout, config/secrets.env and data/users.db included
