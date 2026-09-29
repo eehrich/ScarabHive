@@ -1,16 +1,19 @@
 # setup
 
-What an installation still lacks, and whether the chat answers. The first part
-of the setup described in `docs/einrichtung_konzept.md`: keys are still
-entered in `config/secrets.env`; the panel takes them once the loader reads
-`config/local/`.
+What an installation still lacks, and whether the chat answers. Steps 0 and 1 of
+the setup described in `docs/einrichtung_konzept.md`: the panel writes keys and
+the signing key into this machine's own layer (`config/local.env`,
+`config/local.yaml`, both never in the repository), through
+`agent_system.config.local_layer`, which the install scripts use too.
 
 ## Panel „Setup“ (admin)
 
 - **Chat** — the default agent and its first LLM profile, as the chat started
-  with them (a reload moves neither the entry agent nor its client); *Test the
-  chat* sends one short request the way the agent would and shows the answer's
-  arrival or the provider's error (a refused key reads as such).
+  with them (a reload does not move the entry agent); *Test the chat* sends one
+  short request the way the chat's next message would -- its client built from
+  the config as the API runs now, so a key saved here since is the one tried --
+  and shows the answer's arrival or the provider's error (a refused key reads as
+  such).
 - **Access** — whether an active admin still opens with a publicly known
   password (the configured default, and `admin`/`admin123`, which `config.yaml`
   ships: the admin is created once, so a default changed later is not its
@@ -35,13 +38,30 @@ entered in `config/secrets.env`; the panel takes them once the loader reads
   `token_env`), as *set*,
   *missing* or *placeholder* (a copied template value such as `sk-or-v1-...`,
   which the loader cannot tell from a key and the provider refuses), with the
-  sections that name it. Never a value.
+  sections that name it. Never a value. A key entered here goes into
+  `config/local.env`, which a start reads before `config/secrets.env`, and into
+  the API's environment; the config is then reloaded, so the chat's next
+  message builds its client with it (the web chat always names its model), and
+  so does a session the API wakes. Until a restart, the old key stays with
+  every client built at start: an agent's default client (a `/run` that names
+  no model -- writer jobs, stategraph), its fallbacks and escalation, the
+  sub-agents the chat starts, the LLM clients of plugins (context_summarizer,
+  lessons_learned), and the key a plugin read in its constructor (tavily_search;
+  reload_plugin_configs lists it as unsupported). Replacing a running agent's
+  `system_config` would move its auth and presence as well. A key set by the
+  real environment cannot be entered: the environment wins at every start. A
+  name only the auth section names is no API key and is not listed: the
+  signing key has its own button, and a short one entered as a key would stop
+  the next start.
+- **Signing key** -- *Make an own key* writes a random `AUTH_SECRET_KEY` into
+  `config/local.env` and points `auth.secret_key` at it in
+  `config/local.yaml`; a restart applies it, and every login then ends.
 
 `/plugins/setup/*` is admin only by its rule in `config.yaml`, which also keeps
-the panel out of other users' launcher; `/state` and `/probe` check for an admin
+the panel out of other users' launcher; `/state`, `/probe`, `/key` and `/signing-key` check for an admin
 themselves (`require_admin_viewer`: without authentication the one user is the
-owner). `/probe` takes JSON only, so a page elsewhere cannot send one on the
-admin's cookie.
+owner). `/probe`, `/key` and `/signing-key` take JSON only, so a page elsewhere
+cannot send one on the admin's cookie.
 
 ## Tools
 
@@ -65,8 +85,8 @@ agent is allowed these tools yet; the setup agent comes with a later step.
 says per key only `set`, `missing` or `placeholder` and the sections naming it —
 where the variable is written, not every entry that inherits it through
 `extends`; whether the chat answers, `setup_probe_chat` tells. The status
-tool's description tells the model never to ask for a key in the chat: the user puts it into
-`config/secrets.env` and restarts; the panel shows its state.
+tool's description tells the model never to ask for a key in the chat: the user
+enters it in the Setup panel.
 A `null` in the status's `auth` means "cannot be told from here", never "no"
 (`chat.profile` null: the default agent names none). `shared_signing_key` is the
 key that signs where the tool runs in the API (a chat's tool call); elsewhere the
@@ -82,8 +102,10 @@ again, and if it persists the file needs checking. Nobody is let in then.
 probe costs one short request on the probed profile.
 
 **Known gaps.**
-- A key entered in `config/secrets.env` needs a restart: the loader reads the
-  file once per process (`docs/einrichtung_konzept.md`, step 1 of the build).
+- A key written into a secrets file by hand needs a restart: the loader reads
+  the files once per process. The panel's own write reaches the process's
+  environment and the chat's next message, not what was built at start (see
+  API keys above).
 - Which key the API signs with only the API can tell: the panel, and
   `setup_status` called in a chat. Run elsewhere (agent-cli, a woken session)
   the tool answers `null` for a restart pending, and for an own key configured

@@ -2,10 +2,13 @@
 # root; a pattern without **/ matches only at the top level.
 
 # --- Secrets: never in an image -------------------------------------------
-# The config loader reads config/secrets.env at runtime (docker-compose.yml
-# mounts config/ from the checkout); the template stays in.
+# The config loader reads config/local.env and config/secrets.env at runtime
+# (docker-compose.yml mounts config/ from the checkout); the template stays in.
+# config/local.yaml names this machine's signing key and network.
 config/secrets.env
 **/secrets.env
+config/local.env
+config/local.yaml
 !config/secrets.env.example
 **/.env
 .envrc

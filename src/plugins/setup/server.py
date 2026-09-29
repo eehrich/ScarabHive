@@ -1,9 +1,10 @@
 """Setup: the tools of the setup agent and the Setup panel -- what an installation still lacks.
 
 It reports the keys, the admin's password and the signing key, and tries the
-chat; the panel changes the admin's password. Keys are entered in
-config/secrets.env by hand until the panel can write them
-(docs/einrichtung_konzept.md).
+chat. The panel changes the admin's password, writes a key into
+config/local.env and gives the installation its own signing key
+(agent_system.config.local_layer; docs/einrichtung_konzept.md). A tool never
+writes a key: it would pass through the chat.
 """
 from __future__ import annotations
 
@@ -15,13 +16,16 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from agent_system.api.admin_endpoints import ConfigReloadFailed, ConfigReloadUnavailable, reload_app_config
 from agent_system.api.debug_endpoints import require_admin_viewer
+from agent_system.config.local_layer import WRITING, ensure_signing_key, write_secret
+from agent_system.config.settings import LOCAL_SECRETS, environment_takes, set_by_the_environment, take_secret
 from agent_system.plugins.schema_router import create_schema_router
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from agent_system.ui.resources import ui_templates
 
 from .probe import default_chat_profile, probe_chat, runs_as_a_batch
-from .status import auth_status, keys_status, user_database
+from .status import SHIPPED_SIGNING_KEYS, api_keys, auth_status, keys_status, user_database
 
 logger = logging.getLogger(__name__)
 templates = ui_templates(Path(__file__).parent / "templates")
@@ -96,6 +100,10 @@ async def refusal(params: dict[str, Any], config: Any, status: Any, tool: str, a
 class SetupServer(SchemaBasedToolServer):
     """Tools for the setup agent, and the Setup panel."""
 
+    #: The config the API runs with since a key was saved here (reload_app_config); None: the one it started with.
+    #: The tool has no request to ask the app for it.
+    _running_config: Any = None
+
     # ------------------------------------------------------------------ tools
 
     async def status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -130,7 +138,8 @@ class SetupServer(SchemaBasedToolServer):
             named = ", ".join(profiles[:30]) + (f" and {len(profiles) - 30} more" if len(profiles) > 30 else "")
             return {"status": "error", "error": f"no LLM profile named {profile!r}: omit it to probe the default "
                                                 f"chat, or name one of: {named}"}
-        result = await probe_chat(config, profile)
+        # the config a key saved in the panel reloaded, as the chat's next message builds its client from it
+        result = await probe_chat(config, profile, llm_config=self._running_config)
         if result["ok"]:
             await status.end(f"chat answers: {result['profile']} ({result.get('model')})"[:140])
         else:
@@ -155,9 +164,76 @@ class SetupServer(SchemaBasedToolServer):
         return await asyncio.to_thread(installation_state, self.system_config, running_signing_key())
 
     async def post_probe(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
-        # A probe costs a request: JSON only, so a page elsewhere cannot send one on the admin's cookie
-        # (a cross-site form post is a "simple" request, which a JSON Content-Type is not).
-        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
-            raise HTTPException(status_code=415, detail="Send the request as JSON")
-        # What the chat started with, as the tool does: a reload moves neither its agent nor its client.
-        return await probe_chat(self.system_config)
+        require_json(request)
+        # As the chat's next message: the agent it started with (a reload does not move it), its client built from
+        # the config as it runs now (app.py _live_config) -- a key saved here since is the one tried.
+        return await probe_chat(self.system_config, llm_config=getattr(request.app.state, "config", None))
+
+    def _config_path(self) -> Path:
+        path = getattr(self.system_config, "source_path", None)
+        if path is None:
+            raise HTTPException(status_code=409, detail="This configuration came from no file: there is no "
+                                                        "config/local.env beside it to write to")
+        return Path(path)
+
+    async def post_key(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
+        """Write one key into config/local.env (never a tracked file) and into this process, then reload the config:
+        the chat's next message builds its client with it. The value never comes back."""
+        require_json(request)
+        body = await request.json()
+        name, value = (body.get("name"), body.get("value")) if isinstance(body, dict) else (None, None)
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="Send {\"name\": ..., \"value\": ...}")
+        cfg_path = self._config_path()
+        await asyncio.to_thread(write_key, cfg_path, name, value)
+        try:
+            # On the loop, as the admin endpoint does: the reload walks the live plugin instances.
+            reload_app_config(request.app)
+            self._running_config = getattr(request.app.state, "config", None)
+            reloaded = None
+        except (ConfigReloadUnavailable, ConfigReloadFailed) as error:
+            logger.warning("setup: %s written, the config reload failed: %s", name, error)
+            reloaded = str(error)
+        logger.info("setup: %s written to %s", name, cfg_path.parent / LOCAL_SECRETS)  # the name only
+        return {"name": name, "reload_error": reloaded,
+                "state": await asyncio.to_thread(installation_state, self.system_config, running_signing_key())}
+
+    async def post_signing_key(self, request: Request, _admin: None = Depends(require_admin_viewer)) -> dict[str, Any]:
+        """Give the installation its own signing key in the local layer; a restart applies it."""
+        require_json(request)
+        cfg_path = self._config_path()
+        try:
+            message = await asyncio.to_thread(ensure_signing_key, cfg_path, SHIPPED_SIGNING_KEYS)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=f"No signing key written: {error}") from None
+        logger.info("setup signing key: %s", message)
+        return {"message": message,
+                "state": await asyncio.to_thread(installation_state, self.system_config, running_signing_key())}
+
+
+def require_json(request: Request) -> None:
+    """JSON only, so a page elsewhere cannot send it on the admin's cookie (a cross-site form post is a "simple"
+    request, which a JSON Content-Type is not)."""
+    if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=415, detail="Send the request as JSON")
+
+
+def write_key(cfg_path: Path, name: str, value: str) -> None:
+    """A key the configuration names, into the local secrets file and this process's environment. HTTPException
+    where it cannot or must not be."""
+    if name not in api_keys(str(cfg_path)):
+        raise HTTPException(status_code=400, detail=f"{name} is no API key the configuration names (the signing "
+                                                    "key has a button of its own)")
+    if set_by_the_environment(name):
+        raise HTTPException(status_code=409, detail=f"{name} is set in the environment the API was started with, "
+                                                    "which wins over any file: change it there")
+    if not environment_takes(name, value.strip()):  # before the file: written but not taken would be both
+        raise HTTPException(status_code=400, detail=f"{name} not written: longer than an environment variable can be")
+    try:
+        with WRITING:  # file and environment alike: two saves of one name must not leave them apart
+            write_secret(cfg_path, name, value)
+            take_secret(name, value.strip())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"{name} not written: {error}") from None
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"{name} not written: {error}") from None

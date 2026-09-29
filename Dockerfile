@@ -22,9 +22,10 @@
 #   scripts/aggregate_plugin_deps.py). That set pulls in PyTorch, so torch and
 #   torchaudio are installed first from the CPU-only PyTorch index; from PyPI,
 #   torch on Linux x86_64 brings several GB of CUDA libraries.
-# * config/secrets.env is never part of the image (.dockerignore). The config
-#   loader reads it from next to config.yaml when it exists, and a real
-#   environment variable always wins over it.
+# * config/secrets.env, config/local.env and config/local.yaml are never part
+#   of the image (.dockerignore). The config loader reads them from next to
+#   config.yaml when they exist, and a real environment variable always wins
+#   over both secrets files.
 
 ARG PYTHON_VERSION=3.12
 ARG DEBIAN_RELEASE=trixie

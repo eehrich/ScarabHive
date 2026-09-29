@@ -219,12 +219,16 @@ def _merge_style(items: Optional[list]) -> bool:
 
 
 def _secret_names(config_dir: Path) -> set[str]:
-    """The names `secrets.env` defines (the loader puts them into the environment), read as the loader reads it."""
-    from agent_system.config.settings import _read_secrets_file
-    try:
-        return set(_read_secrets_file(config_dir / "secrets.env"))
-    except (OSError, ValueError):  # the loader starts without it then, and says so
-        return set()
+    """The names the secrets files define (the loader puts them into the environment), read as the loader reads them:
+    config/local.env and secrets.env."""
+    from agent_system.config.settings import _read_secrets_file, secrets_files
+    names: set[str] = set()
+    for path in secrets_files(config_dir / "config.yaml"):
+        try:
+            names |= set(_read_secrets_file(path)) if path.is_file() else set()
+        except (OSError, ValueError):  # the loader starts without it then, and says so
+            pass
+    return names
 
 
 @dataclass

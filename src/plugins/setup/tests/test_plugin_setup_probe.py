@@ -49,6 +49,18 @@ class TestTheProbe:
 
         assert result["ok"] is False and "401" in result["error"] and "User not found" in result["error"], result
 
+    async def test_the_agent_is_the_started_one_and_the_client_the_running_configs(self, config, monkeypatch):
+        """As the chat's next message: a reload does not move the entry agent, and the client is built from the config
+        as the API runs now (app.py _live_config) -- a key the panel saved since is the one tried."""
+        built = []
+        monkeypatch.setattr(probe, "create_llm_from_profile",
+                            lambda cfg, profile: built.append(cfg) or Refusing(answer="OK"))
+        running = config.model_copy(update={"default_agent": "an_agent_only_the_reloaded_config_names"})
+
+        result = await probe.probe_chat(config, llm_config=running)
+
+        assert result["agent"] == config.default_agent and built == [running], (result, built)
+
     async def test_a_silent_provider_ends_at_the_timeout(self, config, monkeypatch):
         monkeypatch.setattr(probe, "create_llm_from_profile", lambda cfg, profile: Refusing(answer="OK", delay=5))
 

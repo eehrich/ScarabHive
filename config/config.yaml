@@ -16,8 +16,7 @@ includes:
   - agents*/*.yaml
   # plugin agent configs
   - ../src/plugins*/*/agents/*.yaml
-  # This machine only, last so it wins; never in the repository (.gitignore)
-  - local.yaml
+  # config/local.yaml, this machine's own layer, is read after all of these (settings.LOCAL_CONFIG)
 
 # Context information automatically added to prompts
 context:

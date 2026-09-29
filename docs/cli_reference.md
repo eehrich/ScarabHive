@@ -512,9 +512,9 @@ dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
 | `AGENT_ADMIN_API_KEY`, `AGENT_API_KEY` | Schlüssel für `reload` |
 | `NO_COLOR` | keine Farben |
 
-API-Schlüssel der LLM-Anbieter stehen in `config/secrets.env` neben der Config.
+API-Schlüssel der LLM-Anbieter stehen in `config/local.env` (dieser Rechner) oder `config/secrets.env` neben der Config.
 
-Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung), steht in `config/local.yaml` daneben: nie im Repo, das letzte Include der `config.yaml` — es gewinnt über alle anderen Dateien. Nur `paths` liest der Loader allein aus der `config.yaml`.
+Was nur auf einer Maschine gilt (Netz, Log-Aufbewahrung, der eigene Signierschlüssel), steht in `config/local.yaml` daneben: nie im Repo, vom Loader nach allen Includes gelesen — es gewinnt über alle anderen Dateien und darf als einzige neben der `config.yaml` auch `auth` und `paths` setzen. Die Schlüssel dieser Maschine stehen in `config/local.env` (ebenfalls nie im Repo); der Loader liest sie vor `config/secrets.env`, dort gewinnt also ihr Wert. Das Setup-Panel und die Installationsskripte schreiben nur in diese beiden Dateien.
 
 ---
 

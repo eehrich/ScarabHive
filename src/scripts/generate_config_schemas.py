@@ -238,8 +238,8 @@ def build_config_part_schema() -> dict:
     That is where the agents live: config/agents/*.yaml and the 85 files under
     src/plugins*/*/agents/. A part carries any section but the master's own
     (settings.MASTER_ONLY_SECTIONS), none of them required — an agent file has
-    ``plugins:``, mcp_servers.yaml has ``external_servers:``, a machine's
-    local.yaml ``network:``.
+    ``plugins:``, mcp_servers.yaml has ``external_servers:``. A machine's
+    local.yaml is no include: the loader reads it last, auth and paths too.
     """
     from agent_system.config.models import AgentSystemConfig
     from agent_system.config.settings import MASTER_ONLY_SECTIONS
@@ -260,8 +260,9 @@ def build_config_part_schema() -> dict:
         "title": "Config Part Schema",
         "description": (
             "JSON Schema for a config file pulled in by config/config.yaml's "
-            "includes: (agent configs, mcp_servers.yaml, local.yaml). Any "
-            "section but paths, auth and includes, which only config.yaml sets. " + _GENERATED_NOTE
+            "includes: (agent configs, mcp_servers.yaml). Any section but paths, "
+            "auth, includes and files, which config.yaml sets; config/local.yaml "
+            "may set paths and auth too. " + _GENERATED_NOTE
         ),
         "type": "object",
         "additionalProperties": False,

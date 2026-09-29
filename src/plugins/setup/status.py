@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from agent_system.auth import database
-from agent_system.config.settings import _ENV_PLACEHOLDER, config_files, environment_at_restart, expand_env
+from agent_system.config.local_layer import signing_key_at_restart
+from agent_system.config.settings import (_ENV_PLACEHOLDER, LOCAL_CONFIG, config_files, local_text,
+                                          set_by_the_environment)
 from agent_system.utils import yaml_io
 
 logger = logging.getLogger(__name__)
@@ -89,7 +91,9 @@ def referenced_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for path in config_files(config_path):
         try:
-            data = yaml_io.safe_load(path.read_text(encoding="utf-8"))
+            # the local layer as the loader reads it: UTF-16 too (PowerShell 5.1's `>`)
+            text = local_text(path) if path.name == LOCAL_CONFIG else path.read_text(encoding="utf-8")
+            data = yaml_io.safe_load(text)
         except Exception as error:  # the loader skips a broken file too
             logger.debug("setup status: %s not read: %s", path, error)
             continue
@@ -131,9 +135,18 @@ def key_state(value: Optional[str]) -> str:
 
 
 def keys_status(config_path: Optional[str] = None) -> list[dict[str, Any]]:
-    """The state of every key the configuration names, sorted by name. Never the value."""
-    return [{"name": name, "state": key_state(os.environ.get(name)), "named_in": sections}
-            for name, sections in sorted(referenced_keys(config_path).items())]
+    """The state of every key the configuration names, sorted by name. Never the value. ``from_environment``: set by
+    the real environment, which a secrets file -- the Setup panel's too -- cannot change."""
+    return [{"name": name, "state": key_state(os.environ.get(name)), "named_in": sections,
+             "from_environment": set_by_the_environment(name)}
+            for name, sections in sorted(api_keys(config_path).items())]
+
+
+def api_keys(config_path: Optional[str] = None) -> dict[str, list[str]]:
+    """referenced_keys, less what only the auth section names: the signing key is no API key. It is made with the
+    panel's own button, a restart applies it, and a short one entered as a key would stop the next start."""
+    return {name: sections for name, sections in referenced_keys(config_path).items()
+            if not all(section.split(".")[0] == "auth" for section in sections)}
 
 
 def user_database(auth: Any) -> Any:
@@ -200,25 +213,21 @@ def _admin_with_a_known_password(auth: Any) -> tuple[Optional[str], Optional[boo
 
 
 def configured_signing_key(config: Any) -> Optional[str]:
-    """The signing key a restart applies: ``auth.secret_key`` as the config file says it now.
+    """The signing key a restart applies: ``auth.secret_key`` as the config files say it now.
 
-    Read from the file, never from a config in memory: the API signs with its
-    start key until a restart, whatever a reload does, and only the master file
-    can set auth (settings.master_data_dir). ``${VAR}`` expands as it would in a
-    process started now -- secrets.env as it reads now included
-    (settings.environment_at_restart). The loaded key where the config came from
-    no file; None where the file or its auth section would not load, as a restart
-    would not either.
+    Read from the files, never from a config in memory: the API signs with its
+    start key until a restart, whatever a reload does, and only the master and
+    the local layer can set auth (local_layer.signing_key_at_restart). ``${VAR}``
+    expands as it would in a process started now -- the secrets files as they
+    read now included. The loaded key where the config came from no file; None
+    where a file or the auth section would not load, as a restart would not either.
     """
-    from agent_system.config.models import AuthConfig
     path = getattr(config, "source_path", None)
     if path is None:
         return config.auth.secret_key
     try:
-        master = yaml_io.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         # a master or an auth section that is no mapping raises here, as it fails the loader
-        section = master.get("auth", {})
-        return AuthConfig(**expand_env(section, environ=environment_at_restart(path))).secret_key
+        return signing_key_at_restart(Path(path))
     except Exception as error:  # unreadable, broken YAML, an auth section that fails validation
         # Only the kind: a validation error quotes the value, which may be the key. The panel shows the state,
         # and the loader reports the error in full at the next start.

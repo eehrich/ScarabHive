@@ -107,28 +107,66 @@ def _read_secrets_file(path: Path, skipped: Optional[list[str]] = None) -> dict[
     return found
 
 
+#: This machine's own credentials beside the master config, never in the repository (.gitignore). Read before
+#: secrets.env, so a name it holds wins over that file; the Setup panel and the install scripts write here.
+LOCAL_SECRETS = "local.env"
+
+
+def secrets_files(cfg_path: Path) -> list[Path]:
+    """The credential files beside *cfg_path*, in the order a start reads them: the first to name a variable wins."""
+    return [cfg_path.parent / LOCAL_SECRETS, cfg_path.parent / "secrets.env"]
+
+
 def environment_at_restart(config_path: str) -> dict[str, str]:
     """The environment a process started now would expand *config_path* with.
 
-    This one's, less what it took from the secrets file beside the config, and that
-    file as it reads now -- where the real environment still wins, as in
+    This one's, less what it took from the secrets files beside the config, and
+    those files as they read now -- where the real environment still wins, as in
     _load_secrets_file. The real environment is taken as the next start gets it
     again.
     """
-    env = {name: value for name, value in os.environ.items()
-           if _secrets_from_file.get(_env_name(name)) != _fingerprint(value)}
-    path = Path(config_path).parent / "secrets.env"
-    try:
-        found = _read_secrets_file(path) if path.is_file() else {}
-    except OSError:  # a start goes on without it (_load_secrets_file), and says so then
-        found = {}
-    for name, value in found.items():
-        if _environment_takes(name, value):
-            env.setdefault(_env_name(name), value)
+    env = {name: value for name, value in os.environ.items() if not _came_from_a_file(name, value)}
+    for path in secrets_files(Path(config_path)):
+        try:
+            found = _read_secrets_file(path) if path.is_file() else {}
+        except OSError:  # a start goes on without it (_load_secrets_file), and says so then
+            found = {}
+        for name, value in found.items():
+            if environment_takes(name, value):
+                env.setdefault(_env_name(name), value)
     return env
 
 
-def _environment_takes(name: str, value: str) -> bool:
+def _came_from_a_file(name: str, value: str) -> bool:
+    return _secrets_from_file.get(_env_name(name)) == _fingerprint(value)
+
+
+def set_by_the_environment(name: str) -> bool:
+    """Whether *name* is set by the real environment -- not taken from a secrets file. A file cannot change it then:
+    the environment wins at every start."""
+    value = os.environ.get(name)
+    return value is not None and not _came_from_a_file(name, value)
+
+
+def take_secret(name: str, value: str) -> None:
+    """Put a credential just written to a secrets file into this process's environment, as a start would have taken
+    it -- remembered as the file's, and handed on to the processes this one starts. Raises ValueError/OSError where
+    the environment does not take it."""
+    os.environ[name] = value
+    _secrets_from_file[_env_name(name)] = _fingerprint(value)
+    _hand_on("a credential written at runtime")
+
+
+def _hand_on(source: str) -> None:
+    try:
+        os.environ[SECRETS_FROM_FILE_ENV] = ",".join(f"{name}:{fingerprint}"
+                                                     for name, fingerprint in sorted(_secrets_from_file.items()))
+    except (ValueError, OSError):  # more names than a Windows variable holds
+        logger.warning("The processes this one starts are not told which of %d credentials came from %s",
+                       len(_secrets_from_file), source)
+
+
+def environment_takes(name: str, value: str) -> bool:
     """What a start can put into its environment: Windows takes `name=value` up to 32767 UTF-16 units (os.putenv
     raises past it, measured 28.09.2026; a character past U+FFFF is two), POSIX any length."""
     return os.name != "nt" or len(f"{name}={value}".encode("utf-16-le", "surrogatepass")) // 2 <= 32767
@@ -146,7 +184,7 @@ def _load_secrets_file(path: Path) -> None:
     "no credentials from here" (and say so), not stop the process from
     starting.
     """
-    key = str(path.resolve()) if path.is_absolute() else str(path)
+    key = str(path.resolve())  # one file under two spellings (relative, absolute) is read once
     if key in _secrets_loaded:
         return
     _secrets_loaded.add(key)
@@ -172,12 +210,7 @@ def _load_secrets_file(path: Path) -> None:
     if skipped:
         logger.warning("Left out of %s: %s", path, "; ".join(skipped))
     if loaded:
-        try:
-            os.environ[SECRETS_FROM_FILE_ENV] = ",".join(f"{name}:{fingerprint}"
-                                                         for name, fingerprint in sorted(_secrets_from_file.items()))
-        except (ValueError, OSError):  # more names than a Windows variable holds
-            logger.warning("The processes this one starts are not told which of %d credentials came from %s",
-                           len(_secrets_from_file), path)
+        _hand_on(str(path))
     # Count only — never the names' values.
     logger.info("Loaded %d credential(s) from %s", loaded, path)
 
@@ -284,35 +317,91 @@ def _expand_includes(master: dict, cfg_path: Path) -> list[str]:
 
 
 #: What an include cannot set: a process reads its data directory from the
-#: master alone (master_data_dir), the setup panel the signing key a restart
-#: applies (plugins/setup/status.py), and an include's includes are not followed.
+#: master and the local layer alone (master_data_dir), the setup panel the
+#: signing key a restart applies (plugins/setup/status.py), and an include's
+#: includes are not followed.
 MASTER_ONLY_SECTIONS = ("paths", "auth", "includes", "files")
+
+#: This machine's own layer beside the master config, never in the repository (.gitignore). Read after every
+#: include, so it wins, and -- unlike an include -- it may set auth and paths too: the Setup panel and the install
+#: scripts point auth.secret_key at the machine's own key here, never in a tracked file.
+LOCAL_CONFIG = "local.yaml"
+
+
+def local_layer(cfg_path: Path) -> dict:
+    """The local layer beside *cfg_path*; {} where there is none, or where it does not load -- a start goes on without
+    it then, and says so."""
+    path = cfg_path.parent / LOCAL_CONFIG
+    if not path.is_file():
+        return {}
+    try:
+        part = yaml_io.safe_load(local_text(path)) or {}
+    except (OSError, ValueError, yaml.YAMLError) as error:  # ValueError: no text
+        logger.error("Config file %s not loaded: %s", path, error)
+        return {}
+    if not isinstance(part, dict):
+        logger.error("Config file %s not loaded: not a mapping", path)
+        return {}
+    # A section with every line commented out sets nothing; in hooks, an empty key neither (as in an include).
+    return {key: strip_empty_yaml_keys(value) if key == "hooks" and isinstance(value, dict) else value
+            for key, value in part.items() if value is not None}
+
+
+def local_text(path: Path) -> str:
+    """A file of the local layer as text: UTF-8, with a BOM or without, or UTF-16 with one -- what PowerShell 5.1's
+    `>` writes, which the install guide has the reader do. Raises OSError, or UnicodeDecodeError (a ValueError)."""
+    data = path.read_bytes()
+    return data.decode("utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig")
+
+
+def master_section(cfg_path: Path, name: str, default: Any = None) -> Any:
+    """Section *name* (auth, paths) as a start takes it: the master's, the local layer's over it; *default* where
+    neither names it. A null in the master stays null, which fails the start as it fails this caller. Raises where
+    the master does not load or is no mapping."""
+    master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(master, dict):
+        raise ValueError(f"{cfg_path} is not a mapping")
+    local = local_layer(cfg_path)  # a null section there sets nothing
+    if name not in local:
+        return master.get(name, default)
+    section = master.get(name)
+    return deep_merge(section, local[name]) if isinstance(section, dict) and isinstance(local[name], dict) \
+        else local[name]
 
 
 def config_files(config_path: Optional[str] = None) -> list[Path]:
-    """The files `load_settings` reads, in its order: the master config, then every include that exists."""
+    """The files `load_settings` reads, in its order: the master config, every include that exists, the local layer."""
     cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
     if not cfg_path.exists():
         return []
     master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    local = cfg_path.parent / LOCAL_CONFIG
     included = (Path(inc) if Path(inc).is_absolute() else cfg_path.parent / inc
                 for inc in _expand_includes(master, cfg_path))
-    return [cfg_path, *(path for path in included if path.exists())]
+    return [cfg_path, *(path for path in included if path.exists() and not _is_local(path, local)),
+            *([local] if local.is_file() else [])]
+
+
+def _is_local(path: Path, local: Path) -> bool:
+    return path.resolve() == local.resolve()
 
 
 def master_data_dir(config_path: Optional[str] = None) -> Optional[str]:
-    """``paths.data_dir`` of the master config, for a process that never loads settings.
+    """``paths.data_dir`` as a start takes it, for a process that never loads settings.
 
-    Only the master can set it: the loader takes this section from that file
-    alone. Credentials are loaded and ``${VAR}`` expanded first, so the value
-    is what load_settings would see.
+    Only the master and the local layer can set it: the loader takes this
+    section from those alone. Credentials are loaded and ``${VAR}`` expanded
+    first, so the value is what load_settings would see.
     """
     cfg_path = Path(config_path or os.environ.get("AGENT_CONFIG_PATH") or "config/config.yaml")
     if not cfg_path.exists():
         return None
-    _load_secrets_file(cfg_path.parent / "secrets.env")
-    master = yaml_io.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    section = master.get("paths") if isinstance(master, dict) else None
+    for path in secrets_files(cfg_path):
+        _load_secrets_file(path)
+    try:
+        section = master_section(cfg_path, "paths")
+    except ValueError:
+        return None
     value = section.get("data_dir") if isinstance(section, dict) else None
     return expand_env(str(value)) if value is not None else None
 
@@ -352,7 +441,8 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     # Credentials come from a file the repository never sees, so that the
     # YAML can be shared and versioned. Loaded BEFORE the ${VAR} expansion
     # below, which is what actually consumes them.
-    _load_secrets_file(cfg_path.parent / "secrets.env")
+    for secrets_path in secrets_files(cfg_path):
+        _load_secrets_file(secrets_path)
 
     data: dict = {}
 
@@ -373,11 +463,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         includes = _expand_includes(master, cfg_path)
         logger.debug(f"Config includes {len(includes)} files from glob patterns")
 
+        local_path = cfg_path.parent / LOCAL_CONFIG
+
         # Load each included file and merge into specific sections
         for inc in includes:
             inc_path = Path(inc)
             if not inc_path.is_absolute():
                 inc_path = cfg_path.parent.joinpath(inc_path)
+            if inc_path.exists() and _is_local(inc_path, local_path):
+                continue  # a master that still names the local layer: it comes last, below
             if inc_path.exists():
                 try:
                     part = yaml_io.safe_load(inc_path.read_text(encoding="utf-8")) or {}
@@ -442,9 +536,7 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             # except and logged the whole file as skipped.
                             data["hooks"] = section
 
-                    # Every other section too, over what came before: an include
-                    # can then hold what one machine sets for itself (network,
-                    # logging -- config/local.yaml, the last include).
+                    # Every other section too, over what came before.
                     for key, value in part.items():
                         if key in ("llm_system", "plugins", "external_servers", "hooks"):
                             continue  # merged above
@@ -465,6 +557,16 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                     logger.error(f"Failed to load included config '{inc_path}': {e}", exc_info=True)
                     logger.warning(f"Skipping problematic config file: {inc_path}")
 
+        # This machine's own layer, over everything: every section but another include list.
+        local = local_layer(cfg_path)
+        _resolve_relative_paths(local, cfg_path.parent)
+        for key, value in local.items():
+            if key in ("includes", "files"):
+                logger.warning("%s: '%s' is read from %s only -- ignored here", LOCAL_CONFIG, key, cfg_path.name)
+                continue
+            current = data.get(key)
+            data[key] = deep_merge(current, value) if isinstance(current, dict) and isinstance(value, dict) else value
+
     # Apply simple env-variable expansion for ${VAR} patterns (keep existing loader behavior)
     _missing_vars: set[str] = set()
     data = expand_env(data, _missing_vars)
@@ -472,10 +574,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
     if _missing_vars:
         logger.warning(
             "Config references %d unset variable(s): %s — the values are empty. "
-            "Set them in %s (template: secrets.env.example) or in the "
-            "environment.",
+            "Enter them in the Setup panel, or in %s (template: secrets.env.example), "
+            "or set them in the environment.",
             len(_missing_vars), ", ".join(sorted(_missing_vars)),
-            cfg_path.parent / "secrets.env",
+            cfg_path.parent / LOCAL_SECRETS,
         )
 
     # One data directory for every path the configuration names under data/

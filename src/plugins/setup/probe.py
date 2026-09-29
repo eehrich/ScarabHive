@@ -37,13 +37,16 @@ def runs_as_a_batch(config: Any, profile: str) -> bool:
 
 
 async def probe_chat(config: Any, profile: Optional[str] = None,
-                     timeout: float = PROBE_TIMEOUT) -> dict[str, Any]:
+                     timeout: float = PROBE_TIMEOUT, llm_config: Any = None) -> dict[str, Any]:
     """Send one short request through *profile* (default: the default agent's first) and say how it went.
 
     The answer text is not returned -- only whether one came, and else the error
-    the provider gave, which names a refused key as such.
+    the provider gave, which names a refused key as such. The agent comes from
+    *config*; the client is built from *llm_config* where given (the config as the
+    API runs now, which a message's own model is built from), else from *config*.
     """
-    agent, first = default_chat_profile(config)
+    config, agent_config = (llm_config or config), config
+    agent, first = default_chat_profile(agent_config)
     profile = profile or first
     result: dict[str, Any] = {"agent": agent, "profile": profile}
     if not profile:
