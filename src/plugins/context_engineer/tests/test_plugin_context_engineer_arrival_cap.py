@@ -54,6 +54,20 @@ async def _engineer(plugin, session_id, messages):
             if getattr(m, "injected_by", None) != hooks_mod._RESTORATION_MARKER]
 
 
+#: The same small image in both earlier user messages: any run past the
+#: arrivals-only path deduplicates it and rewrites the older one. That is the
+#: sign a full run happened, and it needs no threshold or limit of its own.
+_TWIN_IMAGE = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "iVBORw0KGgo" * 20}}
+
+#: target_tokens 0: a full run below every threshold does not stop before the
+#: media passes because the context is under its target.
+_NO_TARGET = {"target_tokens": 0}
+
+
+def _user_with_image(text):
+    return ChatMessage(role="user", content=[{"type": "text", "text": text}, dict(_TWIN_IMAGE)])
+
+
 def _is_ref(message):
     try:
         return json.loads(message.content).get("type") == TOOL_RESULT_REF_TYPE
@@ -145,17 +159,17 @@ async def test_a_run_for_the_cap_alone_leaves_no_hysteresis_mark(plugin):
 @pytest.mark.asyncio
 async def test_a_run_for_the_cap_alone_runs_no_other_pass(plugin):
     """Below the gate the hook used to return; coming in for T must not let
-    Pre-Layer P prune the older messages."""
-    messages = [ChatMessage(role="user", content="Read chapter 2."),
+    another pass (here the media dedup) rewrite the older messages."""
+    messages = [_user_with_image("Read chapter 2."),
                 _call("c0"), _result("c0", "short"),
-                ChatMessage(role="user", content="Now chapter 3."),
+                _user_with_image("Now chapter 3."),
                 _call("c1"), _result("c1", LARGE)]
     sent = [m.model_dump() for m in messages[:-1]]
 
     result = await plugin.engineer_context(HookContext(
         hook_type=HookType.PRE_LLM_CALL, request_id="req-p", session_id="noprune",
         messages=messages, llm=SimpleNamespace(context_window=WINDOW),
-        hook_config={"max_messages": 3}))
+        hook_config=_NO_TARGET))
     out = [m for m in result.context.messages
            if getattr(m, "injected_by", None) != hooks_mod._RESTORATION_MARKER]
 
@@ -205,17 +219,17 @@ async def test_the_hysteresis_level_is_what_was_due_after_the_cap(plugin):
 @pytest.mark.asyncio
 async def test_the_gate_reads_the_call_without_what_the_cap_stores(plugin):
     """Over Layer 1's threshold only because of the arrival: the hook came in as
-    if a layer were due, and Pre-Layer P pruned older messages on the way."""
-    messages = [ChatMessage(role="user", content="Read chapter 2."),
+    if a layer were due, and the other passes rewrote older messages on the way."""
+    messages = [_user_with_image("Read chapter 2."),
                 _call("c0"), _result("c0", "short"),
-                ChatMessage(role="user", content="Now chapter 3."),
+                _user_with_image("Now chapter 3."),
                 _call("c1"), _result("c1", LARGE)]
     sent = [m.model_dump() for m in messages[:-1]]
 
     result = await plugin.engineer_context(HookContext(
         hook_type=HookType.PRE_LLM_CALL, request_id="req-g", session_id="gate",
         messages=messages, llm=SimpleNamespace(context_window=WINDOW),
-        hook_config={"layer1_threshold": 12_000, "max_messages": 3}))
+        hook_config={**_NO_TARGET, "layer1_threshold": 12_000}))
     out = [m for m in result.context.messages
            if getattr(m, "injected_by", None) != hooks_mod._RESTORATION_MARKER]
 
@@ -226,17 +240,17 @@ async def test_the_gate_reads_the_call_without_what_the_cap_stores(plugin):
 @pytest.mark.asyncio
 async def test_the_byte_limit_reads_the_call_without_what_the_cap_stores(plugin):
     """Over the byte limit only because of the arrival: the hook forced a full
-    run, and Pre-Layer P pruned older messages although T alone got it under."""
-    messages = [ChatMessage(role="user", content="Read chapter 2."),
+    run, and the other passes rewrote older messages although T alone got it under."""
+    messages = [_user_with_image("Read chapter 2."),
                 _call("c0"), _result("c0", "short"),
-                ChatMessage(role="user", content="Now chapter 3."),
+                _user_with_image("Now chapter 3."),
                 _call("c1"), _result("c1", LARGE)]
     sent = [m.model_dump() for m in messages[:-1]]
 
     result = await plugin.engineer_context(HookContext(
         hook_type=HookType.PRE_LLM_CALL, request_id="req-b", session_id="bytes",
         messages=messages, llm=SimpleNamespace(context_window=WINDOW),
-        hook_config={"max_request_bytes": 40_000, "max_messages": 3}))
+        hook_config={**_NO_TARGET, "max_request_bytes": 40_000}))
     out = [m for m in result.context.messages
            if getattr(m, "injected_by", None) != hooks_mod._RESTORATION_MARKER]
 
@@ -359,3 +373,19 @@ async def test_the_hysteresis_does_not_hold_it(plugin):
     out = await _engineer(plugin, "held", messages)
 
     assert _is_ref(out[-1]), "held back by the hysteresis"
+
+
+@pytest.mark.asyncio
+async def test_over_the_message_limit_alone_the_hook_prunes(plugin):
+    """No token threshold, no byte limit, no media pass: max_messages was never
+    enforced, because the gate let only those reasons in."""
+    messages = [ChatMessage(role=role, content=f"{role} {n}")
+                for n in range(4) for role in ("user", "assistant")]
+
+    result = await plugin.engineer_context(HookContext(
+        hook_type=HookType.PRE_LLM_CALL, request_id="req-limit", session_id="limit",
+        messages=messages, hook_config={"max_messages": 4, "max_messages_prune_to": 2,
+                                        "always_compact_media_keep_last": 0}))
+
+    assert result.success, result.error
+    assert (result.metadata or {}).get("messages_pruned", 0) > 0, result.metadata

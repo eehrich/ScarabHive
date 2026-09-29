@@ -118,17 +118,19 @@ tools:
       name: "{{ name }}_store_fact"
       description: |
         Store an important fact or decision in core memory for persistent context.
-        
-        Core memory facts are always part of the conversation, ensuring
-        important information is never lost during context compaction.
-        
+
+        Core memory facts are shown to you in the context engineering's note on
+        stored information, so a fact stays in view after the messages around
+        it have been compacted away. list(section='facts') lists them.
+
         Use this for:
         - Key decisions made during conversation
         - Important user preferences discovered
         - Critical project facts to remember
-        
-        Facts are organized by category and limited to ~2000 tokens total.
-        Lower importance facts are evicted when limit is reached.
+
+        Facts are organized by category and share a fixed token budget. When it
+        is full, a new fact pushes out facts that are not more important than
+        it, least important first; if those do not make room, it is refused.
       parameters:
         type: object
         properties:
@@ -156,8 +158,9 @@ tools:
       description: |
         Compact the conversation if it has outgrown the automatic limits.
         The same rules as the automatic compaction before every step apply, so
-        below those limits this changes nothing; there is no need to call it
-        ahead of time. Above them it stores large tool results and attached
+        below those limits no layer runs -- only the media passes that run on
+        every step anyway; there is no need to call it ahead of time. Above
+        them it stores large tool results and attached
         files externally with references (the newest stay) and evicts inline
         media (saved to disk first, restorable with read).
       parameters:
@@ -305,7 +308,7 @@ config:
   compact_media_after_final_response:
     type: boolean
     default: false
-    description: "Compact all media when the agent sends a final response (no tool calls). Useful for long-running sessions with lots of media."
+    description: "Has no effect: the hook runs before LLM calls only, and nothing hands it a final response. compact_media_after_user_message covers the next turn."
 
   always_compact_media_keep_last:
     type: integer
@@ -324,7 +327,7 @@ config:
     type: integer
     default: 0
     minimum: 0
-    description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers. Preserves tool call/result pairs."
+    description: "Maximum message count before pruning oldest messages. Set to 0 to disable. Runs BEFORE token-based layers and whatever the token count: over the limit the hook runs on its own. Preserves tool call/result pairs."
 
   max_messages_prune_to:
     type: integer

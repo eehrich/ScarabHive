@@ -176,17 +176,17 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
             }
             
         Returns:
-            {
-                "success": bool,
-                "fact_id": str,
-                "category": str
-            }
+            {"status": "success", "success": True, "category", "importance",
+            "total_facts"} -- the category and importance the fact is kept
+            under -- or {"status": "error", "error": ...} for a missing or blank
+            fact, a fact core memory refused, or one pushed out again at once.
         """
         status = params.get("_status")
         
         try:
             fact = params.get("fact")
-            if not fact:
+            # Blank counts as missing: core memory strips it and kept an empty line.
+            if not fact or not str(fact).strip():
                 error_msg = "Fact parameter is required"
                 if status:
                     await status.error(error_msg)
@@ -229,17 +229,15 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
         
         Tool name: {{ name }}_compact → e.g., 'context_engineer_compact'
         
-        When called via tool, compaction ALWAYS runs (bypasses thresholds).
-        Layers are applied progressively based on current token count.
-        
+        A person's /compact (no request id) bypasses the thresholds and the
+        hysteresis; the model calling the tool gets the automatic rules.
+
         Returns:
-            {
-                "status": "success",
-                "original_tokens": int,
-                "final_tokens": int,
-                "tokens_saved": int,
-                "layers_applied": [...]
-            }
+            {"status": "success", "modified", "original_tokens", "final_tokens",
+            "tokens_saved", "reduction_percent", "layers_applied",
+            "tool_results_stored", "messages_archived", "messages_dropped",
+            "messages_pruned"}, plus "reason" (below_threshold, hysteresis) for
+            a run turned away -- or {"status": "error", "error": ...}.
         """
         status = params.get("_status")
         
@@ -368,17 +366,25 @@ class ContextEngineerServer(SchemaBasedHookToolServer):
                 reduction = metadata.get("reduction_percent", 0)
                 await status.end(f"Compacted: saved {tokens_saved} tokens ({reduction:.1f}% reduction)")
             
+            # A run turned away (below the thresholds, or held by the hysteresis)
+            # carries no before/after figures; its reading is current_tokens.
+            # Without the fallback the answer said the conversation held 0 tokens.
+            now = metadata.get("current_tokens", 0)
             return {
                 "status": "success",
                 "modified": result.modified,
-                "original_tokens": metadata.get("original_tokens", 0),
-                "final_tokens": metadata.get("final_tokens", 0),
+                **({"reason": metadata["reason"]} if metadata.get("reason") else {}),
+                "original_tokens": metadata.get("original_tokens", now),
+                "final_tokens": metadata.get("final_tokens", now),
                 "tokens_saved": metadata.get("tokens_saved", 0),
                 "reduction_percent": metadata.get("reduction_percent", 0),
                 "layers_applied": metadata.get("layers_applied", []),
                 "tool_results_stored": metadata.get("tool_results_stored", 0),
                 "messages_archived": metadata.get("messages_archived", 0),
-                "messages_dropped": metadata.get("messages_dropped", 0)
+                "messages_dropped": metadata.get("messages_dropped", 0),
+                # Pre-Layer P's count: without it a /compact that pruned said
+                # nothing had left the conversation.
+                "messages_pruned": metadata.get("messages_pruned", 0),
             }
             
         except Exception as e:

@@ -73,6 +73,14 @@ class TestPerAgentOverrides:
         plugin._get_session_components("ov")  # a bare caller again keeps them
         assert components["strategy"].config.tool_result_keep_last == default + 7
 
+    def test_the_media_store_takes_the_agents_overrides(self, plugin):
+        """It was built from the plugin's values: media_store_ttl_seconds and
+        media_store_max_files set per agent reached nothing."""
+        store = plugin._get_session_components("media-ov", overrides={
+            "media_store_ttl_seconds": 60, "media_store_max_files": 7})["media_store"]
+
+        assert (store.ttl_seconds, store.max_files) == (60, 7)
+
     @pytest.mark.asyncio
     async def test_the_compact_tool_brings_the_agents_overrides(self, plugin):
         from agent_system.config.models import ToolServerConfig
@@ -184,6 +192,79 @@ class TestTheCompactTool:
             "a run that changed nothing was staged — the agent rebuilds its list from it "
             "and drops leading system messages" if not by_person
             else "fixture: the person's compaction was not staged")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("held", [False, True])
+    async def test_a_run_turned_away_answers_the_reading_and_why(self, plugin, held):
+        """Below the thresholds, or held by the hysteresis, the answer said the
+        conversation held 0 tokens and gave no reason."""
+        from agent_system.config.models import ToolServerConfig
+        from unittest.mock import MagicMock
+
+        from plugins.context_engineer.server import ContextEngineerServer
+
+        srv = ContextEngineerServer("context_engineer", MagicMock(),
+                                    ToolServerConfig(type="context_engineer", enabled=True))
+        srv._hooks_impl = plugin
+        overrides = {"context_engineer.engineer_context": {
+            "enabled": True, "always_compact_media_keep_last": 0,
+            "compact_media_after_user_message": False,
+            "layer1_threshold": 100 if held else 10**9}}
+        if held:
+            plugin._hysteresis_marks["s"] = hooks_mod._HysteresisMark(level=1, tokens=10**9)
+        agent = SimpleNamespace(
+            name="a", llm=None,
+            agent_config=SimpleNamespace(hooks=SimpleNamespace(overrides=overrides)),
+            get_live_messages=lambda sid: TestHysteresis()._run_messages(2),
+        )
+        answer = await srv.compact({"_session_id": "s", "_agent": agent, "_request_id": "r"})
+
+        assert answer["reason"] == ("hysteresis" if held else "below_threshold"), answer
+        assert answer["original_tokens"] > 0 and answer["final_tokens"] == answer["original_tokens"]
+
+    @pytest.mark.asyncio
+    async def test_a_prune_is_in_the_answer_and_the_status_names_the_agents_target(
+            self, plugin, monkeypatch):
+        """A /compact that pruned answered as if nothing had left, and the
+        status line named the plugin's target_tokens, not the agent's."""
+        from agent_system.config.models import ToolServerConfig
+        from unittest.mock import MagicMock
+
+        from plugins.context_engineer.server import ContextEngineerServer
+
+        started = []
+
+        class Scope:
+            def __init__(self, *args, start_msg=None, **kwargs):
+                started.append(start_msg)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def end(self, message):
+                pass
+
+        monkeypatch.setattr(hooks_mod, "StatusScope", Scope)
+        srv = ContextEngineerServer("context_engineer", MagicMock(),
+                                    ToolServerConfig(type="context_engineer", enabled=True))
+        srv._hooks_impl = plugin
+        overrides = {"context_engineer.engineer_context": {
+            "enabled": True, "max_messages": 4, "max_messages_prune_to": 2, "target_tokens": 1234}}
+        turns = [ChatMessage(role=role, content=f"{role} {n}")
+                 for n in range(3) for role in ("user", "assistant")]
+        agent = SimpleNamespace(
+            name="a", llm=None,
+            agent_config=SimpleNamespace(hooks=SimpleNamespace(overrides=overrides)),
+            get_live_messages=lambda sid: [*turns, ChatMessage(role="user", content="now")],
+            _session_tracker=SimpleNamespace(set_compacted_messages=lambda sid, msgs: None),
+        )
+        answer = await srv.compact({"_session_id": "s", "_agent": agent})
+
+        assert answer["messages_pruned"] > 0, answer
+        assert started and "(target: 1234)" in started[0], started
 
 
 class TestHysteresis:
