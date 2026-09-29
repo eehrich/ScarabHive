@@ -65,6 +65,10 @@ SHOTS = {
         document.querySelector('details.lv-message')?.setAttribute('open', '');
         const log = document.getElementById('log');
         log.scrollTop = log.scrollHeight;""")],
+    "batch_monitor": [("panel.png", "plugins.batch_monitor.tests.test_plugin_batch_monitor_panel", "panel_app",
+                       "/plugins/batch_monitor/", (1000, 540))],
+    "session_archive": [("panel.png", "plugins.session_archive.tests.test_plugin_session_archive_panel", "panel_app",
+                         "/plugins/session_archive/", (900, 380))],
     "debate_forum": [("panel.png", "plugins.debate_forum.tests.test_plugin_debate_forum_panel", "panel_app",
                       "/plugins/debate_forum/", (1000, 680), """
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;
