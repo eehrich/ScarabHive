@@ -620,14 +620,19 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     'success': False
                 })
             else:
-                responses.append({
+                response = {
                     'machine': result.machine,
                     'local_path': result.local_path,
                     'remote_path': result.remote_path,
                     'bytes_transferred': result.bytes_transferred,
                     'duration': result.duration,
                     'success': result.success
-                })
+                }
+                if not result.success:
+                    # A failed transfer comes back as a result, not an
+                    # exception; its reason used to be dropped right here.
+                    response['error'] = result.error
+                responses.append(response)
 
         # Send completion status
         if status:
@@ -654,8 +659,11 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     meta={'successful': successful, 'bytes': total_bytes}
                 )
             else:
+                first_error = next((str(r.get('error') or '')[:60] for r in responses
+                                    if not r.get('success', False)), '')
                 await status.error(
-                    f"Uploaded: {machine_str}: {filename} ({successful} ok, {failed} failed)",
+                    f"Upload failed: {machine_str}: {filename} ({successful} ok, {failed} failed"
+                    + (f": {first_error})" if first_error else ")"),
                     meta={'successful': successful, 'failed': failed}
                 )
 
@@ -708,6 +716,10 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 remote_path,
                 local_path
             )
+            if not result.success:
+                # A failed transfer is a result, not an exception: the reason
+                # and the error line are the except branch's
+                raise RuntimeError(result.error)
 
             # Send completion status
             if status:
@@ -743,7 +755,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 import os
                 filename = os.path.basename(remote_path)
                 await status.error(
-                    f"Downloaded: {machine}: {filename} - {str(e)}",
+                    f"Download failed: {machine}: {filename} - {str(e)}",
                     meta={'error': str(e)}
                 )
 
@@ -875,6 +887,14 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 await status.error(error_msg)
             return {'success': False, 'error': error_msg}
 
+        max_connections = params.get('max_connections', 3)
+        if isinstance(max_connections, bool) or not isinstance(max_connections, int) or max_connections < 1:
+            # 0 would make every command wait 30 s for a slot, a negative value raises
+            error_msg = f"max_connections must be a whole number of at least 1, not {max_connections!r}"
+            if status:
+                await status.error(error_msg)
+            return {'success': False, 'error': error_msg}
+
         # Send status update
         if status:
             await status.progress(f"Adding machine: {name} ({username}@{host})")
@@ -886,7 +906,6 @@ class SSHControlToolServer(SchemaBasedToolServer):
         key_path = params.get('key_path', '~/.ssh/id_rsa')
         tags = params.get('tags', [])
         persistent = params.get('persistent', False)
-        max_connections = params.get('max_connections', 3)
 
         try:
             # Create MachineConfig
@@ -923,13 +942,15 @@ class SSHControlToolServer(SchemaBasedToolServer):
                     timeout=10.0
                 )
 
-                # Test with simple command
-                result = await asyncio.wait_for(
-                    conn.run('echo "Connection test"', check=False),
-                    timeout=5.0
-                )
-
-                conn.close()
+                # Test with simple command; the connection is closed whatever
+                # happens -- a test that timed out used to leave it open
+                try:
+                    result = await asyncio.wait_for(
+                        conn.run('echo "Connection test"', check=False),
+                        timeout=5.0
+                    )
+                finally:
+                    conn.close()
 
                 if result.exit_status != 0:
                     error_msg = f"Connection test failed: exit code {result.exit_status}"
@@ -940,7 +961,8 @@ class SSHControlToolServer(SchemaBasedToolServer):
                 logger.info(f"Connection test successful for {name}")
 
             except asyncio.TimeoutError:
-                error_msg = f"Connection timeout for {name} after 10 seconds"
+                error_msg = (f"Connection timeout for {name}: "
+                             f"10 seconds to connect, 5 for the test command")
                 if status:
                     await status.error(error_msg)
                 return {'success': False, 'error': error_msg}

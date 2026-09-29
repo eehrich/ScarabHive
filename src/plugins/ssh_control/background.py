@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections import deque
 from datetime import datetime
@@ -160,6 +161,13 @@ class RemoteProcessManager:
             await pool.release(conn)
             raise
 
+        # The channel is open, so the command runs on the machine: audited now,
+        # before anything can still stop it -- a stop that arrives while the
+        # channel opened leaves the command running there all the same
+        if self._connections.audit_log_enabled:
+            self._connections._audit_log('start_background', machine_name,
+                                         {'command': command, 'process_id': process_id})
+
         if process_id not in self.processes:
             # Stopped while the channel was opening -- kill_process and cleanup
             # take the entry away, because there is no process to signal yet and
@@ -172,7 +180,8 @@ class RemoteProcessManager:
 
         self.processes[process_id]["process"] = process
         task = asyncio.create_task(
-            self._capture_output(process_id, self.processes[process_id], pool, conn))
+            self._capture_output(process_id, self.processes[process_id], pool, conn,
+                                 time.time()))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         logger.info(f"Started background command {process_id} on {machine_name}: {command}")
@@ -191,7 +200,8 @@ class RemoteProcessManager:
                 logger.debug(f"Stream ended for {process_id}: {e}")
                 break
 
-    async def _capture_output(self, process_id: str, proc_info: Dict, pool, conn) -> None:
+    async def _capture_output(self, process_id: str, proc_info: Dict, pool, conn,
+                              start_time: float) -> None:
         """Read both streams to their end, record the outcome, hand the
         connection back -- and only then tell whoever asked to hear about it.
         The entry is held, not looked up: once the command is over its id may
@@ -220,6 +230,12 @@ class RemoteProcessManager:
                 logger.warning(f"Could not release the connection of {process_id}: {e}")
             logger.info(f"Background command {process_id} finished "
                         f"with exit code {proc_info['exit_code']}")
+            # Into the panel's history like a foreground run, once it is over
+            self._connections._remember(
+                proc_info["machine"], proc_info["command"], start_time,
+                stdout="".join(proc_info["stdout_buffer"]),
+                stderr="".join(proc_info["stderr_buffer"]),
+                exit_code=proc_info["exit_code"], error=proc_info["error"])
 
         if proc_info["on_finish"] is not None:
             try:

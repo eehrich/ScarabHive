@@ -1,0 +1,601 @@
+@database "ssh_control"
+@author "Enrico Ehrich"
+@$VER: ssh_control.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "SSH Control"
+@{h1}SSH Control
+
+An agent that looks after servers runs commands on them over SSH: it
+checks a disk, restarts a service, starts a long build in the background
+and reads its output later, copies files to and from a machine. The
+machines are named in the configuration -- an agent addresses
+@{tt}build-host@{utt}, not an address and a key. In the @{b}SSH
+Machines@{ub} panel you see every machine with its state and what was run
+there, run commands yourself, and add or remove machines.
+
+This plugin gives an agent a shell on other computers. Read
+@{" What an agent can do " link security} before you give it to one.
+
+@{image docs/panel.png "The SSH Machines panel with the history of a machine"}
+
+@{code}
+For users
+  @{"  The SSH Machines panel  " link panel}
+  @{"  What an agent can do  " link security}
+
+For agents and developers
+  @{"  Running commands  " link execute}
+  @{"  Background commands  " link background}
+  @{"  Files  " link files}
+  @{"  Machines and connections  " link machines}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The SSH Machines panel"
+@{h1}The SSH Machines panel
+
+Open it from the launcher (@{b}System@{ub}, "SSH Machines"). It answers
+administrators only: every other role gets the server's refusal.
+
+@{image docs/panel.png "The SSH Machines panel"}
+
+The panel shows the machines of the plugin, whichever chat is open --
+they are not tied to a session.
+
+@{h2}The machines
+
+One tab per machine, with a dot for its state:
+
+@{table}
+State | Means
+green, with milliseconds | used in the last five minutes; the time is the last measured round trip
+Connected | used in the last five minutes, no round trip measured yet
+Not connected yet | nothing has connected to it since the server started; the first command does
+Idle | connected to before, not used in the last five minutes
+Unreachable (red) | the ping of a click on reload failed; the reason is shown next to it until the next tick
+@{body}
+
+The list reloads every 5 seconds (the menu next to the reload button sets
+another interval or turns it off). A tick only looks at when each machine
+was last used and never connects. A click on the reload button pings the
+machines connected to before; a machine never connected to is not
+connected to for it, and one whose connections are all busy is judged by
+its last use instead of being waited for.
+
+Above the output: @{tt}user\@host:port@{utt}, the state, the tags and
+@{b}Remove@{ub}.
+
+@{h2}The output
+
+What was run on the machine, the last 50 runs in the order they were
+recorded: the command,
+its output, its errors in red, and a line with the exit code (or why it did
+not run to the end), the duration and the time. A run that failed is drawn
+in red; an output longer than 10 KB is cut there and says so. The
+history holds the agents' commands and the panel's alike, background
+commands once they have ended, and failed ones too. A background command
+is recorded when it ends but shows the time it started, so it can sit
+below runs that started after it. It lives in the
+server's memory -- 1000 runs over all machines -- and is gone after a
+restart.
+
+@{h2}Running a command
+
+Type a command after the @{tt}name$@{utt} prompt and press @{b}Run@{ub}
+or Enter. It runs as the machine's user, in that user's shell, with the
+machine's command timeout (300 seconds unless configured otherwise). The
+line is locked and the command shown with a spinner until it is done; the
+output then appears in the history. A machine that cannot be reached, or a
+command that does not finish in time, is shown as an error and is in the
+history as well. There is no background mode here: a command that takes
+longer than the timeout is cut off.
+
+@{h2}Adding a machine
+
+@{b}Add machine@{ub} asks for a name, host, port, username and the way
+to log in: an SSH key (a key file on the server, @{tt}~/.ssh/id_rsa@{utt}
+unless you give another), a password, or the SSH agent of the server.
+The connection is tested first; a refusal -- no connection within 10
+seconds, a host key that is not trusted, a login that fails -- is shown in
+the dialog and nothing is added. @{b}Keep across restarts@{ub} stores the
+machine without any password (see @{" Machines and connections " link machines});
+a machine with a password is added but not kept, and the panel says so.
+
+@{h2}Removing a machine
+
+@{b}Remove@{ub} asks first, closes the machine's connections and removes
+it from the stored machines too. A machine from the configuration comes
+back at the next start; the panel says so. A command already running on
+it is cut off with its connection.
+@endnode
+
+@node security "What an agent can do"
+@{h1}What an agent can do
+
+@{h2}Commands
+
+There is no command allowlist. An agent that has @{tt}execute@{utt} runs
+any command line, as the machine's user, in that user's shell -- pipes,
+@{tt}sudo@{utt} and all. What limits it is that account on that host:
+give the plugin an account that can do what the agent should do and no
+more.
+
+Only @{tt}command@{utt} is a shell line. Every other parameter -- machine
+names, paths, modes, process ids -- is used as a value: paths go over
+SFTP, never through a shell, and a machine name picks a configured machine
+or is refused.
+
+@{h2}Hosts
+
+An agent reaches only machines by name: an unknown name is refused with
+the list of known ones. But @{tt}add_machine@{utt} lets it add any host,
+with any user, any key file the server can read (@{tt}~/.ssh/id_rsa@{utt}
+when it names none) or the server's SSH agent. Two things bound that:
+
+@{bullet}With strict host key checking (the default) a host must already
+be in the server's known_hosts file, or the connection test fails with
+"Host key is not trusted for host ..." and nothing is added.
+@{bullet}The tools can be allowed one by one. An agent that should work
+only on the configured machines gets no @{tt}add_machine@{utt} and no
+@{tt}remove_machine@{utt} (see @{" Setting it up " link setup}).
+
+@{tt}remove_machine@{utt} can take a configured machine away until the
+next start, and a machine of that name can then be added with another
+host.
+
+@{h2}Local files
+
+@{tt}upload_file@{utt} reads any file the server process can read and
+@{tt}download_file@{utt} writes wherever it can write, replacing a file
+that is there. Relative paths start in the server's working directory.
+Nothing restricts them to a folder: an agent that should not move files
+between the server and a machine gets neither tool.
+
+@{h2}Host keys
+
+@{tt}strict_host_key_checking@{utt} is on unless the configuration sets
+it to @{tt}false@{utt} -- an empty value keeps it on. Then every connection checks the host's key against
+@{tt}known_hosts_file@{utt} (@{tt}~/.ssh/known_hosts@{utt}). If that file
+does not exist, or the setting is empty, no connection is made -- the
+plugin never falls back to accepting any key. Turned off, every key is
+accepted: anyone who can take over the address gets the commands and the
+password.
+
+@{h2}Credentials
+
+Passwords and passphrases never appear in a tool answer or in the panel;
+@{tt}list_machines@{utt} shows the login method only, and a key path
+shows only in the error that its file is missing. A
+password in the configuration can come from the environment:
+@{tt}password: "${BUILD_HOST_PASSWORD}"@{utt}. A password an agent passes
+to @{tt}add_machine@{utt} is part of the conversation -- the tool call's
+arguments -- and stays in the server's memory; it is never written to the
+machine store. Key or agent logins keep secrets out of both.
+
+Whatever the login method, asyncssh also offers the keys of the server's
+SSH agent (@{tt}SSH_AUTH_SOCK@{utt}) and the default keys
+@{tt}~/.ssh/id_*@{utt} of the account the server runs as. A machine set
+up for a password or one key may therefore log in with another key that
+account holds.
+
+@{h2}The SSH client configuration
+
+asyncssh reads @{tt}~/.ssh/config@{utt} of the account the server runs
+as. A @{tt}ProxyCommand@{utt} or @{tt}Match exec@{utt} there that uses
+@{tt}%h@{utt} runs a local command with the host name in it -- and with
+@{tt}add_machine@{utt} an agent chooses that host name. Keep such entries
+out of that account's configuration, or keep @{tt}add_machine@{utt} from
+the agent.
+
+@{h2}The audit trail
+
+With @{tt}security.audit_log@{utt} on (the default), every command that
+reached a machine -- finished, failed, timed out or cancelled --, every background
+command started and every file copied writes a line to the server's
+log:
+
+@{code}
+AUDIT: {"timestamp": "2026-09-29 10:15:02", "operation": "execute_command",
+        "machine": "build-host", "command": "df -h /", "exit_code": 0, "duration": 0.21}
+@{body}
+
+The operations are @{tt}execute_command@{utt} (with @{tt}error@{utt}
+instead of the exit code when it failed), @{tt}start_background@{utt}
+(with the @{tt}process_id@{utt}), @{tt}upload_file@{utt} and
+@{tt}download_file@{utt}. The command is logged as sent, so a secret typed
+into a command is in the log. There is no separate audit file.
+
+@{h2}Who can use it
+
+The panel answers administrators only (a rule for
+@{tt}/plugins/ssh_control/*@{utt} in @{tt}config/security.yaml@{utt}).
+The tools reach every agent whose allowlist names them; limit the agent
+itself to administrators with @{tt}min_role: admin@{utt} in its metadata.
+Background commands belong to the session that started them: another
+session can neither read nor stop them, nor take over their
+@{tt}process_id@{utt}.
+@endnode
+
+@node execute "Running commands"
+@{h1}Running commands
+
+The tools are named after the plugin instance: @{tt}ssh_control_execute@{utt}
+and so on in the default setup.
+
+@{tt}ssh_control_execute@{utt} runs a command on one machine and answers
+when it is done.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+machine | the machine's name; required
+command | the command line; required
+timeout | seconds; without it the machine's command_timeout (300 by default)
+check_exit_code | true (default): a non-zero exit counts as failed; false: it counts as success
+background | true: start it and return at once, see @{" Background commands " link background}
+wake, process_id | background commands only
+@{body}
+
+@{h2}The answer
+
+@{code json}
+{"results": [{"machine": "build-host", "command": "df -h /",
+              "stdout": "Filesystem ...", "stderr": "", "exit_code": 0,
+              "duration": 0.21, "success": true}],
+ "total_machines": 1, "successful": 1, "failed": 0}
+@{body}
+
+A non-zero exit with @{tt}check_exit_code@{utt} on adds
+@{tt}error: "Command failed with exit code 2"@{utt}. A command that did not
+run to the end has @{tt}error@{utt} and @{tt}success: false@{utt} and no
+output: "Timed out after 300s", "Unknown machine: x. Available: [...]",
+the connection's failure, or "No connection slot available to ... within
+30.0s" when every connection of the machine stays busy for 30 seconds.
+Stdout and stderr come back whole; a command with a lot of output should
+be cut on the machine (@{tt}| tail -50@{utt}). On a timeout the plugin
+stops waiting and sends no signal: the command may go on running on the
+host.
+
+A missing @{tt}machine@{utt} or @{tt}command@{utt} fails the call with an
+error. @{tt}wake@{utt} on a foreground command answers @{tt}wake:
+false@{utt} with a note: the results are already there.
+@endnode
+
+@node background "Background commands"
+@{h1}Background commands
+
+A build, a backup, a long download: @{tt}execute@{utt} with
+@{tt}background: true@{utt} starts the command and answers as soon as it
+runs.
+
+@{code json}
+{"machine": "build-host", "command": "make all", "background": true, "wake": true}
+{"status": "success", "process_id": "ssh_proc_3f9a1c2e", "machine": "build-host",
+ "command": "make all", "started_at": "2026-09-29T10:15:02", "wake": true}
+@{body}
+
+@{h2}Limits
+
+@{bullet}One machine per command, and no timeout: it runs until it ends or
+is stopped.
+@{bullet}It holds one connection of the machine for its whole run, and one
+connection always stays free for ordinary commands: a machine with
+@{tt}max_connections: 3@{utt} runs two background commands at a time, one
+with 1 runs none. A third answers @{tt}error_type:
+BackgroundLimitReached@{utt}.
+@{bullet}Each stream keeps its last 1000 lines. Of the finished commands
+the 50 that ended last stay readable.
+@{bullet}They live in the server's memory. A restart or a stop of the
+server stops them.
+
+@{h2}process_id
+
+Without one the plugin makes an id (@{tt}ssh_proc_@{utt} and eight hex
+digits). A given id may be reused once its command has ended; one still
+running answers @{tt}ProcessIdInUse@{utt}, and so does an id of another
+session.
+
+@{h2}Reading and stopping
+
+@{tt}ssh_control_get_output@{utt} takes @{tt}process_id@{utt},
+@{tt}stream@{utt} (stdout, stderr or both, the default) and
+@{tt}clear_buffer@{utt} (true drops what was read, so the next read gets
+only what is new). It answers @{tt}stdout@{utt}, @{tt}stderr@{utt},
+@{tt}is_running@{utt}, @{tt}exit_code@{utt} (null while it runs),
+@{tt}started_at@{utt}, @{tt}finished_at@{utt} and @{tt}error@{utt}.
+
+@{tt}ssh_control_kill_process@{utt} takes @{tt}process_id@{utt} and
+@{tt}force@{utt} (false: SIGTERM, true: SIGKILL) and answers with the
+@{tt}signal@{utt} sent -- @{tt}none@{utt} with a note when the command
+had already ended or had not started yet.
+
+An unknown id, or one of another session, answers @{tt}{"status":
+"error", "error": "Process ... not found", "error_type":
+"ProcessNotFound"}@{utt}.
+
+@{h2}Being woken
+
+With @{tt}wake: true@{utt} the session is woken when the command ends, so
+the agent can end its turn instead of polling. The answer's
+@{tt}wake@{utt} says whether the wake is armed; when it is not,
+@{tt}wake_note@{utt} says why (waking is switched off, the call belongs
+to no session, the wake chain is too deep) and the agent polls. An armed
+wake is still best effort. The woken run is a new process: it reads the
+outcome from a copy the old one kept -- the last 30,000 characters of
+each stream, for an hour, handed over once. A command whose output was
+read or that was stopped does not wake anybody.
+@endnode
+
+@node files "Files"
+@{h1}Files
+
+Both tools copy over SFTP on one of the machine's connections. Local paths
+are on the server that runs the plugin; see
+@{" What an agent can do " link security} for what that allows.
+
+@{h2}ssh_control_upload_file
+
+@{table}
+Parameter | Meaning
+machine | the machine; required
+local_path | a file on the server; required
+remote_path | where it goes on the machine, file name included; required
+mode | permissions in octal, e.g. "0644"; set after the copy
+@{body}
+
+The answer has the same shape as @{tt}execute@{utt}'s: @{tt}results@{utt}
+with @{tt}local_path@{utt}, @{tt}remote_path@{utt},
+@{tt}bytes_transferred@{utt}, @{tt}duration@{utt} and
+@{tt}success@{utt}, and the counts. A failure has @{tt}error@{utt}: "Local
+file not found: ...", the SFTP error ("Permission denied", "No such
+file"), or an invalid mode -- then the file is on the machine but its mode
+is not set. Directories are not copied.
+
+@{h2}ssh_control_download_file
+
+Takes @{tt}machine@{utt}, @{tt}remote_path@{utt} and @{tt}local_path@{utt},
+all required. It answers @{tt}machine@{utt}, @{tt}remote_path@{utt},
+@{tt}local_path@{utt}, @{tt}bytes_transferred@{utt},
+@{tt}duration@{utt}, @{tt}success: true@{utt} -- or @{tt}success:
+false@{utt} with the @{tt}error@{utt}. A file at @{tt}local_path@{utt} is
+replaced; its folder must exist.
+
+@{code json}
+{"machine": "build-host", "local_path": "dist/app.tar.gz", "remote_path": "/srv/app/app.tar.gz", "mode": "0640"}
+{"machine": "build-host", "remote_path": "/var/log/app/error.log", "local_path": "logs/build-host-error.log"}
+@{body}
+@endnode
+
+@node machines "Machines and connections"
+@{h1}Machines and connections
+
+@{h2}ssh_control_list_machines
+
+Every machine with @{tt}name@{utt}, @{tt}host@{utt}, @{tt}port@{utt},
+@{tt}username@{utt}, @{tt}auth_method@{utt} and @{tt}tags@{utt}, and the
+@{tt}count@{utt}. With @{tt}tags@{utt} only the machines that carry at
+least one of them.
+
+@{h2}ssh_control_check_connection
+
+With @{tt}machine@{utt} one machine, without it every machine. It pings
+each machine the plugin holds a connection to and answers per
+machine @{tt}connected@{utt}, @{tt}latency_ms@{utt}, @{tt}error@{utt}
+and @{tt}last_used@{utt}, plus @{tt}connected@{utt} and
+@{tt}disconnected@{utt} counts. A machine without a connection -- not
+used since the server started, or its connections lost -- is not
+connected to for this: it answers @{tt}connected: false,
+not_yet_connected: true@{utt}. To find out whether it can be reached, run
+a command such as @{tt}true@{utt}. An unknown name answers
+@{tt}error: "Machine not configured"@{utt}.
+
+@{h2}ssh_control_add_machine
+
+@{table}
+Parameter | Meaning
+name | the new machine's name; required, must not exist yet
+host, username | required
+port | 22 when left out
+auth_method | key (default), password or agent
+key_path | for key: a key file on the server; ~/.ssh/id_rsa when left out
+password | for password
+tags | a list of labels for list_machines
+max_connections | at least 1; 3 when left out
+persistent | true: keep it across restarts
+@{body}
+
+The plugin connects and runs a test command first (10 seconds to connect,
+5 to answer); only then is the machine added. It gets the default timeouts:
+10 seconds to connect, 300 per command. The answer has
+@{tt}success: true@{utt}, the machine's data, @{tt}persistent@{utt}
+(whether it was stored) and @{tt}config_error@{utt} (why not); a refusal is
+@{tt}success: false@{utt} with @{tt}error@{utt}: "Machine 'x' already
+exists", "Connection timeout for x: 10 seconds to connect, 5 for the
+test command", "max_connections must be a whole number of at least
+1, not 0", "SSH connection
+failed: ...".
+
+@{tt}persistent@{utt} writes the machine to
+@{tt}data/ssh_control/machines.<instance>.yaml@{utt} -- name, host,
+port, user, login method, key path, tags, @{tt}max_connections@{utt}, never
+a password. A password machine is therefore not stored
+(@{tt}persistent: false@{utt}, @{tt}config_error@{utt} says why); it is
+still added until the next restart.
+
+@{h2}ssh_control_remove_machine
+
+Takes @{tt}name@{utt} and @{tt}remove_from_config@{utt} (false by
+default). It closes the machine's connections and removes it; with
+@{tt}remove_from_config: true@{utt} also from the machine store. A machine
+from the configuration is not in the store and comes back at the next
+start (@{tt}config_error@{utt} says so).
+
+@{h2}Connections
+
+Each machine has a pool of at most @{tt}max_connections@{utt}
+connections, opened on first use and kept for the next command. A command
+that finds them all busy waits up to 30 seconds for one. Every connection
+taken from and given back to the pool is checked with a quick
+@{tt}echo 1@{utt}; one that does not answer is closed and replaced. A
+connection that dies while it sits idle in the pool is not noticed until
+the next command takes it.
+
+A machine added at runtime gets the plugin's @{tt}defaults:@{utt} only
+after a restart (when it was stored).
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Nine tools, named @{tt}<instance>_execute@{utt},
+@{tt}_get_output@{utt}, @{tt}_kill_process@{utt},
+@{tt}_upload_file@{utt}, @{tt}_download_file@{utt},
+@{tt}_list_machines@{utt}, @{tt}_check_connection@{utt},
+@{tt}_add_machine@{utt} and @{tt}_remove_machine@{utt}. Their descriptions
+come from the plugin's @{tt}schema.yaml@{utt}. The machine list is not in
+them: an agent calls @{tt}list_machines@{utt}, or has the names in its
+prompt. Errors are in the answer as described per tool; a missing required
+parameter of execute, the transfers, get_output or kill_process fails the
+call itself.
+
+In the chat, the call's status line ends with its result, outcome first:
+"build-host: exit 0 in 0.2s -- df -h /", "build-host: 0 ok, 1 failed
+(Timed out after 300s) -- make test", "build-host: ssh_proc_3f9a1c2e
+started (wakes this session) -- make all", "ssh_proc_3f9a1c2e on
+build-host: exit 0, 18234 chars", "Uploaded: build-host: app.tar.gz →
+/srv/app/app.tar.gz (2.1 MB)", "Added machine: staging (deploy\@staging.example:22)
+(this session only)".
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results: appended, nothing earlier changes. The
+plugin has no hook and never touches the prompt. A foreground command's
+output comes back whole, and so does everything a background command has
+buffered (up to 1000 lines per stream) on each @{tt}get_output@{utt} --
+@{tt}clear_buffer: true@{utt} or @{tt}stream@{utt} keep repeated reads
+small.
+
+@{h2}Known gaps
+
+@{bullet}No interactive commands: nothing can be typed into a running
+command, and one that asks for input waits until its timeout.
+@{bullet}A foreground command that times out gets no signal and may go
+on running on the machine.
+@{bullet}The panel's history and the background commands live in memory
+only.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is configured where the agent that uses it is defined, with
+its machines -- here in the agent's YAML under @{tt}config/agents/@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    ssh_control:
+      type: ssh_control
+      enabled: true
+      machines:
+        - name: build-host
+          host: build-host.example
+          port: 22
+          username: deploy
+          auth_method: key
+          key_path: ~/.ssh/build_host_ed25519
+          max_connections: 3
+          tags: [build]
+        - name: staging
+          host: 192.0.2.10
+          username: ops
+          auth_method: agent
+@{body}
+
+An agent sees the tools when its allowlist names them -- all of them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+ssh_control/*"
+@{body}
+
+or only some, for an agent that should run commands on the configured
+machines and do nothing else:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "ssh_control/ssh_control_execute"
+      - "ssh_control/ssh_control_get_output"
+      - "ssh_control/ssh_control_kill_process"
+      - "ssh_control/ssh_control_list_machines"
+      - "ssh_control/ssh_control_check_connection"
+@{body}
+
+The plugin needs @{tt}asyncssh@{utt}. Every host must be in the known_hosts
+file of the account the server runs as (@{tt}ssh-keyscan
+build-host.example >> ~/.ssh/known_hosts@{utt}, after checking the key),
+and every key file must be readable by it.
+
+@{h2}A machine
+
+@{table}
+Key | Default | Meaning
+name | -- | how agents and the panel call it; required
+host | -- | name or address; required
+port | 22 | the SSH port
+username | -- | required
+auth_method | key | key, password or agent
+key_path | -- | the private key; required for key
+key_passphrase | -- | for an encrypted key
+password | -- | required for password
+connection_timeout | 10 | seconds to connect
+command_timeout | 300 | seconds a foreground command may take
+max_connections | 3 | connections at a time, at least 1; background commands take all but one
+tags | [] | labels for list_machines
+@{body}
+
+@{tt}agent@{utt} leaves the login to asyncssh: the agent that
+@{tt}SSH_AUTH_SOCK@{utt} names, and the default keys in
+@{tt}~/.ssh@{utt}. A @{tt}defaults:@{utt} block next to
+@{tt}machines:@{utt} gives every machine the keys it does not set itself
+-- the machines of the configuration and the stored ones, read at start;
+a machine added at runtime gets them only after a restart.
+A machine entry that is invalid is logged and left out; the others load.
+
+@{h2}Security settings
+
+@{code yaml}
+      security:
+        strict_host_key_checking: true
+        known_hosts_file: ~/.ssh/known_hosts
+        audit_log: true
+@{body}
+
+@{table}
+Key | Default | Meaning
+strict_host_key_checking | true | false: every host key is accepted; an empty value keeps it on
+known_hosts_file | ~/.ssh/known_hosts | must exist while checking is on
+audit_log | true | AUDIT lines in the server log; only false turns them off, see @{" What an agent can do " link security}
+@{body}
+
+@{h2}Where data lives
+
+Machines added with @{tt}persistent@{utt} are in
+@{tt}data/ssh_control/machines.<instance>.yaml@{utt} and are read at
+start. A machine of the same name in the configuration wins; the stored
+one is ignored with a warning. Recorded outcomes for woken runs are in the
+plugin cache (@{tt}data/cache/<instance>/@{utt}) for an hour. Machines
+that an old version wrote to @{tt}config/mcp.yaml@{utt} are not read;
+at start the server log says how many there are and in which file, so
+they can be added again.
+@endnode

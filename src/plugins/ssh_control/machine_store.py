@@ -21,10 +21,10 @@ One place now, one shape, under ``data/`` where runtime state belongs:
 
     # data/ssh_control/machines.<instance>.yaml
     machines:
-      - name: NewBox
-        host: 192.0.2.9
+      - name: build-host
+        host: build-host.example
         port: 22
-        username: root
+        username: deploy
         auth_method: key
 
 The instance name is in the FILE name, not the directory, so the noun leads

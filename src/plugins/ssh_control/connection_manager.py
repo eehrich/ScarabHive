@@ -219,14 +219,15 @@ class SSHConnectionManager:
         self.command_history = command_history
         
         # Security settings
-        security_config = config.get('security', {})
-        self.strict_host_key_checking = security_config.get('strict_host_key_checking', True)
+        # `or {}`: a bare `security:` line in YAML is None, not a missing key
+        security_config = config.get('security') or {}
+        # Only an explicit false turns these off: an empty YAML value is None
+        self.strict_host_key_checking = security_config.get('strict_host_key_checking') is not False
         self.known_hosts_file = security_config.get('known_hosts_file', '~/.ssh/known_hosts')
-        
-        # Audit logging
-        self.audit_log_enabled = security_config.get('audit_log', True)
-        self.audit_log_file = security_config.get('audit_log_file', 'logs/ssh_control_audit.log')
-        
+
+        # Audit logging: AUDIT lines in the server log (there is no file of its own)
+        self.audit_log_enabled = security_config.get('audit_log') is not False
+
         # Load machine configurations
         self._load_config(config)
         
@@ -239,9 +240,13 @@ class SSHConnectionManager:
             config: Plugin configuration
         """
         machines_config = config.get('machines', [])
-        defaults = config.get('defaults', {})
+        defaults = config.get('defaults') or {}
         
         for machine_data in machines_config:
+            if not isinstance(machine_data, dict):
+                # One stray entry must not take the other machines down with it
+                logger.error(f"Skipped a machine entry that is not a mapping: {machine_data!r}")
+                continue
             # Apply defaults
             machine_dict = {**defaults, **machine_data}
             
@@ -342,10 +347,19 @@ class SSHConnectionManager:
                     conn.run(command, check=False),
                     timeout=timeout
                 )
+            except asyncio.CancelledError:
+                # The command reached the machine: a cancelled call is still one to audit
+                self._remember(machine_name, command, start_time, error="Cancelled")
+                if self.audit_log_enabled:
+                    self._audit_log('execute_command', machine_name, {'command': command, 'error': 'Cancelled'})
+                raise
             except Exception as e:
                 error = f"Timed out after {timeout}s" if isinstance(e, asyncio.TimeoutError) else str(e)
                 logger.error(f"Command failed on {machine_name} after {time.time() - start_time:.2f}s: {command}: {error}")
                 self._remember(machine_name, command, start_time, error=error)
+                # It reached the machine and may have run: audited like one that finished
+                if self.audit_log_enabled:
+                    self._audit_log('execute_command', machine_name, {'command': command, 'error': error})
                 if isinstance(e, asyncio.TimeoutError):
                     raise asyncio.TimeoutError(error) from e
                 raise
