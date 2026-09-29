@@ -1,0 +1,265 @@
+@database "session_archive"
+@author "Enrico Ehrich"
+@$VER: session_archive.guide 1.0 (29.09.2026)
+@smartwrap
+
+@node main "Session Archive"
+@{h1}Session Archive
+
+Old conversations do not stay in the live session store forever. Once a
+conversation and every sub-agent session it started have been left alone
+long enough, the archive sweep packs them into one zip file and takes them
+out of the store -- out of the sidebar, out of every listing. The
+@{b}Session Archive@{ub} panel shows what was put away and brings a
+conversation back, whole, so it can be continued. You can also delete an
+archived conversation for good, or run the sweep by hand.
+
+The archive itself belongs to the app; this plugin is its panel and the
+HTTP routes behind it. It gives agents no tools.
+
+@{image docs/panel.png "The Session Archive panel with three archived conversations"}
+
+@{code}
+For users
+  @{"  The Session Archive panel  " link panel}
+  @{"  What moves, and when  " link sweep}
+
+For developers and administrators
+  @{"  The HTTP routes  " link api}
+  @{"  On the command line  " link cli}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node panel "The Session Archive panel"
+@{h1}The Session Archive panel
+
+Open it from the launcher (@{b}Session@{ub}, "Session Archive").
+
+@{image docs/panel.png "The Session Archive panel"}
+
+@{h2}Whose archive it shows
+
+Your own: every route answers about the user who is logged in, and there
+is no way to ask for anyone else's archive. With login switched off,
+everybody is @{tt}anonymous@{utt} and shares that one archive. The panel
+does not follow the chat; it always shows all of your archived
+conversations. It does not reload on its own: the reload button loads
+at once, and the menu next to it turns a reload every 60 seconds (or
+another interval) on, which the browser remembers.
+
+@{h2}What you see
+
+@{bullet}Four figures: how many conversations are archived, how many
+sessions they hold together, the size of their zip files on disk, and
+after how many days a conversation is archived.
+@{bullet}A table, one row per conversation: its title with the id under
+it, the agent it ran with, its number of sessions, the size of its zip,
+when it was last used and when it was archived. The newest archive comes
+first. A click on a column head sorts by it, a second click the other way;
+the order holds through the reloads. Size and the two dates sort by the
+exact value, not by the rounded text -- a sweep archives many
+conversations within the same minute.
+@{bullet}With nothing archived, the panel says when conversations move
+here -- or, when the periodic sweep is switched off, that nothing moves
+until you press @{b}Archive now@{ub}.
+
+@{h2}What you can do
+
+@{table}
+Button | Does
+Restore (arrow) | puts the conversation and all its sub-agent sessions back; it is in the sidebar again and can be continued
+Delete (bin) | deletes the archived conversation, after asking; there is no copy after this
+Archive now | runs the sweep for your own conversations at once, instead of waiting for the next periodic one
+@{body}
+
+While a restore or a delete is on its way, both buttons of that row stay
+off. The answer is a message at the bottom: "restored (5 sessions)",
+"deleted", "Archived 2 conversation(s), 7 sessions", "Nothing was old
+enough to archive", or "Nothing archived: 1 conversation(s) old enough are
+in use or failed". When a pass stops at the configured cap, the message
+says how many are still waiting, and pressing the button again takes the
+next batch.
+
+@{b}A restored conversation keeps its old timestamps.@{ub} If you do not
+continue it, it is still old enough, and the next sweep -- the periodic
+one or @{b}Archive now@{ub} -- archives it again. Write a message in it to
+keep it in the store.
+
+@{h2}When the server refuses
+
+The server's reason is shown as a message and the list is loaded anew:
+
+@{bullet}A restore is refused when a session of the conversation is in the
+store again as something else (it would be overwritten), when one of its
+session ids now belongs to another user, or when the archive holds
+sessions of another user.
+@{bullet}"a sweep for ... is already running": another pass for you is
+under way, in this process or in another one (a command-line run).
+@{bullet}"the archive index of ... is held by another process": a sweep of
+another process is writing the index; try again in a moment.
+@{bullet}"Session archive is not available": the app runs without the
+archive service.
+
+When the list itself cannot be loaded, the panel says "The archive could
+not be read" with the reason, and shows no figures.
+@endnode
+
+@node sweep "What moves, and when"
+@{h1}What moves, and when
+
+@{h2}A whole conversation at a time
+
+What is archived is a tree: a conversation together with every sub-agent
+session below it, because half a conversation is worth nothing. A tree
+moves only when @{b}every@{ub} session in it is older than the retention
+(30 days as shipped) and @{b}none@{ub} of them is in use. The age is the
+session's last change as the session index records it; without one, the
+file's modification time. A session whose age cannot be read at all
+counts as touched just now.
+
+"In use" is asked right before each tree is taken: a session a run of the
+API is working on, or one another process holds a session lock for. A
+command-line process knows no runs of the API; there the locks are the only
+guard -- and with @{tt}session_presence@{utt} switched off there are none,
+so only the age protects a session (the command line warns about it).
+
+@{h2}The order
+
+For each tree: write the zip, read it back, enter it in the user's archive
+index, and only then delete the live files -- the deepest sub-agent session
+first, the conversation itself last. A crash in between leaves a duplicate,
+never a lost conversation. A zip that is already there is only added to,
+never replaced. A session that cannot be deleted is reported and stays;
+the next pass adds whatever is left to the same zip.
+
+@{h2}When it runs
+
+The periodic sweep starts 5 minutes after the app has started and then
+runs every 24 hours, for every user in the store. It is switched on as
+shipped (see @{" Setting it up " link setup}). @{b}Archive now@{ub} in the
+panel and the command line run the same pass for one user. Only one pass
+per user runs at a time, across processes; a second one is refused, not
+queued.
+
+@{h2}Where the archive lies
+
+@{code}
+data/session_archive/<user>/index.json           one entry per archived tree
+data/session_archive/<user>/<YYYY-MM>/<root>.zip  the sessions, one JSON each
+@{body}
+
+The month is the conversation's own last change. Each zip also carries a
+@{tt}_manifest.json@{utt} with the tree's sessions and the conversation's
+title, agent and dates, so an archive stays readable without the index.
+A restore deletes the zip after the sessions are back; a delete removes
+the index entry and the zip. Files ending in @{tt}.tmp@{utt} are passes
+that were killed while writing; a later pass drops them once they are an
+hour old.
+@endnode
+
+@node api "The HTTP routes"
+@{h1}The HTTP routes
+
+All under @{tt}/plugins/session_archive/@{utt} (the plugin instance's
+name). Each route works on the archive of the requesting user -- the
+login's user name, @{tt}anonymous@{utt} without one; no route takes a user
+as a parameter. With login on, the plugin routes need a logged-in user
+(the @{tt}plugin_security@{utt} route rules).
+
+@{table}
+Method and path | Answer
+GET / | the panel
+GET /archived | user_id, retention_days, sweep_enabled, archived: the entries, newest archive first
+POST /archived/{id}/restore | session_id, restored (sessions), title
+DELETE /archived/{id} | session_id, sessions (how many the archive held)
+POST /sweep?dry_run=false | the pass's report
+@{body}
+
+An archived entry carries @{tt}session_id@{utt} (the conversation's),
+@{tt}title@{utt}, @{tt}agent_name@{utt}, @{tt}llm_profile@{utt},
+@{tt}created_at@{utt}, @{tt}updated_at@{utt}, @{tt}message_count@{utt},
+@{tt}session_count@{utt}, @{tt}archived_at@{utt}, @{tt}archive@{utt} (the
+zip, relative to the user's folder), @{tt}bytes_live@{utt} (the size
+before) and @{tt}bytes@{utt} (the zip's size).
+
+The sweep's report: @{tt}trees@{utt} and @{tt}sessions@{utt} archived,
+@{tt}bytes_live@{utt}, @{tt}bytes_archived@{utt}, @{tt}skipped_young@{utt}
+(trees not old enough), @{tt}skipped_busy@{utt} (old enough, in use),
+@{tt}capped@{utt} (the pass stopped at @{tt}max_trees_per_sweep@{utt}),
+@{tt}remaining@{utt} (old enough and still in the store: the cap's rest,
+the busy ones and the failed ones), @{tt}roots@{utt} (the conversations
+taken) and @{tt}errors@{utt}. With @{tt}dry_run=true@{utt} it only counts,
+writes nothing and is never capped; the panel does not offer that.
+
+@{h2}Errors
+
+@{table}
+Status | When
+404 | restore or delete of a conversation that is not in this user's archive
+409 | a restore that cannot be done (see the panel node), a pass already running, the archive index held by another process
+503 | the app runs without the archive service
+@{body}
+
+The reason is in @{tt}detail@{utt}, readable as it stands.
+@endnode
+
+@node cli "On the command line"
+@{h1}On the command line
+
+@{tt}agent-cli run@{utt} reaches the same archive; @{tt}--session-user@{utt}
+says whose (without it, @{tt}cli_user@{utt}):
+
+@{code bash}
+agent-cli run --session-user ada --list-archived        # the 20 newest, 0 = all
+agent-cli run --session-user ada --archive-sessions --dry-run
+agent-cli run --session-user ada --archive-sessions 60  # older than 60 days
+agent-cli run --session-user ada --restore-session <id>
+@{body}
+
+@{tt}--archive-sessions@{utt} without a number uses the configured
+retention. A pass started here is refused while one runs in the API for the
+same user, and the other way round; a dry run is never refused. See
+@{" What moves, and when " link sweep} for what a command-line process can
+and cannot see of running sessions.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The panel is a plugin, on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    session_archive:
+      type: session_archive
+      enabled: true
+@{body}
+
+The archive and its sweep are part of the app, set in
+@{tt}config/config.yaml@{utt}; this is the shipped block:
+
+@{code yaml}
+session_archive:
+  enabled: true
+  retention_days: 30
+  sweep_interval_hours: 24.0
+  first_sweep_delay_seconds: 300.0
+  max_trees_per_sweep: 0
+  # archive_path: null
+@{body}
+
+@{table}
+Key | Default | Meaning
+enabled | true | run the periodic sweep; the panel and Archive now work either way
+retention_days | 30 | the age every session of a tree must reach; at least 1
+sweep_interval_hours | 24.0 | the time between two periodic sweeps
+first_sweep_delay_seconds | 300.0 | the wait after the start before the first one
+max_trees_per_sweep | 0 | the most trees one pass archives; 0 means no cap
+archive_path | session_archive in the data directory | where the zips and index lie
+@{body}
+
+Changes need a restart. The plugin has no settings of its own and no
+dependencies beyond the app.
+@endnode
