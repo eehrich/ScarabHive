@@ -41,7 +41,18 @@ class ModelCapabilitiesConfig(BaseModel):
     audio_input: bool = False
     video_input: bool = False
     streaming: bool = True
+    # JSON mode ("any JSON object"). NOT READ: structured output sends native JSON
+    # mode only to a model declaring structured_output below -- the catalogue's
+    # json_mode values were never verified, and Gemini before 3 refuses JSON mode
+    # beside tools just as it refuses a schema there.
     json_mode: bool = False
+    # The backend constrains the answer to a caller's JSON schema, and takes plain
+    # JSON mode -- ALSO in a request that carries tools, since an agent asks with
+    # its tools on every step (Gemini before 3 refuses that combination: leave it
+    # false there). Unset means no: a structured request to this model fails with
+    # StructuredOutputUnsupported, or falls back to prompt + validation if the
+    # caller allows it (openai_api always does).
+    structured_output: bool = False
 
     # API type support (OpenAI specific)
     supported_api_types: Optional[List[str]] = None  # e.g. ['chat_completions', 'realtime']

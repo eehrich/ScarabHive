@@ -89,8 +89,101 @@ the `openai` SDK raises its `AuthenticationError` for it all the same.
   never came as a delta follows it: the rest a client salvaged at the end of a
   stream, or — when the turn's last call runs on a model that does not stream
   (a model that never does, or a fallback) — its whole final message, as one
-  delta at the end.
+  delta at the end. A structured turn streams differently, see below.
 - `usage` sums the LLM calls of the turn (all steps).
+
+### Structured output
+
+```python
+class Trip(BaseModel):
+    city: str
+    days: int
+
+trip = client.chat.completions.parse(model="chat_agent", response_format=Trip,
+                                     messages=[{"role": "user", "content": "Plan a weekend trip."}])
+print(trip.choices[0].message.parsed)          # Trip(city=..., days=...)
+print(client.responses.parse(model="chat_agent", input="Plan one.", text_format=Trip).output_parsed)
+```
+
+- Chat Completions `response_format` and Responses `text.format` take
+  `json_schema` (`name` and `schema`; `strict` and `description` optional) and
+  `json_object`; `text` is the default and changes nothing. The rest of `text`
+  (`verbosity`) is ignored like a sampling parameter.
+- The format holds for the agent's **final** answer — the step without tool
+  calls. The steps before it call the agent's tools as always.
+- Where the agent's model takes structured output — its model entry declares
+  `capabilities.structured_output` (for a schema and for plain JSON mode;
+  `json_mode` is not read), and its route has the field
+  (`agent_system/llm/structured_output.py`) — the format goes to the provider as
+  its own field, on every call of the turn: the same field on every call keeps
+  the provider's cached prefix. Where it does not, the format is described to
+  the model in the conversation. Either way the answer is checked against the
+  schema, sent back once with what is wrong with it, and a turn whose answer
+  still does not match fails: `500 server_error`, "Structured output: the final
+  answer does not match the requested format after one correction: …", `code:
+  structured_output_invalid`, with `x-should-retry: false` — the run had its
+  correction round, and the `openai` SDK would otherwise buy two more whole
+  runs for the same verdict (a stream ends on `response.failed`, or on an error
+  chunk with that code). An agent that cannot hold its answer to a format at all
+  — a state machine behind the `stategraph` facade — is refused before it runs:
+  `400`, `code: unsupported_parameter`.
+- The answer is the JSON as the agent wrote it — a Markdown fence around the
+  whole answer taken off, nothing else — so the SDK's `parse()` helpers work.
+- **A strict subset of JSON Schema**, as OpenAI's strict mode has one. Allowed:
+  `type`, `properties`, `required`, `additionalProperties`, `items`,
+  `prefixItems`, `enum`, `const`, `anyOf`, `$defs` (at the root), `$ref` (only
+  `#` and `#/$defs/<name>`), `description`, `title`, `pattern`, `format` (not
+  checked), `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`,
+  `multipleOf` (decided exactly: 2.3 is a multiple of 0.1), `minLength`/
+  `maxLength`, `minItems`/`maxItems`; `$schema` only at the root, 2020-12,
+  2019-09 or draft-07 (all checked as 2020-12), and a root `definitions`
+  (draft-07, what zod-to-json-schema and openai-node's `zodResponseFormat`
+  write) is taken as `$defs`, its `#/definitions/…` references with it — both
+  together are refused. `default`, `examples`, `$comment`, `deprecated`,
+  `readOnly`, `writeOnly` and `x-*` are taken out. Limits: 10 levels, 5000
+  properties, 1000 enum/const values, 100 000 characters, patterns of 1000
+  characters (what `regex` knows, `\p{L}` included) whose counted repeats stay
+  small — counted by their minimum, which is what `regex` writes out:
+  `(a{120}){120}` yes, one level more no, `[\s\S]{0,30000}` yes; 200 000 units
+  for all patterns of a schema together; no inline flags, comments or recursion
+  — patterns are ECMA-262; no
+  `anyOf`/`$ref` fan-out over 1000 subschemas or cycle on one value. pydantic's
+  and the `openai` SDK's schemas of plain models are inside it — fields, nested
+  and recursive models, lists, `Optional`, unions (`anyOf`); sets
+  (`uniqueItems`), constrained dicts (`minProperties`) and discriminated unions
+  (`oneOf`) are not. Anything outside is a `400 invalid_value` on `…schema`
+  naming the keyword and where it stands.
+- **The checks run in a process of their own.** The schema is a client's input,
+  and jsonschema and regex are not built to be bounded: building the format
+  (the subset, the meta-schema) and checking the answer run in a schema worker
+  (`agent_system/llm/schema_worker.py`), at most two at once, each request under
+  a deadline (5 s) past which the worker is killed — by the handle that started
+  it — and the request fails closed (a schema: `400`; an answer: the turn fails
+  as above, without a correction round); the next request gets a fresh worker.
+  A `pattern` is matched with a time limit of its own (0.1 s per match, 0.5 s
+  per answer, `regex` instead of `re`): running out is a mismatch. An answer's
+  whole check has 2 s (`anyOf` decides each branch once per value, so a
+  recursive union stays linear); past them it fails closed. On Linux a
+  worker's address space is limited to 1 GB; macOS takes the limit without
+  enforcing it, and there only the deadline bounds a worker's memory. A worker
+  whose memory grew past 256 MB is replaced after its answer; one that runs a
+  request for 30 s ends itself (for a server that was killed and cannot kill
+  it), and an idle one exits after 5 minutes. More than two checks at once
+  wait, 30 s at most (then `503`, the checker is busy) — and of one user's
+  requests only one runs at a time, the rest wait in that user's own queue
+  (same 30 s): a user's flood holds one worker, not both. A checker that is
+  busy or broke (crashed, did not start) gives no verdict on the answer: `503`,
+  `code: structured_output_unavailable`, retryable (no `x-should-retry`).
+- Streamed, a structured turn sends its answer as **one** delta once it has been
+  checked, and nothing of the steps before it: the joined deltas are the JSON.
+  Meanwhile the stream sends an SSE comment (`: keep-alive`) every 15 s, so a
+  proxy does not drop a long run.
+- A format that cannot be asked for is a `400 invalid_request_error` before the
+  agent runs, with the parameter path: an unknown `type`, a schema outside the
+  subset or a `name` outside `[A-Za-z0-9_-]{1,64}` (`code: invalid_value`), a
+  missing `name` or `schema` (`missing_required_parameter`), a value of the
+  wrong kind — a `strict` that is not a boolean, say (`invalid_type`). Nothing
+  outside the schema is ever fetched.
 
 ### Conversations
 
@@ -179,3 +272,9 @@ the `openai` SDK raises its `AuthenticationError` for it all the same.
   as text (the web chat shows them while the call runs and replaces them with
   the answer when it ends). A Chat Completions stream keeps them in its text;
   the final texts of a Responses stream and every JSON answer do not have them.
+- Structured output: no `refusal` is ever answered — a model's refusal is no
+  answer in the format, and the turn fails. The format belongs to one turn, as
+  at OpenAI: a stored conversation continued without it runs as text again —
+  and the provider's cached prefix changes once there, because the field is
+  part of it. The description a model without the field gets is a note of the
+  run, like the loop's other notes: it is not stored with the conversation.

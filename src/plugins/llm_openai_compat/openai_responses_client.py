@@ -100,6 +100,8 @@ from .httpx_client import (
     routing_pinned_to_last_backend,
 )
 from plugins.llm_common.openai_utils import convert_audio_to_input_audio
+from plugins.llm_common.structured_output import responses_text_format
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.utils.reasoning_artifacts import strip_all_reasoning_artifacts
 
 logger = logging.getLogger(__name__)
@@ -223,6 +225,10 @@ class OpenAIResponsesClient(LLMClient):
     #: the debugger and in session_costs — without a second copy of the
     #: retry/healing loop.
     _PROVIDER = "openai_responses"
+
+    #: The Responses API carries both as ``text.format``; the model entry says whether the
+    #: model behind the gateway honours it (capabilities.structured_output).
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(
         self,
@@ -1106,11 +1112,13 @@ class OpenAIResponsesClient(LLMClient):
         yield "body", body
 
     async def _request(self, messages: list, tools: Optional[list],
-                       cancellation_token=None, status_scope=None) -> dict:
+                       cancellation_token=None, status_scope=None,
+                       response_format: Optional[ResponseFormat] = None) -> dict:
         """The non-streaming result: the shared loop, consumed to its end."""
         result: dict = {}
         async for chunk in self._request_events(
-                messages, tools, cancellation_token, status_scope, stream=False):
+                messages, tools, cancellation_token, status_scope, stream=False,
+                response_format=response_format):
             if chunk.get("type") == "final":
                 result = {key: value for key, value in chunk.items() if key != "type"}
         return result
@@ -1142,7 +1150,8 @@ class OpenAIResponsesClient(LLMClient):
 
     async def _request_events(self, messages: list, tools: Optional[list],
                               cancellation_token=None, status_scope=None,
-                              stream: bool = False):
+                              stream: bool = False,
+                              response_format: Optional[ResponseFormat] = None):
         """The ONE request loop, as an event generator.
 
         With ``stream=True`` it yields ``content_delta`` / ``thinking_delta`` /
@@ -1164,10 +1173,18 @@ class OpenAIResponsesClient(LLMClient):
         # Local, never on self: one client serves parallel runs.
         pinned = provider is not self.provider_routing
 
+        # Refused before the first byte: sending the request without the field would hand back
+        # free text as if the provider had constrained it.
+        self._require_response_format(response_format)
+
         def build_payload() -> dict:
             payload = self._build_payload(messages, tools)
             if provider:
                 payload["provider"] = provider
+            # Here, beside the pin, and not in _build_payload: the heals below rebuild the
+            # payload, and the format belongs to every rebuild as the pin does.
+            if response_format is not None:
+                payload["text"] = {"format": responses_text_format(response_format)}
             return payload
 
         payload = build_payload()
@@ -1554,16 +1571,21 @@ class OpenAIResponsesClient(LLMClient):
                 return self.capabilities.streaming
         return True
 
-    async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None) -> str:
-        result = await self._request(messages, None, cancellation_token, status_scope)
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None, status_scope=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
+        result = await self._request(messages, None, cancellation_token, status_scope,
+                                     response_format=response_format)
         return result.get("assistant", {}).get("content", "") or ""
 
     async def chat_tools(self, messages: list[ChatMessage], tools: list[dict],
-                         cancellation_token=None, status_scope=None) -> dict:
-        return await self._request(messages, tools, cancellation_token, status_scope)
+                         cancellation_token=None, status_scope=None, *,
+                         response_format: Optional[ResponseFormat] = None) -> dict:
+        return await self._request(messages, tools, cancellation_token, status_scope,
+                                   response_format=response_format)
 
     async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict],
-                                   cancellation_token=None, status_scope=None):
+                                   cancellation_token=None, status_scope=None, *,
+                                   response_format: Optional[ResponseFormat] = None):
         """Token deltas as they arrive — or one ``final`` chunk if this model
         does not stream.
 
@@ -1576,7 +1598,7 @@ class OpenAIResponsesClient(LLMClient):
         """
         async for chunk in self._request_events(
                 messages, tools, cancellation_token, status_scope,
-                stream=self.supports_streaming()):
+                stream=self.supports_streaming(), response_format=response_format):
             yield chunk
 
     async def close(self) -> None:  # per-request AsyncClient — nothing to close

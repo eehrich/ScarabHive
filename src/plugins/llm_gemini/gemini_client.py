@@ -9,13 +9,14 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import httpx
 
 from agent_system.llm.tls import httpx_verify
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
     adjust_thinking_for_retry,
@@ -24,6 +25,7 @@ from .gemini_utils import (
     convert_openai_tools_to_gemini,
     extract_usage_from_metadata,
     prepare_messages_for_gemini,
+    response_format_fields,
     StreamingLoopDetector,
     ThinkingProgressTracker,
 )
@@ -33,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 class GeminiClient(LLMClient):
     """Native Google Gemini API client."""
+
+    #: generationConfig.responseMimeType (+ responseJsonSchema). Gemini 3 takes a schema beside
+    #: function declarations, earlier models refuse the combination -- the model entry's
+    #: capabilities.structured_output says which one this is.
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(
         self,
@@ -109,9 +116,12 @@ class GeminiClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Stream chat with tools using Gemini native API."""
+        self._require_response_format(response_format)
         # Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
@@ -157,6 +167,9 @@ class GeminiClient(LLMClient):
                 level = thinking_config["thinkingLevel"]
                 thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
             generation_config["thinkingConfig"] = thinking_config
+
+        if response_format is not None:
+            generation_config.update(response_format_fields(response_format))
 
         payload = {
             "contents": contents,
@@ -635,9 +648,12 @@ class GeminiClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> Dict:
         """Non-streaming chat with tools using Gemini native API."""
+        self._require_response_format(response_format)
         # Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
@@ -683,6 +699,9 @@ class GeminiClient(LLMClient):
                 level = thinking_config["thinkingLevel"]
                 thinking_config["thinkingLevel"] = f"THINKING_LEVEL_{level.upper()}"
             generation_config["thinkingConfig"] = thinking_config
+
+        if response_format is not None:
+            generation_config.update(response_format_fields(response_format))
 
         payload = {
             "contents": contents,
@@ -998,9 +1017,10 @@ class GeminiClient(LLMClient):
             raise Exception(f"Gemini request failed after {self.max_retries + 1} attempts") from last_exception
         raise Exception(f"Gemini request failed after {self.max_retries + 1} attempts")
 
-    async def chat(self, messages: List[ChatMessage], cancellation_token=None) -> str:
+    async def chat(self, messages: List[ChatMessage], cancellation_token=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
         """Simple chat without tools."""
-        result = await self.chat_tools(messages, [], cancellation_token)
+        result = await self.chat_tools(messages, [], cancellation_token, response_format=response_format)
         return result["assistant"]["content"]
 
     def supports_streaming(self) -> bool:

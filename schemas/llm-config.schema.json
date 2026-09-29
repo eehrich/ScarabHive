@@ -816,6 +816,11 @@
           "title": "Json Mode",
           "type": "boolean"
         },
+        "structured_output": {
+          "default": false,
+          "title": "Structured Output",
+          "type": "boolean"
+        },
         "supported_api_types": {
           "anyOf": [
             {

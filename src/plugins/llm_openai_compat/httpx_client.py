@@ -46,8 +46,10 @@ from agent_system.llm.message_roles import (
     resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.core.cancellation import CancellationToken
 from plugins.llm_common import openai_utils
+from plugins.llm_common.structured_output import chat_completions_response_format
 from plugins.llm_common.model_dialects import (
     ASSISTANT_REASONING_FIELDS,
     DIALECT_GEMINI_FUNCTION_DECLARATIONS,
@@ -245,6 +247,10 @@ class HTTPXOpenAIClient(LLMClient):
     - Better connection management and retry logic
     - Cleaner cancellation without complex task management
     """
+
+    #: Chat Completions carries both as ``response_format``; whether the model behind this
+    #: endpoint honours it is its entry's capabilities.structured_output.
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(
         self,
@@ -1051,10 +1057,13 @@ class HTTPXOpenAIClient(LLMClient):
     async def chat(
         self,
         messages: list,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> str:
         """Send chat completion request without tools."""
-        result = await self._make_request(messages, tools=[], cancellation_token=cancellation_token)
+        result = await self._make_request(messages, tools=[], cancellation_token=cancellation_token,
+                                          response_format=response_format)
         return result.get("assistant", {}).get("content", "")
 
     async def chat_tools(
@@ -1062,17 +1071,22 @@ class HTTPXOpenAIClient(LLMClient):
         messages: list,
         tools: list,
         cancellation_token: Optional[CancellationToken] = None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> dict:
         """Send chat completion request with tools."""
-        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope)
+        return await self._make_request(messages, tools=tools, cancellation_token=cancellation_token,
+                                        status_scope=status_scope, response_format=response_format)
 
     async def chat_tools_streaming(
         self,
         messages: list,
         tools: list,
         cancellation_token: Optional[CancellationToken] = None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Stream chat completion request with tools.
 
@@ -1082,7 +1096,8 @@ class HTTPXOpenAIClient(LLMClient):
                 {"type": "tool_call_delta", "index": int, "delta": dict}
                 {"type": "final", "assistant": dict}
         """
-        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token, status_scope=status_scope):
+        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token,
+                                                        status_scope=status_scope, response_format=response_format):
             yield chunk
 
     def supports_streaming(self) -> bool:
@@ -1109,7 +1124,8 @@ class HTTPXOpenAIClient(LLMClient):
         messages: list,
         tools: list,
         cancellation_token: Optional[CancellationToken] = None,
-        status_scope=None
+        status_scope=None,
+        response_format: Optional[ResponseFormat] = None,
     ) -> dict:
         """Make the actual HTTP request with proper cancellation and error handling."""
 
@@ -1126,12 +1142,14 @@ class HTTPXOpenAIClient(LLMClient):
         if not streaming_enabled:
             # Use non-streaming request
             logger.debug("Using non-streaming request path")
-            return await self._make_request_non_streaming(messages, tools, cancellation_token, status_scope)
+            return await self._make_request_non_streaming(messages, tools, cancellation_token, status_scope,
+                                                          response_format=response_format)
 
         # Use streaming request (default behavior)
         logger.debug("Using streaming request path")
         final_result = None
-        async for chunk in self._make_request_streaming(messages, tools, cancellation_token, status_scope):
+        async for chunk in self._make_request_streaming(messages, tools, cancellation_token, status_scope,
+                                                        response_format=response_format):
             if chunk.get("type") == "final":
                 # Extract all fields from final chunk (assistant, usage, etc.)
                 final_result = {k: v for k, v in chunk.items() if k != "type"}
@@ -1144,13 +1162,15 @@ class HTTPXOpenAIClient(LLMClient):
         messages: list,
         tools: list,
         cancellation_token: Optional[CancellationToken] = None,
-        status_scope=None
+        status_scope=None,
+        response_format: Optional[ResponseFormat] = None,
     ) -> dict:
         """Make non-streaming HTTP POST request for models that don't support streaming.
 
         Returns:
             dict: Response with 'assistant' key containing the assistant message
         """
+        self._require_response_format(response_format)
         logger.debug(f"_make_request_non_streaming called for model {self.model}")
 
         # Build request payload - convert ChatMessage objects to dicts
@@ -1262,6 +1282,8 @@ class HTTPXOpenAIClient(LLMClient):
                 payload["temperature"] = self.temperature
 
         self._apply_tool_fields(payload, tools, message_dicts)
+        if response_format is not None:
+            payload["response_format"] = chat_completions_response_format(response_format)
 
         # Content-filter thresholds, sent whenever they are configured
         if self.safety_settings:
@@ -1705,13 +1727,15 @@ class HTTPXOpenAIClient(LLMClient):
         messages: list,
         tools: list,
         cancellation_token: Optional[CancellationToken] = None,
-        status_scope=None
+        status_scope=None,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Make streaming HTTP request that yields chunks.
 
         Yields:
             dict: Chunks with types: content_delta, tool_call_delta, final
         """
+        self._require_response_format(response_format)
 
         # Build request payload - convert ChatMessage objects to dicts
         # NOTE: model_dump() is CPU-intensive for large messages (can take 150ms+ for 30+ messages)
@@ -1821,6 +1845,8 @@ class HTTPXOpenAIClient(LLMClient):
                 payload["temperature"] = self.temperature
 
         self._apply_tool_fields(payload, tools, message_dicts)
+        if response_format is not None:
+            payload["response_format"] = chat_completions_response_format(response_format)
 
         # Content-filter thresholds, sent whenever they are configured
         if self.safety_settings:

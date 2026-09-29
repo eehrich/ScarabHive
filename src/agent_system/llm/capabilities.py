@@ -31,6 +31,7 @@ class ModelCapability(str, Enum):
     VIDEO_INPUT = "video_input"
     STREAMING = "streaming"
     JSON_MODE = "json_mode"
+    STRUCTURED_OUTPUT = "structured_output"
 
 
 class ModelCapabilities(ModelCapabilitiesConfig):
