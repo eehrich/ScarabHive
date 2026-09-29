@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import inspect
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,10 +33,18 @@ from fastapi.background import BackgroundTasks
 
 from agent_system.plugins.web_base import SchemaBasedPluginWebInterface
 
-from .protocol import (ApiError, chat_chunk, chat_completion, chat_usage, model_list, new_id, now, output_message,
-                       refuse_client_tools, response_object, sse, turn_from_messages)
+from agent_system.llm.structured_output import STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE
+
+from .protocol import (ApiError, chat_chunk, chat_completion, chat_response_format, chat_usage, model_list, new_id, now,
+                       output_message, prepare_format, refuse_client_tools, response_object, responses_text_format,
+                       sse, turn_from_messages)
 from .store import ResponseStore
 from .turns import AgentTurn, ConversationBusy, ConversationGone, TurnError
+
+#: Seconds a structured stream may stay silent before it sends an SSE comment: its answer comes whole at the
+#: end, and a proxy drops a connection that says nothing for long.
+KEEPALIVE_SECONDS = 15.0
+_KEEPALIVE: Any = object()  # what _whole yields meanwhile; the routes write ": keep-alive"
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -117,6 +126,16 @@ def _failed(exc: BaseException, model: Optional[str] = None) -> JSONResponse:
     if isinstance(exc, ConversationBusy):  # found by the turn after its opening (AgentTurn.events)
         return JSONResponse(ApiError(409, str(exc), type_="conflict").body(), status_code=409)
     if isinstance(exc, TurnError):
+        if exc.error_type == STRUCTURED_OUTPUT_UNAVAILABLE:
+            # The checker was busy or broke: no verdict on the answer -- a retry may go through (no x-should-retry).
+            return JSONResponse(ApiError(503, str(exc), type_="server_error", code=exc.error_type).body(),
+                                status_code=503)
+        if exc.error_type == STRUCTURED_OUTPUT_INVALID:
+            # The run already had its correction round: a client's automatic retry (the openai SDK retries
+            # every 5xx twice) would buy two more whole agent runs for the same verdict. The SDK reads the
+            # header; the code tells the case apart for everyone else.
+            return JSONResponse(ApiError(500, str(exc), type_="server_error", code=exc.error_type).body(),
+                                status_code=500, headers={"x-should-retry": "false"})
         return JSONResponse(ApiError(500, str(exc), type_="server_error").body(), status_code=500)
     if isinstance(exc, _ClientGone):  # nobody reads it; for the access log
         return JSONResponse(ApiError(499, "the client closed the request").body(), status_code=499)
@@ -165,6 +184,13 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         if self._store is not None:  # unregistered at runtime -- fails instead of opening a store nobody closes
             self._store.close()
             self._store = None
+        # The schema workers of this loop (structured output): ended with the plugin, not left to their idle time.
+        from agent_system.llm.structured_output import close_schema_workers
+
+        try:
+            await close_schema_workers()
+        except Exception:
+            logger.warning("openai_api: the schema workers did not end cleanly", exc_info=True)
 
     @property
     def store(self) -> ResponseStore:
@@ -235,14 +261,20 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                 session_id = self._new_session_id(store)
                 repeated = False
             turn = turn_from_messages(items, "input", instructions=None if repeated else instructions)
+            structured = responses_text_format(body)
             agent, service = self._agent(request, model)
+            _refuse_format_it_cannot_take(agent, model, structured, "text.format")
+            # In the schema worker, not on this loop (the subset, under a deadline): a costly schema holds
+            # nobody else up.
+            structured = await prepare_format(structured, "text.format", user)
         except Exception as exc:
             return _failed(exc)
         response_id, message_id, created = new_id("resp"), new_id("msg"), now()
         common = dict(created=created, store=store, previous=previous)
         # A new conversation is named as SessionService names one (the first user text, 50 characters) -- from the
         # user's own text: the instructions stand in front of it in the turn.
-        opening = dict(persist=store, history=turn.history, continues=previous is not None, title=turn.title[:50])
+        opening = dict(persist=store, history=turn.history, continues=previous is not None, title=turn.title[:50],
+                       response_format=structured)
 
         async def finish(turn_run: AgentTurn, text: str) -> dict[str, Any]:
             def record() -> None:
@@ -291,7 +323,10 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                     yield event("response.output_item.added", output_index=0,
                                 item=output_message(message_id, "", status="in_progress"))
                     yield event("response.content_part.added", part=part, **where)
-                    async for delta in _deltas(turn_run, turn.message):
+                    async for delta in _stream_of(turn_run, turn.message):
+                        if delta is _KEEPALIVE:
+                            yield ": keep-alive\n\n"
+                            continue
                         yield event("response.output_text.delta", delta=delta, logprobs=[], **where)
                     text = turn_run.answer()  # the final message, as the JSON answer has it
                     yield event("response.output_text.done", text=text, logprobs=[], **where)
@@ -333,8 +368,11 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
             if options is not None and not isinstance(options, dict):
                 raise ApiError(400, "stream_options must be an object", param="stream_options")
             turn = turn_from_messages(body.get("messages"), "messages")
+            structured = chat_response_format(body)
             model = self._model(request, body)
             agent, service = self._agent(request, model)
+            _refuse_format_it_cannot_take(agent, model, structured, "response_format")
+            structured = await prepare_format(structured, "response_format.json_schema", user)
         except Exception as exc:
             return _failed(exc)
         completion_id, session_id = new_id("chatcmpl"), self._new_session_id(False)
@@ -342,7 +380,7 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
         if not body.get("stream"):
             try:
                 async with self._turn(agent, service, user, session_id, persist=False,
-                                      history=turn.history) as turn_run:
+                                      history=turn.history, response_format=structured) as turn_run:
                     await _run_to_end(request, turn_run, turn.message)
                     text = turn_run.answer()  # before close: a throwaway session is gone after it
                     await turn_run.close()
@@ -352,7 +390,8 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
 
         with_usage = bool((options or {}).get("include_usage"))
         try:  # opened before the stream starts: a refusal is a status (see create_response)
-            turn_run = await self._open_turn(agent, service, user, session_id, persist=False, history=turn.history)
+            turn_run = await self._open_turn(agent, service, user, session_id, persist=False, history=turn.history,
+                                             response_format=structured)
         except Exception as exc:
             return _failed(exc)
 
@@ -361,7 +400,10 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                 try:
                     yield sse(chat_chunk(completion_id, model, {"role": "assistant", "content": ""}))
                     # The deltas are all a client gets here -- a chunk stream has no final text.
-                    async for delta in _deltas(turn_run, turn.message):
+                    async for delta in _stream_of(turn_run, turn.message):
+                        if delta is _KEEPALIVE:
+                            yield ": keep-alive\n\n"
+                            continue
                         yield sse(chat_chunk(completion_id, model, {"content": delta}))
                     yield sse(chat_chunk(completion_id, model, {}, finish="stop"))
                     if with_usage:
@@ -376,7 +418,11 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
                         yield sse(refused.body())
                     else:
                         message = exc.message if isinstance(exc, ApiError) else str(exc) or type(exc).__name__
-                        yield sse(ApiError(500, message, type_="server_error").body())
+                        # The code as the JSON answer has it (_failed): after the 200 no header can stop a
+                        # retry, but a client can still tell a format verdict from a failed run.
+                        code = (exc.error_type if isinstance(exc, TurnError) and exc.error_type
+                                in (STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE) else None)
+                        yield sse(ApiError(500, message, type_="server_error", code=code).body())
                 yield "data: [DONE]\n\n"
             finally:
                 await turn_run.close()
@@ -385,14 +431,15 @@ class OpenAIApiPlugin(SchemaBasedPluginWebInterface):
 
     # ------------------------------------------------------------ plumbing
     async def _open_turn(self, agent: Any, service: Any, user: str, session_id: str, *, persist: bool,
-                         history: list[Any], continues: bool = False, title: Optional[str] = None) -> AgentTurn:
+                         history: list[Any], continues: bool = False, title: Optional[str] = None,
+                         response_format: Any = None) -> AgentTurn:
         """A turn, opened: one at a time per conversation, the session held and opened. A refusal comes as the
         OpenAI error a client reads, before anything ran. The conversation stays busy until the turn is settled --
         after its run has stopped, not when the client left."""
         from agent_system.services.session_manager import SessionPermissionError
 
         turn = AgentTurn(agent, service, user=user, session_id=session_id, request_id=f"oai_{new_id('r')[2:14]}",
-                         persist=persist, continues=continues, title=title)
+                         persist=persist, continues=continues, title=title, response_format=response_format)
         if session_id in self._busy:
             raise ApiError(409, "this conversation is answering another request right now", type_="conflict")
         self._busy.add(session_id)
@@ -559,6 +606,56 @@ async def _run_to_end(request: Request, turn: AgentTurn, message: str) -> None:
             work.cancel()  # events() stops the run (its token first) and waits for it, STOP_GRACE at most
             with anyio.CancelScope(shield=True):
                 await asyncio.wait({work})
+
+
+def _refuse_format_it_cannot_take(agent: Any, model: str, structured: Any, param: str) -> None:
+    """An agent whose ``run_events`` has no ``response_format`` -- a state machine behind the stategraph
+    facade, say -- cannot hold its answer to a format: refused before the run, as OpenAI refuses a parameter
+    a model does not support, instead of the TypeError its run would end on."""
+    if structured is None:
+        return
+    try:
+        parameters = inspect.signature(agent.run_events).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "response_format" in parameters or any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
+        return
+    raise ApiError(400, f"Unsupported parameter: '{param}' is not supported with the model {model!r}.",
+                   param=param, code="unsupported_parameter")
+
+
+def _stream_of(turn: AgentTurn, message: str) -> AsyncIterator[str]:
+    """What a stream carries: the work as it happens, or -- for a structured turn -- its answer whole."""
+    return _whole(turn, message) if turn.response_format is not None else _deltas(turn, message)
+
+
+async def _whole(turn: AgentTurn, message: str) -> AsyncIterator[str]:
+    """A structured turn's answer as ONE delta, once the run has checked it against the format.
+
+    Nothing of the run goes out before: its steps' notes, an answer the run sent back for
+    correction -- the joined deltas of a stream have to BE the JSON the client asked for. Every
+    KEEPALIVE_SECONDS of that silence it yields _KEEPALIVE, which the routes write as an SSE comment.
+    The run is a task of its own for that; a consumer that leaves stops it, as it stops _deltas' run.
+    """
+
+    async def drain() -> None:
+        async for _ in turn.events(message):
+            pass
+
+    work = asyncio.ensure_future(drain())
+    try:
+        while True:
+            done, _ = await asyncio.wait({work}, timeout=KEEPALIVE_SECONDS)
+            if done:
+                break
+            yield _KEEPALIVE
+        work.result()  # the run's own failure (TurnError, ConversationBusy)
+    finally:
+        if not work.done():
+            work.cancel()  # events() stops the run (its token first) and waits for it, STOP_GRACE at most
+            with anyio.CancelScope(shield=True):
+                await asyncio.wait({work})
+    yield turn.answer()
 
 
 async def _deltas(turn: AgentTurn, message: str) -> AsyncIterator[str]:

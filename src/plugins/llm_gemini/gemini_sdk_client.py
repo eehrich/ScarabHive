@@ -35,6 +35,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from agent_system.utils.json_utils import repair_json
 
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from .gemini_utils import (
     adjust_thinking_for_retry,
@@ -45,6 +46,7 @@ from .gemini_utils import (
     extract_available_tool_names,
     extract_usage_from_metadata,
     filter_unavailable_tool_calls,
+    response_format_fields,
     StreamingLoopDetector,
     ThinkingProgressTracker,
 )
@@ -86,6 +88,10 @@ class GeminiSDKClient(LLMClient):
     - Tool calling with thought signatures
     - Retry logic with exponential backoff
     """
+
+    #: GenerateContentConfig.response_mime_type (+ response_json_schema), the SDK names of
+    #: the REST client's fields; the same capability decides (see GeminiClient).
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(
         self,
@@ -309,6 +315,7 @@ class GeminiSDKClient(LLMClient):
         force_any_mode: bool = False,
         retry_thinking_budget: Optional[int] = None,
         retry_thinking_level: Optional[str] = None,
+        response_format: Optional[ResponseFormat] = None,
     ) -> types.GenerateContentConfig:
         """Build generation config with all parameters.
         
@@ -383,7 +390,13 @@ class GeminiSDKClient(LLMClient):
                 for category, threshold in self.safety_settings.items()
             ]
             logger.debug(f"[GeminiSDK] Safety settings: {len(self.safety_settings)} categories configured")
-        
+
+        if response_format is not None:
+            fields = response_format_fields(response_format)
+            config.response_mime_type = fields["responseMimeType"]
+            if "responseJsonSchema" in fields:
+                config.response_json_schema = fields["responseJsonSchema"]
+
         return config
 
     def _extract_usage(self, usage_metadata) -> Dict[str, Any]:
@@ -611,7 +624,9 @@ class GeminiSDKClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat with tools using official SDK.
         
@@ -620,6 +635,7 @@ class GeminiSDKClient(LLMClient):
         - tool_call_delta: Tool call information
         - final: Final accumulated result
         """
+        self._require_response_format(response_format)
         # Extract available tool names to filter out unavailable tool calls from history
         # This prevents UNEXPECTED_TOOL_CALL when switching agents
         available_tool_names = extract_available_tool_names(tools)
@@ -707,6 +723,7 @@ class GeminiSDKClient(LLMClient):
                 system_instruction, sdk_tools, force_any_mode=force_any_mode,
                 retry_thinking_budget=retry_thinking_budget,
                 retry_thinking_level=retry_thinking_level,
+                response_format=response_format,
             )
             if force_any_mode:
                 logger.debug(f"[GeminiSDK] Retry #{attempt} with forced function calling (mode=ANY)")
@@ -1288,13 +1305,16 @@ class GeminiSDKClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> Dict[str, Any]:
         """Non-streaming chat with tools.
         
         Returns complete result in format compatible with gemini_client.py:
         {"assistant": {...}, "usage": {...}}
         """
+        self._require_response_format(response_format)
         # Status reporting helper
         async def report_status(message: str) -> None:
             if status_scope is None:
@@ -1352,6 +1372,7 @@ class GeminiSDKClient(LLMClient):
                 system_instruction, sdk_tools,
                 retry_thinking_budget=retry_thinking_budget,
                 retry_thinking_level=retry_thinking_level,
+                response_format=response_format,
             )
             
             try:
@@ -1540,9 +1561,10 @@ class GeminiSDKClient(LLMClient):
             ) from last_exception
         raise Exception(f"Gemini SDK request failed after {self.max_retries + 1} attempts")
 
-    async def chat(self, messages: List[ChatMessage], cancellation_token=None) -> str:
+    async def chat(self, messages: List[ChatMessage], cancellation_token=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
         """Simple chat without tools."""
-        result = await self.chat_tools(messages, [], cancellation_token)
+        result = await self.chat_tools(messages, [], cancellation_token, response_format=response_format)
         return result["assistant"]["content"]
 
     def supports_streaming(self) -> bool:

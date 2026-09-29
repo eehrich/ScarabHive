@@ -491,3 +491,34 @@ class TestThisRouteDoesNotStream:
             capabilities={"streaming": True})
 
         assert sibling.supports_streaming() is True
+
+
+class TestStructuredOutputTravelsThroughTheSdk:
+    """``text.format`` is built by the inherited Responses builder; the SDK's typed ``text``
+    parameter has to carry it to the wire, all three of its fields intact."""
+
+    @pytest.mark.asyncio
+    async def test_the_schema_arrives_as_text_format(self, route):
+        from agent_system.config.models import ModelCapabilitiesConfig
+        from agent_system.llm.structured_output import ResponseFormat
+
+        schema = {"type": "object", "properties": {"city": {"type": "string"}},
+                  "required": ["city"], "additionalProperties": False}
+        client = _client(capabilities=ModelCapabilitiesConfig(structured_output=True))
+        await client.chat_tools(MESSAGES, TOOLS,
+                                response_format=ResponseFormat(schema=schema, name="place", strict=True))
+        assert route.bodies[0]["text"] == {"format": {"type": "json_schema", "name": "place",
+                                                      "schema": schema, "strict": True}}
+
+    @pytest.mark.asyncio
+    async def test_json_mode_arrives_and_a_model_without_the_capability_sends_nothing(self, route):
+        from agent_system.config.models import ModelCapabilitiesConfig
+        from agent_system.llm.structured_output import JSON_OBJECT, ResponseFormat, StructuredOutputUnsupported
+
+        await _client(capabilities=ModelCapabilitiesConfig(structured_output=True)).chat_tools(
+            MESSAGES, TOOLS, response_format=ResponseFormat(type=JSON_OBJECT))
+        assert route.bodies[0]["text"] == {"format": {"type": "json_object"}}
+        with pytest.raises(StructuredOutputUnsupported):
+            await _client(capabilities=ModelCapabilitiesConfig(json_mode=True)).chat_tools(
+                MESSAGES, TOOLS, response_format=ResponseFormat(type=JSON_OBJECT))
+        assert len(route.requests) == 1

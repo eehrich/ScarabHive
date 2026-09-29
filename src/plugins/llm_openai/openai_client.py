@@ -19,7 +19,9 @@ from agent_system.llm.models import (
     PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError,
 )
 from agent_system.config.models import ModelCapabilitiesConfig
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from plugins.llm_common import cancellation, openai_utils
+from plugins.llm_common.structured_output import chat_completions_response_format
 
 
 class OpenAIAsyncClient(LLMClient):
@@ -29,6 +31,10 @@ class OpenAIAsyncClient(LLMClient):
       - OpenAI (default base)
       - OpenAI-compatible servers (e.g., Ollama) via base_url="http://host:port/v1"
     """
+
+    #: Chat Completions carries both as ``response_format`` (the realtime session has no such
+    #: field: supports_response_format says no there).
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(self, model: str, api_key: str, base_url: Optional[str] = None, default_extra: Optional[dict] = None, timeout: Optional[float] = None, *, max_attempts: int = 5, base_backoff: float = 2.0, min_backoff: float = 2.0, backoff_cap: float = 300.0, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, max_tokens: Optional[int] = None) -> None:
         try:
@@ -161,8 +167,12 @@ class OpenAIAsyncClient(LLMClient):
             supports_audio=supports_audio
         )
 
-    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
         logger = logging.getLogger(__name__)
+        # Before the try below, which turns every failure into an error text: a format this
+        # route cannot carry is the caller's mistake, not the provider's.
+        self._require_response_format(response_format)
         if self.get_api_type() == 'realtime':
             # Not served on /v1/chat/completions.
             result = await self._chat_tools_realtime(messages, [], cancellation_token)
@@ -192,6 +202,8 @@ class OpenAIAsyncClient(LLMClient):
             
             opts = {"model": self.model, "messages": serialized}
             opts.update(self._default_extra)
+            if response_format is not None:
+                opts["response_format"] = chat_completions_response_format(response_format)
             
             # Add max_tokens if configured
             if self.max_tokens:
@@ -372,20 +384,24 @@ class OpenAIAsyncClient(LLMClient):
                 logger.exception("OpenAI chat failed (secondary error building payload): %s", e)
                 return ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                         *, response_format: Optional[ResponseFormat] = None) -> dict:
         """Dispatch to appropriate API based on model capabilities.
 
         Routes to either Chat Completions API or Realtime API based on
         the model's default_api_type capability.
         """
+        self._require_response_format(response_format)
         api_type = self.get_api_type()
 
         if api_type == 'realtime':
             return await self._chat_tools_realtime(messages, tools, cancellation_token)
         else:
-            return await self._chat_tools_chat_completions(messages, tools, cancellation_token, status_scope)
+            return await self._chat_tools_chat_completions(messages, tools, cancellation_token, status_scope,
+                                                           response_format=response_format)
 
-    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
+    async def _chat_tools_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                                           response_format: Optional[ResponseFormat] = None) -> dict:
         """Original Chat Completions API implementation."""
         logger = logging.getLogger(__name__)
         
@@ -460,6 +476,8 @@ class OpenAIAsyncClient(LLMClient):
                 opts["tool_choice"] = "auto"
 
             opts.update(self._default_extra)
+            if response_format is not None:
+                opts["response_format"] = chat_completions_response_format(response_format)
             
             # Add max_tokens if configured
             if self.max_tokens:
@@ -695,18 +713,22 @@ class OpenAIAsyncClient(LLMClient):
                 result[key] = final[key]
         return result
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                                   *, response_format: Optional[ResponseFormat] = None):
         """Dispatch streaming to appropriate API based on model capabilities."""
+        self._require_response_format(response_format)
         api_type = self.get_api_type()
 
         if api_type == 'realtime':
             async for event in self._chat_tools_streaming_realtime(messages, tools, cancellation_token):
                 yield event
         else:
-            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token, status_scope):
+            async for event in self._chat_tools_streaming_chat_completions(messages, tools, cancellation_token, status_scope,
+                                                                           response_format=response_format):
                 yield event
 
-    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
+    async def _chat_tools_streaming_chat_completions(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                                                     response_format: Optional[ResponseFormat] = None):
         """Original Chat Completions API streaming implementation."""
         logger = logging.getLogger(__name__)
         
@@ -791,6 +813,8 @@ class OpenAIAsyncClient(LLMClient):
                     opts["tools"] = tools
                     opts["tool_choice"] = "auto"
                 opts.update(self._default_extra)
+                if response_format is not None:
+                    opts["response_format"] = chat_completions_response_format(response_format)
                 
                 # Add max_tokens if configured
                 if self.max_tokens:
@@ -1118,6 +1142,10 @@ class OpenAIAsyncClient(LLMClient):
             logger.exception("Realtime API call failed: %s", e)
             await notify_done(error=str(e))
             yield failed(str(e))
+
+    def supports_response_format(self, response_format: Any) -> bool:
+        """As every client -- except on the realtime session, which has no such field."""
+        return self.get_api_type() != 'realtime' and super().supports_response_format(response_format)
 
     def supports_streaming(self) -> bool:
         """Check if this client supports streaming based on model capabilities."""

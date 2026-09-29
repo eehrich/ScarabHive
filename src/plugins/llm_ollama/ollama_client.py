@@ -11,6 +11,7 @@ from agent_system.llm.message_roles import (
     resolve_rung, rung_for_position,
 )
 from agent_system.llm.models import ChatMessage, LLMClient
+from agent_system.llm.structured_output import JSON_OBJECT, JSON_SCHEMA, ResponseFormat
 from agent_system.llm.tls import httpx_verify
 from agent_system.config.models import ModelCapabilitiesConfig
 from plugins.llm_common import cancellation
@@ -25,6 +26,10 @@ class OllamaNativeAsyncClient(LLMClient):
 
     Supports per-request options including num_ctx.
     """
+
+    #: /api/chat ``format``: "json" or a JSON schema; the model entry says whether the model
+    #: holds to it (capabilities.structured_output).
+    response_format_kinds = (JSON_SCHEMA, JSON_OBJECT)
 
     def __init__(self, model: str, base_url: Optional[str] = None, options: Optional[dict[str, Any]] = None, timeout: Optional[float] = None, verify: Optional[bool] = None, context_window: Optional[int] = None, capabilities: Optional[ModelCapabilitiesConfig] = None, think: Optional[bool | str] = None, reasoning_details_mode: Optional[str] = None) -> None:
         import httpx  # lazy import
@@ -157,7 +162,9 @@ class OllamaNativeAsyncClient(LLMClient):
         """Async wrapper for message mapping to avoid blocking event loop."""
         return await asyncio.to_thread(self._map_messages, messages)
 
-    async def _body(self, messages: list[ChatMessage], tools: Optional[list[dict]], stream: bool) -> dict[str, Any]:
+    async def _body(self, messages: list[ChatMessage], tools: Optional[list[dict]], stream: bool,
+                    response_format: Optional[ResponseFormat] = None) -> dict[str, Any]:
+        self._require_response_format(response_format)
         body: dict[str, Any] = {
             "model": self.model,
             "messages": await self._map_messages_async(messages),
@@ -165,6 +172,9 @@ class OllamaNativeAsyncClient(LLMClient):
         }
         if tools:
             body["tools"] = tools
+        if response_format is not None:
+            # /api/chat: "json" is JSON mode, a JSON schema constrains the answer to it.
+            body["format"] = "json" if response_format.type == JSON_OBJECT else response_format.schema
         if self._options:
             body["options"] = self._options
         think = await self._think_for_request()
@@ -274,13 +284,17 @@ class OllamaNativeAsyncClient(LLMClient):
         })
         return data
 
-    async def chat(self, messages: list[ChatMessage], cancellation_token=None) -> str:
-        data = await self._post(await self._body(messages, None, stream=False), cancellation_token)
+    async def chat(self, messages: list[ChatMessage], cancellation_token=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
+        data = await self._post(await self._body(messages, None, stream=False, response_format=response_format),
+                                cancellation_token)
         msg = data.get("message") or {}
         return msg.get("content") or ""
 
-    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None) -> dict:
-        data = await self._post(await self._body(messages, tools, stream=False), cancellation_token)
+    async def chat_tools(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                         *, response_format: Optional[ResponseFormat] = None) -> dict:
+        data = await self._post(await self._body(messages, tools, stream=False, response_format=response_format),
+                                cancellation_token)
         message = data.get("message") or {}
         out: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
         # A thinking model's reasoning arrives beside the answer, never in it.
@@ -311,7 +325,8 @@ class OllamaNativeAsyncClient(LLMClient):
 
         return result
 
-    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None):
+    async def chat_tools_streaming(self, messages: list[ChatMessage], tools: list[dict], cancellation_token=None, status_scope=None,
+                                   *, response_format: Optional[ResponseFormat] = None):
         """Stream LLM responses from Ollama using native streaming API.
 
         Ollama's /api/chat endpoint supports streaming with `stream: true`.
@@ -330,7 +345,7 @@ class OllamaNativeAsyncClient(LLMClient):
                 logger.debug(f"Failed to report LLM status: {e}")
         
         url = f"{self._base}/api/chat"
-        body = await self._body(messages, tools, stream=True)
+        body = await self._body(messages, tools, stream=True, response_format=response_format)
 
         if cancellation_token and cancellation_token.is_cancelled:
             raise asyncio.CancelledError("Request cancelled by user")

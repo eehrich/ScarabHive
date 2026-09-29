@@ -70,7 +70,8 @@ _DONE = object()
 
 class TurnError(Exception):
     """The agent run failed or was cancelled; ``message`` says what the run said, ``error_type`` what its error
-    event said (a refusal before the run: Agent.run_events, REFUSED_BEFORE_THE_RUN)."""
+    event said (a refusal before the run: Agent.run_events, REFUSED_BEFORE_THE_RUN; a format verdict:
+    structured_output_invalid, ...)."""
 
     def __init__(self, message: str, error_type: Optional[str] = None):
         super().__init__(message)
@@ -87,7 +88,8 @@ class ConversationGone(Exception):
 
 class AgentTurn:
     def __init__(self, agent: Any, service: Any, *, user: str, session_id: str, request_id: str,
-                 persist: bool, continues: bool = False, title: Optional[str] = None):
+                 persist: bool, continues: bool = False, title: Optional[str] = None,
+                 response_format: Any = None):
         self.agent = agent
         self.service = service
         self.user = user
@@ -96,6 +98,8 @@ class AgentTurn:
         self.persist = persist
         self.continues = continues  # a stored conversation this turn continues (previous_response_id)
         self.title = title  # a new stored conversation's title: the user's own text, not the instructions
+        # The client's structured output (a llm.structured_output.ResponseFormat), for this turn's final answer
+        self.response_format = response_format
         self.profile = getattr(getattr(agent, "agent_config", None), "default_llm_profile", None) or "normal"
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self.completed = False
@@ -218,10 +222,13 @@ class AgentTurn:
             raise ConversationBusy("the conversation was opened by another request meanwhile")
         queue: asyncio.Queue[Any] = asyncio.Queue()
 
+        # Handed on only when asked for: a turn without one runs the agent exactly as before.
+        structured = {"response_format": self.response_format} if self.response_format is not None else {}
+
         async def pump() -> None:
             try:
                 async with aclosing(self.agent.run_events(task=message, request_id=self.request_id,
-                                                          session_id=self.session_id)) as run:
+                                                          session_id=self.session_id, **structured)) as run:
                     async for event in run:
                         queue.put_nowait(event)
                         if event.get("type") == "end":
@@ -249,7 +256,7 @@ class AgentTurn:
                     from agent_system.servers.agent.server import refused_before_the_run
 
                     failure = str(event.get("message") or "the agent run failed")
-                    failure_type = event.get("error_type")
+                    failure_type = event.get("error_type") or None
                     self._refused = self._refused or refused_before_the_run(event)
                 elif kind == "cancelled":
                     failure = f"cancelled: {event.get('reason') or event.get('message') or 'from outside'}"

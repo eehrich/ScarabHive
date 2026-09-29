@@ -192,6 +192,12 @@ dependencies = ["my-sdk>=1.0"]
 - Shared helpers live in `llm_common`; delegation via `get_provider("openai")`.
 - **No provider tables**: no `if google`, no alias dicts, no name heuristics. Mappings
   come from config or gateway data.
+- **Structured output** (`agent_system/llm/structured_output.py`): a client that wires it
+  lists `response_format_kinds` (the kinds its WIRE has a field for), takes
+  `response_format=` on `chat_tools`/`chat_tools_streaming` and calls
+  `self._require_response_format(...)` before anything goes out. Whether a model honours it
+  is `capabilities.structured_output` on the model entry (`json_mode` is not read). A client without the
+  kinds is never handed a format; one that has them must never drop it silently.
 - Report usage in OpenAI semantics: `prompt_tokens` **including** cache, details as a
   subset (example `llm_anthropic/anthropic_utils.usage_to_openai`).
 - `config/llm*.yaml` belongs to the user — don't change it on your own.

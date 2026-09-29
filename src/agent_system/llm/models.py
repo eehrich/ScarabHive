@@ -338,6 +338,30 @@ class LLMClient:
     #: How long that backend stays the one a new run starts on. None = the
     #: default of backend_affinity, 0 = off. Set from the model entry.
     provider_affinity_minutes: Optional[float] = None
+    #: The response_format kinds this client's ROUTE has a wire field for
+    #: (structured_output.JSON_SCHEMA / JSON_OBJECT) -- a fact about the API,
+    #: not about a model. Empty for every client that has not wired the field,
+    #: so it is never handed one (structured_output.supports_response_format).
+    response_format_kinds: tuple = ()
+
+    def supports_response_format(self, response_format: Any) -> bool:
+        """Whether this client puts ``response_format`` on the wire: its route has the field
+        AND its model entry declares the capability (capabilities.structured_output, for a
+        schema and for plain JSON mode alike). A client whose route depends on more (a realtime
+        session) narrows this."""
+        from .structured_output import declared_support
+
+        kind = getattr(response_format, "type", None)
+        return (kind in self.response_format_kinds
+                and declared_support(getattr(self, "capabilities", None), kind))
+
+    def _require_response_format(self, response_format: Any) -> None:
+        """A client handed a format it cannot put on the wire refuses the call -- dropping the
+        field would return free text as if the provider had constrained it."""
+        if response_format is not None:
+            from .structured_output import require_response_format
+
+            require_response_format(self, response_format)
 
     def set_llm_hooks(
         self,
@@ -520,7 +544,13 @@ class LLMClient:
         - {"type": "final", "assistant": {...}}
 
         Default implementation falls back to non-streaming.
-        
+
+        A client that wires structured output takes ``response_format=`` (a
+        structured_output.ResponseFormat) on ``chat_tools`` and this method, and
+        lists the kinds in ``response_format_kinds``. Callers pass it only when
+        set and only after ``supports_response_format`` said yes, so a client
+        without the keyword is never handed one.
+
         Args:
             messages: Chat messages
             tools: Tool definitions

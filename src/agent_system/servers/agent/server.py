@@ -33,6 +33,13 @@ import httpx
 from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
 from ...llm.model_health import model_health
 from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from ...llm import schema_worker
+from ...llm.structured_output import (
+    JSON_OBJECT, STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
+    InvalidResponseFormat, ResponseFormat,
+    SchemaCheckerError, check_answer, instruction_text, prepare_response_format, repair_text,
+    supports_response_format, unsupported_message,
+)
 from ...llm.text_sanitizer import sanitize_for_llm
 from ...tools.status import (
     status_scope,
@@ -132,6 +139,11 @@ def tool_session_id(caller_session_id: str, agent_name: str) -> str:
         return session_id
     tail = f"--{name}-{digest[:16]}"
     return caller_session_id[:TOOL_SESSION_ID_MAX - len(tail)] + tail
+
+#: STRUCTURED_OUTPUT_UNSUPPORTED and STRUCTURED_OUTPUT_INVALID (imported above) are the
+#: ``error_type``s of a structured run's error events; llm/structured_output.py says when.
+#: ``injected_by`` of the note that describes a run's structured output to the model.
+FORMAT_NOTE = "agent.structured_output"
 
 # llm_progress hooks fire every this many characters of thinking. A hook sets
 # its own, coarser interval on top; this only bounds how often the loop pays
@@ -1517,6 +1529,36 @@ class Agent(ToolServer):
     _STEP_BUDGET_NOTE_LAST_STEPS = 2
 
     @staticmethod
+    def _structured_output_note(text: str, marker: str) -> ChatMessage:
+        """What the run tells a model about its structured answer: the format (to a model that
+        does not get it as a field), or what is wrong with the answer it gave. The RUN speaks, as
+        for the step budget, and injected_by keeps it from counting as a turn."""
+        return ChatMessage(role=DEVELOPER, content=text, timestamp=datetime.now(timezone.utc),
+                           injected_by=marker)
+
+    @staticmethod
+    async def _check_structured_answer(content: str, response_format: ResponseFormat, request_id: str) -> Any:
+        """The answer's check, in the schema worker's process under its deadline (structured_output.
+        check_answer), in the lane of the run's user: the schema is the caller's, and this process never
+        runs jsonschema or regex on it."""
+        from ...core.request_context import get_request_user
+
+        return await check_answer(content, response_format, owner=get_request_user(request_id))
+
+    @staticmethod
+    def _structured_output_unavailable(checked: Any) -> dict:
+        """The error event of a run whose answer the checker could not look at (busy, broken): no verdict."""
+        return {"type": "error", "error_type": STRUCTURED_OUTPUT_UNAVAILABLE,
+                "message": "Structured output: the answer could not be checked, the checker is not available: "
+                           + "; ".join(checked.errors)}
+
+    @staticmethod
+    def _structured_output_failure(errors: List[str], *, corrected: bool) -> str:
+        when = " after one correction" if corrected else ""
+        return (f"Structured output: the final answer does not match the requested format{when}: "
+                + "; ".join(errors))
+
+    @staticmethod
     def _output_cap_note(completion_tokens: Optional[int]) -> ChatMessage:
         """What the run tells a model whose answer the output cap cut off.
 
@@ -1972,7 +2014,8 @@ class Agent(ToolServer):
         session_id: Optional[str] = None,
         llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
-        use_advanced_model: bool = False
+        use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Run the agent and yield structured events for UI streaming.
 
@@ -1983,7 +2026,15 @@ class Agent(ToolServer):
             llm_override: Optional LLM client to use instead of self.llm (for per-request profile overrides)
             llm_profile_info_override: Optional profile info string for status display (e.g., "turbo:openai_httpx/gpt-5-nano")
             use_advanced_model: If True and llm_override not set, use best available LLM profile
+            response_format: Optional structured output for this run's FINAL answer (the step without
+                tool calls): sent as the provider's field on every step of the run where the step's
+                LLM takes it, described in the conversation where it does not and the format allows
+                the prompt fallback, refused otherwise. The final answer is validated, and sent back
+                once for correction; its ``final`` event carries it unformatted (content_format "json").
         """
+        if response_format is not None and not isinstance(response_format, ResponseFormat):
+            # A dict would pass for "no field" at every client and then fail deep in the loop.
+            raise TypeError(f"response_format must be a ResponseFormat, not {type(response_format).__name__}")
 
         # Generate request ID if not provided
         if request_id is None:
@@ -2125,6 +2176,7 @@ class Agent(ToolServer):
                 llm_profile_info_override=llm_profile_info_override,
                 status_forwarder=status_forwarder,
                 use_advanced_model=use_advanced_model,
+                response_format=response_format,
             ):
                 # Before the yield: the consumer of a sub-run can stop reading at its
                 # end, error or cancel (sub_agent_manager does), and the event it
@@ -2628,6 +2680,7 @@ class Agent(ToolServer):
         status_scope: Optional[StatusScope] = None,
         watch_reasoning: bool = True,
         on_reasoning_progress=None,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Call LLM with streaming support and interleaved status events.
 
@@ -2645,12 +2698,16 @@ class Agent(ToolServer):
             status_scope: Optional status scope for LLM to report progress (batch status, etc.)
             on_reasoning_progress: Optional ``async (text, chars, previous_chars)``,
                 awaited every _REASONING_PROGRESS_TICK characters of thinking
+            response_format: The structured output to put on the wire, only ever one the LLM said it
+                takes. Handed on only when set: a call without one is the call it always was, and a
+                client that never wired the keyword is never given it.
 
         Yields:
             - {"type": "thinking_delta", "step": int, "delta": str, "accumulated": str}
             - {"type": "status", ...}
             - {"type": "thinking_complete", "assistant": {...}}
         """
+        wire_format = {"response_format": response_format} if response_format is not None else {}
         if llm.supports_streaming():
             # Streaming LLM: zero-overhead real-time tokens
             accumulated_content = []
@@ -2676,7 +2733,8 @@ class Agent(ToolServer):
             async for chunk in llm.chat_tools_streaming(
                 messages, tools_schema,
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ):
                 chunk_type = chunk.get("type")
 
@@ -2789,7 +2847,8 @@ class Agent(ToolServer):
             llm_task = asyncio.create_task(llm.chat_tools(
                 messages, tools_schema, 
                 cancellation_token=cancellation_token,
-                status_scope=status_scope
+                status_scope=status_scope,
+                **wire_format,
             ))
 
             # Poll for status events while waiting
@@ -2862,6 +2921,7 @@ class Agent(ToolServer):
         llm_override: Optional[LLMClient] = None,
         llm_profile_info_override: Optional[str] = None,
         use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """Execute the main LLM conversation loop with tool execution.
 
@@ -2937,6 +2997,50 @@ class Agent(ToolServer):
         # until a 120k cap must not be sent back for two more rounds of it.
         consecutive_cut_off = 0
         max_cut_off_notes = int(getattr(self.agent_config, "output_cap_notes", 0) or 0)
+        # Structured output (response_format): a final answer that does not match is sent back
+        # once. The note that describes the format to a model without the field is looked for
+        # before every call, not remembered: a compaction may have taken it out of the history.
+        format_repaired = False
+
+        def _takes_format(client: Any) -> bool:
+            """Whether *client* may answer a step of this run. Any client, when the run has no
+            format or allows the prompt fallback; else only one that puts the field on the wire.
+            Asked where the run CHOOSES another model -- an escalation, a walk around a blocked
+            LLM, a failover: that choice must not end the run over a format the chosen model
+            cannot take while another one could."""
+            return (response_format is None or response_format.prompt_fallback
+                    or supports_response_format(client, response_format))
+
+        # A format nobody checked yet (a caller that built it itself; openai_api prepares its own):
+        # its schema goes through the worker's subset before anything runs, and the run works with
+        # what the worker made of it.
+        if response_format is not None and not response_format.checked:
+            from ...core.request_context import get_request_user
+
+            try:
+                response_format = await prepare_response_format(response_format, owner=get_request_user(request_id))
+            except (InvalidResponseFormat, SchemaCheckerError) as bad:
+                unavailable = isinstance(bad, SchemaCheckerError)  # busy or broken: no verdict on the format
+                error_msg = (f"Structured output: the format could not be checked, the checker is not available: {bad}"
+                             if unavailable else f"Structured output: the requested format cannot be used: {bad}")
+                logger.warning("[%s] %s", self.name, error_msg)
+                results.setdefault("errors", []).append(error_msg)
+                yield {"type": "error", "message": error_msg,
+                       "error_type": STRUCTURED_OUTPUT_UNAVAILABLE if unavailable else STRUCTURED_OUTPUT_INVALID}
+                return
+
+        # The run's own model decides at the start, not at the first step that lands on it: a
+        # walk around it while it is blocked would otherwise end the run mid-way, after its tool
+        # steps, once the block lifts and the next step goes back to it.
+        if not _takes_format(active_llm):
+            error_msg = unsupported_message(active_llm, response_format)
+            logger.warning("[%s] %s", self.name, error_msg)
+            results.setdefault("errors", []).append(error_msg)
+            yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+            return
+        # The description as it goes into the history: a note that is there under its marker but
+        # says something else (a compaction's placeholder) does not count as there.
+        format_note_text = instruction_text(response_format) if response_format is not None else None
 
         # Create a request-scoped loop detector.
         # Each request gets its own detector so concurrent requests on the
@@ -3072,10 +3176,12 @@ class Agent(ToolServer):
                     active_profile_override = llm_profile_info_override.split(":", 1)[0]
                 if escalate:
                     escalation_llm = self._get_escalation_llm()
-                    if escalation_llm is None:
+                    if escalation_llm is None or not _takes_format(escalation_llm):
                         # Advanced client couldn't be built — ran on standard.
                         # Disable escalation for this run so we don't retry the
                         # build every step (the window would never close).
+                        # Same for one that cannot take the run's structured
+                        # output: it will not learn to within the run.
                         escalate = False
                         escalator.disable()
                     elif model_health.available(escalation_llm, request_id):
@@ -3124,7 +3230,10 @@ class Agent(ToolServer):
                     blocked = getattr(llm, "model", "?")
                     for index, profile in enumerate(profiles):
                         client = self._fallback_client(profile)
-                        if client is not None and model_health.available(client, request_id):
+                        # _takes_format first: asking model_health makes this
+                        # request the prober of an LLM it would then not call.
+                        if (client is not None and _takes_format(client)
+                                and model_health.available(client, request_id)):
                             logger.info(
                                 f"[{self.name}] LLM {blocked} is blocked for "
                                 f"{model_health.remaining(llm):.0f}s more; this step runs on {profile}")
@@ -3162,7 +3271,7 @@ class Agent(ToolServer):
                         continue
                     if client is None:
                         client = self._fallback_client(label)
-                    if client is None or client is current_llm:
+                    if client is None or client is current_llm or not _takes_format(client):
                         fallback_taken.add(index)
                         continue
                     if model_health.available(client, request_id):
@@ -3328,6 +3437,39 @@ class Agent(ToolServer):
                 # For tools that size the context themselves (compact, summarize):
                 # the model answering this session's step, see llm_for_session.
                 self._step_llms[session_id] = current_llm
+                # Structured output, decided per CALL: a fallback within the step is another
+                # model. The field goes on every call of the run, the tool steps included --
+                # constant through the run, it keeps the cached prefix (OpenAI puts the schema
+                # into the rendered context, Anthropic invalidates the cache when it changes);
+                # a field on the last call only would miss the cache exactly there.
+                wire_format = None
+                if response_format is not None:
+                    if supports_response_format(current_llm, response_format):
+                        wire_format = response_format
+                    elif not response_format.prompt_fallback:
+                        # Unreachable while every switch of model asks _takes_format (and the run's
+                        # own model is asked at the start): the guard that keeps a switch added
+                        # later from sending the request without its field.
+                        model_health.drop_probe(current_llm, request_id)
+                        error_msg = unsupported_message(current_llm, response_format)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg,
+                               "error_type": STRUCTURED_OUTPUT_UNSUPPORTED}
+                        return
+                    # A schema-less JSON mode says nothing about the shape, and a model without
+                    # the field hears of the format only here. Once, as long as it stays in the
+                    # history, and before this step's budget note, which has to stay the last
+                    # thing the model reads.
+                    if (wire_format is None or response_format.type == JSON_OBJECT) and not any(
+                            getattr(m, "injected_by", None) == FORMAT_NOTE and m.content == format_note_text
+                            for m in messages):
+                        note = self._structured_output_note(format_note_text, FORMAT_NOTE)
+                        if budget_note is not None and messages and messages[-1] is budget_note:
+                            messages.insert(len(messages) - 1, note)
+                        else:
+                            messages.append(note)
+                        context.messages = messages
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
                 health_asked_at = model_health.now()
@@ -3344,6 +3486,7 @@ class Agent(ToolServer):
                         on_reasoning_progress=(_reasoning_progress
                                                if self._hook_manager.wants_llm_progress()
                                                else None),
+                        response_format=wire_format,
                     ):
                         event_type = event.get("type")
 
@@ -3794,8 +3937,13 @@ class Agent(ToolServer):
             # Format content for display (markdown -> HTML for web UI)
             formatted_content = content
             content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
+            # A structured run's answer is JSON, not markdown: rendered to HTML it would be neither
+            # what the caller asked for nor parseable (<p>{<br>"a": 1</p>).
+            structured_answer = response_format is not None and not tool_calls
+            if structured_answer:
+                content_format = "json"
             try:
-                if content and self._hook_manager:
+                if content and self._hook_manager and not structured_answer:
                     formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
                         output=content,
                         request_id=request_id or "unknown",
@@ -4000,6 +4148,25 @@ class Agent(ToolServer):
                                 elif content and content.strip():
                                     # What is left is a text answer on the final
                                     # call: delivered like the no-tool answer below.
+                                    if response_format is not None:
+                                        # No step is left to ask for a correction in.
+                                        checked = await self._check_structured_answer(
+                                            content, response_format, request_id)
+                                        if checked.checker_failed:
+                                            event = self._structured_output_unavailable(checked)
+                                            results.setdefault("errors", []).append(event["message"])
+                                            yield event
+                                            return
+                                        if not checked.ok:
+                                            error_msg = self._structured_output_failure(
+                                                checked.errors, corrected=format_repaired)
+                                            logger.warning("[%s] %s", self.name, error_msg)
+                                            results.setdefault("errors", []).append(error_msg)
+                                            yield {"type": "error", "message": error_msg,
+                                                   "error_type": STRUCTURED_OUTPUT_INVALID}
+                                            return
+                                        content = formatted_content = assistant_msg.content = checked.text
+                                        content_format = assistant_msg.content_format = "json"
                                     results["summary"] = content
                                     self._set_live_messages(session_id, messages.copy())
                                     final_event = {"type": "final", "summary": formatted_content,
@@ -4265,6 +4432,40 @@ class Agent(ToolServer):
 
             # If we have content AND it's not just whitespace, treat as final answer
             if content and content.strip():
+                if response_format is not None:
+                    checked = await self._check_structured_answer(content, response_format, request_id)
+                    if checked.checker_failed:
+                        event = self._structured_output_unavailable(checked)
+                        logger.warning("[%s] %s", self.name, event["message"])
+                        results.setdefault("errors", []).append(event["message"])
+                        yield event
+                        return
+                    if not checked.ok and not checked.schema_failed and not format_repaired and not final_call:
+                        # Once: the model sees its answer and what is wrong with it, and
+                        # writes it again. Appended like every loop note, so the cached
+                        # prefix stays; its answer stays too, the note refers to it.
+                        format_repaired = True
+                        logger.warning("[%s] Final answer does not match the requested format, asking "
+                                       "once for a correction: %s", self.name, "; ".join(checked.errors))
+                        messages.append(self._structured_output_note(
+                            repair_text(checked.errors), "agent.structured_output_repair"))
+                        context.messages = messages
+                        self._set_live_messages(session_id, messages.copy())
+                        await status_worker.progress(
+                            "final answer does not match the JSON format -- asked once to correct it",
+                            meta={"step": step + 1})
+                        consecutive_no_tool_calls = 0
+                        continue
+                    if not checked.ok:
+                        error_msg = self._structured_output_failure(checked.errors, corrected=format_repaired)
+                        logger.warning("[%s] %s", self.name, error_msg)
+                        results.setdefault("errors", []).append(error_msg)
+                        yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                        return
+                    # Delivered as checked: a fence around the whole answer is gone, in the
+                    # session too -- the caller parses what the session keeps (openai_api).
+                    content = formatted_content = assistant_msg.content = checked.text
+                    content_format = assistant_msg.content_format = "json"
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
@@ -4284,6 +4485,13 @@ class Agent(ToolServer):
             # which the error after the loop reports, not an empty success.
             if consecutive_no_tool_calls >= max_consecutive_no_tools and not final_call:
                 logger.warning(f"Breaking loop: {consecutive_no_tool_calls} consecutive responses without tool calls (empty or no content)")
+                if response_format is not None:
+                    # An empty answer is no JSON: not a final one for a structured run.
+                    error_msg = self._structured_output_failure(
+                        schema_worker.parse_answer(content)[2], corrected=format_repaired)
+                    results.setdefault("errors", []).append(error_msg)
+                    yield {"type": "error", "message": error_msg, "error_type": STRUCTURED_OUTPUT_INVALID}
+                    return
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
                 self._set_live_messages(session_id, messages.copy())
@@ -4334,6 +4542,7 @@ class Agent(ToolServer):
         llm_profile_info_override: Optional[str] = None,
         status_forwarder: Optional[StatusEventForwarder] = None,
         use_advanced_model: bool = False,
+        response_format: Optional[ResponseFormat] = None,
     ):
         """
         Core agent execution loop - orchestrates LLM conversation with tool usage.
@@ -4488,6 +4697,7 @@ class Agent(ToolServer):
                     llm_override=llm_override,
                     llm_profile_info_override=llm_profile_info_override,
                     use_advanced_model=use_advanced_model,
+                    response_format=response_format,
                 )
 
                 async for event in loop_generator:

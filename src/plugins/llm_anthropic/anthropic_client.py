@@ -28,6 +28,7 @@ from agent_system.llm.message_roles import (
     DEVELOPER, NOTE_CLOSE, NOTE_OPEN, USER, developer_turn, resolve_rung,
 )
 from agent_system.llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError
+from agent_system.llm.structured_output import JSON_SCHEMA, ResponseFormat
 from agent_system.llm.retry_utils import parse_retry_delay, is_rate_limit_error
 from agent_system.llm.tls import httpx_verify
 
@@ -76,6 +77,12 @@ class AnthropicAsyncClient(LLMClient):
             if chunk["type"] == "content_delta":
                 print(chunk["delta"], end="")
     """
+
+    #: Structured outputs travel as ``output_config.format`` (a JSON schema; the Messages
+    #: API has no schema-less JSON mode, so json_object is not offered here). The API takes
+    #: it beside tools; changing it invalidates the conversation's prompt cache, which is why
+    #: an agent sends it on every step of a run, not only on the last.
+    response_format_kinds = (JSON_SCHEMA,)
 
     def __init__(
         self,
@@ -564,8 +571,17 @@ class AnthropicAsyncClient(LLMClient):
             converted_messages,
         ])
 
-    async def chat(self, messages: List[ChatMessage], cancellation_token=None) -> str:
+    @staticmethod
+    def _output_config(response_format: ResponseFormat) -> Dict[str, Any]:
+        """``output_config`` for a structured answer. The schema goes as the caller wrote it:
+        the API refuses one it cannot enforce (an object without ``additionalProperties:
+        false``, say) with a 400 -- loud, where rewriting it would quietly change the contract."""
+        return {"format": {"type": "json_schema", "schema": response_format.schema}}
+
+    async def chat(self, messages: List[ChatMessage], cancellation_token=None, *,
+                   response_format: Optional[ResponseFormat] = None) -> str:
         """Simple chat without tools - returns text response."""
+        self._require_response_format(response_format)
         if cancellation_token and cancellation_token.is_cancelled:
             raise asyncio.CancelledError("Request cancelled by user")
         system_prompt, converted_messages = self._convert_messages(messages)
@@ -584,6 +600,8 @@ class AnthropicAsyncClient(LLMClient):
         for key in ("temperature", "top_p", "top_k"):
             if key in self.extra_params:
                 request_kwargs[key] = self.extra_params[key]
+        if response_format is not None:
+            request_kwargs["output_config"] = self._output_config(response_format)
         
         if cancellation_token:
             # The token has to be watched while the call runs; without it a
@@ -606,11 +624,14 @@ class AnthropicAsyncClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> Dict[str, Any]:
         """Chat with tools - non-streaming."""
         result = {}
-        async for chunk in self.chat_tools_streaming(messages, tools, cancellation_token, status_scope):
+        async for chunk in self.chat_tools_streaming(messages, tools, cancellation_token, status_scope,
+                                                     response_format=response_format):
             if chunk.get("type") == "final":
                 result = chunk
         
@@ -621,7 +642,9 @@ class AnthropicAsyncClient(LLMClient):
         messages: List[ChatMessage],
         tools: List[Dict],
         cancellation_token=None,
-        status_scope=None
+        status_scope=None,
+        *,
+        response_format: Optional[ResponseFormat] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat with tools.
         
@@ -640,6 +663,7 @@ class AnthropicAsyncClient(LLMClient):
             except Exception as e:
                 logger.debug(f"Failed to report LLM status: {e}")
         
+        self._require_response_format(response_format)
         system_prompt, converted_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools) if tools else []
         self._cap_anthropic_cache(system_prompt, converted_messages, anthropic_tools)
@@ -676,6 +700,9 @@ class AnthropicAsyncClient(LLMClient):
         # Handle extended thinking
         if self.include_thinking:
             request_kwargs["thinking"] = self._build_thinking_param()
+
+        if response_format is not None:
+            request_kwargs["output_config"] = self._output_config(response_format)
         
         # Accumulators
         accumulated_content: List[str] = []

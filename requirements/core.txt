@@ -50,6 +50,13 @@ onnxruntime>=1.20.0
 psutil>=5.9.0
 pydub>=0.25.0
 json-repair>=0.57.0
+# agent_system/llm/structured_output.py: an agent's final answer is checked
+# against the caller's JSON schema (structured output, F11).
+jsonschema>=4.21
+# ...validated with an empty referencing.Registry: jsonschema's default one fetches remote $refs.
+referencing>=0.28.4
+# ...and its patterns matched with a time limit (regex.search(timeout=)); re has none.
+regex>=2022.1.18
 colorama>=0.4.6; sys_platform == "win32"
 # agent-cli prompt: line editing and arrow-up history. stdlib readline
 # cannot do this job on Windows — importing it there activates pyreadline3,

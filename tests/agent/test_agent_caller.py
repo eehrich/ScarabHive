@@ -440,3 +440,18 @@ class TestATransportFailureIsNotAFormatProblem:
         assert parse_json_value('{"issues": ["Error: the ship sank twice"]}') == {
             "issues": ["Error: the ship sank twice"]
         }
+
+
+def test_a_schema_call_hands_the_sam_exactly_what_it_always_did() -> None:
+    """Structured output (F11) is opt-in for the run, and AgentCaller does not opt in: its schema
+    stays a prompt-and-validate contract. What reaches the SAM for a schema call -- and so what the
+    sub-agent's run is started with -- is the same key set as before F11, create and follow-up."""
+    agent = FakeAgent([
+        ok('{"score": "hoch", "issues": []}', instance_id="inst-7"),
+        ok('{"score": 4, "issues": []}'),
+    ])
+    asyncio.run(caller(agent).call("judge", "task", schema=Verdict))
+    (_, create), (_, follow) = agent.calls
+    runtime = {"_session_id", "_user_id", "_request_id", "_agent"}
+    assert set(create) == {"operation", "agent_type", "task", "blocking"} | runtime
+    assert set(follow) == {"operation", "instance_id", "message"} | runtime
