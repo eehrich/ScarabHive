@@ -465,7 +465,7 @@ Key | Shipped | Meaning
 
 Changes need a restart. Restore a tree in the @{b}Session Archive@{ub}
 panel, with @{tt}agent-cli run --restore-session ID@{utt}, or with
-@{tt}POST /api/sessions/{id}/restore@{utt}.
+@{tt}POST /plugins/session_archive/archived/{id}/restore@{utt}.
 @{tt}agent-cli run --list-archived [N]@{utt} lists the archive;
 @{tt}--archive-sessions [DAYS]@{utt} runs a sweep by hand, and with
 @{tt}--dry-run@{utt} only reports what it would move.
@@ -655,6 +655,8 @@ File | Holds
 @{tt}mcp_servers.yaml@{utt} | @{tt}external_servers:@{utt}, see @{" External MCP servers " link mcp}
 @{tt}agents*/*.yaml@{utt} | agents and other server entries of this installation
 @{tt}../src/plugins*/*/agents/*.yaml@{utt} | the agents and server entries that plugins ship
+@{tt}security.yaml@{utt} | the route rules: @{tt}auth.endpoint_security@{utt}, @{tt}llm_security@{utt}, @{tt}plugin_security@{utt}
+@{tt}local.yaml@{utt} | this machine's own settings, never in the repository: read after every other file, may set every section but @{tt}includes@{utt} (the signing key, the network), and if it is there it must load, or the start fails; keys of this machine are in @{tt}local.env@{utt}
 @{body}
 
 Not included, read on their own: @{tt}llm_pricing.yaml@{utt} (prices for
@@ -663,12 +665,16 @@ cost reporting), @{tt}secrets.env@{utt} (keys), and the prompt templates in
 
 @{h2}How the files are merged
 
-An included file contributes only these sections: @{tt}llm_system@{utt},
+In an included file, @{tt}llm_system@{utt},
 @{tt}plugins@{utt} and @{tt}hooks@{utt} are merged key by key with what came
 before; @{tt}external_servers@{utt} is @{b}replaced@{ub} as a whole by a
-later file. Everything else (@{tt}auth@{utt}, @{tt}network@{utt}, ...) is
-read from @{tt}config.yaml@{utt} alone. A file that does not parse is
-skipped with an error in the log, and the rest loads.
+later file. Every other section an include sets over what came before,
+except @{tt}includes@{utt}, which only @{tt}config.yaml@{utt} sets, and
+@{tt}paths@{utt} and @{tt}auth@{utt}, which @{tt}config.yaml@{utt}
+and @{tt}local.yaml@{utt} set alone -- and auth's route rules, which a file @{tt}config.yaml@{utt}
+names by its own path may set (@{tt}security.yaml@{utt}). A file named by its
+path must exist and load, or the start fails; a file a glob matched that does
+not parse is skipped with an error in the log, and the rest loads.
 
 @{h2}Secrets: ${NAME}
 
