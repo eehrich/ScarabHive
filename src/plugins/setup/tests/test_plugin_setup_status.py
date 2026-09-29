@@ -2,6 +2,7 @@
 password and the signing key. Read through the files the loader reads, never a hand-built list."""
 import json
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -73,10 +74,12 @@ class TestTheStateOfAKey:
         assert status.key_state(value) == state
 
     def test_the_template_sets_no_key(self):
-        """A copied secrets.env.example must read as 'nothing set yet', whatever its values look like."""
+        """A copied secrets.env.example must read as 'nothing set yet', whatever its values look like --
+        its entries are commented out, and one uncommented without a real value must not count as set."""
         template = REPO / "config" / "secrets.env.example"
-        values = [line.partition("=")[2].strip() for line in template.read_text(encoding="utf-8").splitlines()
-                  if line.strip() and not line.lstrip().startswith("#") and "=" in line]
+        entry = re.compile(r"#?\s*[A-Z][A-Z0-9_]*=(.*)")
+        values = [m.group(1).strip() for line in template.read_text(encoding="utf-8").splitlines()
+                  if (m := entry.fullmatch(line.strip()))]
         assert values, "the template has no entries -- this test would be vacuous"
 
         assert {status.key_state(value) for value in values} <= {"missing", "placeholder"}
