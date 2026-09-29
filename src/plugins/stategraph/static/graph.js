@@ -19,6 +19,11 @@ const INITIAL_GAP = 40;
  * above its line reaches (17): it stays clear of the next line. */
 const LANE_GAP = 12;
 const CROWD_GAP = 20;
+/** The least run of a right-angled line out of a box and into one before it bends. */
+const RUN = 16;
+/** A transition's line: ELK's route while both its states are where ELK put them, then straight (auto); straight;
+ * or right-angled. */
+export const LINE_STYLES = ['auto', 'straight', 'orthogonal'];
 
 export const ROOT_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -316,12 +321,81 @@ export function edgeRoute(route, source, target, moved, lane = null) {
   return lane.crowd ? { ...drawn, at: lane.at } : { ...drawn, side: right.map((v) => v * Math.sign(offset)) };
 }
 
+/**
+ * A right-angled route between two boxes, as a person draws one: out of the side that faces the other box, one bend
+ * half way, in through the side that faces back (a Z; a straight line when both are level). Along the other axis when
+ * the facing sides leave no room; null when the boxes overlap both ways. Its `lane` (lanes) moves it to the right of
+ * its way and bends lanes apart, so transitions between the same two states neither cover nor cross each other; a
+ * lane's label goes beside the middle segment, on the side its lane bends to (`side`).
+ */
+export function orthogonalRoute(source, target, lane = null) {
+  const offset = lane?.offset || 0;
+  const s = [source.x + source.w / 2, source.y + source.h / 2];
+  const t = [target.x + target.w / 2, target.y + target.h / 2];
+  const sideways = Math.abs(t[0] - s[0]) >= Math.abs(t[1] - s[1]);
+  for (const u of sideways ? [0, 1] : [1, 0]) {  // the way out: through a left or right side (x), or top or bottom (y)
+    const v = 1 - u;
+    const [low, size] = u === 0 ? ['x', 'w'] : ['y', 'h'];
+    const dir = Math.sign(t[u] - s[u]) || 1;
+    const out = dir > 0 ? source[low] + source[size] : source[low];
+    const into = dir > 0 ? target[low] : target[low] + target[size];
+    if ((into - out) * dir < 2 * (RUN + Math.abs(offset))) continue;
+    const shift = (u === 0 ? dir : -dir) * offset;  // to the right of the way
+    const [sv, tv] = [s[v] + shift, t[v] + shift];
+    // the lanes bend in the order they lie in, seen on the canvas (whichever way each goes): none crosses another
+    const bend = (out + into) / 2 - shift * dir * (Math.sign(tv - sv) || 1);
+    const at = (along, across) => (u === 0 ? [along, across] : [across, along]);
+    const crowd = lane?.crowd ? { at: lane.at } : null;
+    if (Math.abs(tv - sv) < 1) {  // level: a straight line, labelled as one
+      const right = u === 0 ? [0, dir] : [-dir, 0];
+      return { points: [at(out, sv), at(into, sv)], label: null,
+        ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
+    }
+    const outward = Math.sign(bend - (out + into) / 2);
+    return { points: [at(out, sv), at(bend, sv), at(bend, tv), at(into, tv)], label: null,
+      ...(crowd || (outward ? { side: at(outward, 0) } : {})) };
+  }
+  return null;
+}
+
+/** A transition drawn in its line `style` (LINE_STYLES): ELK's route while both ends are where ELK put them (auto,
+ * orthogonal), else straight (auto, straight) or right-angled (orthogonal; straight where no right angle fits). */
+export function transitionRoute(style, route, source, target, moved, lane) {
+  const routed = Boolean(route?.points.length) && !moved;
+  if (style === 'orthogonal' && !routed) {  // a self-transition fits no right angle: edgeRoute draws its loop
+    return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
+  }
+  return edgeRoute(route, source, target, style === 'straight' || !routed, lane);
+}
+
+/** The key of each transition's line style in the layout: the way it goes, "source→target". A style belongs to the
+ * way, not to one transition: those that go it share it (they lie side by side, lanes), and none moves to another
+ * when transitions are reordered, retargeted or removed -- there is no stable name for one transition. */
+export function lineKeys(transitions) {
+  return Object.fromEntries(transitions.filter((t) => t.target).map((t) => [t.id, `${t.source}→${t.target}`]));
+}
+
+/** The layout's line styles ({way: style}) with the state `old` named `name`; its ways win over ones left from a
+ * state of that name removed before. */
+export function renamedLines(lines, old, name) {
+  const rename = (part) => (part === old ? name : part);
+  const kept = {};
+  const moved = {};
+  for (const [key, style] of Object.entries(lines || {})) {
+    const [from, to] = key.split('→');
+    const way = `${rename(from)}→${rename(to)}`;
+    if (way === key) kept[key] = style;
+    else moved[way] = style;
+  }
+  return { ...kept, ...moved };
+}
+
 /** Where an edge's label text starts ([x, baseline]; its box reaches 3 beyond, 11 above and 4 below): ELK's spot,
  * above the middle of a straight line -- one of a crowd above its place along it (`at`) --, or beside it on its
  * `side`, clear of the line going back. */
 export function labelSpot(drawn, width) {
   if (drawn.label) return [drawn.label.x + 4, drawn.label.y + 12];
-  const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];
+  const [a, b] = [drawn.points[0], drawn.points[drawn.points.length - 1]];  // a right angle's: on its middle segment
   const at = drawn.at ?? 0.5;
   const [mx, my] = [a[0] + (b[0] - a[0]) * at, a[1] + (b[1] - a[1]) * at];
   if (!drawn.side) return [mx - width / 2, my - 6];
@@ -575,7 +649,7 @@ export class Canvas {
     this.svg = svg;
     this.handlers = { onSelect, onConnect, onMove, onOpen };
     this.graph = { states: [], transitions: [] };
-    this.positions = {};
+    this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
     this.view = { x: 0, y: 0, k: 1 };
     this.selected = null;
@@ -600,10 +674,10 @@ export class Canvas {
     this.bindPointer();
   }
 
-  /** Lay the graph out (ELK) and draw it; positions: the sidecar's {name: {x, y}}. */
-  async setGraph(graph, positions = {}) {
+  /** Lay the graph out (ELK) and draw it with the sidecar's layout: positions {name: {x, y}}, line, lines. */
+  async setGraph(graph, layout = {}) {
     this.graph = graph || { states: [], transitions: [] };
-    this.positions = { ...(positions || {}) };
+    this.takeLayout(layout);
     const run = ++this.layoutRun;
     let auto = { nodes: {}, edges: {} };
     if (this.graph.states.length && this.elk) {
@@ -622,9 +696,14 @@ export class Canvas {
     return true;
   }
 
-  setPositions(positions) {
-    this.positions = { ...(positions || {}) };
+  setLayout(layout) {
+    this.takeLayout(layout);
     this.draw();
+  }
+
+  takeLayout(layout) {
+    this.positions = { ...(layout?.positions || {}) };
+    this.lines = { line: layout?.line, lines: { ...(layout?.lines || {}) } };
   }
 
   setOverlay(overlay) {
@@ -670,12 +749,14 @@ export class Canvas {
       }
     }
     const lanesOf = lanes(this.graph.transitions);
+    const keys = lineKeys(this.graph.transitions);
     for (const transition of this.graph.transitions) {
       const source = nodes[stateId(transition.source)];
       const target = transition.target ? nodes[stateId(transition.target)] : null;
       if (!source || !target) continue;
       const route = this.auto.edges[edgeId(transition.id)];
-      const drawn = edgeRoute(route, source, target,
+      const style = this.lines.lines?.[keys[transition.id]] || this.lines.line || 'auto';
+      const drawn = transitionRoute(style, route, source, target,
         moved.has(stateId(transition.source)) || moved.has(stateId(transition.target)), lanesOf[transition.id]);
       this.drawEdge(transition, drawn);
     }

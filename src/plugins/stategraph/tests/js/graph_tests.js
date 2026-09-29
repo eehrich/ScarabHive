@@ -6,7 +6,7 @@
 import {
   applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
-  groupedSpots, labelSpot, lanes, selectedTransitions, selectionOf, statesWithin, toggled,
+  groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
 } from '../../static/graph.js';
 
 const results = [];
@@ -176,6 +176,80 @@ test('lanes: the transitions between two states, either way, side by side', () =
     'x#0': { offset: -20, at: 0.75, crowd: true } }, 'three: 20 apart, each label at its own place along the way (y to x counts from x)');
   equal(offsets(lanes([t('a#0', 'a', 'b'), t('a#1', 'a', 'a'), t('a#2', 'a', null), t('c#0', 'c', 'a')])), { 'a#0': 0, 'c#0': 0 },
     'alone: through the middle; a self-transition and an internal one are no pair');
+});
+
+test('orthogonalRoute: out of the facing side, one bend half way, in through the side facing back', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  equal(orthogonalRoute(a, { x: 300, y: 200, w: 100, h: 40 }).points, [[100, 20], [200, 20], [200, 220], [300, 220]], 'a Z sideways');
+  equal(orthogonalRoute(a, { x: 300, y: 0, w: 100, h: 40 }).points, [[100, 20], [300, 20]], 'level: a straight line');
+  equal(orthogonalRoute(a, { x: 60, y: 300, w: 100, h: 40 }).points, [[50, 40], [50, 170], [110, 170], [110, 300]], 'a Z downwards');
+  // mostly sideways, but the sides overlap: down and in from above instead
+  equal(orthogonalRoute({ x: 0, y: 0, w: 400, h: 40 }, { x: 300, y: 100, w: 300, h: 40 }).points,
+    [[200, 40], [200, 70], [450, 70], [450, 100]], 'no room sideways: along the other axis');
+  equal(orthogonalRoute(a, { x: 50, y: 10, w: 100, h: 40 }), null, 'overlapping boxes: no right angle fits');
+  const near = { x: 140, y: 60, w: 100, h: 40 };  // 40 between the facing sides: two runs of 16 fit, lanes' do not
+  assert(orthogonalRoute(a, near) && orthogonalRoute(a, { x: 120, y: 60, w: 100, h: 40 }) === null,
+    'a run of 16 out of and into the boxes, or no right angle');
+  equal(orthogonalRoute(a, near, { offset: 6 }), null, 'a lane needs its offset besides');
+});
+
+test('orthogonalRoute: transitions between the same two states on lanes neither cover nor cross each other', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  const segments = (points) => points.slice(1).map((p, i) => [points[i], p]);
+  const touch = ([[x1, y1], [x2, y2]], [[x3, y3], [x4, y4]]) => {  // axis-aligned segments: do they share a point?
+    const [ax, bx, ay, by] = [Math.min(x1, x2), Math.max(x1, x2), Math.min(y1, y2), Math.max(y1, y2)];
+    const [cx, dx, cy, dy] = [Math.min(x3, x4), Math.max(x3, x4), Math.min(y3, y4), Math.max(y3, y4)];
+    return ax <= dx && cx <= bx && ay <= dy && cy <= by;
+  };
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  for (const b of [{ x: 400, y: 200, w: 100, h: 40 }, { x: 400, y: -200, w: 100, h: 40 }, { x: 200, y: 400, w: 100, h: 40 },
+    { x: -300, y: 400, w: 100, h: 40 }, { x: 400, y: 0, w: 100, h: 40 }]) {
+    for (const group of [[t('a#0', 'a', 'b'), t('b#0', 'b', 'a')], [t('a#0', 'a', 'b'), t('a#1', 'a', 'b')],
+      [t('a#0', 'a', 'b'), t('b#0', 'b', 'a'), t('a#1', 'a', 'b')]]) {
+      const found = lanes(group);
+      const drawn = group.map((one) => (one.source === 'a' ? orthogonalRoute(a, b, found[one.id]) : orthogonalRoute(b, a, found[one.id])));
+      const where = `${JSON.stringify(b)} ${group.map((one) => one.id)}`;
+      const boxes = drawn.map((route) => {  // the label's box, as drawEdge makes it (text of 120)
+        const [x, y] = labelSpot(route, 120);
+        return [[x - 3, y - 11], [x + 123, y + 4]];
+      });
+      drawn.forEach((p, i) => drawn.forEach((q, j) => {
+        if (i >= j) return;
+        const hits = segments(p.points).flatMap((s) => segments(q.points).filter((r) => touch(s, r)));
+        assert(!hits.length, `${where}: ${JSON.stringify(p.points)} meets ${JSON.stringify(q.points)}`);
+        assert(!touch(boxes[i], boxes[j]), `${where}: labels ${i} and ${j} meet`);
+      }));
+      if (group.length === 2) {  // two: each label clear of the other's line (a crowd's may cross its neighbours', as straight)
+        drawn.forEach((p, i) => segments(drawn[1 - i].points).forEach((s) => assert(!touch(boxes[i], s),
+          `${where}: label ${i} covers the other line at ${JSON.stringify(s)}`)));
+      }
+    }
+  }
+});
+
+test('transitionRoute: ELK\'s route while unmoved (auto, right-angled), else straight or right-angled', () => {
+  const a = { x: 0, y: 0, w: 100, h: 40 };
+  const b = { x: 300, y: 200, w: 100, h: 40 };
+  const elk = { points: [[100, 20], [150, 20], [150, 220], [300, 220]], label: null };
+  const kinds = (style, moved, to = b, route = elk) => {
+    const drawn = transitionRoute(style, route, a, to, moved, undefined);
+    return drawn.points === elk.points ? 'elk' : drawn.points.length === 2 ? 'straight' : drawn.points.length === 4 && to === a ? 'loop' : 'square';
+  };
+  equal(['auto', 'straight', 'orthogonal'].map((style) => kinds(style, false)), ['elk', 'straight', 'elk'], 'where ELK put them');
+  equal(['auto', 'straight', 'orthogonal'].map((style) => kinds(style, true)), ['straight', 'straight', 'square'], 'moved');
+  equal(kinds('orthogonal', false, b, null), 'square', 'no route of ELK (its layout failed): right-angled all the same');
+  equal(kinds('orthogonal', true, { x: 50, y: 10, w: 100, h: 40 }), 'straight', 'overlapping: straight');
+  equal(kinds('orthogonal', true, a), 'loop', 'a self-transition keeps its loop');
+});
+
+test('lineKeys / renamedLines: a line style is kept by the way it goes, and follows a renamed state', () => {
+  const t = (id, source, target) => ({ id, source, target });
+  equal(lineKeys([t('a#0', 'a', 'b'), t('a#1', 'a', 'c'), t('a#2', 'a', 'b'), t('a#3', 'a', null)]),
+    { 'a#0': 'a→b', 'a#1': 'a→c', 'a#2': 'a→b' }, 'the same way, the same style; an internal transition has none');
+  equal(renamedLines({ 'a→b': 'straight', 'b→a': 'orthogonal', 'ab→c': 'auto' }, 'a', 'x'),
+    { 'ab→c': 'auto', 'x→b': 'straight', 'b→x': 'orthogonal' }, 'both ends; a longer name untouched');
+  equal(renamedLines({ 'a→b': 'orthogonal', 'z→b': 'straight' }, 'a', 'z'), { 'z→b': 'orthogonal' },
+    'the renamed state\'s own style wins over one left from a removed state of its new name');
 });
 
 test('lanes / edgeRoute / labelSpot: of three or four between two states, no label covers another or another\'s line', () => {

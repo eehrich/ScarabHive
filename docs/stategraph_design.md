@@ -44,8 +44,8 @@ this document.
 ## 2. The file format (`stategraph: 1`)
 
 A machine is one YAML file `<id>.yaml` in a machine root (§7.2). It may have a companion
-Python module and a layout sidecar `<id>.layout.json`, which holds editor positions and is
-never read by the engine. Keys are chosen so YAML 1.1 readers cannot corrupt them: there is
+Python module and a layout sidecar `<id>.layout.json`, which holds editor positions (and the
+panel's line styles: `line` for the machine, `lines` by `source→target`) and is never read by the engine. Keys are chosen so YAML 1.1 readers cannot corrupt them: there is
 no `on`, `yes` or `no` key. Unknown keys are errors (`extra="forbid"`), so a typo never
 silently drops behaviour.
 
@@ -1055,7 +1055,7 @@ an agent's instance session and the run's own session (§5.8) open in the chat.
 
 **Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
 before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand draws its transitions
-straight: its region's start dot sits left of it, transitions between the same two states are drawn side by side); the wheel
+straight: its region's start dot sits left of it, transitions between the same two states are drawn side by side; a transition's **Line** -- ELK's route, straight once moved (auto), straight, or right-angled -- is set in its inspector, for all of a selection, or for the machine in the overview, and kept in the layout); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
 one undo step); Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
 the states in it -- dragging one moves them all, Delete removes them in one edit (a state inside a selected

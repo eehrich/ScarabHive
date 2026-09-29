@@ -7,8 +7,8 @@ import {
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import {
-  Canvas, fragmentLock, groupedSpots, keepingChoices, outermost, posixPath, problemIndex, putTyped, runOverlay,
-  sameSelection, selectionOf, shorten, stateFragment, typedIn,
+  Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, outermost, posixPath, problemIndex, putTyped,
+  renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
 } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
@@ -107,6 +107,17 @@ function positions() {
 
 /** The stored positions of these states, null for one laid out by ELK. */
 const spotsOf = (names) => Object.fromEntries(names.map((name) => [name, positions()[name] ?? null]));
+/** The stored line styles of these keys, null for the machine's. */
+const stylesOf = (keys) => Object.fromEntries(keys.map((key) => [key, lineStyles()[key] ?? null]));
+/** `map` with `changes` over it: null removes a key. */
+const patched = (map, changes) => {
+  const next = { ...map };
+  for (const [key, value] of Object.entries(changes || {})) {
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+};
 
 function redrawOverlay() {
   canvas.setOverlay({
@@ -118,7 +129,7 @@ function redrawOverlay() {
 
 let fitPending = true;
 async function drawGraph({ fit = false } = {}) {
-  const drawn = await canvas.setGraph(S.machine.graph, positions());
+  const drawn = await canvas.setGraph(S.machine.graph, S.machine.layout);
   if (!drawn) return;
   canvas.select(S.selection);
   redrawOverlay();
@@ -133,16 +144,58 @@ async function drawGraph({ fit = false } = {}) {
     : parses ? 'No states yet: add one from the bar above.' : 'The file does not parse: fix it in the YAML tab.';
 }
 
-async function savePositions(spots) {
-  const layout = { version: 1, positions: { ...positions(), ...spots } };
+function savePositions(spots) {
+  return saveLayout({ positions: { ...positions(), ...spots } });
+}
+
+/** The layout with `changes` (positions, line, lines) over it: drawn at once and stored in the sidecar. */
+async function saveLayout(changes) {
+  const layout = { ...S.machine.layout, version: 1, ...changes };
   S.machine.layout = layout;
-  canvas.setPositions(layout.positions);
+  canvas.setLayout(layout);
   if (!S.machine.writable) return;  // kept for this view only: the sidecar sits next to a read-only file
   try {
     await api(`${API}/machines/${enc(S.machine.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
   } catch (error) {
-    if (!isAborted(error)) toast(`Positions not saved: ${errorText(error)}`, { kind: 'warn' });
+    if (!isAborted(error)) toast(`Layout not saved: ${errorText(error)}`, { kind: 'warn' });
   }
+}
+
+/** The line styles the layout gives single transitions: {key (lineKeys): style}. */
+function lineStyles() {
+  return S.machine?.layout?.lines || {};
+}
+
+/** The one line style these transitions share ('' for the machine's), undefined when they differ. */
+function styleOfAll(transitions) {
+  const keys = lineKeys(S.machine.graph.transitions);
+  const styles = new Set(transitions.map((t) => lineStyles()[keys[t.id]] || ''));
+  return styles.size === 1 ? [...styles][0] : undefined;
+}
+
+/** Set the line style of these transitions ('' for the machine's). */
+function setLines(ids, style) {
+  const keys = lineKeys(S.machine.graph.transitions);
+  const lines = { ...lineStyles() };
+  for (const id of ids) {
+    if (!keys[id]) continue;
+    if (style) lines[keys[id]] = style;
+    else delete lines[keys[id]];
+  }
+  return saveLayout({ lines });
+}
+
+const LINE_NAMES = { auto: 'ELK\'s route, straight once moved', straight: 'Straight', orthogonal: 'Right-angled' };
+
+/** A select of line styles: `inherit` offers the machine's as the first choice (''), `mixed` a first line that
+ * says the selection has several. */
+function lineChoices(chosen, { inherit = false, mixed = false } = {}) {
+  const machine = S.machine?.layout?.line || 'auto';
+  return [
+    mixed ? html`<option value="" selected disabled>Several styles</option>` : '',
+    inherit ? html`<option value="" ${!mixed && !chosen ? 'selected' : ''}>As the machine: ${LINE_NAMES[machine]}</option>` : '',
+    LINE_STYLES.map((style) => html`<option value="${style}" ${!mixed && chosen === style ? 'selected' : ''}>${LINE_NAMES[style]}</option>`),
+  ];
 }
 
 // ------------------------------------------------------------------ machines
@@ -356,8 +409,9 @@ function readOnly() {
 }
 
 /** One graph edit on the saved file; the answer is the machine as it is now. `places`: the states whose positions
- * the caller changes after it (a rename, a group) -- an undo puts theirs back with the text, and only theirs. */
-async function edit(op, { from = null, places = null } = {}) {
+ * the caller changes after it (a rename, a group), `keys`: the transitions' line styles it changes (a rename) -- an
+ * undo puts theirs back with the text, and only theirs. */
+async function edit(op, { from = null, places = null, keys = null } = {}) {
   const m = S.machine;
   if (readOnly()) return null;
   if (hasDrafts() && !await confirm('The YAML tab has unsaved changes, and graph edits change the saved file. Discard the unsaved changes?',
@@ -372,14 +426,15 @@ async function edit(op, { from = null, places = null } = {}) {
   }
   const before = m.files[m.root_file];
   const spots = places && spotsOf(places);
+  const styles = keys && stylesOf(keys);
   try {
     const next = await api(`${API}/machines/${enc(m.id)}/edit`, {
       method: 'POST', json: { op, expected_version: m.versions[m.root_file] }, quiet: true,
     });
     S.drafts = {};
     setDirty(false);
-    S.undo = [...S.undo.filter((step) => step.machine === m.id),
-      { machine: m.id, text: before, version: next.versions[next.root_file], ...(spots && { spots }) }].slice(-UNDO_DEPTH);
+    S.undo = [...S.undo.filter((step) => step.machine === m.id), { machine: m.id, text: before,
+      version: next.versions[next.root_file], ...(spots && { spots }), ...(styles && { styles }) }].slice(-UNDO_DEPTH);
     S.redo = [];  // a new edit: what was undone before it is not redone over it
     // read now, not before the request: what was typed meanwhile counts, what was discarded meanwhile does not
     const others = new Set([...S.inspectorDrafts].filter((key) => key !== from && key !== 'state'));
@@ -467,17 +522,14 @@ async function travel(back) {
   }
   S[from] = S[from].slice(0, -1);
   S[to] = [...S[to], { machine: m.id, text: replaced, version: saved.versions[m.root_file],
-    ...(step.spots && { spots: spotsOf(Object.keys(step.spots)) }) }].slice(-UNDO_DEPTH);
-  if (step.spots) {  // the edit moved positions as well: those go back with its text, the others stay
-    const kept = { ...positions() };
-    for (const [name, spot] of Object.entries(step.spots)) {
-      if (spot) kept[name] = spot;
-      else delete kept[name];
-    }
+    ...(step.spots && { spots: spotsOf(Object.keys(step.spots)) }),
+    ...(step.styles && { styles: stylesOf(Object.keys(step.styles)) }) }].slice(-UNDO_DEPTH);
+  if (step.spots || step.styles) {  // the edit changed the layout as well: that part goes back with its text, the rest stays
+    const layout = { ...m.layout, version: 1, positions: patched(positions(), step.spots), lines: patched(lineStyles(), step.styles) };
     try {
-      await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout: { version: 1, positions: kept } }, quiet: true });
+      await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
     } catch (error) {
-      if (!isAborted(error)) toast(`Positions not put back: ${errorText(error)}`, { kind: 'warn' });
+      if (!isAborted(error)) toast(`Layout not put back: ${errorText(error)}`, { kind: 'warn' });
     }
   }
   S.drafts = {};
@@ -545,14 +597,18 @@ async function renameState(old) {
   const name = await askName(`New name for ${old} (every transition to it and every initial naming it follows):`, old, old);
   if (!name) return;
   const placed = Object.hasOwn(positions(), old);
-  if (!await edit({ op: 'rename_state', old, new: name }, { places: placed ? [old, name] : null })) return;
+  // the line styles of its transitions: keyed by its name as well
+  const styled = Object.keys(lineStyles()).filter((key) => key.split('→').includes(old));
+  const keys = [...styled, ...Object.keys(renamedLines(Object.fromEntries(styled.map((key) => [key, ''])), old, name))];
+  if (!await edit({ op: 'rename_state', old, new: name }, { places: placed ? [old, name] : null, keys: styled.length ? keys : null })) return;
   keepNextPoints((p) => (p.state === old ? { ...p, state: name } : p));  // the next run's breakpoints follow it
+  const changes = {};
   if (placed) {
-    const moved = { ...positions(), [name]: positions()[old] };
-    delete moved[old];
-    S.machine.layout = { version: 1, positions: {} };
-    await savePositions(moved);
+    changes.positions = { ...positions(), [name]: positions()[old] };
+    delete changes.positions[old];
   }
+  if (styled.length) changes.lines = renamedLines(lineStyles(), old, name);
+  if (Object.keys(changes).length) await saveLayout(changes);
   choose({ kind: 'state', id: name });
 }
 
@@ -734,6 +790,8 @@ ${t.guard}</textarea>`
       <label for="tr-effect-${t.id}">Effect</label>
       <textarea class="pk-textarea pk-input--mono" id="tr-effect-${t.id}" name="effect" rows="2" data-shape="code" data-orig="${t.effect ?? ''}" placeholder="Python statements">
 ${t.effect ?? ''}</textarea>
+      ${t.target ? html`<label for="tr-line-${t.id}">Line</label>
+      <select class="pk-select pk-select--sm" id="tr-line-${t.id}" data-line="${t.id}" title="How the canvas draws every transition from ${t.source} to ${t.target}: kept in the layout, not in the YAML, and set at once">${lineChoices(lineStyles()[lineKeys(S.machine.graph.transitions)[t.id]], { inherit: true })}</select>` : ''}
     </div>
     ${problemList(pinned?.problems)}
     <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${writable ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
@@ -762,6 +820,7 @@ function drawInspector() {
   if (sel?.kind === 'many') {
     const names = sel.states.filter((name) => stateOf(name));
     const edges = sel.transitions.map((id) => transitionOf(id)).filter(Boolean);
+    const ways = edges.filter((t) => t.target);  // an internal transition has no line
     const goes = removal(names, sel.transitions);
     const gone = [goes.states.length && counted(goes.states.length, 'state'),
       goes.transitions.length && counted(goes.transitions.length, 'transition')].filter(Boolean);
@@ -771,6 +830,9 @@ function drawInspector() {
       <div class="pk-row">${names.map((name) => html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost"
         data-select-state="${name}">${name}</button>`)}${edges.map((t) => html`<button type="button"
         class="pk-btn pk-btn--sm pk-btn--ghost pk-mono" data-select-transition="${t.id}">${arrow(t)}</button>`)}</div>
+      ${ways.length ? html`<div class="sg-fields"><label for="many-line">Line${ways.length > 1 ? 's' : ''}</label>
+        <select class="pk-select pk-select--sm" id="many-line" data-line="*" title="How the canvas draws the selected transitions (each the way it goes): kept in the layout, set at once">${lineChoices(
+          styleOfAll(ways), { inherit: true, mixed: styleOfAll(ways) === undefined })}</select></div>` : ''}
       <p class="pk-help">Drag one of the states to move them all; Delete removes what is selected, Group puts the states
         into a new composite. Ctrl or Shift+click adds or takes out a state or a transition, Ctrl or Shift+drag draws a
         box and adds the states wholly inside it.</p>
@@ -908,6 +970,8 @@ function machineOverview() {
       ${g.description ? html`<p class="pk-help">${g.description}</p>` : ''}
       <dl class="pk-kv"><dt>initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
         <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd></dl>
+      <div class="sg-fields"><label for="machine-line">Lines</label>
+        <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(m.layout?.line || 'auto')}</select></div>
       <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
         Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box the states in it: drag
         one to move them all, Delete removes them, Group puts the states into a new composite.</p>
@@ -1193,6 +1257,12 @@ $('side-inspect').addEventListener('submit', async (event) => {
 });
 
 $('side-inspect').addEventListener('change', async (event) => {
+  // line styles: layout, set at once (no Apply, no undo -- like a drag)
+  if (event.target.dataset.lineDefault !== undefined) return saveLayout({ line: event.target.value });
+  if (event.target.dataset.line !== undefined) {
+    const ids = event.target.dataset.line === '*' ? (S.selection?.kind === 'many' ? S.selection.transitions : []) : [event.target.dataset.line];
+    return setLines(ids, event.target.value);
+  }
   if (event.target.name === 'trigger' && event.target.value === NEW_EVENT) {
     const t = transitionOf(event.target.closest('[data-transition]')?.dataset.transition);
     if (t) await newEventFor(t, event.target);
@@ -1214,6 +1284,7 @@ $('side-inspect').addEventListener('change', async (event) => {
 $('side-inspect').addEventListener('input', (event) => {
   paint(event.target);
   if (event.target.value === NEW_EVENT) return;  // a dialog asks for it; the select goes back to what it showed
+  if (event.target.dataset.line !== undefined || event.target.dataset.lineDefault !== undefined) return;  // no draft: set at once
   const key = draftKey(event.target.closest('form'));
   if (key) {
     S.inspectorDrafts.add(key);
@@ -2408,7 +2479,7 @@ async function duplicateMachine(m) {
   } catch (error) {
     return;  // toasted: a file in the way, a machine that does not validate
   }
-  if (Object.keys(positions()).length) {
+  if (Object.keys(positions()).length || m.layout?.line || Object.keys(lineStyles()).length) {  // positions, line styles
     try {
       await api(`${API}/machines/${enc(id)}/layout`, { method: 'PUT', json: { layout: m.layout }, quiet: true });
     } catch (error) { /* the copy lays itself out */ }
@@ -2488,8 +2559,7 @@ $('autoLayout').addEventListener('click', async () => {
   if (!S.machine) return;
   if (Object.keys(positions()).length && !await confirm('Forget the positions dragged by hand and lay the machine out anew?',
     { title: 'Auto layout', confirmLabel: 'Lay out' })) return;
-  S.machine.layout = { version: 1, positions: {} };
-  await savePositions({});
+  await saveLayout({ positions: {} });  // the line styles stay: they are no positions
   await drawGraph({ fit: true });
 });
 
