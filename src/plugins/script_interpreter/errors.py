@@ -1,5 +1,6 @@
 """Custom error types for the script interpreter."""
 
+import builtins as _builtins
 from typing import Any, Optional
 
 
@@ -46,6 +47,21 @@ class UnsupportedFeatureError(ScriptInterpreterError):
     pass
 
 
+def script_line_from_traceback(tb: Any) -> Optional[int]:
+    """The script line an error happened on: the syntax-tree node of the
+    DEEPEST interpreter frame. The outermost one, taken before, is the
+    top-level statement -- a loop's first line for an error inside it."""
+    line = None
+    while tb:
+        frame = tb.tb_frame
+        if frame.f_code.co_name in ("eval_expression", "execute_ast_node"):
+            node = frame.f_locals.get("node")
+            if getattr(node, "lineno", None):
+                line = node.lineno
+        tb = tb.tb_next
+    return line
+
+
 def format_error_for_llm(error: Exception, code: Optional[str] = None) -> dict[str, Any]:
     """Format an error in a way that's helpful for LLMs to understand and potentially fix.
 
@@ -66,57 +82,27 @@ def format_error_for_llm(error: Exception, code: Optional[str] = None) -> dict[s
         "category": "unknown"
     }
     
-    # Extract line number from syntax errors
-    if hasattr(error, 'lineno'):
+    # Syntax errors carry their line: Python's own as an attribute, the
+    # interpreter's SyntaxError (this module's class) in its message. Any
+    # other message is the script's or a tool's text -- "invalid JSON at
+    # line 7" says nothing about the script's line 7.
+    if isinstance(error, _builtins.SyntaxError):
         error_info["line_number"] = error.lineno
-        if hasattr(error, 'offset') and error.offset:
+        if error.offset:
             error_info["column_number"] = error.offset
-    else:
-        # Try to extract line number from error message
+    elif isinstance(error, SyntaxError):
         line_match = re.search(r'line (\d+)', error_message)
         if line_match:
             error_info["line_number"] = int(line_match.group(1))
-    
+
     # Add stack trace for runtime errors
     if hasattr(error, '__traceback__') and error.__traceback__:
         tb_lines = traceback.format_exception(type(error), error, error.__traceback__)
         error_info["stack_trace"] = ''.join(tb_lines)
-        
-        # Extract the line number from the user's code, not internal executor lines
-        tb = error.__traceback__
-        user_line_number = None
-        
-        while tb:
-            frame = tb.tb_frame
-            filename = frame.f_code.co_filename
-            
-            # Look for frames that indicate user code execution
-            if ('<unknown>' in filename or 
-                'eval_expression' in frame.f_code.co_name or 
-                'execute_ast_node' in frame.f_code.co_name):
-                
-                # Try to find the original line number in user code
-                # This is a best-effort approach
-                if user_line_number is None and code:
-                    # Use a heuristic: look for the deepest frame in user code
-                    local_vars = frame.f_locals
-                    if 'node' in local_vars:
-                        node = local_vars['node']
-                        if hasattr(node, 'lineno'):
-                            user_line_number = node.lineno
-                            
-            tb = tb.tb_next
-        
-        if user_line_number and "line_number" not in error_info:
-            error_info["line_number"] = user_line_number
-        elif "line_number" not in error_info:
-            # Fallback: extract from error message
-            for line in tb_lines:
-                if 'line' in line and '<unknown>' not in line:
-                    line_match = re.search(r'line (\d+)', line)
-                    if line_match:
-                        error_info["line_number"] = int(line_match.group(1))
-                        break
+        if "line_number" not in error_info and code:
+            user_line_number = script_line_from_traceback(error.__traceback__)
+            if user_line_number:
+                error_info["line_number"] = user_line_number
     
     # Add code context if available and line number is known
     if code and "line_number" in error_info:

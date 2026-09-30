@@ -34,12 +34,15 @@ import concurrent.futures
 import json
 import logging
 import fnmatch
+import math
+import threading
 import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
 from plugins.script_interpreter.config import ScriptInterpreterConfig
 from plugins.script_interpreter.executor import ScriptExecutor
+from plugins.script_interpreter.safe_executor import OutputLimitExceeded, estimate_text_size
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -68,6 +71,22 @@ def _parse_json(text: Any) -> Any:
 # design keeps out of the LLM context).
 _SNAPSHOT_VALUE_LIMIT = 200
 
+# A failed call's error text in the `calls` trace. The failing call's full
+# text is the report's `error` (capped at max_result_chars); the trace only
+# needs enough to tell the calls apart.
+_CALL_ERROR_LIMIT = 500
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, saying how long it was."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]} ... [cut, {len(text)} chars]"
+
+
+#: dispatch() answers this when the script was stopped before the call went out.
+_NOT_DISPATCHED = object()
+
 
 class ToolCallError(Exception):
     """A tool call inside a script failed (dispatch error, tool status=error,
@@ -75,10 +94,13 @@ class ToolCallError(Exception):
     ``except ToolCallError:``."""
 
 
-class _ScriptAbort(Exception):
+class _ScriptAbort(BaseException):
     """Internal: abort the script for reasons a script must not catch
     (cancellation, script deadline, max_tool_calls). Deliberately NOT seeded
-    into the sandbox namespace — ``except ToolCallError`` won't swallow it."""
+    into the sandbox namespace, and a BaseException: the sandbox runs a
+    script's ``except Exception:`` and bare ``except:`` as a Python
+    ``except Exception``, so an Exception subclass was swallowed by them and a
+    cancelled script finished as "ok"."""
 
 
 class _ScriptContext:
@@ -87,7 +109,20 @@ class _ScriptContext:
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
         self.log_lines: List[str] = []
+        self.log_chars = 0
         self.n_calls = 0
+        # Why the script was aborted, kept apart from the exception: a
+        # script's `finally:` that raises replaces the in-flight abort, and
+        # the run then ended "ok" (or with the finally's error).
+        self.abort_reason: Optional[str] = None
+        # Set when the awaiting task is cancelled: the worker thread cannot be
+        # killed, so it has to notice and stop by itself.
+        self.stopped = threading.Event()
+
+    def abort(self, reason: str) -> "_ScriptAbort":
+        if self.abort_reason is None:
+            self.abort_reason = reason
+        return _ScriptAbort(reason)
 
 
 class ToolScriptServer(SchemaBasedToolServer):
@@ -178,7 +213,16 @@ class ToolScriptServer(SchemaBasedToolServer):
         cancellation_token = params.get("_cancellation_token")
         status = params.get("_status")
 
-        timeout = min(float(params.get("timeout") or self._timeout), self._timeout)
+        try:
+            requested = float(params.get("timeout") or self._timeout)
+        except (TypeError, ValueError):
+            requested = 0.0
+        # NaN passed `<= 0`, and min(nan, 120) is nan: no time limit at all.
+        if not math.isfinite(requested) or requested <= 0:
+            return {"status": "error",
+                    "error": "'timeout' must be a positive number of seconds "
+                             f"(at most {self._timeout:g})."}
+        timeout = min(requested, self._timeout)
 
         # Bound the lock map in long-running server processes: idle (unlocked)
         # entries carry no state and can be dropped once the map grows.
@@ -200,11 +244,24 @@ class ToolScriptServer(SchemaBasedToolServer):
 
             call_tool = self._make_call_tool(
                 ctx=ctx, agent=agent, loop=loop, deadline=deadline,
-                session_id=session_id, user_id=user_id, request_id=request_id,
+                timeout=timeout, session_id=session_id, user_id=user_id, request_id=request_id,
                 cancellation_token=cancellation_token, status=status)
 
             def log(msg: Any) -> None:
+                # str() of a big container is one long C call: estimated first.
+                room = self._max_output_length - ctx.log_chars
+                if not isinstance(msg, str) and estimate_text_size(msg, room) > 2 * room + 64:
+                    raise OutputLimitExceeded(
+                        f"log() output exceeds max_output_length "
+                        f"({self._max_output_length} chars)")
                 line = str(msg)
+                # Same cap as print(): the log lines go back to the model in
+                # full, so an uncapped log() in a loop filled its context.
+                ctx.log_chars += len(line) + 1
+                if ctx.log_chars > self._max_output_length:
+                    raise OutputLimitExceeded(
+                        f"log() output exceeds max_output_length "
+                        f"({self._max_output_length} chars)")
                 ctx.log_lines.append(line)
                 if status is not None:
                     # Fire-and-forget progress from the worker thread.
@@ -216,6 +273,10 @@ class ToolScriptServer(SchemaBasedToolServer):
 
             executor = ScriptExecutor(ScriptInterpreterConfig(
                 max_execution_time=timeout,
+                # The sandbox's own per-loop limit is 2 s -- written for pure
+                # computation, it killed any loop over tool calls that took
+                # longer in total. The script's timeout bounds a loop here.
+                loop_timeout_seconds=timeout,
                 max_output_length=self._max_output_length,
             ))
             executor.safe_executor.variables["call_tool"] = call_tool
@@ -226,10 +287,29 @@ class ToolScriptServer(SchemaBasedToolServer):
             # first live run: the model immediately reached for json.loads.
             executor.safe_executor.variables["parse_json"] = _parse_json
 
+            # The sandbox checks its clock at every statement and expression;
+            # checking the cancel there too stops a script that only computes.
+            sandbox_check = executor.safe_executor.check_timeout
+
+            def check_timeout() -> None:
+                if ctx.stopped.is_set() or (cancellation_token is not None and getattr(
+                        cancellation_token, "is_cancelled", False)):
+                    raise ctx.abort("Request cancelled — script aborted.")
+                sandbox_check()
+
+            executor.safe_executor.check_timeout = check_timeout
+
             try:
                 exec_result = await asyncio.to_thread(executor.execute, script)
             except _ScriptAbort as e:
-                return self._failure(ctx, executor, str(e), line=None)
+                ctx.abort(str(e))
+            except asyncio.CancelledError:
+                ctx.stopped.set()
+                raise
+            if ctx.abort_reason is not None:
+                return self._failure(
+                    ctx, executor, ctx.abort_reason, line=None,
+                    output="\n".join(executor.safe_executor.output_buffer))
 
         shaped = self._shape_result(ctx, executor, exec_result, status)
         # _shape_result took `status` and never used it, so the informative
@@ -250,22 +330,22 @@ class ToolScriptServer(SchemaBasedToolServer):
 
     def _make_call_tool(self, *, ctx: _ScriptContext, agent: Any,
                         loop: asyncio.AbstractEventLoop, deadline: float,
-                        session_id: Optional[str], user_id: Optional[str],
+                        timeout: float, session_id: Optional[str], user_id: Optional[str],
                         request_id: Optional[str], cancellation_token: Any,
                         status: Any):
         def call_tool(name: Any, **tool_params: Any) -> Any:
             # --- pre-flight guards (between hops) ---------------------------
-            if cancellation_token is not None and getattr(
-                    cancellation_token, "is_cancelled", False):
-                raise _ScriptAbort("Request cancelled — script aborted between "
-                                   "tool calls.")
+            if ctx.stopped.is_set() or (cancellation_token is not None and getattr(
+                    cancellation_token, "is_cancelled", False)):
+                raise ctx.abort("Request cancelled — script aborted between "
+                                "tool calls.")
             if time.monotonic() > deadline:
-                raise _ScriptAbort(
-                    f"Script timeout ({self._timeout:.0f}s) exceeded between "
+                raise ctx.abort(
+                    f"Script timeout ({timeout:g}s) exceeded between "
                     f"tool calls.")
             ctx.n_calls += 1
             if ctx.n_calls > self._max_tool_calls:
-                raise _ScriptAbort(
+                raise ctx.abort(
                     f"max_tool_calls ({self._max_tool_calls}) exceeded — split "
                     f"the work into multiple scripts.")
 
@@ -288,6 +368,14 @@ class ToolScriptServer(SchemaBasedToolServer):
                 raise ToolCallError(
                     f"call_tool: '{name_s}' is blocked by this script tool's "
                     f"config.")
+            # The agent's own allowlist BEFORE the schema lookup: the lookup
+            # falls back to every registered server, so a tool the agent may
+            # not call answered with its parameter list instead of "not allowed".
+            denial = self._agent_denial(agent, name_s)
+            if denial is not None:
+                ctx.calls.append({"tool": name_s, "ok": False,
+                                  "error": _clip(denial, _CALL_ERROR_LIMIT)})
+                raise ToolCallError(f"{name_s} -> {denial}")
 
             self._ensure_plain_data(tool_params)
             # Param injection (secrets): after the plain-data check of the
@@ -316,16 +404,22 @@ class ToolScriptServer(SchemaBasedToolServer):
             logger.info("Invoking tool %s via tool_script (call %d, rid=%s)",
                         name_s, ctx.n_calls, child_rid)
             t0 = time.monotonic()
-            future = asyncio.run_coroutine_threadsafe(
-                agent.dispatch_tool_call(
+            async def dispatch() -> Any:
+                # Checked ON the loop thread, where the task's cancel sets the
+                # flag: between the worker's checks above and this point the
+                # task could be cancelled, and the call still went out.
+                if ctx.stopped.is_set():
+                    return _NOT_DISPATCHED
+                return await agent.dispatch_tool_call(
                     name_s, dict(tool_params), session_id=session_id,
                     user_id=user_id, request_id=child_rid,
                     # The model wrote the script: its calls pass the same
                     # pre_tool_call / post_tool_call hooks as the model's own.
                     hook_source="tool_script",
                     cancellation_token=cancellation_token,
-                    injected_params=injected or None),
-                loop)
+                    injected_params=injected or None)
+
+            future = asyncio.run_coroutine_threadsafe(dispatch(), loop)
             try:
                 raw = future.result(timeout=self._per_call_timeout)
             except concurrent.futures.TimeoutError:
@@ -336,17 +430,20 @@ class ToolScriptServer(SchemaBasedToolServer):
                     f"{name_s} timed out after {self._per_call_timeout:.0f}s.")
             except Exception as e:
                 entry["ms"] = int((time.monotonic() - t0) * 1000)
-                entry["error"] = str(e)
+                entry["error"] = _clip(str(e), _CALL_ERROR_LIMIT)
                 if cancellation_token is not None and getattr(
                         cancellation_token, "is_cancelled", False):
                     # Cancelled while the call waited (a tool hook asking a
                     # person): as uncatchable as a cancel between hops.
-                    raise _ScriptAbort("Request cancelled — script aborted while "
-                                       "a tool call waited.") from e
+                    raise ctx.abort("Request cancelled — script aborted while "
+                                    "a tool call waited.") from e
                 # ToolDispatchError and transport errors arrive here — the
                 # message is already agent-actionable.
                 raise ToolCallError(f"{name_s} -> {e}") from e
             entry["ms"] = int((time.monotonic() - t0) * 1000)
+            if raw is _NOT_DISPATCHED:
+                entry["error"] = "not run: the script was cancelled"
+                raise ctx.abort("Request cancelled — script aborted before the call ran.")
 
             # Sanitize to plain data (drops live objects a tool might return)
             # and measure for the per-result cap in one pass.
@@ -374,7 +471,7 @@ class ToolScriptServer(SchemaBasedToolServer):
                 status_val = clean.get("status")
                 error_val = clean.get("error")
                 if status_val == "error" or (error_val and status_val is None):
-                    entry["error"] = str(error_val)
+                    entry["error"] = _clip(str(error_val), _CALL_ERROR_LIMIT)
                     raise ToolCallError(f"{name_s} -> {error_val}")
 
             entry["ok"] = True
@@ -443,6 +540,27 @@ class ToolScriptServer(SchemaBasedToolServer):
                 f"(at {'/'.join(str(p) for p in e.absolute_path) or 'root'})")
 
     @staticmethod
+    def _agent_denial(agent: Any, tool_name: str) -> Optional[str]:
+        """Why the agent may not dispatch *tool_name*, or None. Dispatch asks
+        the same question again; asked here first, it comes before the schema
+        lookup and its parameter list."""
+        resolver = getattr(agent, "_resolve_flat_tool_name", None)
+        if resolver is None:
+            return None
+        server, server_name = resolver(tool_name)
+        if server is None:
+            # In the model's tool list but no plugin server behind it: an
+            # external MCP tool, listed with its dot turned into "_".
+            live_schema = getattr(agent, "_current_tools_schema", None) or []
+            if any(isinstance(t, dict) and (t.get("function") or {}).get("name") == tool_name
+                   for t in live_schema):
+                return (f"Tool '{tool_name}' is an external MCP tool — a script "
+                        f"cannot call it. Call it directly instead.")
+            return None  # dispatch answers "Unknown tool"
+        deny = getattr(agent, "tool_dispatch_denial", None)
+        return deny(tool_name, server_name) if deny is not None else None
+
+    @staticmethod
     def _find_tool_schema(agent: Any, tool_name: str) -> Optional[Dict[str, Any]]:
         """The target tool's parameters schema, via the agent's resolution.
 
@@ -505,6 +623,14 @@ class ToolScriptServer(SchemaBasedToolServer):
         for key, value in executor.safe_executor.variables.items():
             if key in _SEEDED_NAMES or callable(value):
                 continue
+            # This runs on the event loop: a big value is estimated, never
+            # dumped whole (a dump of it stood the loop still for 0.45 s).
+            # Only what is far too long is ruled out here; the dump's own
+            # length decides the rest (eight floats were hidden before).
+            if estimate_text_size(value, 4 * _SNAPSHOT_VALUE_LIMIT) > 4 * _SNAPSHOT_VALUE_LIMIT:
+                snapshot[key] = (f"<{type(value).__name__}, over "
+                                 f"{_SNAPSHOT_VALUE_LIMIT} chars — omitted>")
+                continue
             try:
                 text = json.dumps(value, ensure_ascii=False, default=str)
             except (TypeError, ValueError, RecursionError):
@@ -536,16 +662,24 @@ class ToolScriptServer(SchemaBasedToolServer):
                 f"rolled back — do not repeat calls marked ok:true.")
 
     def _failure(self, ctx: _ScriptContext, executor: ScriptExecutor,
-                 error: str, line: Optional[int]) -> Dict[str, Any]:
+                 error: str, line: Optional[int],
+                 output: Optional[str] = None) -> Dict[str, Any]:
         result: Dict[str, Any] = {
             "status": "error",
-            "error": error,
+            # Capped like `result`: a tool's error text or a script's
+            # raise ValueError("x" * n) went back to the model whole. The floor
+            # keeps this plugin's own messages whole under a tiny cap.
+            "error": _clip(error, max(self._max_result_chars, 1000)),
             "calls": ctx.calls,
             "committed_side_effects": self._committed_summary(ctx),
             "variables": self._snapshot_variables(executor),
         }
         if line is not None:
             result["line"] = line
+        # What the script printed before it failed -- dropped before, although
+        # a failed run is when the model needs its diagnostics most.
+        if output:
+            result["output"] = output[:self._max_output_length]
         if ctx.log_lines:
             result["log"] = ctx.log_lines
         return result
@@ -564,23 +698,37 @@ class ToolScriptServer(SchemaBasedToolServer):
                 line = err.get("line_number")
             else:  # pragma: no cover - executor always returns a dict here
                 message, line = str(err), None
-            return self._failure(ctx, executor, message, line)
+            return self._failure(ctx, executor, message, line,
+                                 output=exec_result.get("output"))
 
         result_value = executor.safe_executor.variables.get("result")
         if callable(result_value):
             result_value = None
+        # On the event loop, like the snapshot: estimated before the dump
+        # (dumping a big result first stood the loop still for 0.85 s).
+        # Far over only: the exact length below decides the rest -- 900
+        # rounded prices (6,138 chars) were refused as "over 20000".
+        if estimate_text_size(result_value, 4 * self._max_result_chars) > 4 * self._max_result_chars:
+            return self._failure(
+                ctx, executor,
+                f"`result` is too large (over {self._max_result_chars} chars). "
+                f"Store big payloads (e.g. a json_store doc) and return the "
+                f"reference instead.", None,
+                output=exec_result.get("output"))
         try:
             result_text = json.dumps(result_value, ensure_ascii=False, default=str)
         except (TypeError, ValueError, RecursionError):
             return self._failure(
                 ctx, executor,
-                "The script's `result` value is not JSON-serializable.", None)
+                "The script's `result` value is not JSON-serializable.", None,
+                output=exec_result.get("output"))
         if len(result_text) > self._max_result_chars:
             return self._failure(
                 ctx, executor,
                 f"`result` is too large ({len(result_text)} chars > "
                 f"{self._max_result_chars}). Store big payloads (e.g. a "
-                f"json_store doc) and return the reference instead.", None)
+                f"json_store doc) and return the reference instead.", None,
+                output=exec_result.get("output"))
         # Round-trip so seeded/sandbox values can never leak upstream.
         result_value = json.loads(result_text)
 

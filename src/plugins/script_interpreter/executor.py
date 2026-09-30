@@ -10,6 +10,7 @@ from .errors import (
     RuntimeError,
     UnsupportedFeatureError,
     format_error_for_llm,
+    script_line_from_traceback,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class ScriptExecutor:
                 "type": type(error).__name__,
                 "message": str(error),
                 "category": "unsupported_feature",
-                "line_number": 1,  # Could be improved to find actual line
+                "line_number": script_line_from_traceback(error.__traceback__) or 1,
                 "stack_trace": "",
                 "code": code
             }

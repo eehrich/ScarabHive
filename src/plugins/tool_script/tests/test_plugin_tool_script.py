@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict
 
 import pytest
@@ -17,7 +18,8 @@ from unittest.mock import MagicMock
 
 from agent_system.config.models import ToolServerConfig
 from agent_system.servers.agent.components.tool_execution import ToolDispatchError
-from plugins.tool_script.server import ToolScriptServer, ToolCallError
+from plugins.tool_script.server import (
+    ToolScriptServer, ToolCallError, _ScriptAbort, _ScriptContext)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +359,8 @@ class TestErrorContract:
             "    x = [[[[[[[[[[x]]]]]]]]]]\n" + last_line))
         assert res["status"] == "error"
         assert named in res["error"]
-        assert "not serializable" in res["variables"]["x"]
+        # Estimated before any dump, the deep value is only named.
+        assert "omitted" in res["variables"]["x"]
         json.dumps(res, ensure_ascii=False)
 
     @pytest.mark.asyncio
@@ -538,6 +541,277 @@ class TestSecurityAndCaps:
         res = await run(server, agent, 'call_tool("hang_tool")\nresult = 1')
         assert res["status"] == "error"
         assert "timed out" in res["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler", ["except Exception:", "except:"],
+                             ids=["except-Exception", "bare-except"])
+    async def test_a_broad_except_cannot_swallow_the_call_cap(self, agent, handler):
+        # The sandbox runs a script's `except Exception:` and bare `except:` as
+        # a Python `except Exception`: an abort that is an Exception was
+        # swallowed, and the script finished "ok".
+        server = make_server(max_tool_calls=2)
+        res = await run(server, agent, (
+            'for i in [1, 2, 3, 4]:\n'
+            '    try:\n'
+            '        call_tool("forum_post", content="spam")\n'
+            f'    {handler}\n'
+            '        pass\n'
+            'print("went on")\n'
+            'result = "done"'
+        ))
+        assert res["status"] == "error", res
+        assert "max_tool_calls" in res["error"]
+        # The abort ends the script there; it does not run on to its end.
+        assert "went on" not in res.get("output", "")
+
+    @pytest.mark.asyncio
+    async def test_a_broad_except_cannot_swallow_a_cancel(self, agent):
+        token = MagicMock(is_cancelled=True)
+        server = make_server()
+        res = await run(server, agent, (
+            'for i in [1, 2]:\n'
+            '    try:\n'
+            '        call_tool("forum_post", content="x")\n'
+            '    except Exception:\n'
+            '        pass\n'
+            'result = "went on"'
+        ), _cancellation_token=token)
+        assert res["status"] == "error", res
+        assert "cancel" in res["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_a_loop_over_tool_calls_may_take_longer_than_two_seconds(self, agent):
+        # The sandbox's own per-loop limit (2 s, for pure computation) cut a
+        # loop over tool calls although the script's timeout was far away.
+        async def slow(params):
+            await asyncio.sleep(0.7)
+            return {"status": "ok"}
+
+        agent.add_tool("slow_tool", lambda p: slow(p), {"type": "object", "properties": {}})
+        server = make_server()
+        res = await run(server, agent,
+                        'for i in range(4):\n    call_tool("slow_tool")\nresult = "done"')
+        assert res["status"] == "ok", res
+        assert len(res["calls"]) == 4
+
+    @pytest.mark.asyncio
+    async def test_log_is_capped_like_print(self, agent):
+        # log() lines go back to the model in full; uncapped, a log() in a
+        # loop returned 160,000 characters.
+        server = make_server(max_output_length=1000)
+        res = await run(server, agent,
+                        'for i in range(100):\n    log("x" * 50)\nresult = 1')
+        assert res["status"] == "error"
+        assert "max_output_length" in res["error"]
+        assert sum(len(line) + 1 for line in res["log"]) <= 1000
+
+    @pytest.mark.asyncio
+    async def test_error_texts_are_capped(self, agent):
+        agent.add_tool("loud_tool", lambda p: {"status": "error", "error": "E" * 300_000})
+        server = make_server()
+        res = await run(server, agent, 'call_tool("loud_tool")')
+        assert res["status"] == "error"
+        assert len(res["error"]) < 21_000
+        assert len(res["calls"][0]["error"]) < 600
+        res = await run(server, agent, 'raise ValueError("x" * 100000)')
+        assert len(res["error"]) < 21_000
+
+    @pytest.mark.asyncio
+    async def test_what_the_script_printed_is_in_the_failure_report(self, agent):
+        server = make_server(max_tool_calls=1)
+        res = await run(server, agent, 'print("before")\nd = {}\nd["missing"]')
+        assert res["status"] == "error"
+        assert res["output"] == "before"
+        # An abort (here: the call cap) takes the same way out.
+        res = await run(server, agent, (
+            'print("step one")\n'
+            'call_tool("forum_post", content="a")\n'
+            'call_tool("forum_post", content="b")'))
+        assert "max_tool_calls" in res["error"]
+        assert res["output"] == "step one"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["soon", -5, "nan", "inf"])
+    async def test_an_invalid_timeout_is_refused(self, agent, value):
+        server = make_server()
+        res = await run(server, agent, 'result = 1', timeout=value)
+        assert res["status"] == "error"
+        assert "'timeout'" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_finally_that_raises_cannot_replace_the_abort(self, agent):
+        # Python lets a raise in `finally:` replace the exception in flight --
+        # the abort went, the outer except caught the ValueError, "ok".
+        server = make_server(max_tool_calls=1)
+        res = await run(server, agent, (
+            'try:\n'
+            '    try:\n'
+            '        call_tool("forum_post", content="a")\n'
+            '        call_tool("forum_post", content="b")\n'
+            '    finally:\n'
+            '        raise ValueError("swap")\n'
+            'except Exception:\n'
+            '    pass\n'
+            'result = "went on"'))
+        assert res["status"] == "error", res
+        assert "max_tool_calls" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_stops_a_script_that_only_computes(self, agent):
+        # The cancel came while the call ran; the call returned normally and
+        # the script computed on, with no further call to notice it.
+        token = MagicMock(is_cancelled=False)
+
+        def cancelling(params):
+            token.is_cancelled = True
+            return {"status": "ok"}
+
+        agent.add_tool("cancelling", cancelling, {"type": "object", "properties": {}})
+        server = make_server()
+        res = await run(server, agent, (
+            'call_tool("cancelling")\n'
+            'n = 0\n'
+            'for i in range(1000):\n'
+            '    n += 1\n'
+            'result = n'), _cancellation_token=token)
+        assert res["status"] == "error", res
+        assert "cancel" in res["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_task_stops_its_worker_thread(self, agent):
+        # The worker thread cannot be killed; cancelled, the task used to
+        # leave it calling tools with nobody waiting for the answers.
+        async def slow(params):
+            await asyncio.sleep(0.2)
+            return {"status": "ok"}
+
+        agent.add_tool("slow_tool", lambda p: slow(p), {"type": "object", "properties": {}})
+        server = make_server()
+        task = asyncio.create_task(run(server, agent,
+                                       'for i in range(8):\n    call_tool("slow_tool")\nresult = 1'))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.8)
+        assert len(agent.dispatched) <= 3, agent.dispatched
+
+    @pytest.mark.asyncio
+    async def test_the_log_cap_cannot_be_caught(self, agent):
+        server = make_server(max_output_length=1000)
+        res = await run(server, agent, (
+            'for i in range(100):\n'
+            '    try:\n'
+            '        log("x" * 50)\n'
+            '    except Exception:\n'
+            '        pass\n'
+            'result = "went on"'))
+        assert res["status"] == "error", res
+        assert "max_output_length" in res["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("last_line,cap,message", [
+        ('result = "y" * 500', 100, "too large"),            # caught by the estimate
+        ("result = chr(0) * 50", 100, "too large"),          # JSON escapes it past the cap
+        ("result = 10 ** 5000", 20000, "not JSON-serializable"),  # over 4300 digits
+    ], ids=["too-large-estimated", "too-large-escaped", "not-serializable"])
+    async def test_output_is_reported_when_the_result_fails(self, agent, last_line, cap, message):
+        server = make_server(max_result_chars=cap)
+        res = await run(server, agent, 'print("step one")\n' + last_line)
+        assert res["status"] == "error"
+        assert message in res["error"]
+        assert res["output"] == "step one"
+
+    @pytest.mark.asyncio
+    async def test_a_dispatch_error_text_is_capped_in_the_trace(self, agent):
+        def refuse(params):
+            raise ToolDispatchError("D" * 300_000)
+
+        agent.add_tool("refusing", refuse)
+        server = make_server()
+        res = await run(server, agent, 'call_tool("refusing")')
+        assert res["status"] == "error"
+        assert len(res["calls"][0]["error"]) < 600
+
+    @pytest.mark.asyncio
+    async def test_a_tool_the_agent_may_not_call_is_refused_before_its_schema(self, agent):
+        # The schema lookup falls back to every registered server: a tool the
+        # agent may not call answered with its parameter list.
+        agent.tool_dispatch_denial = lambda tool, server: (
+            f"Tool '{tool}' is not in this agent's allowed tools." if tool == "forum_post" else None)
+        server = make_server()
+        res = await run(server, agent, 'call_tool("forum_post", bogus=1)')
+        assert res["status"] == "error"
+        assert "not in this agent's allowed tools" in res["error"]
+        assert "Valid parameters" not in res["error"]
+        assert agent.dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_an_external_mcp_tool_is_named_as_such(self, agent):
+        # The model's list shows an MCP tool with "_" for the dot; there is
+        # no plugin server behind the name.
+        agent._current_tools_schema = [
+            {"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        server = make_server()
+        res = await run(server, agent, 'call_tool("web_search")')
+        assert res["status"] == "error"
+        assert "external MCP tool" in res["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("script", [
+        "b = 10 ** 4000\nresult = [b] * 20000",
+        "b = 10 ** 4000\nbig = [b] * 20000\nkeynum",
+        "b = 10 ** 4000\nlog([b] * 20000)",
+    ], ids=["result", "snapshot", "log"])
+    async def test_a_big_value_is_estimated_not_dumped(self, agent, script):
+        # The result and the variables snapshot are dumped on the event loop:
+        # dumping ~80 MB first stood it still for about a second. str() in
+        # log() is the same long call in the worker.
+        server = make_server()
+        t = time.perf_counter()
+        res = await run(server, agent, script)
+        assert res["status"] == "error"
+        assert time.perf_counter() - t < 1.0, f"took {time.perf_counter() - t:.2f}s"
+
+    @pytest.mark.asyncio
+    async def test_the_exact_length_decides_near_the_limit(self, agent):
+        # [999] * 4000 is exactly 20,000 JSON characters; the estimate says
+        # more. An estimate alone refused realistic results (900 prices).
+        server = make_server()
+        res = await run(server, agent, "result = [999] * 4000")
+        assert res["status"] == "ok", res.get("error")
+        # [999] * 40 is exactly 200 characters: shown in the snapshot, not hidden.
+        res = await run(server, agent, "v = [999] * 40\nkeynum")
+        assert res["variables"]["v"] == [999] * 40
+
+    @pytest.mark.asyncio
+    async def test_no_call_goes_out_after_the_task_was_cancelled(self, agent, monkeypatch):
+        # The worker checks the stop flag, then validates, then dispatches: a
+        # cancel between the check and the dispatch let the call out.
+        server = make_server()
+        slow = server._validate_against_tool_schema
+
+        def slow_validate(*args, **kwargs):
+            time.sleep(0.3)
+            return slow(*args, **kwargs)
+
+        monkeypatch.setattr(server, "_validate_against_tool_schema", slow_validate)
+        task = asyncio.create_task(run(server, agent, 'call_tool("forum_post", content="a")\nresult = 1'))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.5)
+        assert agent.dispatched == []
+
+    def test_the_deadline_message_names_the_timeout_of_the_run(self, agent):
+        server = make_server()  # config timeout 120
+        call_tool = server._make_call_tool(
+            ctx=_ScriptContext(), agent=agent, loop=MagicMock(), deadline=0.0,
+            timeout=5.0, session_id=None, user_id=None, request_id=None,
+            cancellation_token=None, status=None)
+        with pytest.raises(_ScriptAbort, match=r"\(5s\)"):
+            call_tool("forum_post", content="x")
 
     def test_plain_data_validation(self):
         ToolScriptServer._ensure_plain_data({"a": [1, "x", None, {"b": True}]})

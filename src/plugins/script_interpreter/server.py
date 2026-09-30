@@ -9,9 +9,31 @@ import sys
 from pathlib import Path
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
-from .executor import ScriptExecutor
-from .safe_executor import SEEDED_TYPE_NAMES
+from .executor import ScriptExecutor
+
+from .safe_executor import SEEDED_TYPE_NAMES, estimate_text_size
 from .config import ScriptInterpreterConfig
+
+#: Characters of one variable's value in the tool's answer.
+_VARIABLE_TEXT_LIMIT = 200
+
+
+def _variable_text(value: Any) -> str:
+    """A variable's value for the answer: as text when short, else only its
+    type. str() of every variable ran whole on the event loop -- a 6 MB text
+    went back in full, and ``10 ** 5000`` failed the whole call with the
+    4300-digit error."""
+    # The estimate only rules out what is far too long; the text's own
+    # length decides the rest (it counted eight floats as over 200 chars).
+    if estimate_text_size(value, 4 * _VARIABLE_TEXT_LIMIT) > 4 * _VARIABLE_TEXT_LIMIT:
+        return f"<{type(value).__name__}, over {_VARIABLE_TEXT_LIMIT} chars — omitted>"
+    try:
+        text = str(value)
+    except ValueError:
+        return f"<{type(value).__name__} — not shown>"
+    if len(text) > _VARIABLE_TEXT_LIMIT:
+        return f"<{type(value).__name__}, {len(text)} chars — omitted>"
+    return text
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
@@ -187,7 +209,7 @@ class ScriptInterpreterServer(SchemaBasedToolServer):
                 if result.get("output"):
                     output_parts.append(f"Output: {result['output']}")
                 if user_vars:
-                    var_str = ", ".join(f"{k}={v}" for k, v in user_vars.items())
+                    var_str = ", ".join(f"{k}={_variable_text(v)}" for k, v in user_vars.items())
                     output_parts.append(f"Variables: {var_str}")
                 if result.get("execution_time") is not None:
                     output_parts.append(f"Execution time: {result['execution_time']:.3f}s")
