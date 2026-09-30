@@ -607,7 +607,7 @@ async def test_hook_removes_old_injection(server, mock_status):
         request_id="test_req_123",
         messages=[
             ChatMessage(role="system", content="You are an assistant"),
-            ChatMessage(role="system", content="## Active Cognitive Stack\nOld injection", injected_by="cognitive_stack"),
+            ChatMessage(role="system", content="## Active Cognitive Stack\nOld injection", injected_by=server.name),
             ChatMessage(role="user", content="Help me")
         ],
         session_id="test_session",
@@ -618,7 +618,7 @@ async def test_hook_removes_old_injection(server, mock_status):
 
     # The new state is appended, the old block keeps its place
     injections = [m for m in result.context.messages
-                  if getattr(m, "injected_by", None) == "cognitive_stack"]
+                  if getattr(m, "injected_by", None) == server.name]
     assert len(injections) == 2
     assert injections[-1].role == DEVELOPER, (
         "a system role in the history is hoisted into the prompt head by "
@@ -662,7 +662,7 @@ async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, 
 
         stack_injections = [
             msg for msg in context.messages
-            if getattr(msg, "injected_by", None) == "cognitive_stack"
+            if getattr(msg, "injected_by", None) == server.name
         ]
         assert len(stack_injections) == 1, (
             f"After call {i+1}: expected 1 stack block, found {len(stack_injections)}"
@@ -674,7 +674,7 @@ async def test_hook_prevents_duplicate_injections_across_multiple_calls(server, 
 
     final_stack_injections = [
         msg for msg in context.messages
-        if getattr(msg, "injected_by", None) == "cognitive_stack"
+        if getattr(msg, "injected_by", None) == server.name
     ]
     assert len(final_stack_injections) == 1, "an unchanged stack is written once"
 

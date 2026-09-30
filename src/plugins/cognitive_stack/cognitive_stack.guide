@@ -1,0 +1,299 @@
+@database "cognitive_stack"
+@author "Enrico Ehrich"
+@$VER: cognitive_stack.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Cognitive Stack"
+@{h1}Cognitive Stack
+
+Working memory as a stack. When an agent has to interrupt what it is doing
+-- a failing test in the middle of a release, a question inside a question
+-- it pushes the current task onto the stack, works on the interruption,
+and pops back to where it was, instead of keeping the nesting in prose and
+losing it a few turns later. Each frame holds a short description and,
+optionally, some structured data. An optional hook shows the top frames to
+the model before each LLM call. The stack lives in memory only -- it is
+working notes for a run, not a record. It has no panel.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  The stack tool  " link tool}
+  @{"  The stack hook  " link hook}
+  @{"  Where the state lives  " link state}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    cognitive_stack:
+      type: cognitive_stack
+      enabled: true
+      max_depth: 50
+      max_frames_in_prompt: 3
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+cognitive_stack/*"
+@{body}
+
+The hook is off until an agent switches it on; see
+@{" The stack hook " link hook}. No extra packages.
+
+@{h2}Server settings
+
+The settings stand directly in the server entry, as above -- not under a
+@{tt}config:@{utt} block, where the plugin does not look. What is not set
+takes the default below. They are read once, when the plugin starts.
+
+@{table}
+Key | Default | Meaning
+max_depth | 20 | frames one stack may hold; a push beyond it is refused
+max_frames_in_prompt | 3 | the hook: frames shown; 0 or less shows all
+session_ttl_seconds | 3600 | a stack no tool call touched for this long is removed
+@{body}
+
+The ranges in the schema (5 to 100, 1 to 10, 60 to 86400) are not
+enforced. The plugin stores nothing on disk; see
+@{" Where the state lives " link state}.
+@endnode
+
+@node tool "The stack tool"
+@{h1}The stack tool
+
+One tool, named like the plugin instance (@{tt}cognitive_stack@{utt} in the
+default setup), with five operations chosen by @{tt}operation@{utt}
+(@{tt}op@{utt} is accepted too).
+
+@{table}
+Operation | Does
+push_batch | puts one or more frames on top, in the order given
+pop_batch | removes the top frames and returns them, topmost first
+peek | returns the top frames without removing them, bottom one first
+list | returns all frames, bottom first
+clear | removes all frames; the stack itself stays
+@{body}
+
+@{h2}Which stack a call works on
+
+@{bullet}Without @{tt}stack_id@{utt}: the stack of this conversation. The
+first push creates it with a random 10-character ID; every later call of
+the conversation finds it again. Until then, every operation but a push
+answers "No active cognitive stack found".
+@{bullet}With @{tt}stack_id@{utt}: that stack, whichever conversation made
+it. A push to an ID the plugin does not know creates a stack under that ID,
+and from then on it is this conversation's stack. The other operations
+answer "Stack X not found" for an unknown ID.
+@{bullet}A sub-agent runs in a conversation of its own, so it starts its
+own stack unless it is given an ID.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Used by | Meaning
+operation | all | push_batch, pop_batch, peek, list or clear
+items | push_batch | a list of objects: @{tt}context@{utt} (text, not empty) and optional @{tt}data@{utt} (an object, stored as sent)
+count | pop_batch | frames to pop; default 1, must be 1 or more; more than the stack holds pops all
+depth | peek | top frames to return; default 1; 0 or less returns all
+stack_id | all | see above
+@{body}
+
+A number must be whole: 3, 3.0 and "3" are taken, 2.5 and true are
+refused. A push is all or nothing: one bad item refuses the whole batch,
+and nothing is pushed. So is the depth limit: a batch that would take the
+stack past @{tt}max_depth@{utt} is refused as a whole. There is no limit on
+the length of a context or the size of the data.
+
+@{h2}Answers
+
+@{table}
+Operation | Fields
+push_batch | stack_id, pushed_count, frames (frame_id and context of each pushed frame), depth, max_depth, message
+pop_batch | stack_id, popped_count, frames, remaining_depth, message
+peek | stack_id, frames, total_depth, message; an empty stack: depth 0 and "Stack is empty"
+list | stack_id, frames, depth, max_depth, created_at, last_accessed
+clear | stack_id, cleared_frames, message
+@{body}
+
+Every answer has @{tt}status@{utt}: success or error. A frame in
+@{tt}frames@{utt} carries frame_id, context, data and timestamp (the
+server's local time), except in the push answer.
+
+A refused call answers @{tt}{"status": "error", "error": "..."}@{utt} and
+changes nothing. The texts:
+
+@{table}
+error | When
+Unknown operation: x. Valid: push_batch, pop_batch, peek, list, clear | no or an unknown operation
+items array cannot be empty for push_batch. ... | no items (the text shows the right form)
+items must be an array | items is not a list
+Each item must be an OBJECT with 'context' key, got: str. ... | an item that is not an object
+Each item must have non-empty 'context' | a context that is missing, empty or not text
+'data' must be an object | data that is not an object
+Batch would exceed max depth (50). Current: 49, trying to add: 2 | the depth limit, with a hint to pop or clear first
+No active cognitive stack found. Use push_batch first to create a stack. | no stack_id and the conversation has no stack
+Stack X not found | an unknown stack_id
+Stack is empty | pop_batch on an empty stack, with a hint to push first
+count must be at least 1 | count below 1
+x must be a whole number, got ... | a count or depth that is not whole
+No active stack for this session (provide an explicit stack_id to clear a specific stack) | clear in a conversation that has no stack
+@{body}
+
+Anything else that goes wrong answers the same way with the exception
+text.
+
+@{h2}An example
+
+@{code json}
+{"operation": "push_batch", "items": [{"context": "Release 2.4: finish the changelog", "data": {"branch": "release/2.4"}}, {"context": "CI fails on Windows: find out why before going on"}]}
+{"operation": "peek"}
+{"operation": "pop_batch", "count": 1}
+@{body}
+@endnode
+
+@node hook "The stack hook"
+@{h1}The stack hook
+
+@{tt}inject_stack_context@{utt} runs before each LLM call and shows the
+model where it stands on the stack, so it can pop back without asking for
+the list. It is off until an agent switches it on.
+
+@{h2}What it appends
+
+A message at the end of the history, from the run (role
+@{tt}developer@{utt}, marked with the instance name in
+@{tt}injected_by@{utt}, so two instances do not replace each other's
+block):
+
+@{bullet}While the conversation has no stack, or an empty one: a short
+reminder that the tool exists, with an example push, list and pop.
+@{bullet}With frames: the depth and the top @{tt}max_frames_in_prompt@{utt}
+frames, topmost first, each context cut at 150 characters and followed by
+the names of its data keys (not their values).
+
+@{code markdown}
+## Active Cognitive Stack
+
+**Depth**: 2/50
+
+**Working Memory (top frames):**
+- **Frame #2**: CI fails on Windows: find out why before going on
+- **Frame #1** [data: branch]: Release 2.4: finish the changelog
+@{body}
+
+The message is added only when it differs from the last one the hook
+added: a step that did not change the stack adds nothing. When compaction
+removed the last one, it comes back. Without messages or without a session
+the hook does nothing; if it fails, the error is logged and the call goes
+on without it. It has 5 seconds.
+
+@{h2}Switching it on
+
+In the agent's YAML; its setting goes in the same entry:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      cognitive_stack.inject_stack_context:
+        enabled: true
+        max_frames_in_prompt: 1
+@{body}
+
+@{h2}Settings
+
+@{table}
+Key | Default | Meaning
+max_frames_in_prompt | 3 | frames shown; 0 or less: all
+@{body}
+
+A key in the agent's override wins; otherwise the key in the plugin's
+server entry; otherwise the default above. A value that is not a whole
+number makes the hook fail (logged) and add nothing.
+@endnode
+
+@node state "Where the state lives"
+@{h1}Where the state lives
+
+Everything is held in the memory of the server process that runs the
+plugin, and nothing else.
+
+@{bullet}@{b}Per conversation@{ub}: a stack belongs to the conversation
+(the chat session) that created it; the hook and a call without
+@{tt}stack_id@{utt} find it that way. A conversation has one stack at a
+time.
+@{bullet}@{b}Per process@{ub}: the store is shared by every agent and user
+the process serves. The API and a command-line run are different processes
+with different stores; a woken session runs in a new process and finds
+nothing of the old one.
+@{bullet}@{b}Restart@{ub}: nothing survives. A restart, a reload of the
+plugin or a new process starts empty.
+
+@{h2}How big it can grow
+
+@{bullet}A stack holds at most @{tt}max_depth@{utt} frames (20 in code, 50
+in the default configuration).
+@{bullet}There is no limit on the number of stacks, the length of a context
+or the size of a frame's data.
+@{bullet}A stack is removed when no tool call touched it for
+@{tt}session_ttl_seconds@{utt} (one hour); the hook showing it does not
+count. The check runs at the start of each tool call and before the hook
+shows the stack, so the prompt never shows a stack the next call finds
+gone.
+@{bullet}@{tt}clear@{utt} empties a stack but keeps it and the
+conversation's link to it.
+
+@{h2}Clearing
+
+In a conversation, @{tt}clear@{utt} without @{tt}stack_id@{utt} empties
+the conversation's own stack; with none it is refused -- it never touches
+other conversations' stacks. Called outside a conversation (directly from
+code, with no session), it removes every stack of the process.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool description comes from the plugin's @{tt}schema.yaml@{utt}: the
+five operations, the item form with an example, and that the stack is
+tracked per session, so the model need not keep the stack_id. Refused
+calls answer with the error texts in @{" The stack tool " link tool}. The
+chat's status line shows "Pushed 2 frames (depth: 2/50)", "Popped 1
+frame(s) (depth: 1)", "Peeked top 1 frame(s)", "Listed 2 frame(s)" or
+"Cleared 2 frame(s)", and the error text when a call is refused.
+
+@{h2}Tokens and cache
+
+Answers are small but not bounded: @{tt}list@{utt} returns every frame with
+its full context and data, and a push echoes each pushed context back. Tool
+answers are appended like any other; nothing earlier changes. The hook
+appends its block at the end of the history and only when it changed; it
+never rewrites the system prompt or an earlier message, so the cached
+prompt in front of it stays intact. Every changed block stays in the
+history, though: each push or pop with the hook on adds one block to the
+conversation.
+
+@{h2}Known gaps
+
+@{bullet}A stack ID is all it takes: any conversation that has one can
+read, change or clear that stack.
+@{bullet}The server settings are read once; a change takes effect after a
+restart.
+@endnode
