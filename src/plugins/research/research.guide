@@ -1,0 +1,331 @@
+@database "research"
+@author "Enrico Ehrich"
+@$VER: research.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Research"
+@{h1}Research
+
+A web research agent. You ask a question; it searches, opens the pages
+that matter, reads them, checks the surprising claims against a second
+source and answers with the URLs it actually read. A question with
+independent parts -- three libraries to compare, four claims to check -- it
+splits over up to four sub-researchers that work in parallel.
+
+The plugin is configuration only: two agents, their prompt and one skill.
+It has no tools of its own; it uses the shared search and reading tools
+(Tavily when a key is set, DuckDuckGo without one, the web scraper).
+
+@{code}
+For users
+  @{"  Asking it  " link use}
+  @{"  How it researches  " link method}
+  @{"  Wide questions  " link wide}
+
+For agents and developers
+  @{"  Calling it from another agent  " link tool}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node use "Asking it"
+@{h1}Asking it
+
+In the web UI, pick @{b}research_agent@{ub} as the agent of a chat (see
+@{" Choosing an agent " link scarabhive/agents}). From the command line:
+
+@{code sh}
+agent-cli chat --agent research_agent
+agent-cli run --agent research_agent "What is the default texture filter in Godot 4?"
+@{body}
+
+A good question says what would count as an answer and whether the date
+matters: "the current stable version of X and its release date" works
+better than "X version".
+
+@{h2}What you get back
+
+@{bullet}The answer first, in plain sentences, in the language you asked in
+-- whatever language the sources were in.
+@{bullet}Then @{tt}Sources:@{utt}, one line per source: the URL and what it
+supports. Only pages it opened; it is told never to construct or remember
+a URL.
+@{bullet}Numbers, versions and dates as the source has them, with a note
+when a source is old or two sources disagree.
+@{bullet}When it found nothing usable, it says so and what it tried.
+
+@{h2}When it asks you
+
+The agent may ask one question back (the @{" ask_user " link ask_user/main}
+tool) when your question can be read in ways that lead to different
+answers. Sub-researchers never ask; they answer the agent that started
+them.
+
+@{h2}Limits
+
+@{table}
+Limit | research_agent | sub-researcher
+Steps per run | 40 | 25
+Sub-researchers at a time | 4 per session | none
+Wait for sub-researchers | 900 s | --
+@{body}
+
+A step is one LLM call with the tool calls it asks for. Forty covers a few
+searches, three or four pages, one long page read in pieces and a
+cross-check.
+@endnode
+
+@node method "How it researches"
+@{h1}How it researches
+
+The method is the @{tt}web-research@{utt} skill, which is part of the
+agent's prompt on every run. In short:
+
+@{bullet}@{b}Know the question.@{ub} What fact, from what kind of source, as
+of when. A question that is really several is taken one part at a time.
+@{bullet}@{b}Search two or three ways.@{ub} Rephrased with the field's own
+vocabulary, with @{tt}site:@{utt} when it is clear who owns the fact, with the
+year or version when recency matters.
+@{bullet}@{b}Rank the sources.@{ub} The owner of the fact (official docs,
+specification, repository, vendor page) first, then references that cite
+it, then named experts, then blogs and forums -- those only to find a
+stronger source. Two to four pages, not ten.
+@{bullet}@{b}Read, do not skim.@{ub} A search snippet is a lead, not
+evidence. Long pages are read in windows (@{tt}offset@{utt}) instead of
+guessed from the first screen.
+@{bullet}@{b}Cross-check@{ub} whatever decides the answer or surprised it.
+Disagreement between strong sources is reported as such, with both URLs.
+@{bullet}@{b}Stop@{ub} when the question is answered or the next search would
+only repeat what it has.
+
+@{h2}With or without a Tavily key
+
+@{table}
+ | search | read a page | read several at once
+key set | tavily_search_web_search | web_scraper_page | tavily_search_extract
+no key | duckduckgo_search_web_search | web_scraper_page | one page at a time
+@{body}
+
+Nothing in the prompt switches this: without @{tt}TAVILY_API_KEY@{utt} the
+Tavily server offers no tools, so the agent only ever sees tools that work.
+DuckDuckGo needs no account and returns titles and snippets only, so the
+scraper does the reading.
+
+@{h2}Blocked pages and files
+
+A challenge page, a 403, 429 or 503 comes back from the scraper as an
+error; the agent looks for the same content elsewhere instead of retrying.
+A login or cookie wall comes back as the wall's own text. PDFs and other
+files are not read as pages: @{tt}web_scraper_download@{utt} saves them into
+@{tt}data/workspace@{utt} (see @{" Downloading a file " link web_scraper/download}).
+The agent has no tool to read that file afterwards; other agents working
+in the workspace can.
+@endnode
+
+@node wide "Wide questions"
+@{h1}Wide questions
+
+For a question with independent parts that each need their own searching
+-- a comparison of several products, several claims to verify, several
+ecosystems to survey -- the agent starts one @{b}research_worker@{ub} per
+part without waiting, then waits for all of them once and merges their
+answers and sources into its own. One fact or one page it researches
+itself; branching costs a full prompt per branch.
+
+@{h2}The worker
+
+@{tt}research_worker@{utt} is the research agent minus three things:
+@{bullet}no sub-agent manager, so a branch cannot branch again -- wherever
+the research agent itself runs, from the UI or as another agent's
+sub-agent;
+@{bullet}no @{tt}ask_user@{utt}: its questions are the coordinator's to ask;
+@{bullet}25 steps instead of 40, no Markdown formatting of its answer and
+no list of running sub-agents.
+
+It shares the prompt file; the section about branching is left out of its
+prompt, so it is never told to use a tool it does not have.
+
+@{h2}Limits
+
+The manager (@{tt}research_sam@{utt}) may start only
+@{tt}research_worker@{utt}, and at most 4 of them in a session that are not
+archived (@{tt}max_sub_agents_per_type@{utt}; the session limit of 8 is never
+reached with one type). A fifth archives the oldest to make room
+(@{tt}auto_archive_on_limit@{utt}). A wait gives up after 900 seconds
+(@{tt}default_wait_timeout@{utt}).
+
+The agent sees a short list of its sub-researchers (the manager's
+@{tt}inject_sub_agent_context@{utt} hook, at most 4 shown, archived ones left
+out), appended as a turn at the end of the context whenever the list has
+changed, so it waits for them instead of starting a second copy. See @{" Sub-agents and the SAM " link scarabhive/subagents}.
+@endnode
+
+@node tool "Calling it from another agent"
+@{h1}Calling it from another agent
+
+The agent is visible both in the UI and as a tool (@{tt}visibility:
+both@{utt}). Another agent reaches it in one of two ways.
+
+@{h2}As a tool
+
+Put @{tt}"+research_agent/*"@{utt} into the caller's
+@{tt}agent_config.tools.allowed@{utt}. The caller then has:
+
+@{table}
+Tool | What it does
+research_agent_execute_task | runs the research agent on one task and returns its answer
+research_agent_list_available_tools | lists the tools the research agent has (names and descriptions)
+@{body}
+
+Parameters of @{tt}research_agent_execute_task@{utt}:
+
+@{table}
+Name | Meaning
+task | required; the question and what would count as an answer
+llm_profile | optional; one of the agent's two routes, @{tt}or-deepseek-flash@{utt} or @{tt}deepseek-chat@{utt}
+use_advanced_model | has no effect: the agent has no advanced profile
+@{body}
+
+@{h2}As a sub-agent
+
+Add @{tt}research_agent@{utt} to the @{tt}allowed_agents@{utt} of the caller's
+sub-agent manager and allow that manager's tools. The shared
+@{tt}sub_agent_manager@{utt} in @{tt}config/plugins.yaml@{utt} already lists
+it. A sub-agent keeps its history and can be continued with a follow-up
+question. It can still branch into its own workers from there.
+
+@{code}
+sub_agent_manager_manage_sub_agent(operation="create", agent_type="research_agent",
+    task="Which HTTP/2 features does aiohttp 3.x support? Official docs or source.")
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The prompt
+
+@{tt}agents/prompts/research_agent.md@{utt}, read from disk on every run, so
+an edit takes effect at once. It has four parts: the role and the list of
+tools the agent has, which tool to search and read with, the method in five
+steps, and how to write the answer. For @{tt}research_agent@{utt} it adds the
+section on branching with the exact call:
+
+@{code}
+research_sam_manage_sub_agent(operation="create", agent_type="research_worker",
+    task="<the sub-question>", blocking=false)
+@{body}
+
+followed by one @{tt}wait_all@{utt} with the @{tt}instance_ids@{utt} the creates
+returned. The prompt ends with the date (day only). After it comes the full
+@{tt}web-research@{utt} skill (@{tt}skills/web-research/SKILL.md@{utt}),
+about 7,400 characters together; the worker's prompt, without the
+branching section, about 6,800.
+
+@{h2}Its tools
+
+@{table}
+Tool | From | Worker
+tavily_search_web_search, tavily_search_extract | @{" tavily_search " link tavily_search/main}, only with a key | yes
+duckduckgo_search_web_search | @{" duckduckgo_search " link duckduckgo_search/main} | yes
+web_scraper_page, web_scraper_download | @{" web_scraper " link web_scraper/main} | yes
+datetime_operations | datetime | yes
+context_engineer_list, _read, _store_fact, _compact | @{" context_engineer " link context_engineer/main} | yes
+research_sam_manage_sub_agent | this plugin's manager | no
+ask_user | @{" ask_user " link ask_user/main} | no
+@{body}
+
+The descriptions are the tools' own. The agent's own tool, as another agent
+sees it, carries the description from @{tt}self_tool_descriptions@{utt} in
+@{tt}agents/research_agent.yaml@{utt}.
+
+@{h2}Hooks that run for it
+
+@{bullet}@{tt}context_engineer.engineer_context@{utt} -- trims old tool results
+when the context grows (the 200,000-token window is set for all models).
+See @{" The compaction hook " link context_engineer/hook}.
+@{bullet}@{tt}markdown_formatter.format_markdown_output@{utt} -- formats the
+final answer for the screen; off for the worker.
+@{bullet}@{tt}research_sam.inject_sub_agent_context@{utt} -- the list of running
+sub-researchers; off for the worker.
+
+@{h2}Prompt cache
+
+The system prompt is fixed for a run -- the date changes once a day, the
+step counter is not in it -- and the agent runs with
+@{tt}prompt_cache_mode: multi_turn@{utt}. The sub-researcher list is appended
+at the end and rewrites nothing before it. What breaks the cached prefix is
+the context engineer's compaction, which it does seldom and deep on
+purpose.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the files are found by convention.
+
+@{table}
+File | Picked up by
+agents/research_agent.yaml | @{tt}config/config.yaml@{utt} includes @{tt}../src/plugins*/*/agents/*.yaml@{utt}
+agents/research_worker.yaml | the same include
+agents/tools.yaml | the same include; defines @{tt}research_sam@{utt}
+agents/prompts/research_agent.md | @{tt}system_template@{utt}, relative to the YAML
+skills/web-research/SKILL.md | @{tt}skills.skill_dirs@{utt} lists @{tt}src/plugins*/*/skills@{utt}
+@{body}
+
+@{h2}What it needs
+
+The shared instances in @{tt}config/plugins.yaml@{utt}, all enabled:
+@{tt}duckduckgo_search@{utt}, @{tt}web_scraper@{utt} (with
+@{tt}allowed_directories@{utt} for downloads), @{tt}datetime@{utt},
+@{tt}ask_user@{utt}, @{tt}context_engineer@{utt}, @{tt}markdown_formatter@{utt};
+and @{tt}tavily_search@{utt}, which offers tools only with a key:
+
+@{code yaml}
+tavily_search:
+  type: tavily_search
+  enabled: true
+  api_key: "${TAVILY_API_KEY}"
+@{body}
+
+@{h2}The agent
+
+@{table}
+Key | Value | Meaning
+type | multi_turn_agent | a basic agent with the context engineer, a 200k window and multi-turn caching
+llm_profile | [or-deepseek-flash, deepseek-chat] | the chain; the second route takes over when the first fails
+max_steps | 40 (worker 25) | step budget per run
+skills.always | [web-research] | the method, in the prompt on every run
+template_vars.can_fork | true (worker false) | renders the branching section of the prompt
+visibility | both (worker tool) | UI and tool; the worker is not in the UI
+@{body}
+
+@{h2}The sub-agent manager (agents/tools.yaml)
+
+@{table}
+Key | Value | Default in code
+allowed_agents | [research_worker] | --
+max_sub_agents_per_type | 4 | 3
+max_sub_agents_per_session | 8 | 10
+max_nesting_depth | 5 | 5
+max_message_history | 50 | 100
+default_wait_timeout | 900 | 3600
+auto_archive_on_limit | true | false
+hook_config.inject_sub_agent_context | max_sub_agents_shown 4, show_completed false | 10, false
+@{body}
+
+@{h2}Tuning
+
+@{table}
+Want | Change
+another model | @{tt}llm_profile@{utt} in @{tt}agents/research_agent.yaml@{utt}; keep two routes
+deeper research | @{tt}max_steps@{utt}
+another method | @{tt}skills/web-research/SKILL.md@{utt}
+downloads elsewhere | @{tt}allowed_directories@{utt} of @{tt}web_scraper@{utt}
+@{body}
+
+The configuration is checked by @{tt}tests/test_research_config.py@{utt}:
+the prompt as it renders, every tool it names, the skill's discovery, the
+manager and the worker's missing manager.
+@endnode

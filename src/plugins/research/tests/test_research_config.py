@@ -257,3 +257,38 @@ def test_the_agent_asks_for_exactly_the_skill_that_exists(agent, skills):
     assert set(agent.agent_config.skills.always) == {SKILL}
     assert not agent.agent_config.skills.on_demand
     assert skills.get(SKILL) is not None
+
+
+def test_the_skill_calls_an_error_only_what_the_scraper_refuses():
+    """The skill told the model a login or cookie wall comes back as an
+    error. The scraper refuses only status codes and challenge pages; a wall
+    arrives as page text, and a model waiting for an error reads it as the
+    content."""
+    from plugins.web_scraper.server import WebScraperServer
+
+    blocked = WebScraperServer._is_blocked_response
+    assert blocked("", 403, "https://x.test")[0]
+    for wall in ("<title>Sign in</title><form>password</form>",
+                 "<title>News</title><div>We use cookies. Accept all</div>"):
+        assert not blocked(wall, 200, "https://x.test")[0], wall
+
+    text = (PLUGIN / "skills" / SKILL / "SKILL.md").read_text(encoding="utf-8")
+    claims = re.findall(r"([^.;]*)comes back as an\s+error", text)
+    assert claims, "the skill no longer says what comes back as an error"
+    for claim in claims:
+        assert "login" not in claim and "cookie" not in claim, claim
+
+
+def test_the_wait_all_it_is_shown_carries_the_ids_the_manager_requires(config):
+    """wait_all refuses without `instance_ids` ("Missing required parameter").
+    A prompt that shows the call without them costs every wide question a
+    failed step."""
+    cfg = get_tool_server_config("research_agent", config)
+    ctx = PromptContext(agent_name="research_agent", agent_config=cfg.agent_config,
+                        system_config=config, available_tools=[], max_steps=10,
+                        current_step=0, agent_instance=object())
+    rendered, _ = PromptRenderer().render(ctx)
+    lines = [line for line in rendered.splitlines() if "wait_all" in line]
+    assert lines, "the branching section no longer shows how to wait"
+    for line in lines:
+        assert "instance_ids" in line, line

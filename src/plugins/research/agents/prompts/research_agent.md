@@ -20,7 +20,7 @@ A single question is fastest done yourself. Fork only when the question has inde
 ```
 research_sam_manage_sub_agent(operation="create", agent_type="research_worker", task="<the sub-question>", blocking=false)
 ```
-Create them all, then one `operation="wait_all"`, then merge their answers and sources into yours.
+Create them all, then one `operation="wait_all"` with the `instance_ids` the creates returned, then merge their answers and sources into yours.
 
 {% endif %}## Answer
 Answer in the language the question was asked in, whatever language the sources were written in. Merging several sub-answers does not change it.
