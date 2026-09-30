@@ -56,7 +56,8 @@ tools:
    Tool-Liste (und dem Cache-Prefix), mit der der vorige endete.
 
 Code: `src/agent_system/servers/agent/deferred_tools.py`. Verdrahtet in
-`Agent._initialize_request_and_conversation` (Aufteilen und `restore`) und in
+`Agent._initialize_request_and_conversation` (Aufteilen und `restore`), vor
+jedem LLM-Aufruf im Schritt-Loop (`restore`) und in
 `ToolExecutionManager.execute_tools_streaming` (Parameter `intercept`). Pre-
 und Post-Tool-Hooks sehen `tool_search` nicht, ebenso wenig wie einen
 abgewiesenen Aufruf.
@@ -72,11 +73,30 @@ Kern schreibt dazu einmal pro Prozess eine Warnung ins Log, und der
 agent_editor zeigt es als Problem „Deferred matches no allowed tool“. Bei
 einem externen MCP-Server-Eintrag (`mcp_servers`) wird das Feld ignoriert.
 
-**Grenze:** Ruft ein `tool_script` ein zurückgestelltes, noch nicht geladenes
-**externes** MCP-Tool auf, bekommt es „Unknown tool“ statt des Hinweises, das
-Tool direkt aufzurufen. Diese Kombination kommt in keiner Konfiguration vor.
-Ein Fix müsste die Prüfung in `tool_script`, die statisch und synchron ist, an
-den Zustand des laufenden Requests anbinden.
+**Vor jedem LLM-Aufruf** läuft `restore` erneut über den Verlauf. Er lädt
+nichts, wenn nichts neu ist. Er fängt aber Tool-Aufrufe ab, die andere in den
+Verlauf geschrieben haben, etwa `tool_preload` in den Pre-LLM-Hooks oder
+angehängte Nachrichten. Das Modell liest so nie einen Aufruf eines Tools, dessen
+Schema es nicht hat. Das `restore` beim Laufstart bleibt trotzdem nötig: Die
+Pre-LLM-Hooks des ersten Schritts messen die Größe über
+`get_live_tools_schema`.
+
+**Grenze, bewusst so gelassen:** Schreibt ein Pre-LLM-Hook einen Tool-Aufruf in
+den Verlauf, geht das Schema dazu zwar mit hinaus, aber die Hooks derselben
+Kette haben die Größe schon ohne es gemessen (context_engineer,
+context_summarizer). Die Abweichung ist ein Tool-Schema für einen Aufruf. Um sie
+zu schließen, müsste die gemeinsame Hook-Kette (`hooks/registry.py`) nach
+jedem Hook zurückrufen, und zwar für jedes Plugin.
+
+Ein Aufruf mit kaputtem JSON bekommt den Parse-Fehler. Ist das Tool noch nicht
+geladen, lädt er es trotzdem sofort, in der Reihenfolge der Aufrufe. Das ist
+dieselbe Reihenfolge, die ein späteres `restore` aus dem Verlauf nachbaut.
+
+**Skripte (`tool_script`):** Ein Skript darf ein zurückgestelltes Tool
+aufrufen, das das Modell nie geladen hat. Die Erlaubnis kommt weiter allein aus
+der Allowlist. Für die Parameterprüfung und für den Hinweis „externes MCP-Tool“
+liest `tool_script` `Agent.get_run_tool_schemas(session_id)`: die Live-Liste
+plus alle zurückgestellten Schemas des laufenden Laufs dieser Session.
 
 ## Prompt-Cache
 

@@ -371,7 +371,7 @@ class ToolScriptServer(SchemaBasedToolServer):
             # The agent's own allowlist BEFORE the schema lookup: the lookup
             # falls back to every registered server, so a tool the agent may
             # not call answered with its parameter list instead of "not allowed".
-            denial = self._agent_denial(agent, name_s)
+            denial = self._agent_denial(agent, name_s, session_id)
             if denial is not None:
                 ctx.calls.append({"tool": name_s, "ok": False,
                                   "error": _clip(denial, _CALL_ERROR_LIMIT)})
@@ -387,7 +387,7 @@ class ToolScriptServer(SchemaBasedToolServer):
             for _pattern, _extra in self._inject_params.items():
                 if fnmatch.fnmatch(name_s, _pattern):
                     injected.update(_extra)
-            self._validate_against_tool_schema(agent, name_s, {**tool_params, **injected})
+            self._validate_against_tool_schema(agent, name_s, {**tool_params, **injected}, session_id)
 
             child_rid = (f"{request_id}_ts{ctx.n_calls:02d}"
                          if request_id else None)
@@ -508,12 +508,13 @@ class ToolScriptServer(SchemaBasedToolServer):
             f"list/dict.")
 
     def _validate_against_tool_schema(self, agent: Any, tool_name: str,
-                                      tool_params: Dict[str, Any]) -> None:
+                                      tool_params: Dict[str, Any],
+                                      session_id: Optional[str] = None) -> None:
         """Validate params against the target tool's JSON schema (unknown and
         missing-required params fail HERE with the schema echoed — not three
         hops later with a confusing tool error). Best effort: tools without a
         resolvable schema skip validation (dispatch still authorizes)."""
-        schema = self._find_tool_schema(agent, tool_name)
+        schema = self._find_tool_schema(agent, tool_name, session_id)
         if not schema:
             return
         properties = schema.get("properties") or {}
@@ -540,7 +541,18 @@ class ToolScriptServer(SchemaBasedToolServer):
                 f"(at {'/'.join(str(p) for p in e.absolute_path) or 'root'})")
 
     @staticmethod
-    def _agent_denial(agent: Any, tool_name: str) -> Optional[str]:
+    def _run_schemas(agent: Any, session_id: Optional[str]) -> List[Any]:
+        """The schemas the calling run may call: its live list plus what
+        tools.deferred holds back from it (Agent.get_run_tool_schemas). A script
+        may call a deferred tool the model never loaded -- its parameters are
+        still needed, and it is still in the model's list by name."""
+        run_schemas = getattr(agent, "get_run_tool_schemas", None)
+        if callable(run_schemas):
+            return run_schemas(session_id) or []
+        return getattr(agent, "_current_tools_schema", None) or []
+
+    @staticmethod
+    def _agent_denial(agent: Any, tool_name: str, session_id: Optional[str] = None) -> Optional[str]:
         """Why the agent may not dispatch *tool_name*, or None. Dispatch asks
         the same question again; asked here first, it comes before the schema
         lookup and its parameter list."""
@@ -551,7 +563,7 @@ class ToolScriptServer(SchemaBasedToolServer):
         if server is None:
             # In the model's tool list but no plugin server behind it: an
             # external MCP tool, listed with its dot turned into "_".
-            live_schema = getattr(agent, "_current_tools_schema", None) or []
+            live_schema = ToolScriptServer._run_schemas(agent, session_id)
             if any(isinstance(t, dict) and (t.get("function") or {}).get("name") == tool_name
                    for t in live_schema):
                 return (f"Tool '{tool_name}' is an external MCP tool — a script "
@@ -561,7 +573,8 @@ class ToolScriptServer(SchemaBasedToolServer):
         return deny(tool_name, server_name) if deny is not None else None
 
     @staticmethod
-    def _find_tool_schema(agent: Any, tool_name: str) -> Optional[Dict[str, Any]]:
+    def _find_tool_schema(agent: Any, tool_name: str,
+                          session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """The target tool's parameters schema, via the agent's resolution.
 
         Primary source is the agent's LIVE tool schema -- the exact list the
@@ -571,7 +584,7 @@ class ToolScriptServer(SchemaBasedToolServer):
         jsonschema validation for exactly those calls.
         """
         try:
-            live_schema = getattr(agent, "_current_tools_schema", None) or []
+            live_schema = ToolScriptServer._run_schemas(agent, session_id)
             for tool in live_schema:
                 fn = (tool.get("function") or {}) if isinstance(tool, dict) else {}
                 if fn.get("name") == tool_name:

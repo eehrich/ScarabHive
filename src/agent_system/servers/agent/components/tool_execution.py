@@ -258,7 +258,9 @@ class ToolExecutionManager:
                              sub-agent the tool starts can follow it (llm/caller_llm.py).
             intercept: Answers a call itself instead of a tool server (name, arguments, step) ->
                              result, or None to leave the call alone: the run's deferred tools
-                             (deferred_tools.py). An answered call reaches no hook.
+                             (deferred_tools.py). An answered call reaches no hook. A call
+                             with broken JSON is shown with arguments None: it keeps its
+                             parse error, and an unloaded deferred tool is loaded for it.
 
         Yields:
             Dict with either:
@@ -327,29 +329,10 @@ class ToolExecutionManager:
                         forged, tool_name,
                     )
 
-            # Before the parse check: an unloaded deferred tool is refused (and
-            # loaded) whatever its arguments, a tool_search with broken ones
-            # gets the parse error below (the intercept answers None).
-            answer = (intercept(openai_tool_name, None if json_parse_failed else params, step)
-                      if intercept is not None else None)
-            if answer is not None:
-                indexed_results.append((pos, ChatMessage(
-                    role="tool",
-                    tool_call_id=tc.get("id") or f"{openai_tool_name}-call-{int(time.time()*1000)}",
-                    name=sanitize_for_llm(openai_tool_name),
-                    content=json.dumps(answer, ensure_ascii=False),
-                    timestamp=datetime.now(timezone.utc),
-                ), [], []))
-                events_to_yield.extend([
-                    {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name,
-                     "params": params, "request_id": request_id},
-                    {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name,
-                     "result": answer, "request_id": request_id},
-                ])
-                continue
-
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:
+                if intercept is not None:
+                    intercept(openai_tool_name, None, step)  # loads an unloaded deferred tool, in call order
                 tool_call_id = tc.get("id") or f"parse-error-{int(time.time()*1000)}"
                 error_content = json.dumps({
                     "error": (
@@ -373,6 +356,23 @@ class ToolExecutionManager:
                     content=error_content,
                     timestamp=datetime.now(timezone.utc),
                 ), [], []))
+                continue
+
+            answer = intercept(openai_tool_name, params, step) if intercept is not None else None
+            if answer is not None:
+                indexed_results.append((pos, ChatMessage(
+                    role="tool",
+                    tool_call_id=tc.get("id") or f"{openai_tool_name}-call-{int(time.time()*1000)}",
+                    name=sanitize_for_llm(openai_tool_name),
+                    content=json.dumps(answer, ensure_ascii=False),
+                    timestamp=datetime.now(timezone.utc),
+                ), [], []))
+                events_to_yield.extend([
+                    {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "params": params, "request_id": request_id},
+                    {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "result": answer, "request_id": request_id},
+                ])
                 continue
 
             if not tool_name or tool_name not in available_tools:

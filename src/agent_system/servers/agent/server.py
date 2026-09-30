@@ -472,6 +472,7 @@ class Agent(ToolServer):
         # They reflect the most recent request and are NOT session-correct.
         self._current_messages: List[ChatMessage] = []
         self._current_tools_schema: List[Dict[str, Any]] = []
+        self._current_held_back_schemas: List[Dict[str, Any]] = []
 
         # Initialize component managers for better code organization
         # Create request manager first (owns _active_requests dict)
@@ -1805,14 +1806,31 @@ class Agent(ToolServer):
         entry["messages"] = messages
         self._evict_live_state(session_id)
 
-    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]]) -> None:
-        """Record the live tool schema for a session (request-scoped)."""
+    def _set_live_tools_schema(self, session_id: Optional[str], tools_schema: List[Dict[str, Any]],
+                               held_back: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Record the live tool schema for a session (request-scoped), and the
+        schemas tools.deferred holds back from it (get_run_tool_schemas)."""
         self._current_tools_schema = tools_schema
+        self._current_held_back_schemas = list(held_back or [])
         if not session_id:
             return
         entry = self._live_state_by_session.setdefault(session_id, {})
         entry["tools_schema"] = tools_schema
+        entry["held_back_schemas"] = self._current_held_back_schemas
         self._evict_live_state(session_id)
+
+    def get_run_tool_schemas(self, session_id: Optional[str]) -> List[Dict[str, Any]]:
+        """Every schema the current run of *session_id* may call: the live list,
+        then every deferred schema (a loaded one comes twice; a lookup by name
+        finds it either way).
+
+        For a caller that dispatches by name without the model having loaded
+        the tool (tool_script): it needs the tool's parameters either way. The
+        shared, racy fields answer only when the session is not tracked."""
+        entry = self._live_state_by_session.get(session_id) if session_id else None
+        if entry is None:
+            return list(self._current_tools_schema) + list(self._current_held_back_schemas)
+        return list(entry.get("tools_schema") or []) + list(entry.get("held_back_schemas") or [])
 
     def _evict_live_state(self, keep_session: str) -> None:
         """Bound the per-session live-state dict (simple FIFO eviction)."""
@@ -2397,7 +2415,8 @@ class Agent(ToolServer):
 
         # Track current tool schemas per-session for token estimation by hooks.
         # The same list the run sends: a tool loaded later is counted too.
-        self._set_live_tools_schema(session_id, tools_schema)
+        self._set_live_tools_schema(session_id, tools_schema,
+                                    held_back=deferred_tools.schemas() if deferred_tools is not None else None)
 
         # Return initialized context
         return ConversationContext(
@@ -3505,6 +3524,11 @@ class Agent(ToolServer):
                         else:
                             messages.append(note)
                         context.messages = messages
+                # A tool the history calls goes out with its schema: the hooks
+                # may have written calls in since the run started (tool_preload),
+                # as appended messages may. Loads nothing when nothing is new.
+                if context.deferred_tools is not None:
+                    context.deferred_tools.restore(messages, tools_schema)
                 pending_thinking_complete = None
                 _llm_call_started = asyncio.get_event_loop().time()
                 health_asked_at = model_health.now()

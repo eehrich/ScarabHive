@@ -758,6 +758,32 @@ class TestSecurityAndCaps:
         assert "external MCP tool" in res["error"]
 
     @pytest.mark.asyncio
+    async def test_a_deferred_external_mcp_tool_is_named_as_such(self, agent):
+        # tools.deferred holds its schema back from the live list; the run's
+        # schemas still carry it, for the calling session.
+        asked = []
+        agent._current_tools_schema = []
+        agent.get_run_tool_schemas = lambda session_id: asked.append(session_id) or [
+            {"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        res = await run(make_server(), agent, 'call_tool("web_search")')
+        assert "external MCP tool" in res["error"]
+        assert asked and set(asked) == {"sess-1"}
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_tool_is_validated_against_its_held_back_schema(self, agent):
+        # A plugin with list_tools() only: no get_tools() fallback finds it.
+        agent.add_tool("kit_deploy", lambda p: {"status": "ok"})
+        asked = []
+        schema = {"type": "function", "function": {"name": "kit_deploy", "parameters": {
+            "type": "object", "properties": {"text": {"type": "string"}}}}}
+        # Only the calling session's run has it: the lookup must name that session.
+        agent.get_run_tool_schemas = lambda session_id: asked.append(session_id) or (
+            [schema] if session_id == "sess-1" else [])
+        res = await run(make_server(), agent, 'call_tool("kit_deploy", bogus=1)')
+        assert res["status"] == "error" and "unknown parameter(s) ['bogus']" in res["error"]
+        assert agent.dispatched == []
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("script", [
         "b = 10 ** 4000\nresult = [b] * 20000",
         "b = 10 ** 4000\nbig = [b] * 20000\nkeynum",

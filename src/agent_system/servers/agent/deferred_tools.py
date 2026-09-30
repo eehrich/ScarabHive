@@ -11,7 +11,10 @@ told to send the call again with the parameters now in its tool list.
 Loaded schemas are APPENDED to the run's tool list, so a load invalidates the
 cached prefix from the tool list on, once. A new run of the same session loads
 again what its history already loaded (``restore``), so it starts with the tool
-list the previous run ended with instead of paying the load a second time.
+list the previous run ended with instead of paying the load a second time; the
+run repeats that before every LLM call, for calls others wrote into the history
+(tool_preload). tool_script reads the held-back schemas through
+``Agent.get_run_tool_schemas``.
 """
 
 from __future__ import annotations
@@ -81,6 +84,10 @@ class DeferredTools:
         tools_schema.append(instance.search_schema())
         return instance
 
+    def schemas(self) -> List[Dict[str, Any]]:
+        """Every deferred schema, loaded or not."""
+        return list(self._schemas.values())
+
     def search_schema(self) -> Dict[str, Any]:
         lines = [f"- {name}: {_summary(self._schemas[name]['function'].get('description', ''))}"
                  for name in sorted(self._schemas)]
@@ -133,12 +140,15 @@ class DeferredTools:
         loaded it: the model wrote its arguments without the schema, which only
         the next step carries.
 
-        *arguments* is None when they were not valid JSON: a ``tool_search``
-        then gets the parse error (None here), an unloaded tool is refused and
-        loaded all the same -- its arguments were never going to be used."""
+        *arguments* None: the call's arguments were not valid JSON, and it
+        gets the parse error, not an answer from here (None). An unloaded tool
+        is loaded all the same, in the order of the calls -- the order a later
+        ``restore`` of this history rebuilds."""
+        if arguments is None:
+            if name is not None and self.load([name], tools_schema):
+                self._refused[name] = step
+            return None
         if name == TOOL_SEARCH:
-            if arguments is None:
-                return None
             query = arguments.get("query") if isinstance(arguments, dict) else None
             found = self.search(query if isinstance(query, str) else "")
             for loaded in self.load(found, tools_schema):
