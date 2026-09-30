@@ -242,6 +242,24 @@ class TestRoom:
 
         assert [c["question"] for c in listing] == ["one", "two"], "turn one gave way for nothing"
 
+    async def test_a_deleted_directory_takes_no_room_from_older_turns(self, make_rig):
+        """A directory keeps no bytes -- only the files in it do. Its st_size
+        (tens of KB for one with many entries) was counted as room needed."""
+        rig = await make_rig(max_session_bytes=250)
+        work = rig.work
+        (work / "a.txt").write_text("a" * 100)
+        (work / "d").mkdir()
+        for i in range(300):
+            (work / "d" / f"entry_with_a_long_name_{i:04}.txt").write_text("")
+        if os.lstat(work / "d").st_size <= 150:
+            pytest.skip("this file system reports no size for a directory")
+        await rig.turn("one", [create(work / "a.txt", "A", overwrite=True)])
+        await rig.turn("two", [delete(work / "d", recursive=True)])
+
+        listing = (await rig.checkpoints())["checkpoints"]
+
+        assert [c["question"] for c in listing] == ["one", "two"], "turn one gave way for nothing"
+
     async def test_a_grandchild_of_an_earlier_branch_stands_before_a_later_sibling(self, rig):
         """X, then Y on top of it, both dropped without their files; then Z where
         X stood, dropped too; then W. y.txt was on disk when Z began: rewinding to
