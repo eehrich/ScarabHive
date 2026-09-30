@@ -148,11 +148,25 @@ host.
 
 @{h2}Local files
 
-@{tt}upload_file@{utt} reads any file the server process can read and
-@{tt}download_file@{utt} writes wherever it can write, replacing a file
-that is there. Relative paths start in the server's working directory.
-Nothing restricts them to a folder: an agent that should not move files
-between the server and a machine gets neither tool.
+@{tt}upload_file@{utt} reads and @{tt}download_file@{utt} writes local
+files only inside one folder, the setting @{tt}local_root@{utt} (see
+@{" Setting it up " link setup}). Without it both tools refuse every call.
+A relative @{tt}local_path@{utt} starts in that folder, also one
+beginning with @{tt}data/@{utt}; an absolute one
+must lie in it.
+
+The path is resolved before it is checked: @{tt}..@{utt} and symlinks or
+junctions that lead out of the folder are refused, and so is a download
+onto a link to a file outside. A host path (@{tt}\\\\host\\share@{utt},
+@{tt}//host/share@{utt}) is refused from its text alone -- Windows would
+otherwise connect to the host and sign in with the server's credentials
+before any check. A folder, a Windows device name (@{tt}CON@{utt},
+@{tt}COM1@{utt}, ...) and a path starting with @{tt}~@{utt} (not expanded)
+are refused as @{tt}local_path@{utt} too.
+
+Inside the folder there is no further limit: a download replaces a file
+that is there. An agent that should not move files between the server
+and a machine at all gets neither tool.
 
 @{h2}Host keys
 
@@ -334,26 +348,33 @@ read or that was stopped does not wake anybody.
 @{h1}Files
 
 Both tools copy over SFTP on one of the machine's connections. Local paths
-are on the server that runs the plugin; see
-@{" What an agent can do " link security} for what that allows.
+are on the server that runs the plugin, inside the folder
+@{tt}local_root@{utt}; a relative one starts there. See
+@{" What an agent can do " link security} for what is refused.
 
 @{h2}ssh_control_upload_file
 
 @{table}
 Parameter | Meaning
 machine | the machine; required
-local_path | a file on the server; required
+local_path | a file in local_root; required
 remote_path | where it goes on the machine, file name included; required
 mode | permissions in octal, e.g. "0644"; set after the copy
 @{body}
 
 The answer has the same shape as @{tt}execute@{utt}'s: @{tt}results@{utt}
-with @{tt}local_path@{utt}, @{tt}remote_path@{utt},
+with @{tt}local_path@{utt} (resolved, absolute), @{tt}remote_path@{utt},
 @{tt}bytes_transferred@{utt}, @{tt}duration@{utt} and
 @{tt}success@{utt}, and the counts. A failure has @{tt}error@{utt}: "Local
 file not found: ...", the SFTP error ("Permission denied", "No such
 file"), or an invalid mode -- then the file is on the machine but its mode
 is not set. Directories are not copied.
+
+A local path the tools refuse fails the call itself, before any machine
+is contacted: "Local files are disabled: local_root is not set. ...",
+"Path is outside the allowed directories: ... Allowed: <folder>",
+"local_path is a directory, not a file: ...", "Refusing a Windows
+device name: ..." or "Path starts with '~' ...".
 
 @{h2}ssh_control_download_file
 
@@ -362,7 +383,8 @@ all required. It answers @{tt}machine@{utt}, @{tt}remote_path@{utt},
 @{tt}local_path@{utt}, @{tt}bytes_transferred@{utt},
 @{tt}duration@{utt}, @{tt}success: true@{utt} -- or @{tt}success:
 false@{utt} with the @{tt}error@{utt}. A file at @{tt}local_path@{utt} is
-replaced; its folder must exist.
+replaced; missing folders inside local_root are created. A refused path
+fails the call as for upload.
 
 @{code json}
 {"machine": "build-host", "local_path": "dist/app.tar.gz", "remote_path": "/srv/app/app.tar.gz", "mode": "0640"}
@@ -461,8 +483,8 @@ Nine tools, named @{tt}<instance>_execute@{utt},
 come from the plugin's @{tt}schema.yaml@{utt}. The machine list is not in
 them: an agent calls @{tt}list_machines@{utt}, or has the names in its
 prompt. Errors are in the answer as described per tool; a missing required
-parameter of execute, the transfers, get_output or kill_process fails the
-call itself.
+parameter of execute, the transfers, get_output or kill_process, and a
+refused local path, fail the call itself.
 
 In the chat, the call's status line ends with its result, outcome first:
 "build-host: exit 0 in 0.2s -- df -h /", "build-host: 0 ok, 1 failed
@@ -503,6 +525,7 @@ plugins:
     ssh_control:
       type: ssh_control
       enabled: true
+      local_root: data/ssh_control/files
       machines:
         - name: build-host
           host: build-host.example
@@ -572,6 +595,15 @@ tags | [] | labels for list_machines
 a machine added at runtime gets them only after a restart.
 A machine entry that is invalid is logged and left out; the others load.
 
+@{h2}Local files
+
+@{tt}local_root@{utt} (no default) is the one folder
+@{tt}upload_file@{utt} reads from and @{tt}download_file@{utt} writes to.
+A relative value counts from the project folder, and @{tt}data/...@{utt}
+from the data directory. Unset, empty or blank, both tools refuse every call and
+say so -- the other tools work as before. The folder is not created at
+start; a download creates what it needs inside it.
+
 @{h2}Security settings
 
 @{code yaml}
@@ -594,7 +626,9 @@ Machines added with @{tt}persistent@{utt} are in
 @{tt}data/ssh_control/machines.<instance>.yaml@{utt} and are read at
 start. A machine of the same name in the configuration wins; the stored
 one is ignored with a warning. Recorded outcomes for woken runs are in the
-plugin cache (@{tt}data/cache/<instance>/@{utt}) for an hour. Machines
+plugin cache (@{tt}data/cache/<instance>/@{utt}) for an hour. Transferred
+files are wherever @{tt}local_root@{utt} points (the sysadmin agent uses
+@{tt}data/ssh_control/files@{utt}). Machines
 that an old version wrote to @{tt}config/mcp.yaml@{utt} are not read;
 at start the server log says how many there are and in which file, so
 they can be added again.

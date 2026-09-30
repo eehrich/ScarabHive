@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import deque
+from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
 from agent_system.core.session_presence import wake_blocked, wake_session
+from agent_system.paths import PROJECT_ROOT, resolve_data_path
 from agent_system.plugins.cache import PluginCache
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import PathSandbox, PathSandboxDenied
 
 from . import machine_store
 from .background import RemoteProcessManager
@@ -27,6 +31,12 @@ logger = logging.getLogger(__name__)
 #: What a recorded result may carry per stream -- enough for the tail of a
 #: build, not the whole log.
 _RECORDED_STREAM_CAP = 30_000
+
+
+#: Windows device names (CON, NUL, COM1, ...). Windows 11 treats them as plain
+#: files inside a folder; older Windows opens the device instead.
+_reserved = getattr(os.path, "isreserved",
+                    lambda path: os.name == "nt" and PureWindowsPath(path).is_reserved())
 
 
 def _short(command: str, limit: int = 60) -> str:
@@ -82,6 +92,16 @@ class SSHControlToolServer(SchemaBasedToolServer):
                            name, config_dict.get('machines') or [])}
 
         self.connection_manager = SSHConnectionManager(config_dict, command_history=self.command_history)
+        # upload_file and download_file touch local files only inside
+        # local_root; unset, both refuse (fail closed).
+        self._local_files: PathSandbox | None = None
+        # Blank counts as unset: "  " resolved to the project root on Windows.
+        local_root = str(config_dict.get('local_root') or '').strip()
+        if local_root:
+            root = resolve_data_path(local_root)
+            root = (root if root.is_absolute() else PROJECT_ROOT / root).resolve()
+            self._local_root = root
+            self._local_files = PathSandbox.from_config([str(root)], base=root)
         self.processes = RemoteProcessManager(self.connection_manager)
         # Where a finished command's outcome survives THIS process: a run
         # woken for it is a new one and has none of these in memory.
@@ -100,6 +120,34 @@ class SSHControlToolServer(SchemaBasedToolServer):
             f"SSH Control Tool Server '{name}' initialized with "
             f"{len(self.connection_manager.machines)} machines"
         )
+
+    def _local_file(self, local_path: str, *, write: bool) -> str:
+        """The file local_path names inside local_root, resolved -- the path that is then opened.
+
+        Symlinks and junctions are followed before the check, so a link out of
+        the root is refused like any other path outside it.
+        """
+        if self._local_files is None:
+            raise PermissionError(
+                "Local files are disabled: local_root is not set. The operator "
+                "must set local_root in the ssh_control configuration.")
+        relative = Path(local_path)
+        if not relative.is_absolute() and not relative.drive:
+            # Joined here: the sandbox sends a relative data/... to the data directory.
+            local_path = str(self._local_root / relative)
+        try:
+            full = self._local_files.resolve(local_path)
+        except PathSandboxDenied as exc:
+            raise PermissionError(str(exc)) from exc
+        if _reserved(full.name):
+            raise PermissionError(f"Refusing a Windows device name: {local_path}")
+        if full.is_dir():
+            raise IsADirectoryError(f"local_path is a directory, not a file: {local_path}")
+        if write:
+            # ponytail: checked, then opened -- a link planted between the two
+            # by another process is not caught; nothing in this plugin makes links.
+            full.parent.mkdir(parents=True, exist_ok=True)
+        return str(full)
 
     # MCP Tool Handlers - auto-dispatched by SchemaBasedToolServer
 
@@ -575,6 +623,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
             raise ValueError("Missing required parameter: local_path")
         if not remote_path:
             raise ValueError("Missing required parameter: remote_path")
+        local_path = self._local_file(local_path, write=False)
 
         # Handle single machine or list of machines
         machines = [machine] if isinstance(machine, str) else machine
@@ -694,6 +743,7 @@ class SSHControlToolServer(SchemaBasedToolServer):
             raise ValueError("Missing required parameter: remote_path")
         if not local_path:
             raise ValueError("Missing required parameter: local_path")
+        local_path = self._local_file(local_path, write=True)
 
         logger.info(f"Downloading file from {machine}: {remote_path} -> {local_path}")
 

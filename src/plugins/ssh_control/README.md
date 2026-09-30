@@ -11,11 +11,11 @@ machine with its state and history, runs commands and adds or removes machines -
   and remove.
 - **Security** -- no command allowlist: the remote account is the limit. Strict host key checking against
   `known_hosts` is on by default; every command, background start and file copy is written to the server log as an
-  `AUDIT:` line. `add_machine` and the file tools reach beyond the configured machines and folders -- allow the
-  tools one by one where that is not wanted.
+  `AUDIT:` line. `add_machine` reaches beyond the configured machines -- allow the tools one by one where that is
+  not wanted. The file tools read and write local files only inside the folder `local_root` and refuse without it.
 
-Configure it with its machines in the agent's YAML (`plugins.servers.ssh_control: {type: ssh_control, machines:
-[...]}`) and allow `+ssh_control/*` (or single tools) in the agent's tool list. It needs `asyncssh`.
+Configure it with its machines in the agent's YAML (`plugins.servers.ssh_control: {type: ssh_control, local_root:
+data/ssh_control/files, machines: [...]}`) and allow `+ssh_control/*` (or single tools) in the agent's tool list. It needs `asyncssh`.
 
 The full manual -- the panel, what an agent can and cannot do, every tool with its parameters and answers,
 background commands and wakes, the machine and security settings -- is the plugin's guide, `ssh_control.guide`, in

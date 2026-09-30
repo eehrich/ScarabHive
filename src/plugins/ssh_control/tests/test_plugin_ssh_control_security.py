@@ -71,7 +71,7 @@ class Connection:
         pass
 
 
-def server(monkeypatch, audit=True):
+def server(monkeypatch, audit=True, local_root=None):
     from plugins.ssh_control.plugin import PLUGIN_FACTORY
 
     async def connect(*args, **kwargs):
@@ -81,6 +81,8 @@ def server(monkeypatch, audit=True):
     config = ToolServerConfig()
     config.machines = [{"name": "m", "host": "m.test", "username": "root", "command_timeout": 1}]
     config.security = {"audit_log": audit}
+    if local_root is not None:
+        config.local_root = str(local_root)
     return PLUGIN_FACTORY("ssh_control_test", AgentSystemConfig(), config).tool_server
 
 
@@ -124,8 +126,8 @@ def failed(machine, local_path, remote_path, *rest):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_upload_says_why(monkeypatch):
-    tool_server = server(monkeypatch)
+async def test_a_failed_upload_says_why(monkeypatch, tmp_path):
+    tool_server = server(monkeypatch, local_root=tmp_path)
 
     async def upload(machine, local_path, remote_path, mode=None):
         return failed(machine, local_path, remote_path)
@@ -137,8 +139,8 @@ async def test_a_failed_upload_says_why(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_download_says_why_and_ends_as_an_error(monkeypatch):
-    tool_server = server(monkeypatch)
+async def test_a_failed_download_says_why_and_ends_as_an_error(monkeypatch, tmp_path):
+    tool_server = server(monkeypatch, local_root=tmp_path)
 
     async def download(machine, remote_path, local_path):
         return failed(machine, local_path, remote_path)
@@ -216,8 +218,8 @@ def recording_status(lines):
 
 
 @pytest.mark.asyncio
-async def test_failed_transfers_say_so_in_the_status_line(monkeypatch):
-    tool_server = server(monkeypatch)
+async def test_failed_transfers_say_so_in_the_status_line(monkeypatch, tmp_path):
+    tool_server = server(monkeypatch, local_root=tmp_path)
 
     async def upload(machine, local_path, remote_path, mode=None):
         return failed(machine, local_path, remote_path)

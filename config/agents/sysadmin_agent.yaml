@@ -5,6 +5,9 @@ plugins:
     ssh_control:
       type: ssh_control
       enabled: true
+      # upload_file/download_file only read and write local files in here;
+      # without it both tools refuse.
+      local_root: data/ssh_control/files
       machines:
         - name: hosta
           host: 192.0.2.2
