@@ -27,7 +27,7 @@ class PlatformDetector:
             return self._detect_unix_bash()
 
     def _detect_windows_bash(self) -> Tuple[str, str]:
-        """Detect bash on Windows (Git Bash, WSL, or bash in PATH)."""
+        """Detect bash on Windows: Git Bash, else the first bash on PATH."""
         # Try Git Bash first (preferred on Windows)
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
         if os.path.exists(git_bash):
@@ -38,16 +38,14 @@ class PlatformDetector:
         if bash:
             return bash, "bash"
 
-        # Try WSL bash as last resort
-        wsl_bash = shutil.which("wsl")
-        if wsl_bash:
-            # Return wsl bash (need to run as "wsl bash -c command")
-            return wsl_bash, "WSL"
-
+        # No wsl.exe fallback: every command is spawned as `<bash> -c
+        # <command>`, and wsl.exe answers that with "invalid command line
+        # argument: -c" (measured) -- a terminal that loads and runs nothing.
+        # WSL's own bash.exe in System32 takes -c and is found on PATH above.
         raise RuntimeError(
             "No bash executable found on Windows. "
-            "Please install Git Bash (https://git-scm.com/download/win) "
-            "or WSL (https://aka.ms/wsl)"
+            "Please install Git Bash (https://git-scm.com/download/win), "
+            "or name a bash in the terminal's platform.bash_path"
         )
 
     def _detect_unix_bash(self) -> Tuple[str, str]:

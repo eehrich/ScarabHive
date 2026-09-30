@@ -7,6 +7,8 @@ the backend choice itself.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -52,6 +54,7 @@ def test_a_host_without_a_backend_announces_the_refusal(tmp_path, monkeypatch):
     assert "Commands are refused here" in description(tmp_path, "workspace-write")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows forbids a double quote in a file name")
 def test_a_workspace_path_with_quotes_survives_the_yaml(tmp_path, monkeypatch):
     """The note lands inside a double-quoted YAML string."""
     monkeypatch.setattr(ps, "_host", lambda: "macos")
