@@ -698,4 +698,4 @@ llm_system:
   decision_profiles:
     laya:
       model_ref: laya
-      description: "Laya, open weights on a local laya-serve - measured blind to German language errors (README of llm_decisions)"
+      description: "Laya, open weights on a local laya-serve"
