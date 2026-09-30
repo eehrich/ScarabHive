@@ -27,7 +27,7 @@ tools:
       description: >-
         Sends one short request through an LLM profile the way an agent would (default: the
         default chat agent's first profile) and says whether an answer came, or the error the
-        provider gave -- a refused key shows as such. Uses the configuration the chat started with.
+        provider gave -- a refused key shows as such.
         Costs one small request; batch profiles are refused. Administrators only.
       parameters:
         type: object

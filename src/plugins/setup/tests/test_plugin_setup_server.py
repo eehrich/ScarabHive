@@ -399,6 +399,16 @@ class TestTheKeyEndpoints:
         assert "SETUP_TEST_KEY=" + value in (master.parent / "local.env").read_text(encoding="utf-8")
         assert not (master.parent / "secrets.env").exists()
 
+    def test_a_body_that_is_no_json_is_a_400(self, machine):
+        """request.json() raised unguarded: broken JSON answered 500."""
+        app, master = machine
+
+        answer = TestClient(app, raise_server_exceptions=False).post(
+            "/plugins/setup/key", content=b"{not json", headers={"Content-Type": "application/json"})
+
+        assert answer.status_code == 400, answer.text
+        assert not (master.parent / "local.env").exists()
+
     def test_only_a_key_the_configuration_names_is_taken(self, machine):
         """Not PATH, not a variable some plugin never reads: the name must be one the files name."""
         app, master = machine

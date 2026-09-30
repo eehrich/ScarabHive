@@ -180,7 +180,10 @@ class SetupServer(SchemaBasedToolServer):
         """Write one key into config/local.env (never a tracked file) and into this process, then reload the config:
         the chat's next message builds its client with it. The value never comes back."""
         require_json(request)
-        body = await request.json()
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
         name, value = (body.get("name"), body.get("value")) if isinstance(body, dict) else (None, None)
         if not isinstance(name, str) or not isinstance(value, str):
             raise HTTPException(status_code=400, detail="Send {\"name\": ..., \"value\": ...}")

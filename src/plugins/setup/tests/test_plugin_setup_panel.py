@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.skipif(BROWSER is None, reason="no Chromium-based brow
               pytest.mark.timeout(PAGE_TIMEOUT + 60)]
 
 
-def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
+def panel_app(users_folder: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     from plugins.setup import server as module
 
     loaded = load_settings()
@@ -145,7 +145,7 @@ def panel_app(monkeypatch, users_folder: Path) -> FastAPI:
 @pytest.fixture(scope="module")
 def results(tmp_path_factory):
     with pytest.MonkeyPatch.context() as monkeypatch:
-        app = panel_app(monkeypatch, tmp_path_factory.mktemp("setup_panel"))
+        app = panel_app(tmp_path_factory.mktemp("setup_panel"), monkeypatch)
         yield run_app_test_page(BROWSER, app, "tests/setup/panel_tests.html", timeout=PAGE_TIMEOUT)
 
 

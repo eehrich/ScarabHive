@@ -121,6 +121,26 @@ SHOTS = {
         };
         relative();
         new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});""")],
+    "setup": [("panel.png", "plugins.setup.tests.test_plugin_setup_panel", "panel_app",
+               "/plugins/setup/", (900, 900), """
+        // a first start, seeded: the stub's state is read from this machine's configuration and environment
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        const key = (name, state, named_in, from_environment = false) => ({name, state, named_in, from_environment});
+        await fetch('/__stub/set', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+          keys: [key('ANTHROPIC_API_KEY', 'placeholder', ['llm_system.models.claude-opus-5-thinking']),
+                 key('DEEPSEEK_API_KEY', 'missing', ['llm_system.models.deepseek-pro']),
+                 key('FORGE_GITLAB_TOKEN', 'set', ['plugins.servers.forge'], true),
+                 key('OPENROUTER_API_KEY', 'set', ['llm_system.models.openrouter-base',
+                                                   'llm_system.tts_models.openrouter-qwen-tts']),
+                 key('TAVILY_API_KEY', 'missing', ['plugins.servers.tavily_search'])],
+          auth: {admin: 'admin', default_admin_password: true, shared_signing_key: true,
+                 signing_key_needs_restart: false, configured_signing_key_known: true},
+          me: 'admin', probe: {ok: true, model: '~deepseek/deepseek-v4-flash-latest'}})});
+        document.querySelector('pk-refresh [data-act="now"]').click();
+        await until(() => document.querySelectorAll('#keys tbody tr').length === 5 && document.getElementById('password'));
+        document.getElementById('probe').click();
+        await until(() => document.querySelector('#chat .pk-badge--ok'));""")],
     "debate_forum": [("panel.png", "plugins.debate_forum.tests.test_plugin_debate_forum_panel", "panel_app",
                       "/plugins/debate_forum/", (1000, 680), """
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;
