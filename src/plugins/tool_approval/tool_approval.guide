@@ -1,0 +1,472 @@
+@database "tool_approval"
+@author "Enrico Ehrich"
+@$VER: tool_approval.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Tool Approval"
+@{h1}Tool Approval
+
+Tool Approval decides every tool call of an agent before it runs. Deny rules
+block a call, allow rules let it through, and in @{tt}ask@{utt} mode every
+other call is put to the person watching the run in the web chat: the call
+and its arguments appear under the run, with the buttons
+@{b}Allow once@{ub}, @{b}Allow for this session@{ub} and @{b}Deny@{ub}. A
+call nobody answers does not run. The plugin is loaded in the default
+configuration, but it is off for every agent until the agent switches it on.
+It has no tools and no panel of its own.
+
+@{code}
+For users
+  @{"  Approving a call  " link approving}
+  @{"  Who is asked, and when not  " link attended}
+
+For agents and developers
+  @{"  Rules and modes  " link rules}
+  @{"  Sub-agents, spawns and scripts  " link subruns}
+  @{"  The hook  " link hook}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node approving "Approving a call"
+@{h1}Approving a call
+
+A question is a line in the run's status rows: @{tt}Approve <tool>?@{utt}
+followed by the arguments. Below it the chat draws a box with the call's
+arguments, a field for a reason and the buttons. A call a sub-agent makes is
+asked the same way, in the sub-agent's box inside the run.
+
+@{h2}What the box shows
+
+@{bullet}Every argument by name, in the order the model sent them. Nested
+fields are named by their path (@{tt}opts.cmd@{utt}, @{tt}files[2]@{utt}); a
+name with any other character -- a dot, a bracket, a space, a line break --
+is shown in quotes, so a key @{tt}"opts.cmd"@{utt} cannot pass for the field
+@{tt}cmd@{utt} inside @{tt}opts@{utt}.
+@{bullet}One-line values as JSON. Values with line breaks (a script, a
+heredoc) follow as a block, each line marked with @{tt}│@{utt}, so a line of
+code cannot pass for another argument.
+@{bullet}Invisible characters escaped: control characters, bidirectional
+overrides, zero-width characters, line and paragraph separators appear as
+@{tt}\\u202e@{utt} and the like. What you read is what runs.
+@{bullet}At most about 4000 characters. Short values stand whole; long ones
+lose their middle, never their head or tail, and the box says
+@{i}Long values are shortened in the middle -- check what the call writes
+before you allow it.@{ui} Past 300 values the rest are counted
+(@{i}… and 12 more arguments not shown@{ui}); the top-level arguments stay
+in view before the fields of a big nested one.
+@{bullet}A red warning above the buttons when the call would start work that
+passes no approval -- a sub-agent that has approvals off, Claude Code, a
+state machine: @{i}agent 'x' runs WITHOUT tool approvals: the rules of this
+run do not apply to its calls.@{ui}
+
+The text is shown as text, never as markup.
+
+@{h2}The buttons
+
+@{table}
+Button | What happens
+Allow once | this call runs; the next call of the same tool is asked again
+Allow for this session | this call runs, and every later call of the same tool in this session runs without a question -- whatever its arguments. Not offered for a script
+Deny | the call does not run. The reason you typed goes to the agent with the refusal
+@{body}
+
+"Allow for this session" is kept per tool (@{tt}server/tool@{utt}), not per
+argument: allowing @{tt}terminal_execute@{utt} once for the session allows
+every later command. A deny rule still wins over it. For a spawn without
+approvals it is kept per target: allowing agent @{tt}x@{utt} does not allow
+agent @{tt}y@{utt}. It lasts until the server restarts.
+
+After a click the box says @{i}Sending…@{ui}, then @{i}Answered: Allow
+once@{ui}. The row's last line takes the box down in every tab that shows the
+run: @{tt}<tool>: allowed once by <you>@{utt}, @{tt}allowed for this session
+by …@{utt}, @{tt}denied by … -- <reason>@{utt}.
+
+@{h2}When the answer is refused
+
+@{bullet}@{i}Not taken: No such question is waiting -- it was answered, timed
+out or its run ended.@{ui} -- the buttons stay off.
+@{bullet}@{i}Not taken: Only the user whose run asks, or an admin, may
+answer.@{ui} -- you are signed in as someone else.
+@{bullet}Any other refusal leaves the buttons on for a second try.
+
+@{h2}When nobody answers
+
+@{table}
+Case | What happens to the call
+no answer within ask_timeout (300 s by default) | not run; the row ends @{tt}no answer within 300 s, not run@{utt}
+the tab was closed and not reopened within gone_after_seconds (15 s) | the question stops; the call gets the @{tt}unattended@{utt} answer -- not run by default
+the run is stopped while it asks | not run; the chat reports the call cancelled
+the server restarts | the run ends; nothing about the question or earlier session grants is kept
+@{body}
+
+A page reloaded while a question waits gets the box back within
+@{tt}reask_seconds@{utt} (20 s): the question is sent again that often.
+
+@{h2}Who may answer
+
+The user the run belongs to, or an admin. Only a person's sign-in counts --
+the chat's session, or a bearer token -- never an API key: a program that
+answers the questions put to a person would make them pointless.
+
+@{b}With authentication off, anyone who reaches the API can answer@{ub} --
+another web page, and the agent itself through an HTTP tool or a shell with
+@{tt}curl@{utt}. Approvals that must hold against the model need
+authentication on.
+@endnode
+
+@node attended "Who is asked, and when not"
+@{h1}Who is asked, and when not
+
+A question is put only where a person can answer it: a run the web chat
+started for a signed-in user (or with authentication off), while a tab reads
+it. Everything else is @{i}unattended@{ui}, and the call gets the
+@{tt}unattended@{utt} answer: @{tt}block@{utt} (the default) or
+@{tt}allow@{utt}.
+
+@{table}
+Started by | Asked?
+the web chat, signed in or authentication off, while a tab reads the run | yes
+the web chat, an anonymous visitor; or the tab was closed for gone_after_seconds | no
+a sub-agent, an agent called as a tool, a state machine activity under such a run | yes, in the run above it
+an async sub-agent after the run above it ended | no
+the OpenAI-compatible API, agent-run, agent-cli, a JSON @{tt}/run@{utt} | no
+a call inside a tool_script script | never -- see @{" Sub-agents, spawns and scripts " link subruns}
+@{body}
+
+The web chat marks the runs it starts (@{tt}"attended": true@{utt} on
+@{tt}POST /events@{utt}, form field @{tt}attended@{utt} on @{tt}/run@{utt}
+with files). Another client that shows its user the stream must send the mark
+itself and draw @{tt}meta.tool_approval@{utt}; see @{" Setting it up " link setup}.
+
+"Nobody reads" counts from the moment the last tab left the run, so a reload
+-- which reads again within moments -- keeps the question. A spawn without
+approvals is always blocked where nobody can be asked, whatever
+@{tt}unattended@{utt} says.
+@endnode
+
+@node rules "Rules and modes"
+@{h1}Rules and modes
+
+@{h2}Modes
+
+@{table}
+Mode | Deny rules | Allow rules | Everything else
+ask | block | run without a question | put to the person watching; unattended: the @{tt}unattended@{utt} answer
+auto | block | -- | runs
+off | the instance's deny rules still block | -- | runs
+@{body}
+
+@{tt}off@{utt} on an agent switches off its own rules and its questions; the
+deny rules of the instance (the plugins.yaml entry) and those of a run above
+it still apply. @{tt}off@{utt} on the instance is the default for agents
+that set no mode, and for them nothing is checked. YAML reads a bare
+@{tt}off@{utt} as false; both mean off.
+
+@{h2}The order of the checks
+
+@{bullet}A deny rule of the run, or of a run above it, names the call:
+blocked. Deny wins over allow rules and over "allow for this session".
+@{bullet}Mode off: the call runs.
+@{bullet}The call starts work without approvals (a spawn): blocked in auto,
+asked with a warning in ask. Allow rules do not let it through.
+@{bullet}A call inside a script: runs.
+@{bullet}Mode auto: runs.
+@{bullet}Mode ask: an allow rule names it, or a person allowed the tool for
+this session: runs. Otherwise the person is asked.
+
+@{h2}A rule
+
+A rule names tools the way an agent's @{tt}tools.allowed@{utt} does, by the
+same function:
+
+@{table}
+Pattern | Matches
+server/tool | that one tool; the tool name carries the instance prefix: @{tt}terminal/terminal_execute@{utt}
+server/* | every tool of that instance
+server | the same, without the slash
+anything with * | fnmatch on @{tt}server/tool@{utt} and on the bare tool name: @{tt}*_execute@{utt} matches the execute tool of every instance
+@{body}
+
+A rule names an @{b}instance@{ub}, not a plugin type:
+@{tt}terminal/*@{utt} does not reach a second shell instance such as
+@{tt}coder_shell@{utt}. Deny each instance, or use a wildcard. Without a
+@{tt}*@{utt} the pattern is compared as it is, so @{tt}?@{utt} and
+@{tt}[ ]@{utt} only work next to a @{tt}*@{utt}.
+
+A rule may add patterns on the call's arguments:
+
+@{code yaml}
+deny:
+  - "ssh_control"
+  - tool: "terminal/*"
+    arguments:
+      command: "\\\\bsudo\\\\b"
+allow:
+  - "file_ops/*_read_*"
+  - tool: "terminal/terminal_execute"
+    arguments:
+      command: "^git (status|log|diff)( [\\\\w./][-\\\\w./]*)*\\\\Z"
+@{body}
+
+Every argument pattern must match (@{tt}re.search@{utt}) for the rule to
+match. A value that is not a string is matched as its JSON text. A call
+without the argument does not match -- for a deny rule that means it is
+not blocked by that rule.
+
+@{tt}re.search@{utt} finds the pattern anywhere: an allow pattern
+@{tt}^git status@{utt} also allows @{tt}git status; rm -rf ~@{utt}. Anchor
+both ends (@{tt}^...\\Z@{utt}; @{tt}$@{utt} also matches before a final line
+break) and leave out the shell's @{tt};@{utt}, @{tt}&@{utt}, @{tt}|@{utt},
+@{tt}$@{utt} and backquote. Know the allowed command's options too:
+@{tt}git diff --output FILE@{utt} writes a file, so the example allows no
+argument that starts with @{tt}-@{utt}.
+
+@{b}An argument rule on a shell is no boundary.@{ub} A regex catches the
+spellings it was written for, not @{tt}rm -R@{utt}, @{tt}find -delete@{utt},
+a script file, an alias or an interpreter that does the same. Use it to stop
+the obvious; to keep an agent out of the shell, deny the tool.
+
+@{h2}A rule that cannot be read
+
+A bad regex, an unknown key, @{tt}arguments@{utt} that are not a mapping, a
+mode or @{tt}unattended@{utt} value that does not exist, a number of seconds
+that is not above 0: every call the hook decides for that agent is blocked,
+and the error is logged. An error in the instance's settings is logged at
+start and blocks every agent that switched the hook on. A typo in a deny
+rule must not open what it was written to close.
+@endnode
+
+@node subruns "Sub-agents, spawns and scripts"
+@{h1}Sub-agents, spawns and scripts
+
+A run cannot leave its rules behind by starting other work.
+
+@{h2}Sub-runs inherit
+
+A sub-agent, an agent called as a tool, a state machine activity: each runs
+under a request id that extends the id of the run that started it. The
+spawning call passes the parent's hook first, which records the parent's
+rules; a sub-run whose agent has the hook on is held to those of every run
+above it, never looser:
+
+@{bullet}mode: the stricter one (off < auto < ask). A parent in ask makes
+the sub-run ask, in the parent's chat.
+@{bullet}deny: every rule of every level.
+@{bullet}allow: a call runs unasked only when an allow rule of @{i}every@{ui}
+asking level names it.
+@{bullet}unattended: block when any asking level says block.
+@{bullet}"allow for this session": counts only where it was given for every
+asking level; it is kept in the session of each and only for the run's
+owner.
+
+The recorded rules live in memory while the run or a run under it streams,
+and a minute after its last call; at most 10000 runs.
+
+@{h2}Spawns without approvals
+
+Work whose calls this hook would not see is decided on its own, before allow
+rules and session grants:
+
+@{table}
+Call | Starts | Without approvals when
+sub_agent_manager manage_sub_agent, create | the agent @{tt}agent_type@{utt} | that agent does not run this hook, or is a state machine agent
+sub_agent_manager manage_sub_agent, continue | the agent of the sub-session @{tt}instance_id@{utt} | the same; a sub-session that cannot be read counts as without
+an agent called as a tool | that agent | the same; a schema agent's @{tt}list_available_tools@{utt} starts nothing
+coding_cli run_task | Claude Code | always
+stategraph run_machine, send_event, control_run continue/step/run_to/resume/fork/terminate | the machine | always: its @{tt}tool:@{utt} activities pass no hook
+@{body}
+
+Servers are recognised by their plugin type, whatever the instance is
+called. "Does not run this hook" means this instance's
+@{tt}check_tool_call@{utt}: a sub-agent guarded only by a second
+tool_approval instance counts as without. In auto such a spawn is blocked;
+in ask it is asked with the warning; unattended or inside a script it is
+blocked.
+
+Not covered: @{tt}agent_continuation@{utt} continues the same run.
+@{tt}terminal@{utt}, @{tt}ssh_control@{utt} and the like can start anything,
+an agent CLI included -- deny them to close that. A sub-agent started from a
+slash command or a panel button has no request id of a caller and inherits
+nothing.
+
+@{h2}Scripts
+
+A tool_script script is one call of the model: it passes this hook like any
+other, asked with its code in the box, and only ever allowed once -- allowed
+for the session, every later script and every call inside one would run
+unread. The calls inside a script never ask: deny rules (the run's and the
+inherited ones) and spawns without approvals block them, everything else
+runs.
+@endnode
+
+@node hook "The hook"
+@{h1}The hook
+
+One @{tt}pre_tool_call@{utt} hook, @{tt}check_tool_call@{utt}. It runs before
+every tool call of an agent that switched it on -- the model's calls, and the
+calls a script makes -- after every hook that changes arguments (category
+@{tt}tool_arguments@{utt}), so what it checks is what runs. Calls the
+framework already rejected (unknown tool, malformed arguments) never reach
+it.
+
+It never changes a call. It lets it pass, or blocks it: the model reads the
+refusal in place of a result (see @{" What the model sees " link model}).
+It fails closed: a hook that crashes or runs past its own timeout (3600 s)
+blocks the call.
+
+@{h2}Switching it on
+
+In the agent's YAML; the key is the full hook name,
+@{tt}<instance>.check_tool_call@{utt}:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      tool_approval.check_tool_call:
+        enabled: true
+        mode: ask
+        allow:
+          - "file_ops/*_read_*"
+        deny:
+          - "ssh_control"
+        ask_timeout: 300
+        unattended: block
+@{body}
+
+@{tt}hooks.enabled: false@{utt} on the agent switches every hook off, this
+one too.
+
+@{h2}Settings
+
+Each key of the agent's override replaces the instance's @{tt}config:@{utt}
+in plugins.yaml, which replaces the default -- except @{tt}allow@{utt} and
+@{tt}deny@{utt}: the agent's rules are @{b}added@{ub} to the instance's, so
+an agent cannot drop a deny rule the operator set for everyone.
+
+@{table}
+Key | Default | Meaning
+mode | ask | ask, auto or off; see @{" Rules and modes " link rules}
+allow | [] | rules for calls that run without a question in ask
+deny | [] | rules for calls that never run
+ask_timeout | 300 | seconds a question waits; unanswered, the call does not run. Kept 5 s short of the hook's timeout (3600 s), with a warning in the log
+unattended | block | block or allow: a call that would be asked while nobody can answer
+gone_after_seconds | 15 | a run nobody has read this long is not asked any more; a waiting question stops
+reask_seconds | 20 | a waiting question is sent again this often, for a reloaded page
+@{body}
+
+@{tt}enabled@{utt}, @{tt}timeout@{utt} and @{tt}order@{utt} in the override
+belong to the hook system and do not reach the hook. The seconds must be
+numbers above 0.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+No tool, no tool description, no injected message. A call that is allowed
+runs as it was sent, and the model sees nothing of the check. The person's
+waiting shows in the chat, not to the model.
+
+A blocked call's result is the framework's
+
+@{code json}
+{"status": "error", "error": "<text>", "type": "ToolCallBlocked"}
+@{body}
+
+with one of these texts (@{tt}<tool>@{utt} is the name the model called):
+
+@{table}
+Case | Text
+deny rule | The call to '<tool>' is not allowed for this agent (rule on <tool pattern>); it did not run. Do not send it again, and do not try to get the same effect with another call. Tell the user what you would need.
+the person denied | The user denied the call to '<tool>'; it did not run. Their reason: <reason> Do not send it again, and do not try to get the same effect with another call. Take their answer into account, or ask the user how to proceed.
+no answer | The call to '<tool>' needs the user's approval, and nobody answered within <n> seconds; it did not run. Do not send it again right away: go on without it, or finish and tell the user which call is waiting for their approval.
+nobody watching | The call to '<tool>' needs a person's approval, and nobody can give it in this run: nobody is watching it. It did not run. Go on without it, or finish and tell the user which call needs their approval.
+rules unreadable | The call to '<tool>' did not run: the approval rules of this agent cannot be read (<error>). Tell the user; do not retry it.
+spawn, auto | The call to '<tool>' would start <target>, which runs without tool approvals: the rules this run is held to would not apply to its calls. It did not run. Use an agent that has approvals switched on, or tell the user that <target> needs them.
+spawn, nobody to ask | The call to '<tool>' would start <target> without tool approvals; only a person may allow that, and nobody is watching this run. It did not run. Go on without it, or finish and tell the user which call needs their approval.
+spawn inside a script, ask | The call to '<tool>' inside the script would start <target> without tool approvals, and only a person may allow that -- a script cannot ask. It did not run. Make this call on its own, outside the script, so the user can be asked.
+@{body}
+
+Without a reason the sentence @{i}Their reason: …@{ui} is left out. In
+auto a spawn inside a script reads @{i}The call to '<tool>' inside the
+script would start …@{ui}. @{tt}<target>@{utt} reads @{i}agent 'name'@{ui},
+@{i}Claude Code (coding_cli)@{ui}, @{i}the state machine 'id'@{ui} or
+@{i}the sub-agent 'instance'@{ui}. A call cancelled while it was asked is
+reported cancelled by the framework, not blocked.
+
+The deny text names the rule's tool pattern, never its argument patterns: a
+regex in the result would be a recipe for the call that slips past it.
+
+@{h2}Tokens and cache
+
+A blocked call costs its text -- about 40 to 80 tokens, plus the person's
+reason -- in place of the result the tool would have returned. The history
+stays append-only: the model's call and the refusal stand in their place,
+nothing earlier is rewritten, and the prompt cache holds.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The default configuration loads the plugin, so its answer route exists, and
+switches the hook on for nobody (@{tt}config/plugins.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    tool_approval:
+      type: tool_approval
+      enabled: true
+      config:
+        mode: ask
+        ask_timeout: 300
+        unattended: block
+        # ask_user only puts a question to the same person: approving it first
+        # would ask twice
+        allow: ["ask_user/*"]
+        deny: []
+@{body}
+
+The rules here hold for every agent that switches the hook on; each agent's
+own are added. The instance's settings are read when the plugin starts: a
+change takes effect after a restart. No tool, so no allowlist line; no extra
+packages. Each agent opts in as shown in @{" The hook " link hook}.
+
+@{h2}The routes
+
+@{code text}
+POST /plugins/tool_approval/answer    {"question_id", "decision", "reason"}
+GET  /plugins/tool_approval/pending   [?session_id=…&request_id=…]
+@{body}
+
+@{tt}decision@{utt} is @{tt}allow_once@{utt}, @{tt}allow_session@{utt} or
+@{tt}deny@{utt}; @{tt}reason@{utt} reaches the model with deny only, cut to
+1000 characters. An unknown decision, or @{tt}allow_session@{utt} for a
+script, answers 422; a question that no longer waits, 404; someone else's,
+403. @{tt}/pending@{utt} lists the open questions the caller may answer;
+@{tt}request_id@{utt} also takes those of the runs under it,
+@{tt}session_id@{utt} those of the agents that session called as tools.
+
+The question travels as a status line of the run, with
+@{tt}meta.tool_approval@{utt}: @{tt}id, tool, server, arguments,
+arguments_cut, warning, decisions, request_id, session_id, agent, asked_at,
+expires_at, answer_url@{utt}. A client other than the web chat draws its box
+from that, and sends @{tt}attended@{utt} when it starts a run.
+
+@{h2}Where data lives
+
+Nowhere on disk. Open questions, the rules recorded for running sub-runs and
+what was allowed for a session live in the server process; a restart ends
+every run that waits and forgets every session grant. Session grants are kept
+for the last 1000 sessions.
+
+@{h2}Known gaps
+
+@{bullet}"Allow for this session" is per tool, not per argument.
+@{bullet}auto has no reviewer: unmatched calls run.
+@{bullet}A long value is shortened in the middle in the box. When the part
+that matters could be hidden there, deny and ask the agent for a shorter
+call.
+@endnode

@@ -34,7 +34,8 @@ MAX_LIST_ITEMS = 50
 #: What marks a line of a multi-line value.
 BLOCK_MARK = "  │ "
 
-_PLAIN_NAME = re.compile(r"^[A-Za-z0-9_.\-\[\]]+$")
+#: No `.`, `[` or `]`: a key "opts.cmd" would read as the field cmd inside opts.
+_PLAIN_NAME = re.compile(r"^[A-Za-z0-9_\-]+$")
 #: Unicode categories shown escaped: control, format (bidi overrides, zero-width
 #: characters), line and paragraph separators. Text the person reads before they
 #: allow a call must read as it runs -- a bidi override makes code read otherwise.
@@ -123,9 +124,14 @@ def arguments_preview(arguments: Mapping[str, Any]) -> Tuple[str, bool]:
     for key, value in arguments.items():
         _leaves(value, (key,), leaves)
     hidden = max(0, len(leaves) - MAX_LEAVES)
+    if hidden:
+        # The shallowest leaves stay: a big nested argument sent first must not
+        # push a top-level one (the command) out of view.
+        kept = sorted(sorted(range(len(leaves)), key=lambda i: len(leaves[i][0]))[:MAX_LEAVES])
+        leaves = [leaves[i] for i in kept]
     items: List[Tuple[str, str, bool]] = []   # (name, text, is a block)
     names_cut = False
-    for path, value in leaves[:MAX_LEAVES]:
+    for path, value in leaves:
         name, name_cut = _name(path)
         names_cut = names_cut or name_cut
         block = isinstance(value, str) and "\n" in value
