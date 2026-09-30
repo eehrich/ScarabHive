@@ -290,3 +290,22 @@ async def test_on_pre_llm_call_reuses_injector(system_config, server_config):
         # Both should succeed
         assert result1.success is True
         assert result2.success is True
+
+
+@pytest.mark.asyncio
+async def test_the_agents_override_wins_over_the_server_entry(system_config, server_config):
+    """``hooks.overrides.<instance>.inject_sub_agent_context`` settings reach the hook as
+    ``context.hook_config`` and win over the server entry's block (5 shown there)."""
+    server = SubAgentManagerServer("sub_agent_manager", system_config, server_config)
+    sub_agents = [{"instance_id": f"sub_worker_{i:04d}", "agent_type": "worker", "status": "active",
+                   "created_at": f"2026-09-30T10:0{i}:00+00:00", "task_summary": f"Task {i}"} for i in range(3)]
+    with patch.object(server, '_get_manager') as mock_get_manager:
+        mock_get_manager.return_value = MagicMock(list_sub_sessions=AsyncMock(return_value=sub_agents))
+        context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="s",
+                              agent=MagicMock(), agent_name="coordinator",
+                              messages=[ChatMessage(role="user", content="Go")], step=1,
+                              hook_config={"max_sub_agents_shown": 1})
+        await server.on_pre_llm_call(context)
+    block = context.messages[-1].content
+    assert "sub_worker_0002" in block
+    assert "sub_worker_0001" not in block and "sub_worker_0000" not in block

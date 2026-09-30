@@ -153,6 +153,15 @@ SHOTS = {
         (await until(() => document.querySelector('[data-channel="1"]'))).click();
         await until(() => document.querySelectorAll('.df-post').length === 4);
         setTimeout(() => { document.querySelector('.df-messages').scrollTop = 0; }, 300);""")],
+    "sub_agent_manager": [
+        ("panel.png", "plugins.sub_agent_manager.tests.sam_panel_shot", "panel_app",
+         "/plugins/sub_agent_manager/?session_id=s-1", (1000, 820), """
+        const until = async (find) => { for (;;) { const found = find(); if (found) return found;
+                                                   await new Promise((done) => setTimeout(done, 50)); } };
+        await until(() => document.querySelector('#agents .sa-agent'));
+        document.querySelector('[data-tab="list"]').click();"""),
+        ("map.png", "plugins.sub_agent_manager.tests.sam_panel_shot", "panel_app",
+         "/plugins/sub_agent_manager/?session_id=s-1", (1000, 520))],
 }
 
 

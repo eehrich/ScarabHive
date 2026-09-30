@@ -23,7 +23,6 @@ plugins:
       # widest a question needs, and it caps the cost.
       max_sub_agents_per_type: 4
       max_sub_agents_per_session: 8
-      max_message_history: 50
       # A sub-research is a few searches and pages, minutes not hours.
       default_wait_timeout: 900
       auto_archive_on_limit: true

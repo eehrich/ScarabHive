@@ -93,6 +93,15 @@ async def context_of(session_ids: list[str]) -> dict[str, dict[str, Any]]:
     return await asyncio.to_thread(read)  # sqlite, two queries per sub-agent
 
 
+def configured_phase(agent_name: Optional[str], variable: str) -> Optional[str]:
+    """The phase the session's agent sets in its own configuration (``template_vars``) -- what create judges by while
+    the session has set none (server._get_current_phase). None where that agent is not loaded here."""
+    from agent_system.plugins.tool_adapter import plugin_tool_registry
+    agent = getattr(plugin_tool_registry.get_server(agent_name or ""), "plugin_server", None)
+    template_vars = getattr(getattr(agent, "agent_config", None), "template_vars", None)
+    return template_vars.get(variable) if isinstance(template_vars, dict) else None
+
+
 def answered(result: dict[str, Any]) -> dict[str, Any]:
     """The server answers a failure like a result; here it becomes an error. A sub-agent that is not there or not the
     session's is the same to the panel: not found."""
@@ -202,7 +211,8 @@ class SubAgentManagerWebFactory:
         current = None
         try:
             stored = await session_service.session_manager.load_session(user_id, session_id)
-            current = (stored.get("context_vars") or {}).get(server.phase_variable)
+            current = ((stored.get("context_vars") or {}).get(server.phase_variable)
+                       or configured_phase(stored.get("agent_name"), server.phase_variable))
         except Exception as error:  # a session not saved yet, or not the viewer's, has no phase
             logger.debug("No phase for session %s: %s", session_id, error)
         phases = server.phase_agents
