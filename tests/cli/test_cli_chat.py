@@ -3230,33 +3230,6 @@ class TestCtrlCOutsideATurn:
         assert ctx.last_saved == "s" and ctx.was_new_session is False
         assert "finishing the save" in capsys.readouterr().err
 
-    def test_the_answer_is_shown_when_its_formatting_is_interrupted(
-            self, monkeypatch, capsys, caplog):
-        import agent_system.cli_utils.chat as chat
-
-        async def slow_format(**kwargs):
-            _interrupt_soon(asyncio.get_running_loop())
-            await asyncio.sleep(0.05)
-            return "formatted", "text"
-
-        monkeypatch.setattr(chat, "format_output_with_hooks", slow_format)
-        loop = asyncio.new_event_loop()
-        try:
-            with caplog.at_level(logging.DEBUG, logger="agent_system.cli_utils.chat"):
-                chat._render_answer(loop, _inject_ctx(None), ChatRenderer(ansi=False),
-                                    "die antwort")
-        finally:
-            loop.close()
-
-        printed = capsys.readouterr()
-        assert "die antwort" in printed.out
-        assert "(formatting cancelled)" in printed.err
-        # WHICH branch printed it: the cancelled run returns (False, None),
-        # and unpacking that raises into the generic rescue below, which
-        # prints the answer as well. Only the log tells the two apart.
-        assert "Answer formatting failed" not in caplog.text
-
-
 class TestWhatACtrlCStops:
     def test_a_ctrl_c_that_lost_the_race_still_drops_the_queue(self, monkeypatch):
         """The agent was already finishing (its token gone), so no
@@ -3852,10 +3825,10 @@ class TestInterruptsInsideTheWork:
         real_render = chat._render_answer
         turns = []
 
-        def render_hit(loop, ctx, renderer, summary):
+        def render_hit(renderer, summary):
             if summary == "antwort eins":
                 raise KeyboardInterrupt
-            return real_render(loop, ctx, renderer, summary)
+            return real_render(renderer, summary)
 
         monkeypatch.setattr(chat, "_render_answer", render_hit)
 

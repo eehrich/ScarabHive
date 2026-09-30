@@ -122,29 +122,25 @@ async def test_the_format_goes_on_every_call_and_the_final_answer_is_delivered_a
     assert not _errors(events)
 
 
-async def test_the_answer_is_not_rendered_by_the_format_output_hooks():
-    agent = _agent()
-    agent.llm = ScriptedLLM([GOOD])
+async def test_an_answer_leaves_the_run_as_the_model_wrote_it():
+    """Markdown in, the same Markdown out: the chat and agent-cli draw it, and a caller that reads the
+    answer (a sub-agent's parent, parsing it) gets the text, not a rendering of it. A structured run's
+    answer says it is JSON."""
+    answer = "# Found\n\n- **one**\n- `two`\n\n<b>raw</b> &quot;"
+    for response_format, text in ((None, answer), (ResponseFormat(schema=SCHEMA), GOOD)):
+        agent = _agent()
+        agent.llm = ScriptedLLM([text])
+        events = await _run(agent, response_format)
+        structured = response_format is not None
 
-    async def to_html(output, **_):
-        return f"<p>{output}</p>", "html"
-
-    agent._hook_manager.execute_format_output_hooks = to_html
-
-    events = await _run(agent, ResponseFormat(schema=SCHEMA))
-    assert _finals(events)[-1]["summary"] == GOOD
-    # The web chat shows the answer from the thinking events, before the final one arrives.
-    shown = [e for e in events if e.get("type") == "thinking" and (e.get("content") or e.get("assistant"))]
-    assert shown, "no thinking event carried the answer: this check would be vacuous"
-    for event in shown:
-        body = event.get("assistant") or event
-        assert (body["content"], body["content_format"]) == (GOOD, "json")
-
-    # Measured against the same run without a format: there the hook does render.
-    plain = _agent()
-    plain.llm = ScriptedLLM([GOOD])
-    plain._hook_manager.execute_format_output_hooks = to_html
-    assert _finals(await _run(plain))[-1]["summary"] == f"<p>{GOOD}</p>"
+        final = _finals(events)[-1]
+        assert (final["summary"], final["content_format"] == "json") == (text, structured)
+        # The web chat shows the answer from the thinking events, before the final one arrives.
+        shown = [e for e in events if e.get("type") == "thinking" and (e.get("content") or e.get("assistant"))]
+        assert shown, "no thinking event carried the answer: this check would be vacuous"
+        for event in shown:
+            body = event.get("assistant") or event
+            assert (body["content"], body["content_format"] == "json") == (text, structured)
 
 
 async def test_an_answer_that_does_not_match_is_sent_back_once_with_what_is_wrong():
@@ -244,7 +240,7 @@ async def test_json_mode_sends_the_field_and_says_what_it_is_for():
 
 async def test_a_run_without_a_format_hands_the_client_nothing_new():
     """Byte-identical for every caller that does not ask (the writer's AgentCaller, every chat):
-    no keyword, no note, the format_output hooks as before."""
+    no keyword, no note."""
     agent = _agent()
     agent.llm = llm = ScriptedLLM(["tool", "plain prose"])
 

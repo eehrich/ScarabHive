@@ -195,42 +195,6 @@ async def resolve_agent_for_request(
     return default_agent
 
 
-async def format_answer_fields(payload: dict, selected_agent, request_id: str, session_id: str) -> dict:
-    """The event with the answer it carries rendered to HTML: a final's summary, a finished step's content.
-
-    A copy where anything changes, never the event itself: every reader of a job is sent
-    the same event object, and rendered in place the next reader would render the HTML
-    again -- and the run's own caller (POST /run) holds it too.
-    """
-    kind = payload.get("type")
-    if kind == "final" and payload.get("summary"):
-        try:
-            formatted_summary, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                output=payload["summary"],
-                request_id=request_id,
-                session_id=session_id,
-                output_format='html'
-            )
-            return {**payload, "summary": formatted_summary, "content_format": content_format}
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format summary to HTML: {e}", exc_info=True)
-
-    # Also format thinking_complete content to HTML (for streaming)
-    elif kind == "thinking_complete" and payload.get("assistant", {}).get("content"):
-        try:
-            formatted_content, content_format = await selected_agent._hook_manager.execute_format_output_hooks(
-                output=payload["assistant"]["content"],
-                request_id=request_id,
-                session_id=session_id,
-                output_format='html'
-            )
-            return {**payload, "assistant": {**payload["assistant"], "content": formatted_content},
-                    "content_format": content_format}
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[FORMAT_HTML] Failed to format thinking_complete to HTML: {e}", exc_info=True)
-    return payload
-
-
 # Lives in llm.capabilities so the command-line entry points share it without
 # importing FastAPI; imported here for this module and its tests.
 from .llm.capabilities import capability_model_name  # noqa: E402,F401
@@ -1221,16 +1185,8 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         }
 
     async def _format_and_yield_event(ev: dict, selected_agent, request_id: str, session_id: str) -> str:
-        """An event as an SSE data line, its answer rendered to HTML."""
+        """An event as an SSE data line. An answer in it stays the Markdown the model wrote: the chat draws it."""
         payload = ev.to_dict() if hasattr(ev, 'to_dict') else ev
-
-        if selected_agent._hook_manager:
-            payload = await format_answer_fields(payload, selected_agent, request_id, session_id)
-            # A sub-agent's answer is the same text and is shown the same way.
-            if payload.get("type") == "sub_run" and isinstance(payload.get("event"), dict):
-                payload = {**payload, "event": await format_answer_fields(
-                    payload["event"], selected_agent, request_id, session_id)}
-
         try:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         except (TypeError, ValueError) as e:
@@ -1950,20 +1906,6 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     llm_profile_info_override=llm_profile_info,
                     on_event=on_event,
                 )
-
-                # Format summary from Markdown to HTML for web display
-                if result.get("summary") and selected_agent._hook_manager:
-                    try:
-                        formatted_summary, _ = await selected_agent._hook_manager.execute_format_output_hooks(
-                            output=result["summary"],
-                            request_id=request_id,
-                            session_id=session_id or "unknown",
-                            output_format='html'
-                        )
-                        result["summary"] = formatted_summary
-                    except Exception as e:
-                        logger.warning(f"Failed to format summary to HTML: {e}")
-                        # Keep original markdown on error
 
                 # Save session after execution (if session_id was provided or created) --
                 # not one the run was refused, nor one somebody holds after it

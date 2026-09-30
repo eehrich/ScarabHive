@@ -1,6 +1,6 @@
 """Tests for the central Markdown → HTML renderer (agent_system.utils.markdown_render).
 
-Shared by the markdown_formatter hook (main chat panel) and the debate forum.
+Shared by the debate forum, the help viewer and ``agent-cli --color html``.
 """
 import pytest
 

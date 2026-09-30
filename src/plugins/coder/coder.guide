@@ -311,7 +311,6 @@ See @{" Semantic search " link file_ops/semantic}.
 @{table}
 Hook | coder | sub-agents
 context_engineer.engineer_context | on | on
-markdown_formatter.format_markdown_output | on | off
 coder_okf.okf_context_injection | on, bundle @{tt}data/okf/coder@{utt} | --
 project_instructions.inject_project_instructions | on, root @{tt}.@{utt} | on
 file_checkpoints.record_before_change, _after_change | on | on
@@ -351,7 +350,7 @@ skills/coding-harness, skills/adversarial-review, skills/web-testing | @{tt}skil
 The shared instances in @{tt}config/plugins.yaml@{utt}: @{tt}skills@{utt},
 @{tt}todo@{utt}, @{tt}ask_user@{utt}, @{tt}sequential_thinking@{utt},
 @{tt}datetime@{utt}, @{tt}context_engineer@{utt},
-@{tt}markdown_formatter@{utt}, @{tt}project_instructions@{utt},
+@{tt}project_instructions@{utt},
 @{tt}file_checkpoints@{utt}; optionally @{tt}coding_cli@{utt} and
 @{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
 @{tt}code_fallback@{utt}, @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},

@@ -41,8 +41,7 @@ from .cli_utils.common import (
     supports_color as _supports_color,
     colorize as _colorize,
     set_color_mode,
-    format_output_with_hooks,
-    render_with_rich
+    show_answer,
 )
 from .cli_utils.commands.hooks import handle_hooks_command
 from .cli_utils.session_defaults import (
@@ -1575,21 +1574,7 @@ def _main() -> None:
                 print(_colorize(err, "31") if _supports_color() else err)
             elif t == "final" and ev.get("summary"):
                 print("", flush=True)
-                try:
-                    formatted_summary, content_format = await format_output_with_hooks(
-                        output=ev["summary"],
-                        agent_instance=agent,
-                        session_id=actual_session_id,
-                        request_id="cli_display",
-                        output_format='ansi'  # Request ANSI format for terminal display
-                    )
-                    if content_format == 'ansi':
-                        render_with_rich(formatted_summary)
-                    else:
-                        print(formatted_summary, flush=True)
-                except Exception as e:
-                    logger.debug(f"Failed to format summary: {e}")
-                    print(ev["summary"], flush=True)
+                show_answer(ev["summary"])
 
         from .servers.agent.result_utils import collect_final_result
         try:

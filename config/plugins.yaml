@@ -25,11 +25,6 @@ plugins:
 
       hooks:
         enabled: true
-        overrides:  # by default disable html formatting of markdown
-          markdown_formatter.format_markdown_output:
-             enabled: false
-          markdown_formatter.inject_markdown_system_prompt:
-             enabled: false
              
       timeouts:
         # Queue handler timeouts (prevent cross-session blocking)
@@ -1038,9 +1033,6 @@ plugins:
         max_tool_response_size_kb: 9999
         warn_tool_response_size_kb: 9998
 
-    markdown_formatter:
-      type: markdown_formatter
-      enabled: true
 
     # GitLab/GitHub for the coder (src/plugins/forge/README.md). For now the
     # GitLab test instance on the Docker host (src/plugins/forge/tests/live/gitlab/),

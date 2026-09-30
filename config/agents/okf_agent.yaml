@@ -21,9 +21,6 @@ plugins:
 
         hooks:
           enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
 
       metadata:
         author: "Enrico Ehrich"

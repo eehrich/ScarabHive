@@ -721,7 +721,7 @@ llm_profile | [structured, deepseek-chat]: the same model, the second over the d
 max_steps | 60
 skills.on_demand | n8n-building, n8n-testing, n8n-recipes
 tools.allowed | the nineteen n8n tools, @{tt}skills/*@{utt}, @{tt}n8n_okf/*@{utt}, @{tt}tavily_search/*@{utt}
-hooks | context engineer, Markdown formatter, the OKF context injection on @{tt}data/okf/n8n@{utt}
+hooks | context engineer, the OKF context injection on @{tt}data/okf/n8n@{utt}
 visibility | both: the UI and a tool
 @{body}
 

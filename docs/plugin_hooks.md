@@ -25,7 +25,7 @@ The Plugin Hook System provides lifecycle interception points for extending agen
 
 ### Key Features
 
-- **10 Hook Types**: session start/end, pre/post LLM call, LLM progress, format output, pre LLM request/post LLM response (client level), pre/post tool call
+- **9 Hook Types**: session start/end, pre/post LLM call, LLM progress, pre LLM request/post LLM response (client level), pre/post tool call
 - **Flexible Ordering**: Named dependencies with topological sorting
 - **Schema-Based Pattern**: Declarative hook definitions in YAML
 - **Error Isolation**: Hook failures don't crash the agent
@@ -44,8 +44,6 @@ Agent Execution Flow
   │  LLM call ── PRE_LLM_REQUEST / LLM_PROGRESS / POST_LLM_RESPONSE (client level)
   │    ↓
   │  POST_LLM_CALL hooks
-  │    ↓
-  │  FORMAT_OUTPUT hooks (display)
   │    ↓
   └─ Tool execution, per call: PRE_TOOL_CALL → tool → POST_TOOL_CALL
   ↓
@@ -366,54 +364,6 @@ Call bzw. das Ergebnis (Deep Copy, wie `messages` bei `pre_llm_call`).
   oder ein Spawn ohne Freigaben nicht erlauben. Ein Skript selbst gibt es nie
   „für die Session“ frei: Jedes wird mit seinem Code gefragt.
 
-### FORMAT_OUTPUT
-
-**Trigger:** Before returning output to the user
-**Use Cases:** Multi-format rendering (HTML, ANSI, text), filtering
-**Can Modify:** Displayed output only — never the conversation history
-
-```python
-async def on_format_output(self, context: HookContext) -> HookResult:
-    """Executed before output formatting.
-
-    Context provides:
-    - output: The content to format (usually Markdown)
-    - output_format: Target format ('html', 'ansi', 'text', 'markdown')
-
-    Common use cases:
-    - Convert markdown to HTML (web frontend with syntax highlighting)
-    - Convert markdown to ANSI (CLI with colors)
-    - Apply custom formatting per interface
-    - Filter sensitive information
-    - Add metadata/footers
-
-    Example:
-        target_format = context.output_format or 'text'
-
-        if target_format == 'html':
-            # Convert to HTML with Prism.js syntax highlighting
-            html = markdown_to_html(context.output)
-            return HookResult(
-                success=True,
-                modified=True,
-                context=replace(context, output=html),
-                metadata={'content_format': 'html'}
-            )
-        elif target_format == 'ansi':
-            # Convert to ANSI colored terminal output
-            ansi = markdown_to_ansi(context.output)
-            return HookResult(
-                success=True,
-                modified=True,
-                context=replace(context, output=ansi),
-                metadata={'content_format': 'ansi'}
-            )
-        else:
-            # Return plain text/markdown unchanged
-            return HookResult(success=True, modified=False, context=context)
-    """
-```
-
 ### SESSION_START
 
 **Trigger:** When a new session begins (not for resumed sessions)
@@ -521,8 +471,6 @@ class HookContext:
     llm_response: Optional[Dict[str, Any]] = None         # post_llm_call: {"assistant": {...}}
     tool_call: Optional[Dict[str, Any]] = None            # pre/post_tool_call: id, name, server, arguments, source
     tool_result: Optional[Dict[str, Any]] = None          # post_tool_call: {"result", "is_error", "started_at", "finished_at"}
-    output: Optional[str] = None                          # format_output
-    output_format: str = "text"                           # 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)
     hook_config: Dict[str, Any] = field(default_factory=dict)  # per-agent override keys
     target_hook_name: Optional[str] = None                # short hook name being dispatched
@@ -749,7 +697,6 @@ hooks:
 
 **Examples:**
 - `todo.inject_todo_tasks`
-- `markdown_formatter.format_markdown_output`
 - `context_engineer.engineer_context`
 
 **Why This Matters:**
@@ -840,7 +787,7 @@ agents:
             # effect if the hook reads it (todo does not)
 
           # Disable globally enabled hook for this agent
-          markdown_formatter.format_markdown_output:
+          context_engineer.engineer_context:
             enabled: false
 
   simple_agent:

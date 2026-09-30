@@ -2840,17 +2840,16 @@ In addition to tool plugins, AgentSystem supports **hooks-only plugins** that in
 
 ### Hook Types
 
-`HookType` (`agent_system/hooks/plugin_hook.py`) has ten values:
+`HookType` (`agent_system/hooks/plugin_hook.py`) has nine values:
 
 1. **SESSION_START** - New session only, before history and user input
 2. **PRE_LLM_CALL** - Every step before the LLM call; a changed `messages` list is sent as-is
 3. **LLM_PROGRESS** - While streaming, every few KB of thinking; no messages, no effect
 4. **POST_LLM_CALL** - After the assistant message is appended
-5. **FORMAT_OUTPUT** - Display formatting only, never history
-6. **SESSION_END** - After saving; no effect
-7. **PRE_LLM_REQUEST** / 8. **POST_LLM_RESPONSE** - At LLM client level, read-only
-9. **PRE_TOOL_CALL** - Before each tool call of the model (and of a tool_script script); may change the arguments or block the call
-10. **POST_TOOL_CALL** - After the call ran, before its result joins the history; may change the result
+5. **SESSION_END** - After saving; no effect
+6. **PRE_LLM_REQUEST** / 7. **POST_LLM_RESPONSE** - At LLM client level, read-only
+8. **PRE_TOOL_CALL** - Before each tool call of the model (and of a tool_script script); may change the arguments or block the call
+9. **POST_TOOL_CALL** - After the call ran, before its result joins the history; may change the result
 
 Each hook gets a deep copy of the context. Changes count only with
 `modified=True`; `success=False` discards context and metadata.
@@ -3040,8 +3039,6 @@ class HookContext:
     llm_response: Optional[Dict] = None
     tool_call: Optional[Dict] = None
     tool_result: Optional[Dict] = None
-    output: Optional[str] = None                   # format_output only
-    output_format: str = "text"
     metadata: Dict[str, Any] = {}
     hook_config: Dict[str, Any] = {}               # per-agent keys from hooks.overrides
     step: int = 0

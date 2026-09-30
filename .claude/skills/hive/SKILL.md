@@ -90,7 +90,6 @@ Name of the System is ScarabHive
 | `batch_monitor/` | Batch operation monitoring |
 | `user_management/` | User management |
 | `lessons_learned/` | Lessons learned storage |
-| `markdown_formatter/` | Markdown formatting |
 | `datetime/` | Date/time utilities |
 | `simple_prompt_inject/` | Prompt injection utility |
 

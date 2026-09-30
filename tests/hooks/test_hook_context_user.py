@@ -67,7 +67,6 @@ async def _every_context(manager):
                                              step=1, **ids)
     await manager.execute_pre_tool_hooks(tool_call={"name": "x"}, step=1, **ids)
     await manager.execute_post_tool_hooks(tool_call={"name": "x"}, tool_result={"ok": True}, step=1, **ids)
-    await manager.execute_format_output_hooks(output="ok", **ids)
     await manager.execute_session_start_hooks(messages=messages, **ids)
     await manager.execute_session_end_hooks(messages=messages, **ids)
     return {call.args[0]: call.args[1] for call in manager.registry.execute_hooks.call_args_list}
@@ -81,7 +80,7 @@ async def _every_context(manager):
 async def test_every_context_the_agent_builds_names_the_user(metadata_user, registered_user, expected):
     contexts = await _every_context(_manager(metadata_user, registered_user))
 
-    assert len(contexts) == 10, sorted(t.value for t in contexts)
+    assert len(contexts) == 9, sorted(t.value for t in contexts)
     assert {hook_type.value: context.user_id for hook_type, context in contexts.items()} == {
         hook_type.value: expected for hook_type in contexts}
 

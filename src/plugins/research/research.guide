@@ -245,8 +245,6 @@ sees it, carries the description from @{tt}self_tool_descriptions@{utt} in
 @{bullet}@{tt}context_engineer.engineer_context@{utt} -- trims old tool results
 when the context grows (the 200,000-token window is set for all models).
 See @{" The compaction hook " link context_engineer/hook}.
-@{bullet}@{tt}markdown_formatter.format_markdown_output@{utt} -- formats the
-final answer for the screen; off for the worker.
 @{bullet}@{tt}research_sam.inject_sub_agent_context@{utt} -- the list of running
 sub-researchers; off for the worker.
 
@@ -279,7 +277,7 @@ skills/web-research/SKILL.md | @{tt}skills.skill_dirs@{utt} lists @{tt}src/plugi
 The shared instances in @{tt}config/plugins.yaml@{utt}, all enabled:
 @{tt}duckduckgo_search@{utt}, @{tt}web_scraper@{utt} (with
 @{tt}allowed_directories@{utt} for downloads), @{tt}datetime@{utt},
-@{tt}ask_user@{utt}, @{tt}context_engineer@{utt}, @{tt}markdown_formatter@{utt};
+@{tt}ask_user@{utt}, @{tt}context_engineer@{utt};
 and @{tt}tavily_search@{utt}, which offers tools only with a key:
 
 @{code yaml}

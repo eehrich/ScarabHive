@@ -12,7 +12,6 @@ step loop in `servers/agent/server.py`.
 | `pre_llm_call` | every step before the LLM call (including the final call after max_steps) | `messages` — the changed list is sent as-is and mirrored into the session; receives `tools_schema`, `llm`, `step`, `cancellation_token` |
 | `llm_progress` | while streaming, every 2000 chars of thinking | nothing |
 | `post_llm_call` | after the assistant message is appended | only `assistant.content`/`tool_calls`; metadata `continue`, `continue_message`, `continue_injected_by`, `content_format` |
-| `format_output` | display (HTML) | display only, never history |
 | `session_end` | after saving | nothing; `metadata`: `persisted`, `cancelled`, `errors`, `completed` |
 | `pre_llm_request` / `post_llm_response` | at client level | read-only, errors swallowed |
 | `pre_tool_call` | before each tool call of the model — one by one, in call order, before any starts — and each call of a tool_script script (`dispatch_tool_call(hook_source=...)`) | `tool_call["arguments"]` (dict, `modified=True`); `metadata["block"] = "<what to do>"` blocks: the call does not run, the model reads `{"status":"error","error":...,"type":"ToolCallBlocked"}`, the run goes on, no later hook runs for the call |

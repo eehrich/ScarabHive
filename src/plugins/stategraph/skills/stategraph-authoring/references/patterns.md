@@ -2,8 +2,8 @@
 
 Each pattern is a complete machine that validates against the shipped configuration
 (agents `stategraph_example_agent`, the plain agent this plugin ships, and `research_worker`;
-tools of `stategraph_json` through the runner). Name agents whose answer is plain text: an
-agent with the markdown formatter on (`chat_agent`) answers in HTML. Swap in the agents and tools
+tools of `stategraph_json` through the runner). Name agents whose answer is plain text.
+Swap in the agents and tools
 `stategraph_catalog` lists for you. The machines in `src/plugins/stategraph/machines/`
 are the same patterns, runnable.
 

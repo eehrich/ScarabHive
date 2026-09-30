@@ -41,9 +41,6 @@
     }
   }
 
-  // Backend now handles all formatting via plugins
-  // Frontend displays content as-is
-
   function kitIcon(name) {
     return `<svg class="pk-icon" aria-hidden="true"><use href="/static/kit/icons.svg#${name}"/></svg>`;
   }
@@ -60,13 +57,54 @@
     return escaped.replace(/\n/g, '<br>');
   }
 
-  function formatContent(content, format) {
-    // If format is explicitly 'html', return as-is (already sanitized by backend)
-    if (format === 'html') {
-      return content;
+  // An agent's answer is the Markdown the model wrote; the chat draws it. An answer carries whatever a tool
+  // fetched, so raw HTML in it stays text (<br> aside, below), and no image is loaded: a remote image is a
+  // request to an address the text chose, which is how an injected page exfiltrates. A single line break
+  // stays one, as the model meant it. Links are http(s), mailto or relative (no scheme, as the server's
+  // sanitiser has it), and open beside the chat, not in its place.
+  const markdown = typeof window.markdownit === 'function' ? (() => {
+    const md = window.markdownit({ html: false, breaks: true, linkify: false }).disable('image');
+    md.validateLink = (url) => {
+      const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url);
+      return !scheme || ['http', 'https', 'mailto'].includes(scheme[1].toLowerCase());
+    };
+    // <br> is the one line break a table cell has, and models write it there: that tag, and no other, is one.
+    // Sticky, so the rule looks at this position only.
+    const lineBreakTag = /<br\s*\/?>/iy;
+    md.inline.ruler.before('html_inline', 'br_tag', (state, silent) => {
+      lineBreakTag.lastIndex = state.pos;
+      if (!lineBreakTag.test(state.src)) return false;
+      if (!silent) state.push('hardbreak', 'br', 0);
+      state.pos = lineBreakTag.lastIndex;
+      return true;
+    });
+    const openLink = md.renderer.rules.link_open
+      || ((tokens, i, options, env, self) => self.renderToken(tokens, i, options));
+    md.renderer.rules.link_open = (tokens, i, options, env, self) => {
+      tokens[i].attrSet('target', '_blank');
+      tokens[i].attrSet('rel', 'noopener noreferrer');
+      return openLink(tokens, i, options, env, self);
+    };
+    return md;
+  })() : null;
+
+  // A whole answer wrapped in a ```markdown fence is the answer, not a code sample of it.
+  const MARKDOWN_WRAPPER = /^```(?:markdown|md)[ \t]*\r?\n([\s\S]*?)\r?\n```\s*$/;
+
+  function formatContent(content) {
+    const text = String(content ?? '');
+    const trimmed = text.trim();
+    if (/^[{[]/.test(trimmed)) {
+      try {
+        JSON.parse(trimmed);
+        // JSON -- a structured answer, or one a prompt asked for -- as it is: drawn, its lines would join
+        return `<pre><code class="language-json">${escapeHtml(trimmed)}</code></pre>`;
+      } catch (e) { /* prose that starts with a bracket */ }
     }
-    // Otherwise, escape and convert line breaks
-    return formatTextWithLineBreaks(content);
+    if (!markdown) return formatTextWithLineBreaks(text);
+    const wrapped = MARKDOWN_WRAPPER.exec(trimmed);
+    // markdown-it ends its HTML with a line break, which would end the answer's text too
+    return markdown.render(wrapped ? wrapped[1] : text).trim();
   }
 
   // The chat scrolls inside the shell's #chatScroll, not the page.
@@ -176,9 +214,9 @@
   }
 
   /**
-   * A note with rendered content, for /history: assistant answers reach the
-   * browser as sanitized HTML from the backend's formatting hooks. Everything
-   * a person or a tool wrote goes through escapeHtml on the way in.
+   * A note with rendered content, for /history: assistant answers are drawn by
+   * formatContent (raw HTML stays text there). Everything a person or a tool
+   * wrote goes through escapeHtml on the way in.
    */
   function addRichNote(chatContainer, html) {
     if (!chatContainer) return;
@@ -1309,7 +1347,7 @@
           // response-text, not note-text: the answer is rendered markdown, and
           // the note's monospace pre-wrap would set it as if it were a log.
           parts.push('<div class="response-text">' +
-            formatContent(msg.content, msg.content_format) + '</div>');
+            formatContent(msg.content) + '</div>');
         }
         (msg.tool_calls || []).forEach(function (call) {
           parts.push(plain(toolCallLines(call, false).join('\n')));
@@ -3343,18 +3381,15 @@
         // Final thinking event from streaming - remove cursor, keep content
         view.streamStep = null;
         if (data.assistant && data.assistant.content) {
-          // Content was already displayed via thinking_delta
-          // Now show final formatted content (HTML from format_output hook)
-          showAnswer(view, data.assistant.content, data.content_format || 'text');
+          // Streamed as it came (thinking_delta), as text; now the whole answer, drawn
+          showAnswer(view, data.assistant.content);
         }
         // Tool calls are not listed here: Status carries every one of them.
         break;
       case 'thinking':
         if (data.assistant) {
           // The step's result. Its `assistant.content` is NOT written into the call's
-          // section: it is the step's answer, which the Response box already shows --
-          // and it arrives here past the format_output hook, so a `<pre>` rendered it
-          // as literal `<p>…</p>` markup beside the rendered copy.
+          // section: it is the step's answer, which the Response box already shows.
           //
           // Its tool_calls only NAME the call in the header. The lines themselves are
           // Status's, with the arguments and the outcome this listing dropped.
@@ -3393,7 +3428,7 @@
         // joined past its answer's stream). A reconnect's note in the box is no answer.
         if (!view.answerLoaded
             && (!view.t.innerHTML.trim() || view.t.querySelector(':scope > .reconnect-info'))) {
-          showAnswer(view, data.summary || data.content || '', data.content_format || 'text');
+          showAnswer(view, data.summary || data.content || '');
         }
         settleView(view);
         break;
@@ -3401,14 +3436,11 @@
     }
   }
 
-  /** A run's answer in its Response box, rendered as the server formatted it. */
-  function showAnswer(view, content, contentFormat) {
+  /** A run's answer in its Response box, drawn from its Markdown, its code coloured. */
+  function showAnswer(view, content) {
     showSection(view.t);
-    view.t.innerHTML = `<div class="response-text">${formatContent(content, contentFormat)}</div>`;
-    // Apply Prism.js syntax highlighting if available and content is HTML
-    if (contentFormat === 'html' && typeof Prism !== 'undefined') {
-      Prism.highlightAllUnder(view.t);
-    }
+    view.t.innerHTML = `<div class="response-text">${formatContent(content)}</div>`;
+    if (typeof Prism !== 'undefined') Prism.highlightAllUnder(view.t);
   }
 
   /**
@@ -3764,7 +3796,7 @@
       stepNo = msg.step || stepNo + 1;
       replayStep(view, msg, stepNo, answersTo(messages, index));
       answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
-      if (msg.content) showAnswer(view, msg.content, msg.content_format);
+      if (msg.content) showAnswer(view, msg.content);
     });
     view.storedStep = stepNo;   // what the stream still sends of these steps is here already
     // Still working: its last step is the call in flight, open as a live run leaves it
@@ -4870,7 +4902,7 @@
           stepNo = msg.step || stepNo + 1;   // as the server numbered it (ChatMessage.step)
           replayStep(runBlk, msg, stepNo, answersTo(session.messages, index));
           answered = !!msg.content && !(msg.tool_calls && msg.tool_calls.length);
-          if (msg.content) showAnswer(runBlk, msg.content, msg.content_format);
+          if (msg.content) showAnswer(runBlk, msg.content);
         } else if (msg.role === 'developer') {
           // What the run told the model, at the point it told it. Without this
           // branch the note fell through every else-if and the restored chat

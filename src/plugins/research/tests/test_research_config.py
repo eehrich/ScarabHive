@@ -126,13 +126,11 @@ def test_context_engineering_is_on_for_forty_steps_of_pages(agent):
 def test_the_branch_runs_no_hook_that_has_nothing_to_do(config):
     """A branch answers a coordinator and owns no manager.
 
-    Formatting for a screen and listing its own sub-agents are both a call per
-    step that cannot change its answer.
+    Listing its own sub-agents is a call per step that cannot change its answer.
     """
     worker = get_tool_server_config("research_worker", config)
     overrides = getattr(worker.agent_config.hooks, "overrides", None) or {}
-    for hook in ("markdown_formatter.format_markdown_output",
-                 "research_sam.inject_sub_agent_context"):
+    for hook in ("research_sam.inject_sub_agent_context",):
         entry = overrides.get(hook)
         enabled = entry.get("enabled") if isinstance(entry, dict) else getattr(entry, "enabled", None)
         assert enabled is False, f"{hook} still runs for a branch"

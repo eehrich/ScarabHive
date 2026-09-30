@@ -628,7 +628,7 @@ async def get_session(
 
         session = await session_manager.load_session(user_id, session_id)
 
-        # Resolve the session's agent (for both formatting and live-var injection)
+        # Resolve the session's agent (for the live conversation and its template vars)
         session_agent_name = session.get("agent_name")
         session_agent = None
         if session_agent_name and tool_registry:
@@ -739,43 +739,7 @@ async def get_session(
             except Exception as desc_err:
                 logger.debug(f"Could not build descendants tree for {session_id}: {desc_err}")
 
-        # Format assistant messages to HTML for frontend display
-        if session.get("messages"):
-            # Only format if we found the exact session agent (no fallback to avoid wrong hook settings)
-            formatting_agent = session_agent
-            if formatting_agent:
-                try:
-                    # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
-                    # The session dict is loaded from storage and modifications would persist on next load
-                    import copy
-                    formatted_messages = copy.deepcopy(session["messages"])
-
-                    # Format each assistant message using agent's hooks
-                    for msg in formatted_messages:
-                        if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
-                            # Only format if not already formatted
-                            if not msg.get("content_format") or msg.get("content_format") != "html":
-                                try:
-                                    formatted_content, content_format = await formatting_agent._hook_manager.execute_format_output_hooks(
-                                        output=msg["content"],
-                                        request_id="session_load",
-                                        session_id=session_id,
-                                        output_format='html'
-                                    )
-                                    msg["content"] = formatted_content
-                                    msg["content_format"] = content_format
-                                except Exception as format_error:
-                                    logger.warning(f"Failed to format message in session {session_id}: {format_error}")
-                                    # Keep original content if formatting fails
-                                    msg["content_format"] = "text"
-
-                    # Replace session messages with formatted copy (only affects this HTTP response)
-                    session["messages"] = formatted_messages
-
-                except Exception as hook_error:
-                    logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
-                    # Return session without formatting if hook access fails
-
+        # The answers as the models wrote them -- Markdown, which the chat draws.
         return session
 
     except SessionNotFoundError:
@@ -792,75 +756,12 @@ async def get_session_messages(
     session_id: str,
     current_user: User = Depends(get_current_active_user),
     session_manager=Depends(get_session_manager),
-    default_agent=Depends(get_agent_optional),
-    tool_registry=Depends(get_tool_registry),
 ):
-    """Get messages from a session (authenticated only)."""
-    # session_manager, default_agent, tool_registry injected via dependency
-
+    """Get messages from a session (authenticated only) -- the answers as the models wrote them."""
     try:
         from agent_system.services.session_manager import SessionNotFoundError, SessionPermissionError
 
-        session = await session_manager.load_session(current_user.username, session_id)
-
-        # Format assistant messages to HTML for frontend display using the CORRECT agent from session
-        if session.get("messages"):
-            # Get the agent that was used in this session
-            session_agent_name = session.get("agent_name")
-            formatting_agent = None
-
-            # Try to get the specific agent from the session
-            # IMPORTANT: Do NOT fallback to default_agent if session agent not found!
-            # Different agents have different hook configurations (e.g., markdown_formatter enabled/disabled).
-            # Using a different agent's hooks would apply wrong formatting settings.
-            if session_agent_name and tool_registry:
-                try:
-                    from agent_system.servers.agent.server import Agent as _Agent
-                    session_agent = tool_registry.get(session_agent_name)
-                    if isinstance(session_agent, _Agent):
-                        formatting_agent = session_agent
-                    else:
-                        logger.debug(f"Session agent '{session_agent_name}' is not an Agent instance, skipping formatting")
-                except KeyError:
-                    logger.debug(f"Session agent '{session_agent_name}' not found in registry, skipping formatting")
-                except Exception as e:
-                    logger.warning(f"Failed to get session agent '{session_agent_name}': {e}, skipping formatting")
-
-            # Only format if we found the exact session agent (no fallback to avoid wrong hook settings)
-            if formatting_agent:
-                try:
-                    # CRITICAL: Create a COPY of messages for formatting to avoid modifying stored session
-                    # The session dict is loaded from storage and modifications would persist on next load
-                    import copy
-                    formatted_messages = copy.deepcopy(session["messages"])
-
-                    # Format each assistant message using agent's hooks
-                    for msg in formatted_messages:
-                        if msg.get("role") == "assistant" and msg.get("content") and not msg.get("tool_calls"):
-                            # Only format if not already formatted
-                            if not msg.get("content_format") or msg.get("content_format") != "html":
-                                try:
-                                    formatted_content, content_format = await formatting_agent._hook_manager.execute_format_output_hooks(
-                                        output=msg["content"],
-                                        request_id="session_load",
-                                        session_id=session_id,
-                                        output_format='html'
-                                    )
-                                    msg["content"] = formatted_content
-                                    msg["content_format"] = content_format
-                                except Exception as format_error:
-                                    logger.warning(f"Failed to format message in session {session_id}: {format_error}")
-                                    # Keep original content if formatting fails
-                                    msg["content_format"] = "text"
-
-                    # Replace session messages with formatted copy (only affects this HTTP response)
-                    session["messages"] = formatted_messages
-
-                except Exception as hook_error:
-                    logger.warning(f"Failed to access hooks for formatting session {session_id}: {hook_error}")
-                    # Return session without formatting if hook access fails
-
-        return session
+        return await session_manager.load_session(current_user.username, session_id)
 
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")

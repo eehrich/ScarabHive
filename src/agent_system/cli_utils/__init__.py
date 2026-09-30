@@ -5,7 +5,7 @@ from .common import (
     set_color_mode, supports_color, colorize,
     format_status_event, status_subscriber,
     format_error, get_phase_color_map,
-    format_output_with_hooks, render_with_rich, print_agent_response
+    show_answer, render_with_rich, print_agent_response
 )
 
 __all__ = [
@@ -17,7 +17,7 @@ __all__ = [
     "status_subscriber",
     "format_error",
     "get_phase_color_map",
-    "format_output_with_hooks",
+    "show_answer",
     "render_with_rich",
     "print_agent_response",
 ]

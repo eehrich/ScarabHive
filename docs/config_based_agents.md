@@ -339,11 +339,9 @@ hooks:
   disabled_hooks:
     - "request_logger.log_pre_llm"  # Disable specific hooks
   hook_overrides:
-    "markdown_formatter.format_markdown_output":
+    "context_engineer.engineer_context":
       enabled: true
       timeout: 5.0
-      config:
-        convert_to_html: false
 ```
 
 See [Plugin Hooks](plugin_hooks.md) for details.
@@ -716,7 +714,7 @@ agents:
       hooks:
         enabled: true
         hook_overrides:
-          "markdown_formatter.format_markdown_output":
+          "context_engineer.engineer_context":
             enabled: true
     metadata:
       author: "DevOps Team"

@@ -169,9 +169,6 @@ hooks:
     timeout: 2.0
     order:
       after: ["begin"]
-  - name: to_markdown
-    type: format_output
-    enabled: true
 ```
 
 ```python
@@ -201,7 +198,6 @@ def PLUGIN_FACTORY(name=None, system_config=None, server_config=None):
 - Logging, monitoring
 - Context optimization
 - Message validation
-- Output formatting
 - Token tracking
 
 ---
@@ -239,7 +235,7 @@ class EnhancedSearchServer(SchemaBasedToolServer, PluginHook):
 | Scenario | Manifest `type` | Base Class(es) |
 |----------|-----------------|----------------|
 | Provide callable tools | `tool-server` | `SchemaBasedToolServer` |
-| Log/monitor agent, optimize context, format output | `hooks` | `SchemaBasedPluginHook` |
+| Log/monitor agent, optimize context | `hooks` | `SchemaBasedPluginHook` |
 | Tools + hooks | `tool-server`, `hooks` | `SchemaBasedToolServer, PluginHook` |
 | HTTP routes / panel | `web` | object with `get_web_router` |
 | Agent with custom logic | `tool-server` | `Agent` / `SchemaBasedAgent` + `make_agent_plugin_factory` |
@@ -445,7 +441,6 @@ plugins:
 | `pre_llm_request` | LLM client, before the HTTP request | Capture the exact API payload |
 | `post_llm_response` | LLM client, after the HTTP response | Capture raw response, usage, timing |
 | `llm_progress` | During a streaming call, every few KB of thinking | Progress/monitoring (no messages) |
-| `format_output` | Before returning to user | Format `output` (MD, HTML, etc.) |
 | `session_start` | Session begins | Initialize session state |
 | `session_end` | Session ends | Cleanup, save state |
 | `pre_tool_call` | Before each tool call of the model / a tool_script script | Change arguments, block the call |
@@ -469,8 +464,6 @@ class HookContext:
     llm_response: Optional[Dict[str, Any]] = None
     tool_call: Optional[Dict[str, Any]] = None
     tool_result: Optional[Dict[str, Any]] = None
-    output: Optional[str] = None          # format_output
-    output_format: str = "text"           # 'html', 'ansi', 'text', 'markdown'
     metadata: Dict[str, Any] = field(default_factory=dict)
     hook_config: Dict[str, Any] = field(default_factory=dict)  # per-agent hooks.overrides
     target_hook_name: Optional[str] = None

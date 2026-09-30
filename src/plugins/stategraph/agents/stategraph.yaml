@@ -58,8 +58,7 @@ plugins:
 
     # The agent of the example machines (machines/*.yaml): plain text in, plain
     # text out, no tools. Shipped with the plugin so the examples validate on
-    # every installation. Not chat_agent: its markdown formatter turns answers
-    # into HTML, and a machine reads the answer as data.
+    # every installation.
     stategraph_example_agent:
       type: basic_agent
       enabled: true
@@ -70,11 +69,6 @@ plugins:
         max_steps: 10
         hooks:
           enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: false
-            markdown_formatter.inject_markdown_system_prompt:
-              enabled: false
       metadata:
         visibility: private                # runs from machines, not a chat partner
 

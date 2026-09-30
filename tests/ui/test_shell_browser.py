@@ -273,7 +273,7 @@ STORED_RUNS = {
         {"role": "assistant", "content": "", "reasoning_content": "the helper looks.",
          **_calls(f"{HELPED}_003_sub_aaaaaa", ("c_2", "skills_sam_manage_sub_agent"))},
         *_answers("c_2"),
-        {"role": "assistant", "content": "<p>Icons <b>found</b>.</p>", "content_format": "html"},
+        {"role": "assistant", "content": "Icons **found**."},
         # continued later by another call: a run of its own, which did not answer
         {"role": "user", "content": "And the colours", "request_id": f"{HELPED}_004_sub_cont_bbbbbb"},
         {"role": "assistant", "content": "", **_calls(f"{HELPED}_004_sub_cont_bbbbbb", ("c_2", "file_ops_read_file"))},
@@ -711,14 +711,13 @@ def stub_app() -> FastAPI:
                 # What a reasoning model's step really sends. The deltas arrive split
                 # mid-word, as providers send them, so a box that re-rendered instead of
                 # appending would show the last fragment only. The `thinking` event after
-                # them carries the step's ANSWER -- already through the format_output
-                # hook, hence the markup -- and the tool call Status names anyway.
+                # them carries the step's ANSWER -- which Response shows -- and the tool
+                # call Status names anyway.
                 for delta in ("No datetime t", "ool here, so I say ", "so."):
                     yield event({"type": "reasoning_delta", "step": 1, "delta": delta})
                 yield event({"type": "thinking", "step": 1,
-                             "assistant": {"content": "<p>There is no <code>datetime</code> tool.</p>",
-                                           "tool_calls": [{"function": {"name": "datetime_now"}}],
-                                           "content_format": "html"}})
+                             "assistant": {"content": "There is no `datetime` tool.",
+                                           "tool_calls": [{"function": {"name": "datetime_now"}}]}})
                 yield event({"type": "final", "content": "Done"})
                 yield event({"type": "end"})
                 return
@@ -850,6 +849,12 @@ def stub_app() -> FastAPI:
                 async for chunk in subrun_stream(request_id):
                     yield chunk
                 return
+            if ending in ("markdown", "json", "fenced"):
+                answer = {"markdown": MARKDOWN_ANSWER, "json": JSON_ANSWER, "fenced": FENCED_ANSWER}[ending]
+                yield event({"type": "final", "summary": answer,
+                             **({"content_format": "json"} if ending == "json" else {})})
+                yield event({"type": "end"})
+                return
             if ending in ("closes", "stale", "ending", "left-unnamed", "left-named-new", "answered", "saving"):
                 return
             if ending in ("final-drops", "cancelled-drops"):
@@ -962,11 +967,11 @@ def stub_app() -> FastAPI:
                       {"type": "start", "task": "No line of its own", "request_id": rowless, "session_id": "sub-5"})
         yield relayed(rowless, f"{sub}_010", 4, "grand_agent", {"type": "end"})
         yield of_sub({"type": "thinking_delta", "step": 2, "delta": "Icons", "accumulated": "Icons found."})
-        # A streamed answer ends with thinking_complete, rendered by the API as the
-        # caller's is; the final that follows carries the same text again.
-        yield of_sub({"type": "thinking_complete", "step": 2, "content_format": "html",
-                      "assistant": {"role": "assistant", "content": "<p>Icons <b>found</b>.</p>"}})
-        yield of_sub({"type": "final", "summary": "<p>Icons <b>found</b>.</p>", "content_format": "html"})
+        # A streamed answer ends with thinking_complete, the Markdown the model wrote, as the
+        # caller's does; the final that follows carries the same text again.
+        yield of_sub({"type": "thinking_complete", "step": 2,
+                      "assistant": {"role": "assistant", "content": "Icons **found**."}})
+        yield of_sub({"type": "final", "summary": "Icons **found**."})
         yield status("coordinator", f"{sub}_006", "end", "completed (2 steps)", sub, 3)
         yield of_sub({"type": "end"})
         # A retry of the sub-run (sub_agent_manager's short-result retry): its id extends
@@ -1208,7 +1213,8 @@ def stub_app() -> FastAPI:
                    "steps": "r-steps", "subrun": "r-subrun", "last-answer": "r-last-answer",
                    "last-answer-whole": "r-last-answer-whole", "end-then-open": "r-end-then-open",
                    "left-unnamed": "r-left-unnamed", "left-unnamed-known": "r-left-unnamed-known",
-                   "slimmed": "r-slimmed", "left-named-new": "r-left-named-new"}
+                   "slimmed": "r-slimmed", "left-named-new": "r-left-named-new",
+                   "markdown": "r-markdown", "json": "r-json", "fenced": "r-fenced"}
         if ending in started:
             # stub_start_after: a run whose start event is late -- the chat has sent it and
             # waits, and nothing of it has reached the page yet
@@ -1588,7 +1594,40 @@ def results():
     return run_app_test_page(BROWSER, stub_app(), "tests/ui/shell_tests.html", timeout=PAGE_TIMEOUT)
 
 
+#: A run's answer as a model writes it (stub_stream=markdown): what the chat draws, and what it must not
+#: let through -- raw HTML, a script, a remote image, a link other than http(s)/mailto. The data:image and
+#: ms-settings: links pass markdown-it's own check: only the chat's allowlist keeps them out.
+MARKDOWN_ANSWER = """# Found it
+
+Line one
+line two
+
+- **bold** item
+- `code` item
+
+| name | count |
+|------|-------|
+| icons | 2 |
+| days | Mo<br>Sa |
+| hover | Mo<br onmouseover="window.__mdInjected=4">Sa |
+
+```python
+x = 1
+```
+
+[docs](https://example.com/docs) and [bad](javascript:window.__mdInjected=3) and [app](ms-settings:privacy)
+and [png](data:image/png;base64,AAAA)
+
+<script>window.__mdInjected = 1</script><img src=x onerror="window.__mdInjected = 2"> <b>raw</b>
+
+![pic](https://example.com/p.png)"""
+#: An answer a model wrapped whole in a ```markdown fence (stub_stream=fenced): the answer, not a code sample.
+FENCED_ANSWER = "```markdown\n# Fenced\n\nText\n```"
+#: A structured run's answer (stub_stream=json).
+JSON_ANSWER = '{\n  "city": "Oslo",\n  "days": 3\n}'
+
 EXPECTED = [
+    'an answer is drawn from its Markdown: what the model wrote shows, <br> in a table cell too; raw HTML, images and links other than http(s) do not; a fenced answer is the answer, and a JSON answer stays JSON',
     'the shell starts for the owner when auth is off',
     'an empty message leaves the welcome in place',
     'the message form never reloads the page, not even before the chat has taken it over',

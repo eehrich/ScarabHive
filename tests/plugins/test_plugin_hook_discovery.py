@@ -45,9 +45,6 @@ class MockHookPlugin(PluginHook):
     async def on_post_tool_call(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
-    async def on_format_output(self, context: HookContext) -> HookResult:
-        return HookResult(success=True, modified=False, context=context)
-    
     async def on_session_start(self, context: HookContext) -> HookResult:
         return HookResult(success=True, modified=False, context=context)
     
@@ -396,8 +393,8 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
                 'enabled': True
             },
             {
-                'name': 'format_hook',
-                'type': 'format_output',
+                'name': 'start_hook',
+                'type': 'session_start',
                 'enabled': True
             }
         ]
@@ -408,7 +405,7 @@ async def test_multiple_hook_types_same_plugin(clean_registry):
     assert len(registered) == 3
     assert clean_registry.get_hook_info('multi_hook_plugin.pre_hook') is not None
     assert clean_registry.get_hook_info('multi_hook_plugin.post_hook') is not None
-    assert clean_registry.get_hook_info('multi_hook_plugin.format_hook') is not None
+    assert clean_registry.get_hook_info('multi_hook_plugin.start_hook') is not None
 
 
 @pytest.mark.asyncio

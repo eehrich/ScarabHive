@@ -290,12 +290,11 @@ class Agent(ToolServer):
 - Order management and dependencies
 - Error isolation
 
-**Hook Types** (`HookType` in `hooks/plugin_hook.py`, 10 values):
+**Hook Types** (`HookType` in `hooks/plugin_hook.py`, 9 values):
 - `pre_llm_call` - Before LLM request
 - `post_llm_call` - After LLM response
 - `pre_llm_request` / `post_llm_response` - LLM-client level (exact API payload/response)
 - `llm_progress` - During a streaming LLM call (no messages attached)
-- `format_output` - Output formatting
 - `session_start/end` - Session lifecycle
 - `pre_tool_call` / `post_tool_call` - around every tool call of the model
   (`components/tool_execution.py`) and of a tool_script script
@@ -480,9 +479,6 @@ User Request (HTTP/CLI)
          │   Tool Results
          │
          ├─► Repeat until complete
-         │
-         ▼
-   Hook: format_output
          │
          ▼
    Save Session

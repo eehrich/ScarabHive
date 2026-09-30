@@ -5,17 +5,32 @@ from agent_system.cli_utils import common
 from agent_system.config.models import AgentSystemConfig, ToolServerConfig, PluginsConfig
 
 
-@pytest.mark.parametrize("no_color, mode, expected", [
-    ("1", "auto", "text"),     # NO_COLOR silences the automatic choice ...
-    ("1", "always", "ansi"),   # ... but not an explicit --color
-    ("", "auto", "ansi"),
+@pytest.mark.parametrize("no_color, term, mode, expected", [
+    ("1", "xterm", "auto", "text"),     # NO_COLOR silences the automatic choice ...
+    ("1", "xterm", "always", "ansi"),   # ... but not an explicit --color
+    ("", "xterm", "auto", "ansi"),
+    ("", "dumb", "auto", "text"),       # so does a terminal that says it is dumb
+    ("", "dumb", "always", "ansi"),
 ])
-def test_no_color_env_on_a_terminal_that_renders_ansi(monkeypatch, no_color, mode, expected):
+def test_no_color_env_on_a_terminal_that_renders_ansi(monkeypatch, no_color, term, mode, expected):
     """Only `users` read NO_COLOR; the rest of agent-cli coloured regardless."""
     monkeypatch.setattr(common, "ansi_capable_stdout", lambda: True)
     monkeypatch.setenv("NO_COLOR", no_color)
+    monkeypatch.setenv("TERM", term)
     monkeypatch.setattr(common, "color_mode", mode)
     assert common.get_output_format() == expected
+
+
+@pytest.mark.parametrize("term, expected", [("xterm", True), ("dumb", False)])
+def test_users_colour_on_a_terminal_unless_it_is_dumb(monkeypatch, term, expected):
+    """`agent-cli users` decides before --color is read (users._supports_color); a dumb terminal counts there too."""
+    from agent_system.cli_utils import users
+
+    monkeypatch.setattr(users.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("TERM", term)
+    assert users._supports_color() is expected
 
 
 @pytest.mark.parametrize("flags, wants_ansi", [

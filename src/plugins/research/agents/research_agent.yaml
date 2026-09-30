@@ -59,8 +59,6 @@ plugins:
         hooks:
           enabled: true
           overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
             # Shows the running sub-researchers, so the parent continues or
             # waits on them instead of spawning a second copy.
             research_sam.inject_sub_agent_context:

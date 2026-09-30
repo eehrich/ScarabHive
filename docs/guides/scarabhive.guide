@@ -261,9 +261,10 @@ folded -- a run's steps, thinking, sub-agents, their answers -- is set per
 account in @{b}Settings@{ub}.
 @{bullet}Slash commands work in the message box, see
 @{" Chat commands " link commands}.
-@{bullet}Whether an answer is rendered as Markdown depends on the agent:
-agents that run the @{tt}markdown_formatter@{utt} hook get formatted
-answers.
+@{bullet}An answer is drawn from the Markdown the agent wrote: headings,
+lists, tables, code with its colours; a link opens in a new browser tab.
+HTML in an answer shows as text, and an image in it is not loaded. An answer
+that is JSON shows as it is.
 
 @{h2}Finding a panel
 
@@ -502,7 +503,7 @@ server needed. They write their log to @{tt}logs/cli.log@{utt}.
 Option | Effect
 @{tt}--config PATH@{utt} | the configuration; default @{tt}AGENT_CONFIG_PATH@{utt}, else @{tt}config/config.yaml@{utt}
 @{tt}-v@{utt}, @{tt}--verbose@{utt} | progress and debug messages on the console
-@{tt}--color auto\|always\|never\|ansi\|html\|text@{utt} | how output is rendered; @{tt}--no-color@{utt} = @{tt}never@{utt}
+@{tt}--color auto\|always\|never\|ansi\|html\|text@{utt} | how output is rendered: the answer's Markdown with colours on a terminal (@{tt}auto@{utt}, @{tt}ansi@{utt}), as HTML (@{tt}html@{utt}), or as the agent wrote it (@{tt}never@{utt}, @{tt}text@{utt}, and into a pipe); @{tt}--no-color@{utt} = @{tt}never@{utt}
 @{tt}--show-tools@{utt} | show tool calls and their results
 @{tt}--no-status@{utt} | hide the status lines while a run works
 @{tt}--raw@{utt} | print the raw JSON result
@@ -1311,7 +1312,6 @@ Type | Fires | What takes effect
 @{tt}pre_llm_call@{utt} | every step, before the LLM call | @{tt}messages@{utt} -- sent as changed, and kept in the session
 @{tt}llm_progress@{utt} | while a reply streams, every 2000 characters of thinking | nothing
 @{tt}post_llm_call@{utt} | after the assistant message is appended | its content and tool calls; @{tt}continue@{utt} in the metadata asks for another step
-@{tt}format_output@{utt} | for display | display only, never the history
 @{tt}session_end@{utt} | after the session is saved | nothing
 @{tt}pre_llm_request@{utt}, @{tt}post_llm_response@{utt} | in the LLM client: the exact request and response | read-only
 @{body}

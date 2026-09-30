@@ -69,9 +69,6 @@ plugins:
 
         hooks:
           enabled: true
-          overrides:
-            markdown_formatter.format_markdown_output:
-              enabled: true
 
       metadata:
         visibility: "both"
@@ -83,8 +80,7 @@ this plugin; they are described in
 @{" Writing an agent " link scarabhive/agentdev}. Entries without their own
 values take them from @{tt}plugins.default_config@{utt} in
 @{tt}config/plugins.yaml@{utt} (two profiles @{tt}[normal, think]@{utt},
-20 steps, @{tt}config/prompts/system_prompt.md@{utt}, the
-markdown_formatter hooks switched off).
+20 steps, @{tt}config/prompts/system_prompt.md@{utt}).
 
 @{h2}What this plugin reads itself
 

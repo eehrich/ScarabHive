@@ -23,9 +23,6 @@ plugins:
 
         hooks:
           overrides:
-            # Its answer is read by the coordinator, not by a screen.
-            markdown_formatter.format_markdown_output:
-              enabled: false
             # It owns no manager, so there is never a sub-agent to list.
             research_sam.inject_sub_agent_context:
               enabled: false

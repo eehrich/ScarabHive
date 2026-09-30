@@ -507,7 +507,6 @@ class ContextSummarizerPlugin(SchemaBasedPluginHook):
                         llm_response=context.llm_response,
                         tool_call=context.tool_call,
                         tool_result=context.tool_result,
-                        output=context.output,
                         metadata=context.metadata,
                         step=context.step,
                         llm=context.llm

@@ -33,10 +33,9 @@ from typing import Any, Callable, Iterator, Optional, Sequence, TextIO
 from ..llm.pricing import normalize_usage, resolve_call_cost
 from ..paths import user_path
 from .common import (
-    format_output_with_hooks,
     reassert_vt,
-    render_with_rich,
     restore_console_input_mode,
+    show_answer,
     snapshot_console_input_mode,
     supports_color,
 )
@@ -3399,31 +3398,15 @@ def _cancel_turn(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
             "usage": state.get("usage") or {}, **({"refused": state["refused"]} if state.get("refused") else {})}
 
 
-def _render_answer(loop: asyncio.AbstractEventLoop, ctx: _ChatContext,
-                   renderer: ChatRenderer, summary: str) -> None:
+def _render_answer(renderer: ChatRenderer, summary: str) -> None:
     # rich prints straight to stdout, invisible to the region's offsets.
     renderer.commit()
     print()
     try:
-        # output_format=None lets the central helper honour --color; the
-        # one-shot path hardcodes 'ansi' here, which chat deliberately doesn't.
-        # A Ctrl-C here skips the formatting, not the answer or the save.
-        finished, formatted_output = _run_interruptible(loop, format_output_with_hooks(
-            output=summary,
-            agent_instance=ctx.agent,
-            session_id=ctx.session_id,
-            request_id="cli_display",
-        ), "formatting")
-        formatted, content_format = formatted_output if finished else (summary, "text")
-        if content_format == "ansi":
-            render_with_rich(formatted)
-        else:
-            print(formatted)
+        # As --color says (show_answer). A Ctrl-C here stops the drawing, not the save.
+        show_answer(summary)
     except KeyboardInterrupt:
         print("\n(display interrupted)", file=sys.stderr)
-    except Exception:
-        logger.debug("Answer formatting failed, printing raw", exc_info=True)
-        print(summary)
     print()  # region is already committed; plain spacing line
 
 
@@ -3883,7 +3866,7 @@ def run_chat_loop(
 
                 summary = result.get("summary")
                 if summary:
-                    _render_answer(loop, ctx, renderer, summary)
+                    _render_answer(renderer, summary)
                 elif not result.get("errors"):
                     print(renderer._colored("(no answer returned)", "90"))
 

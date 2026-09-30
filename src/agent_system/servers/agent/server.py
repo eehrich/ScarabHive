@@ -2368,7 +2368,7 @@ class Agent(ToolServer):
             messages.append(ChatMessage(role="system", content=tools_msg))
 
         # Execute session start hooks for new sessions AFTER creating system messages
-        # This allows hooks like markdown_formatter to inject additional system prompts
+        # This allows hooks to inject additional system prompts
         # A session starts once: one taken back to no messages (/undo) is not new again
         if self._session_tracker.start_session(session_id):
             modified_messages = await self._hook_manager.execute_session_start_hooks(
@@ -3586,9 +3586,8 @@ class Agent(ToolServer):
                             # the events of sub-agents working while this call waits.
                             yield event
                         elif event_type == "thinking_complete":
-                            # CRITICAL: Make a deep copy of assistant dict to prevent
-                            # format_output hooks in app.py from modifying the stored message!
-                            # app.py formats events for display, but we need raw Markdown in messages
+                            # A copy: the event goes on to every reader of the run, and the
+                            # message kept in the session must not change with what one of them does
                             llm_out = {"assistant": copy.deepcopy(event["assistant"])}
                             # Preserve usage data if present in event
                             if "usage" in event:
@@ -4027,33 +4026,18 @@ class Agent(ToolServer):
             except Exception as e:
                 logger.warning(f"Post-LLM hooks failed: {e}", exc_info=True)
 
-            # Format content for display (markdown -> HTML for web UI)
-            formatted_content = content
+            # The answer goes out as the model wrote it -- Markdown, which the chat and agent-cli draw
+            # themselves. A structured run's answer is JSON, and its events say so.
             content_format = getattr(assistant_msg, 'content_format', 'text')  # Default to 'text' if not set by hooks
-            # A structured run's answer is JSON, not markdown: rendered to HTML it would be neither
-            # what the caller asked for nor parseable (<p>{<br>"a": 1</p>).
-            structured_answer = response_format is not None and not tool_calls
-            if structured_answer:
+            if response_format is not None and not tool_calls:
                 content_format = "json"
-            try:
-                if content and self._hook_manager and not structured_answer:
-                    formatted_content, content_format = await self._hook_manager.execute_format_output_hooks(
-                        output=content,
-                        request_id=request_id or "unknown",
-                        session_id=session_id or "unknown",
-                        output_format='html'
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to format content for display: {e}", exc_info=True)
-                # Keep original content on error
-                formatted_content = content
 
             # Emit thinking event with LLM response (for UI to show assistant reasoning)
-            yield {"type": "thinking", "step": step + 1, "assistant": {"content": formatted_content, "tool_calls": tool_calls, "content_format": content_format}}
+            yield {"type": "thinking", "step": step + 1, "assistant": {"content": content, "tool_calls": tool_calls, "content_format": content_format}}
 
             # Also emit simplified thinking event if we have content and no tool calls (final answer)
             if content and not tool_calls:
-                yield {"type": "thinking", "content": formatted_content, "content_format": content_format}
+                yield {"type": "thinking", "content": content, "content_format": content_format}
 
             # Yield pending status events after LLM response
             for status_event in yield_pending_status_events():
@@ -4258,11 +4242,11 @@ class Agent(ToolServer):
                                             yield {"type": "error", "message": error_msg,
                                                    "error_type": STRUCTURED_OUTPUT_INVALID}
                                             return
-                                        content = formatted_content = assistant_msg.content = checked.text
+                                        content = assistant_msg.content = checked.text
                                         content_format = assistant_msg.content_format = "json"
                                     results["summary"] = content
                                     self._set_live_messages(session_id, messages.copy())
-                                    final_event = {"type": "final", "summary": formatted_content,
+                                    final_event = {"type": "final", "summary": content,
                                                    "content_format": content_format}
                                     if llm_out and "usage" in llm_out:
                                         final_event["usage"] = llm_out["usage"]
@@ -4561,15 +4545,14 @@ class Agent(ToolServer):
                         return
                     # Delivered as checked: a fence around the whole answer is gone, in the
                     # session too -- the caller parses what the session keeps (openai_api).
-                    content = formatted_content = assistant_msg.content = checked.text
+                    content = assistant_msg.content = checked.text
                     content_format = assistant_msg.content_format = "json"
                 # Assistant message was already added above before post_llm hooks
                 results["summary"] = content
                 # Update tracked messages with final response
                 self._set_live_messages(session_id, messages.copy())
 
-                # Use the already formatted content from above
-                final_event = {"type": "final", "summary": formatted_content, "content_format": content_format}
+                final_event = {"type": "final", "summary": content, "content_format": content_format}
                 # Include usage data if available from last LLM call
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
@@ -4592,7 +4575,7 @@ class Agent(ToolServer):
                 # Treat whatever content we have as final (even if empty)
                 results["summary"] = content or ""
                 self._set_live_messages(session_id, messages.copy())
-                final_event = {"type": "final", "summary": formatted_content or "", "content_format": content_format}
+                final_event = {"type": "final", "summary": content or "", "content_format": content_format}
                 if llm_out and "usage" in llm_out:
                     final_event["usage"] = llm_out["usage"]
                 yield final_event
