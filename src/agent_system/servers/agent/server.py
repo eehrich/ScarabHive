@@ -211,8 +211,8 @@ def _name_the_model(event: dict, llm: Any) -> dict:
     model = getattr(llm, "model", None)
     if isinstance(model, str) and model:
         event["model"] = model
-        batch = getattr(llm, "batch_provider", None)
-        event["batch"] = isinstance(batch, str) and bool(batch)
+        # Who answered, not what the client is: a batch client's sync fallback bills in full.
+        event["batch"] = getattr(llm, "last_was_batch", None) is True
     return event
 
 

@@ -1328,6 +1328,13 @@ class TestCallPricingKey:
         override = SimpleNamespace(model="b")
         assert _call_pricing_key(agent, override) == ("b", False)
 
+    def test_a_batch_client_is_priced_by_who_answered(self):
+        """Its sync fallback answered: full price, not the batch discount."""
+        batch = SimpleNamespace(model="m", batch_provider="openai", last_was_batch=True)
+        assert _call_pricing_key(SimpleNamespace(llm=batch)) == ("m", True)
+        batch.last_was_batch = False
+        assert _call_pricing_key(SimpleNamespace(llm=batch)) == ("m", False)
+
 
 class TestSessionsCommand:
     """`/sessions [count]` -- the count has to survive the REPL's dispatch.

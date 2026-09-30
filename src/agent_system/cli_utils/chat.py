@@ -1640,11 +1640,10 @@ def _call_pricing_key(agent: Any, override: Any = None,
         return model, event.get("batch") is True
     client = override or getattr(agent, "llm", None)
     model = getattr(client, "model", None)
-    provider = getattr(client, "batch_provider", None)
-    # isinstance-str guard mirrors the usage tracker: a bare mock must not look
-    # batchy and halve the estimate.
+    # Who answered, not which client ran: a batch client's sync fallback is
+    # priced in full. `is True`: a bare mock must not look batchy.
     return (str(model) if model else None,
-            isinstance(provider, str) and bool(provider))
+            getattr(client, "last_was_batch", None) is True)
 
 
 def _merge_totals(total: dict, turn: dict) -> None:

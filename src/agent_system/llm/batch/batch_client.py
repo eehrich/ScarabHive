@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError
@@ -74,6 +75,11 @@ class BatchLLMClient(LLMClient):
         
         # Status tracking to avoid duplicate messages
         self._last_status_message: Optional[str] = None
+
+        # Whether the last answer came from the batch attempt (False after the
+        # sync fallback answered): what prices the call at the batch discount.
+        # batch_provider only says what this client is, not who answered.
+        self.last_was_batch = True
         
         # Copy attributes from underlying client
         if hasattr(underlying_client, 'context_window'):
@@ -132,21 +138,18 @@ class BatchLLMClient(LLMClient):
             Response text
         """
         self._last_status_message = None  # Reset for new request
-        
-        result = await self._submit_batch_request(
-            messages=messages,
-            tools=None,
-            cancellation_token=cancellation_token,
-            status_scope=status_scope
-        )
-        
+
+        result = await self._submit_reported(messages, None, cancellation_token, status_scope)
+
         if result is None:
             # Fallback to sync if batch failed
             if self.batch_provider_config.fallback_to_sync:
                 await self._report_status(status_scope, f"Fallback to sync: {self.model_name}")
-                return await self.underlying_client.chat(messages, cancellation_token)
+                answer = await self.underlying_client.chat(messages, cancellation_token)
+                self._take_sync_latency()
+                return answer
             raise RuntimeError("Batch request failed and fallback is disabled")
-        
+
         # Extract text from result - support both OpenAI batch format and native format
         # Note: Status "Batch completed" already reported by queue_manager
         return self._extract_content(result)
@@ -236,52 +239,20 @@ class BatchLLMClient(LLMClient):
             Dict with 'assistant' key containing response
         """
         self._last_status_message = None  # Reset for new request
-        
-        # Notify pre-request hook (LLM-client level)
-        import time as _time
-        _batch_start = _time.time()
-        await self._notify_pre_request({
-            "provider": f"batch_{self.batch_provider}",
-            "model": self.model_name,
-            "url": "batch_queue",
-            "payload": {"message_count": len(messages), "tool_count": len(tools)},
-            "is_streaming": False,
-            "timestamp_ms": _time.time() * 1000,
-        })
-        
-        result = await self._submit_batch_request(
-            messages=messages,
-            tools=tools,
-            cancellation_token=cancellation_token,
-            status_scope=status_scope
-        )
-        
+
+        result = await self._submit_reported(messages, tools, cancellation_token, status_scope)
+
         if result is None:
-            # Notify post-response hook on failure
-            _duration_ms = (_time.time() - _batch_start) * 1000
-            await self._notify_post_response({
-                "provider": f"batch_{self.batch_provider}", "model": self.model_name,
-                "url": "batch_queue", "is_streaming": False,
-                "duration_ms": _duration_ms, "error": "Batch request failed",
-                "timestamp_ms": _time.time() * 1000,
-            })
             # Fallback to sync if batch failed
             if self.batch_provider_config.fallback_to_sync:
                 await self._report_status(status_scope, f"Fallback to sync: {self.model_name}")
-                return await self.underlying_client.chat_tools(
+                answer = await self.underlying_client.chat_tools(
                     messages, tools, cancellation_token
                 )
+                self._take_sync_latency()
+                return answer
             raise RuntimeError("Batch request failed and fallback is disabled")
-        
-        # Notify post-response hook on success
-        _duration_ms = (_time.time() - _batch_start) * 1000
-        await self._notify_post_response({
-            "provider": f"batch_{self.batch_provider}", "model": self.model_name,
-            "url": "batch_queue", "is_streaming": False,
-            "duration_ms": _duration_ms,
-            "timestamp_ms": _time.time() * 1000,
-        })
-        
+
         # Convert from OpenAI batch format to native format
         # Note: Status "Batch completed" already reported by queue_manager
         return self._convert_to_native_format(result)
@@ -300,11 +271,13 @@ class BatchLLMClient(LLMClient):
         """
         if self.batch_provider_config.fallback_to_sync:
             # Use underlying client for streaming
+            self.last_was_batch = False
             await self._report_status(status_scope, f"Streaming: {self.model_name}")
             async for chunk in self.underlying_client.chat_tools_streaming(
                 messages, tools, cancellation_token
             ):
                 yield chunk
+            self._take_sync_latency()
         else:
             # Use batch and yield final result
             result = await self.chat_tools(messages, tools, cancellation_token, status_scope)
@@ -319,6 +292,81 @@ class BatchLLMClient(LLMClient):
         """
         return False
     
+    def _take_sync_latency(self) -> None:
+        """The sync client's latency for the answer it served, where the
+        agent-level readers look for it (this client)."""
+        self._last_response_duration_ms = getattr(
+            self.underlying_client, "_last_response_duration_ms", None)
+
+    def set_llm_hooks(self, on_pre_request: Any = None, on_post_response: Any = None) -> None:
+        """Wire the hooks here AND on the underlying client.
+
+        The sync fallback and the streaming path call the underlying client,
+        which then reports its own request. The batch attempt before it is a
+        request of its own, reported by this wrapper: two requests, one end each.
+        """
+        super().set_llm_hooks(on_pre_request, on_post_response)
+        if hasattr(self.underlying_client, "set_llm_hooks"):
+            self.underlying_client.set_llm_hooks(on_pre_request, on_post_response)
+
+    async def _submit_reported(
+        self,
+        messages: List[ChatMessage],
+        tools: Optional[List[Dict[str, Any]]],
+        cancellation_token: Optional[Any],
+        status_scope: Optional["StatusScope"],
+    ) -> Optional[Dict[str, Any]]:
+        """_submit_batch_request, reported to pre/post_llm_response exactly once.
+
+        Every way the batch request ends reaches post_llm_response once: a
+        result (with its usage -- the one row the cost readers count), a failure
+        that falls back to sync, a cancel or an exception while waiting (re-raised
+        unchanged).
+        """
+        start = time.time()
+        await self._notify_pre_request({
+            "provider": f"batch_{self.batch_provider}",
+            "model": self.model_name,
+            "url": "batch_queue",
+            "payload": {"message_count": len(messages), "tool_count": len(tools or [])},
+            "is_streaming": False,
+            "timestamp_ms": start * 1000,
+        })
+        ended = False
+
+        async def report_end(**info: Any) -> None:
+            nonlocal ended
+            ended = True
+            await self._notify_post_response({
+                "provider": f"batch_{self.batch_provider}", "model": self.model_name,
+                "url": "batch_queue", "is_streaming": False,
+                "duration_ms": (time.time() - start) * 1000,
+                "timestamp_ms": time.time() * 1000, **info,
+            })
+
+        try:
+            result = await self._submit_batch_request(
+                messages=messages,
+                tools=tools,
+                cancellation_token=cancellation_token,
+                status_scope=status_scope,
+            )
+            self.last_was_batch = result is not None
+            if result is None:
+                await report_end(error="Batch request failed")
+            else:
+                usage = result.get("usage") if isinstance(result, dict) else None
+                await report_end(usage=usage)
+            return result
+        except BaseException as error:
+            if not ended:
+                if isinstance(error, asyncio.CancelledError):
+                    text = str(error) or "cancelled"
+                else:
+                    text = str(error) or type(error).__name__
+                await report_end(error=text)
+            raise
+
     async def _submit_batch_request(
         self,
         messages: List[ChatMessage],

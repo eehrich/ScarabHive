@@ -836,7 +836,7 @@ async def test_track_usage_unknown_model_keeps_none(plugin, mock_hook_context, p
 
 @pytest.mark.asyncio
 async def test_track_usage_batch_discount_applied(plugin, mock_hook_context, tmp_path, monkeypatch):
-    """Batch clients (BatchLLMClient.batch_provider) get the table's
+    """An answer from a batch (BatchLLMClient.last_was_batch) gets the table's
     batch_discount — otherwise estimates would be ~2x the real price."""
     cfg = tmp_path / "config"; cfg.mkdir(exist_ok=True)
     (cfg / "llm_pricing.yaml").write_text(
@@ -847,12 +847,18 @@ async def test_track_usage_batch_discount_applied(plugin, mock_hook_context, tmp
     pricing_mod._cache.update(path=None, mtime=None, table={})
 
     mock_hook_context.llm.model = "batchy-model"
-    mock_hook_context.llm.batch_provider = "anthropic"  # str -> batch
+    mock_hook_context.llm.last_was_batch = True
     await plugin.hooks_plugin.track_usage(mock_hook_context)
     latest = plugin.tracker.get_latest()
     full = (100 * 1.0 + 50 * 2.0) / 1_000_000
     assert latest["cost"] == pytest.approx(full * 0.5)
     assert latest["cost_is_estimate"] is True
+
+    # The same batch client after its sync fallback answered: full price.
+    mock_hook_context.llm.batch_provider = "anthropic"
+    mock_hook_context.llm.last_was_batch = False
+    await plugin.hooks_plugin.track_usage(mock_hook_context)
+    assert plugin.tracker.get_latest()["cost"] == pytest.approx(full)
 
 
 def test_estimated_calls_tracked_in_rollups(tmp_path):
