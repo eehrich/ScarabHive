@@ -8,6 +8,7 @@ agent-cli run -- and whoever looks next finds its end on disk.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -241,13 +242,23 @@ def _when(epoch: float) -> str:
 def git(cwd: Path, *args: str, timeout: float = 120, pinned: Sequence[str] = (), stdin: Optional[str] = None,
         ok: tuple[int, ...] = (0,)) -> str:
     try:
-        done = subprocess.run(["git", *pinned, *args], cwd=cwd, input=stdin, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = subprocess.Popen(["git", *pinned, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
         raise GitError(f"git {args[0]}: {exc}") from exc
-    if done.returncode not in ok:
-        raise GitError(f"git {args[0]}: {(done.stderr or done.stdout).strip()[:300]}")
-    return done.stdout
+    try:
+        stdout, stderr = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run kills git alone and then waits for its pipes: a filter
+        # or hook git started holds them open, and the timeout bounded nothing.
+        kill_tree(proc.pid, process_start(proc.pid))
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            # One git already left behind before the timeout is out of the tree.
+            proc.communicate(timeout=5)
+        raise GitError(f"git {args[0]}: timed out after {timeout:g} s") from exc
+    if proc.returncode not in ok:
+        raise GitError(f"git {args[0]}: {(stderr or stdout).strip()[:300]}")
+    return stdout
 
 
 class Worktree(NamedTuple):
@@ -282,6 +293,18 @@ def make_worktree(repo: Path, path: Path, branch: str, exclude: Iterable[str]) -
         git(path, "update-index", "--skip-worktree", "--", tracked)
         (path / tracked).unlink(missing_ok=True)
     return Worktree(base, git_dir, hidden)
+
+
+def remove_worktree(repo: Path, path: Path, branch: str) -> None:
+    """Takes back what make_worktree made for a run that never started, as far as it got. Only this
+    worktree's entry -- `remove --force` drops it even when the folder is gone (measured, git 2.36): a
+    repo-wide prune would drop the entries of the owner's own worktrees whose folder is missing just now
+    (an unmounted drive)."""
+    for args in (("worktree", "remove", "--force", str(path)), ("branch", "-D", branch)):
+        try:
+            git(repo, *args)
+        except GitError:
+            pass
 
 
 def secret_values(path: Path) -> set[str]:

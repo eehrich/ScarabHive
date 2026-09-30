@@ -7,6 +7,7 @@ down is the plugin's side: what it starts, what it refuses, what a run leaves.
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -1065,3 +1066,45 @@ async def test_a_long_hidden_list_is_capped(repo, data_root):
     result, _ = await call(server, "get_run", run_id="a1b2c3d4e5f6")
     assert len(result["hidden"]) == 51 and result["hidden"][-1] == "... 10 more"
 
+
+
+@pytest.mark.parametrize("breaks", ["hiding the secrets", "starting claude code", "the worktree is gone"])
+async def test_a_run_that_did_not_start_leaves_no_worktree_or_branch(tmp_path, monkeypatch, breaks):
+    """Answered "not started", nothing names the worktree and branch it had made -- and the
+    cleanup touches no other worktree, not even one whose folder is missing just now."""
+    repo = fresh_repo(tmp_path / "repo")
+    git(repo, "worktree", "add", "-q", "-b", "mine", str(tmp_path / "mine"))
+    (tmp_path / "mine").rename(tmp_path / "unmounted")
+    server = make_server(repo)
+    server.workdirs["repo"]["exclude"] = ["a.txt"]
+
+    def broken(*args, **kwargs):
+        if breaks == "the worktree is gone":
+            for made in (server._root() / "worktrees").glob("*"):
+                shutil.rmtree(made)
+        raise OSError("broken on purpose")
+
+    monkeypatch.setattr(cli, "launch" if breaks == "starting claude code" else "secret_values", broken)
+    result, _ = await call(server, "run_task", task="WRITE b.txt hello")
+    assert "not started" in result["error"] and "broken on purpose" in result["error"]
+    assert git(repo, "branch", "--list", "coding_cli/*").strip() == ""
+    listed = git(repo, "worktree", "list", "--porcelain")
+    assert listed.count("worktree ") == 2 and "mine" in listed and "coding_cli" not in listed
+    assert not any((server._root() / "worktrees").glob("*"))
+    for record in server._records():
+        assert record["state"] == "failed" and not {"worktree", "branch", "base"} & set(record), record
+
+
+def test_a_git_timeout_ends_what_git_started_too(tmp_path):
+    """subprocess.run kills git alone and waits for its pipes: a hook or filter
+    git started held them, and a 1 s timeout waited as long as that ran."""
+    repo = fresh_repo(tmp_path / "repo")
+    pidfile, child = tmp_path / "child.pid", tmp_path / "child.py"
+    child.write_text(f"import os, time\nopen({str(pidfile)!r}, 'w').write(str(os.getpid()))\ntime.sleep(30)\n",
+                     encoding="utf-8")
+    alias = f'alias.slow=!"{Path(sys.executable).as_posix()}" "{child.as_posix()}"'
+    started = time.monotonic()
+    with pytest.raises(cli.GitError, match="timed out"):
+        cli.git(repo, "slow", timeout=1.5, pinned=["-c", alias])
+    assert time.monotonic() - started < 10
+    assert not alive(int(pidfile.read_text()))

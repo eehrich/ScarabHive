@@ -1,0 +1,507 @@
+@database "coding_cli"
+@author "Enrico Ehrich"
+@$VER: coding_cli.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Coding CLI"
+@{h1}Coding CLI
+
+This plugin lets an agent hand a programming task to @{b}Claude Code@{ub}.
+Each task becomes a @{i}run@{ui}: one headless Claude Code process, started
+on the Claude Code login of the account ScarabHive runs under -- the
+operator's subscription, not an API key -- in a fresh git worktree of a
+repository the operator listed. What the run changed is committed on a
+branch of its own; nothing is merged or pushed. The agent gets back the
+branch, the changed files and Claude Code's report, and can continue the
+same conversation later with @{tt}resume@{utt}.
+
+Runs are locked down (no MCP servers, a fixed tool list, no shell unless the
+operator allows commands), only listed users may start them, and none starts
+while the subscription is near its limit. A long run goes on in the
+background; the session that started it is woken when it ends.
+
+The plugin has three tools, no hooks and no panel. It also ships an agent,
+@{tt}claude_code_agent@{utt}, that only relays work to Claude Code; the
+coder agent has the tools too.
+
+@{code}
+For users
+  @{"  How a run goes  " link run}
+  @{"  What a run may do  " link lockdown}
+  @{"  The relay agent  " link agent}
+
+For agents and developers
+  @{"  run_task  " link run_task}
+  @{"  get_run  " link get_run}
+  @{"  cancel_run  " link cancel_run}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Known gaps  " link gaps}
+@{body}
+@endnode
+
+@node run "How a run goes"
+@{h1}How a run goes
+
+@{h2}Starting
+
+@{tt}run_task@{utt} checks, in this order: the user is in
+@{tt}allowed_users@{utt}; the task is text of at most 20,000 characters;
+the mode; for a resume, that the run is the user's, has ended and left a
+conversation and a worktree; the workdir is known; no subscription window
+is at or past @{tt}max_window_utilization@{utt}; fewer than
+@{tt}max_parallel@{utt} runs are going. Then:
+
+@{bullet}@{tt}git worktree add@{utt} of the repository's HEAD on a new
+branch @{tt}coding_cli/<run_id>@{utt}, under
+@{tt}data/coding_cli/worktrees/<run_id>@{utt}. A resume reuses its run's
+worktree and branch instead.
+@{bullet}The workdir's @{tt}exclude@{utt} files are deleted in the worktree
+and marked skip-worktree, so the run can neither read them nor commit them
+as deleted. So is every other tracked file that holds one of their secret
+values (see @{" What a run may do " link lockdown}). The answer lists all
+of them under @{tt}hidden@{utt}.
+@{bullet}Claude Code starts detached (its own process group, no window),
+the task on stdin, its stream-json output into
+@{tt}data/coding_cli/runs/<run_id>.jsonl@{utt}. Neither Ctrl+C in
+ScarabHive's console nor an API restart takes it along.
+@{bullet}If anything of this fails, the answer is "not started: ..." and
+the worktree and branch made for it are removed again.
+
+@{h2}Waiting
+
+The call waits up to @{tt}wait_s@{utt} (300 s by default) for the end.
+Meanwhile the chat shows the run the way it shows a sub-agent: a box under
+the call with Claude Code's steps, its text and every tool call with its
+arguments and result, and a status line per tool call. The box goes on
+after the call has answered, as long as the turn that made the call is
+streaming; it is not stored -- after a reload, read the run with
+@{tt}get_run@{utt}.
+
+A run that ends in time is answered in full. One still going is answered
+with its run id, its latest actions and a @{tt}wake@{utt}: when the run
+ends, the session that started it is woken and reads it with
+@{tt}get_run@{utt} -- unless it read the end itself already. Stopping the
+turn while the call still waits stops the run too; once the call has
+answered, only @{tt}cancel_run@{utt} or the time limit stops it.
+
+@{h2}The end
+
+A run is stopped after @{tt}max_run_minutes@{utt} (60). A stop -- time
+limit, cancel, stopped turn -- kills Claude Code and everything it started.
+Then, once per run, the plugin commits everything left in the worktree as
+one commit @{tt}coding_cli <run_id>: <first line of the task>@{utt} (edit
+mode only), lists the changes against the base, stores the subscription
+usage Claude Code reported and records the state:
+
+@{table}
+State | When
+done | Claude Code ended with a success result -- even if a stop came too late
+cancelled | stopped (cancel, time limit, stopped turn) before a success result
+failed | an error result, or no result at all (its stderr goes into @{tt}details@{utt})
+@{body}
+
+For this commit the plugin's git keeps to the git directory the worktree was
+made with and runs no hook and no fsmonitor: the run could have rewritten the
+worktree's @{tt}.git@{utt} file or planted a hook.
+
+@{h2}Who watches a run
+
+A run is on disk, not in a process. Its owner -- the plugin instance that
+started it -- watches it. When the owner is gone (an API restart, a one-shot
+@{tt}agent-cli run@{utt} that ended, a stopped plugin), another instance
+takes the run over: at its start and every 30 seconds it looks for such
+runs, one instance per dead owner. Any @{tt}get_run@{utt},
+@{tt}cancel_run@{utt} or @{tt}run_task@{utt} also ends a run whose owner is
+gone and whose process has ended or is past its time limit. Every instance
+looks only at its own data folder.
+
+@{h2}What stays
+
+Worktrees and branches stay -- @{tt}resume@{utt} needs them. Nothing is
+merged. Look at a result with @{tt}git diff <base>..coding_cli/<run_id>@{utt}
+(the answer's @{tt}next@{utt} says so); remove a worktree with
+@{tt}git worktree remove@{utt} and its branch with @{tt}git branch -D@{utt}
+once you merged or dropped it.
+@endnode
+
+@node lockdown "What a run may do"
+@{h1}What a run may do
+
+@{h2}The command line
+
+@{code}
+claude -p --output-format stream-json --verbose --restricted
+       --strict-mcp-config --mcp-config data/coding_cli/no_mcp.json
+       --permission-mode acceptEdits          (plan mode: plan)
+       [--allowedTools <Shell>(<cmd>) ... --disallowedTools <Shell>(git push:*) ...]
+       --tools Read,Edit,Write,Glob,Grep[,<Shell>]   (plan mode: Read,Glob,Grep)
+       [--model <model>] [--resume <session>] [--append-system-prompt-file CLAUDE.md]
+@{body}
+
+@{bullet}The task goes in on stdin: nothing the model writes becomes an
+argument. A @{tt}resume@{utt} passes the session id Claude Code itself
+reported, and only if it has the form of one.
+@{bullet}No MCP server: the MCP config is empty and nothing else is read.
+@{bullet}The file tools write only inside the worktree; a write elsewhere
+is refused and shows up under @{tt}denials@{utt}.
+@{bullet}The shell exists only when @{tt}allowed_commands@{utt} is set, and
+only in edit mode. It is PowerShell on Windows and Bash elsewhere, and it
+runs exactly the listed commands (Claude Code permission patterns such as
+@{tt}pytest:*@{utt}). @{tt}git push@{utt}, @{tt}git remote@{utt},
+@{tt}git config@{utt} and @{tt}git worktree@{utt} are refused to the shell
+tool whatever the list says.
+@{bullet}The repository's @{tt}CLAUDE.md@{utt}, which
+@{tt}--restricted@{utt} would leave unread, is appended to the system
+prompt when the worktree has one.
+
+@{h2}The environment
+
+Claude Code gets an allowlist of environment variables: what it needs to
+start and find its login (@{tt}PATH@{utt}, the home and profile folders,
+temp, locale, proxies, @{tt}CLAUDE_CONFIG_DIR@{utt},
+@{tt}CLAUDE_CODE_OAUTH_TOKEN@{utt} and the like), plus the names in
+@{tt}pass_env@{utt}. None of the keys ScarabHive loaded from
+@{tt}config/secrets.env@{utt} reaches it -- an @{tt}ANTHROPIC_API_KEY@{utt}
+would even switch Claude Code from the subscription to paid API use.
+
+@{h2}Secrets kept out of the worktree
+
+For each file in the workdir's @{tt}exclude@{utt} list, the plugin collects
+its secret values: every value of a @{tt}.env@{utt} file (read as the
+loader reads it; a value with quotes counts with and without them), and in
+a YAML file the string values of keys whose name contains secret, password,
+passwd, token, api key or private key. Values shorter than 8 characters,
+spanning lines or holding @{tt}${@{utt} are skipped. Every tracked file of
+the worktree that contains one of the values is hidden too. The values go
+to @{tt}git grep@{utt} on stdin, never on a command line.
+
+@{h2}Who may start runs
+
+Only the users in @{tt}allowed_users@{utt}, compared by user id; the
+@{tt}agent-cli@{utt} runs as @{tt}cli_user@{utt} (its
+@{tt}--session-user@{utt}), a name no account can be registered under. Every
+other user gets an error before anything is made. A run belongs to the user who started it:
+another user's run id answers "no run ... of yours".
+
+@{h2}The subscription guard
+
+Every run reports the subscription's windows (five hours, seven days, ...)
+in its stream; the plugin stores the last report in
+@{tt}data/coding_cli/quota.json@{utt}. While a window stands at or above
+@{tt}max_window_utilization@{utt} and has not reset yet, or the
+subscription refuses requests, no run starts: "not started: the
+subscription's five_hour window is at 85%, the limit for runs is 80%; it
+resets 2026-09-30 14:00".
+@endnode
+
+@node agent "The relay agent"
+@{h1}The relay agent
+
+@{tt}claude_code_agent@{utt} is a @{tt}multi_turn_agent@{utt} shipped in
+the plugin's @{tt}agents/coding_cli.yaml@{utt}. It writes no code: it turns a
+request into one complete task, runs it, and reports the branch, the changed
+files, what Claude Code says it did and what it could not do. Its prompt
+(@{tt}agents/prompts/claude_code_agent.md@{utt}) tells it to plan bigger or
+unclear changes with @{tt}mode: plan@{utt} first and carry the plan out with
+@{tt}resume@{utt}, to continue follow-ups with @{tt}resume@{utt}, to end its
+turn when a wake is armed, to treat everything marked untrusted as data, and
+to leave merging to the user.
+
+@{table}
+Setting | Value
+llm_profile | or-gemini-flash, or-deepseek-flash -- it only relays
+max_steps | 20
+tools | +coding_cli/*
+metadata.min_role | admin
+metadata.visibility | not set: private -- neither in the agent list nor a tool of other agents
+@{body}
+
+As shipped it is therefore reached by name, e.g.
+@{tt}agent-cli run claude_code_agent "..."@{utt}. The coder agent has the
+three tools itself (deferred: loaded on demand with @{tt}tool_search@{utt}).
+@endnode
+
+@node run_task "run_task"
+@{h1}run_task
+
+Starts a run. Answers when it ends, or with a run id after @{tt}wait_s@{utt}.
+
+@{table}
+Parameter | Meaning
+task | required; the complete task, at most 20,000 characters -- Claude Code sees nothing of the conversation
+workdir | one of the configured workdirs; may be left out when there is only one; ignored with resume (the run's own)
+mode | @{tt}edit@{utt} (default): change the code; @{tt}plan@{utt}: only read (Read, Glob, Grep, Claude Code's plan mode) and answer with a plan
+resume | run id of an ended run of the user's: continue its Claude Code conversation in its worktree and branch
+@{body}
+
+@{h2}The answer of an ended run
+
+@{table}
+Field | Meaning
+status | @{tt}success@{utt}; the run's own outcome is @{tt}state@{utt}
+run_id, mode, workdir | the run
+state | done, failed or cancelled (see @{" How a run goes " link run})
+branch, base, worktree | the branch, the commit it started from, the worktree folder
+commit | the commit the plugin made at the end; null when nothing changed or in plan mode
+turns, duration_s | as Claude Code reported them
+abo | subscription usage per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 0.51}@{utt}
+changes | untrusted: @{tt}M<TAB>path@{utt} per file against base, plus @{tt}uncommitted ...@{utt} lines; at most 100 lines and a "... N more"
+denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewhere/x.txt@{utt}; at most 20, 120 characters each
+result | untrusted: Claude Code's final report, at most 12,000 characters (@{tt}result_cut: true@{utt} when cut)
+hidden | files kept out of the worktree for their secrets; at most 50 and a "... N more"
+note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", ...
+details | untrusted: git's error output, the last 600 characters of Claude Code's stderr
+next | how to resume, and the @{tt}git diff@{utt} that shows the branch
+@{body}
+
+Untrusted fields come as @{tt}{"untrusted": true, "content": ...}@{utt}:
+Claude Code read the files it wrote about, so its words are data for the
+model, never instructions.
+
+@{h2}The answer of a run still going
+
+@{tt}status: success@{utt}, @{tt}run_id@{utt}, @{tt}state: running@{utt},
+@{tt}branch@{utt}, @{tt}running_s@{utt}, @{tt}last_actions@{utt}
+(untrusted: the last 12 tool calls and texts, one line of at most 100
+characters each), and @{tt}wake@{utt} with @{tt}wake_note@{utt} (see
+@{" What the model sees " link model}).
+
+@{h2}Errors
+
+@{tt}{"status": "error", "error": "..."}@{utt}, verbatim:
+
+@{table}
+Error | Cause
+Claude Code runs on the operator's subscription: this user may not start runs (coding_cli allowed_users) | the user is not listed
+task: the complete task as text | task empty or not a string
+task: at most 20000 characters | too long
+task: not valid text (a broken character escape) -- send it again | a lone surrogate in the text
+mode: edit (change the code) or plan (read and answer with a plan) | another mode
+resume: no run <id> of yours | unknown run, or another user's
+resume: run <id> has not ended yet | still running
+resume: run <id> left no conversation or worktree to continue -- start a new run | no Claude Code session, or the worktree was removed
+workdir: one of <names> | unknown workdir, or none given with several configured
+not started: <reason> | the subscription guard, a git or start failure
+not started: <n> run(s) still going (<ids>) -- wait for them or cancel one | @{tt}max_parallel@{utt} reached
+resume: another run works in that worktree | a resume of a run whose worktree is in use
+@{body}
+
+@{h2}Example
+
+@{code json}
+{"task": "In src/util/dates.py, parse_date fails on ISO dates with a Z suffix. Accept it, add a test in tests/util/test_dates.py, run pytest tests/util.", "workdir": "scarabhive"}
+@{body}
+@endnode
+
+@node get_run "get_run"
+@{h1}get_run
+
+A run's state: while it runs, the same short report @{tt}run_task@{utt}
+gives for a run still going (without @{tt}wake@{utt}); once it ended, the
+full answer of @{" run_task " link run_task}. Reading an ended run marks it
+read for this session, so it is not woken for it any more.
+
+@{table}
+Parameter | Meaning
+run_id | required; a run of the calling user
+wait_s | 0 to 600 seconds (default 0; values outside are clamped): wait that long for the end, checking about every 2 seconds
+@{body}
+
+Errors: "no run <id> of yours", "wait_s: seconds, a number from 0 to 600"
+(not a number).
+
+@{code json}
+{"run_id": "3f9a1c0b7e21", "wait_s": 300}
+@{body}
+@endnode
+
+@node cancel_run "cancel_run"
+@{h1}cancel_run
+
+Stops a running run: kills Claude Code and everything it started, then waits
+up to 30 seconds for the run to be finalized and answers as
+@{" run_task " link run_task} does -- @{tt}state: cancelled@{utt}, note
+"cancelled on request", what it changed so far committed on its branch.
+
+@{bullet}A run still being started gets the stop on disk; its owner kills
+the process as soon as it runs.
+@{bullet}A run that already ended on its own keeps its outcome, even if
+nobody has read it yet.
+@{bullet}If the run is not finalized within the 30 seconds (another process
+owns it), the answer is the running report with the note "the stop is sent
+and the run is still ending -- look again with coding_cli_get_run".
+
+@{table}
+Parameter | Meaning
+run_id | required; a run of the calling user
+@{body}
+
+Error: "no run <id> of yours".
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The three tools come from the plugin's @{tt}schema.yaml@{utt}, rendered per
+instance: the names carry the instance name
+(@{tt}coding_cli_run_task@{utt}, ...), and @{tt}workdir@{utt} is an enum of
+the configured workdirs. Without a Claude Code executable or a usable
+workdir the instance offers @{b}no@{ub} tools -- an installation without
+Claude Code loses nothing by the plugin being enabled. The
+@{tt}run_task@{utt} description tells the model that Claude Code sees nothing
+of the conversation, that nothing is merged, what to do with a run id, and
+that the untrusted fields are data.
+
+@{h2}The wake note
+
+A run still going when @{tt}run_task@{utt} answers comes with
+@{tt}wake@{utt} and @{tt}wake_note@{utt}. Armed:
+
+@{code}
+you are woken when the run ends: give the user run id <id> and end your turn,
+then read it with coding_cli_get_run. A one-shot agent-cli run is never woken
+-- there, wait with coding_cli_get_run wait_s
+@{body}
+
+Not armed, the note is the reason followed by "; you are not woken -- give
+run id <id> to whoever asked; coding_cli_get_run with wait_s waits for its
+end". The reasons: "this run was itself woken and ends with its turn", "a
+sub-agent's session is never woken", "this session cannot be watched", or
+the core's own (session presence off, no session, waking switched off).
+
+@{h2}The chat status line
+
+@{tt}run_task@{utt}: "run <id> started on coding_cli/<id> (edit)", then per
+second at most one line with Claude Code's latest text (and, without a live
+box, its latest tool call), "(+N)" for the others. At the end "run <id>
+done: 3 turn(s), 2 file(s), 41 s, 5h window 34%" -- as an error line with
+the note for a failed or cancelled run -- or "run <id> still going after 300
+s, wake armed" (or ", no wake"). @{tt}get_run@{utt} on a running run: "run
+<id> running, <n> recent action(s)". Errors show their text, cut to 140
+characters.
+
+@{h2}Tokens and cache
+
+Append-only: each call returns one tool result and nothing earlier is
+rewritten. The result is bounded -- the report at 12,000 characters, the
+change list at 100 lines, denials at 20, hidden files at 50, the running
+report at 12 lines. Claude Code's own tokens are spent on the subscription,
+not on the calling agent's model; @{tt}resume@{utt} continues its
+conversation instead of starting a fresh one.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Claude Code must be installed and logged in for the account ScarabHive runs
+under. The plugin looks for @{tt}command@{utt} on the PATH; on Windows,
+npm's @{tt}claude.cmd@{utt} is replaced by the @{tt}claude.exe@{utt} it
+calls (cmd.exe would parse the arguments by its own rules). psutil is a core
+dependency; git must be on the PATH.
+
+The entry ships in the plugin's own @{tt}agents/coding_cli.yaml@{utt}, which
+@{tt}config/config.yaml@{utt} includes with every plugin's
+@{tt}agents/*.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    coding_cli:
+      type: coding_cli
+      enabled: true
+      description: "Claude Code, headless on the operator's subscription: programming tasks in a git worktree, results on a branch"
+      allowed_users: [admin, cli_user]
+      workdirs:
+        scarabhive:
+          path: "."
+          exclude: [config/secrets.env, config/local.env, config/local.yaml, config/config.yaml]
+      allowed_commands: []
+      max_window_utilization: 0.8
+      wait_s: 300
+      max_run_minutes: 60
+      max_parallel: 1
+      model: ""
+      pass_env: []
+@{body}
+
+An agent gets the tools with @{tt}+coding_cli/*@{utt} in its
+@{tt}agent_config.tools.allowed@{utt}.
+
+@{h2}Settings
+
+All flat in the server entry, read once when the instance is made.
+
+@{table}
+Key | Default | Meaning
+command | claude | the Claude Code executable, a name on the PATH or a path
+workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
+workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
+allowed_users | none | user ids that may start runs; empty: nobody
+allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell
+pass_env | none | environment variable names Claude Code gets beyond its allowlist
+model | "" | Claude Code's @{tt}--model@{utt}; empty: the subscription's default
+max_window_utilization | 0.8 | no run starts while a window is at or past this share (0.05 to 1)
+wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id (0 to 3600)
+max_run_minutes | 60 | a run still going after this is stopped (1 to 1440)
+max_parallel | 1 | runs going at the same time, counted over the data folder (1 to 8)
+@{body}
+
+Numbers outside the range are clamped; a value that is no number falls back
+to the default.
+
+@{h2}Where data lives
+
+@{tt}data/coding_cli/@{utt} (the data directory), or the folder named by
+the environment variable @{tt}CODING_CLI_DATA_ROOT@{utt} (relative to the
+project). A second ScarabHive process on the machine -- an app a test starts
+-- needs a folder of its own: every instance takes over the runs in its
+folder whose owner is gone, and rings their wakes.
+
+@{table}
+Path | Holds
+runs/<id>.json | the run's record
+runs/<id>.task, .jsonl, .err | the task, Claude Code's stream, its stderr
+runs/<id>.cancel, .wake, .rung, .final | a stop and its reason, the session to wake, the ring's lease, the finalize claim
+quota.json | the last subscription report
+no_mcp.json | the empty MCP config
+worktrees/<id> | the worktrees; their branches are @{tt}coding_cli/<id>@{utt} in the workdir's repository
+@{body}
+@endnode
+
+@node gaps "Known gaps"
+@{h1}Known gaps
+
+@{bullet}@{b}An allowed command runs code.@{ub} Every entry in
+@{tt}allowed_commands@{utt} -- above all a test runner -- executes what the
+run wrote, with the operator's rights: it can read any file, secrets
+included, and push with the stored git credentials. The deny list keeps only
+the shell tool itself from typing git push, remote, config or worktree; a
+program an allowed command starts is not checked. A test run in a worktree
+also runs that checkout's own @{tt}conftest.py@{utt} -- the comment at
+@{tt}allowed_commands@{utt} in @{tt}agents/coding_cli.yaml@{utt} names a
+case where that ends the API.
+@{bullet}@{b}Secrets are found by value, not by meaning.@{ub} A secret in a
+file that is not excluded, one shorter than 8 characters, or one written
+differently (split, encoded) stays readable. A task that has to change an
+excluded or hidden file is not one for this plugin.
+@{bullet}@{b}allowed_users compares names.@{ub} An account named
+@{tt}cli_user@{utt} made before that name was reserved passes the check.
+@{bullet}@{b}The quota guard is a lower bound.@{ub} It knows the usage as of
+the last run; the operator's own Claude Code sessions have used more since.
+@{bullet}@{b}A one-shot agent-cli run is never woken:@{ub} its process ends
+with its turn. There, @{tt}get_run@{utt} with @{tt}wait_s@{utt} waits.
+@{bullet}@{b}Whether a run outlives an API restart depends on how the API
+runs:@{ub} a service manager that stops the whole control group (systemd's
+default) ends the run with the API; the next look reports it failed.
+@{bullet}@{b}What Claude Code leaves running is not stopped.@{ub} A stop
+kills Claude Code's whole process tree; a process that is still running
+after Claude Code ended on its own is no longer part of that tree.
+@{bullet}@{b}max_parallel is no lock across processes:@{ub} two processes
+starting a run at the same moment can both start one.
+@{bullet}@{b}A ring can come twice:@{ub} when two sweeps take over a dead
+ringer's lease at the same instant. The core answers the second wake with
+@{tt}being_woken@{utt}, so no second turn starts.
+@endnode

@@ -501,16 +501,25 @@ class CodingCliServer(SchemaBasedToolServer):
                  user_id: str, session_id: str) -> dict:
         """Worktree, command line and record, then the process (sync, off the loop)."""
         (self._root() / "runs").mkdir(parents=True, exist_ok=True)
-        mcp = self._root() / "no_mcp.json"
-        if not mcp.exists():
-            mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
         if prior:
             worktree, branch = Path(prior["worktree"]), prior["branch"]
             made = cli.Worktree(prior["base"], prior.get("git_dir") or "", prior.get("hidden") or [])
-        else:
-            worktree, branch = self._root() / "worktrees" / run_id, f"coding_cli/{run_id}"
-            spec = self.workdirs[workdir]
+            return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made)
+        worktree, branch = self._root() / "worktrees" / run_id, f"coding_cli/{run_id}"
+        spec = self.workdirs[workdir]
+        try:
             made = cli.make_worktree(spec["path"], worktree, branch, spec["exclude"])
+            return self._start(run_id, task, mode, workdir, prior, user_id, session_id, worktree, branch, made)
+        except BaseException:
+            # Answered "not started": no worktree or branch is left that no answer names.
+            cli.remove_worktree(spec["path"], worktree, branch)
+            raise
+
+    def _start(self, run_id: str, task: str, mode: str, workdir: str, prior: Optional[dict], user_id: str,
+               session_id: str, worktree: Path, branch: str, made: cli.Worktree) -> dict:
+        mcp = self._root() / "no_mcp.json"
+        if not mcp.exists():
+            mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
         rules = worktree / "CLAUDE.md"
         resume = prior["claude_session"] if prior else ""
         if resume and not _SESSION.fullmatch(resume):
@@ -529,6 +538,10 @@ class CodingCliServer(SchemaBasedToolServer):
                               self._file(run_id, "jsonl"), self._file(run_id, "err"))
         except OSError as exc:
             record.update(state="failed", ended_at=time.time(), note=f"Claude Code did not start: {exc}")
+            if prior is None:
+                # _prepare removes the worktree and branch: the record must not name them.
+                for key in ("worktree", "branch", "base", "git_dir", "hidden"):
+                    record.pop(key, None)
             self._save(record)
             raise
         record.update(pid=proc.pid, pid_started=cli.process_start(proc.pid))
