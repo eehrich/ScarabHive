@@ -21,6 +21,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _as_whole(value: Any, name: str, default: int | None = None) -> int | None:
+    """A whole number from an int, a whole float or its text; else ValueError."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = None
+        if number is not None and number.is_integer():
+            return int(number)
+    raise ValueError(f"{name} must be a whole number, got {value!r}")
+
+
+def _as_flag(value: Any, default: bool, name: str) -> bool:
+    """A bool from a bool, 0/1 or the text true/false; else ValueError."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ValueError(f"{name} must be true or false, got {value!r}")
+
+
 @dataclass
 class Thought:
     """Single thought in reasoning chain."""
@@ -60,6 +87,9 @@ class SessionState:
     branches: dict[str, Branch] = field(default_factory=dict)
     total_thoughts_estimate: int = 1
     actual_thoughts: int = 0
+    # Highest number a NEW thought got. A revision keeps the number it
+    # revises, so it must not advance this -- actual_thoughts counts it.
+    last_number: int = 0
     max_history_size: int = 100
 
     def __post_init__(self) -> None:
@@ -130,8 +160,18 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             "max_history_size": self.max_history_size,
             "session_ttl_seconds": self.session_ttl_seconds,
             "enable_branching": self.enable_branching,
-            "enable_revisions": self.enable_revisions
+            "enable_revisions": self.enable_revisions,
+            "max_summary_thoughts": self.max_summary_thoughts,
         }
+
+    def _find_session(self, session_id: str | None, agent_session_id: str | None) -> SessionState | None:
+        """The session _get_or_create_session would return, if it exists -- without
+        creating it, mapping it or refreshing its last_accessed."""
+        if session_id:
+            return self._sessions.get(session_id)
+        valid = [self._sessions[sid] for sid in self._agent_session_mapping.get(agent_session_id, [])
+                 if sid in self._sessions] if agent_session_id else []
+        return max(valid, key=lambda s: s.last_accessed) if valid else None
 
     def _get_or_create_session(self, session_id: str | None, agent_session_id: str | None = None) -> SessionState:
         """Get existing session or create new one.
@@ -229,16 +269,26 @@ class SequentialThinkingServer(SchemaBasedToolServer):
         ]
         for sid in expired:
             del self._sessions[sid]
-
-            # Clean up agent session mapping
-            for agent_sid, thinking_sids in list(self._agent_session_mapping.items()):
-                if sid in thinking_sids:
-                    thinking_sids.remove(sid)
-                # Remove empty mappings
-                if not thinking_sids:
-                    del self._agent_session_mapping[agent_sid]
-
             logger.info(f"Cleaned up expired session: {sid}")
+        if expired:
+            self._forget_removed_state()
+
+    def _forget_removed_state(self) -> None:
+        """Drop the mapping entries and idempotency keys of what is gone.
+
+        Both only ever grew: clear_history left the mapping of a cleared
+        session behind, and no path removed an idempotency key at all, so a
+        long-running process kept one entry per key it had ever seen.
+        """
+        for agent_sid, thinking_sids in list(self._agent_session_mapping.items()):
+            thinking_sids[:] = [sid for sid in thinking_sids if sid in self._sessions]
+            if not thinking_sids:
+                del self._agent_session_mapping[agent_sid]
+        live = {t.event_id for s in self._sessions.values() for t in s.thoughts}
+        self._idempotency_cache = {
+            key: event_id for key, event_id in self._idempotency_cache.items()
+            if event_id in live
+        }
 
     def _create_branch(
         self,
@@ -349,7 +399,20 @@ class SequentialThinkingServer(SchemaBasedToolServer):
         if len(session.thoughts) > session.max_history_size:
             excess = len(session.thoughts) - session.max_history_size
             # Remove oldest thoughts (keep recent ones)
+            dropped_thoughts = session.thoughts[:excess]
+            dropped = {t.event_id for t in dropped_thoughts}
             session.thoughts = session.thoughts[excess:]
+            # The branches hold the same thoughts; untrimmed they kept every
+            # thought ever written, so the limit bounded nothing.
+            for branch in session.branches.values():
+                branch.thoughts = [t for t in branch.thoughts if t.event_id not in dropped]
+            # Only the keys of the dropped thoughts, found through the thought
+            # itself: this runs on every call of a full session, so no sweep
+            # over the whole cache or all sessions here.
+            for t in dropped_thoughts:
+                key = t.metadata.get("idempotency_key")
+                if key is not None and self._idempotency_cache.get(key) == t.event_id:
+                    del self._idempotency_cache[key]
             logger.warning(
                 f"Memory limit reached for session {session.session_id}, "
                 f"removed {excess} oldest thoughts"
@@ -389,16 +452,27 @@ class SequentialThinkingServer(SchemaBasedToolServer):
 
             # Extract parameters - use .get() with defaults for robustness
             thought_content = params.get("thought", "")
-            # Support both snake_case and camelCase for next_thought_needed
-            next_thought_needed = params.get("next_thought_needed", params.get("nextThoughtNeeded", True))
-            thought_number = int(params.get("thought_number", params.get("thoughtNumber", 1)))
-            total_thoughts = int(params.get("total_thoughts", params.get("totalThoughts", 5)))
+            # Numbers and flags are parsed, not cast: int() cut 2.5 to 2 and
+            # took True as 1, and the string "false" was a true flag.
+            next_thought_needed = _as_flag(
+                params.get("next_thought_needed", params.get("nextThoughtNeeded")), True,
+                "next_thought_needed")
+            thought_number = _as_whole(
+                params.get("thought_number", params.get("thoughtNumber")), "thought_number", 1)
+            total_thoughts = _as_whole(
+                params.get("total_thoughts", params.get("totalThoughts")), "total_thoughts", 5)
             session_id = params.get("session_id", params.get("sessionId"))
-            is_revision = params.get("is_revision", params.get("isRevision", False))
-            revises_thought = params.get("revises_thought", params.get("revisesThought"))
-            branch_from_thought = params.get("branch_from_thought", params.get("branchFromThought"))
+            is_revision = _as_flag(
+                params.get("is_revision", params.get("isRevision")), False, "is_revision")
+            revises_thought = _as_whole(
+                params.get("revises_thought", params.get("revisesThought")), "revises_thought")
+            branch_from_thought = _as_whole(
+                params.get("branch_from_thought", params.get("branchFromThought")),
+                "branch_from_thought")
             branch_id = params.get("branch_id", params.get("branchId"))
-            needs_more_thoughts = params.get("needs_more_thoughts", params.get("needsMoreThoughts", False))
+            needs_more_thoughts = _as_flag(
+                params.get("needs_more_thoughts", params.get("needsMoreThoughts")), False,
+                "needs_more_thoughts")
             idempotency_key = params.get("idempotency_key", params.get("idempotencyKey"))
 
             # Get status context (optional for direct test calls)
@@ -437,23 +511,15 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                                 "recorded_thoughts_count": len(s.thoughts),
                                 "total_thoughts_estimate": s.total_thoughts_estimate,
                                 "next_thought_needed": next_thought_needed,
-                                "progress": f"Thought {s.actual_thoughts}/{max(s.actual_thoughts, s.total_thoughts_estimate)}",
+                                "progress": f"Thought {s.last_number}/{max(s.last_number, s.total_thoughts_estimate)}",
                                 "branch": s.current_branch,
                                 "thought_history": [],  # Minimal response for cached
                                 "warnings": ["Idempotent request - returned cached result"]
                             }
 
-            # Get or create session first (for session_id in status messages)
-            session = self._get_or_create_session(session_id, agent_session_id)
-
-            # Server-assigned thought number (auto-increment for consistency)
-            # For revisions, use the thought being revised; for new thoughts, auto-increment
-            if is_revision and revises_thought is not None:
-                server_thought_number = revises_thought  # Keep same number for revisions
-            else:
-                server_thought_number = session.actual_thoughts + 1  # New thought gets next number
-
-            # Validate parameters
+            # Validate parameters BEFORE the session exists: a refused call
+            # used to leave an empty session behind, which the hook then
+            # showed as the conversation's active one.
             if thought_number < 1:
                 await safe_status_call("error", "thought_number must be >= 1")
                 return {"status": "error", "error": "thought_number must be >= 1"}
@@ -464,6 +530,13 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 await safe_status_call("error", "thought content cannot be empty")
                 return {"status": "error", "error": "thought content cannot be empty"}
 
+            # The remaining checks run against the session as it is, WITHOUT
+            # creating it or touching it: a refused revision or branch switch
+            # must not leave a session behind or keep one alive.
+            existing = self._find_session(session_id, agent_session_id)
+            known_thoughts = existing.thoughts if existing else []
+            known_branches = existing.branches if existing else {"main": None}
+
             # Validate revision parameters
             if is_revision:
                 if revises_thought is None:
@@ -473,7 +546,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                     await safe_status_call("error", "revises_thought must be >= 1")
                     return {"status": "error", "error": "revises_thought must be >= 1"}
                 # Check if thought to revise exists
-                thought_exists = any(t.number == revises_thought for t in session.thoughts)
+                thought_exists = any(t.number == revises_thought for t in known_thoughts)
                 if not thought_exists:
                     logger.info(f"Thought #{revises_thought} not found in session {session_id}")
                     await safe_status_call("error", f"Thought #{revises_thought} not found in session")
@@ -486,6 +559,27 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             if branch_id and not self.enable_branching:
                 await safe_status_call("error", "Branching is disabled")
                 return {"status": "error", "error": "Branching is disabled"}
+
+            creates_branch = (branch_from_thought is not None and branch_id
+                              and branch_id not in known_branches)
+            if creates_branch and not any(t.number == branch_from_thought for t in known_thoughts):
+                await safe_status_call("error", f"Thought #{branch_from_thought} not found")
+                return {"status": "error", "error": f"Thought #{branch_from_thought} not found"}
+            if branch_id and branch_from_thought is None and branch_id not in known_branches:
+                await safe_status_call("error", f"Branch '{branch_id}' not found")
+                return {"status": "error", "error": f"Branch '{branch_id}' not found"}
+
+            # All checks passed: only now is the session created or touched.
+            session = self._get_or_create_session(session_id, agent_session_id)
+
+            # Server-assigned thought number: a revision keeps the number it
+            # revises; a new thought gets the next one. Counting from
+            # actual_thoughts (which includes revisions) left a gap after
+            # every revision.
+            if is_revision and revises_thought is not None:
+                server_thought_number = revises_thought
+            else:
+                server_thought_number = session.last_number + 1
 
             # Handle branching
             if branch_from_thought is not None and branch_id:
@@ -504,10 +598,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                     )
                     self._create_branch(session, branch_id, branch_from_thought)
             elif branch_id:
-                # Switching to existing branch (no branch_from_thought specified)
-                if branch_id not in session.branches:
-                    await safe_status_call("error", f"Branch '{branch_id}' not found")
-                    return {"status": "error", "error": f"Branch '{branch_id}' not found"}
+                # Switching to an existing branch (checked above)
                 session.current_branch = branch_id
 
             # Handle revision
@@ -522,6 +613,8 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 is_revision,
                 revises_thought
             )
+            if not is_revision:
+                session.last_number = server_thought_number
 
             # Collect warnings for validation issues
             warnings = []
@@ -530,13 +623,14 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             if needs_more_thoughts or total_thoughts != session.total_thoughts_estimate:
                 old_estimate = session.total_thoughts_estimate
 
-                # Auto-clamp: estimate must be >= actual thoughts
-                if total_thoughts < session.actual_thoughts:
+                # Auto-clamp: the estimate must not be below the thoughts so far
+                # (revisions do not count: they repeat a step, not add one)
+                if total_thoughts < session.last_number:
                     warnings.append(
                         f"total_thoughts ({total_thoughts}) < recorded thoughts "
-                        f"({session.actual_thoughts}), adjusted to {session.actual_thoughts}"
+                        f"({session.last_number}), adjusted to {session.last_number}"
                     )
-                    total_thoughts = session.actual_thoughts
+                    total_thoughts = session.last_number
                     # Use the already-parsed local (old_estimate), NOT
                     # params['total_thoughts']: callers may send camelCase
                     # 'totalThoughts', so the subscript raised KeyError here -
@@ -584,7 +678,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 )
 
             # Consistent progress display: never show X/Y with X > Y
-            effective_total = max(session.actual_thoughts, session.total_thoughts_estimate)
+            effective_total = max(session.last_number, session.total_thoughts_estimate)
 
             # Get the thought that was just added
             current_thought = session.thoughts[-1]
@@ -592,6 +686,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             # Cache event_id for idempotency (if key provided)
             if idempotency_key:
                 self._idempotency_cache[idempotency_key] = current_thought.event_id
+                current_thought.metadata["idempotency_key"] = idempotency_key
                 logger.debug(f"Cached idempotency_key={idempotency_key[:8]}... → event_id={current_thought.event_id[:8]}...")
 
             # Prepare result
@@ -604,7 +699,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 "recorded_thoughts_count": len(session.thoughts),  # Total recorded thoughts
                 "total_thoughts_estimate": session.total_thoughts_estimate,
                 "next_thought_needed": next_thought_needed,
-                "progress": f"Thought {session.actual_thoughts}/{effective_total}",
+                "progress": f"Thought {session.last_number}/{effective_total}",
                 "branch": session.current_branch,
                 "thought_history": [
                     {
@@ -633,10 +728,10 @@ class SequentialThinkingServer(SchemaBasedToolServer):
 
             # END status
             complete_msg = "✓ Complete" if not next_thought_needed else "Continue reasoning..."
-            # Show actual thought count, not thought number (which can be same for revisions)
+            # The number of this entry, and the thoughts so far (revisions excluded)
             await safe_status_call(
                 "end",
-                f"Thought #{session.actual_thoughts} added ({session.actual_thoughts}/{effective_total}). "
+                f"Thought #{server_thought_number} added ({session.last_number}/{effective_total}). "
                 f"{complete_msg}"
             )
 
@@ -683,6 +778,7 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 )
 
                 del self._sessions[session_id]
+                self._forget_removed_state()
 
                 await safe_status_call(
                     "end", f"Cleared session {session_id} ({thought_count} thoughts)")
@@ -693,12 +789,25 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                     "message": f"Cleared session {session_id} ({thought_count} thoughts)"
                 }
             else:
-                # Clear all sessions
-                session_count = len(self._sessions)
+                # "All" is all of the calling conversation's sessions. The
+                # store is shared by every agent and user of the process, and
+                # the tool used to wipe the sessions of all of them.
+                agent_session_id = params.get("_session_id")
+                if agent_session_id:
+                    doomed = [sid for sid in self._agent_session_mapping.get(agent_session_id, [])
+                              if sid in self._sessions]
+                else:
+                    # No conversation (a direct call, the CLI): only sessions
+                    # that belong to none -- never another conversation's.
+                    owned = {sid for sids in self._agent_session_mapping.values() for sid in sids}
+                    doomed = [sid for sid in self._sessions if sid not in owned]
+                session_count = len(doomed)
 
-                await safe_status_call("progress", f"Clearing all sessions ({session_count} total)")
+                await safe_status_call("progress", f"Clearing {session_count} session(s)")
 
-                self._sessions.clear()
+                for sid in doomed:
+                    del self._sessions[sid]
+                self._forget_removed_state()
 
                 await safe_status_call("end", f"Cleared {session_count} session(s)")
 
@@ -737,8 +846,9 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             if not session_id:
                 await safe_status_call("error", "session_id is required")
                 return {"status": "error", "error": "session_id is required"}
-            max_thoughts = params.get("max_thoughts", self.max_summary_thoughts)
-            include_branches = params.get("include_branches", True)
+            max_thoughts = _as_whole(params.get("max_thoughts"), "max_thoughts",
+                                     self.max_summary_thoughts)
+            include_branches = _as_flag(params.get("include_branches"), True, "include_branches")
 
             if session_id not in self._sessions:
                 await safe_status_call("error", f"Session {session_id} not found")
@@ -831,11 +941,19 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             return HookResult(success=True, modified=False, context=context)
 
         try:
-            # Get hook config from schema.yaml
-            max_thoughts = getattr(self.server_config, "max_thoughts_in_prompt", 5)
-            show_branch_info = getattr(self.server_config, "show_branch_info", True)
-            format_type = getattr(self.server_config, "format", "markdown")
-            max_sessions_in_prompt = getattr(self.server_config, "max_sessions_in_prompt", 1)
+            # The server entry's keys, with the calling agent's own
+            # hooks.overrides entry on top -- the registry hands that over as
+            # context.hook_config, and without this it was read by nobody.
+            agent_settings = context.hook_config or {}
+
+            def setting(key: str, default: Any) -> Any:
+                return agent_settings.get(key, getattr(self.server_config, key, default))
+
+            max_thoughts = setting("max_thoughts_in_prompt", 5)
+            show_branch_info = setting("show_branch_info", True)
+            format_type = setting("format", "markdown")
+            max_sessions_in_prompt = setting("max_sessions_in_prompt", 1)
+            show_quick_actions = setting("show_quick_actions", True)
 
             # Find active sequential thinking sessions for this agent session
             agent_session_id = context.session_id
@@ -865,12 +983,14 @@ class SequentialThinkingServer(SchemaBasedToolServer):
                 # Format active sessions (one or multiple)
                 if len(active_sessions) == 1:
                     session_prompt = self._format_session_for_prompt(
-                        active_sessions[0], max_thoughts, show_branch_info, format_type
+                        active_sessions[0], max_thoughts, show_branch_info, format_type,
+                        show_quick_actions
                     )
                 else:
                     # Multiple sessions - format with dividers
                     session_prompt = self._format_multiple_sessions_for_prompt(
-                        active_sessions, max_thoughts, show_branch_info, format_type
+                        active_sessions, max_thoughts, show_branch_info, format_type,
+                        show_quick_actions
                     )
 
                 total_thoughts = sum(len(s.thoughts) for s in active_sessions)
@@ -891,14 +1011,14 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             # that compaction took away simply comes back.
             previous = next(
                 (msg for msg in reversed(context.messages)
-                 if getattr(msg, 'injected_by', None) == "sequential_thinking"), None)
+                 if getattr(msg, 'injected_by', None) == self.name), None)
             if previous is not None and previous.content == session_prompt:
                 return HookResult(success=True, modified=False, context=context)
 
             context.messages.append(ChatMessage(
                 role=DEVELOPER,
                 content=session_prompt,
-                injected_by="sequential_thinking",
+                injected_by=self.name,
             ))
 
             return HookResult(success=True, modified=True, context=context)
@@ -909,14 +1029,18 @@ class SequentialThinkingServer(SchemaBasedToolServer):
             return HookResult(success=True, modified=False, context=context)
 
     def _format_thinking_reminder(self) -> str:
-        """Format sequential thinking tool reminder when no active session."""
-        return """## Sequential Thinking Tool Available
+        """Format sequential thinking tool reminder when no active session.
 
-Use `sequential_thinking()` for complex, multi-step reasoning. Break down problems into thoughts, revise earlier insights, and explore alternatives via branching.
+        The tool is named after the plugin instance, so the texts use
+        self.name rather than a fixed "sequential_thinking".
+        """
+        return f"""## Sequential Thinking Tool Available
+
+Use `{self.name}()` for complex, multi-step reasoning. Break down problems into thoughts, revise earlier insights, and explore alternatives via branching.
 
 **Start new session:**
 ```
-sequential_thinking(
+{self.name}(
     thought="First, let's analyze the requirements...",
     thought_number=1,
     total_thoughts=5,
@@ -936,7 +1060,8 @@ sequential_thinking(
         session: SessionState,
         max_thoughts: int,
         show_branch_info: bool,
-        format_type: str = "markdown"
+        format_type: str = "markdown",
+        show_quick_actions: bool = True
     ) -> str:
         """Format active session for injection into prompt.
 
@@ -946,13 +1071,11 @@ sequential_thinking(
         run changed the front of the prompt and re-billed the whole
         conversation behind it, on steps that never touched this tool.
         """
-        show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
-
         if format_type == "markdown":
             lines = []
             lines.append("## Active Sequential Thinking Session\n")
             lines.append(f"**Session ID**: `{session.session_id}`")
-            lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts\n")
+            lines.append(f"**Progress**: {session.last_number}/{session.total_thoughts_estimate} thoughts\n")
 
             # Show recent thoughts
             recent_thoughts = session.thoughts[-max_thoughts:] if max_thoughts > 0 else session.thoughts
@@ -983,11 +1106,11 @@ sequential_thinking(
                 lines.append("- **Revise**: `is_revision=true`, `revises_thought=<N>` (creates new entry, keeps number)")
                 lines.append("- **Branch**: Create: `branch_from_thought=<N>`, `branch_id='name'` | Switch: `branch_id='name'` only")
                 lines.append("\n**Examples:**")
-                lines.append(f"- Continue: `sequential_thinking(session_id='{session.session_id}', thought='...', thought_number={len(session.thoughts)+1}, ...)`")
-                lines.append(f"- Revise #3: `sequential_thinking(session_id='{session.session_id}', thought='...', thought_number=3, is_revision=true, revises_thought=3, ...)`")
-                lines.append(f"- Branch: `sequential_thinking(session_id='{session.session_id}', thought='...', branch_from_thought=2, branch_id='alt', ...)`")
+                lines.append(f"- Continue: `{self.name}(session_id='{session.session_id}', thought='...', thought_number={session.last_number + 1}, ...)`")
+                lines.append(f"- Revise #3: `{self.name}(session_id='{session.session_id}', thought='...', thought_number=3, is_revision=true, revises_thought=3, ...)`")
+                lines.append(f"- Branch: `{self.name}(session_id='{session.session_id}', thought='...', branch_from_thought=2, branch_id='alt', ...)`")
             else:
-                lines.append("\nContinue reasoning with `sequential_thinking()` or summarize findings if complete.")
+                lines.append(f"\nContinue reasoning with `{self.name}()` or summarize findings if complete.")
 
             return "\n".join(lines)
         else:
@@ -995,7 +1118,7 @@ sequential_thinking(
             lines = [
                 "Sequential Thinking Session Active",
                 f"Session ID: {session.session_id}",
-                f"Progress: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts",
+                f"Progress: {session.last_number}/{session.total_thoughts_estimate} thoughts",
                 ""
             ]
 
@@ -1010,7 +1133,8 @@ sequential_thinking(
         sessions: list[SessionState],
         max_thoughts: int,
         show_branch_info: bool,
-        format_type: str = "markdown"
+        format_type: str = "markdown",
+        show_quick_actions: bool = True
     ) -> str:
         """Format multiple active sessions for injection into prompt."""
         if format_type == "markdown":
@@ -1020,10 +1144,10 @@ sequential_thinking(
             for i, session in enumerate(sessions, 1):
                 # Session header
                 lines.append(f"### Session {i}: `{session.session_id}`")
-                lines.append(f"**Progress**: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+                lines.append(f"**Progress**: {session.last_number}/{session.total_thoughts_estimate} thoughts")
 
                 # Show recent thoughts (reduced for multi-session view)
-                thoughts_to_show = min(max_thoughts, 3)  # Show fewer thoughts per session
+                thoughts_to_show = min(max_thoughts, 3) if max_thoughts > 0 else 3  # [-0:] would be all
                 recent_thoughts = session.thoughts[-thoughts_to_show:]
 
                 if recent_thoughts:
@@ -1040,11 +1164,10 @@ sequential_thinking(
                     lines.append("")
 
             # Add quick actions for all sessions
-            show_quick_actions = getattr(self.server_config, "show_quick_actions", True)
             if show_quick_actions:
                 lines.append("\n**Quick actions:**")
-                lines.append("- Continue session: `sequential_thinking(thought='...', session_id='<session_id>', ...)`")
-                lines.append("- Get summary: `get_summary(session_id='<session_id>')`")
+                lines.append(f"- Continue session: `{self.name}(thought='...', session_id='<session_id>', ...)`")
+                lines.append(f"- Get summary: `{self.name}_get_summary(session_id='<session_id>')`")
 
             return "\n".join(lines)
         else:
@@ -1056,10 +1179,10 @@ sequential_thinking(
 
             for i, session in enumerate(sessions, 1):
                 lines.append(f"Session {i}: {session.session_id}")
-                lines.append(f"Progress: {len(session.thoughts)}/{session.total_thoughts_estimate} thoughts")
+                lines.append(f"Progress: {session.last_number}/{session.total_thoughts_estimate} thoughts")
 
                 # Show fewer thoughts in plain text
-                thoughts_to_show = min(max_thoughts, 2)
+                thoughts_to_show = min(max_thoughts, 2) if max_thoughts > 0 else 2
                 recent_thoughts = session.thoughts[-thoughts_to_show:]
                 for thought in recent_thoughts:
                     content = thought.content[:80] + "..." if len(thought.content) > 80 else thought.content
