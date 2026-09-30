@@ -110,7 +110,7 @@ external_servers:
     #   uv pip install --python external/mcp/blender_mcp/.venv blender-mcp==1.9.0
     #   external/mcp/blender_mcp/.venv/Scripts/blender-mcp.exe install-addon
     # Blender side (once): enable the addon 'Interface: Blender MCP', then in
-    # the N-panel "BlenderMCP" click "Start MCP Server" (port 9876). The
+    # the N-panel "BlenderMCP" click "Connect to MCP server" (port 9876). The
     # native plugin needs this same addon -- only the bridge is redundant.
     blender:
       enabled: false
