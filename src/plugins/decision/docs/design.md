@@ -2,7 +2,7 @@
 
 ## 1. Overview & Motivation
 
-The **Decision Plugin** provides LLM agents in ScarabHive with direct access to calibrated "System One" decision models (TypeSafe's **Jev** via OpenRouter or TypeSafe, or a local Laya — whichever the decision profile names).
+The **Decision Plugin** provides LLM agents in ScarabHive with direct access to calibrated "System One" decision models (TypeSafe's **Jev** via OpenRouter or TypeSafe, or a local Laya or Ollama model — whichever the decision profile names).
 
 Unlike standard generative chat models that produce non-deterministic prose, decision models evaluate named questions against given content and return calibrated numeric values (probabilities, scale points, categorical choices) without generating conversational text or tool calls. They are not deterministic: Jev gives the same question a few hundredths apart on repeated calls.
 
@@ -33,7 +33,8 @@ In real-world agent workflows, agents frequently need to evaluate large batches 
                               v
 +-----------------------------------------------------------+
 | DecisionsClient (src/plugins/llm_decisions/system_one.py)  |
-| - POST <the profile's endpoint: OpenRouter, TypeSafe, Laya>|
+| - POST <the profile's endpoint: OpenRouter, TypeSafe,     |
+|   Laya, Ollama>                                           |
 +-----------------------------------------------------------+
 ```
 

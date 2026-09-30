@@ -7,8 +7,9 @@
 @{h1}Decision model provider
 
 This plugin is the client for decision models: TypeSafe's Jev, reached
-through OpenRouter or TypeSafe's own endpoint, and Laya, an open model run
-locally with @{tt}laya-serve@{utt}. A decision model writes no text. It
+through OpenRouter or TypeSafe's own endpoint; Laya, an open model run
+locally with @{tt}laya-serve@{utt}; and the decision models a local Ollama
+runs (Nimble, Tev1). A decision model writes no text. It
 gets a piece of content and named questions, and answers each question with
 a number or an option: a probability for a yes/no question, one of several
 named options, or a position on an ordered scale. The
@@ -18,14 +19,15 @@ this plugin has no tools, no hooks and no panel of its own.
 A decision model is not a chat model. Nothing here can answer a
 conversation, so this plugin serves no chat provider at all: its models live
 in their own section of the configuration, beside the chat models, and are
-reached by decision profile. Laya speaks the same wire as Jev, so one client
-serves both; what differs per host is its endpoint, whether it takes a
+reached by decision profile. Laya and Ollama speak the same wire as Jev, so
+one client serves all of them; what differs per host is its endpoint, whether it takes a
 session id, and the provider name its calls are booked under.
 
 @{table}
 Provider name | Default endpoint | Key from the environment | Session id sent
 openrouter_decisions | https://openrouter.ai/api/alpha/decisions | OPENROUTER_API_KEY | yes
 systemone_decisions | https://api.typesafe.ai/v1/systemone | TYPESAFE_API_KEY | no
+ollama_decisions | http://127.0.0.1:11434/v1/systemone | (none, local) | no
 @{body}
 
 A local Laya is @{tt}systemone_decisions@{utt} with the url of the machine
@@ -49,9 +51,10 @@ For agents and developers
 
 Nothing to enable: the core finds the plugin by its @{tt}plugin.toml@{utt}
 (@{tt}type = ["llm-provider"]@{utt}, @{tt}provides_decisions =
-["openrouter_decisions", "systemone_decisions"]@{utt}, no
-@{tt}provides@{utt}) and imports @{tt}provider.py@{utt} the first time a
-decision model entry names one of the two providers. There is no entry in
+["openrouter_decisions", "systemone_decisions",
+"ollama_decisions"]@{utt}, no @{tt}provides@{utt}) and imports
+@{tt}provider.py@{utt} the first time a decision model entry names one of
+them. There is no entry in
 @{tt}config/plugins.yaml@{utt} and no allowlist line.
 
 @{h2}The entries
@@ -133,6 +136,35 @@ does not refuse an unknown @{tt}model@{utt} but picks a checkpoint itself,
 and its answer names @{tt}laya-rl-agent@{utt} whatever judged: name the
 checkpoint in the entry.
 
+@{h2}Ollama
+
+Ollama serves decision models from version 0.35 on, at
+@{tt}/v1/systemone@{utt} on its usual port. Pull one --
+@{tt}ollama pull nimble@{utt} (9B, Bespoke Labs), @{tt}tev1@{utt} (4B) or
+@{tt}tev1:0.8b@{utt} (Together AI) -- and name it:
+
+@{code yaml}
+  decision_models:
+    nimble:
+      provider: ollama_decisions
+      model: nimble
+      # url: http://192.168.1.10:11434/v1/systemone   # Ollama elsewhere
+
+  decision_profiles:
+    nimble:
+      model_ref: nimble
+@{body}
+
+No key is sent. Ollama's own limits, from its documentation: a request
+body of at most 64 KiB (HTTP 413 beyond), at most 64 questions, 2 to 26
+options or levels, and the whole prompt within the model's context -- 8,192
+tokens for Nimble, about 2,000 for Tev1 -- with the state and every question
+in it. The @{" decision " link decision/main} tool lets an item run to
+50,000 characters by default: with these models keep items short. How long the model stays loaded after a call is Ollama's
+setting (@{tt}OLLAMA_KEEP_ALIVE@{utt}, 5 minutes by default); the client
+sends no @{tt}keep_alive@{utt}. A model name Ollama does not have is HTTP
+404, a chat model HTTP 400; neither is tried again.
+
 @{h2}Dependencies and data
 
 @{tt}httpx@{utt} only. The plugin is kept apart from the OpenRouter chat
@@ -160,8 +192,8 @@ result["safe"].value   # a probability from 0 to 1
 Outside a configuration (a script, a test) the client takes its arguments
 directly: @{tt}DecisionsClient(model=..., api_key=None, url=None,
 request_timeout=60, max_retries=2, host=OPENROUTER)@{utt} from
-@{tt}plugins.llm_decisions.system_one@{utt}; @{tt}SYSTEM_ONE@{utt} is the
-other host.
+@{tt}plugins.llm_decisions.system_one@{utt}; @{tt}SYSTEM_ONE@{utt} and
+@{tt}OLLAMA@{utt} are the other hosts.
 
 @{h2}decide(state, questions, *, cancellation_token=None, session_id=None)
 
@@ -267,7 +299,7 @@ is logged as a warning, later ones only at debug level.
 The usage tracker books agent-less reports that carry a usage
 (@{" What it records " link context_usage_tracker/hooks}), under the
 provider name. The cost the answer reports wins. When there is none -- a
-local Laya, TypeSafe's own endpoint -- the tracker prices the call from
+local Laya or Ollama, TypeSafe's own endpoint -- the tracker prices the call from
 @{tt}config/llm_pricing.yaml@{utt} by the entry's @{tt}model@{utt}; without
 a row there, the cost stays unknown. The message debugger records every
 report (@{" The capture hooks " link message_debugger/hooks}), the served
@@ -331,6 +363,6 @@ in the price than the length of the content. There is no conversation and
 no prompt cache.
 
 Jev is not deterministic -- the same question can come back a few
-hundredths apart -- and Jev and Laya give different numbers for the same
-question: a threshold tuned on one does not carry over to the other.
+hundredths apart -- and Jev, Laya and Nimble give different numbers for the
+same question: a threshold tuned on one does not carry over to another.
 @endnode

@@ -25,6 +25,9 @@ reference -- there was no key here to call it::
                 answers plus fields of its own this client leaves alone
                 (answer_confidence, action, routing); ``model`` is always
                 "laya-rl-agent", and ``usage`` carries no cost
+    Ollama      /v1/systemone from 0.35 on (nimble, tev1) -- per its API
+                reference: model as asked, answers, usage{input_tokens,
+                output_tokens}; no id, provider or cost; bodies up to 64 KiB
 
 So one client, and what differs per host is data (``Host``): the provider name
 the hooks and the tracker book a call under, the default endpoint, and whether
@@ -107,6 +110,10 @@ OPENROUTER = Host("openrouter_decisions", "https://openrouter.ai/api/alpha/decis
 #: TypeSafe's own endpoint, and the wire laya-serve speaks: a local Laya is this
 #: host with the url of the machine it runs on.
 SYSTEM_ONE = Host("systemone_decisions", "https://api.typesafe.ai/v1/systemone", False)
+#: Ollama 0.35+ serves its decision models (nimble, tev1) on this wire; the
+#: default port and address are llm_ollama's. Its reference lists model, state,
+#: questions and keep_alive -- no session_id.
+OLLAMA = Host("ollama_decisions", "http://127.0.0.1:11434/v1/systemone", False)
 
 
 @dataclass(frozen=True)

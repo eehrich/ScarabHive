@@ -7,7 +7,7 @@
 @{h1}Decision
 
 This plugin lets an agent ask a decision model -- TypeSafe's Jev, or a
-local Laya, whichever the decision profile names -- questions about many
+local Laya or Ollama model, whichever the decision profile names -- questions about many
 pieces of content at once. A decision model writes no text: for each item
 it answers each question with a number, a probability for a yes/no question
 or a position on an ordered scale for a rating. One tool call takes up to
@@ -220,8 +220,8 @@ the endpoint names it (an alias such as @{tt}~typesafe/jev-latest@{utt}
 comes back with its dated version). The token and cost totals count every
 call that was answered, including one whose answer was refused (a question
 left unanswered), since it was billed. @{tt}total_cost@{utt} is null when
-any of them came without a price -- a local Laya and TypeSafe's own
-endpoint report none; the sum of the others would read as the whole.
+any of them came without a price -- a local Laya or Ollama and TypeSafe's
+own endpoint report none; the sum of the others would read as the whole.
 
 @{h2}Failed items
 
@@ -292,7 +292,7 @@ call carries its numbers twice (@{tt}results@{utt} and
 @{tt}probabilities@{utt} or @{tt}scores@{utt}). The decision calls
 themselves go to the decision model, not the chat model, and are booked
 under their own provider (@{tt}openrouter_decisions@{utt},
-@{tt}systemone_decisions@{utt}) in the usage tracker and the message
+@{tt}systemone_decisions@{utt}, @{tt}ollama_decisions@{utt}) in the usage tracker and the message
 debugger.
 
 @{h2}Known gaps

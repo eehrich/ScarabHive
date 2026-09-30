@@ -1,6 +1,6 @@
 # Decision
 
-Lets an agent ask a decision model -- TypeSafe's Jev, or a local Laya, whichever the decision profile names --
+Lets an agent ask a decision model -- TypeSafe's Jev, or a local Laya or Ollama model, whichever the decision profile names --
 yes/no and rating questions about many items at once. The model writes no text: per item and question it answers
 with a number, a probability or a position on an ordered scale (counted from 0). One request per item, ten at a
 time, up to 250 items and 20 questions per call; the answer is a compact table plus what the batch cost.

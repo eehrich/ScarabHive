@@ -11,12 +11,13 @@ is the way the audio plugins are reached.
 
 One wire, several hosts: TypeSafe's "System One" API, which OpenRouter serves
 under ``/api/alpha/decisions`` (and ``/api/v1/systemone``), TypeSafe under
-``https://api.typesafe.ai/v1/systemone``, and ``laya-serve`` on a machine that
-runs the open Laya weights. One questionnaire against OpenRouter (both paths)
+``https://api.typesafe.ai/v1/systemone``, ``laya-serve`` on a machine that
+runs the open Laya weights, and Ollama from 0.35 on. One questionnaire against OpenRouter (both paths)
 and laya-serve, and TypeSafe's reference for its own host (2026-09-25): the
 same request, the same answer fields. So there is one client
 (``system_one.py``), and what a host needs of its own is data -- a ``Host``
 with the provider name its calls are booked under, its default endpoint, and
-whether it takes OpenRouter's ``session_id``. Two manifest providers hand the
-client one each: ``openrouter_decisions`` and ``systemone_decisions``.
+whether it takes OpenRouter's ``session_id``. The manifest's providers hand the
+client one each: ``openrouter_decisions``, ``systemone_decisions`` and
+``ollama_decisions``.
 """
