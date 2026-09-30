@@ -17,10 +17,16 @@ from typing import Any, cast
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from agent_system.paths import resolve_data_path
+from agent_system.utils.path_sandbox import remote_outside
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SIZE = (1024, 1536)  # 2:3 portrait book cover
+# Largest picture any step may hold: the canvas cap, applied to every
+# decoded source and every layer the spec sizes. Pillow's own bomb guard
+# only warns up to twice its 89 Mpx default, and a layer's size is not
+# decoded at all -- rect [0,0,100000,100000] would allocate 40 GB.
+MAX_PIXELS = 8192 * 8192
 LAYER_TYPES = {"image", "text", "rect", "gradient", "svg", "vignette"}
 BLEND_MODES = {"normal", "multiply", "screen", "overlay"}
 
@@ -181,7 +187,7 @@ def analyze_image(path: Path,
     """
     import numpy as np  # lazy — analyze is the only path that needs it
 
-    img = Image.open(path).convert("RGB")
+    img = _open_image(path, "image").convert("RGB")
     iw, ih = img.size
 
     if region is not None:
@@ -313,7 +319,7 @@ def find_text_region(path: Path,
     """
     import numpy as np  # lazy
 
-    img = Image.open(path).convert("RGB")
+    img = _open_image(path, "image").convert("RGB")
     iw, ih = img.size
     rw, rh = region_size
     if rw <= 0 or rh <= 0 or rw > iw or rh > ih:
@@ -425,6 +431,27 @@ def find_text_region(path: Path,
 
 
 # ── Canvas / size / color helpers ─────────────────────────────────────────
+
+def check_local(value: str, what: str, roots: tuple[Path, ...] | list[Path] = ()) -> None:
+    """Refuse a host or device path (\\\\host\\share, //host/share) on its text,
+    before anything touches it: resolving or opening one makes Windows sign in
+    to that host with the user's credentials."""
+    if remote_outside(str(value), Path.cwd(), roots):
+        raise CompositionError(f"{what} {value} is a network or device path")
+
+
+def _check_pixels(w: int, h: int, what: str) -> None:
+    if w * h > MAX_PIXELS:
+        raise CompositionError(f"{what} {w}x{h} is too large (max {MAX_PIXELS} pixels)")
+
+
+def _open_image(fp: Any, what: str) -> Image.Image:
+    """Image.open reads only the header; refuse an oversized picture before
+    it is decoded."""
+    img = Image.open(fp)
+    _check_pixels(img.size[0], img.size[1], what)
+    return img
+
 
 def _parse_size(size: Any) -> tuple[int, int]:
     if not isinstance(size, (list, tuple)) or len(size) != 2:
@@ -583,11 +610,12 @@ def _resolve_rect(rect: Any, position: Any, size: Any,
     if rect is not None:
         if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
             raise CompositionError(f"rect must be [x, y, w, h], got {rect!r}")
-        return tuple(int(v) for v in rect)  # type: ignore[return-value]
-    sz = _resolve_size_field(size, canvas_size, default=canvas_size)
-    pos = _resolve_position(position, sz or canvas_size, canvas_size)
-    w, h = sz or canvas_size
-    return (pos[0], pos[1], int(w), int(h))
+        x, y, w, h = (int(v) for v in rect)
+    else:
+        sz = _resolve_size_field(size, canvas_size, default=canvas_size)
+        (x, y), (w, h) = _resolve_position(position, sz or canvas_size, canvas_size), sz or canvas_size
+    _check_pixels(int(w), int(h), "layer")
+    return (x, y, int(w), int(h))
 
 
 # ── Layer dispatcher ──────────────────────────────────────────────────────
@@ -948,6 +976,7 @@ def _render_text_layer(layer: dict, canvas_size: tuple[int, int],
 
     layer_w = block_w + 2 * pad
     layer_h = block_h + 2 * pad
+    _check_pixels(layer_w, layer_h, "text layer")
     img = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
 
     # Shadow first (separate layer for blur)
@@ -1187,6 +1216,49 @@ def _render_svg_layer(layer: dict, canvas_size: tuple[int, int]) -> tuple[Image.
     return img, pos
 
 
+_SVG_RASTER_RE = re.compile(r"^data:image/(jpe?g|png);base64")  # svglib's own pattern
+
+
+def _check_svg_rasters(svg_str: str) -> None:
+    """svglib decodes an embedded data: PNG/JPEG at full size (Pillow's own
+    guard only). Read each one's header first, parsed and decoded the way
+    svglib does, and refuse one over MAX_PIXELS. A payload that does not
+    open here does not open in svglib either."""
+    from svglib.svglib import load_svg_file  # type: ignore
+
+    root = load_svg_file(io.StringIO(svg_str))  # type: ignore[arg-type]
+    if root is None:
+        return
+    for node in root.iter():
+        for value in node.attrib.values():
+            match = _SVG_RASTER_RE.match(value)
+            if not match:
+                continue
+            try:
+                raw = base64.decodebytes(value[match.span(0)[1] + 1:].encode("ascii"))
+                _open_image(io.BytesIO(raw), "svg embedded image")
+            except CompositionError:
+                raise
+            except Exception:
+                continue
+
+
+def _svg_font_map() -> Any:
+    """svglib turns an unknown font-family into a file name and opens it
+    (TTFont("<family>.ttf")); a family like //host/share/f would reach that
+    host. Path-like names get the default font instead."""
+    from svglib.fonts import DEFAULT_FONT_NAME, FontMap  # type: ignore
+
+    class _NoPathFontMap(FontMap):
+        def find_font(self, font_name: str, weight: str = "normal",
+                      style: str = "normal") -> tuple[str, bool]:
+            if any(c in font_name for c in "/\\:"):
+                return DEFAULT_FONT_NAME, False
+            return super().find_font(font_name, weight, style)
+
+    return _NoPathFontMap()
+
+
 def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> Image.Image:
     """Render SVG via svglib + reportlab (pure-Python, no native deps)."""
     try:
@@ -1197,9 +1269,10 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
             "SVG rendering requires 'svglib' and 'reportlab' (pip install svglib reportlab). "
             f"Import failed: {e}"
         )
+    _check_svg_rasters(svg_str)
     # svglib accepts a file-like object at runtime even though its type
     # stubs only mention str/PathLike.
-    drawing = svg2rlg(io.StringIO(svg_str))  # type: ignore[arg-type]
+    drawing = svg2rlg(io.StringIO(svg_str), font_map=_svg_font_map())  # type: ignore[arg-type]
     if drawing is None:
         raise CompositionError("SVG could not be parsed (invalid SVG)")
     if target_size:
@@ -1211,6 +1284,8 @@ def _render_svg_to_image(svg_str: str, target_size: tuple[int, int] | None) -> I
         drawing.width = int(drawing.width * scale)
         drawing.height = int(drawing.height * scale)
         drawing.scale(scale, scale)
+    # renderPM rasterises at the drawing's own size -- an SVG may declare any.
+    _check_pixels(int(drawing.width), int(drawing.height), "svg")
 
     # renderPM cannot render onto a transparent background — it always bakes in
     # a solid bg colour. Render the SAME drawing twice (on black and on white)
@@ -1243,21 +1318,23 @@ def _load_image_src(src: str, project_root: Path) -> Image.Image:
         try:
             _, payload = src.split(",", 1)
             raw = base64.b64decode(payload)
-            return Image.open(io.BytesIO(raw)).convert("RGBA")
+            return _open_image(io.BytesIO(raw), "data URI image").convert("RGBA")
         except Exception as e:
             raise CompositionError(f"failed to decode data URI: {e}")
+    check_local(src, "image src")
     # data/... lands in the data directory (agent_system/paths.py)
     p = (project_root / resolve_data_path(src)).resolve()
     if not p.exists():
         raise CompositionError(f"image src not found: {p}")
     try:
-        return Image.open(p).convert("RGBA")
+        return _open_image(p, "image").convert("RGBA")
     except Exception as e:
         raise CompositionError(f"failed to load image {p}: {e}")
 
 
 def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Image:
     tw, th = target
+    _check_pixels(tw, th, "image size")
     if fit == "stretch":
         return img.resize((tw, th), Image.Resampling.LANCZOS)
     sw, sh = img.size
@@ -1282,6 +1359,8 @@ def _fit_image(img: Image.Image, target: tuple[int, int], fit: str) -> Image.Ima
     else:
         new_w = tw
         new_h = max(1, int(tw / src_aspect))
+    # A sliver source (1x4000) scaled to cover a square is 4000x as tall as it.
+    _check_pixels(new_w, new_h, "image scaled to cover")
     resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
     left = (new_w - tw) // 2
     top = (new_h - th) // 2
@@ -1294,6 +1373,7 @@ def _load_font(font_spec: str, size: int, fonts_dir: Path,
                aliases: dict[str, str], warnings: list[str]) -> ImageFont.FreeTypeFont:
     # 1) Absolute / existing path
     if font_spec:
+        check_local(font_spec, "font")
         p = Path(font_spec)
         if p.is_absolute() and p.exists():
             return ImageFont.truetype(str(p), size=size)
