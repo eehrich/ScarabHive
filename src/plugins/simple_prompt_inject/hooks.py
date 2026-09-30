@@ -16,13 +16,15 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
-from agent_system.llm.message_roles import SYSTEM, is_input, role_of
+from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, is_input, role_of
 from agent_system.llm.models import ChatMessage
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
 logger = logging.getLogger(__name__)
 
 INJECTED_BY = "simple_prompt_inject"
+_POSITIONS = ("before_last_user", "end", "after_system")
+_ROLES = (SYSTEM, DEVELOPER, USER)
 
 # Project config directory (config/)
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config"
@@ -36,7 +38,9 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     configured position, marked with ``injected_by``. What repeated calls do
     depends on the position: ``before_last_user`` moves the text with the turn
     and therefore replaces the previous copy, ``end`` appends it once and
-    writes again only when the rendered text changed, ``after_system`` keeps
+    writes again only when the rendered text changed (a developer copy is
+    dropped when the session is saved, so each turn appends it anew),
+    ``after_system`` keeps
     it right behind the system prompt and rewrites it there only when the
     rendered text changed.
 
@@ -53,8 +57,12 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
             stands behind the system prompt ('after_system').
     """
 
-    def __init__(self, plugin_dir: Path | str, server_config: Any = None) -> None:
+    def __init__(self, plugin_dir: Path | str, server_config: Any = None,
+                 name: str | None = None) -> None:
         super().__init__(plugin_dir)
+        # The instance's own marker: a second instance must not take the first
+        # one's message for its previous copy and delete it.
+        self.injected_by: str = name or INJECTED_BY
 
         # Merge schema defaults with runtime config from plugins.yaml
         config = self.get_config()
@@ -63,6 +71,16 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         self.injection_position: str = str(config.get("injection_position", "before_last_user"))
         self.role: str = str(config.get("role", "developer"))
+        # Nobody checks the config against the schema's enums: an unknown role
+        # would reach the provider on every call, an unknown position acted as
+        # before_last_user without a word.
+        if self.injection_position not in _POSITIONS:
+            logger.error("simple_prompt_inject: unknown injection_position %r, using "
+                         "'before_last_user'", self.injection_position)
+            self.injection_position = "before_last_user"
+        if self.role not in _ROLES:
+            logger.error("simple_prompt_inject: unknown role %r, using 'developer'", self.role)
+            self.role = DEVELOPER
         if self.role == SYSTEM and self.injection_position != "after_system":
             # A system message belongs to the instructions at the head. Inside
             # the history Anthropic and Gemini hoist it there anyway, where it
@@ -140,27 +158,33 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         # Render prompt through Jinja2
         rendered = self._render_template(self.prompt_template, template_vars)
         if not rendered:
-            return HookResult(success=True, modified=False, context=context)
+            # An empty rendering withdraws the note: a copy left from an
+            # earlier call would go on speaking.
+            kept = [m for m in context.messages if m.injected_by != self.injected_by]
+            if len(kept) == len(context.messages):
+                return HookResult(success=True, modified=False, context=context)
+            context.messages = kept
+            return HookResult(success=True, modified=True, context=context)
 
         # Build replacement message
         new_msg = ChatMessage(
             role=self.role,
             content=rendered,
-            injected_by=INJECTED_BY,
+            injected_by=self.injected_by,
         )
 
         # Work on a shallow copy so we don't mutate the original list
         messages = list(context.messages)
         previous = next((m for m in reversed(messages)
-                         if m.injected_by == INJECTED_BY), None)
+                         if m.injected_by == self.injected_by), None)
 
         if self.injection_position == "after_system":
             # Part of the instructions: behind the system prompt, and it stays
             # there. Rewritten only when the rendered text changed -- a head
             # that changes invalidates the cached prefix of the whole history.
-            rest = [m for m in messages if m.injected_by != INJECTED_BY]
+            rest = [m for m in messages if m.injected_by != self.injected_by]
             idx = self._after_system_prompt_index(rest)
-            if (len(rest) == len(messages) - 1 and messages[idx].injected_by == INJECTED_BY
+            if (len(rest) == len(messages) - 1 and messages[idx].injected_by == self.injected_by
                     and messages[idx].role == self.role and messages[idx].content == rendered):
                 return HookResult(success=True, modified=False, context=context)
             messages = rest
@@ -175,10 +199,10 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         else:
             # "before_last_user": here the POINT is the distance to the end --
             # a reminder the model should read just before it answers. That one
-            # has to move with the turn, so the previous copy goes. It costs
-            # the last message's cache, not the history's: everything in front
-            # of the insertion point stays byte-identical.
-            messages = [m for m in messages if m.injected_by != INJECTED_BY]
+            # has to move with the turn, so the previous copy goes. Each new
+            # turn costs the cache from where the previous copy stood -- the
+            # previous turn --, not the history's in front of it.
+            messages = [m for m in messages if m.injected_by != self.injected_by]
             idx = self._find_last_user_index(messages)
             if idx is not None:
                 messages.insert(idx, new_msg)
@@ -194,34 +218,28 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
     @staticmethod
     def _get_template_vars(context: HookContext) -> dict[str, Any]:
-        """Extract template_vars from agent context.
+        """The agent's template_vars, overridden key by key by the session's.
 
-        Tries session-scoped vars first (they may be updated at runtime),
-        then falls back to static agent_config.template_vars.
+        Merged as the system prompt merges them: taking the session's vars
+        INSTEAD of the agent's dropped every agent var as soon as the session
+        held any variable at all -- another plugin's included -- and the text
+        changed mid-session.
         """
         agent = context.agent
         if agent is None:
             return {}
 
-        # Session-scoped template vars (preferred – may be updated at runtime)
+        merged: dict[str, Any] = {}
+        if hasattr(agent, "agent_config") and agent.agent_config:
+            merged.update(agent.agent_config.template_vars or {})
         if (
             context.session_id
             and hasattr(agent, "_session_tracker")
             and agent._session_tracker
         ):
-            session_vars = agent._session_tracker.get_session_template_vars(
-                context.session_id
-            )
-            if session_vars:
-                return dict(session_vars)
-
-        # Fallback: static agent_config template_vars
-        if hasattr(agent, "agent_config") and agent.agent_config:
-            cfg_vars = agent.agent_config.template_vars
-            if cfg_vars:
-                return dict(cfg_vars)
-
-        return {}
+            merged.update(agent._session_tracker.get_session_template_vars(
+                context.session_id) or {})
+        return merged
 
     def _render_template(self, template_str: str, template_vars: dict[str, Any]) -> str:
         """Render a Jinja2 template string with the given variables.

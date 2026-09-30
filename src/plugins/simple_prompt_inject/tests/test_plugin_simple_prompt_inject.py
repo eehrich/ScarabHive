@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent_system.hooks import HookContext
@@ -761,3 +762,114 @@ class TestAfterSystem:
 
         assert msgs[1].role == "system" and msgs[1].content == "Rules."
         assert caplog.text == "", "a legitimate configuration logs nothing"
+
+
+# ============================================================================
+# Through the real dispatcher (HookRegistry)
+# ============================================================================
+
+async def _registry(*instances):
+    """A HookRegistry with one inject_prompt hook per (name, config) pair."""
+    from agent_system.hooks import HookRegistry
+    from plugins.simple_prompt_inject.plugin import PLUGIN_FACTORY
+
+    registry = HookRegistry()
+    for name, config in instances:
+        plugin = PLUGIN_FACTORY(name=name, server_config=SimpleNamespace(config=config))
+        await registry.register_hook(HookType.PRE_LLM_CALL, f"{name}.inject_prompt", plugin)
+    return registry
+
+
+async def _call(registry, messages, agent=None):
+    ctx = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r1", session_id="s1",
+                      agent_name="test_agent", agent=agent, messages=messages)
+    return (await registry.execute_hooks(HookType.PRE_LLM_CALL, ctx)).messages
+
+
+class TestThroughTheDispatcher:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position", ["before_last_user", "end", "after_system"])
+    async def test_two_instances_keep_their_own_notes(self, position):
+        """A second instance used to take the first one's message for its own
+        previous copy (one marker for both) and delete or skip it."""
+        registry = await _registry(
+            ("reminder_a", {"prompt_text": "A", "injection_position": position}),
+            ("reminder_b", {"prompt_text": "B", "injection_position": position}))
+
+        msgs = _conversation()
+        for _ in range(2):
+            msgs = await _call(registry, msgs)
+
+        notes = sorted((m.injected_by, m.content) for m in msgs if m.injected_by)
+        assert notes == [("reminder_a", "A"), ("reminder_b", "B")]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_variable_survives_a_session_variable(self):
+        """Session vars override the agent's key by key, as in the system
+        prompt. Taking them INSTEAD lost every agent var as soon as the session
+        held any variable -- another plugin's included."""
+        agent = MagicMock()
+        agent.agent_config.template_vars = {"lang": "German"}
+        agent._session_tracker.get_session_template_vars.return_value = {"other": "x"}
+        registry = await _registry(
+            ("simple_prompt_inject", {"prompt_text": "Answer in {{ lang }}."}))
+
+        msgs = await _call(registry, _conversation(), agent=agent)
+
+        assert [m.content for m in msgs if m.injected_by] == ["Answer in German."]
+
+    def test_an_unknown_position_or_role_falls_back_to_the_default(self, make_plugin, caplog):
+        """Nothing checks the config against the schema's enums: an unknown role
+        went to the provider on every call, an unknown position silently acted
+        as before_last_user."""
+        with caplog.at_level("ERROR"):
+            p = make_plugin("Rules.", position="after-system", role="Developer")
+
+        assert (p.injection_position, p.role) == ("before_last_user", "developer")
+        assert "after-system" in caplog.text and "Developer" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position,role", [
+        ("after_system", "developer"), ("after_system", "user"),
+        ("after_system", "system"), ("end", "user")])
+    async def test_every_request_is_a_prefix_of_the_next(self, position, role):
+        """Two turns with a tool round each; between the turns the session is
+        saved the way the agent saves it (system prompt rebuilt, volatile notes
+        dropped). These placements must never rewrite an earlier request."""
+        from agent_system.servers.agent.components.session_tracking import is_volatile_note
+
+        registry = await _registry(("simple_prompt_inject", {
+            "prompt_text": "Rules.", "injection_position": position, "role": role}))
+        system = ChatMessage(role="system", content="sys")
+        msgs = [system, ChatMessage(role="user", content="u1")]
+        requests = []
+        for turn in (1, 2):
+            for step in ("tool", "answer"):
+                msgs = await _call(registry, msgs)
+                requests.append([(m.role, m.content) for m in msgs])
+                msgs = msgs + [ChatMessage(role="assistant", content=f"{step} {turn}")]
+            kept = [m for m in msgs if m.role != "system" and not is_volatile_note(m)]
+            msgs = [system] + kept + [ChatMessage(role="user", content=f"u{turn + 1}")]
+
+        for earlier, later in zip(requests, requests[1:]):
+            assert later[:len(earlier)] == earlier, (earlier, later)
+        assert [c for _, c in requests[-1]].count("Rules.") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("position", ["before_last_user", "end", "after_system"])
+    async def test_an_empty_rendering_withdraws_the_note(self, position):
+        """A text that renders empty from now on used to leave the copy of the
+        call before in the list, and the stale note went on speaking."""
+        agent = MagicMock()
+        agent.agent_config.template_vars = {}
+        registry = await _registry(("simple_prompt_inject", {
+            "prompt_text": "{% if flag %}Hurry.{% endif %}", "injection_position": position}))
+
+        agent._session_tracker.get_session_template_vars.return_value = {"flag": True}
+        msgs = await _call(registry, _conversation(), agent=agent)
+        assert [m.content for m in msgs if m.injected_by] == ["Hurry."]
+
+        agent._session_tracker.get_session_template_vars.return_value = {"flag": False}
+        msgs = await _call(registry, msgs, agent=agent)
+        assert [m.content for m in msgs if m.injected_by] == []

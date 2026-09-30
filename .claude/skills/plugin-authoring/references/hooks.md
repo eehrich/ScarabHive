@@ -145,8 +145,9 @@ A hook that breaks this pays for the whole context again on every step.
   front of history. The prompt is **re-rendered every step**.
   Guard: `tests/config/test_prompts_have_no_ticking_clock.py` (Jinja AST).
 - Don't rewrite earlier messages; append new content at the end. Whoever inserts at
-  the front (OKF seed, `simple_prompt_inject` with `before_last_user`) breaks the cache
-  deliberately — state it in the README under "Token and cache effect".
+  the front (OKF seed) breaks the cache deliberately, and so does a note that moves
+  (`simple_prompt_inject` with `before_last_user` loses the cache from its previous copy
+  on, every turn) — state it in the guide's "What the model sees".
 - Find your own insert by `injected_by` and replace it, don't duplicate it.
 - Guard for the loop: `tests/agent/test_agent_step_budget_note.py`
   (`test_every_request_is_a_prefix_of_the_next`) — the pattern for your own hook tests.
