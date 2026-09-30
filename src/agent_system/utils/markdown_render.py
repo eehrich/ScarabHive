@@ -296,6 +296,27 @@ def _lists_after_paragraphs(source: str) -> str:
     return "\n".join(out)
 
 
+# Python-Markdown's opening fence: at the line start, then a {attrs} or a (.)lang.
+_OPENING_FENCE = re.compile(r"(`{3,}|~{3,}) *(\{[^\n]*\}|\.?[\w#.+-]* *)$")
+
+
+def _close_open_fence(source: str) -> str:
+    """Close a code fence the text leaves open (an answer cut off in its code).
+
+    Unclosed, the code is read as one paragraph of many lines, and Python-Markdown's
+    line-break pattern takes time growing with the square of that: 200 KB took 48 s.
+    Closed, the code shows as code again. A fence closes on a line of just itself.
+    """
+    fence = ""
+    for line in re.split(r"\r\n|\r|\n", source):
+        if not fence:
+            mark = _OPENING_FENCE.match(line)
+            fence = mark.group(1) if mark else ""
+        elif line.rstrip(" ") == fence:
+            fence = ""
+    return f"{source}\n{fence}" if fence else source
+
+
 def _fix_list_formatting(html: str) -> str:
     """Rescue lists that LLMs wrote without the required blank line, so they
     render inline inside a single <p> (``Intro - a - b - c``)."""
@@ -354,6 +375,8 @@ def markdown_to_html(
         return None
 
     source = extract_markdown_content(text)
+    if code:
+        source = _close_open_fence(source)
     if not line_breaks:
         source = _lists_after_paragraphs(source)
     with _lock:
