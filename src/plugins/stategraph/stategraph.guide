@@ -67,19 +67,31 @@ something in. @{b}New@{ub} asks for an id and creates
 @{h2}The machine (middle)
 
 The head shows title, id and file, the problems (a click lists them all in
-the inspector), and buttons to copy the id, @{b}Duplicate@{ub} the machine
+the inspector), @{b}Save@{ub} and @{b}Auto-save@{ub}, and buttons to copy
+the id, @{b}Duplicate@{ub} the machine
 (a copy under a new id in the folder new machines are saved to, its Python module copied
 as @{tt}<id>.py@{utt}, even of a shipped machine) and delete it (writable
 machines only: its file, its layout and its Python module unless another
 machine uses it; refused while another machine imports it; its runs stay
 readable).
 
+Edits are saved by hand: what you change in the graph, the inspector and
+the YAML tab, and where you move states, stays unsaved until @{b}Save@{ub}
+(Ctrl+S) writes it all. Opening another machine or a run of unsaved
+changes asks first -- a run starts from the saved file; @{b}Duplicate@{ub}
+copies the saved machine, so it waits for Save or Revert. Text typed in
+the YAML tab reaches the graph with @{b}Validate@{ub}; a graph edit before
+that asks first. @{b}Auto-save@{ub}
+writes every edit and move at once instead; switched on, it saves what is
+unsaved first. The browser remembers the choice.
+
 @{b}Graph@{ub} -- the machine as a diagram. The bar adds a state of each
 activity kind, or a plain State, Choice, Junction, Final or Composite (a
 composite comes with a first state inside it); new states go into the
 selected composite. @{b}Find a state@{ub} selects a state by name.
-@{b}Undo@{ub} and @{b}Redo@{ub} put the file back as it was before or
-after an edit (the last 20 edits). @{b}Fit@{ub}, the zoom buttons and
+@{b}Undo@{ub} and @{b}Redo@{ub} put the machine back as it was before or
+after an edit (the last 20 edits): the unsaved text, or with auto-save the
+file. @{b}Fit@{ub}, the zoom buttons and
 @{b}Auto layout@{ub} (it asks before it drops positions you dragged)
 arrange the view.
 
@@ -92,6 +104,7 @@ Ctrl or Shift+click | adds a state or transition to the selection
 Ctrl or Shift+drag on empty canvas | selects the states wholly inside the box
 Delete, Backspace | removes what is selected, after asking
 Ctrl+Z; Ctrl+Shift+Z or Ctrl+Y | undo; redo
+Ctrl+S | save
 wheel; Shift+wheel; Ctrl+wheel | scrolls; scrolls sideways; zooms
 Escape | clears the selection
 @{body}
@@ -102,7 +115,7 @@ moved around but not changed; its layout is kept only for the open view.
 @{b}YAML@{ub} -- the machine's files as text: the YAML, its Python module,
 the machines it imports. Tab indents with spaces. @{b}Validate@{ub} checks
 the unsaved text, @{b}Save@{ub} writes every changed file, @{b}Revert@{ub}
-drops the changes. @{b}Python module@{ub} gives a writable machine without
+drops the changes -- without auto-save the graph's and the moves' too. @{b}Python module@{ub} gives a writable machine without
 one its module: a @{tt}python:@{utt} line and the file, both unsaved until
 Save. The problem list below the text leads to each problem's line.
 

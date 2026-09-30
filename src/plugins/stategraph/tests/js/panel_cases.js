@@ -7,6 +7,8 @@ import { FIELDS, HOOKS, MACHINE, RUN, RUNS, KINDS } from './fixtures.js';
 import { ApiError } from './fake_kit.js';
 
 load('./fake_dom.js');
+// the cases edit the file at once, as with auto-save; those without it take the setting back before they boot
+localStorage.setItem('stategraph:autosave', 'true');
 
 globalThis.RENDERS = []; globalThis.ICONS = new Set(); globalThis.TOASTS = []; globalThis.CALLS = []; globalThis.ASKED = [];
 globalThis.TABS = {}; globalThis.ANSWERS = { prompt: [], confirm: true, dialog: null };
@@ -66,6 +68,7 @@ globalThis.SERVER = (method, path, json) => {
   if (copy) return method === 'PUT' ? { machine_id: copy[1], versions: {}, problems: [], graph: MACHINE.graph } : { ...MACHINE, id: copy[1] };
   if (p === '/machines/review' && method === 'DELETE') return { deleted: 'review', files: ['review.yaml'], kept_module: null };
   if (p.endsWith('/edit')) return editAnswer || MACHINE;
+  if (p === '/validate') return { machine_id: 'review', problems: [], graph: MACHINE.graph };
   if (p.endsWith('/layout')) {
     if (layoutsKept && p === '/machines/review/layout') reviewAnswer = { ...reviewAnswer, layout: json.layout };
     return {};
@@ -1912,6 +1915,267 @@ const CASES = {
     check(ABORTED.some((path) => path.endsWith('/review')), 'the refresh was not abandoned');
     await release();
     check(headName() === 'other', `open: ${headName()}`);
+  },
+
+  async without_auto_save_an_edit_and_a_move_wait_for_save() {
+    localStorage.removeItem('stategraph:autosave');
+    const drafted = MACHINE.files['review.yaml'].replace('    max_visits: 5\n', '    max_visits: 5  # drafted\n');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: drafted };
+    await boot('?machine=review');
+    const module = 'def f():\n    return 2\n';
+    $('yamlFile').value = 'review.py';
+    await $('yamlFile').fire('change', {});
+    $('yamlText').value = module;
+    await $('yamlText').fire('input', {});
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check(!ASKED.some(([, text]) => String(text).includes('graph edits change the saved file')), 'a second edit asked about the first');
+    await choose('write');
+    check($('side-inspect').innerHTML.includes('# drafted'), 'the state\'s YAML is not cut from the draft the graph shows');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    const edits = CALLS.filter(([, path]) => path.endsWith('/edit')).map(([, , json]) => json);
+    check(edits.length === 2 && !('expected_version' in edits[0]) && edits[0].drafts['review.yaml'] === MACHINE.files['review.yaml']
+      && edits[1].drafts['review.yaml'] === drafted && edits[0].drafts['review.py'] === module, `edits ${JSON.stringify(edits)}`);
+    check($('yamlProblems').innerHTML.includes('Unsaved text'), 'the draft\'s problems are called the saved file\'s');
+    const writes = () => CALLS.filter(([method]) => method === 'PUT');
+    check(!writes().length, `written before Save: ${JSON.stringify(writes())}`);
+    check(DIRTY && $('yamlText').value === drafted, `dirty ${DIRTY}`);
+    check(!/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML), 'Save not offered');
+    ANSWERS.confirm = false;
+    await $('startForm').fire('submit', {});
+    await settle();
+    check(!CALLS.some(([method, path]) => method === 'POST' && path.endsWith('/api/runs')), 'a run started from the saved file unasked');
+    ANSWERS.confirm = true;
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'duplicate-machine' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.includes('_copy')) && TOASTS.some(([, text]) => text.includes('Save or revert')),
+      'a copy of the saved machine made while the open one has unsaved changes');
+    DOC_LISTENERS.keydown.forEach((fn) => fn({ key: 's', ctrlKey: true, preventDefault() {} }));
+    DOC_LISTENERS.keydown.forEach((fn) => fn({ key: 's', ctrlKey: true, preventDefault() {} }));  // a held key
+    await settle();
+    const [file, layout, ...more] = writes();
+    check(file && file[1].endsWith('/machines/review') && file[2].files['review.yaml'] === drafted
+      && file[2].expected_versions['review.yaml'] === MACHINE.versions['review.yaml'], `save ${JSON.stringify(file)}`);
+    check(layout && layout[1].endsWith('/machines/review/layout'), `the layout after the text: ${JSON.stringify(layout)}`);
+    check(!more.length, `saved twice: ${JSON.stringify(more)}`);
+    check(!DIRTY, 'still unsaved after Save');
+  },
+
+  async without_auto_save_undo_and_redo_move_the_draft_and_write_nothing() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    editAnswer = { ...editAnswer, draft: 'drafted twice' };
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    const shown = () => CALLS.filter(([, path]) => path.endsWith('/validate')).map(([, , json]) => json.files['review.yaml']);
+    await $('undo').fire('click', {});
+    await settle();
+    check(DIRTY && shown().pop() === 'drafted' && $('yamlText').value === 'drafted', `one undo: drawn from ${shown().pop()}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(!DIRTY && shown().pop() === MACHINE.files['review.yaml'] && $('yamlText').value === MACHINE.files['review.yaml'],
+      `two undos: dirty ${DIRTY}, drawn from ${shown().pop()}`);
+    await $('redo').fire('click', {});
+    await settle();
+    check(DIRTY && shown().pop() === 'drafted' && $('yamlText').value === 'drafted', `after the redo: dirty ${DIRTY}`);
+    check(!CALLS.some(([method]) => method === 'PUT'), 'an undo without auto-save wrote');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    const gets = () => CALLS.filter(([method, path]) => method === 'GET' && path.endsWith('/machines/review')).length;
+    const before = gets();
+    await $('yamlRevert').fire('click', {});
+    await settle();
+    check(gets() === before + 1 && !DIRTY && $('yamlText').value === MACHINE.files['review.yaml'], `revert: dirty ${DIRTY}`);
+    check($('undo').disabled && $('redo').disabled, 'steps of the reverted drafts are still offered');
+    check(/data-act="save"[^>]*disabled/.test($('machineHead').innerHTML), 'Save still offered after the revert');
+    check(!CALLS.some(([method]) => method === 'PUT'), 'a revert wrote');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    await choose('write');
+    check(DIRTY, 'a click on a state forgot the unsaved move');
+    ANSWERS.confirm = false;
+    await clickMachine('other');
+    await settle();
+    check(headName() === 'review' && ASKED.pop()[1].includes('unsaved changes'), 'a move alone let another machine open unasked');
+  },
+
+  async turning_auto_save_on_saves_the_drafts_first_and_is_kept() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    check(/data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML), 'auto-save on by default');
+    await $('autoLayout').fire('click', {});
+    await settle();
+    check(!$('yamlSave').disabled && !$('yamlRevert').disabled, 'the YAML tab offers no Save or Revert for a move');
+    await $('yamlSave').fire('click', {});
+    await settle();
+    check(CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/review/layout')) && !DIRTY,
+      'the YAML tab\'s Save left the layout unsaved');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'autosave' }) });
+    await settle();
+    const put = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/review'));
+    check(put && put[2].files['review.yaml'] === 'drafted', `not saved first: ${JSON.stringify(put)}`);
+    check(localStorage.getItem('stategraph:autosave') === 'true'
+      && /data-act="autosave" aria-pressed="true"/.test($('machineHead').innerHTML), 'auto-save not on, or not kept');
+    editAnswer = null;
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    const edit = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(edit[2].expected_version && !edit[2].drafts, `with auto-save the edit went to ${JSON.stringify(edit[2])}`);
+  },
+
+  async with_auto_save_an_undo_writes_back_the_saved_text_not_discarded_yaml() {
+    editAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v2' } };
+    await boot('?machine=review');
+    await typeDraft();
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });  // discards the draft
+    await settle();
+    await $('undo').fire('click', {});
+    await settle();
+    const put = CALLS.find(([method, path]) => method === 'PUT' && path.endsWith('/machines/review'));
+    check(put && put[2].files['review.yaml'] === MACHINE.files['review.yaml'], `undo wrote ${JSON.stringify(put?.[2])}`);
+  },
+  async without_auto_save_text_the_graph_does_not_show_is_asked_about_and_validate_draws_it() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await typeDraft();
+    check(!$('yamlSave').disabled, 'typing offers no Save');
+    ANSWERS.confirm = false;
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && ASKED.some(([, text]) => String(text).includes('does not show yet')),
+      'an edit on the graph drawn before the typed text went on unasked');
+    await $('yamlValidate').fire('click', {});
+    await settle();
+    const validated = CALLS.filter(([, path]) => path.endsWith('/validate')).pop();
+    check(validated && validated[2].files['review.yaml'].includes('# unsaved'), 'Validate did not draw the typed text');
+    const asked = confirms();
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    const edit = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(confirms() === asked && edit && edit[2].drafts['review.yaml'].includes('# unsaved'),
+      `after Validate: asked ${confirms() - asked}, sent ${JSON.stringify(edit?.[2]?.drafts)}`);
+    $('yamlText').value = 'drafted\n# again\n';
+    await $('yamlText').fire('input', {});
+    ANSWERS.confirm = true;
+    editAnswer = new ApiError(422, 'refused');
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});  // the text drawn anew from the drafts
+    check($('yamlText').value.includes('# again'), 'a refused edit dropped the typed text');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted twice' };
+    ANSWERS.prompt.push('judge');
+    await $('palette').fire('click', { target: element('button', { 'data-add-type': 'state' }) });
+    await settle();
+    const made = CALLS.filter(([, path]) => path.endsWith('/edit')).pop();
+    check(made[2].drafts['review.yaml'] === 'drafted' && $('yamlText').value === 'drafted twice',
+      `a discarding edit sent ${JSON.stringify(made[2].drafts)}, shows ${$('yamlText').value}`);
+  },
+
+  async without_auto_save_undo_steps_go_when_the_file_changes_under_them() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('undo').fire('click', {});
+    await settle();
+    check(!DIRTY && !$('redo').disabled, 'no redo after the undo');
+    reviewAnswer = { ...MACHINE, versions: { ...MACHINE.versions, 'review.yaml': 'v-other' } };  // another editor saved
+    DOC_LISTENERS.refresh.forEach((fn) => fn({ detail: { auto: true } }));
+    await settle();
+    check($('redo').disabled && $('undo').disabled, 'steps drafted from the older file are offered over the new one');
+  },
+
+  async an_edit_answered_after_another_machine_opened_is_dropped() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await clickMachine('plain');
+    await settle();
+    await release();
+    await removing;
+    check($('machineHead').innerHTML.includes('>plain<') && !DIRTY && !$('yamlFile').innerHTML.includes('(unsaved)'),
+      'the answer for review went into plain');
+  },
+  async without_auto_save_an_edit_answered_after_a_revert_is_dropped() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    await choose('write');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    HOLD = (method, path) => path.endsWith('/edit');
+    editAnswer = { ...editAnswer, draft: 'drafted twice' };
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('yamlRevert').fire('click', {});
+    await settle();
+    await release();
+    await removing;
+    check(!DIRTY && $('yamlText').value === MACHINE.files['review.yaml'] && TOASTS.some(([, text]) => text.includes('not applied')),
+      `the answer brought the reverted drafts back: dirty ${DIRTY}, ${$('yamlText').value.slice(0, 20)}`);
+  },
+
+  async without_auto_save_text_typed_while_an_edit_is_on_its_way_is_kept() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await typeDraft();
+    await release();
+    await removing;
+    $('yamlFile').value = 'review.yaml';
+    await $('yamlFile').fire('change', {});
+    check($('yamlText').value.includes('# unsaved') && TOASTS.some(([, text]) => text.includes('YAML tab changed')),
+      `the answer overwrote the typed text: ${$('yamlText').value.slice(-20)}`);
+  },
+
+  async auto_save_is_not_switched_under_an_edit_on_its_way() {
+    localStorage.removeItem('stategraph:autosave');
+    editAnswer = { machine_id: 'review', problems: [], graph: MACHINE.graph, draft: 'drafted' };
+    await boot('?machine=review');
+    HOLD = (method, path) => path.endsWith('/edit');
+    await choose('write');
+    const removing = $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    await $('machineHead').fire('click', { target: element('button', { 'data-act': 'autosave' }) });
+    await settle();
+    await release();
+    await removing;
+    check(localStorage.getItem('stategraph:autosave') !== 'true' && /data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML)
+      && DIRTY && $('yamlText').value === 'drafted', 'auto-save switched while the edit was on its way, or the edit lost');
   },
 };
 

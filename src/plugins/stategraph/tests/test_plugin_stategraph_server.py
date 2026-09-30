@@ -607,3 +607,29 @@ async def test_an_edit_renders_the_file_off_the_event_loop(server, monkeypatch):
 
     assert any(state["name"] == "later" for state in answer["graph"]["states"])
     assert len(ticks) >= 5, f"the event loop stood still during the edit ({len(ticks)} ticks in 0.3 s)"
+
+
+async def test_an_edit_onto_drafts_writes_nothing_and_answers_the_draft(server, tmp_path):
+    """Without auto-save the panel's edits go onto its drafts: the file stays, the answer is the draft and its graph."""
+    file = tmp_path / "machines" / "hello.yaml"
+    saved = file.read_bytes()
+
+    first = await server.service.edit_machine("hello", {"op": "add_state", "name": "later"}, None, drafts={})
+    second = await server.service.edit_machine("hello", {"op": "add_state", "name": "after"}, None,
+                                               drafts={"hello.yaml": first["draft"]})
+
+    assert file.read_bytes() == saved, "a draft edit wrote the file"
+    names = {state["name"] for state in second["graph"]["states"]}
+    assert {"later", "after"} <= names, "the second edit did not go onto the first one's draft"
+    assert "after:" in second["draft"] and "later:" in second["draft"]
+    assert set(second) == {"machine_id", "problems", "graph", "draft"}, "no saved files or versions to go stale"
+
+
+async def test_an_edit_onto_a_draft_that_does_not_parse_says_so(server):
+    from plugins.stategraph.service import ServiceError
+
+    with pytest.raises(ServiceError) as refused:
+        await server.service.edit_machine("hello", {"op": "add_state", "name": "later"}, None,
+                                          drafts={"hello.yaml": "stategraph: 1\nstates: [\n"})
+
+    assert refused.value.status == 422 and "YAML tab" in str(refused.value)

@@ -302,11 +302,24 @@ class StateGraphService:
         return {"machine_id": machine_id, "versions": versions, "problems": self._problems(tree),
                 "graph": self._graph(tree)}
 
-    async def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str]) -> dict[str, Any]:
+    async def edit_machine(self, machine_id: str, op: dict[str, Any], expected_version: Optional[str],
+                           drafts: Optional[dict[str, str]] = None) -> dict[str, Any]:
+        """One graph edit. On the file (its version the caller read), written at once; or, given ``drafts`` (the
+        caller's unsaved files, by relative path), on the root file's draft, else the file: nothing is written, the
+        answer is ``graph`` and ``problems`` of the drafts and ``draft``, the new root text."""
         from .model.yamledit import EditError, apply_op
 
         self._require(machine_id)
         found, text = self.store.read(machine_id)
+        root = f"{machine_id}.yaml"
+        if drafts is not None:
+            try:
+                draft = await asyncio.to_thread(apply_op, str(drafts.get(root, text)), op)
+            except EditError as exc:
+                raise ServiceError(422, str(exc)) from None
+            tree = self._validate(self._tree_from({**drafts, root: draft}, None, machine_id)[2])
+            return {"machine_id": machine_id, "problems": self._problems(tree), "graph": self._graph(tree),
+                    "draft": draft}
         if expected_version != version_of(text):
             raise ServiceError(409, f"the file changed since you read it (current version {version_of(text)})")
         try:
@@ -315,7 +328,6 @@ class StateGraphService:
             new_text = await asyncio.to_thread(apply_op, text, op)
         except EditError as exc:
             raise ServiceError(422, str(exc)) from None
-        root = f"{machine_id}.yaml"
         try:
             self.store.write_files(machine_id, {root: new_text}, {root: expected_version})
         except VersionConflict as exc:

@@ -1,6 +1,7 @@
 // State Graph: machines on the left; the open machine as graph, YAML and runs in the middle; the inspector and the
-// debugger on the right. Every graph edit is one POST .../edit against the file version the panel shows, and the
-// panel redraws from what the server answers. Runs are polled while they are alive.
+// debugger on the right. Every graph edit is one POST .../edit, and the panel redraws from what the server answers:
+// onto the unsaved drafts, written by Save -- or, with auto-save on, onto the file version the panel shows, written at
+// once. Runs are polled while they are alive.
 import {
   abandon, api, autoRefresh, confirm, copyText, dialog, emptyState, errorText, html, icon, isAborted, jsonView,
   localTime, navigate, notice, openSession, pluginBase, prompt, render, selectTab, setDirty, setQuery, setTitle, toast,
@@ -35,7 +36,10 @@ const S = {
   kinds: [],
   selection: null,      // {kind: 'state' | 'transition', id} or {kind: 'many', states, transitions} (graph.js selectionOf)
   problems: { states: {}, transitions: {}, machine: [] },
-  drafts: {},           // YAML tab: path -> unsaved text
+  drafts: {},           // path -> unsaved text: the YAML tab's, and the graph edits' without auto-save
+  autosave: recall('autosave', false),  // graph edits and the layout written at once, not by Save
+  layoutDirty: false,   // positions or line styles changed and not saved (without auto-save)
+  editing: 0,           // graph edits on their way: auto-save is not switched under them
   inspectorDrafts: new Set(),  // the inspector's forms with text typed and not applied: 'state', 'transition:<id>'
   yamlFile: null,
   runs: [],
@@ -51,7 +55,8 @@ const S = {
   runStatus: '',        // the runs list shows runs of this status only ('': every run)
   runsMore: false,      // the list's last page was full: older runs may follow
   acceptedSeen: '',     // the events the run waited for when the event form last chose one for the viewer
-  undo: [],             // [{machine, text, version}]: the root file before each edit, and its version after it
+  undo: [],             // [{machine, text, version}]: the root text before each edit (the draft, or with auto-save
+                        // the file) and, with auto-save, the file's version after it
   redo: [],             // the same for each undo: the text it replaced, and the version it left
 };
 const UNDO_DEPTH = 20;
@@ -61,7 +66,12 @@ const statusBadge = (status) => badge(status || 'unknown', STATUS_KIND[status] ?
 const stateOf = (name) => S.machine?.graph?.states?.find((state) => state.name === name) || null;
 const transitionOf = (id) => S.machine?.graph?.transitions?.find((t) => t.id === id) || null;
 const hasDrafts = () => Object.keys(S.drafts).length > 0;
-const unsaved = () => hasDrafts() || S.inspectorDrafts.size > 0;
+const unsaved = () => hasDrafts() || S.layoutDirty || S.inspectorDrafts.size > 0;
+const savable = () => hasDrafts() || S.layoutDirty;
+/** The root file as the panel holds it: its draft, else as saved. */
+const rootText = () => yamlText(S.machine.root_file);
+/** The root text the graph is drawn from: a draft edit's, else the saved file's. */
+const drawnText = (m) => m.draft ?? m.files[m.root_file];
 /** The inspector form an input belongs to, as S.inspectorDrafts names it. */
 const FORM_DRAFTS = { 'set-state': 'state', activity: 'activity', 'state-fields': 'fields', 'machine-fields': 'machine' };
 const draftKey = (form) => (FORM_DRAFTS[form?.dataset.form]
@@ -154,6 +164,12 @@ async function saveLayout(changes) {
   S.machine.layout = layout;
   canvas.setLayout(layout);
   if (!S.machine.writable) return;  // kept for this view only: the sidecar sits next to a read-only file
+  if (!S.autosave) {  // written by Save
+    S.layoutDirty = true;
+    setDirty(true);
+    drawSaveControls();
+    return;
+  }
   try {
     await api(`${API}/machines/${enc(S.machine.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
   } catch (error) {
@@ -278,7 +294,7 @@ $('machineList').addEventListener('toggle', (event) => {
 /** Open (or reload) a machine. Unsaved YAML is discarded only after the author agreed, or when the caller has
  * dealt with it already (discard: a reload after a conflict or a save). */
 async function openMachine(id, { keepRun = false, discard = false } = {}) {
-  const where = hasDrafts() ? 'The YAML tab has unsaved changes' : 'The inspector has changes that are not applied';
+  const where = savable() ? 'The machine has unsaved changes' : 'The inspector has changes that are not applied';
   if (unsaved() && !discard && !await confirm(id === S.machine?.id
     ? `${where}. Reload the machine and discard them?`
     : `${where}. Open another machine and discard them?`, { danger: true, confirmLabel: 'Discard' })) {
@@ -293,6 +309,8 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
   }
   const switched = machine.id !== S.machine?.id;
   S.drafts = {};
+  S.layoutDirty = false;
+  if (!S.autosave) S.undo = S.redo = [];  // steps of the drafts just dropped
   S.inspectorDrafts.clear();
   setDirty(false);
   if (switched) {
@@ -327,8 +345,13 @@ function foldListWhenNarrow() {
 
 /** A machine answer (get, edit): everything that shows it is drawn again. */
 function showMachine(machine) {
+  const shown = S.machine;
   S.machine = machine;
   if ([...S.undo, ...S.redo].some((step) => step.machine !== machine.id)) S.undo = S.redo = [];  // another machine's
+  // without auto-save a step is the text of a draft of the file as read: another version of the file outdates it
+  if (!S.autosave && shown?.id === machine.id && shown.versions[shown.root_file] !== machine.versions[machine.root_file]) {
+    S.undo = S.redo = [];
+  }
   drawUndo();
   S.problems = problemIndex(machine.graph, machine.problems, machine.file || machine.root_file);
   if (S.selection?.kind === 'state' && !stateOf(S.selection.id)) S.selection = null;
@@ -385,10 +408,12 @@ function drawHead() {
       ${errors ? badge(`${errors} error${errors > 1 ? 's' : ''}`, 'danger') : ''}${warnings ? badge(`${warnings} warning${warnings > 1 ? 's' : ''}`, 'warn') : ''}</button>`
     : badge('valid', 'ok')}
     ${m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
+    ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm${savable() ? ' pk-btn--primary' : ''}" data-act="save" title="Save the changes (Ctrl+S)" ${savable() ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Save</button>
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="autosave" aria-pressed="${String(S.autosave)}" title="Write every graph edit and move at once, not by Save">Auto-save</button>` : ''}
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="copy-id" title="Copy the machine id">${icon('copy', { size: 'sm' })}</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="duplicate-machine" title="A copy under a new id among your own machines">${icon('layers', { size: 'sm' })} Duplicate</button>
     ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="delete-machine" title="Delete the machine" aria-label="Delete the machine">${icon('trash-2', { size: 'sm' })}</button>` : ''}`);
-  $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
+  $('yamlCount').textContent = savable() ? 'unsaved' : '';
 }
 
 /** The buttons that add a state, in the bar -- and, for a narrow panel, in the menu that stands in for it. */
@@ -413,13 +438,25 @@ function readOnly() {
   return true;
 }
 
-/** One graph edit on the saved file; the answer is the machine as it is now. `places`: the states whose positions
+/** One graph edit: onto the drafts, or with auto-save onto the saved file; the machine is drawn as the server
+ * answers. `places`: the states whose positions
  * the caller changes after it (a rename, a group), `keys`: the transitions' line styles it changes (a rename) -- an
  * undo puts theirs back with the text, and only theirs. */
 async function edit(op, { from = null, places = null, keys = null } = {}) {
   const m = S.machine;
+  const auto = S.autosave;  // the answer is read the way the request was made: toggleAutosave waits for it
   if (readOnly()) return null;
-  if (hasDrafts() && !await confirm('The YAML tab has unsaved changes, and graph edits change the saved file. Discard the unsaved changes?',
+  // the root text the edit starts from, and what an undo writes back (auto-save) or puts back as the draft
+  let before = auto ? m.files[m.root_file] : rootText();
+  // without auto-save, text typed in the YAML tab the graph does not show yet: the edit works from the text drawn,
+  // and the typed text goes once the edit is made
+  if (!auto && before !== drawnText(m)) {
+    if (!await confirm('The YAML tab has text the graph does not show yet (Validate there draws it). Discard that text and make the edit?',
+      { danger: true, confirmLabel: 'Discard' })) return null;
+    before = drawnText(m);
+  }
+  // with auto-save the edit changes the saved file; without, it goes onto the drafts
+  if (auto && hasDrafts() && !await confirm('The YAML tab has unsaved changes, and graph edits change the saved file. Discard the unsaved changes?',
     { danger: true, confirmLabel: 'Discard' })) {
     return null;
   }
@@ -429,17 +466,34 @@ async function edit(op, { from = null, places = null, keys = null } = {}) {
     { danger: true, confirmLabel: 'Discard' })) {
     return null;
   }
-  const before = m.files[m.root_file];
   const spots = places && spotsOf(places);
   const styles = keys && stylesOf(keys);
   try {
-    const next = await api(`${API}/machines/${enc(m.id)}/edit`, {
-      method: 'POST', json: { op, expected_version: m.versions[m.root_file] }, quiet: true,
-    });
-    S.drafts = {};
-    setDirty(false);
+    let next;
+    const held = rootText();  // the YAML tab as the request left it
+    S.editing += 1;
+    try {
+      next = await api(`${API}/machines/${enc(m.id)}/edit`, {
+        method: 'POST', quiet: true, json: auto ? { op, expected_version: m.versions[m.root_file] }
+          : { op, drafts: { ...S.drafts, [m.root_file]: before } },  // the text as read: not the file as it is now
+      });
+    } finally {
+      S.editing -= 1;
+    }
+    // another machine opened meanwhile -- or, without auto-save, this one reloaded or redrawn: not the answer's
+    if (auto ? S.machine?.id !== m.id : S.machine !== m) {
+      if (S.machine?.id === m.id) toast('The edit was not applied: the machine was reloaded meanwhile.', { kind: 'warn' });
+      return null;
+    }
+    if (!auto && rootText() !== held) {  // typed into meanwhile: the answer would overwrite it
+      toast('The edit was not applied: the YAML tab changed meanwhile. Make it again.', { kind: 'warn' });
+      return null;
+    }
+    if (auto) S.drafts = {};
+    else setRoot(next.draft);
+    setDirty(unsaved());
     S.undo = [...S.undo.filter((step) => step.machine === m.id), { machine: m.id, text: before,
-      version: next.versions[next.root_file], ...(spots && { spots }), ...(styles && { styles }) }].slice(-UNDO_DEPTH);
+      version: next.versions?.[m.root_file], ...(spots && { spots }), ...(styles && { styles }) }].slice(-UNDO_DEPTH);
     S.redo = [];  // a new edit: what was undone before it is not redone over it
     // read now, not before the request: what was typed meanwhile counts, what was discarded meanwhile does not
     const others = new Set([...S.inspectorDrafts].filter((key) => key !== from && key !== 'state'));
@@ -448,9 +502,11 @@ async function edit(op, { from = null, places = null, keys = null } = {}) {
       S.selection = { kind: 'state', id: op.new };  // the renamed state stays the one shown, its forms under its name
       typed = new Map([...typed].map(([key, held]) => [key.replace(`transition:${op.old}#`, `transition:${op.new}#`), held]));
     }
-    showMachine(next);
+    // a draft keeps the files, versions and layout the panel holds: Save checks against the version they came from
+    const shown = auto ? next : { ...m, graph: next.graph, problems: next.problems, draft: next.draft };
+    showMachine(shown);
     keepTyped(typed);
-    return next;
+    return shown;
   } catch (error) {
     if (isAborted(error)) return null;
     if (error.status === 409) {
@@ -510,6 +566,10 @@ async function travel(back) {
   const [from, to, word] = back ? ['undo', 'redo', 'Undo'] : ['redo', 'undo', 'Redo'];
   const step = S[from][S[from].length - 1];
   if (!m?.writable || !step || step.machine !== m.id) return;
+  if (!S.autosave) {
+    await travelDrafts(back, step);
+    return;
+  }
   if (unsaved() && !await confirm(`${word} reloads the machine: unsaved text in the YAML tab and the inspector is lost. ${word} anyway?`,
     { danger: true, confirmLabel: word })) return;
   const replaced = m.files[m.root_file];
@@ -539,6 +599,103 @@ async function travel(back) {
   }
   S.drafts = {};
   await openMachine(m.id, { keepRun: true, discard: true });
+}
+
+/** travel() without auto-save: the root draft goes back to the step's text, the layout part with it; nothing is
+ * written, the graph is drawn from the drafts. */
+async function travelDrafts(back, step) {
+  const m = S.machine;
+  const [from, to] = back ? ['undo', 'redo'] : ['redo', 'undo'];
+  if (!await dropTyped()) return;
+  S[from] = S[from].slice(0, -1);
+  S[to] = [...S[to], { machine: m.id, text: rootText(),
+    ...(step.spots && { spots: spotsOf(Object.keys(step.spots)) }),
+    ...(step.styles && { styles: stylesOf(Object.keys(step.styles)) }) }].slice(-UNDO_DEPTH);
+  setRoot(step.text);
+  if (step.spots || step.styles) saveLayout({ positions: patched(positions(), step.spots), lines: patched(lineStyles(), step.styles) });
+  S.inspectorDrafts.clear();
+  setDirty(unsaved());
+  await drawDrafts();
+}
+
+/** The inspector's unapplied text is dropped by a redraw: asked first. */
+const dropTyped = async () => !S.inspectorDrafts.size
+  || confirm('The inspector has changes that are not applied, and this redraws it. Go on and drop them?', { danger: true, confirmLabel: 'Drop' });
+
+/** Without auto-save: the graph drawn from the drafts, the root file's text as the YAML tab holds it. */
+async function drawDrafts() {
+  const m = S.machine;
+  try {
+    const shown = await api(`${API}/validate`, { method: 'POST', json: { files: allFiles(), machine_id: m.id } });
+    if (S.machine === m) showMachine({ ...m, graph: shown.graph, problems: shown.problems, draft: rootText() });
+  } catch (error) { /* toasted */ }
+}
+
+/** The root file's draft: none when it is the saved text. */
+function setRoot(text) {
+  const root = S.machine.root_file;
+  if (text === S.machine.files[root]) delete S.drafts[root];
+  else S.drafts[root] = text;
+}
+
+let saving = null;  // the save in flight: a second Ctrl+S (a held key) joins it
+
+/** Save: the drafts with the layout after them (the YAML tab's save, which reloads the machine), else the layout. */
+function saveAll() {
+  saving ??= saveNow().finally(() => { saving = null; });
+  return saving;
+}
+
+async function saveNow() {
+  const m = S.machine;
+  if (!m?.writable || !savable()) return;
+  const layout = S.layoutDirty ? m.layout : null;
+  if (hasDrafts()) {
+    await saveYaml(false, layout);  // the layout after the text: it names the states the saved text has
+    return;
+  }
+  if (!await putLayout(m, layout)) return;
+  S.layoutDirty = false;
+  setDirty(unsaved());
+  drawSaveControls();
+  toast('Saved', { kind: 'ok' });
+}
+
+async function putLayout(m, layout) {
+  try {
+    await api(`${API}/machines/${enc(m.id)}/layout`, { method: 'PUT', json: { layout }, quiet: true });
+    return true;
+  } catch (error) {
+    if (!isAborted(error)) toast(`Layout not saved: ${errorText(error)}`, { kind: 'warn' });
+    return false;
+  }
+}
+
+/** The save controls: the YAML tab's and the head's. */
+function drawSaveControls() {
+  const m = S.machine;
+  $('yamlSave').disabled = !m.writable || !savable();
+  $('yamlRevert').disabled = !savable();
+  $('yamlState').textContent = !m.writable ? 'read-only' : hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved`
+    : S.layoutDirty ? 'layout unsaved' : 'saved';
+  drawHead();
+}
+
+/** Auto-save on saves what is unsaved first -- if that fails, it stays off. The undo steps of the other way go. */
+async function toggleAutosave() {
+  if (S.editing) {
+    toast('An edit is on its way: switch auto-save once it is done.', { kind: 'warn' });
+    return;
+  }
+  if (!S.autosave && savable()) {
+    await saveAll();
+    if (savable() || S.editing) return;
+  }
+  S.autosave = !S.autosave;
+  remember('autosave', S.autosave);
+  S.undo = S.redo = [];
+  drawUndo();
+  drawHead();
 }
 
 function drawUndo() {
@@ -807,7 +964,7 @@ function drawInspector() {
   const pane = $('side-inspect');
   const m = S.machine;
   S.inspectorDrafts.clear();  // the forms are drawn anew: what was typed into them is gone (callers asked first)
-  setDirty(hasDrafts());
+  setDirty(savable());
   if (!m) {
     render(pane, emptyState('workflow', 'Nothing open'));
     return;
@@ -861,8 +1018,8 @@ function drawInspector() {
   const { hooks, why } = hooksOf(state);
   const live = liveRun();
   const parentInitial = state.parent ? stateOf(state.parent)?.initial : m.graph.initial;
-  const fragment = stateFragment(m.files[m.root_file], state.line, state.name);
-  const lock = fragmentLock(m.files[m.root_file], state.line, state.name);
+  const fragment = stateFragment(drawnText(m), state.line, state.name);
+  const lock = fragmentLock(drawnText(m), state.line, state.name);
   const applies = m.writable && !lock;
   render(pane, html`
     <div class="sg-section">
@@ -1374,11 +1531,8 @@ function drawYaml() {
   const area = $('yamlText');
   area.readOnly = !m.writable;
   $('yamlAddModule').hidden = !m.writable || PYTHON_KEY.test(yamlText(m.root_file));
-  $('yamlSave').disabled = !m.writable || !hasDrafts();
-  $('yamlRevert').disabled = !hasDrafts();
-  $('yamlState').textContent = !m.writable ? 'read-only' : hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved` : 'saved';
-  $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
-  drawProblems($('yamlProblems'), m.problems, 'Saved file');
+  drawSaveControls();
+  drawProblems($('yamlProblems'), m.problems, m.draft !== undefined && m.draft !== m.files[m.root_file] ? 'Unsaved text' : 'Saved file');
 }
 
 /** Problems as buttons that go where each one is (data-problem: its index in `problems`). */
@@ -1434,10 +1588,7 @@ $('yamlText').addEventListener('input', () => {
   if (text === S.machine.files[S.yamlFile]) delete S.drafts[S.yamlFile];
   else S.drafts[S.yamlFile] = text;
   setDirty(unsaved());
-  $('yamlSave').disabled = !S.machine.writable || !hasDrafts();
-  $('yamlRevert').disabled = !hasDrafts();
-  $('yamlState').textContent = hasDrafts() ? `${Object.keys(S.drafts).length} file(s) unsaved` : 'saved';
-  $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
+  drawSaveControls();
 });
 
 $('yamlText').addEventListener('scroll', () => followScroll($('yamlText')));
@@ -1485,6 +1636,10 @@ function allFiles() {
 }
 
 $('yamlValidate').addEventListener('click', () => withBusy($('yamlValidate'), async () => {
+  if (!S.autosave) {  // the graph drawn from the text: graph edits go on from it
+    if (await dropTyped()) await drawDrafts();
+    return;
+  }
   try {
     const result = await api(`${API}/validate`, { method: 'POST', json: { files: allFiles(), machine_id: S.machine.id } });
     drawProblems($('yamlProblems'), result.problems, hasDrafts() ? 'Unsaved text' : 'Saved file');
@@ -1492,15 +1647,19 @@ $('yamlValidate').addEventListener('click', () => withBusy($('yamlValidate'), as
 }));
 
 $('yamlRevert').addEventListener('click', async () => {
-  if (!await confirm('Discard every unsaved change in the YAML tab?', { danger: true, confirmLabel: 'Discard' })) return;
-  S.drafts = {};
-  setDirty(unsaved());
-  drawYaml();
+  if (!await confirm('Discard every unsaved change?', { danger: true, confirmLabel: 'Discard' })) return;
+  if (S.autosave) {  // the graph shows the saved file: only the text goes
+    S.drafts = {};
+    setDirty(unsaved());
+    drawYaml();
+    return;
+  }
+  await openMachine(S.machine.id, { keepRun: true, discard: true });  // graph and layout as saved
 });
 
-$('yamlSave').addEventListener('click', () => withBusy($('yamlSave'), () => saveYaml(false)));
+$('yamlSave').addEventListener('click', () => withBusy($('yamlSave'), saveAll));
 
-async function saveYaml(force) {
+async function saveYaml(force, layout = null) {
   const m = S.machine;
   if (!force && S.inspectorDrafts.size && !await confirm('The inspector has changes that are not applied: saving '
     + 'reloads the machine and drops them. Save anyway?', { danger: true, confirmLabel: 'Save' })) return;
@@ -1521,7 +1680,7 @@ async function saveYaml(force) {
       });
       if (choice === 'use') {
         delete S.drafts[inTheWay];
-        await saveYaml(force);
+        await saveYaml(force, layout);
       }
     } else if (error.status === 409) {
       const choice = await dialog({
@@ -1540,12 +1699,13 @@ async function saveYaml(force) {
         message: `${errorText(error)}. A machine with errors cannot run. Save it anyway, to fix it later?`,
         actions: [{ label: 'Cancel', value: null }, { label: 'Save anyway', value: 'force', danger: true }],
       });
-      if (choice === 'force') await saveYaml(true);
+      if (choice === 'force') await saveYaml(true, layout);
     } else {
       toast(errorText(error), { kind: 'error' });
     }
     return;
   }
+  if (layout) await putLayout(m, layout);  // said when it fails: the text is saved, the reload shows the old layout
   S.drafts = {};
   setDirty(false);
   S.undo = S.redo = [];  // the edits before the save are not undone or redone over it
@@ -1646,6 +1806,8 @@ $('startForm').addEventListener('submit', (event) => {
 async function startRun(params, mocks, mockOnly) {
   const error = $('startError');
   notice(error, '');
+  if (hasDrafts() && !await confirm('The machine has unsaved changes: the run starts from the saved file. Start anyway?',
+    { confirmLabel: 'Start' })) return;
   remember(`mocks:${S.machine.id}`, $('mocks').value);
   remember(`params:${S.machine.id}`, params);
   // a point on a state the file no longer has (removed, renamed in the YAML tab) would be refused by the server
@@ -2454,6 +2616,15 @@ $('machineHead').addEventListener('click', (event) => {
     choose(null);  // the overview lists them all
   }
   if (event.target.closest('[data-act="delete-machine"]') && S.machine) deleteMachine(S.machine);
+  if (event.target.closest('[data-act="save"]') && S.machine) withBusy(event.target.closest('[data-act="save"]'), saveAll);
+  if (event.target.closest('[data-act="autosave"]') && S.machine) toggleAutosave();
+});
+
+document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && S.machine) {
+    event.preventDefault();  // the browser's "save page"
+    saveAll();
+  }
 });
 
 const PYTHON_LINE = /^python[ \t]*:.*$/m;
@@ -2464,6 +2635,10 @@ const escapeRe = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * instead: a copy of that file in the writable root would stand in for the machine of that id everywhere. The
  * layout comes along. */
 async function duplicateMachine(m) {
+  if (savable()) {
+    toast('Save or revert the unsaved changes first: a copy is made from the saved machine.', { kind: 'warn' });
+    return;
+  }
   let free = `${m.id}_copy`;
   for (let n = 2; S.machines.some((other) => other.id === free); n += 1) free = `${m.id}_copy_${n}`;
   const id = await askMachineId(`Id of the copy of ${m.id}:`, { title: 'Duplicate machine', value: free });

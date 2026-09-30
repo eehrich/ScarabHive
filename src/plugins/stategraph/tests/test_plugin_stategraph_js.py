@@ -340,6 +340,16 @@ def test_the_panel_runs_every_main_path_against_a_fake_kit_and_dom(tmp_path):
 
 
 PANEL_CASES = [
+    "without_auto_save_an_edit_and_a_move_wait_for_save",
+    "without_auto_save_undo_and_redo_move_the_draft_and_write_nothing",
+    "turning_auto_save_on_saves_the_drafts_first_and_is_kept",
+    "with_auto_save_an_undo_writes_back_the_saved_text_not_discarded_yaml",
+    "without_auto_save_text_the_graph_does_not_show_is_asked_about_and_validate_draws_it",
+    "without_auto_save_undo_steps_go_when_the_file_changes_under_them",
+    "an_edit_answered_after_another_machine_opened_is_dropped",
+    "without_auto_save_an_edit_answered_after_a_revert_is_dropped",
+    "without_auto_save_text_typed_while_an_edit_is_on_its_way_is_kept",
+    "auto_save_is_not_switched_under_an_edit_on_its_way",
     "a_click_on_the_open_machine_asks_before_it_drops_the_drafts",
     "a_reload_after_an_edit_conflict_asks_about_the_drafts_once",
     "breakpoints_and_watches_of_the_next_run_carry_the_open_machine",

@@ -1036,7 +1036,7 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite); `PUT /api/machines/{id}/layout`;
+  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.
 - **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
   the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
@@ -1063,8 +1063,16 @@ edit or another machine drops them. Each run has a **Result** card: its output o
 end state of every frame, and every finished activity folded, with its full answer when opened;
 an agent's instance session and the run's own session (§5.8) open in the chat.
 
-**Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) writes back the file as it was
-before the last edit, **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand takes its region's
+**Saving.** The panel saves by hand: graph edits go onto the drafts (`edit` with `drafts`), moves and line styles
+onto the layout it holds, and **Save** (Ctrl+S) writes the layout, then the drafts with the versions they were read
+at -- a file changed meanwhile is a conflict, not overwritten, and undo steps drafted from an older version go.
+Opening another machine, a reload or a run of unsaved changes asks first; Duplicate waits for Save or Revert. Text
+typed in the YAML tab reaches the graph with Validate (`/validate` over the drafts); a graph edit before that asks,
+since it would work from the text the graph was drawn from. **Auto-save** (kept per browser) writes each edit and move at once, as before; switched
+on, it saves what is unsaved first.
+
+**Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) puts back the root file as it was
+before the last edit -- the draft, or with auto-save the file -- **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand takes its region's
 start dot along, left of it; transitions between the same two states are drawn side by side; a transition's **Line** -- right-angled (the default: ELK's route, re-routed when a state is moved) or straight; moving never changes it -- is set in its inspector, for all of a selection, or for the machine in the overview, and kept in the layout); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
 one undo step); Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box

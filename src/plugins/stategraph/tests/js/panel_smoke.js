@@ -9,6 +9,7 @@ import { MACHINE, RUN, RUNS, KINDS } from './fixtures.js';
 import { ApiError } from './fake_kit.js';
 
 load('./fake_dom.js');
+localStorage.setItem('stategraph:autosave', 'true');  // the main paths edit the file at once
 load(ELK_PATH);
 
 globalThis.RENDERS = []; globalThis.ICONS = new Set(); globalThis.TOASTS = []; globalThis.CALLS = []; globalThis.ASKED = [];

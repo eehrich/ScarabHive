@@ -135,8 +135,9 @@ class StateGraphWebEndpoints:
     async def api_edit_machine(self, request: Request, machine_id: str):
         await self._user(request)
         body = await self._body(request)
+        drafts = _field(body, "drafts", dict)  # the panel's unsaved files: the edit goes onto them, not to disk
         return await self._call("edit_machine", machine_id, _field(body, "op", dict, required=True),
-                                _field(body, "expected_version", str, required=True))
+                                _field(body, "expected_version", str, required=drafts is None), drafts=drafts)
 
     async def api_save_layout(self, request: Request, machine_id: str):
         await self._user(request)

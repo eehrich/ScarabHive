@@ -85,7 +85,19 @@ def test_an_edit_carries_the_operation_and_the_version_read():
     answer = test_client.post("/plugins/stategraph/api/machines/review/edit", json={"op": op, "expected_version": "abc"})
 
     assert answer.status_code == 200
-    assert service.calls == [("edit_machine", ("review", op, "abc"), {})]
+    assert service.calls == [("edit_machine", ("review", op, "abc"), {"drafts": None})]
+
+
+def test_an_edit_onto_drafts_needs_no_version():
+    test_client, service = client()
+    op = {"op": "add_state", "name": "judge"}
+
+    answer = test_client.post("/plugins/stategraph/api/machines/review/edit", json={"op": op, "drafts": {"review.yaml": "x"}})
+    without = test_client.post("/plugins/stategraph/api/machines/review/edit", json={"op": op})
+
+    assert answer.status_code == 200
+    assert service.calls == [("edit_machine", ("review", op, None), {"drafts": {"review.yaml": "x"}})]
+    assert without.status_code == 422 and without.json()["detail"] == "expected_version is required"
 
 
 def test_a_service_refusal_keeps_its_status_and_message():
