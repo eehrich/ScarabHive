@@ -4,9 +4,14 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://www.python.org/)
 ![Status](https://img.shields.io/badge/status-beta-orange.svg)
 
-ScarabHive is a self-hosted framework for LLM agents. You define an agent in YAML: its model, its
-prompt and the tools it may use. You run it in the browser, from the command line or through an
-OpenAI-compatible API. Tools come from plugins; about 75 ship with it.
+ScarabHive is a self-hosted framework for LLM agents, built around plugins. You define an agent
+in YAML: its model, its prompt and the tools it may use. You run it in the browser, from the
+command line or through an OpenAI-compatible API.
+
+**Everything is a plugin** -- tools, hooks around the model call, panels in the UI, even the LLM
+providers. About 75 ship with it, and a new one is a folder with three small files.
+
+![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
 
 > [!WARNING]
 > **ScarabHive is beta software.** It is under heavy development and **may contain serious
@@ -15,7 +20,64 @@ OpenAI-compatible API. Tools come from plugins; about 75 ship with it.
 > people you do not trust. Keep backups of everything under `data/`, and watch your providers'
 > spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
 
-## What it does
+## Built on plugins
+
+A plugin is a folder under `src/plugins/`. It can give agents tools, run hooks before and after
+each LLM call, add a panel to the UI and endpoints to the API, ship agents, prompts and skills of
+its own, or add an LLM provider -- any mix of these. The core finds it by its `plugin.toml`; one
+line in the configuration switches it on.
+
+A complete tool plugin:
+
+```toml
+# src/plugins/greeter/plugin.toml
+[plugin]
+name = "greeter"
+version = "0.1.0"
+description = "Greets people."
+entrypoint = "plugin:PLUGIN_FACTORY"
+type = ["tool-server"]
+requires = { agent_system = ">=0.6.0" }
+```
+
+```yaml
+# src/plugins/greeter/schema.yaml -- what the model sees
+tools:
+  - type: function
+    function:
+      name: "{{ name }}_hello"
+      description: Greet a person by name.
+      parameters:
+        type: object
+        properties:
+          who: {type: string}
+        required: [who]
+```
+
+```python
+# src/plugins/greeter/plugin.py -- one method per tool
+from typing import Any
+
+from agent_system.tools.schema_based import SchemaBasedToolServer
+
+
+class GreeterServer(SchemaBasedToolServer):
+    async def hello(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "success", "greeting": f"Hello, {params.get('who')}!"}
+
+
+PLUGIN_FACTORY = GreeterServer
+```
+
+Switch it on in `config/plugins.yaml` (`greeter: {type: greeter, enabled: true}` under
+`plugins: servers:`) and give an agent `+greeter/*` in its tool list. A tool plugin can run
+several times under different names with different settings. An agent that needs no code of its
+own -- a prompt, a model, some tools -- is a YAML file and no plugin at all.
+
+More: [docs/plugin_authoring.md](docs/plugin_authoring.md), [docs/plugin_hooks.md](docs/plugin_hooks.md)
+and the [example plugin](src/plugins/example/).
+
+## What ships with it
 
 **Agents from configuration**
 - An agent is a YAML file: LLM profile, system prompt, the tools it may use (allow and deny
@@ -63,6 +125,15 @@ OpenAI-compatible API. Tools come from plugins; about 75 ship with it.
   each tool with its parameters, and what the model sees.
 - `agent-cli` for interactive chat and one-off runs, `agent-run` for scripted runs.
 - Users with roles, JWT and API-key login, route security per role.
+
+## A look inside
+
+| | |
+|---|---|
+| ![Cost and context of every LLM call, per session, agent and model](src/plugins/context_usage_tracker/docs/panel.png) | ![Sub-agents as a tree: who started whom, what each is doing](src/plugins/sub_agent_manager/docs/map.png) |
+| Cost, tokens and cache use of every call | The sub-agents of a session as a map |
+| ![The agent editor: agents in their YAML files, edited in a form](src/plugins/agent_editor/docs/panel.png) | ![The setup panel: keys, admin password, a test of the chat](src/plugins/setup/docs/panel.png) |
+| Agents edited in a form, their YAML and comments kept | Setup: what the installation still lacks |
 
 ## Getting started
 

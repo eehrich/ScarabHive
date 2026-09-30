@@ -120,7 +120,26 @@ SHOTS = {
           }
         };
         relative();
-        new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});""")],
+        new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});"""),
+                   # the README's picture: the graph alone, fitted, the run's path on it
+                   ("readme.png", "plugins.stategraph.tests.stategraph_panel_app", "panel_app",
+                    "/plugins/stategraph/?machine=build_review&run=demo_run", (1400, 640), """
+        const relative = () => {
+          const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+            if (/[A-Za-z]:\\\\.*machines\\\\/.test(node.data)) node.data = node.data.replace(/[A-Za-z]:\\\\.*machines\\\\/, 'machines/');
+          }
+        };
+        relative();
+        new MutationObserver(relative).observe(document.body, {childList: true, subtree: true, characterData: true});
+        await new Promise((done) => setTimeout(done, 1500));
+        for (const pane of ['machinesPane', 'inspectorPane']) {
+          const toggle = document.querySelector(`[data-pk-sidebar-toggle][aria-controls="${pane}"]`);
+          if (toggle?.getAttribute('aria-expanded') === 'true') toggle.click();
+        }
+        await new Promise((done) => setTimeout(done, 500));
+        document.getElementById('fit')?.click();
+        await new Promise((done) => setTimeout(done, 800));""")],
     "setup": [("panel.png", "plugins.setup.tests.test_plugin_setup_panel", "panel_app",
                "/plugins/setup/", (900, 900), """
         // a first start, seeded: the stub's state is read from this machine's configuration and environment
