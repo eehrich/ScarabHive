@@ -2666,7 +2666,10 @@
           button.type = 'button';
           button.className = 'pk-btn pk-btn--sm ask-user-option';
           button.textContent = option;
-          button.addEventListener('click', () => send([option], option));
+          button.addEventListener('click', () => {
+            const typed = text.value.trim();   // it goes along; the note says so, as for Send
+            return send([option], [option].concat(typed ? [typed] : []).join(', '));
+          });
           controls.push(button);
           list.appendChild(button);
         }

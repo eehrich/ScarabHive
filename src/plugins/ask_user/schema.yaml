@@ -1,6 +1,6 @@
 # Tool definition for the ask_user plugin. The tool is named like the instance
-# ("{{ name }}" routes to execute). The description is quoted verbatim in
-# README.md ("Model Experience") -- change both together.
+# ("{{ name }}" routes to execute). ask_user.guide ("What the model sees")
+# summarises it -- change both together.
 
 tools:
   - type: function

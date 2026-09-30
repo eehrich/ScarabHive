@@ -1183,7 +1183,7 @@ plugins:
     # The model asks the person watching the run (F12): a question with 2-4
     # options or free text, answered in the web chat. A run nobody watches
     # gets an error at once ("decide yourself"). Agents get it through their
-    # allowlist ("ask_user/*"). See src/plugins/ask_user/README.md.
+    # allowlist ("ask_user/*"). Manual: src/plugins/ask_user/ask_user.guide.
     ask_user:
       type: ask_user
       enabled: true
