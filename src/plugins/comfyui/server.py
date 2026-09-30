@@ -1517,7 +1517,7 @@ class ComfyUIServer(SchemaBasedToolServer):
         # Timeout only from plugin config, not from tool params
         timeout = self.timeout
         # Clamp poll_interval to a sane lower bound: it is LLM-controlled and
-        # unbounded in the schema, so poll_interval=0 would busy-loop two HTTP
+        # nothing enforces the schema's minimum, so poll_interval=0 would busy-loop two HTTP
         # round-trips per iteration against ComfyUI for the full timeout window.
         try:
             poll_interval = max(1, int(params.get("poll_interval", 2)))

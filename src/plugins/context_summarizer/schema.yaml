@@ -16,55 +16,31 @@ tools:
     function:
       name: "{{ name }}_summarize"
       description: |
-        Manually trigger context summarization when conversation history becomes too long or irrelevant.
-
-        Use this when:
-        - You notice the conversation is getting very long
-        - Old information is no longer needed for current task
-        - You want to reduce token usage
-        - Context window is approaching limits
-
-        The summarization will:
-        - Preserve recent messages (the last 10 unless configured otherwise)
-        - Preserve all system messages
-        - Replace older messages with summaries (user messages starting "[Summary of ...]")
-        - Keep the original history when there is too little to summarize or the summaries would
-          not make it smaller by the configured minimum (30% by default); then the answer has
-          "modified": false and "not_applied" says why
-
-        Example: If context feels cluttered with old discussion, call this to compress history.
+        Summarize older messages when the conversation is long or old content is no longer needed.
+        Recent and system messages stay. If it would save too little, nothing changes and not_applied says why.
       parameters:
         type: object
         properties:
           reason:
             type: string
-            description: "Optional reason for summarization (for logging). Example: 'long planning discussion complete', 'switching topics'"
+            description: "For the log, e.g. 'switching topics'"
           chunk_size:
             type: integer
             minimum: 2
             maximum: 50
-            description: "Number of older messages to summarize together (2-50; without it the configured size, 10 by default). Larger = more aggressive compression."
+            description: "Older messages per summary; larger = more compression"
           preserve_recent:
             type: integer
             minimum: 2
             maximum: 100
-            description: "Number of recent messages to keep untouched (2-100; without it the configured count, 10 by default). Increase if you need more recent context."
+            description: "Recent messages kept untouched"
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_check_stats"
       description: |
-        Check current conversation context statistics to decide if summarization is needed.
-
-        Returns:
-        - Total message count
-        - Estimated token usage
-        - Context window utilization percentage
-        - Recommendation (summarize vs ok): "summarize" when the utilization reaches the
-          automatic trigger or the message count exceeds max_messages
-
-        Use this to assess if manual summarization would be beneficial before calling summarize.
+        Message count, estimated tokens, context utilization and a summarize/ok recommendation.
       parameters:
         type: object
         properties: {}

@@ -177,7 +177,7 @@ def tools(tmp_path, monkeypatch):
 
 def test_tool_descriptions_name_the_instance(tools):
     described = str(tools.get_tools())
-    assert "log_viewer_list names it" in described and "{{" not in described
+    assert "named by log_viewer_list" in described and "{{" not in described
 
 
 def test_tail_returns_the_newest_lines_and_refuses_a_count_below_one(tools):

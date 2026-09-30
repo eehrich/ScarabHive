@@ -15,8 +15,7 @@ from agent_system.config.models import AgentSystemConfig, ToolServerConfig
 from agent_system.utils import process_sandbox as ps
 from plugins.terminal.server import TerminalServer
 
-PLAIN = ("Execute a shell command either synchronously (wait for completion) "
-         "or as a background process.")
+PLAIN = "Run a shell command, in the foreground or in the background."
 
 
 def description(tmp_path, mode: str, cwd=None) -> str:

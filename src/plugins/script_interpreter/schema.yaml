@@ -5,7 +5,7 @@ tools:
       description: |
         Execute Python code in a secure sandbox. Supports built-in types, math/stats, control flow, functions, f-strings, and type checking.
         No imports, os function or global dunders allowed; no break/continue.
-        Variables and functions persist in this session until reset. Use print() to see a value: only code that is one lone expression is echoed.
+        Use print() to see values.
         Note: Avoid __name__ (use direct function calls instead of if __name__ == "__main__").
       parameters:
         type: object

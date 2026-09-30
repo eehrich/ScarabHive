@@ -145,9 +145,7 @@ tools:
       name: "{{ name }}"
       description: |
         Manage persistent lessons learned across sessions.
-        Store insights, search by topic, teach other agents, and confirm lesson effectiveness.
-        A stored or taught lesson is a draft; only active lessons are found by search and added to the
-        conversation (when the inject_lessons hook is enabled).
+        New lessons are drafts; search finds only active ones.
       parameters:
         type: object
         properties:
@@ -155,38 +153,37 @@ tools:
             type: string
             enum: ["store", "search", "list", "update", "confirm", "teach", "delete"]
             description: |
-              Operations:
-              - store: Save a new lesson as a draft (title + content required). If a lesson of this agent is already that similar, nothing is stored; the existing one gets confirming evidence.
-              - search: Semantic search among the active lessons by query string.
-              - list: List lessons of every status with filters (agent_name, status, category).
-              - update: Edit an existing lesson (lesson_id required).
-              - confirm: Add evidence that a lesson is correct/incorrect (lesson_id + evidence_type).
-              - teach: Store a lesson as a draft for another agent (target_agent + title + content); deduplicated against that agent's lessons.
-              - delete: Permanently delete a trivial, nonsensical, or outdated lesson (lesson_id required).
+              - store: new lesson (title, content); deduplicated
+              - search: semantic search (query)
+              - list: filter by agent_name, status, category
+              - update: edit a lesson (lesson_id)
+              - confirm: add evidence (lesson_id, evidence_type)
+              - teach: lesson for another agent (target_agent, title, content)
+              - delete: remove a trivial or outdated lesson (lesson_id)
 
           # For store / teach operations
           title:
             type: string
             minLength: 1
             maxLength: 200
-            description: "Lesson title (required for store/teach)"
+            description: "store/teach"
 
           content:
             type: string
             minLength: 1
             maxLength: 2000
-            description: "Detailed lesson content - what to do/avoid and why (required for store/teach)"
+            description: "What to do/avoid and why (store/teach)"
 
           category:
             type: string
             enum: ["style", "workflow", "error_pattern", "domain_knowledge", "tool_usage", "communication", "performance", "quality", "general"]
-            description: "Lesson category (store/teach: default general); a filter for list and search"
+            description: "Lesson category"
 
           priority:
             type: integer
             minimum: 1
             maximum: 10
-            description: "Priority level 1-10 (higher = more important; store/teach without it: 5)"
+            description: "Higher = more important"
 
           tags:
             type: array
@@ -194,62 +191,62 @@ tools:
               type: string
               maxLength: 50
             maxItems: 10
-            description: "Tags for categorization"
+            description: "Tags"
 
           # For search operation
           query:
             type: string
             minLength: 1
             maxLength: 500
-            description: "Search query for semantic search (required for search)"
+            description: "search"
 
           # For update / confirm operations
           lesson_id:
             type: string
-            description: "Lesson ID (required for update/confirm/delete), as returned: <agent>_les_NNN"
+            description: "Lesson ID as returned (update/confirm/delete)"
 
           # For update operation
           status:
             type: string
             enum: ["draft", "active", "inactive", "archived"]
-            description: "Lesson status (for update; a filter for list)"
+            description: "update; list filter"
 
           confidence:
             type: number
             minimum: 0.0
             maximum: 1.0
-            description: "Manual confidence override (for update); the next evidence recalculates it"
+            description: "Manual override (update)"
 
           # For confirm operation
           evidence_type:
             type: string
             enum: ["confirm", "contradict", "neutral"]
-            description: "Type of evidence (for confirm operation; without it: confirm)"
+            description: "confirm"
 
           description:
             type: string
             maxLength: 500
-            description: "Evidence description (for confirm operation)"
+            description: "Evidence text (confirm)"
 
           # For teach operation
           target_agent:
             type: string
-            description: "Target agent name to teach a lesson to (required for teach)"
+            description: "Agent to teach (teach)"
 
           # For list/search
           agent_name:
             type: string
-            description: "Filter by agent name (for list/search; defaults to calling agent)"
+            description: "list/search filter; default: calling agent"
 
           limit:
             type: integer
             minimum: 1
             maximum: 100
-            description: "Maximum results to return (list: 20, search: 10 without it)"
+            description: "Maximum results"
 
           sort_by:
             type: string
             enum: ["priority", "confidence", "evidence", "created", "updated", "applied"]
-            description: "Sort field for list operation, highest or newest first (without it: priority)"
+            description: "list: sort field, highest/newest first"
 
         required: ["operation"]

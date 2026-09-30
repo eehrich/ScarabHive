@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list"
-      description: List the configured log files, with size and last change of those that exist.
+      description: List the log files.
       parameters:
         type: object
         properties: {}
@@ -11,37 +11,37 @@ tools:
   - type: function
     function:
       name: "{{ name }}_tail"
-      description: Get the most recent lines of one configured log file (the file itself, not its rotations).
+      description: Get the most recent lines of a log file.
       parameters:
         type: object
         properties:
           log_file:
             type: string
-            description: "A configured log file, exactly as {{ name }}_list names it (e.g. logs/api.log)"
+            description: "As named by {{ name }}_list"
           lines:
             type: integer
             default: 500
-            description: "How many of the newest lines to return, at least 1 (default 500)"
+            minimum: 1
         required: ["log_file"]
         additionalProperties: false
 
   - type: function
     function:
       name: "{{ name }}_search"
-      description: Search the configured log files line by line for a regular expression (case-insensitive).
+      description: Search log files for lines matching a regex (case-insensitive).
       parameters:
         type: object
         properties:
           pattern:
             type: string
-            description: "Python regular expression, matched against each line, case-insensitive"
+            description: "Python regex"
           log_file:
             type: string
-            description: "One configured log file, exactly as {{ name }}_list names it; without it every configured file is searched"
+            description: "As named by {{ name }}_list; omit for all"
           max_results:
             type: integer
             default: 100
-            description: "Stop after this many matching lines, at least 1 (default 100)"
+            minimum: 1
         required: ["pattern"]
         additionalProperties: false
 

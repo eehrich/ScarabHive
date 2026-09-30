@@ -241,8 +241,7 @@ limit.
 
 The tool descriptions come from the plugin's @{tt}schema.yaml@{utt}: what
 the sandbox supports, no imports and no @{tt}break@{utt}/@{tt}continue@{utt},
-that variables and functions stay until a reset, and that a value needs
-@{tt}print()@{utt}. The error answer is made for the model to correct the
+and that a value needs @{tt}print()@{utt}. The error answer is made for the model to correct the
 next call from: the line, the code around it, what was printed before.
 
 In the chat, the status line shows "Python execution started" and ends

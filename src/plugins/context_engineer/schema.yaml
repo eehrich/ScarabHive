@@ -117,37 +117,24 @@ tools:
     function:
       name: "{{ name }}_store_fact"
       description: |
-        Store an important fact or decision in core memory for persistent context.
-
-        Core memory facts are shown to you in the context engineering's note on
-        stored information, so a fact stays in view after the messages around
-        it have been compacted away. list(section='facts') lists them.
-
-        Use this for:
-        - Key decisions made during conversation
-        - Important user preferences discovered
-        - Critical project facts to remember
-
-        Facts are organized by category and share a fixed token budget. When it
-        is full, a new fact pushes out facts that are not more important than
-        it, least important first; if those do not make room, it is refused.
+        Store a key decision, user preference or project fact in core memory; it stays in view after compaction.
+        Facts share a token budget: less important ones are evicted, and a fact that does not fit is refused.
       parameters:
         type: object
         properties:
           fact:
             type: string
-            description: "The fact or decision to store (keep concise)"
+            description: "Concise fact or decision"
           category:
             type: string
             enum: ["decisions", "preferences", "facts", "context", "tasks"]
             default: "facts"
-            description: "Category to organize the fact under"
           importance:
             type: number
             minimum: 0.0
             maximum: 1.0
             default: 0.5
-            description: "Importance score (0.0-1.0). Higher = less likely to be evicted"
+            description: "Higher = less likely evicted"
         required:
           - fact
         additionalProperties: false
@@ -156,13 +143,10 @@ tools:
     function:
       name: "{{ name }}_compact"
       description: |
-        Compact the conversation if it has outgrown the automatic limits.
-        The same rules as the automatic compaction before every step apply, so
-        below those limits no layer runs -- only the media passes that run on
-        every step anyway; there is no need to call it ahead of time. Above
-        them it stores large tool results and attached
-        files externally with references (the newest stay) and evicts inline
-        media (saved to disk first, restorable with read).
+        Compact the conversation if it has outgrown the automatic limits; below them it
+        changes nothing, so don't call it ahead of time. Above them large tool results and
+        files are stored externally with references and inline media is evicted
+        (restorable with read).
       parameters:
         type: object
         properties: {}

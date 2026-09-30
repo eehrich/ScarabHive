@@ -13,35 +13,29 @@ tools:
 
         RULES:
         - call_tool uses EXACTLY the tool names and parameters from your tool
-          list (params are schema-validated; wrong names fail immediately).
-        - Assign your return value to `result` (JSON-serializable, keep it
-          small — store big payloads via a tool and return the reference).
+          list.
+        - Assign your return value to `result` (JSON-serializable, small —
+          store big payloads via a tool and return the reference).
         - A tool result {"status":"error"} or {"error": ...} raises
-          ToolCallError (catchable with try/except ToolCallError; `as e` gives
-          the message text). Other results are returned as data.
+          ToolCallError (catchable with try/except ToolCallError). Other
+          results are returned as data.
         - Tools returning JSON as TEXT (e.g. a store's read -> {"json": "..."}):
           use parse_json(text) to get data — there is no json module.
         - log("...") reports progress.
-        - Cancellation, the call limit, the timeout and the print/log cap
-          end the script; no except clause catches them.
-        - On failure you get: the line where it failed, every executed call
-          (ok/error), what you printed, and small variables. Send a NEW script that continues AFTER the last committed
-          call — never repeat calls marked ok:true.
+        - On failure you get: failing line, every executed call (ok/error),
+          and small variables. Send a NEW script that continues AFTER the
+          last committed call — never repeat calls marked ok:true.
 
         SANDBOX (Python subset — no imports, no file/network access):
         - Works: if/for/while, try/except, def, lambda, f-strings, slicing
           x[1:3], dicts/lists/sets + their common methods, str + - in
           comparisons, list comprehensions, print(), parse_json().
-        - A loop runs at most 100000 times, range() at most 100000 items;
-          `while True:` is refused. Huge numbers, texts, lists and sorts are
-          refused (the error says which); sum() adds numbers only.
         - NOT available: import (also no json module — use parse_json),
-          break/continue (use a flag or a function with return), del, with,
-          class, assert, zip/any/all/map/filter/reversed, str.format (use
-          f-strings), variables starting with "_", open()/eval()/exec(),
-          attribute tricks.
-        - Your own functions take positional arguments only: f(1, b=5)
-          ignores b. One exception type per except clause.
+          break/continue, while True, del, with, class, assert,
+          zip/any/all/map/filter/reversed, str.format (use f-strings),
+          variables starting with "_", open()/eval()/exec(), attribute tricks.
+        - Own functions take positional arguments only. One exception type
+          per except clause.
 
         Example:
           delta = call_tool("my_json_manage_json", operation="read", doc="d1")
@@ -53,13 +47,13 @@ tools:
         properties:
           script:
             type: string
-            description: "The Python script (sandbox subset, see tool description)."
+            description: "Python script"
           timeout:
             type: number
-            description: "Optional overall seconds for this run (capped by config)."
+            description: "Overall seconds for this run"
           dry_run:
             type: boolean
-            description: "Only check syntax and list call_tool targets — nothing is executed."
+            description: "Only check syntax and list call_tool targets; nothing runs"
         required: [script]
 
 config:

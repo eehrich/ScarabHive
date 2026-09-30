@@ -2,38 +2,38 @@ tools:
   - type: function
     function:
       name: "{{ name }}_execute"
-      description: "Execute a shell command either synchronously (wait for completion) or as a background process.{% if whitelisted %} This terminal runs only the commands its configuration allows, in its configured working directory and environment.{% endif %}{{ sandbox_note }}"
+      description: "Run a shell command, in the foreground or in the background.{% if whitelisted %} This terminal runs only the commands its configuration allows, in its configured working directory and environment.{% endif %}{{ sandbox_note }}"
       parameters:
         type: object
         properties:
           command:
             type: string
-            description: "Shell command to execute"
+            description: "Shell command"
           background:
             type: boolean
             default: false
-            description: "Run as background process (default: false). If true, returns immediately with process_id."
+            description: "Return immediately with a process_id"
           {% if not whitelisted %}cwd:
             type: string
-            description: "Working directory for command execution (defaults to the terminal's configured start directory)"
+            description: "Working directory (default: the terminal's start directory)"
           {% endif %}timeout:
             type: number
             minimum: 1
             maximum: {{ max_timeout }}
             default: {{ default_timeout }}
-            description: "Timeout in seconds for foreground commands (1-{{ max_timeout }}, default: {{ default_timeout }}, ignored for background)"
+            description: "Seconds, foreground only"
           {% if not whitelisted %}env_vars:
             type: object
-            description: "Environment variables to set (merged with current environment)"
+            description: "Extra environment variables"
             additionalProperties:
               type: string
           {% endif %}process_id:
             type: string
-            description: "Custom process ID for background processes (auto-generated if omitted, only used when background=true)"
+            description: "Custom ID for a background process"
           wake:
             type: boolean
             default: false
-            description: "Only with background=true: wake this session when the process ends, so you can end your turn instead of polling. When woken, call get_output with the process_id to read the result. The answer says whether the wake is armed; if it is not, poll instead. A wake is best effort even when armed - if you are not woken, fall back to polling."
+            description: "With background=true: wake this session when the process ends, so you can end your turn instead of polling; then call get_output. If the answer says the wake is not armed, or no wake comes, poll."
         required: ["command"]
         additionalProperties: false
 
@@ -46,16 +46,15 @@ tools:
         properties:
           process_id:
             type: string
-            description: "process_id from execute with background=true"
+            description: "From execute with background=true"
           stream:
             type: string
             enum: ["stdout", "stderr", "both"]
             default: "both"
-            description: "Which output stream to retrieve (stdout, stderr, or both). Each stream returns at most its last {{ max_output_kb }} KB; truncated: true says the start was cut"
           clear_buffer:
             type: boolean
             default: false
-            description: "Clear the returned streams' buffers after reading, so the next call returns only newer output (default: false)"
+            description: "Clear the buffer after reading"
         required: ["process_id"]
         additionalProperties: false
 
@@ -68,11 +67,11 @@ tools:
         properties:
           process_id:
             type: string
-            description: "Process ID to kill (from execute with background=true)"
+            description: "From execute with background=true"
           force:
             type: boolean
             default: false
-            description: "Use SIGKILL instead of SIGTERM (default: false). Without it a process still running after 5 seconds is killed anyway. On Windows both end the process at once"
+            description: "SIGKILL instead of SIGTERM"
         required: ["process_id"]
         additionalProperties: false
 

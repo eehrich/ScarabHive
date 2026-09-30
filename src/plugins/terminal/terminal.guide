@@ -410,7 +410,7 @@ group (@{tt}setsid@{utt}, a daemon) is not reached.
 
 The three tool descriptions and their parameters come from the plugin's
 @{tt}schema.yaml@{utt}, rendered once per instance: the timeout's default
-and maximum and the output cap are the configured ones. A whitelisted
+and maximum are the configured ones. A whitelisted
 terminal's @{tt}execute@{utt} has no @{tt}cwd@{utt} and no
 @{tt}env_vars@{utt}, and its description adds "This terminal runs only
 the commands its configuration allows, in its configured working directory

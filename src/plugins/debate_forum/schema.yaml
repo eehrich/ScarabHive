@@ -31,17 +31,14 @@ tools:
     function:
       name: "{{ name }}_create_group"
       description: >
-        Create a new channel group. Groups let you organize related debate channels
-        together (e.g. all channels of one review run). Returns the group_id.
+        Create a group for related debate channels. Returns the group_id.
       parameters:
         type: object
         properties:
           name:
             type: string
-            description: "Group name (e.g. 'Code review - payment service')"
           description:
             type: string
-            description: "Optional description"
         required: [name]
 
   - type: function
@@ -60,26 +57,23 @@ tools:
     function:
       name: "{{ name }}_create_channel"
       description: >
-        Create a new debate channel. Returns the channel_id.
-        Each debate gets its own channel where agents post messages.
+        Create a debate channel. Returns the channel_id.
       parameters:
         type: object
         properties:
           name:
             type: string
-            description: "Short channel name (e.g. 'api-design-options')"
+            description: "Short name, e.g. 'api-design-options'"
           topic:
             type: string
-            description: "What is being debated (e.g. 'Which of the three API designs is best?')"
+            description: "What is being debated"
           context:
             type: string
-            description: "Background context as text or JSON (requirements, candidates, etc.)"
+            description: "Background as text or JSON"
           group_id:
             type: integer
-            description: "Optional group ID to assign this channel to (from create_group or list_groups)"
           metadata:
             type: object
-            description: "Optional metadata, stored with the channel"
         required: [name, topic]
 
   - type: function
@@ -88,23 +82,22 @@ tools:
       description: >
         Post a message to a debate channel. Long output: post the first chunk, then send
         the rest with append=true + the returned message_id (concatenated server-side into
-        one message) — never truncate or summarize. A new post shorter than the
-        server's minimum length is refused.
+        one message) — never truncate or summarize.
       parameters:
         type: object
         properties:
           channel_id:
             type: integer
-            description: "Channel to post to; required for a new post"
+            description: "Required for a new post"
           agent_name:
             type: string
-            description: "Agent display name (e.g. 'Mira', 'Sven'); required for a new post"
+            description: "Display name, e.g. 'Mira'; required for a new post"
           agent_role:
             type: string
             description: "Role in the debate"
           round:
             type: integer
-            description: "Round number (1, 2, 3, ...); default 1"
+            description: "Round number"
           content:
             type: string
             description: "Message content (or next chunk if append=true)"
@@ -137,7 +130,7 @@ tools:
             enum: ["text", "json"]
           max_messages:
             type: integer
-            description: "Return only the first N messages, oldest first (0 = all, the default)"
+            description: "Only the first N messages (0 = all)"
         required: [channel_id]
 
   - type: function
@@ -216,9 +209,8 @@ tools:
     function:
       name: "{{ name }}_pin_message"
       description: >
-        Pin or unpin a message. Pinned messages are always part of the channel block
-        that agents with the debate context hook get, together with topic and context.
-        Use this to preserve important context (original task, key decisions, etc.).
+        Pin or unpin a message. Pinned messages always stay in the agents' debate
+        context — use for the original task, key decisions.
       parameters:
         type: object
         properties:

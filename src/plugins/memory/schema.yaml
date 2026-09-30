@@ -113,8 +113,8 @@ tools:
               Operations:
               - store: Save a new memory with title and content
               - recall: Get memory by ID (also updates access count)
-              - search: Semantic search by query string (similarity: 1.0 = the same meaning, unrelated text about 0.5)
-              - list: Show the memories, 50 at a time (limit, offset, sort_by, sort_order)
+              - search: Semantic search by query string (unrelated text still scores ~0.5)
+              - list: Page through memories (limit, offset, sort_by, sort_order)
               - delete: Remove a memory
               - update: Edit an existing memory (partial update supported - only provide fields to change)
 
@@ -137,13 +137,13 @@ tools:
               type: string
               maxLength: 50
             maxItems: 20
-            description: "Keywords for categorization (optional; a store without them gets up to ten taken from title and content)"
+            description: "Keywords (auto-extracted if omitted)"
 
           importance:
             type: integer
             minimum: 1
             maximum: 10
-            description: "Importance level 1-10 (optional; a store without it is 5, an update without it keeps it)"
+            description: "Higher = more important"
 
           tags:
             type: array
@@ -170,7 +170,7 @@ tools:
             type: integer
             minimum: 1
             maximum: 20
-            description: "Number of search results to return (for search operation; default: the server's search_n_results, 5)"
+            description: "Number of search results"
 
           # For list operation
           limit:
