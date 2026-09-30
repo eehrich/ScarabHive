@@ -9,14 +9,19 @@
 @{jleft}
 
 ScarabHive is a plugin-based framework for building and running LLM agents:
-a core runtime, about seventy plugins, a web UI, a command-line client and a
+a core runtime, about seventy-five plugins, a web UI, a command-line client and a
 REST API, all driven by YAML configuration. This guide is the manual for
 both sides: for the people who install, run and use it, and for the people
 who extend it with plugins, agents and panels.
 
-Pick a topic below, or use Contents and Browse to move around.
+Pick a topic below, or use Contents and Browse to move around. Every
+plugin has a manual of its own -- its panel, its tools and hooks with their
+parameters, and how to set it up:
 
 @{code}
+Plugins
+  @{"  All plugins and their manuals  " link plugins/main}
+
 Getting started
   @{"  What is ScarabHive  " link intro}
   @{"  Quickstart  " link quickstart}
@@ -48,7 +53,6 @@ Developing
   @{"  Sub-agents and the SAM  " link subagents}
   @{"  Config models and schemas  " link devconfig}
   @{"  Tests and conventions  " link testing}
-  @{"  Browse installed plugins  " link plugins/main}
 
 About this help
   @{"  Using this help  " link help}
