@@ -17,8 +17,10 @@ The browser tools are deferred. Load the ones you need by name —
 `tool_search` with `select:playwright_browser_navigate,playwright_browser_snapshot,playwright_browser_console_messages,playwright_browser_click`
 (add others from the table as you need them). A keyword query returns
 only five tools, and `browser` matches every one of them. If the names
-are unknown, the `playwright` server is off in this installation — say
-so, and fall back to reading the code.
+are unknown, the `playwright` server is off in this installation; if the
+first call fails because the browser cannot be started ("… is not
+found"), the host lacks it. Either way say so, with the error, and fall
+back to reading the code.
 
 The ones you need:
 

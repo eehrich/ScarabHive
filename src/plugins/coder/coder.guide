@@ -15,7 +15,7 @@ finds things, @{b}coder_reviewer@{ub} reviews read-only,
 keeps in a knowledge bundle that is folded into later sessions.
 
 The plugin is configuration only: four agents, their prompts, five tool
-instances and two skills. It has no tools, hooks or panel of its own.
+instances and three skills. It has no tools, hooks or panel of its own.
 
 @{code}
 For users
@@ -94,6 +94,28 @@ Where repositories are configured for @{" Forge " link forge/main}, it
 works tickets from issue to merge. Neither is there otherwise, and the
 prompt then does not mention them.
 
+@{h2}Web pages
+
+Where the external MCP server @{tt}playwright@{utt} is enabled in
+@{tt}config/mcp_servers.yaml@{utt}, the coder has a headless browser: it
+opens a page, reads it as text (the accessibility tree), clicks and types,
+reads the console and the network requests, and takes screenshots. Its
+@{tt}web-testing@{utt} skill says how: serve the page, snapshot and
+console first, a screenshot only when the question is visual, close the
+browser at the end. A screenshot reaches a model with image input as an
+image; any other model gets a note instead.
+
+The server starts with the first coder run of a process
+(@{tt}connect: on_demand@{utt}, see @{" Starting, dropping, reconnecting " link mcp_client/external})
+and stays for that process: the API shares one browser between all its
+coder sessions, and the sub-agents get none. The shipped configuration
+drives Edge; a host without Edge needs @{tt}--browser chromium@{utt} and
+once @{tt}npx playwright install chromium@{utt}. Without it the tools are
+still offered -- the browser starts only with the first call, which then
+fails with "Chromium distribution 'msedge' is not found". Where the
+server is off, there are no browser tools. In both cases the skill tells
+the coder to say so and fall back to reading the code.
+
 @{h2}Limits
 
 @{table}
@@ -171,9 +193,10 @@ coding-harness | this plugin | the coder's, in full: the working loop, when to d
 adversarial-review | this plugin | the reviewer's, in full; for the coder only its description
 tdd, diagnosing-bugs, codebase-design | @{tt}skills/coding/@{utt} | the coder's (and codebase-design the reviewer's), description only
 forge-workflow | the forge plugin | the coder's, description only
+web-testing | this plugin | the coder's, description only
 @{body}
 
-The coder can edit the two skills of this plugin: they lie inside its
+The coder can edit the three skills of this plugin: they lie inside its
 sandbox.
 
 @{h2}The project's own instructions
@@ -202,7 +225,8 @@ result reviewed before reporting".
 
 The @{b}gamedev@{ub} agent of the Godot plugin inherits the coder
 (@{tt}type: coder@{utt}): its sandbox and shell, with its own prompt,
-skills, bundle and sub-agent manager. Its manager starts @{tt}coder_explorer@{utt} and
+skills, bundle and sub-agent manager, and without the browser
+(@{tt}!playwright.*@{utt}). Its manager starts @{tt}coder_explorer@{utt} and
 @{tt}coder_reviewer@{utt} as well, and the Godot plugin's
 @{tt}godot_agent@{utt} uses @{tt}coder_fs@{utt}: a change to the
 instances or the roles here changes them too.
@@ -225,7 +249,7 @@ Read from @{tt}agents/prompts/@{utt} on every run. Rendered sizes:
 
 @{table}
 Agent | Characters | Contents
-coder | about 13,800; 16,000 with Claude Code and forge | sandbox, shell and commit rules, deferred tools, the bundle, the sub-agent table, the done bar, then the coding-harness skill and the index of five on-demand skills
+coder | about 14,200; 16,400 with Claude Code and forge | sandbox, shell and commit rules, deferred tools, the bundle, the sub-agent table, the done bar, then the coding-harness skill and the index of six on-demand skills
 coder_explorer | about 2,600 | how to search (grep first, semantic search for an unknown word), what to report
 coder_reviewer | about 7,400 | what counts as a finding, the report format, then the adversarial-review skill and the codebase-design index
 coder_tester | about 2,700 | run what was asked, report failures verbatim, the mutation probe
@@ -252,6 +276,7 @@ coder_okf_search, _read_concept, _neighbors, _subgraph, _list, _write_concept, _
 sequential_thinking and its two helpers, datetime_operations | deferred
 coding_cli_run_task, _get_run, _cancel_run | deferred; only where Claude Code is installed
 forge_* | deferred; only where repositories are configured
+playwright_browser_navigate, _snapshot, _click, _console_messages, _take_screenshot and 18 more | deferred; the external MCP server @{tt}playwright@{utt}, only where it is enabled
 @{body}
 
 Deferred tools reach the model as a name and one line in the description
@@ -318,7 +343,7 @@ File | Picked up by
 agents/coder.yaml, coder_explorer.yaml, coder_reviewer.yaml, coder_tester.yaml | @{tt}config/config.yaml@{utt} includes @{tt}../src/plugins*/*/agents/*.yaml@{utt}
 agents/tools.yaml | the same include; defines the five tool instances
 agents/prompts/*.md | @{tt}system_template@{utt}, relative to the YAML
-skills/coding-harness, skills/adversarial-review | @{tt}skills.skill_dirs@{utt} lists @{tt}src/plugins*/*/skills@{utt}
+skills/coding-harness, skills/adversarial-review, skills/web-testing | @{tt}skills.skill_dirs@{utt} lists @{tt}src/plugins*/*/skills@{utt}
 @{body}
 
 @{h2}What it needs
@@ -331,7 +356,8 @@ The shared instances in @{tt}config/plugins.yaml@{utt}: @{tt}skills@{utt},
 @{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
 @{tt}code_fallback@{utt}, @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},
 @{tt}structured@{utt}, @{tt}structured_fallback@{utt}. On the server:
-whatever the projects build and test with.
+whatever the projects build and test with; for the browser node with
+npx, and Edge or Chromium (see @{" Working with it " link use}).
 
 @{h2}The file sandboxes (coder_fs, coder_fs_ro)
 

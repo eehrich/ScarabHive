@@ -47,6 +47,10 @@ plugins:
             - "+gamedev_sam/*"            # explorer, reviewer, tester, blender, image
             - "!coder_okf/*"
             - "+gamedev_okf/*"            # its own bundle
+            # The coder's headless browser: naming it starts one per process
+            # (connect: on_demand), and a Godot project has no page to open.
+            # Remove this line to test a web export.
+            - "!playwright.*"
 
         hooks:
           enabled: true
