@@ -1,0 +1,318 @@
+@database "task_switch"
+@author "Enrico Ehrich"
+@$VER: task_switch.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Task Switch"
+@{h1}Task Switch
+
+An agent that works in phases -- plan, then do, then check -- needs a
+different instruction in each phase. Task Switch lets the agent say which
+phase it is in: it calls @{tt}set_task@{utt}, and the plugin stores the
+name in a session variable (@{tt}current_task@{utt} by default). The
+agent's prompt template reads that variable, so from the next LLM call on
+the agent sees the instructions for the new phase. A switch can be guarded:
+before it is allowed, another tool is asked whether the work of the
+current phase is done. A second tool, @{tt}set_context@{utt}, sets any
+other session variable the same way. The variables are kept with the
+session and come back when it is reopened. It has no panel and no hook.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Switching the task  " link set_task}
+  @{"  Gate checks  " link gates}
+  @{"  Setting context variables  " link set_context}
+  @{"  Where the state lives  " link state}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is not in the default configuration. An agent that uses it
+brings its own instance in its YAML; this one comes with the debate
+moderator:
+
+@{code yaml}
+plugins:
+  servers:
+    debate_switch:
+      type: task_switch
+      enabled: true
+      config:
+        task_var_name: "debate_phase"
+        allowed_tasks:
+          - setup
+          - discussion
+          - consensus
+          - concluded
+@{body}
+
+The agent sees the tools when its allowlist names them, and its prompt
+template decides what each task means:
+
+@{code yaml}
+agent_config:
+  template_vars:
+    debate_phase: "setup"
+  tools:
+    allowed:
+      - "+debate_switch/*"
+  system_prompt: |
+    {% if debate_phase == 'setup' %}Pick the participants.
+    {% elif debate_phase == 'discussion' %}Run the rounds.
+    {% endif %}
+@{body}
+
+The value in @{tt}template_vars@{utt} is where a new session starts. The
+tools are named after the instance: @{tt}debate_switch_set_task@{utt},
+@{tt}debate_switch_set_context@{utt}. No extra packages.
+
+@{h2}Server settings
+
+The settings go under @{tt}config:@{utt} in the server entry; keys directly
+in the entry are not read. They are read once, when the plugin starts.
+
+@{table}
+Key | Default | Meaning
+task_var_name | current_task | the session variable set_task writes
+allowed_tasks | none: any name | the task names set_task accepts; they are also sent to the model as the only choices
+task_preconditions | none | a gate check per task name; see @{" Gate checks " link gates}
+@{body}
+
+A value of the wrong kind (@{tt}allowed_tasks@{utt} that is not a list,
+@{tt}task_preconditions@{utt} that is not a mapping) is ignored without a
+word. The plugin stores no files of its own; the variables go into the
+session record (see @{" Where the state lives " link state}).
+@endnode
+
+@node set_task "Switching the task"
+@{h1}Switching the task
+
+@{tt}<instance>_set_task@{utt} sets the task variable of the calling
+session.
+
+@{table}
+Parameter | Meaning
+task_name | the task to switch to; required. Leading and trailing blanks are dropped, a number is taken as text
+@{body}
+
+What happens, in order:
+
+@{bullet}An empty name is refused.
+@{bullet}With @{tt}allowed_tasks@{utt} set, a name not in the list is
+refused. The comparison is exact: @{tt}Review@{utt} is not
+@{tt}review@{utt}.
+@{bullet}A task with a @{" gate check " link gates} runs it; a closed
+gate blocks the switch and changes nothing.
+@{bullet}The variable is set for the session and written to the session
+record. Switching to the task the session is already in is allowed and
+does the same.
+
+@{h2}Answers
+
+@{table}
+status | Fields
+success | previous_task (the session's value before, @{tt}init@{utt} when it had none), current_task, persisted (the session record was written)
+blocked | task_name, gate_closed (true), reason, gate_field, gate_value, precondition_result (the gate tool's full answer); the last three are null when the gate could not be checked
+error | error: "task_name is required", or "Invalid task 'x'. Allowed tasks: ['plan', 'do']"
+@{body}
+
+The chat's status line shows @{i}Task: plan → do@{ui}; a blocked switch
+shows @{i}Gate closed for task 'do': <reason>@{ui} as an error.
+
+@{code json}
+{"task_name": "review"}
+{"status": "success", "previous_task": "execute", "current_task": "review", "persisted": true}
+@{body}
+
+@{tt}persisted: false@{utt} means the value holds for this run but is not
+in the session record yet: there is no session store, or the write failed
+(logged as a warning). The record catches up when the session is saved.
+@endnode
+
+@node gates "Gate checks"
+@{h1}Gate checks
+
+A gate keeps an agent from moving on before the work of its phase is
+done. It is configured per task name:
+
+@{code yaml}
+config:
+  task_var_name: "phase"
+  task_preconditions:
+    execute:
+      tool: "project_status_check"
+      params:
+        project_id: "{{ project_id }}"
+        scope: "plan"
+      gate_field: "summary.can_proceed"
+      error_field: "summary.gate_reason"
+@{body}
+
+@{table}
+Key | Default | Meaning
+tool | -- | the full tool name (server prefix included) to ask
+params | none | its arguments; see below
+gate_field | can_proceed | the field of the answer that must be true; dots go into nested objects
+error_field | gate_reason | the field that says why not
+@{body}
+
+@{h2}What the check does
+
+@{bullet}Placeholders @{tt}{{ name }}@{utt} in the string values of
+@{tt}params@{utt}, also inside nested objects and lists, are replaced by
+the variable's value as text -- the agent's @{tt}template_vars@{utt}
+with the session's variables over them, so a value set with
+@{" set_context " link set_context} counts. Only the plain form works, no
+filters or expressions; a variable that is missing or null leaves the
+placeholder as it is. A number becomes text: @{tt}"{{ id }}"@{utt} gives
+@{tt}"42"@{utt}.
+@{bullet}The tool is called directly: not through the agent's allowlist or
+tool approval, and without the session, user or agent the loop would pass
+it. It must work from its arguments alone.
+@{bullet}The gate is open only when @{tt}gate_field@{utt} is exactly
+@{tt}true@{utt} -- not "true", not 1. Otherwise the switch is blocked, and
+the reason is the @{tt}error_field@{utt} value or "Gate 'can_proceed' is
+not true for task 'execute'".
+@{h2}A gate that cannot be checked is closed
+
+@{table}
+Case | The switch is blocked with the reason
+the tool fails | Precondition check failed: <error>
+the answer is not a JSON object | Gate tool 'project_status_check' for task 'execute' did not answer an object
+the entry names no tool (or is not a mapping) | Gate for task 'execute' is misconfigured: no tool
+@{body}
+
+The last two are also logged as errors: they are mistakes in the
+configuration, and the model cannot fix them -- the switch stays refused
+until the entry is corrected. Only a call outside an agent (no agent in
+the call) skips the check.
+@endnode
+
+@node set_context "Setting context variables"
+@{h1}Setting context variables
+
+@{tt}<instance>_set_context@{utt} sets any session variables -- an id the
+later steps need, a mode, a name. They are the same variables a prompt
+template and a @{" gate check " link gates} read, and the same the chat's
+@{tt}/vars@{utt} command lists and changes (see
+@{" Sessions " link scarabhive/sessions}).
+
+@{table}
+Parameter | Meaning
+vars | the variables as a JSON object in a string: @{tt}'{"project_id": 42, "mode": "review"}'@{utt}; an object is taken as well
+@{body}
+
+@{bullet}Values keep their JSON type: 42 stays a number, a list stays a
+list.
+@{bullet}Other top-level arguments next to @{tt}vars@{utt} are taken as
+variables too; @{tt}vars@{utt} wins on the same name.
+@{bullet}Names starting with @{tt}_@{utt}, and @{tt}request_id@{utt},
+@{tt}requestId@{utt} and @{tt}vars@{utt}, are dropped.
+@{bullet}Variables are only added or changed, never removed.
+@{bullet}The task variable (@{tt}task_var_name@{utt}) is refused: it
+changes only through set_task, with its allowed_tasks and gate checks.
+The whole call is refused, the other variables in it are not set.
+
+@{h2}Answers
+
+@{table}
+status | Fields
+success | updated (what was set), previous (the old value per name, null when new), persisted (as for set_task)
+error | see below
+@{body}
+
+@{table}
+error | When
+vars is not valid JSON: ... | the string does not parse
+vars must be a JSON object (e.g. '{"book_id": 42}') | it parses to something else
+No context variables provided. Pass them via the `vars` argument as a JSON object string, e.g. vars='{"book_id": 42}'. | nothing is left to set
+'current_task' is the task variable: switch it with task_switch_set_task | the task variable is among them (named after the setting and the instance)
+No session_tracker or agent_config available | called with no agent to set them on
+@{body}
+
+The status line shows @{i}Set: project_id=42, mode=review@{ui}, with
+@{i}+N@{ui} for more than two.
+@endnode
+
+@node state "Where the state lives"
+@{h1}Where the state lives
+
+@{bullet}@{b}Per session@{ub}: every chat session has its own variables,
+held in the memory of the agent that runs it and written into the
+session record (@{tt}context_vars@{utt}). Two sessions of the same agent
+do not see each other's task.
+@{bullet}@{b}Restart@{ub}: the record survives. When a session is opened
+again -- after a restart, in the web UI, on the command line, by a woken
+run -- its variables are loaded from it. A new session starts from the
+agent's @{tt}template_vars@{utt}.
+@{bullet}@{b}Without a session@{ub} (a direct call that names none) the
+agent's own @{tt}template_vars@{utt} are changed instead: shared by all of
+that agent's sessions in the process, and gone at a restart. A warning is
+logged.
+
+@{h2}Sub-agents
+
+@{bullet}A sub-agent runs in a session of its own. Its calls change its
+own variables, never its parent's.
+@{bullet}A sub-agent started by the sub-agent manager takes a copy of its
+parent's variables when it is created -- the task variable included, when
+both use the same name. When the parent continues it later, the parent's
+current values are copied in again, except for the ones the sub-agent set
+itself.
+@{bullet}A set_context and a sub-agent start in the same turn: the
+sub-agent gets the new value, whichever call comes first. The same holds
+for set_task, except for a task with a gate check -- the check runs
+first, and the sub-agent may start with the old task.
+
+@{h2}How big it can grow
+
+There is no limit on the number or size of variables. Each is kept in the
+session record, and a variable the prompt template prints is sent with
+every call. The memory entry goes when the session leaves the agent's
+memory.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The descriptions come from the plugin's @{tt}schema.yaml@{utt}. With
+@{tt}allowed_tasks@{utt} set, @{tt}task_name@{utt} offers exactly those
+names; with any gate configured, the description of set_task adds that a
+switch can be blocked. The answers and error texts are in
+@{" Switching the task " link set_task} and
+@{" Setting context variables " link set_context}.
+
+@{h2}The prompt
+
+The system prompt is rendered again before every LLM call, with the
+session's variables over the agent's @{tt}template_vars@{utt}. A switch
+shows from the next call on; the call that made it only gets the tool
+answer. The plugin inserts no message into the history and rewrites none.
+A variable named like a built-in template value (@{tt}tools@{utt},
+@{tt}max_steps@{utt}, ...) replaces it in the prompt.
+
+@{h2}Tokens and cache
+
+The system prompt is the head of every request, so the prompt cache
+depends on it. A switch that changes what the template prints changes the
+head: the next call reads the whole prompt again without the cache, once,
+and it is cached anew from there. A variable the template does not print
+changes nothing. An agent that switches back and forth pays that each
+time; the tool answers themselves are appended like any other.
+
+@{h2}Known gaps
+
+@{bullet}The gate tool is called without the session: a tool that needs
+to know the session or user cannot be a gate. That is deliberate -- the
+gate is the operator's configuration, not the model's choice.
+@{bullet}The server settings are read once; a change takes effect after a
+restart.
+@endnode
