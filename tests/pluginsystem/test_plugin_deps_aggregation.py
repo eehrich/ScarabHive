@@ -35,6 +35,13 @@ def test_all_txt_is_not_stale():
     )
 
 
+def test_the_aggregator_knows_every_plugin_root_of_the_checkout():
+    """A root the aggregator misses would skip the test below instead of failing it."""
+    agg = _load_aggregator()
+    on_disk = {d.name for d in (ROOT / "src").iterdir() if d.is_dir() and d.name.startswith("plugins") and d.name.isidentifier()}
+    assert {d.name for d in (*agg.PLUGIN_DIRS, *agg.PRIVATE_PLUGIN_DIRS)} == on_disk
+
+
 def test_private_txt_is_not_stale():
     """requirements/private.txt must equal the aggregator's output wherever the
     private roots exist; the open-source checkout has neither."""

@@ -110,10 +110,8 @@ COPY . /app
 # data/ and logs/ are the server's writable state (mounted as volumes by
 # docker-compose.yml); ~/.cache holds downloaded models (Hugging Face, Chroma,
 # and rembg's through U2NET_HOME above -- by default it would use ~/.rembg).
-# Known gap: the writer plugins (src/plugins_writer, not part of the open-source
-# set) dump debug JSON into src/plugins_writer/writer_pipeline_v4/batch_logs/,
-# which the container user cannot write -- a `stop_after=scene_drafts` run
-# fails at that dump.
+# Known gap: a plugin package that writes into its own folder (batch_logs/ and
+# the like) cannot do so here -- the container user does not own /app/src.
 RUN pip install --no-deps --no-build-isolation -e /app \
     && python -m compileall -q -j 0 /app/src \
     && mkdir -p /app/data /app/logs /home/scarab/.cache \

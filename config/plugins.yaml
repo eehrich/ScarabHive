@@ -3,14 +3,14 @@
 # ================================
 # Configuration for local plugins (servers)
 # Note: Additional plugin configs are loaded via includes in config/config.yaml
-# (e.g., agents_writer/writer_plugin_configs.yaml, agents_trading/trading_plugin_configs.yaml)
+# (each plugin's agents/*.yaml).
 
 plugins:
-  # Plugin discovery directories
+  # Plugin discovery directories. A wildcard becomes every directory it matches
+  # (sorted, so src/plugins comes first and wins a name clash): further plugin
+  # packages next to src/plugins (src/plugins_<name>/) are found without an entry.
   plugin_dirs:
-    - src/plugins
-    - src/plugins_writer
-    - src/plugins_trading
+    - src/plugins*
 
   # Default configuration for all plugins
   default_config:

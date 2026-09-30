@@ -37,7 +37,7 @@ A plugin in AgentSystem is a **tool server**: a Python object with a `call(tool,
 
 ### How Plugins Work
 
-1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers sit in the same directory but are found separately, by the LLM registry, which reads the manifests rather than the folder name.
+1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins*`: `src/plugins` and every further `src/plugins_<name>/`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers sit in the same directory but are found separately, by the LLM registry, which reads the manifests rather than the folder name.
 2. **Schema**: Each plugin describes its tools in `schema.yaml` (what parameters, what they do)
 3. **Activation**: A server entry under `plugins: servers:` with `type: <plugin folder name>` and `enabled: true` (the default is `false`) builds an instance; an agent sees its tools only if its `agent_config.tools.allowed` admits them
 4. **Execution**: The agent calls tools via `call(tool_name, parameters)`
@@ -274,8 +274,8 @@ src/plugins/<plugin_name>/tests/
 
 **Example test file:** `src/plugins/hello_world/tests/test_plugin_hello_world_basic.py`
 
-`pytest.ini` collects these via the `src/plugins/*/tests`,
-`src/plugins_writer/*/tests` and `src/plugins_trading/*/tests` testpaths. The shared fixtures (`mock_system_config`,
+`pytest.ini` collects these via the `src/plugins*/*/tests` testpath (every
+plugin root). The shared fixtures (`mock_system_config`,
 `reset_global_state`, the fake-LLM patch, …) live in the **root-level
 `conftest.py`**, so colocated tests inherit them exactly like tests under `tests/`.
 
@@ -466,8 +466,8 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
    deps shared by many plugins) with every plugin's `dependencies` into
    `requirements/all.txt`. Scanned root: `src/plugins` (LLM provider plugins
-   included). Where the private roots `src/plugins_writer` and
-   `src/plugins_trading` exist, what they need beyond that goes to
+   included). Where further plugin roots `src/plugins_<name>/` exist, what
+   they need beyond that goes to
    `requirements/private.txt`; it is not part of the open-source release.
 3. The root `pyproject.toml` reads both files via `[tool.setuptools.dynamic]`
    (setuptools skips one that does not exist), so `pip install .` installs
@@ -2255,9 +2255,7 @@ All plugin configurations must use the `plugins:` top-level key with this struct
 plugins:
   # Plugin discovery directories
   plugin_dirs:
-    - src/plugins
-    - src/plugins_writer
-    - src/plugins_trading
+    - src/plugins*          # src/plugins and every src/plugins_<name>/, sorted
 
   # Default configuration inherited by all plugins
   default_config:
@@ -2552,7 +2550,7 @@ on any network connection.)
 
 ### For Internal Plugins
 
-Internal plugins live in one of the `plugin_dirs` (`src/plugins/`, `src/plugins_writer/`, `src/plugins_trading/`) and are discovered automatically. No additional packaging needed.
+Internal plugins live in one of the `plugin_dirs` (`src/plugins/` or a further root `src/plugins_<name>/`) and are discovered automatically. No additional packaging needed.
 
 ### For External Distribution
 

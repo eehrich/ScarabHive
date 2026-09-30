@@ -8,6 +8,10 @@ scans the source (AST, not grep: docstrings and comments may mention the
 path) and fails on each such spelling. Write ``data_path("writer", "x.db")``
 for a default, ``resolve_data_path(value)`` for a value from configuration,
 the environment or a database row.
+
+A line that spells it for another reason says so itself:
+``# not-the-data-dir: <why>`` -- the way a plugin package outside this
+repository keeps its exceptions without this file naming it.
 """
 from __future__ import annotations
 
@@ -25,12 +29,14 @@ ALLOWED = {
     # config-form defaults of the models, shown in the JSON schemas; their
     # consumers resolve them (UserDatabase, BatchQueueManager)
     "agent_system/config/models.py",
-    # the portable form stored in books.db and in exchange bundles, not a
-    # location; the exporter and importer resolve it
-    "plugins_writer/writer_admin/exchange/spec.py",
-    # the package's own data folder next to the module, not the data directory
-    "plugins_writer/writer_core/cross_scene_checker.py",
 }
+
+MARKER = re.compile(r"#\s*not-the-data-dir:\s*\S")
+
+
+def _unmarked(source: str) -> list[tuple[int, str]]:
+    lines = source.splitlines()
+    return [(line, what) for line, what in spellings(source) if not MARKER.search(lines[line - 1])]
 
 PREFIX = re.compile(r"^(\./)?data[/\\]")
 CALLS = {"Path", "PurePath", "PurePosixPath", "joinpath", "join"}
@@ -102,7 +108,7 @@ def test_no_code_spells_the_data_directory():
         rel = path.relative_to(SRC).as_posix()
         if "tests" in path.parts or rel in ALLOWED:
             continue
-        for line, what in spellings(path.read_text(encoding="utf-8")):
+        for line, what in _unmarked(path.read_text(encoding="utf-8")):
             offenders.append(f"src/{rel}:{line}: {what}")
     assert not offenders, (
         "the data directory is configurable -- use agent_system.paths "
@@ -113,10 +119,24 @@ def test_no_code_spells_the_data_directory():
 def test_every_allowed_file_still_needs_its_exception():
     """An exception whose file no longer spells the path is dead weight -- and
     the next spelling in that file would slip through unseen."""
-    # An entry under a package root this checkout does not have (the writer is
-    # not in the open-source one) cannot be judged here; a missing file under a
-    # root that is there still fails.
-    stale = [rel for rel in sorted(ALLOWED)
-             if (SRC / rel.split("/")[0]).is_dir()
-             and not spellings((SRC / rel).read_text(encoding="utf-8"))]
+    stale = [rel for rel in sorted(ALLOWED) if not spellings((SRC / rel).read_text(encoding="utf-8"))]
     assert not stale, f"no longer needed in ALLOWED: {stale}"
+
+
+def test_every_marker_sits_on_a_spelling():
+    """A marker on a line that no longer spells the path would exempt the next
+    spelling written there."""
+    stale = []
+    for path in sorted(SRC.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "not-the-data-dir" not in source:
+            continue
+        spelled = {line for line, _ in spellings(source)}
+        stale += [f"src/{path.relative_to(SRC).as_posix()}:{n}"
+                  for n, text in enumerate(source.splitlines(), 1) if MARKER.search(text) and n not in spelled]
+    assert not stale, f"markers on lines that spell no data path: {stale}"
+
+
+def test_a_marker_exempts_only_its_own_line():
+    source = 'a = "data/x"  # not-the-data-dir: a bundle path\nb = "data/y"\n'
+    assert _unmarked(source) == [(2, "'data/y'")]

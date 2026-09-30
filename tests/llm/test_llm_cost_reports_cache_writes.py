@@ -1,4 +1,4 @@
-"""Both cost reports price Anthropic cache writes, as the live estimate does.
+"""The session cost report prices Anthropic cache writes, as the live estimate does.
 
 The Anthropic client records writes as prompt_tokens_details.cache_creation_tokens
 (OpenRouter: cache_write_tokens). A report that does not read them bills the
@@ -48,18 +48,3 @@ def test_session_costs_prices_cache_writes(tmp_path, details_key):
 
     assert rows[0]["cost"] == pytest.approx(_expected())
 
-
-@pytest.mark.parametrize("details_key", ["cache_creation_tokens", "cache_write_tokens"])
-def test_analyze_costs_prices_cache_writes(tmp_path, monkeypatch, details_key):
-    # The writer is not part of the open-source checkout. Only the root package is optional:
-    # a module that breaks under it must fail, not skip.
-    pytest.importorskip("plugins_writer")
-    import plugins_writer.writer_pipeline_v4.analyze_costs as ac
-
-    db = tmp_path / "debugger.db"
-    _debugger_db(db, details_key).close()
-    monkeypatch.setattr(ac, "_connect_debugger", lambda: sqlite3.connect(db))
-
-    report = ac.calculate_costs("root1")
-
-    assert report.rows[0].cost == pytest.approx(_expected())

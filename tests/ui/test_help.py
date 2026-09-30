@@ -13,7 +13,7 @@ from agent_system.ui.help import Library
 from agent_system.ui.routes import router
 
 REPO = Path(__file__).resolve().parents[2]
-PLUGIN_DIRS = [REPO / "src" / name for name in ("plugins", "plugins_writer", "plugins_trading")]
+PLUGIN_DIRS = sorted(d for d in (REPO / "src").glob("plugins*") if d.is_dir())
 
 
 def laid_out(source, resolve=lambda target: ("g", target.lower())):

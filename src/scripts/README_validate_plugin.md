@@ -30,8 +30,8 @@ python src/scripts/validate_plugin.py src/plugins/basic_operations
 python src/scripts/validate_plugin.py --all
 ```
 
-`--all` covers every plugin under `src/plugins`, `src/plugins_writer`
-and `src/plugins_trading`.
+`--all` covers every plugin under every plugin root: `src/plugins` and each
+further `src/plugins_<name>/`.
 
 ### Verbose Output
 

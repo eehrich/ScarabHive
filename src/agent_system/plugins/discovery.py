@@ -41,8 +41,8 @@ def _register_shared_modules(path: Path, pkg_name: str, taken: dict[str, str] | 
     when loading plugins via importlib.
     
     Args:
-        path: The plugin directory path (e.g., src/plugins_writer)
-        pkg_name: The package name (e.g., "plugins_writer")
+        path: The plugin directory path (e.g., src/plugins_extra)
+        pkg_name: The package name (e.g., "plugins_extra")
     """
     global _registered_shared_modules
     
@@ -194,7 +194,7 @@ def discover_plugins(path: Path, taken: dict[str, str] | None = None) -> Dict[st
     # Package module + shared modules ONCE per path -- doing this inside the
     # per-plugin loop re-scanned (and re-executed) every shared module for
     # every plugin directory.
-    pkg_name = path.name  # e.g., "plugins" or "plugins_writer"
+    pkg_name = path.name  # e.g., "plugins" or "plugins_extra"
     root = str(path.resolve())
     try:
         if pkg_name not in sys.modules:

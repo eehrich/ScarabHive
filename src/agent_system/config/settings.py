@@ -497,11 +497,15 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
         # repository root is assumed to be parent of the config dir
         repo_root = cfg_path.parent.parent if cfg_path.parent.parent.exists() else base_dir
 
-        def _resolve_dir_list(block_key: str, list_key: str) -> None:
+        def _resolve_dir_list(block_key: str, list_key: str, expand: bool = False) -> None:
             """Resolve <block_key>.<list_key> entries to absolute paths in place.
 
             Shared by plugin_dirs and skill_dirs so both behave identically —
             the alternative was duplicating this resolution per discovery root.
+            With ``expand`` a wildcard entry becomes the directories it matches
+            (sorted, each a valid package name) instead of the pattern: every
+            reader of plugin_dirs takes its entries as package roots, and
+            ``src/plugins*`` then names roots a checkout may or may not carry.
             """
             block = data.get(block_key) if isinstance(data, dict) else None
             if not isinstance(block, dict):
@@ -509,11 +513,22 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             entries = block.get(list_key)
             if not isinstance(entries, list):
                 return
+            def package_dirs(pattern: str) -> list[str]:
+                matches = [m for m in sorted(glob_module.glob(pattern))
+                           if Path(m).is_dir() and Path(m).name.isidentifier()]
+                if not matches:
+                    logger.warning(f"{block_key}.{list_key}: {pattern} matches no directory")
+                return matches
+
             resolved = []
             for p in entries:
                 if isinstance(p, str) and p:
                     ppath = Path(p)
-                    if not ppath.is_absolute() and any(ch in p for ch in "*?["):
+                    wildcard = any(ch in p for ch in "*?[")
+                    if wildcard and ppath.is_absolute() and expand:
+                        resolved.extend(package_dirs(p))
+                        continue
+                    if not ppath.is_absolute() and wildcard:
                         # A wildcard entry (e.g. "skills/*/") cannot be tested
                         # with exists() — the literal path never exists, so the
                         # plain branch below would silently root it at the
@@ -534,7 +549,10 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
                             # where a skills/... pattern is meant, so the
                             # "matched nothing" warning names a sane path.
                             p = repo_pattern
-                        resolved.append(p)
+                        if expand:
+                            resolved.extend(package_dirs(p))
+                        else:
+                            resolved.append(p)
                         continue
                     if not ppath.is_absolute():
                         # Try config-folder-relative first
@@ -560,11 +578,12 @@ def load_settings(config_path: Optional[str] = None) -> AgentSystemConfig:
             data[block_key][list_key] = resolved
 
         try:
-            _resolve_dir_list("plugins", "plugin_dirs")   # New structure: plugins.plugin_dirs
+            _resolve_dir_list("plugins", "plugin_dirs", expand=True)   # plugins.plugin_dirs
             _resolve_dir_list("skills", "skill_dirs")     # skills.skill_dirs (docs/skills_design.md)
         except Exception:
-            # Conservative: if resolution fails for any reason, keep original values
-            pass
+            # Conservative: if resolution fails for any reason, keep original values --
+            # but say so: an unexpanded "src/plugins*" discovers no plugin at all.
+            logger.warning("Resolving plugin_dirs/skill_dirs failed; kept as written", exc_info=True)
 
     _resolve_model_inheritance(data)
 

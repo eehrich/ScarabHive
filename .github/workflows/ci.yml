@@ -31,7 +31,7 @@ env:
   # process. Left out: tests/app, tests/status, tests/tools, tests/bootstrap
   # and tests/ui (build_app() on the full repository config), tests/cli and
   # tests/scripts (subprocesses, sleeps of several seconds), tests/integration,
-  # tests/other, tests/plugins_writer, and the per-plugin suites under
+  # tests/other, and the per-plugin suites under
   # src/plugins*/*/tests. Single files from those directories are in when
   # they need neither: the tool dispatch and cancellation tests, the systemd
   # unit template check, and two that build the app on a minimal config or

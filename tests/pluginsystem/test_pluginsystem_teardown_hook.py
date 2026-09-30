@@ -48,10 +48,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-PLUGIN_ROOTS = [
-    Path(__file__).resolve().parents[2] / "src" / "plugins",
-    Path(__file__).resolve().parents[2] / "src" / "plugins_writer",
-]
+PLUGIN_ROOTS = sorted(d for d in (Path(__file__).resolve().parents[2] / "src").glob("plugins*") if d.is_dir())
 
 #: The names a teardown gets called when nobody says which one counts. Exact
 #: matches only: ``cleanup_lessons`` is a tool, ``close_all`` belongs to a

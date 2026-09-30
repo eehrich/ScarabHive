@@ -47,9 +47,9 @@ audio-ops = "plugins.audio_ops.__main__:main"
 # requirements in its own plugin.toml; scripts/aggregate_plugin_deps.py
 # merges them with requirements/core.txt into requirements/all.txt, which
 # setuptools reads here. Keeps plugin-owned deps out of this file.
-# requirements/private.txt holds what the writer and trading plugins need on
-# top; it is not part of the open-source release, and setuptools skips it
-# where it does not exist.
+# requirements/private.txt holds what further plugin roots (src/plugins_<name>/)
+# need on top; it is not part of the open-source release, and setuptools skips
+# it where it does not exist.
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements/all.txt"] }
 
@@ -91,7 +91,7 @@ gpu = [
 
 [tool.ruff]
 line-length = 100
-exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pycache__", "src/plugins_writer_OLD"]
+exclude = [".venv", ".pytest_cache", "*.egg-info", "logs", "docs", "src/**/__pycache__"]
 
 [tool.ruff.lint]
 # Ruff's default set before 0.16 (which widened it to ~400 rules). Named here so

@@ -300,7 +300,7 @@ There is no separate plugin registry class. Discovery returns a plain dict `type
 **File:** `src/agent_system/plugins/discovery.py`
 
 **Responsibilities:**
-- Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins`, `src/plugins_writer`, `src/plugins_trading`) plus the `agent_system.tool_plugins` entry point group
+- Scan every immediate subdirectory of each plugin dir (`plugins.plugin_dirs`: `src/plugins*`, i.e. `src/plugins` and every further `src/plugins_<name>/`) plus the `agent_system.tool_plugins` entry point group
 - A plugin dir's name is its package name (`plugins.<name>`). Two plugin dirs with the same name (`src/plugins`, `external/plugins`) share it: a plugin or shared module the first one has is not loaded from the second -- whether the first one's loads or not -- and the second logs a warning: both would be the same module
 - Read `plugin.toml` (`plugins/plugin_manifest.py`)
 - Import the entrypoint module and fetch the factory
@@ -363,7 +363,7 @@ async def execute_hooks(self, hook_type, context, timeout=None, hook_filter=None
 
 **Structure:**
 ```
-src/plugins/                 # also src/plugins_writer/, src/plugins_trading/
+src/plugins/                 # also every further root src/plugins_<name>/
 ├── datetime/
 │   ├── plugin.toml        # Manifest ([plugin] table)
 │   ├── plugin.py          # Entrypoint module: PLUGIN_FACTORY

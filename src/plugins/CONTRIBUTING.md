@@ -2,7 +2,7 @@ Plugin contribution guidelines
 
 Verified quick reference: the Claude skill `.claude/skills/plugin-authoring/` (SKILL.md + references/).
 
-- Put each plugin in its own folder under `src/plugins/<plugin_name>/` (or `src/plugins_writer/`, `src/plugins_trading/`). The folder name is the plugin type used in `type:` of a server entry.
+- Put each plugin in its own folder under `src/plugins/<plugin_name>/` (or another plugin root `src/plugins_<name>/`). The folder name is the plugin type used in `type:` of a server entry.
 - The entrypoint module sits directly in the plugin folder: `entrypoint = "plugin:PLUGIN_FACTORY"` (the default) or e.g. `"server:MyServer"`. The factory is called as `(name, system_config, server_config)`, plus `registry=` only if it carries `_accepts_registry = True` (agents: use `make_agent_plugin_factory`). Config-only plugins (`type = ["library"]`) have no entrypoint.
 - Include `plugin.toml` with a `[plugin]` table: `name`, `description`, `version`, `requires = { agent_system = ">=0.6.0" }`, `type`, and `entrypoint` where needed. Check it with `python src/scripts/validate_plugin.py <plugin dir>`.
 - Declare the plugin's own pip requirements in `plugin.toml` (`[plugin] dependencies = [...]`); they are aggregated into the install by `scripts/aggregate_plugin_deps.py` (re-run it after changing deps). Keep them minimal.

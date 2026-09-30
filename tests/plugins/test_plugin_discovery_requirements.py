@@ -24,7 +24,8 @@ class TestPluginFactoryRequirement:
     
     def test_all_plugins_have_plugin_factory_in_plugin_py(self):
         """CRITICAL: plugin.py MUST export PLUGIN_FACTORY for discovery."""
-        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer'), Path('src/plugins_trading')]
+        plugin_dirs = sorted(Path('src').glob('plugins*'))
+        assert plugin_dirs, 'no plugin root under src/ -- the test runs from the repository root'
         missing = []
         
         for plugin_dir in plugin_dirs:
@@ -99,38 +100,34 @@ class TestPluginDirsConfiguration:
         # Should find plugins from src/plugins
         assert len(plugins) > 0, "No plugins found in src/plugins"
         
-        # Test with multiple directories
-        dirs = [Path('src/plugins'), Path('src/plugins_writer')]
+        # Test with every plugin root of the checkout
+        dirs = sorted(Path('src').glob('plugins*'))
         plugins_multi = discover_all_plugins(dirs=dirs)
-        
-        # Should find more plugins (writer plugins included)
+
+        # Should find at least as many
         assert len(plugins_multi) >= len(plugins), \
             "Multiple dirs should find same or more plugins"
     
     def test_all_configured_plugin_dirs_are_discovered(self):
-        """Verify plugins from ALL configured directories are found."""
-        if not (Path(__file__).resolve().parents[2] / 'src' / 'plugins_writer').is_dir():
-            pytest.skip("the second root, src/plugins_writer, is not in the open-source checkout")
-        # No clearing of plugins_writer.* from sys.modules here: a later test that
-        # imported a function before this ran would then patch a fresh module
-        # object while its function reads the old one.
-        # Simulate config with multiple plugin_dirs
-        plugin_dirs = [Path('src/plugins'), Path('src/plugins_writer')]
-        
+        """Verify plugins from ALL configured directories are found.
+
+        The roots come from the shipped configuration (``src/plugins*``), so a
+        checkout with further plugin roots checks those too. No clearing of
+        their modules from sys.modules here: a later test that imported a
+        function before this ran would then patch a fresh module object while
+        its function reads the old one.
+        """
+        from agent_system.config.settings import load_settings
+
+        plugin_dirs = [Path(d) for d in load_settings().plugins.plugin_dirs]
+        assert any(d.name == 'plugins' for d in plugin_dirs), plugin_dirs
+
         all_plugins = discover_all_plugins(dirs=plugin_dirs)
-        
-        # Check that plugins from src/plugins are found
-        standard_plugins = ['example', 'todo', 'memory', 'basic_operations']
-        found_standard = [p for p in standard_plugins if p in all_plugins]
-        assert len(found_standard) > 0, \
-            "No standard plugins found - src/plugins not discovered?"
-        
-        # Check that plugins from src/plugins_writer are found
-        # Note: v3 architecture replaced writer_graph/writer_state with writer_path
-        writer_plugins = ['writer_content', 'writer_path', 'writer_admin', 'writer_player', 'writer_core', 'writer_search', 'writer_review']
-        found_writer = [p for p in writer_plugins if p in all_plugins]
-        assert len(found_writer) > 0, \
-            f"No writer plugins found - src/plugins_writer not discovered? Found: {list(all_plugins.keys())}"
+
+        # Every configured root contributes the plugins it holds
+        for root in plugin_dirs:
+            own = {d.name for d in root.iterdir() if (d / 'plugin.toml').exists()}
+            assert own & set(all_plugins), f"nothing from {root} was discovered"
 
 
 class TestToolServerIntegrationPluginDirs:
@@ -144,7 +141,7 @@ class TestToolServerIntegrationPluginDirs:
         # Create config with custom plugin_dirs
         config = AgentSystemConfig(
             plugins=PluginsConfig(
-                plugin_dirs=['src/plugins', 'src/plugins_writer'],
+                plugin_dirs=['src/plugins', 'src/plugins_extra'],
                 servers={}
             )
         )
@@ -156,13 +153,13 @@ class TestToolServerIntegrationPluginDirs:
         # The _discover_and_register_plugins method should use config.plugins.plugin_dirs
         # We can't easily test the private method, but we can verify the config is accessible
         assert config.plugins is not None
-        assert config.plugins.plugin_dirs == ['src/plugins', 'src/plugins_writer']
+        assert config.plugins.plugin_dirs == ['src/plugins', 'src/plugins_extra']
         
         # Indirect test: Verify discovery would use these dirs
         # (The actual method is async and has side effects, so we test the config structure)
         plugin_dirs = config.plugins.plugin_dirs if config.plugins and config.plugins.plugin_dirs else ['src/plugins']
-        assert 'src/plugins_writer' in plugin_dirs, \
-            "plugin_dirs from config should include src/plugins_writer"
+        assert 'src/plugins_extra' in plugin_dirs, \
+            "plugin_dirs from config should include src/plugins_extra"
 
 
 class TestPluginDiscoveryDocumentation:

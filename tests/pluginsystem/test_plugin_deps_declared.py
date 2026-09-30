@@ -83,7 +83,7 @@ def _core_dists() -> set[str]:
 #: Every root scripts/aggregate_plugin_deps.py collects from — read FROM the
 #: aggregator, not copied. A root the aggregator reads but this guard does not
 #: is a package whose undeclared imports reach a fresh install unchecked, which
-#: is how plugins_writer stayed unscanned while its manifests fed
+#: is how a whole plugin root stayed unscanned while its manifests fed
 #: requirements/all.txt. A second hand-kept list would drift the same way.
 def _aggregator_roots() -> tuple[str, ...]:
     spec = importlib.util.spec_from_file_location(
@@ -159,10 +159,24 @@ def _third_party_imports(plugin_dir: Path) -> set[str]:
                 top = mod.split(".")[0]
                 if top.lower() in stdlib:
                     continue
-                if top in ("agent_system", "plugins", "plugins_writer"):
+                # The framework, src/plugins and the plugin's own root. Another
+                # root is NOT skipped: a public plugin must not import a
+                # package the open-source checkout does not carry.
+                if top in ("agent_system", "plugins", plugin_dir.parent.name):
                     continue
                 found.add(top)
     return found
+
+
+def test_an_import_from_another_plugin_root_is_a_finding(tmp_path):
+    """Only a plugin's own root counts as internal: a public plugin importing a
+    package the open-source checkout does not carry would break there."""
+    plugin = tmp_path / "src" / "plugins" / "probe"
+    plugin.mkdir(parents=True)
+    (plugin / "mod.py").write_text(
+        "import plugins.other\nimport plugins_extra.thing\nimport agent_system\n", encoding="utf-8")
+
+    assert _third_party_imports(plugin) == {"plugins_extra"}
 
 
 def test_scan_covers_packages_without_a_manifest():
@@ -174,8 +188,8 @@ def test_scan_covers_packages_without_a_manifest():
     own test: with every offender declared, reverting the enumeration would
     leave the suite green and the hole open.
     """
-    if not (REPO_ROOT / "src" / "plugins_writer").is_dir():
-        pytest.skip("the example, writer_core, lives in the private writer root")
+    if not any(d.is_dir() and d.name.isidentifier() for d in (REPO_ROOT / "src").glob("plugins_*")):
+        pytest.skip("every package under src/plugins has a manifest; the examples live in further roots")
     dirs = _plugin_dirs()
     manifestless = [d for d in dirs if not (d / "plugin.toml").exists()]
     assert manifestless, (
@@ -184,9 +198,6 @@ def test_scan_covers_packages_without_a_manifest():
         "_declared() can go")
     for d in manifestless:
         assert _declared(d) == set(), f"{d.name}: expected an empty declaration set"
-    assert "writer_core" in {d.name for d in manifestless}, (
-        "writer_core has no plugin.toml and must be among the scanned "
-        "manifest-less packages — if it got one, pick another example")
 
 
 def test_every_import_is_declared_in_core_or_the_plugins_toml():
@@ -194,7 +205,7 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
     assert len(core) >= 20, "core requirements did not load — test would be vacuous"
     plugins = _plugin_dirs()
     assert len(plugins) >= 65, f"only {len(plugins)} plugins found — scan went blind"
-    assert len(PLUGIN_ROOTS) >= 3, (
+    assert "plugins" in PLUGIN_ROOTS, (
         f"aggregator reports only {PLUGIN_ROOTS} — root list did not load")
     scanned_roots = {d.parent.name for d in plugins}
     present_roots = {r for r in PLUGIN_ROOTS if (REPO_ROOT / "src" / r).is_dir()}
@@ -264,10 +275,9 @@ def test_plugin_modules_use_no_parent_relative_imports():
     SILENTLY. Level-1 relative imports (same plugin package) are fine;
     anything above must be absolute.
 
-    src/plugins only. plugins_writer does the opposite on purpose: its plugins
-    reach the shared writer_core through `from ..writer_core`, and discovery
-    pre-registers that module for them — 101 such imports, measured
-    2026-09-20. The guard used to sit on the LLM providers' own root; they
+    src/plugins only. A further plugin root may do the opposite on purpose:
+    its plugins reach a shared package of that root through `from ..<shared>`,
+    and discovery pre-registers that module for them. The guard used to sit on the LLM providers' own root; they
     live under src/plugins now, and the rule was never about them in
     particular."""
     root = REPO_ROOT / "src" / "plugins"

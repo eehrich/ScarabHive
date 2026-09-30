@@ -131,8 +131,8 @@ def test_every_config_part_the_editor_maps_validates():
             errors += [f"{path.relative_to(REPO_ROOT)} -> "
                        f"{'/'.join(map(str, e.absolute_path))}: {e.message}"
                        for e in validator.iter_errors(data)]
-    # Far more than 50 part files with the writer's, ~38 in the open-source checkout (no src/plugins_writer).
-    least = 50 if (REPO_ROOT / "src" / "plugins_writer").is_dir() else 25
+    # Far more than 50 part files with further plugin roots, ~38 with src/plugins alone.
+    least = 50 if any(d.is_dir() and d.name.isidentifier() for d in (REPO_ROOT / "src").glob("plugins_*")) else 25
     assert checked > least, f"fixture assertion: only {checked} part files found"
     assert errors == [], "\n".join(errors[:10])
 

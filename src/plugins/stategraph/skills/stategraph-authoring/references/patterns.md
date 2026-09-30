@@ -520,7 +520,7 @@ again (e.g. from a retry state) resets the visit counts of everything inside.
 The writer v6 story design repeats one ritual for every step: a panel of agents works, its
 delta is merged into the story document, keys are dropped, the step is recorded. As a machine
 it is one submachine called once per step with parameters: `v6_ritual.yaml`, called by
-`v6_story.yaml` (both in `src/plugins_writer/writer_pipeline_v6/machines/`). Its moves:
+`v6_story.yaml` (both in a plugin package outside this repository). Its moves:
 
 1. **Template vars per call.** `vars: "{{ {**params.vars, 'phase': params.phase, 'aufgabe':
    params.aufgabe} }}"` -- the v6 prompts branch on these names. The merge order (§11 of

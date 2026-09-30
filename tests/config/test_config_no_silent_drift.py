@@ -30,8 +30,9 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parents[2]
-#: The writer is not part of the open-source checkout; the fixture counts below are calibrated per case.
-WRITER = (REPO_ROOT / "src" / "plugins_writer").is_dir()
+#: Further plugin roots (src/plugins_<name>/) are not part of the open-source checkout; the fixture
+#: counts below are calibrated for both.
+PRIVATE_ROOTS = any(d.is_dir() and d.name.isidentifier() for d in (REPO_ROOT / "src").glob("plugins_*"))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 #: Wo Konfiguration lebt. `docs` ist ausgenommen — dort stehen Beispiele.
@@ -78,8 +79,8 @@ def _config_files() -> list[Path]:
 
 def test_no_yaml_file_has_a_duplicate_key():
     files = _config_files()
-    # ~200 with the writer's files, ~114 in the open-source checkout (no src/plugins_writer).
-    least = 100 if WRITER else 80
+    # ~200 with further plugin roots, ~114 with src/plugins alone.
+    least = 100 if PRIVATE_ROOTS else 80
     assert len(files) >= least, (
         f"only {len(files)} yaml files found -- the scanner no longer sees the "
         f"tree, the test would be vacuous")
@@ -96,7 +97,7 @@ def test_no_yaml_file_has_a_duplicate_key():
             # mit Platzhaltern). Die zaehlen nicht als geprueft.
             pass
 
-    assert parsed >= (100 if WRITER else 60), (
+    assert parsed >= (100 if PRIVATE_ROOTS else 60), (
         f"only {parsed} of {len(files)} files parsed -- the test no longer "
         f"measures what it should")
     assert not duplicates, (
@@ -149,8 +150,8 @@ def test_every_profile_reference_resolves():
             continue
         _profile_references(data, str(path.relative_to(REPO_ROOT)), references)
 
-    # Far over 200 with the writer's agents, ~91 in the open-source checkout (no src/plugins_writer).
-    assert len(references) >= (200 if WRITER else 50), (
+    # Far over 200 with further plugin roots, ~91 with src/plugins alone.
+    assert len(references) >= (200 if PRIVATE_ROOTS else 50), (
         f"only {len(references)} profile references found -- the collector no "
         f"longer reaches them, the test would be vacuous")
 
