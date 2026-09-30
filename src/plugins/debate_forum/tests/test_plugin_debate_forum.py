@@ -212,11 +212,11 @@ class TestDebateForumDB:
         db.post_message(cid, "Sven", "critic", 1, "Synopsis A has weak pacing.")
 
         text = db.format_thread(cid)
-        assert "FORUM-DEBATTE: synopsis-debate" in text
+        assert "FORUM DEBATE: synopsis-debate" in text
         assert "TOPIC: Best synopsis?" in text
-        assert "KONTEXT:\nFantasy book" in text
-        assert '[ADVOCATE "Mira" | Runde 1]' in text
-        assert '[CRITIC "Sven" | Runde 1]' in text
+        assert "CONTEXT:\nFantasy book" in text
+        assert '[ADVOCATE "Mira" | Round 1]' in text
+        assert '[CRITIC "Sven" | Round 1]' in text
 
     def test_format_thread_with_verdict(self, db: DebateForumDB):
         ch = db.create_channel(name="ch", topic="t")
@@ -454,7 +454,7 @@ class TestDebateForumServer:
         })
         result = await server.get_thread({"channel_id": ch["channel_id"]})
         assert "thread" in result
-        assert "FORUM-DEBATTE" in result["thread"]
+        assert "FORUM DEBATE" in result["thread"]
         assert result["message_count"] == 1
 
     @pytest.mark.asyncio

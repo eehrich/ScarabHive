@@ -320,14 +320,14 @@ class DebateForumHooks(SchemaBasedPluginHook):
         channel_id: int,
     ) -> str:
         """Format new forum posts, and the new part of posts given before, for permanent user injection."""
-        parts = [f"[Debate-Forum Channel #{channel_id} – Neue Beiträge]\n"]
+        parts = [f"[Debate-Forum Channel #{channel_id} – New posts]\n"]
 
         current_round = None
         for msg in messages:
             r = msg.get("round", 0)
             if r != current_round:
                 current_round = r
-                parts.append(f"\n### Runde {r}\n")
+                parts.append(f"\n### Round {r}\n")
 
             name = msg.get("agent_name", "?")
             role = msg.get("agent_role", "?")

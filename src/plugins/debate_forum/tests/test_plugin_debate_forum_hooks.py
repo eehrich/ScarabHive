@@ -284,8 +284,9 @@ class TestInjectDebateContext:
         user_msgs = [m for m in result.context.messages if m.injected_by == INJECTION_MARKER_POSTS]
         assert len(user_msgs) == 1
         content = user_msgs[0].content
-        assert "### Runde 1" in content
-        assert "### Runde 2" in content
+        assert content.startswith(f"[Debate-Forum Channel #{cid} – New posts]")
+        assert "### Round 1" in content
+        assert "### Round 2" in content
 
     @pytest.mark.asyncio
     async def test_invalid_channel_id_noop(self, hooks: DebateForumHooks, db: DebateForumDB):

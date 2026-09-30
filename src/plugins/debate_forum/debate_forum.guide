@@ -275,18 +275,18 @@ short (5 chars, min 10). Likely a truncated API response. Please provide
 full message.", "append=true requires 'message_id' and 'content'",
 "Message 12 not found".
 
-The text of @{tt}get_thread@{utt} (its labels are German):
+The text of @{tt}get_thread@{utt}:
 
 @{code text}
-FORUM-DEBATTE: api-design-options
+FORUM DEBATE: api-design-options
 TOPIC: Which of the three API designs is best?
 
-KONTEXT:
+CONTEXT:
 Three drafts, see below.
 
 ════════════════════════════════════════════════════════════
 
-[REVIEWER "Ada" | Runde 1]
+[REVIEWER "Ada" | Round 1]
 Draft B keeps the resources flat ...
 
 ────────────────────────────────────────
@@ -346,9 +346,9 @@ a further chunk appended -- comes again with only its new part, marked
 @{tt}continuation_of@{utt} that post.
 
 @{code markdown}
-[Debate-Forum Channel #7 – Neue Beiträge]
+[Debate-Forum Channel #7 – New posts]
 
-### Runde 2
+### Round 2
 
 <post author="Ada" role="reviewer" round="2" msg_id="34">
 Draft B keeps the resources flat ...
@@ -487,11 +487,6 @@ call behind it, which a move would take out of the cache), direct
 messages at the end. None of them rewrites
 the system prompt or an earlier message, so the cached prompt before them
 stays valid.
-
-@{h2}Known gaps
-
-@{bullet}The texts of get_thread and of the new-posts block are partly
-German ("Runde", "Neue Beiträge").
 @endnode
 
 @node setup "Setting it up"
