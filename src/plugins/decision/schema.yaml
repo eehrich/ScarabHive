@@ -37,10 +37,10 @@ tools:
                   description: "The question or instruction to evaluate against each context (e.g. 'Is this operation safe to perform?')."
                 criteria_true:
                   type: string
-                  description: "Optional explanation of what conditions make the question true."
+                  description: "What makes the answer true; only together with criteria_false."
                 criteria_false:
                   type: string
-                  description: "Optional explanation of what conditions make the question false."
+                  description: "What makes the answer false; only together with criteria_true."
               required: ["question"]
           max_concurrency:
             type: integer
@@ -56,8 +56,8 @@ tools:
     function:
       name: "{{ name }}_evaluate_scores"
       description: |
-        Evaluate a batch of context items against one or more scoring dimensions in parallel using a calibrated decision model (Jev).
-        Outputs continuous score points along ordered scales (e.g. 1-5 or custom levels) per item.
+        Score a batch of context items on one or more ordered scales in parallel using a calibrated decision model (Jev).
+        Each score is a continuous position on its scale: 0 = lowest level, len(scale)-1 = highest.
       parameters:
         type: object
         properties:
