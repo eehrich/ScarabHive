@@ -56,6 +56,35 @@ class MCPConnectionError(RuntimeError):
     """Raised when a server cannot be reached or refuses the handshake."""
 
 
+class MCPServerGone(MCPConnectionError):
+    """The transport closed under a call: a stdio server's process ended (a crash), or the remote
+    hung up. ``unsent``: the request never left, so repeating it on a new connection is safe."""
+
+    def __init__(self, message: str, *, unsent: bool):
+        super().__init__(message)
+        self.unsent = unsent
+
+
+def _transport_closed(error: BaseException) -> Optional[bool]:
+    """None if *error* is not a closed transport; else whether the request stayed unsent.
+
+    anyio's stream errors carry no text at all -- the model saw "Tool invocation failed: " and
+    nothing else, call after call, while the connection still counted as connected (measured
+    2026-09-30: a stdio server crashed mid-render, every later call failed the same way)."""
+    import anyio
+
+    if isinstance(error, (anyio.ClosedResourceError, anyio.BrokenResourceError)):
+        return True                                      # the write stream was already gone
+    if isinstance(error, anyio.EndOfStream):
+        return False
+    from mcp.shared.exceptions import McpError
+    from mcp.types import CONNECTION_CLOSED
+
+    if isinstance(error, McpError) and getattr(error.error, "code", None) == CONNECTION_CLOSED:
+        return False                                     # sent, and the answer never came
+    return None
+
+
 @dataclass
 class _Command:
     """A unit of work for the connection task."""
@@ -89,6 +118,8 @@ class ServerConnection:
 
         self._commands: asyncio.Queue[Optional[_Command]] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
+        self._closing = False           # the stop sentinel is queued: a new call would wait behind it
+        self._stopping = False          # ... by stop(): this client closes, the server did nothing wrong
         self._ready: Optional[asyncio.Future] = None
         self._server_info: Dict[str, Any] = {}
         self._capabilities: Dict[str, Any] = {}
@@ -98,7 +129,7 @@ class ServerConnection:
 
     @property
     def connected(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._task is not None and not self._task.done() and not self._closing
 
     @property
     def server_info(self) -> Dict[str, Any]:
@@ -123,6 +154,11 @@ class ServerConnection:
         """
         if self.connected:
             return
+        if self._task is not None or self._closing:
+            # One connection, one worker: a restart on the same object raced the old worker's
+            # ending in every variant tried. ExternalServerPool.connect builds a new one.
+            raise MCPConnectionError(f"MCP server '{self.name}': this connection was used already; "
+                                     f"a new one starts the server again")
 
         loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
@@ -168,6 +204,7 @@ class ServerConnection:
         if task is None:
             return
         if not task.done():
+            self._closing = self._stopping = True
             await self._commands.put(None)
         await self._reap_task()
 
@@ -175,22 +212,20 @@ class ServerConnection:
         task, self._task = self._task, None
         if task is None:
             return
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=self.timeout)
-        except asyncio.TimeoutError:
+        # The drain in _serve takes up to timeout/2 and the SDK's stdio shutdown up to 2 s more (on
+        # POSIX 2 s after closing stdin and 2 s after SIGTERM): a cancel inside that skips its next
+        # step, and the task then waits for the child to exit by itself -- a minute, or for ever.
+        limit = max(self.timeout, self.timeout / 2 + 5)
+        # asyncio.wait never raises the task's outcome: a cancel from elsewhere (a loop torn down)
+        # raised CancelledError into stop(), and close_all() then left the other servers running.
+        await asyncio.wait({task}, timeout=limit)
+        if not task.done():
             # The server never let go. Cancelling the task IS safe (anyio
             # unwinds the scopes inside that task); only __aexit__ from a
             # foreign task is not.
-            logger.warning("MCP server '%s' did not close within %ss, cancelling", self.name, self.timeout)
+            logger.warning("MCP server '%s' did not close within %ss, cancelling", self.name, limit)
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: B014 - shutdown must not raise
-                pass
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("MCP server '%s' task ended with: %s", self.name, e)
+            await asyncio.wait({task})
 
     # ------------------------------------------------------------------ worker
 
@@ -207,6 +242,11 @@ class ServerConnection:
                         self._ready.set_result(None)
                     await self._serve(session)
         except asyncio.CancelledError:
+            # A stop() during the handshake cancels the worker: start() hears it now, not when
+            # its handshake deadline runs out.
+            if self._ready is not None and not self._ready.done():
+                self._ready.set_exception(MCPConnectionError(
+                    f"MCP server '{self.name}' was stopped during the handshake"))
             raise
         except BaseException as e:  # noqa: BLE001 - the failure has to reach start()
             if self._ready is not None and not self._ready.done():
@@ -218,6 +258,9 @@ class ServerConnection:
             else:
                 logger.warning("MCP server '%s' connection ended: %s", self.name, _describe(e))
             self._fail_pending(e)
+        finally:
+            self._closing = True
+            self._fail_pending(RuntimeError("the connection closed"))    # calls queued behind the sentinel
 
     async def _serve(self, session: Any) -> None:
         """Run queued commands against *session* until told to stop.
@@ -270,17 +313,35 @@ class ServerConnection:
                     for task in in_flight:
                         task.cancel()
 
-    @staticmethod
-    async def _run_command(session: Any, command: _Command) -> None:
+    async def _run_command(self, session: Any, command: _Command) -> None:
         try:
             result = await command.run(session)
             if not command.future.done():
                 command.future.set_result(result)
         except asyncio.CancelledError:
+            # The caller gave up (its future is cancelled already), or the session closes under
+            # the call: a crash in several calls at once ends up here, not in the branch below.
             if not command.future.done():
-                command.future.cancel()
+                command.future.set_exception(MCPConnectionError(
+                    f"The connection to MCP server '{self.name}' was closed by this client (stop, disconnect) "
+                    f"while the call ran; whether it took effect is unknown.") if self._stopping else MCPServerGone(
+                    f"MCP server '{self.name}' closed the connection while this call ran; whether it "
+                    f"took effect is unknown.", unsent=False))
             raise
         except BaseException as e:  # noqa: BLE001 - hand the error to the caller
+            unsent = _transport_closed(e)
+            if unsent is not None:
+                # The session is dead: end the worker -- `connected` turns false at once, so the pool
+                # starts the server again instead of queueing behind the sentinel -- and say what
+                # happened instead of an empty text.
+                self._closing = True
+                self._commands.put_nowait(None)
+                gone = MCPServerGone(
+                    f"MCP server '{self.name}' closed the connection -- its process ended or the remote "
+                    f"hung up ({_describe(e) or type(e).__name__}). The next call starts it again.",
+                    unsent=unsent)
+                gone.__cause__ = e
+                e = gone
             if not command.future.done():
                 command.future.set_exception(e)
 

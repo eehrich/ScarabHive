@@ -19,7 +19,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from .connection import MCPConnectionError, ServerConnection
+from .connection import MCPConnectionError, MCPServerGone, ServerConnection
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class ExternalServerPool:
         self._epoch = 0
         self._name_epochs: Dict[str, int] = {}
         self._on_demand_failed_at: Dict[str, float] = {}
+        self._restart_locks: Dict[str, asyncio.Lock] = {}
 
         self._tools_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._tools_cache_at: float = 0.0
@@ -139,9 +140,33 @@ class ExternalServerPool:
                 await connection.stop()
                 raise MCPConnectionError(f"External MCP server '{name}' was disconnected while connecting")
             self._connections[name] = connection
+            self._on_demand_failed_at.pop(name, None)   # up: an old failure no longer delays a restart
 
         self.invalidate_cache()
         return connection
+
+    async def _restart(self, name: str, dead: ServerConnection) -> ServerConnection:
+        """Start a server again whose connection died. One restart for every caller: a hanging one
+        cost each parallel call a handshake deadline, one after the other behind the connect lock.
+        A failed one is not tried again for ON_DEMAND_RETRY_S -- each call waited it out again."""
+        async with self._restart_locks.setdefault(name, asyncio.Lock()):
+            current = self._connections.get(name)
+            # A caller before us restarted it -- or a disconnect/close_all took it out of the pool
+            # meanwhile, and a restart would bring back what the operator closed.
+            if current is not dead:
+                if current is None or not current.connected:
+                    raise MCPConnectionError(f"External MCP server '{name}' is not connected")
+                return current
+            wait = ON_DEMAND_RETRY_S - (time.monotonic() - self._on_demand_failed_at.get(name, -ON_DEMAND_RETRY_S))
+            if wait > 0:
+                raise MCPConnectionError(f"External MCP server '{name}' died and did not start again; "
+                                         f"next try in {wait:.0f}s")
+            try:
+                return await self.connect(name)
+            except Exception:
+                if self._connections.get(name) is dead:  # not when a disconnect cut the restart short
+                    self._on_demand_failed_at[name] = time.monotonic()
+                raise
 
     async def connect_on_demand(self, names: List[str]) -> bool:
         """Connect those of *names* that are on_demand and not connected yet.
@@ -242,6 +267,11 @@ class ExternalServerPool:
         complete = True
         for name, connection in list(self._connections.items()):
             if not connection.connected:
+                # It died (a crash): the next call starts it again, so its tools stay listed --
+                # dropped, a startup server was gone from every later run. The cache key holds the
+                # connected set: its restart asks every server again.
+                if name in self._last_seen:
+                    result[name] = self._last_seen[name]
                 continue
             try:
                 tools = await connection.list_tools()
@@ -290,10 +320,20 @@ class ExternalServerPool:
             raise PermissionError(f"Tool '{tool_name}' is blocked on MCP server '{server_name}'")
 
         connection = self._connections.get(server_name)
+        if connection is not None and not connection.connected:
+            # It was connected and died (a crashed stdio process): start it again. A server that
+            # was never connected stays the caller's decision (startup, on_demand).
+            connection = await self._restart(server_name, connection)
         if connection is None or not connection.connected:
             raise MCPConnectionError(f"External MCP server '{server_name}' is not connected")
         try:
-            result = await connection.call_tool(tool_name, arguments)
+            try:
+                result = await connection.call_tool(tool_name, arguments)
+            except MCPServerGone as gone:
+                if not gone.unsent:
+                    raise                     # it reached the server: repeating could do it twice
+                connection = await self._restart(server_name, connection)
+                result = await connection.call_tool(tool_name, arguments)
         except Exception as e:
             # A server's error text reaches the model as str(e): same cap.
             # The type is kept where it can be built from the text alone

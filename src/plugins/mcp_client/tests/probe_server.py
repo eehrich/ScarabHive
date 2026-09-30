@@ -31,6 +31,14 @@ def boom() -> str:
 
 
 @mcp.tool()
+def die() -> str:
+    """Ends the server process mid-call, the way a native crash does (no answer, no cleanup)."""
+    import os
+
+    os._exit(3)
+
+
+@mcp.tool()
 async def sleep(seconds: float) -> str:
     """Takes its time, so head-of-line blocking becomes visible."""
     import asyncio

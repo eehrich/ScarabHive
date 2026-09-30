@@ -12,13 +12,14 @@ import asyncio
 import json
 import os
 import sys
+import time
 import types
 from pathlib import Path
 
 import psutil
 import pytest
 
-from plugins.mcp_client.connection import MCPConnectionError, ServerConnection
+from plugins.mcp_client.connection import MCPConnectionError, MCPServerGone, ServerConnection
 from plugins.mcp_client.manager import ExternalServerPool
 
 PROBE = str(Path(__file__).parent / "probe_server.py")
@@ -478,6 +479,60 @@ class TestLifecycle:
             await conn.call_tool("add", {"a": 1, "b": 1})
 
     @pytest.mark.asyncio
+    async def test_a_connection_is_used_once(self):
+        """A restart on the same object raced the old worker's ending in every variant tried; the
+        pool builds a new connection instead."""
+        conn = ServerConnection("probe", make_config(), timeout=30.0)
+        await conn.start()
+        await conn.stop()
+        with pytest.raises(MCPConnectionError, match="used already"):
+            await conn.start()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_survives_another_party_cancelling_the_worker(self):
+        """start()'s handshake timeout or a second reaper may cancel the worker a stop() waits on:
+        its CancelledError escaped close_all(), which then left the other servers running."""
+        conn = ServerConnection("probe", make_config(), timeout=30.0)
+        await conn.start()
+        worker = conn._task
+        stopping = asyncio.create_task(conn.stop())
+        await asyncio.sleep(0)
+        worker.cancel()
+        await asyncio.wait_for(stopping, 10)
+        assert not conn.connected
+
+    @pytest.mark.asyncio
+    async def test_a_stop_during_the_handshake_ends_start_at_once(self, monkeypatch):
+        """Not when the handshake deadline (60 s in production) runs out."""
+        conn = ServerConnection("silent", make_config(args=["-c", "import time; time.sleep(60)"]), timeout=1.0)
+        starting = asyncio.create_task(conn.start())
+        await asyncio.sleep(0.5)
+        await conn.stop()                            # waits its timeout, then cancels the worker
+        with pytest.raises(MCPConnectionError, match="stopped during the handshake"):
+            await asyncio.wait_for(starting, 5)
+        assert not conn.connected
+
+    @pytest.mark.asyncio
+    async def test_a_worker_cancelled_from_outside_does_not_break_stop(self):
+        conn = ServerConnection("probe", make_config(), timeout=4.0)
+        await conn.start()
+        conn._task.cancel()                          # a loop torn down under it
+        await asyncio.wait({conn._task})
+        await conn.stop()                            # awaiting the cancelled task raised CancelledError
+        assert not conn.connected
+
+    @pytest.mark.asyncio
+    async def test_a_call_cut_off_by_stop_does_not_blame_the_server(self):
+        """An agent reads "closed the connection" as a crash and reopens its work; a stop is not one."""
+        conn = ServerConnection("probe", make_config(), timeout=2.0)
+        await conn.start()
+        call = asyncio.create_task(conn.call_tool("sleep", {"seconds": 10}))
+        await asyncio.sleep(0.3)
+        await conn.stop()
+        with pytest.raises(MCPConnectionError, match="closed by this client"):
+            await call
+
+    @pytest.mark.asyncio
     async def test_stop_is_idempotent(self):
         conn = ServerConnection("probe", make_config(), timeout=30.0)
         await conn.start()
@@ -750,6 +805,115 @@ class TestPool:
             assert results["probe"] is None
             assert results["dead"]  # an error string, not a raise
             assert pool.list_connected() == ["probe"]
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_dies_is_named_and_started_again(self):
+        """A stdio server that crashes mid-call (measured 2026-09-30: ScarabAnimator in a render).
+        The call that killed it says so, the connection stops counting as connected, and the next
+        call starts the server again -- before, every later call failed with an empty text."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        try:
+            await pool.list_tools_by_server()
+            with pytest.raises(MCPConnectionError) as died:
+                await pool.call_tool("probe", "die", {})
+            assert "closed the connection" in str(died.value), died.value
+            listing = await pool.list_tools_by_server()
+            assert "probe" in listing, "a dead server's tools stay listed"
+            assert await pool.list_tools_by_server() is listing, "and the listing is cached"
+            # at once: a call queued while the worker still ends waited the full timeout
+            assert await asyncio.wait_for(pool.call_tool("probe", "echo", {"text": "wieder da"}), 10) == "wieder da"
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_that_fails_is_shared_and_not_repeated(self, monkeypatch):
+        """Parallel calls to a dead server wait for one restart, not one each behind the connect
+        lock; and once it failed, calls say so at once instead of waiting out the handshake."""
+        from plugins.mcp_client import connection as conn_mod
+        monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
+        pool = ExternalServerPool(timeout=1.0)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        try:
+            with pytest.raises(MCPConnectionError):
+                await pool.call_tool("probe", "die", {})
+            pool.configured_servers["probe"] = make_config(args=["-c", "import time; time.sleep(60)"])
+            started = time.monotonic()
+            calls = [pool.call_tool("probe", "echo", {"text": "x"}) for _ in range(3)]
+            results = await asyncio.gather(*calls, return_exceptions=True)
+            assert all(isinstance(r, MCPConnectionError) for r in results), results
+            assert time.monotonic() - started < 8, "one restart for all three, not three in a row"
+            started = time.monotonic()
+            with pytest.raises(MCPConnectionError, match="did not start again"):
+                await pool.call_tool("probe", "echo", {"text": "x"})
+            assert time.monotonic() - started < 1
+            # the operator fixes it and connects by hand: a later crash restarts at once again
+            pool.configured_servers["probe"] = make_config()
+            await pool.connect("probe")
+            with pytest.raises(MCPConnectionError):
+                await pool.call_tool("probe", "die", {})
+            assert await pool.call_tool("probe", "echo", {"text": "wieder da"}) == "wieder da"
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_cut_short_by_a_disconnect_is_no_failure(self):
+        """Else connect_on_demand skipped the server for ON_DEMAND_RETRY_S without a word."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        dead = await pool.connect("probe")
+
+        async def disconnected_meanwhile(name):
+            await pool.disconnect(name)
+            raise MCPConnectionError("was disconnected while connecting")
+        pool.connect = disconnected_meanwhile
+        try:
+            with pytest.raises(MCPConnectionError):
+                await pool._restart("probe", dead)
+            assert "probe" not in pool._on_demand_failed_at
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_no_restart_for_a_server_closed_meanwhile(self):
+        """An unsent failure arriving after disconnect/close_all must not bring the server back."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        conn = pool._connections["probe"]
+        real = conn.call_tool
+
+        async def closed_meanwhile(*args, **kwargs):
+            await pool.disconnect("probe")
+            raise MCPServerGone("gone", unsent=True)
+        conn.call_tool = closed_meanwhile
+        try:
+            with pytest.raises(MCPConnectionError):
+                await pool.call_tool("probe", "echo", {"text": "x"})
+            assert "probe" not in pool._connections, "the operator closed it"
+        finally:
+            conn.call_tool = real
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_calls_in_flight_when_a_server_dies_are_told_so(self):
+        """A turn's tool calls run in parallel. When the server dies under several, each caller
+        hears that it closed the connection -- the session's teardown cancelled some of them,
+        and a bare CancelledError reached the model as "force-cancelled"."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        try:
+            sleeps = [asyncio.create_task(pool.call_tool("probe", "sleep", {"seconds": 5})) for _ in range(3)]
+            await asyncio.sleep(0.3)
+            results = await asyncio.gather(pool.call_tool("probe", "die", {}), *sleeps, return_exceptions=True)
+            assert all(isinstance(r, MCPConnectionError) and "closed the connection" in str(r)
+                       for r in results), results
+            assert await pool.call_tool("probe", "echo", {"text": "wieder da"}) == "wieder da"
         finally:
             await pool.close_all()
 
