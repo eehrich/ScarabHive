@@ -39,7 +39,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_status"
-      description: Get server status and system information.
+      description: Get server status and settings.
       parameters:
         type: object
         properties:
@@ -52,4 +52,3 @@ tools:
 config:
   precision: 2
   max_text_length: 1000
-  enable_debug: null

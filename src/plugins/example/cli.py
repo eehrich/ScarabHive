@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 from argparse import ArgumentParser, Namespace
+from types import SimpleNamespace
 from typing import Any
 
 from .server import ExampleServer
@@ -18,6 +19,15 @@ from .server import ExampleServer
 # Configure logging for CLI
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _server(**settings: Any) -> ExampleServer:
+    """A server named "cli" (tools cli_calculator, ...) with the given settings.
+
+    The server reads its settings as attributes of server_config and does not
+    use system_config, so a namespace stands in for both.
+    """
+    return ExampleServer("cli", None, SimpleNamespace(**settings))
 
 
 async def run_calculator(args: Namespace) -> dict[str, Any]:
@@ -29,7 +39,7 @@ async def run_calculator(args: Namespace) -> dict[str, Any]:
     Returns:
         Calculator operation result
     """
-    server = ExampleServer(name="cli", config={"precision": args.precision})
+    server = _server(precision=args.precision)
     
     params = {
         "operation": args.operation,
@@ -54,7 +64,7 @@ async def run_formatter(args: Namespace) -> dict[str, Any]:
     Returns:
         Text formatting result
     """
-    server = ExampleServer(name="cli", config={"max_text_length": args.max_length})
+    server = _server(max_text_length=args.max_length)
     
     params = {
         "text": args.text,
@@ -78,15 +88,7 @@ async def run_status(args: Namespace) -> dict[str, Any]:
     Returns:
         Plugin status information
     """
-    config = {}
-    if hasattr(args, 'precision'):
-        config["precision"] = args.precision
-    if hasattr(args, 'max_length'):
-        config["max_text_length"] = args.max_length
-    if hasattr(args, 'debug'):
-        config["enable_debug"] = args.debug
-        
-    server = ExampleServer(name="cli", config=config)
+    server = _server(precision=args.precision, max_text_length=args.max_length)
     
     params = {"verbose": args.verbose}
     
@@ -138,8 +140,6 @@ def create_parser() -> ArgumentParser:
                              help="Calculator precision setting")
     status_parser.add_argument("--max-length", "-m", type=int, default=1000,
                              help="Formatter max length setting")
-    status_parser.add_argument("--debug", "-d", action="store_true",
-                             help="Enable debug mode")
     
     return parser
 
