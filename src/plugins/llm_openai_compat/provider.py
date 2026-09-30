@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 
 def _timeout_config(cfg: "LLMModelConfig", default_read: float,
                     default_write: float) -> HTTPXTimeoutConfig:
-    ht = cfg.httpx_timeouts.model_dump() if cfg.httpx_timeouts else {}
-    read_default = float(cfg.request_timeout) if cfg.request_timeout else default_read
+    # exclude_unset: a key the entry does not set falls back below. A full
+    # dump carried the pydantic defaults instead, so request_timeout and the
+    # route's own read/write defaults never applied once any key was set.
+    ht = cfg.httpx_timeouts.model_dump(exclude_unset=True) if cfg.httpx_timeouts else {}
+    # Set in the entry, not merely present: the field has a model default
+    # (120), and truthiness left the route's own default unreachable.
+    read_default = (float(cfg.request_timeout)
+                    if "request_timeout" in cfg.model_fields_set and cfg.request_timeout
+                    else default_read)
     return HTTPXTimeoutConfig(
         connect=ht.get("connect", 10.0),
         read=ht.get("read", read_default),

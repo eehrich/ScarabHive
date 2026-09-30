@@ -7,6 +7,7 @@ OpenAI client which has known hanging/timeout issues.
 
 import asyncio
 import codecs
+from contextlib import aclosing
 import json
 import logging
 import random
@@ -68,6 +69,15 @@ from agent_system.utils.reasoning_artifacts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ending_error(error: BaseException) -> str:
+    """The post_llm_response error text for a request that ended by *error*."""
+    if isinstance(error, asyncio.CancelledError):
+        return str(error) or "cancelled"
+    if isinstance(error, GeneratorExit):
+        return "stream abandoned by the caller"
+    return str(error) or type(error).__name__
 
 
 def openrouter_routing_info(response_data: dict) -> Optional[dict]:
@@ -1096,9 +1106,14 @@ class HTTPXOpenAIClient(LLMClient):
                 {"type": "tool_call_delta", "index": int, "delta": dict}
                 {"type": "final", "assistant": dict}
         """
-        async for chunk in self._make_request_streaming(messages, tools=tools, cancellation_token=cancellation_token,
-                                                        status_scope=status_scope, response_format=response_format):
-            yield chunk
+        # aclosing: a caller that stops reading closes this generator, and the
+        # request underneath must close with it -- not whenever the garbage
+        # collector gets to it -- so its end is reported while it matters.
+        async with aclosing(self._make_request_streaming(
+                messages, tools=tools, cancellation_token=cancellation_token,
+                status_scope=status_scope, response_format=response_format)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     def supports_streaming(self) -> bool:
         """Check if this client supports streaming based on model capabilities."""
@@ -1307,6 +1322,20 @@ class HTTPXOpenAIClient(LLMClient):
 
         # Retry logic with exponential backoff
         _request_start = _time.time()
+
+        # Every way this request ends reaches post_llm_response exactly once
+        # (see the streaming path).
+        ended = False
+
+        async def _report_end(**info: Any) -> None:
+            nonlocal ended
+            ended = True
+            await self._notify_post_response({
+                "provider": "openai_httpx", "model": self.model, "url": url,
+                "is_streaming": False, "duration_ms": (_time.time() - _request_start) * 1000,
+                "timestamp_ms": _time.time() * 1000, **info,
+            })
+
         last_exception = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
         # One-shot self-healing retry for cross-backend thought-signature mismatch.
@@ -1315,127 +1344,283 @@ class HTTPXOpenAIClient(LLMClient):
         # Two-stage retry for OpenAI encrypted-reasoning 400s (0=targeted item
         # strip, 1=full strip). See _recover_encrypted_reasoning.
         _enc_retries = 0
-        for attempt in range(_effective_max + 1):
-            # Check cancellation before each attempt
-            if cancellation_token and cancellation_token.is_cancelled:
-                raise asyncio.CancelledError("Request cancelled by user")
+        try:
+            for attempt in range(_effective_max + 1):
+                # Check cancellation before each attempt
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise asyncio.CancelledError("Request cancelled by user")
 
-            try:
-                # Create fresh client for each request
-                client_kwargs: dict[str, Any] = {"timeout": self._timeout}
-                if getattr(self, "_verify", None) is not None:
-                    client_kwargs["verify"] = self._verify
+                try:
+                    # Create fresh client for each request
+                    client_kwargs: dict[str, Any] = {"timeout": self._timeout}
+                    if getattr(self, "_verify", None) is not None:
+                        client_kwargs["verify"] = self._verify
 
-                async with httpx.AsyncClient(**client_kwargs) as client:
-                    logger.debug(f"HTTPX non-streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
+                    async with httpx.AsyncClient(**client_kwargs) as client:
+                        logger.debug(f"HTTPX non-streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
 
-                    # Make regular POST request (not streaming)
-                    response = await client.post(url=url, headers=self._headers, json=payload)
+                        # Make regular POST request (not streaming)
+                        response = await client.post(url=url, headers=self._headers, json=payload)
 
-                    # Handle rate limiting (429) - longer backoff + jitter to avoid thundering herd
-                    if response.status_code == 429:
-                        retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                        if attempt < self.rate_limit_max_retries:
-                            base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
-                            jitter = base * random.uniform(0.0, 0.5)
-                            # No waiting out a pinned backend's 429: the retry is
-                            # free to go to another one.
-                            backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
-                            logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
-                            await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
-                            await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
-                            await self._cancellable_sleep(backoff_time, cancellation_token)
-                            continue
-                        # Retries exhausted - raise for fallback
-                        error_text = response.text[:200] if response.text else ""
-                        await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
-                        # Notify response hook on error
-                        _duration_ms = (_time.time() - _request_start) * 1000
-                        await self._notify_post_response({
-                            "provider": "openai_httpx", "model": self.model, "url": url,
-                            "is_streaming": False, "duration_ms": _duration_ms,
-                            "error": f"Rate limit: {error_text}", "timestamp_ms": _time.time() * 1000,
-                        })
-                        if "quota" in error_text.lower() or "exhausted" in error_text.lower():
-                            raise LLMQuotaExhaustedError(
-                                f"Quota exhausted: {error_text}",
+                        # Handle rate limiting (429) - longer backoff + jitter to avoid thundering herd
+                        if response.status_code == 429:
+                            retry_after = self._parse_retry_after(response.headers.get("retry-after"))
+                            if attempt < self.rate_limit_max_retries:
+                                base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
+                                jitter = base * random.uniform(0.0, 0.5)
+                                # No waiting out a pinned backend's 429: the retry is
+                                # free to go to another one.
+                                backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
+                                logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
+                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
+                                await self._notify_retry("openai_httpx", self.model, url, False, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                                await self._cancellable_sleep(backoff_time, cancellation_token)
+                                continue
+                            # Retries exhausted - raise for fallback
+                            error_text = response.text[:200] if response.text else ""
+                            await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
+                            await _report_end(error=f"Rate limit: {error_text}")
+                            if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                                raise LLMQuotaExhaustedError(
+                                    f"Quota exhausted: {error_text}",
+                                    provider="httpx", model=self.model, retry_after=retry_after
+                                )
+                            raise LLMRateLimitError(
+                                f"Rate limit exceeded: {error_text}",
                                 provider="httpx", model=self.model, retry_after=retry_after
                             )
-                        raise LLMRateLimitError(
-                            f"Rate limit exceeded: {error_text}",
-                            provider="httpx", model=self.model, retry_after=retry_after
-                        )
 
-                    # Handle server errors (5xx) - retry with exponential backoff
-                    if response.status_code >= 500 and attempt < self.max_retries:
-                        backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
-                        logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
-                        await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                        await self._notify_retry("openai_httpx", self.model, url, False, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
-                        await self._cancellable_sleep(backoff_time, cancellation_token)
-                        continue
-
-                    # Check for HTTP errors (4xx client errors or exhausted retries)
-                    if response.status_code >= 400:
-                        error_text = response.text[:200] if response.text else ""
-                        error_msg = f"HTTP {response.status_code}: {error_text}"
-
-                        # A 404 under our own pin: that backend does not serve
-                        # this model (endpoint list changed, alias moved on).
-                        # Not a dead model until a request without the pin says so.
-                        if response.status_code == 404 and _release_pin_after_refusal():
-                            await self._notify_retry(
-                                "openai_httpx", self.model, url, False,
-                                "404, provider pin released", attempt, self.max_retries + 1)
+                        # Handle server errors (5xx) - retry with exponential backoff
+                        if response.status_code >= 500 and attempt < self.max_retries:
+                            backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
+                            logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                            await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                            await self._notify_retry("openai_httpx", self.model, url, False, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
-                        # Self-healing: OpenAI encrypted-reasoning 400 (defective
-                        # blob from the OpenRouter bridge) can arrive as an
-                        # HTTP-STATUS 400 — not just a body-level 400. The
-                        # body-level retry below only runs after json() on a 2xx,
-                        # so we must also catch it here. Recovery happens BEFORE
-                        # the ERROR log: the healed case is routine self-repair
-                        # and only logs its own WARNING.
-                        if response.status_code == 400 and _enc_retries < 2:
-                            _full_body = response.text or ""
-                            _enc_hit = ("encrypted content" in _full_body
-                                        and "rs_" in _full_body)
-                            if _enc_hit:
-                                recovery = self._recover_encrypted_reasoning(
-                                    _full_body, payload, messages, _enc_retries)
-                                if recovery:
-                                    _enc_retries += 1
+                        # Check for HTTP errors (4xx client errors or exhausted retries)
+                        if response.status_code >= 400:
+                            error_text = response.text[:200] if response.text else ""
+                            error_msg = f"HTTP {response.status_code}: {error_text}"
+
+                            # A 404 under our own pin: that backend does not serve
+                            # this model (endpoint list changed, alias moved on).
+                            # Not a dead model until a request without the pin says so.
+                            if response.status_code == 404 and _release_pin_after_refusal():
+                                await self._notify_retry(
+                                    "openai_httpx", self.model, url, False,
+                                    "404, provider pin released", attempt, self.max_retries + 1)
+                                continue
+
+                            # Self-healing: OpenAI encrypted-reasoning 400 (defective
+                            # blob from the OpenRouter bridge) can arrive as an
+                            # HTTP-STATUS 400 — not just a body-level 400. The
+                            # body-level retry below only runs after json() on a 2xx,
+                            # so we must also catch it here. Recovery happens BEFORE
+                            # the ERROR log: the healed case is routine self-repair
+                            # and only logs its own WARNING.
+                            if response.status_code == 400 and _enc_retries < 2:
+                                _full_body = response.text or ""
+                                _enc_hit = ("encrypted content" in _full_body
+                                            and "rs_" in _full_body)
+                                if _enc_hit:
+                                    recovery = self._recover_encrypted_reasoning(
+                                        _full_body, payload, messages, _enc_retries)
+                                    if recovery:
+                                        _enc_retries += 1
+                                        logger.warning(
+                                            "HTTP-400 retry: %s (defective encrypted "
+                                            "reasoning item). model=%s detail=%r",
+                                            recovery, self.model, _full_body[:500],
+                                        )
+                                        await self._report_status(
+                                            status_scope,
+                                            f"Encrypted-reasoning retry: {self.model}",
+                                        )
+                                        await self._notify_retry(
+                                            "openai_httpx", self.model, url, False,
+                                            "http-400 encrypted-reasoning strip",
+                                            attempt, self.max_retries + 1,
+                                        )
+                                        continue
+
+                            # Self-healing: Gemini "Corrupted thought signature" can
+                            # ALSO arrive as an HTTP-STATUS 400 (observed 2026-07-24,
+                            # gemini-3.5-flash-lite) — the signature-bypass below
+                            # only covers the body-level shape, so without this
+                            # branch the run crashed hard instead of healing.
+                            if (response.status_code == 400 and not _sig_retried
+                                    and "thought signature" in (response.text or "").lower()):
+                                n_patched = self._inject_signature_bypass(payload)
+                                if n_patched > 0:
+                                    _sig_retried = True
                                     logger.warning(
-                                        "HTTP-400 retry: %s (defective encrypted "
-                                        "reasoning item). model=%s detail=%r",
-                                        recovery, self.model, _full_body[:500],
+                                        "HTTP-400 retry: injecting signature bypass "
+                                        "token into reasoning_details (%d block(s)). "
+                                        "model=%s detail=%r",
+                                        n_patched, self.model, (response.text or "")[:500],
                                     )
                                     await self._report_status(
                                         status_scope,
-                                        f"Encrypted-reasoning retry: {self.model}",
+                                        f"Signature bypass retry: {self.model}",
                                     )
                                     await self._notify_retry(
                                         "openai_httpx", self.model, url, False,
-                                        "http-400 encrypted-reasoning strip",
+                                        "http-400 signature bypass",
                                         attempt, self.max_retries + 1,
                                     )
                                     continue
 
-                        # Self-healing: Gemini "Corrupted thought signature" can
-                        # ALSO arrive as an HTTP-STATUS 400 (observed 2026-07-24,
-                        # gemini-3.5-flash-lite) — the signature-bypass below
-                        # only covers the body-level shape, so without this
-                        # branch the run crashed hard instead of healing.
-                        if (response.status_code == 400 and not _sig_retried
-                                and "thought signature" in (response.text or "").lower()):
+                            logger.error(f"HTTPX non-streaming request failed: {error_msg}")
+                            await _report_end(error=error_msg)
+                            if response.status_code >= 500:
+                                raise LLMServerError(
+                                    error_msg, provider="httpx", model=self.model,
+                                    status_code=response.status_code,
+                                )
+                            raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
+
+                        # Parse successful response.
+                        # If JSON parsing fails (occasional truncated bodies seen
+                        # from OpenRouter on large multi-MB requests), log enough
+                        # diagnostics to discriminate between truncation, wrong
+                        # content-type, and silent gateway errors before the
+                        # outer except re-raises and triggers the retry.
+                        try:
+                            response_data = response.json()
+                        except json.JSONDecodeError as _json_err:
+                            body_bytes = response.content or b""
+                            content_length_hdr = response.headers.get("content-length")
+                            try:
+                                cl_int = int(content_length_hdr) if content_length_hdr else None
+                            except ValueError:
+                                cl_int = None
+                            truncated = cl_int is not None and len(body_bytes) < cl_int
+                            # Sample body endpoints; encrypt-safe slicing on bytes
+                            head = body_bytes[:300].decode("utf-8", errors="replace")
+                            tail = body_bytes[-300:].decode("utf-8", errors="replace")
+                            logger.warning(
+                                "JSON decode failed on LLM response (likely truncated body). "
+                                "model=%s status=%s content_type=%r content_length_hdr=%s "
+                                "received_bytes=%d truncated=%s transfer_encoding=%r "
+                                "cf_ray=%r server=%r error=%s",
+                                self.model,
+                                response.status_code,
+                                response.headers.get("content-type"),
+                                content_length_hdr,
+                                len(body_bytes),
+                                truncated,
+                                response.headers.get("transfer-encoding"),
+                                response.headers.get("cf-ray"),
+                                response.headers.get("server"),
+                                _json_err,
+                            )
+                            logger.warning("  body head[0:300]: %r", head)
+                            logger.warning("  body tail[-300:]: %r", tail)
+                            raise
+
+                        # Body-level upstream 429 (e.g. OpenRouter proxying upstream
+                        # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
+                        # as HTTP-status 429. Drop service_tier from the *local*
+                        # payload (flex -> standard) on the first 429 so the retry
+                        # tries the standard tier - without mutating self, which
+                        # keeps the singleton clean for parallel requests.
+                        _body_429_msg = self._detect_body_429(response_data)
+                        if _body_429_msg and attempt < self.rate_limit_max_retries:
+                            base = self.rate_limit_backoff * (1.5 ** attempt)
+                            jitter = base * random.uniform(0.0, 0.5)
+                            backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
+                            tier_note = ""
+                            if payload.get("service_tier"):
+                                dropped = payload.pop("service_tier")
+                                tier_note = f", dropping service_tier={dropped!r}"
+                            logger.warning(
+                                f"Upstream 429 in response body ({_body_429_msg[:80]}), "
+                                f"retrying in {backoff_time:.0f}s "
+                                f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
+                            )
+                            await self._report_status(
+                                status_scope,
+                                f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
+                            )
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, False,
+                                f"Upstream 429 body-error{tier_note}",
+                                attempt, self.rate_limit_max_retries + 1,
+                            )
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
+                            continue
+
+                        # Body-level 400: OpenAI encrypted-reasoning mismatch (rs_*
+                        # item fails verification on the routed backend). Checked
+                        # FIRST (more specific) so the permissive generic signature
+                        # detector below doesn't claim it — its Gemini bypass token
+                        # would overwrite the encrypted `data` and corrupt the chain.
+                        # Same ordering as the streaming path.
+                        # Recovery via _recover_encrypted_reasoning: stage 0 drops
+                        # only the named defective item, stage 1 full-strips. Both
+                        # stages also heal the ORIGINAL session messages — stripping
+                        # only the payload copy would re-trigger the same 400 on
+                        # every following turn.
+                        _enc_issue = (
+                            self._detect_openai_encrypted_reasoning_400(response_data)
+                            if _enc_retries < 2 else None
+                        )
+                        if _enc_issue is not None:
+                            recovery = self._recover_encrypted_reasoning(
+                                _enc_issue, payload, messages, _enc_retries)
+                            if recovery:
+                                _enc_retries += 1
+                                logger.warning(
+                                    "Body-400 retry: %s (defective encrypted "
+                                    "reasoning item). model=%s detail=%r",
+                                    recovery, self.model, _enc_issue[:500],
+                                )
+                                await self._report_status(
+                                    status_scope,
+                                    f"Encrypted-reasoning retry: {self.model}",
+                                )
+                                await self._notify_retry(
+                                    "openai_httpx", self.model, url, False,
+                                    "body-400 encrypted-reasoning strip",
+                                    attempt, self.max_retries + 1,
+                                )
+                                continue
+
+                        # Body-level 400: probable Gemini cross-backend thought-signature
+                        # mismatch. OpenRouter routes Gemini requests between Vertex
+                        # and AI Studio (per provider_routing.order + allow_fallbacks).
+                        # Thought signatures are encrypted blobs keyed to the signing
+                        # backend - the OTHER backend rejects them with "Corrupted
+                        # thought signature". Vertex is strict and requires a valid
+                        # signature; AI Studio is lenient but OR's translation layer
+                        # can also mangle the signature mid-route.
+                        #
+                        # Recovery: replace `data` in every reasoning.encrypted block
+                        # with Google's documented bypass token
+                        # ("skip_thought_signature_validator"). Both Vertex and AI
+                        # Studio recognize this string as a signal to skip signature
+                        # validation. Structure (type, format, id, index) is left
+                        # intact so OR's translation to Google's native format still
+                        # works. One-shot: if the retry still 400s, fall through to
+                        # the agent-level fallback chain.
+                        _sig_issue = (
+                            self._detect_body_400_signature_issue(response_data)
+                            if not _sig_retried else None
+                        )
+                        if _sig_issue is not None:
                             n_patched = self._inject_signature_bypass(payload)
                             if n_patched > 0:
                                 _sig_retried = True
+                                response_backend = response_data.get("provider")
                                 logger.warning(
-                                    "HTTP-400 retry: injecting signature bypass "
-                                    "token into reasoning_details (%d block(s)). "
-                                    "model=%s detail=%r",
-                                    n_patched, self.model, (response.text or "")[:500],
+                                    "Body-400 retry: injecting signature bypass token "
+                                    "into reasoning_details (likely cross-backend "
+                                    "Vertex<->AI Studio routing mismatch). model=%s "
+                                    "response_backend=%r patched_blocks=%d detail=%r",
+                                    self.model, response_backend, n_patched,
+                                    _sig_issue[:200],
                                 )
                                 await self._report_status(
                                     status_scope,
@@ -1443,284 +1628,120 @@ class HTTPXOpenAIClient(LLMClient):
                                 )
                                 await self._notify_retry(
                                     "openai_httpx", self.model, url, False,
-                                    "http-400 signature bypass",
+                                    "body-400 signature bypass",
                                     attempt, self.max_retries + 1,
                                 )
                                 continue
 
-                        logger.error(f"HTTPX non-streaming request failed: {error_msg}")
-                        _duration_ms = (_time.time() - _request_start) * 1000
-                        await self._notify_post_response({
-                            "provider": "openai_httpx", "model": self.model, "url": url,
-                            "is_streaming": False, "duration_ms": _duration_ms,
-                            "error": error_msg, "timestamp_ms": _time.time() * 1000,
-                        })
-                        if response.status_code >= 500:
-                            raise LLMServerError(
-                                error_msg, provider="httpx", model=self.model,
-                                status_code=response.status_code,
-                            )
-                        raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
-
-                    # Parse successful response.
-                    # If JSON parsing fails (occasional truncated bodies seen
-                    # from OpenRouter on large multi-MB requests), log enough
-                    # diagnostics to discriminate between truncation, wrong
-                    # content-type, and silent gateway errors before the
-                    # outer except re-raises and triggers the retry.
-                    try:
-                        response_data = response.json()
-                    except json.JSONDecodeError as _json_err:
-                        body_bytes = response.content or b""
-                        content_length_hdr = response.headers.get("content-length")
-                        try:
-                            cl_int = int(content_length_hdr) if content_length_hdr else None
-                        except ValueError:
-                            cl_int = None
-                        truncated = cl_int is not None and len(body_bytes) < cl_int
-                        # Sample body endpoints; encrypt-safe slicing on bytes
-                        head = body_bytes[:300].decode("utf-8", errors="replace")
-                        tail = body_bytes[-300:].decode("utf-8", errors="replace")
-                        logger.warning(
-                            "JSON decode failed on LLM response (likely truncated body). "
-                            "model=%s status=%s content_type=%r content_length_hdr=%s "
-                            "received_bytes=%d truncated=%s transfer_encoding=%r "
-                            "cf_ray=%r server=%r error=%s",
-                            self.model,
-                            response.status_code,
-                            response.headers.get("content-type"),
-                            content_length_hdr,
-                            len(body_bytes),
-                            truncated,
-                            response.headers.get("transfer-encoding"),
-                            response.headers.get("cf-ray"),
-                            response.headers.get("server"),
-                            _json_err,
-                        )
-                        logger.warning("  body head[0:300]: %r", head)
-                        logger.warning("  body tail[-300:]: %r", tail)
-                        raise
-
-                    # Body-level upstream 429 (e.g. OpenRouter proxying upstream
-                    # rate-limit from OpenAI/Gemini Flex). Same backoff schedule
-                    # as HTTP-status 429. Drop service_tier from the *local*
-                    # payload (flex -> standard) on the first 429 so the retry
-                    # tries the standard tier - without mutating self, which
-                    # keeps the singleton clean for parallel requests.
-                    _body_429_msg = self._detect_body_429(response_data)
-                    if _body_429_msg and attempt < self.rate_limit_max_retries:
-                        base = self.rate_limit_backoff * (1.5 ** attempt)
-                        jitter = base * random.uniform(0.0, 0.5)
-                        backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
-                        tier_note = ""
-                        if payload.get("service_tier"):
-                            dropped = payload.pop("service_tier")
-                            tier_note = f", dropping service_tier={dropped!r}"
-                        logger.warning(
-                            f"Upstream 429 in response body ({_body_429_msg[:80]}), "
-                            f"retrying in {backoff_time:.0f}s "
-                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
-                        )
-                        await self._report_status(
-                            status_scope,
-                            f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
-                        )
-                        await self._notify_retry(
-                            "openai_httpx", self.model, url, False,
-                            f"Upstream 429 body-error{tier_note}",
-                            attempt, self.rate_limit_max_retries + 1,
-                        )
-                        await self._cancellable_sleep(backoff_time, cancellation_token)
-                        continue
-
-                    # Body-level 400: OpenAI encrypted-reasoning mismatch (rs_*
-                    # item fails verification on the routed backend). Checked
-                    # FIRST (more specific) so the permissive generic signature
-                    # detector below doesn't claim it — its Gemini bypass token
-                    # would overwrite the encrypted `data` and corrupt the chain.
-                    # Same ordering as the streaming path.
-                    # Recovery via _recover_encrypted_reasoning: stage 0 drops
-                    # only the named defective item, stage 1 full-strips. Both
-                    # stages also heal the ORIGINAL session messages — stripping
-                    # only the payload copy would re-trigger the same 400 on
-                    # every following turn.
-                    _enc_issue = (
-                        self._detect_openai_encrypted_reasoning_400(response_data)
-                        if _enc_retries < 2 else None
-                    )
-                    if _enc_issue is not None:
-                        recovery = self._recover_encrypted_reasoning(
-                            _enc_issue, payload, messages, _enc_retries)
-                        if recovery:
-                            _enc_retries += 1
+                        # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
+                        # where identical payloads can succeed or fail non-deterministically.
+                        # Retry instead of returning an empty response to the agent.
+                        if self._is_gemini_malformed_response(response_data) and attempt < self.max_retries:
+                            backoff_time = self.retry_backoff * (2 ** attempt)
                             logger.warning(
-                                "Body-400 retry: %s (defective encrypted "
-                                "reasoning item). model=%s detail=%r",
-                                recovery, self.model, _enc_issue[:500],
+                                f"Gemini MALFORMED_FUNCTION_CALL (transient), "
+                                f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
                             )
                             await self._report_status(
                                 status_scope,
-                                f"Encrypted-reasoning retry: {self.model}",
+                                f"Gemini malformed response, retry {attempt + 1}/{self.max_retries}: {self.model}"
                             )
-                            await self._notify_retry(
-                                "openai_httpx", self.model, url, False,
-                                "body-400 encrypted-reasoning strip",
-                                attempt, self.max_retries + 1,
-                            )
+                            await self._notify_retry("openai_httpx", self.model, url, False, "MALFORMED_FUNCTION_CALL", attempt, self.max_retries + 1, response_data=response_data)
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
-                    # Body-level 400: probable Gemini cross-backend thought-signature
-                    # mismatch. OpenRouter routes Gemini requests between Vertex
-                    # and AI Studio (per provider_routing.order + allow_fallbacks).
-                    # Thought signatures are encrypted blobs keyed to the signing
-                    # backend - the OTHER backend rejects them with "Corrupted
-                    # thought signature". Vertex is strict and requires a valid
-                    # signature; AI Studio is lenient but OR's translation layer
-                    # can also mangle the signature mid-route.
-                    #
-                    # Recovery: replace `data` in every reasoning.encrypted block
-                    # with Google's documented bypass token
-                    # ("skip_thought_signature_validator"). Both Vertex and AI
-                    # Studio recognize this string as a signal to skip signature
-                    # validation. Structure (type, format, id, index) is left
-                    # intact so OR's translation to Google's native format still
-                    # works. One-shot: if the retry still 400s, fall through to
-                    # the agent-level fallback chain.
-                    _sig_issue = (
-                        self._detect_body_400_signature_issue(response_data)
-                        if not _sig_retried else None
-                    )
-                    if _sig_issue is not None:
-                        n_patched = self._inject_signature_bypass(payload)
-                        if n_patched > 0:
-                            _sig_retried = True
-                            response_backend = response_data.get("provider")
+                        # Detect Gemini's internal-format-leak — same family as MALFORMED
+                        # but without the error signal: the model emits its function call
+                        # as plain text (`call:default_api:NAME{…}`) instead of structured
+                        # tool_calls, and finish_reason is just "stop". Without this the
+                        # agent loop accepts the response as a final answer and the task
+                        # silently ends mid-workflow.
+                        if self._is_gemini_internal_format_leak(response_data) and attempt < self.max_retries:
+                            backoff_time = self.retry_backoff * (2 ** attempt)
+                            leaked = response_data["choices"][0]["message"].get("content", "")[:120]
                             logger.warning(
-                                "Body-400 retry: injecting signature bypass token "
-                                "into reasoning_details (likely cross-backend "
-                                "Vertex<->AI Studio routing mismatch). model=%s "
-                                "response_backend=%r patched_blocks=%d detail=%r",
-                                self.model, response_backend, n_patched,
-                                _sig_issue[:200],
+                                f"Gemini internal-format leak in content (no tool_calls), "
+                                f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1}). "
+                                f"Leaked head: {leaked!r}"
                             )
                             await self._report_status(
                                 status_scope,
-                                f"Signature bypass retry: {self.model}",
+                                f"Gemini internal-format leak, retry {attempt + 1}/{self.max_retries}: {self.model}"
                             )
                             await self._notify_retry(
                                 "openai_httpx", self.model, url, False,
-                                "body-400 signature bypass",
-                                attempt, self.max_retries + 1,
+                                "GEMINI_INTERNAL_FORMAT_LEAK",
+                                attempt, self.max_retries + 1, response_data=response_data,
                             )
+                            await self._cancellable_sleep(backoff_time, cancellation_token)
                             continue
 
-                    # Detect Gemini MALFORMED_FUNCTION_CALL — a transient model error
-                    # where identical payloads can succeed or fail non-deterministically.
-                    # Retry instead of returning an empty response to the agent.
-                    if self._is_gemini_malformed_response(response_data) and attempt < self.max_retries:
+                        # Notify post-response hook with successful response
+                        _finish = None
+                        if response_data.get("choices"):
+                            _finish = response_data["choices"][0].get("finish_reason")
+                        await _report_end(response_data=response_data,
+                                          usage=response_data.get("usage"), finish_reason=_finish,
+                                          routing=openrouter_routing_info(response_data))
+
+                        # Use centralized response formatting (handles usage, tool_calls, etc.)
+                        return self._format_response(response_data)
+
+                except httpx.HTTPStatusError:
+                    raise  # Re-raise HTTP errors immediately
+                except asyncio.CancelledError:
+                    raise  # Re-raise cancellation (reported by the guard below)
+                except (LLMRateLimitError, LLMServerError, LLMConnectionError):
+                    # Typed fallback errors (incl. LLMQuotaExhaustedError, a
+                    # subclass of LLMRateLimitError) are raised intentionally above
+                    # for the agent server's LLM-fallback mechanism. They must NOT
+                    # be caught by the generic handler below (which would re-wrap
+                    # them in a plain Exception and break fallback detection). The
+                    # streaming path does not catch them either - this keeps both
+                    # paths consistent. LLMConnectionError is not raised inside
+                    # this try today (it is produced by the generic handler below)
+                    # - listed defensively so a future raise site cannot be
+                    # re-wrapped into an untyped Exception.
+                    raise
+                except Exception as e:
+                    last_exception = e
+                    err_label = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                    if attempt < self.max_retries:
                         backoff_time = self.retry_backoff * (2 ** attempt)
                         logger.warning(
-                            f"Gemini MALFORMED_FUNCTION_CALL (transient), "
-                            f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                            f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}) "
+                            f"model={self.model} url={url}: {err_label}. Retrying in {backoff_time}s"
                         )
-                        await self._report_status(
-                            status_scope,
-                            f"Gemini malformed response, retry {attempt + 1}/{self.max_retries}: {self.model}"
-                        )
-                        await self._notify_retry("openai_httpx", self.model, url, False, "MALFORMED_FUNCTION_CALL", attempt, self.max_retries + 1, response_data=response_data)
+                        await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model} ({err_label})")
+                        await self._notify_retry("openai_httpx", self.model, url, False, err_label, attempt, self.max_retries + 1)
                         await self._cancellable_sleep(backoff_time, cancellation_token)
-                        continue
-
-                    # Detect Gemini's internal-format-leak — same family as MALFORMED
-                    # but without the error signal: the model emits its function call
-                    # as plain text (`call:default_api:NAME{…}`) instead of structured
-                    # tool_calls, and finish_reason is just "stop". Without this the
-                    # agent loop accepts the response as a final answer and the task
-                    # silently ends mid-workflow.
-                    if self._is_gemini_internal_format_leak(response_data) and attempt < self.max_retries:
-                        backoff_time = self.retry_backoff * (2 ** attempt)
-                        leaked = response_data["choices"][0]["message"].get("content", "")[:120]
-                        logger.warning(
-                            f"Gemini internal-format leak in content (no tool_calls), "
-                            f"retrying in {backoff_time}s (attempt {attempt + 1}/{self.max_retries + 1}). "
-                            f"Leaked head: {leaked!r}"
+                    else:
+                        logger.error(
+                            f"Request failed after {self.max_retries + 1} attempts "
+                            f"model={self.model} url={url}: {err_label}"
                         )
-                        await self._report_status(
-                            status_scope,
-                            f"Gemini internal-format leak, retry {attempt + 1}/{self.max_retries}: {self.model}"
-                        )
-                        await self._notify_retry(
-                            "openai_httpx", self.model, url, False,
-                            "GEMINI_INTERNAL_FORMAT_LEAK",
-                            attempt, self.max_retries + 1, response_data=response_data,
-                        )
-                        await self._cancellable_sleep(backoff_time, cancellation_token)
-                        continue
+                        await self._report_status(status_scope, f"Request failed after retries: {self.model} ({err_label})")
+                        await _report_end(error=f"Request failed after {self.max_retries + 1} attempts ({err_label})")
+                        if isinstance(last_exception, httpx.TransportError):
+                            # Endpoint nicht erreichbar (ConnectTimeout, ReadTimeout,
+                            # Netzfehler) — getypt werfen, damit der Agent-Server auf
+                            # das naechste Profil der llm_profile-Kette wechseln kann.
+                            raise LLMConnectionError(
+                                f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}",
+                                provider="openai_httpx", model=self.model,
+                            ) from last_exception
+                        raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}") from last_exception
 
-                    # Notify post-response hook with successful response
-                    _duration_ms = (_time.time() - _request_start) * 1000
-                    _usage = response_data.get("usage")
-                    _finish = None
-                    if response_data.get("choices"):
-                        _finish = response_data["choices"][0].get("finish_reason")
-                    await self._notify_post_response({
-                        "provider": "openai_httpx", "model": self.model, "url": url,
-                        "is_streaming": False, "duration_ms": _duration_ms,
-                        "response_data": response_data,
-                        "usage": _usage, "finish_reason": _finish,
-                        "routing": openrouter_routing_info(response_data),
-                        "timestamp_ms": _time.time() * 1000,
-                    })
-
-                    # Use centralized response formatting (handles usage, tool_calls, etc.)
-                    return self._format_response(response_data)
-
-            except httpx.HTTPStatusError:
-                raise  # Re-raise HTTP errors immediately
-            except asyncio.CancelledError:
-                raise  # Re-raise cancellation
-            except (LLMRateLimitError, LLMServerError, LLMConnectionError):
-                # Typed fallback errors (incl. LLMQuotaExhaustedError, a
-                # subclass of LLMRateLimitError) are raised intentionally above
-                # for the agent server's LLM-fallback mechanism. They must NOT
-                # be caught by the generic handler below (which would re-wrap
-                # them in a plain Exception and break fallback detection). The
-                # streaming path does not catch them either - this keeps both
-                # paths consistent. LLMConnectionError is not raised inside
-                # this try today (it is produced by the generic handler below)
-                # - listed defensively so a future raise site cannot be
-                # re-wrapped into an untyped Exception.
-                raise
-            except Exception as e:
-                last_exception = e
-                err_label = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-                if attempt < self.max_retries:
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(
-                        f"Request failed (attempt {attempt + 1}/{self.max_retries + 1}) "
-                        f"model={self.model} url={url}: {err_label}. Retrying in {backoff_time}s"
-                    )
-                    await self._report_status(status_scope, f"Request failed, retry {attempt + 1}/{self.max_retries}: {self.model} ({err_label})")
-                    await self._notify_retry("openai_httpx", self.model, url, False, err_label, attempt, self.max_retries + 1)
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                else:
-                    logger.error(
-                        f"Request failed after {self.max_retries + 1} attempts "
-                        f"model={self.model} url={url}: {err_label}"
-                    )
-                    await self._report_status(status_scope, f"Request failed after retries: {self.model} ({err_label})")
-                    if isinstance(last_exception, httpx.TransportError):
-                        # Endpoint nicht erreichbar (ConnectTimeout, ReadTimeout,
-                        # Netzfehler) — getypt werfen, damit der Agent-Server auf
-                        # das naechste Profil der llm_profile-Kette wechseln kann.
-                        raise LLMConnectionError(
-                            f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}",
-                            provider="openai_httpx", model=self.model,
-                        ) from last_exception
-                    raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts ({err_label}) url={url}") from last_exception
-
-        # Should never reach here
-        raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception!r}") from last_exception
+            # Should never reach here
+            raise Exception(f"HTTP request failed after {self.max_retries + 1} attempts: {last_exception!r}") from last_exception
+        except BaseException as error:
+            # Whatever ends the request without a report yet -- a cancel during
+            # a retry wait, a caller abandoning the stream (GeneratorExit; awaiting
+            # is allowed while it closes), an unexpected exception -- is reported
+            # here, once, and travels on unchanged.
+            if not ended:
+                await _report_end(error=_ending_error(error))
+            raise
 
     async def _make_request_streaming(
         self,
@@ -1870,6 +1891,27 @@ class HTTPXOpenAIClient(LLMClient):
 
         # Retry logic with exponential backoff
         _streaming_request_start = _time.time()
+
+        # Every way this request ends reaches post_llm_response exactly once --
+        # an answer, a refusal after the retries, a cancelled stream. Without
+        # the failed ones the message debugger shows a request that never got
+        # a response, and the chat span and the cost readers miss the call.
+        ended = False
+        # Whether the caller has seen a delta of an attempt that did not
+        # finish. A retry starts from scratch, so the caller is told to drop
+        # what it has (stream_restart) -- otherwise it shows the text twice.
+        yielded_delta = False
+
+        async def _report_end(**info: Any) -> None:
+            nonlocal ended
+            ended = True
+            await self._notify_post_response({
+                "provider": "openai_httpx", "model": self.model, "url": url,
+                "is_streaming": True,
+                "duration_ms": (_time.time() - _streaming_request_start) * 1000,
+                "timestamp_ms": _time.time() * 1000, **info,
+            })
+
         last_exception: Exception | None = None
         _effective_max = max(self.max_retries, self.rate_limit_max_retries)
         # One-shot self-healing retry for cross-backend thought-signature
@@ -1880,456 +1922,277 @@ class HTTPXOpenAIClient(LLMClient):
         # strip, 1=full strip; mirrors non-streaming). See
         # _recover_encrypted_reasoning.
         _enc_retries = 0
-        for attempt in range(_effective_max + 1):
-            # Accumulators for building the complete response. MUST be reset at
-            # the start of every attempt: a stream that drops mid-response
-            # (RemoteProtocolError on a stalled stream is common during long
-            # thinking pauses) retries the whole request - keeping the partial
-            # chunks from the failed attempt would concatenate them with the
-            # retry's output, duplicating text and corrupting tool-call argument
-            # JSON. The other clients (anthropic/gemini) reset on retry too.
-            accumulated_content: list[str] = []
-            accumulated_reasoning: list[str] = []  # reasoning_content (DeepSeek, OpenAI o-series)
-            accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
-            # OpenRouter delivers Gemini 3.x thought_signature inside reasoning_details
-            # blocks (format=google-gemini-v1). Must round-trip on next turn or upstream
-            # returns MALFORMED_FUNCTION_CALL. We keep blocks keyed by index so deltas
-            # from the same block accumulate cleanly.
-            accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
-            accumulated_usage = None  # usage information from final chunk
-            # Which backend served the stream: the gateway puts
-            # openrouter_metadata in the LAST chunk and a plain
-            # `provider` earlier, so the richer record wins.
-            accumulated_routing = None
-            _last_finish_reason: str | None = None  # finish_reason from chunks
+        try:
+            for attempt in range(_effective_max + 1):
+                # Accumulators for building the complete response. MUST be reset at
+                # the start of every attempt: a stream that drops mid-response
+                # (RemoteProtocolError on a stalled stream is common during long
+                # thinking pauses) retries the whole request - keeping the partial
+                # chunks from the failed attempt would concatenate them with the
+                # retry's output, duplicating text and corrupting tool-call argument
+                # JSON. The other clients (anthropic/gemini) reset on retry too.
+                accumulated_content: list[str] = []
+                accumulated_reasoning: list[str] = []  # reasoning_content (DeepSeek, OpenAI o-series)
+                accumulated_tool_calls: dict[int, dict[str, Any]] = {}  # index -> tool call data
+                # OpenRouter delivers Gemini 3.x thought_signature inside reasoning_details
+                # blocks (format=google-gemini-v1). Must round-trip on next turn or upstream
+                # returns MALFORMED_FUNCTION_CALL. We keep blocks keyed by index so deltas
+                # from the same block accumulate cleanly.
+                accumulated_reasoning_details: dict[int, dict[str, Any]] = {}
+                accumulated_usage = None  # usage information from final chunk
+                # Which backend served the stream: the gateway puts
+                # openrouter_metadata in the LAST chunk and a plain
+                # `provider` earlier, so the richer record wins.
+                accumulated_routing = None
+                _last_finish_reason: str | None = None  # finish_reason from chunks
 
-            # Check cancellation before each attempt
-            if cancellation_token and cancellation_token.is_cancelled:
-                raise asyncio.CancelledError("Request cancelled by user")
+                # Check cancellation before each attempt
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise asyncio.CancelledError("Request cancelled by user")
 
-            # Body-level 429 retry signal — set inside chunk parsing when the
-            # upstream wraps a rate-limit in a normal HTTP 200 SSE chunk.
-            # Picked up after the async with block exits.
-            _body_429_retry_msg: Optional[str] = None
-            # Body-level 400 signature-bypass retry signal — same pattern as
-            # _body_429_retry_msg, but for cross-backend signature mismatch.
-            _body_400_sig_retry_msg: Optional[str] = None
-            # Body-level 400 OpenAI encrypted-reasoning retry signal (same
-            # pattern) — recover by stripping reasoning_details, not a bypass.
-            _body_400_enc_retry_msg: Optional[str] = None
+                if yielded_delta:
+                    yielded_delta = False
+                    yield {"type": "stream_restart"}
 
-            try:
-                # Create fresh client for each request to avoid connection issues
-                # Enable TCP keep-alive to prevent connection drops during long "thinking" pauses
-                # This is especially important on Linux servers where firewalls/proxies may
-                # close idle connections after ~30s
-                socket_options = self._get_keepalive_socket_options()
-                
-                # Configure HTTP transport with socket options
-                # Note: http2=True can help avoid some SSL shutdown issues on certain platforms
-                # but may cause compatibility issues with some APIs, so we stick with HTTP/1.1
-                transport = httpx.AsyncHTTPTransport(
-                    retries=0,  # We handle retries ourselves
-                    socket_options=socket_options,
-                    # Disable HTTP/2 to avoid potential compatibility issues
-                    http2=False,
-                    # httpx ignores the client-level verify once a transport is
-                    # passed in -- the TLS context has to be handed to the
-                    # transport itself, or every streaming request builds its
-                    # own (measured: one CA-bundle load per request).
-                    verify=self._verify,
-                )
-                
-                client_kwargs: dict[str, Any] = {
-                    "timeout": self._timeout,
-                    "transport": transport
-                }
-                # Only include verify if explicitly configured (None means use httpx default)
-                if getattr(self, "_verify", None) is not None:
-                    client_kwargs["verify"] = self._verify
+                # Body-level 429 retry signal — set inside chunk parsing when the
+                # upstream wraps a rate-limit in a normal HTTP 200 SSE chunk.
+                # Picked up after the async with block exits.
+                _body_429_retry_msg: Optional[str] = None
+                # Body-level 400 signature-bypass retry signal — same pattern as
+                # _body_429_retry_msg, but for cross-backend signature mismatch.
+                _body_400_sig_retry_msg: Optional[str] = None
+                # Body-level 400 OpenAI encrypted-reasoning retry signal (same
+                # pattern) — recover by stripping reasoning_details, not a bypass.
+                _body_400_enc_retry_msg: Optional[str] = None
 
-                # Create client - we'll handle cleanup carefully to avoid SSL shutdown segfaults
-                client = httpx.AsyncClient(**client_kwargs)
                 try:
-                    logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
+                    # Create fresh client for each request to avoid connection issues
+                    # Enable TCP keep-alive to prevent connection drops during long "thinking" pauses
+                    # This is especially important on Linux servers where firewalls/proxies may
+                    # close idle connections after ~30s
+                    socket_options = self._get_keepalive_socket_options()
+                
+                    # Configure HTTP transport with socket options
+                    # Note: http2=True can help avoid some SSL shutdown issues on certain platforms
+                    # but may cause compatibility issues with some APIs, so we stick with HTTP/1.1
+                    transport = httpx.AsyncHTTPTransport(
+                        retries=0,  # We handle retries ourselves
+                        socket_options=socket_options,
+                        # Disable HTTP/2 to avoid potential compatibility issues
+                        http2=False,
+                        # httpx ignores the client-level verify once a transport is
+                        # passed in -- the TLS context has to be handed to the
+                        # transport itself, or every streaming request builds its
+                        # own (measured: one CA-bundle load per request).
+                        verify=self._verify,
+                    )
+                
+                    client_kwargs: dict[str, Any] = {
+                        "timeout": self._timeout,
+                        "transport": transport
+                    }
+                    # Only include verify if explicitly configured (None means use httpx default)
+                    if getattr(self, "_verify", None) is not None:
+                        client_kwargs["verify"] = self._verify
 
-                    # Make streaming request
-                    async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
-                        # Check status code (don't use raise_for_status() - it tries to read the body)
-                        if response.status_code == 429:
-                            retry_after = self._parse_retry_after(response.headers.get("retry-after"))
-                            if attempt < self.rate_limit_max_retries:
-                                base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
-                                jitter = base * random.uniform(0.0, 0.5)
-                                # No waiting out a pinned backend's 429: the retry is
-                                # free to go to another one.
-                                backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
-                                logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
-                                await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
-                                await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
-                                await self._cancellable_sleep(backoff_time, cancellation_token)
-                                continue
-                            # Retries exhausted - raise for fallback
-                            error_body = await response.aread()
-                            error_text = error_body.decode()[:200] if error_body else ""
-                            await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
-                            if "quota" in error_text.lower() or "exhausted" in error_text.lower():
-                                raise LLMQuotaExhaustedError(
-                                    f"Quota exhausted: {error_text}",
+                    # Create client - we'll handle cleanup carefully to avoid SSL shutdown segfaults
+                    client = httpx.AsyncClient(**client_kwargs)
+                    try:
+                        logger.debug(f"HTTPX streaming request attempt {attempt + 1}/{self.max_retries + 1} to {url}")
+
+                        # Make streaming request
+                        async with client.stream("POST", url=url, headers=self._headers, json=payload) as response:
+                            # Check status code (don't use raise_for_status() - it tries to read the body)
+                            if response.status_code == 429:
+                                retry_after = self._parse_retry_after(response.headers.get("retry-after"))
+                                if attempt < self.rate_limit_max_retries:
+                                    base = retry_after or (self.rate_limit_backoff * (1.5 ** attempt))
+                                    jitter = base * random.uniform(0.0, 0.5)
+                                    # No waiting out a pinned backend's 429: the retry is
+                                    # free to go to another one.
+                                    backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
+                                    logger.warning(f"Rate limited (429), retrying in {backoff_time:.0f}s (attempt {attempt + 1}/{self.rate_limit_max_retries})")
+                                    await self._report_status(status_scope, f"Rate limited, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)")
+                                    await self._notify_retry("openai_httpx", self.model, url, True, "Rate limited (429)", attempt, self.rate_limit_max_retries + 1)
+                                    await self._cancellable_sleep(backoff_time, cancellation_token)
+                                    continue
+                                # Retries exhausted - raise for fallback
+                                error_body = await response.aread()
+                                error_text = error_body.decode()[:200] if error_body else ""
+                                await self._report_status(status_scope, f"Rate limit exceeded: {self.model}")
+                                await _report_end(error=f"Rate limit: {error_text}")
+                                if "quota" in error_text.lower() or "exhausted" in error_text.lower():
+                                    raise LLMQuotaExhaustedError(
+                                        f"Quota exhausted: {error_text}",
+                                        provider="httpx", model=self.model, retry_after=retry_after
+                                    )
+                                raise LLMRateLimitError(
+                                    f"Rate limit exceeded: {error_text}",
                                     provider="httpx", model=self.model, retry_after=retry_after
                                 )
-                            raise LLMRateLimitError(
-                                f"Rate limit exceeded: {error_text}",
-                                provider="httpx", model=self.model, retry_after=retry_after
-                            )
 
-                        # Handle server errors (5xx) - retry with exponential backoff
-                        if response.status_code >= 500 and attempt < self.max_retries:
-                            backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
-                            logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
-                            await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                            await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
-                            await self._cancellable_sleep(backoff_time, cancellation_token)
-                            continue
-
-                        # Check for errors without reading body (streaming response)
-                        if response.status_code >= 400:
-                            # Read the error body for streaming responses
-                            error_body = await response.aread()
-                            error_text = error_body.decode('utf-8', errors='replace')
-                            error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
-                            # A 404 under our own pin — see the non-streaming path.
-                            if response.status_code == 404 and _release_pin_after_refusal():
-                                await self._notify_retry(
-                                    "openai_httpx", self.model, url, True,
-                                    "404, provider pin released (stream)", attempt,
-                                    self.max_retries + 1)
+                            # Handle server errors (5xx) - retry with exponential backoff
+                            if response.status_code >= 500 and attempt < self.max_retries:
+                                backoff_time = 0.0 if _release_pin_after_refusal() else self.retry_backoff * (2 ** attempt)
+                                logger.warning(f"Server error {response.status_code}, retrying in {backoff_time}s")
+                                await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                                await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({response.status_code})", attempt, self.max_retries + 1)
+                                await self._cancellable_sleep(backoff_time, cancellation_token)
                                 continue
 
-                            # Self-healing: OpenAI encrypted-reasoning 400
-                            # arriving as an HTTP-status 400 (mirrors the
-                            # non-streaming path). Two-stage recovery, heals
-                            # payload AND original session messages. Runs BEFORE
-                            # the ERROR log: the healed case is routine
-                            # self-repair and only logs its own WARNING.
-                            if response.status_code == 400 and _enc_retries < 2:
-                                if "encrypted content" in error_text and "rs_" in error_text:
-                                    recovery = self._recover_encrypted_reasoning(
-                                        error_text, payload, messages, _enc_retries)
-                                    if recovery:
-                                        _enc_retries += 1
+                            # Check for errors without reading body (streaming response)
+                            if response.status_code >= 400:
+                                # Read the error body for streaming responses
+                                error_body = await response.aread()
+                                error_text = error_body.decode('utf-8', errors='replace')
+                                error_msg = f"HTTP {response.status_code}: {error_text[:200]}"
+                                # A 404 under our own pin — see the non-streaming path.
+                                if response.status_code == 404 and _release_pin_after_refusal():
+                                    await self._notify_retry(
+                                        "openai_httpx", self.model, url, True,
+                                        "404, provider pin released (stream)", attempt,
+                                        self.max_retries + 1)
+                                    continue
+
+                                # Self-healing: OpenAI encrypted-reasoning 400
+                                # arriving as an HTTP-status 400 (mirrors the
+                                # non-streaming path). Two-stage recovery, heals
+                                # payload AND original session messages. Runs BEFORE
+                                # the ERROR log: the healed case is routine
+                                # self-repair and only logs its own WARNING.
+                                if response.status_code == 400 and _enc_retries < 2:
+                                    if "encrypted content" in error_text and "rs_" in error_text:
+                                        recovery = self._recover_encrypted_reasoning(
+                                            error_text, payload, messages, _enc_retries)
+                                        if recovery:
+                                            _enc_retries += 1
+                                            logger.warning(
+                                                "HTTP-400 stream retry: %s (defective "
+                                                "encrypted reasoning item). model=%s detail=%r",
+                                                recovery, self.model, error_text[:500],
+                                            )
+                                            await self._report_status(
+                                                status_scope,
+                                                f"Encrypted-reasoning retry: {self.model}",
+                                            )
+                                            await self._notify_retry(
+                                                "openai_httpx", self.model, url, True,
+                                                "http-400 encrypted-reasoning strip (stream)",
+                                                attempt, self.max_retries + 1,
+                                            )
+                                            continue
+
+                                # Self-healing: Gemini "Corrupted thought signature"
+                                # as HTTP-STATUS 400 (mirrors the non-streaming
+                                # path; the body-level bypass below doesn't see
+                                # status-level 400s).
+                                if (response.status_code == 400 and not _sig_retried
+                                        and "thought signature" in error_text.lower()):
+                                    n_patched = self._inject_signature_bypass(payload)
+                                    if n_patched > 0:
+                                        _sig_retried = True
                                         logger.warning(
-                                            "HTTP-400 stream retry: %s (defective "
-                                            "encrypted reasoning item). model=%s detail=%r",
-                                            recovery, self.model, error_text[:500],
+                                            "HTTP-400 stream retry: injecting signature "
+                                            "bypass token into reasoning_details "
+                                            "(%d block(s)). model=%s detail=%r",
+                                            n_patched, self.model, error_text[:500],
                                         )
                                         await self._report_status(
                                             status_scope,
-                                            f"Encrypted-reasoning retry: {self.model}",
+                                            f"Signature bypass retry: {self.model}",
                                         )
                                         await self._notify_retry(
                                             "openai_httpx", self.model, url, True,
-                                            "http-400 encrypted-reasoning strip (stream)",
+                                            "http-400 signature bypass (stream)",
                                             attempt, self.max_retries + 1,
                                         )
                                         continue
 
-                            # Self-healing: Gemini "Corrupted thought signature"
-                            # as HTTP-STATUS 400 (mirrors the non-streaming
-                            # path; the body-level bypass below doesn't see
-                            # status-level 400s).
-                            if (response.status_code == 400 and not _sig_retried
-                                    and "thought signature" in error_text.lower()):
-                                n_patched = self._inject_signature_bypass(payload)
-                                if n_patched > 0:
-                                    _sig_retried = True
-                                    logger.warning(
-                                        "HTTP-400 stream retry: injecting signature "
-                                        "bypass token into reasoning_details "
-                                        "(%d block(s)). model=%s detail=%r",
-                                        n_patched, self.model, error_text[:500],
+                                logger.error(f"HTTPX streaming request failed: {error_msg}")
+                                if response.status_code >= 500:
+                                    raise LLMServerError(
+                                        error_msg, provider="httpx", model=self.model,
+                                        status_code=response.status_code,
                                     )
-                                    await self._report_status(
-                                        status_scope,
-                                        f"Signature bypass retry: {self.model}",
-                                    )
-                                    await self._notify_retry(
-                                        "openai_httpx", self.model, url, True,
-                                        "http-400 signature bypass (stream)",
-                                        attempt, self.max_retries + 1,
-                                    )
-                                    continue
+                                raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
 
-                            logger.error(f"HTTPX streaming request failed: {error_msg}")
-                            if response.status_code >= 500:
-                                raise LLMServerError(
-                                    error_msg, provider="httpx", model=self.model,
-                                    status_code=response.status_code,
-                                )
-                            raise httpx.HTTPStatusError(error_msg, request=response.request, response=response)
+                            # Parse SSE stream with chunk timeout
+                            # Use aiter_bytes() instead of aiter_lines() because aiter_lines()
+                            # can block indefinitely inside httpcore when server keeps connection
+                            # open but stops sending data. With aiter_bytes() we get smaller chunks
+                            # and our timeout actually works.
+                            chunk_timeout = self.timeout_config.read
+                            # aiter_bytes() is async iterator that we can iterate over directly
+                            line_buffer = ""
 
-                        # Parse SSE stream with chunk timeout
-                        # Use aiter_bytes() instead of aiter_lines() because aiter_lines()
-                        # can block indefinitely inside httpcore when server keeps connection
-                        # open but stops sending data. With aiter_bytes() we get smaller chunks
-                        # and our timeout actually works.
-                        chunk_timeout = self.timeout_config.read
-                        # aiter_bytes() is async iterator that we can iterate over directly
-                        line_buffer = ""
+                            # Create async iterator manually to apply timeout per chunk
+                            byte_stream = response.aiter_bytes()
+                            # Keep-alive comments reset the per-chunk timeout, so
+                            # only events count as progress; without the declared
+                            # limit an upstream that stopped answering holds the
+                            # call as long as the endpoint keeps it open.
+                            silence_limit = self.stream_silence_timeout
+                            last_event = time.monotonic()
+                            # The network cuts where it likes: a character split
+                            # across two chunks must not decode as two U+FFFD.
+                            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
 
-                        # Create async iterator manually to apply timeout per chunk
-                        byte_stream = response.aiter_bytes()
-                        # Keep-alive comments reset the per-chunk timeout, so
-                        # only events count as progress; without the declared
-                        # limit an upstream that stopped answering holds the
-                        # call as long as the endpoint keeps it open.
-                        silence_limit = self.stream_silence_timeout
-                        last_event = time.monotonic()
-                        # The network cuts where it likes: a character split
-                        # across two chunks must not decode as two U+FFFD.
-                        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
-
-                        while True:
-                            if cancellation_token and cancellation_token.is_cancelled:
-                                raise asyncio.CancelledError("Request cancelled during streaming")
-
-                            try:
-                                # Get next chunk with timeout
-                                chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
-                                line_buffer += decoder.decode(chunk_bytes)
-                            except StopAsyncIteration:
-                                # Stream completed - process any remaining data in buffer
-                                break
-                            except (asyncio.TimeoutError, httpx.TransportError) as error:
-                                # the answer is complete; only [DONE] is missing -- whether the
-                                # stream then stalled or the connection dropped
-                                if _last_finish_reason:
-                                    logger.warning("HTTPX stream: finish arrived, then %r: %s", error, self.model)
-                                    break
-                                if isinstance(error, httpx.TransportError):
-                                    raise
-                                logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
-                                raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
-                            
-                            # Process complete lines from buffer
-                            while '\n' in line_buffer:
-                                line, line_buffer = line_buffer.split('\n', 1)
-                                line = line.strip()
-                                
-                                if not line or not line.startswith("data: "):
-                                    continue
-                                last_event = time.monotonic()
-
-                                data = line[6:]  # Remove "data: " prefix
-
-                                if data == "[DONE]":
-                                    # Stream finished - yield final result
-                                    assistant = {
-                                        "role": "assistant",
-                                        "content": "".join(accumulated_content) if accumulated_content else ""
-                                    }
-
-                                    # Add the thinking text if any — but store
-                                    # it ONCE. OpenRouter sends the same text
-                                    # as ``reasoning`` deltas AND inside the
-                                    # reasoning_details blocks below, which
-                                    # have to be kept verbatim for the replay;
-                                    # a copy here would double every thought in
-                                    # the session. Readers ask
-                                    # ``reasoning_artifacts.thinking_text``,
-                                    # and the strip functions rescue the text
-                                    # before the artifacts are dropped.
-                                    _thinking = "".join(accumulated_reasoning)
-                                    if _thinking and not self._reasoning_text_from_details(
-                                            accumulated_reasoning_details):
-                                        assistant["reasoning_content"] = _thinking
-
-                                    # Add tool calls if any
-                                    if accumulated_tool_calls:
-                                        tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                                        assistant["tool_calls"] = tool_calls_list
-                                    if accumulated_reasoning_details:
-                                        assistant["reasoning_details"] = [
-                                            accumulated_reasoning_details[idx]
-                                            for idx in sorted(accumulated_reasoning_details.keys())
-                                        ]
-                                    if accumulated_routing and accumulated_routing.get("selected"):
-                                        assistant["served_by"] = accumulated_routing["selected"]
-
-                                    final_result = {"assistant": assistant}
-
-                                    # Add usage if available
-                                    if accumulated_usage:
-                                        final_result["usage"] = accumulated_usage
-                                    # Carry finish_reason to the caller, not just to
-                                    # the hook: "length" means the answer was CUT OFF,
-                                    # which the agent loop must not mistake for an
-                                    # empty response (a model that spends its whole
-                                    # budget on reasoning returns no content at all).
-                                    if _last_finish_reason:
-                                        final_result["finish_reason"] = _last_finish_reason
-
-                                    # Notify post-response hook for streaming
-                                    _s_duration = (_time.time() - _streaming_request_start) * 1000
-                                    await self._notify_post_response({
-                                        "provider": "openai_httpx", "model": self.model,
-                                        "url": url, "is_streaming": True,
-                                        "duration_ms": _s_duration,
-                                        "usage": accumulated_usage,
-                                        "routing": accumulated_routing,
-                                        "finish_reason": _last_finish_reason,
-                                        "timestamp_ms": _time.time() * 1000,
-                                    })
-
-                                    yield {"type": "final", **final_result}
-                                    return  # Success - exit retry loop
+                            while True:
+                                if cancellation_token and cancellation_token.is_cancelled:
+                                    raise asyncio.CancelledError("Request cancelled during streaming")
 
                                 try:
-                                    chunk_data = json.loads(data)
-                                except Exception:
-                                    logger.debug(f"Failed to parse chunk data: {data[:100]}")
-                                    continue
-
-                                # Upstream-error chunk (e.g. OpenRouter wrapping a
-                                # provider 429 as a body-error inside SSE). Signal
-                                # the outer attempt loop to retry and break out of
-                                # the chunk parser cleanly.
-                                _body_err_msg = self._detect_body_429(chunk_data)
-                                if _body_err_msg:
-                                    _body_429_retry_msg = _body_err_msg
-                                    break  # exit "while '\n' in line_buffer"
-
-                                # Body-level 400 (Gemini cross-backend signature
-                                # mismatch) - mirror of the non-streaming path.
-                                # Check the OpenAI encrypted-reasoning case FIRST
-                                # (more specific) so the generic signature detector
-                                # doesn't claim it.
-                                if _enc_retries < 2:
-                                    _enc_err = self._detect_openai_encrypted_reasoning_400(chunk_data)
-                                    if _enc_err:
-                                        _body_400_enc_retry_msg = _enc_err
+                                    # Get next chunk with timeout
+                                    chunk_bytes = await asyncio.wait_for(byte_stream.__anext__(), timeout=chunk_timeout)
+                                    line_buffer += decoder.decode(chunk_bytes)
+                                except StopAsyncIteration:
+                                    # Stream completed - process any remaining data in buffer
+                                    break
+                                except (asyncio.TimeoutError, httpx.TransportError) as error:
+                                    # the answer is complete; only [DONE] is missing -- whether the
+                                    # stream then stalled or the connection dropped
+                                    if _last_finish_reason:
+                                        logger.warning("HTTPX stream: finish arrived, then %r: %s", error, self.model)
                                         break
-                                if not _sig_retried:
-                                    _sig_err = self._detect_body_400_signature_issue(chunk_data)
-                                    if _sig_err:
-                                        _body_400_sig_retry_msg = _sig_err
-                                        break
-
-                                # Track usage if available in chunk
-                                if "usage" in chunk_data:
-                                    accumulated_usage = chunk_data["usage"]
-                                _routing = openrouter_routing_info(chunk_data)
-                                if _routing and (accumulated_routing is None
-                                                 or "available" in _routing):
-                                    accumulated_routing = _routing
-
-                                # Process chunk
-                                choices = chunk_data.get("choices", [])
-                                if not choices:
-                                    continue
-
-                                choice = choices[0]
-                                delta = choice.get("delta", {})
-
-                                # Track finish_reason from chunks
-                                _fr = choice.get("finish_reason")
-                                if _fr:
-                                    _last_finish_reason = _fr
-
-                                # Handle the thinking delta. DeepSeek calls the
-                                # field reasoning_content, OpenRouter calls it
-                                # reasoning — same payload, and only ever one of
-                                # them arrives. Reading just the first name made
-                                # every OpenRouter thinking model look silent.
-                                # This comes BEFORE the actual content in thinking models
-                                _reasoning_delta = (delta.get("reasoning_content")
-                                                    or delta.get("reasoning"))
-                                if _reasoning_delta:
-                                    accumulated_reasoning.append(_reasoning_delta)
-                                    yield {
-                                        "type": "thinking_delta",
-                                        "delta": _reasoning_delta,
-                                        "accumulated": "".join(accumulated_reasoning)
-                                    }
-
-                                # Capture reasoning_details verbatim (Gemini 3.x thought_signature).
-                                # OpenRouter delivers the encrypted signature here keyed by index;
-                                # required on round-trip or upstream returns MALFORMED_FUNCTION_CALL.
-                                if "reasoning_details" in delta and delta["reasoning_details"]:
-                                    for rd in delta["reasoning_details"]:
-                                        self._accumulate_reasoning_detail(
-                                            accumulated_reasoning_details, rd)
-
-                                # Handle content delta
-                                if "content" in delta and delta["content"]:
-                                    accumulated_content.append(delta["content"])
-                                    yield {
-                                        "type": "content_delta",
-                                        "delta": delta["content"],
-                                        "accumulated": "".join(accumulated_content)
-                                    }
-
-                                # Handle tool call deltas
-                                if "tool_calls" in delta:
-                                    for tc_delta in delta["tool_calls"]:
-                                        index = self._accumulate_tool_call_delta(
-                                            accumulated_tool_calls, tc_delta)
-
-                                        # Yield delta with accumulated state
-                                        yield {
-                                            "type": "tool_call_delta",
-                                            "index": index,
-                                            "delta": tc_delta,
-                                            "accumulated": accumulated_tool_calls[index]
-                                        }
-
-                            # Body-429 signaled from inside chunk parser — abort
-                            # the chunk-fetching loop so the outer attempt loop
-                            # can apply backoff and retry the whole request.
-                            if _body_429_retry_msg:
-                                break  # exits the outer "while True" chunk fetcher
-                            # Body-400 signature-bypass signaled — same pattern.
-                            if _body_400_sig_retry_msg:
-                                break
-                            # Body-400 encrypted-reasoning signaled — same pattern.
-                            if _body_400_enc_retry_msg:
-                                break
-                            if silence_limit and time.monotonic() - last_event > silence_limit:
-                                if _last_finish_reason:
-                                    break  # the answer is complete; only [DONE] is missing
-                                logger.warning(f"HTTPX stream: only keep-alives for {silence_limit:g}s: {self.model}")
-                                raise httpx.RemoteProtocolError(
-                                    f"Stream stalled - no event for {silence_limit:g}s, only keep-alives")
-
-                        # A body-level retry was signaled from the chunk
-                        # parser. Skip the finalization tail entirely --
-                        # falling through to it yielded an EMPTY final
-                        # answer and returned, which made the retry
-                        # handlers behind the `finally` dead code (an
-                        # upstream 429 became a silent empty response).
-                        if not (_body_429_retry_msg or _body_400_sig_retry_msg
-                                or _body_400_enc_retry_msg):
-                            # After stream ends, process any remaining data in buffer
-                            # This handles the case where the last chunk doesn't end with \n
-                            # or where [DONE] is in the buffer but wasn't processed yet
-                            if line_buffer.strip():
-                                for line in line_buffer.split('\n'):
+                                    if isinstance(error, httpx.TransportError):
+                                        raise
+                                    logger.warning(f"HTTPX stream chunk timeout after {chunk_timeout}s")
+                                    raise httpx.RemoteProtocolError(f"Stream stalled - no data for {chunk_timeout}s")
+                            
+                                # Process complete lines from buffer
+                                while '\n' in line_buffer:
+                                    line, line_buffer = line_buffer.split('\n', 1)
                                     line = line.strip()
+                                
                                     if not line or not line.startswith("data: "):
                                         continue
-                                    data = line[6:]
+                                    last_event = time.monotonic()
+
+                                    data = line[6:]  # Remove "data: " prefix
+
                                     if data == "[DONE]":
-                                        # Found [DONE] in remaining buffer
+                                        # Stream finished - yield final result
                                         assistant = {
                                             "role": "assistant",
                                             "content": "".join(accumulated_content) if accumulated_content else ""
                                         }
-                                        # One home for the text — see the main
-                                        # loop above.
+
+                                        # Add the thinking text if any — but store
+                                        # it ONCE. OpenRouter sends the same text
+                                        # as ``reasoning`` deltas AND inside the
+                                        # reasoning_details blocks below, which
+                                        # have to be kept verbatim for the replay;
+                                        # a copy here would double every thought in
+                                        # the session. Readers ask
+                                        # ``reasoning_artifacts.thinking_text``,
+                                        # and the strip functions rescue the text
+                                        # before the artifacts are dropped.
                                         _thinking = "".join(accumulated_reasoning)
                                         if _thinking and not self._reasoning_text_from_details(
                                                 accumulated_reasoning_details):
                                             assistant["reasoning_content"] = _thinking
+
+                                        # Add tool calls if any
                                         if accumulated_tool_calls:
                                             tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
                                             assistant["tool_calls"] = tool_calls_list
@@ -2340,280 +2203,482 @@ class HTTPXOpenAIClient(LLMClient):
                                             ]
                                         if accumulated_routing and accumulated_routing.get("selected"):
                                             assistant["served_by"] = accumulated_routing["selected"]
+
                                         final_result = {"assistant": assistant}
+
+                                        # Add usage if available
                                         if accumulated_usage:
                                             final_result["usage"] = accumulated_usage
-                                        if _last_finish_reason:  # see note above
+                                        # Carry finish_reason to the caller, not just to
+                                        # the hook: "length" means the answer was CUT OFF,
+                                        # which the agent loop must not mistake for an
+                                        # empty response (a model that spends its whole
+                                        # budget on reasoning returns no content at all).
+                                        if _last_finish_reason:
                                             final_result["finish_reason"] = _last_finish_reason
-                                        _s_duration = (_time.time() - _streaming_request_start) * 1000
-                                        await self._notify_post_response({
-                                            "provider": "openai_httpx", "model": self.model,
-                                            "url": url, "is_streaming": True,
-                                            "duration_ms": _s_duration, "usage": accumulated_usage,
-                                            "routing": accumulated_routing,
-                                            "finish_reason": _last_finish_reason,
-                                            "timestamp_ms": _time.time() * 1000,
-                                        })
+
+                                        await _report_end(usage=accumulated_usage,
+                                                          routing=accumulated_routing,
+                                                          finish_reason=_last_finish_reason)
+
                                         yield {"type": "final", **final_result}
-                                        return
-                                    # Try to parse remaining JSON chunks
+                                        return  # Success - exit retry loop
+
                                     try:
                                         chunk_data = json.loads(data)
-                                        if "usage" in chunk_data:
-                                            accumulated_usage = chunk_data["usage"]
-                                        _routing = openrouter_routing_info(chunk_data)
-                                        if _routing and (accumulated_routing is None
-                                                         or "available" in _routing):
-                                            accumulated_routing = _routing
-                                        choices = chunk_data.get("choices", [])
-                                        if choices:
-                                            delta = choices[0].get("delta", {})
-                                            _reasoning_delta = (
-                                                delta.get("reasoning_content")
-                                                or delta.get("reasoning"))
-                                            if _reasoning_delta:
-                                                accumulated_reasoning.append(_reasoning_delta)
-                                            if "content" in delta and delta["content"]:
-                                                accumulated_content.append(delta["content"])
-                                            # Same accumulation as the main loop —
-                                            # fragments that only arrive in the
-                                            # unterminated rest buffer must not
-                                            # be dropped (lost signature / broken
-                                            # tool-call args otherwise).
-                                            if "reasoning_details" in delta and delta["reasoning_details"]:
-                                                for rd in delta["reasoning_details"]:
-                                                    self._accumulate_reasoning_detail(
-                                                        accumulated_reasoning_details, rd)
-                                            if "tool_calls" in delta:
-                                                for tc_delta in delta["tool_calls"]:
-                                                    self._accumulate_tool_call_delta(
-                                                        accumulated_tool_calls, tc_delta)
-                                    except json.JSONDecodeError:
-                                        # EXPECTED here: this is the salvage pass
-                                        # over an unterminated buffer, so a partial
-                                        # JSON tail is the normal case. Narrow on
-                                        # purpose — a TypeError/KeyError from the
-                                        # accumulators would be a real bug, and
-                                        # `except Exception` used to bury it in a
-                                        # path that is already degraded.
-                                        pass
-                                    except Exception as _salvage_error:
-                                        logger.warning(
-                                            "Rest-buffer salvage failed on a "
-                                            "well-formed chunk (%s): %s",
-                                            type(_salvage_error).__name__,
-                                            _salvage_error)
+                                    except Exception:
+                                        logger.debug(f"Failed to parse chunk data: {data[:100]}")
+                                        continue
+
+                                    # Upstream-error chunk (e.g. OpenRouter wrapping a
+                                    # provider 429 as a body-error inside SSE). Signal
+                                    # the outer attempt loop to retry and break out of
+                                    # the chunk parser cleanly.
+                                    _body_err_msg = self._detect_body_429(chunk_data)
+                                    if _body_err_msg:
+                                        _body_429_retry_msg = _body_err_msg
+                                        break  # exit "while '\n' in line_buffer"
+
+                                    # Body-level 400 (Gemini cross-backend signature
+                                    # mismatch) - mirror of the non-streaming path.
+                                    # Check the OpenAI encrypted-reasoning case FIRST
+                                    # (more specific) so the generic signature detector
+                                    # doesn't claim it.
+                                    if _enc_retries < 2:
+                                        _enc_err = self._detect_openai_encrypted_reasoning_400(chunk_data)
+                                        if _enc_err:
+                                            _body_400_enc_retry_msg = _enc_err
+                                            break
+                                    if not _sig_retried:
+                                        _sig_err = self._detect_body_400_signature_issue(chunk_data)
+                                        if _sig_err:
+                                            _body_400_sig_retry_msg = _sig_err
+                                            break
+
+                                    # Any other upstream failure mid-stream (OpenRouter
+                                    # sends {"error": ...} with finish_reason "error"):
+                                    # not an answer. Read as one, it became a partial
+                                    # text reported as a success. Retried like a
+                                    # dropped stream (the accumulators start afresh),
+                                    # then LLMConnectionError and the fallback chain.
+                                    _upstream_err = chunk_data.get("error")
+                                    if _upstream_err or any(
+                                            isinstance(c, dict) and c.get("finish_reason") == "error"
+                                            for c in chunk_data.get("choices") or []):
+                                        _detail = (_upstream_err.get("message", _upstream_err)
+                                                   if isinstance(_upstream_err, dict) else _upstream_err)
+                                        raise httpx.RemoteProtocolError(
+                                            f"Upstream error in stream: {str(_detail or 'finish_reason error')[:300]}")
+
+                                    # Track usage if available in chunk
+                                    if "usage" in chunk_data:
+                                        accumulated_usage = chunk_data["usage"]
+                                    _routing = openrouter_routing_info(chunk_data)
+                                    if _routing and (accumulated_routing is None
+                                                     or "available" in _routing):
+                                        accumulated_routing = _routing
+
+                                    # Process chunk
+                                    choices = chunk_data.get("choices", [])
+                                    if not choices:
+                                        continue
+
+                                    choice = choices[0]
+                                    delta = choice.get("delta", {})
+
+                                    # Track finish_reason from chunks
+                                    _fr = choice.get("finish_reason")
+                                    if _fr:
+                                        _last_finish_reason = _fr
+
+                                    # Handle the thinking delta. DeepSeek calls the
+                                    # field reasoning_content, OpenRouter calls it
+                                    # reasoning — same payload, and only ever one of
+                                    # them arrives. Reading just the first name made
+                                    # every OpenRouter thinking model look silent.
+                                    # This comes BEFORE the actual content in thinking models
+                                    _reasoning_delta = (delta.get("reasoning_content")
+                                                        or delta.get("reasoning"))
+                                    if _reasoning_delta:
+                                        accumulated_reasoning.append(_reasoning_delta)
+                                        yielded_delta = True
+                                        yield {
+                                            "type": "thinking_delta",
+                                            "delta": _reasoning_delta,
+                                            "accumulated": "".join(accumulated_reasoning)
+                                        }
+
+                                    # Capture reasoning_details verbatim (Gemini 3.x thought_signature).
+                                    # OpenRouter delivers the encrypted signature here keyed by index;
+                                    # required on round-trip or upstream returns MALFORMED_FUNCTION_CALL.
+                                    if "reasoning_details" in delta and delta["reasoning_details"]:
+                                        for rd in delta["reasoning_details"]:
+                                            self._accumulate_reasoning_detail(
+                                                accumulated_reasoning_details, rd)
+
+                                    # Handle content delta
+                                    if "content" in delta and delta["content"]:
+                                        accumulated_content.append(delta["content"])
+                                        yielded_delta = True
+                                        yield {
+                                            "type": "content_delta",
+                                            "delta": delta["content"],
+                                            "accumulated": "".join(accumulated_content)
+                                        }
+
+                                    # Handle tool call deltas
+                                    if "tool_calls" in delta:
+                                        for tc_delta in delta["tool_calls"]:
+                                            index = self._accumulate_tool_call_delta(
+                                                accumulated_tool_calls, tc_delta)
+
+                                            # Yield delta with accumulated state
+                                            yielded_delta = True
+                                            yield {
+                                                "type": "tool_call_delta",
+                                                "index": index,
+                                                "delta": tc_delta,
+                                                "accumulated": accumulated_tool_calls[index]
+                                            }
+
+                                # Body-429 signaled from inside chunk parser — abort
+                                # the chunk-fetching loop so the outer attempt loop
+                                # can apply backoff and retry the whole request.
+                                if _body_429_retry_msg:
+                                    break  # exits the outer "while True" chunk fetcher
+                                # Body-400 signature-bypass signaled — same pattern.
+                                if _body_400_sig_retry_msg:
+                                    break
+                                # Body-400 encrypted-reasoning signaled — same pattern.
+                                if _body_400_enc_retry_msg:
+                                    break
+                                if silence_limit and time.monotonic() - last_event > silence_limit:
+                                    if _last_finish_reason:
+                                        break  # the answer is complete; only [DONE] is missing
+                                    logger.warning(f"HTTPX stream: only keep-alives for {silence_limit:g}s: {self.model}")
+                                    raise httpx.RemoteProtocolError(
+                                        f"Stream stalled - no event for {silence_limit:g}s, only keep-alives")
+
+                            # A body-level retry was signaled from the chunk
+                            # parser. Skip the finalization tail entirely --
+                            # falling through to it yielded an EMPTY final
+                            # answer and returned, which made the retry
+                            # handlers behind the `finally` dead code (an
+                            # upstream 429 became a silent empty response).
+                            if not (_body_429_retry_msg or _body_400_sig_retry_msg
+                                    or _body_400_enc_retry_msg):
+                                # After stream ends, process any remaining data in buffer
+                                # This handles the case where the last chunk doesn't end with \n
+                                # or where [DONE] is in the buffer but wasn't processed yet
+                                if line_buffer.strip():
+                                    for line in line_buffer.split('\n'):
+                                        line = line.strip()
+                                        if not line or not line.startswith("data: "):
+                                            continue
+                                        data = line[6:]
+                                        if data == "[DONE]":
+                                            # Found [DONE] in remaining buffer
+                                            assistant = {
+                                                "role": "assistant",
+                                                "content": "".join(accumulated_content) if accumulated_content else ""
+                                            }
+                                            # One home for the text — see the main
+                                            # loop above.
+                                            _thinking = "".join(accumulated_reasoning)
+                                            if _thinking and not self._reasoning_text_from_details(
+                                                    accumulated_reasoning_details):
+                                                assistant["reasoning_content"] = _thinking
+                                            if accumulated_tool_calls:
+                                                tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                                assistant["tool_calls"] = tool_calls_list
+                                            if accumulated_reasoning_details:
+                                                assistant["reasoning_details"] = [
+                                                    accumulated_reasoning_details[idx]
+                                                    for idx in sorted(accumulated_reasoning_details.keys())
+                                                ]
+                                            if accumulated_routing and accumulated_routing.get("selected"):
+                                                assistant["served_by"] = accumulated_routing["selected"]
+                                            final_result = {"assistant": assistant}
+                                            if accumulated_usage:
+                                                final_result["usage"] = accumulated_usage
+                                            if _last_finish_reason:  # see note above
+                                                final_result["finish_reason"] = _last_finish_reason
+                                            await _report_end(usage=accumulated_usage,
+                                                              routing=accumulated_routing,
+                                                              finish_reason=_last_finish_reason)
+                                            yield {"type": "final", **final_result}
+                                            return
+                                        # Try to parse remaining JSON chunks
+                                        try:
+                                            chunk_data = json.loads(data)
+                                            if "usage" in chunk_data:
+                                                accumulated_usage = chunk_data["usage"]
+                                            _routing = openrouter_routing_info(chunk_data)
+                                            if _routing and (accumulated_routing is None
+                                                             or "available" in _routing):
+                                                accumulated_routing = _routing
+                                            choices = chunk_data.get("choices", [])
+                                            if choices:
+                                                delta = choices[0].get("delta", {})
+                                                _reasoning_delta = (
+                                                    delta.get("reasoning_content")
+                                                    or delta.get("reasoning"))
+                                                if _reasoning_delta:
+                                                    accumulated_reasoning.append(_reasoning_delta)
+                                                if "content" in delta and delta["content"]:
+                                                    accumulated_content.append(delta["content"])
+                                                # Same accumulation as the main loop —
+                                                # fragments that only arrive in the
+                                                # unterminated rest buffer must not
+                                                # be dropped (lost signature / broken
+                                                # tool-call args otherwise).
+                                                if "reasoning_details" in delta and delta["reasoning_details"]:
+                                                    for rd in delta["reasoning_details"]:
+                                                        self._accumulate_reasoning_detail(
+                                                            accumulated_reasoning_details, rd)
+                                                if "tool_calls" in delta:
+                                                    for tc_delta in delta["tool_calls"]:
+                                                        self._accumulate_tool_call_delta(
+                                                            accumulated_tool_calls, tc_delta)
+                                        except json.JSONDecodeError:
+                                            # EXPECTED here: this is the salvage pass
+                                            # over an unterminated buffer, so a partial
+                                            # JSON tail is the normal case. Narrow on
+                                            # purpose — a TypeError/KeyError from the
+                                            # accumulators would be a real bug, and
+                                            # `except Exception` used to bury it in a
+                                            # path that is already degraded.
+                                            pass
+                                        except Exception as _salvage_error:
+                                            logger.warning(
+                                                "Rest-buffer salvage failed on a "
+                                                "well-formed chunk (%s): %s",
+                                                type(_salvage_error).__name__,
+                                                _salvage_error)
 
 
-                            # Stream ended without [DONE] - yield final result anyway
-                            # This can happen with some API implementations
-                            logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
-                            # ...but say so. Without a marker we cannot tell a
-                            # complete answer from one cut off mid-generation, and
-                            # accepting the latter as final is silent truncation.
-                            if not _last_finish_reason:
-                                _last_finish_reason = "incomplete_stream"
-                            assistant: dict[str, Any] = {
-                                "role": "assistant",
-                                "content": "".join(accumulated_content) if accumulated_content else ""
-                            }
-                            # One home for the text — see the main loop above.
-                            _thinking = "".join(accumulated_reasoning)
-                            if _thinking and not self._reasoning_text_from_details(
-                                    accumulated_reasoning_details):
-                                assistant["reasoning_content"] = _thinking
-                            if accumulated_tool_calls:
-                                tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
-                                assistant["tool_calls"] = tool_calls_list
-                            if accumulated_reasoning_details:
-                                assistant["reasoning_details"] = [
-                                    accumulated_reasoning_details[idx]
-                                    for idx in sorted(accumulated_reasoning_details.keys())
-                                ]
-                            if accumulated_routing and accumulated_routing.get("selected"):
-                                assistant["served_by"] = accumulated_routing["selected"]
-                            final_result = {"assistant": assistant}
-                            if accumulated_usage:
-                                final_result["usage"] = accumulated_usage
-                            if _last_finish_reason:
-                                final_result["finish_reason"] = _last_finish_reason
-                            _s_duration = (_time.time() - _streaming_request_start) * 1000
-                            await self._notify_post_response({
-                                "provider": "openai_httpx", "model": self.model,
-                                "url": url, "is_streaming": True,
-                                "duration_ms": _s_duration, "usage": accumulated_usage,
-                                "routing": accumulated_routing,
-                                "finish_reason": _last_finish_reason,
-                                "timestamp_ms": _time.time() * 1000,
-                            })
-                            yield {"type": "final", **final_result}
-                            return  # Success - exit retry loop
-                finally:
-                    # Safely close client with timeout to avoid SSL shutdown segfaults
-                    # This is critical on Linux with OpenSSL 3.x where SSL_shutdown can hang
-                    try:
-                        await asyncio.wait_for(client.aclose(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("Client close timed out, forcing close")
-                        # Force close without waiting for SSL shutdown
+                                # Stream ended without [DONE] - yield final result anyway
+                                # This can happen with some API implementations
+                                logger.warning("Stream ended without [DONE] marker, yielding accumulated content")
+                                # ...but say so. Without a marker we cannot tell a
+                                # complete answer from one cut off mid-generation, and
+                                # accepting the latter as final is silent truncation.
+                                if not _last_finish_reason:
+                                    _last_finish_reason = "incomplete_stream"
+                                assistant: dict[str, Any] = {
+                                    "role": "assistant",
+                                    "content": "".join(accumulated_content) if accumulated_content else ""
+                                }
+                                # One home for the text — see the main loop above.
+                                _thinking = "".join(accumulated_reasoning)
+                                if _thinking and not self._reasoning_text_from_details(
+                                        accumulated_reasoning_details):
+                                    assistant["reasoning_content"] = _thinking
+                                if accumulated_tool_calls:
+                                    tool_calls_list = [accumulated_tool_calls[idx] for idx in sorted(accumulated_tool_calls.keys())]
+                                    assistant["tool_calls"] = tool_calls_list
+                                if accumulated_reasoning_details:
+                                    assistant["reasoning_details"] = [
+                                        accumulated_reasoning_details[idx]
+                                        for idx in sorted(accumulated_reasoning_details.keys())
+                                    ]
+                                if accumulated_routing and accumulated_routing.get("selected"):
+                                    assistant["served_by"] = accumulated_routing["selected"]
+                                final_result = {"assistant": assistant}
+                                if accumulated_usage:
+                                    final_result["usage"] = accumulated_usage
+                                if _last_finish_reason:
+                                    final_result["finish_reason"] = _last_finish_reason
+                                await _report_end(usage=accumulated_usage,
+                                                  routing=accumulated_routing,
+                                                  finish_reason=_last_finish_reason)
+                                yield {"type": "final", **final_result}
+                                return  # Success - exit retry loop
+                    finally:
+                        # Safely close client with timeout to avoid SSL shutdown segfaults
+                        # This is critical on Linux with OpenSSL 3.x where SSL_shutdown can hang
                         try:
-                            await asyncio.shield(asyncio.sleep(0))  # Give event loop a tick
-                        except Exception:
-                            pass
-                    except Exception as close_err:
-                        logger.debug(f"Error during client close (ignored): {close_err}")
+                            await asyncio.wait_for(client.aclose(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("Client close timed out, forcing close")
+                            # Force close without waiting for SSL shutdown
+                            try:
+                                await asyncio.shield(asyncio.sleep(0))  # Give event loop a tick
+                            except Exception:
+                                pass
+                        except Exception as close_err:
+                            logger.debug(f"Error during client close (ignored): {close_err}")
 
-                # Body-level 400 signature-bypass retry for streaming (mirrors
-                # the non-streaming path). Flag was set inside the SSE chunk
-                # parser; inject the bypass token here and retry the same
-                # attempt slot. One-shot per request via _sig_retried.
-                if _body_400_sig_retry_msg and not _sig_retried:
-                    n_patched = self._inject_signature_bypass(payload)
-                    if n_patched > 0:
-                        _sig_retried = True
+                    # Body-level 400 signature-bypass retry for streaming (mirrors
+                    # the non-streaming path). Flag was set inside the SSE chunk
+                    # parser; inject the bypass token here and retry the same
+                    # attempt slot. One-shot per request via _sig_retried.
+                    if _body_400_sig_retry_msg and not _sig_retried:
+                        n_patched = self._inject_signature_bypass(payload)
+                        if n_patched > 0:
+                            _sig_retried = True
+                            logger.warning(
+                                "Body-400 stream retry: injecting signature bypass "
+                                "token into reasoning_details (likely cross-backend "
+                                "Vertex<->AI Studio routing mismatch). model=%s "
+                                "patched_blocks=%d detail=%r",
+                                self.model, n_patched, _body_400_sig_retry_msg[:200],
+                            )
+                            await self._report_status(
+                                status_scope,
+                                f"Signature bypass retry: {self.model}",
+                            )
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, True,
+                                "body-400 signature bypass (stream)",
+                                attempt, self.max_retries + 1,
+                            )
+                            continue
+
+                    # Body-level 400 OpenAI encrypted-reasoning retry for streaming
+                    # (mirrors the non-streaming path). Two-stage recovery, heals
+                    # payload AND original session messages.
+                    if _body_400_enc_retry_msg and _enc_retries < 2:
+                        recovery = self._recover_encrypted_reasoning(
+                            _body_400_enc_retry_msg, payload, messages, _enc_retries)
+                        if recovery:
+                            _enc_retries += 1
+                            logger.warning(
+                                "Body-400 stream retry: %s (defective encrypted "
+                                "reasoning item). model=%s detail=%r",
+                                recovery, self.model, _body_400_enc_retry_msg[:500],
+                            )
+                            await self._report_status(
+                                status_scope,
+                                f"Encrypted-reasoning retry: {self.model}",
+                            )
+                            await self._notify_retry(
+                                "openai_httpx", self.model, url, True,
+                                "body-400 encrypted-reasoning strip (stream)",
+                                attempt, self.max_retries + 1,
+                            )
+                            continue
+
+                    # Body-level upstream 429 retry for streaming (mirrors the
+                    # non-streaming path). The flag was set inside the SSE chunk
+                    # parser; here we apply backoff and drop service_tier from the
+                    # *local* payload (flex -> standard) on the first 429 so the
+                    # retry tries the standard tier - without mutating
+                    # self.service_tier (singleton-safe).
+                    if _body_429_retry_msg and attempt < self.rate_limit_max_retries:
+                        base = self.rate_limit_backoff * (1.5 ** attempt)
+                        jitter = base * random.uniform(0.0, 0.5)
+                        backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
+                        tier_note = ""
+                        if payload.get("service_tier"):
+                            dropped = payload.pop("service_tier")
+                            tier_note = f", dropping service_tier={dropped!r}"
                         logger.warning(
-                            "Body-400 stream retry: injecting signature bypass "
-                            "token into reasoning_details (likely cross-backend "
-                            "Vertex<->AI Studio routing mismatch). model=%s "
-                            "patched_blocks=%d detail=%r",
-                            self.model, n_patched, _body_400_sig_retry_msg[:200],
+                            f"Upstream 429 in stream chunk ({_body_429_retry_msg[:80]}), "
+                            f"retrying in {backoff_time:.0f}s "
+                            f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
                         )
                         await self._report_status(
                             status_scope,
-                            f"Signature bypass retry: {self.model}",
+                            f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
                         )
                         await self._notify_retry(
                             "openai_httpx", self.model, url, True,
-                            "body-400 signature bypass (stream)",
-                            attempt, self.max_retries + 1,
+                            f"Upstream 429 body-error{tier_note}",
+                            attempt, self.rate_limit_max_retries + 1,
                         )
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
 
-                # Body-level 400 OpenAI encrypted-reasoning retry for streaming
-                # (mirrors the non-streaming path). Two-stage recovery, heals
-                # payload AND original session messages.
-                if _body_400_enc_retry_msg and _enc_retries < 2:
-                    recovery = self._recover_encrypted_reasoning(
-                        _body_400_enc_retry_msg, payload, messages, _enc_retries)
-                    if recovery:
-                        _enc_retries += 1
-                        logger.warning(
-                            "Body-400 stream retry: %s (defective encrypted "
-                            "reasoning item). model=%s detail=%r",
-                            recovery, self.model, _body_400_enc_retry_msg[:500],
-                        )
-                        await self._report_status(
-                            status_scope,
-                            f"Encrypted-reasoning retry: {self.model}",
-                        )
-                        await self._notify_retry(
-                            "openai_httpx", self.model, url, True,
-                            "body-400 encrypted-reasoning strip (stream)",
-                            attempt, self.max_retries + 1,
-                        )
+                    # Retries exhausted (or one-shot recovery already spent):
+                    # raise instead of silently starting another attempt.
+                    if _body_429_retry_msg:
+                        raise LLMRateLimitError(
+                            f"Upstream 429 body-error after retries: {_body_429_retry_msg[:200]}",
+                            provider="openai_httpx", model=self.model)
+                    if _body_400_sig_retry_msg or _body_400_enc_retry_msg:
+                        _msg = _body_400_sig_retry_msg or _body_400_enc_retry_msg
+                        _msg = f"Unrecoverable body-400 in stream: {_msg[:300]}"
+                        # A request the endpoint refuses as it is: the status
+                        # error the agent server falls back on, as for a 400.
+                        raise httpx.HTTPStatusError(
+                            _msg, request=response.request,
+                            response=httpx.Response(400, text=_msg, request=response.request))
+
+                except asyncio.CancelledError as error:
+                    # Re-raise cancellation without wrapping -- after telling the
+                    # hooks: what streamed so far is billed. Its usage is known only
+                    # when the usage chunk came before the cancel.
+                    logger.info("HTTPX streaming request cancelled by user")
+                    if not ended:
+                        await _report_end(error=str(error) or "cancelled",
+                                          usage=accumulated_usage, routing=accumulated_routing)
+                    raise
+
+                except httpx.TimeoutException as e:
+                    last_exception = e
+                    if attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
+                        await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._notify_retry("openai_httpx", self.model, url, True, f"Timeout: {e}", attempt, self.max_retries + 1)
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
                         continue
+                    else:
+                        logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
+                        await self._report_status(status_scope, f"Timeout after retries: {self.model}")
+                        raise LLMConnectionError(
+                            f"Request timed out: {e}", provider="openai_httpx", model=self.model,
+                        ) from e
 
-                # Body-level upstream 429 retry for streaming (mirrors the
-                # non-streaming path). The flag was set inside the SSE chunk
-                # parser; here we apply backoff and drop service_tier from the
-                # *local* payload (flex -> standard) on the first 429 so the
-                # retry tries the standard tier - without mutating
-                # self.service_tier (singleton-safe).
-                if _body_429_retry_msg and attempt < self.rate_limit_max_retries:
-                    base = self.rate_limit_backoff * (1.5 ** attempt)
-                    jitter = base * random.uniform(0.0, 0.5)
-                    backoff_time = 0.0 if _release_pin_after_refusal() else base + jitter
-                    tier_note = ""
-                    if payload.get("service_tier"):
-                        dropped = payload.pop("service_tier")
-                        tier_note = f", dropping service_tier={dropped!r}"
-                    logger.warning(
-                        f"Upstream 429 in stream chunk ({_body_429_retry_msg[:80]}), "
-                        f"retrying in {backoff_time:.0f}s "
-                        f"(attempt {attempt + 1}/{self.rate_limit_max_retries}){tier_note}"
-                    )
-                    await self._report_status(
-                        status_scope,
-                        f"Upstream 429, retry {attempt + 1}/{self.rate_limit_max_retries}: {self.model} (wait {backoff_time:.0f}s)"
-                    )
-                    await self._notify_retry(
-                        "openai_httpx", self.model, url, True,
-                        f"Upstream 429 body-error{tier_note}",
-                        attempt, self.rate_limit_max_retries + 1,
-                    )
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
+                except httpx.HTTPStatusError as e:
+                    last_exception = e  # type: ignore[assignment]  # Can be HTTPStatusError, TimeoutException, or NetworkError
+                    if e.response.status_code >= 500 and attempt < self.max_retries:
+                        # Server error - retry
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
+                        await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({e.response.status_code})", attempt, self.max_retries + 1)
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
+                        continue
+                    else:
+                        # Client error or max retries exceeded
+                        # Error message already in exception (we read it before raising in streaming mode)
+                        error_msg = str(e)
+                        logger.error(f"HTTP error (streaming): {error_msg}")
+                        await self._report_status(status_scope, f"HTTP error: {self.model}")
+                        # The HTTPStatusError itself, as the non-streaming path and
+                        # the Responses route raise it: the agent server falls back
+                        # (and blocks a dead key or model) on exactly that type. A
+                        # plain Exception ended the run without trying the chain.
+                        raise
 
-                # Retries exhausted (or one-shot recovery already spent):
-                # raise instead of silently starting another attempt.
-                if _body_429_retry_msg:
-                    raise LLMRateLimitError(
-                        f"Upstream 429 body-error after retries: {_body_429_retry_msg[:200]}",
-                        provider="openai_httpx", model=self.model,
-                    )
-                if _body_400_sig_retry_msg or _body_400_enc_retry_msg:
-                    _msg = _body_400_sig_retry_msg or _body_400_enc_retry_msg
-                    raise Exception(
-                        f"Unrecoverable body-400 in stream: {_msg[:300]}"
-                    )
+                except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                    last_exception = e  # type: ignore[assignment]  # Multiple exception types possible
+                    if attempt < self.max_retries:
+                        backoff_time = self.retry_backoff * (2 ** attempt)
+                        logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
+                        await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
+                        await self._notify_retry("openai_httpx", self.model, url, True, f"Network error: {e}", attempt, self.max_retries + 1)
+                        await self._cancellable_sleep(backoff_time, cancellation_token)
+                        continue
+                    else:
+                        logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
+                        await self._report_status(status_scope, f"Network error after retries: {self.model}")
+                        raise LLMConnectionError(
+                            f"Network/protocol error: {e}", provider="openai_httpx", model=self.model,
+                        ) from e
 
-            except asyncio.CancelledError:
-                # Re-raise cancellation without wrapping
-                logger.info("HTTPX streaming request cancelled by user")
-                raise
-
-            except httpx.TimeoutException as e:
-                last_exception = e
-                if attempt < self.max_retries:
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Request timeout, retrying in {backoff_time}s: {e}")
-                    await self._report_status(status_scope, f"Timeout, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await self._notify_retry("openai_httpx", self.model, url, True, f"Timeout: {e}", attempt, self.max_retries + 1)
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    logger.error(f"Request timed out after {self.max_retries + 1} attempts: {e}")
-                    await self._report_status(status_scope, f"Timeout after retries: {self.model}")
-                    raise LLMConnectionError(
-                        f"Request timed out: {e}", provider="openai_httpx", model=self.model,
-                    ) from e
-
-            except httpx.HTTPStatusError as e:
-                last_exception = e  # type: ignore[assignment]  # Can be HTTPStatusError, TimeoutException, or NetworkError
-                if e.response.status_code >= 500 and attempt < self.max_retries:
-                    # Server error - retry
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Server error {e.response.status_code}, retrying in {backoff_time}s")
-                    await self._report_status(status_scope, f"Server error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await self._notify_retry("openai_httpx", self.model, url, True, f"Server error ({e.response.status_code})", attempt, self.max_retries + 1)
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    # Client error or max retries exceeded
-                    # Error message already in exception (we read it before raising in streaming mode)
-                    error_msg = str(e)
-                    logger.error(f"HTTP error (streaming): {error_msg}")
-                    await self._report_status(status_scope, f"HTTP error: {self.model}")
-                    raise Exception(error_msg) from e
-
-            except (httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                last_exception = e  # type: ignore[assignment]  # Multiple exception types possible
-                if attempt < self.max_retries:
-                    backoff_time = self.retry_backoff * (2 ** attempt)
-                    logger.warning(f"Network/protocol error (stream interrupted), retrying in {backoff_time}s: {e}")
-                    await self._report_status(status_scope, f"Network error, retry {attempt + 1}/{self.max_retries}: {self.model}")
-                    await self._notify_retry("openai_httpx", self.model, url, True, f"Network error: {e}", attempt, self.max_retries + 1)
-                    await self._cancellable_sleep(backoff_time, cancellation_token)
-                    continue
-                else:
-                    logger.error(f"Network/protocol error after {self.max_retries + 1} attempts: {e}")
-                    await self._report_status(status_scope, f"Network error after retries: {self.model}")
-                    raise LLMConnectionError(
-                        f"Network/protocol error: {e}", provider="openai_httpx", model=self.model,
-                    ) from e
-
-        # Should never reach here, but just in case
-        raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
+            # Should never reach here, but just in case
+            raise Exception(f"Request failed after {self.max_retries + 1} attempts") from last_exception
+        except BaseException as error:
+            # Whatever ends the request without a report yet -- a cancel during
+            # a retry wait, a caller abandoning the stream (GeneratorExit; awaiting
+            # is allowed while it closes), an unexpected exception -- is reported
+            # here, once, and travels on unchanged.
+            if not ended:
+                await _report_end(error=_ending_error(error))
+            raise
 
     def _parse_retry_after(self, retry_after: Optional[str]) -> Optional[float]:
         """Parse Retry-After header value."""
