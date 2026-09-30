@@ -1026,11 +1026,9 @@ plugins:
       type: message_validator
       enabled: true
       config:
-        log_level: warning
-        strict_mode: false
-        # disable it
-        max_tool_response_size_kb: 9999  # Hard limit: 50 KB (≈12.5k tokens)
-        warn_tool_response_size_kb: 9998  # Warn at 30 KB (≈7.5k tokens)
+        # size checks effectively off (the plugin's defaults: 50 / 20 KB)
+        max_tool_response_size_kb: 9999
+        warn_tool_response_size_kb: 9998
 
     markdown_formatter:
       type: markdown_formatter

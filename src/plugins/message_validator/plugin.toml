@@ -5,7 +5,7 @@
 [plugin]
 name = "message_validator"
 version = "1.0.0"
-description = "Validates and sanitizes messages before LLM calls to ensure safety, proper formatting, and compliance with content policies.\n"
+description = "Repairs the structure of the message history before LLM calls: tool-call pairing, tool names, message order."
 author = "Enrico Ehrich"
 entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["hooks"]

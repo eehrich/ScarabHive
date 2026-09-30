@@ -7,8 +7,8 @@ Hook definitions are loaded from schema.yaml, handlers from hooks.py.
 **Plugin Type:** Hook-only (inherits from SchemaBasedPluginHook)
 
 **Hooks Defined in schema.yaml:**
-- message_validator: Main validation hook (pre_llm_call)
-- message_structure_validator: Structure validation hook (pre_llm_call)
+- validate_messages: checks and repairs the history (pre_llm_call)
+- validate_structure: logs messages without a role (pre_llm_call)
 """
 
 from pathlib import Path

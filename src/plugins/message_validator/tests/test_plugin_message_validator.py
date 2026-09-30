@@ -1,5 +1,7 @@
 """Unit tests for message_validator plugin."""
 
+import re
+
 import pytest
 
 from plugins.message_validator.hooks import (
@@ -11,15 +13,20 @@ from agent_system.llm.models import ChatMessage
 class TestMessageValidatorInitialization:
     """Test MessageValidator initialization."""
 
-    def test_default_initialization(self):
-        """Test validator with default log level."""
-        validator = InternalMessageValidator()
-        assert validator.log_level == "warning"
+    def test_server_config_overrides_schema_defaults(self):
+        """The plugins.yaml `config:` block reaches the size checks."""
+        from types import SimpleNamespace
+        from plugins.message_validator.plugin import PLUGIN_FACTORY
 
-    def test_custom_log_level(self):
-        """Test validator with custom log level."""
-        validator = InternalMessageValidator(log_level="DEBUG")
-        assert validator.log_level == "debug"
+        plugin = PLUGIN_FACTORY("mv", {}, SimpleNamespace(config={"warn_tool_response_size_kb": 1}))
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None,
+                        tool_calls=[{"id": "c1", "function": {"name": "t"}}]),
+            ChatMessage(role="tool", tool_call_id="c1", content="x" * 2048),
+        ]
+        issues = plugin.validator.validate_and_repair(messages).issues
+        assert [i.type for i in issues] == ["tool_response_large"]
 
 
 class TestToolCallConsistency:
@@ -1540,3 +1547,394 @@ class TestInterleavedMessageInToolBlock:
         assert repaired[3].tool_call_id == "call_k70"
         assert repaired[4].role == "user"
         assert "NOTICE" in repaired[4].content
+
+
+STRUCTURAL_ISSUES = {"orphaned_tool_call", "orphaned_tool_response", "missing_tool_call_id",
+                     "interleaved_message_in_tool_block", "invalid_first_message"}
+
+
+def _call(call_id, name="t"):
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+def _structural_issues(messages):
+    """What a second pass still finds that a provider would refuse."""
+    return [i.type for i in InternalMessageValidator().validate_and_repair(messages).issues
+            if i.type in STRUCTURAL_ISSUES]
+
+
+class TestRepairsFindMessagesByIdentity:
+    """Repairs used indices of the input after earlier repairs had moved or
+    removed messages: they stripped a valid call, kept an orphaned one, or
+    dropped merged tool calls while keeping their responses."""
+
+    def test_partially_answered_message_keeps_its_answered_call(self):
+        messages = [
+            ChatMessage(role="user", content="weather and news"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1"), _call("c2")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="sunny"),
+            ChatMessage(role="user", content="and?"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [tc["id"] for tc in repaired[1].tool_calls] == ["c1"]
+        assert repaired[2].tool_call_id == "c1"
+        assert _structural_issues(repaired) == []
+
+    def test_orphan_is_stripped_after_the_head_was_removed(self):
+        messages = [
+            ChatMessage(role="system", content="s"),
+            ChatMessage(role="assistant", content="t", tool_calls=[_call("c0")]),
+            ChatMessage(role="tool", tool_call_id="c0", content="r"),
+            ChatMessage(role="user", content="u"),
+            ChatMessage(role="assistant", content="t", tool_calls=[_call("c2"), _call("c3")]),
+            ChatMessage(role="tool", tool_call_id="c2", content="r"),
+            ChatMessage(role="user", content="u"),
+            ChatMessage(role="assistant", content="t", tool_calls=[_call("c4")]),
+            ChatMessage(role="tool", tool_call_id="c4", content="r"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        calls = [[tc["id"] for tc in m.tool_calls or []] for m in repaired if m.role == "assistant"]
+        assert calls == [["c2"], ["c4"]]
+        assert _structural_issues(repaired) == []
+
+    def test_merged_run_of_assistants_keeps_calls_and_responses(self):
+        messages = [
+            ChatMessage(role="user", content="u"),
+            ChatMessage(role="assistant", content=""),
+            ChatMessage(role="assistant", content="a"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1"), _call("c2")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="r"),
+            ChatMessage(role="tool", tool_call_id="c2", content="r"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [m.role for m in repaired] == ["user", "assistant", "tool", "tool"]
+        assert repaired[1].content == "a"
+        assert [tc["id"] for tc in repaired[1].tool_calls] == ["c1", "c2"]
+        assert _structural_issues(repaired) == []
+
+
+class TestThroughTheHookRegistry:
+    """The hooks as the agent loop runs them: registered in a HookRegistry,
+    each on a deep copy, the result mirrored into the next step's history."""
+
+    @staticmethod
+    async def _registry():
+        from pathlib import Path
+        from agent_system.hooks import HookType
+        from agent_system.hooks.registry import HookRegistry
+        from plugins.message_validator.hooks import MessageValidatorPlugin
+
+        plugin = MessageValidatorPlugin(Path(__file__).resolve().parents[1])
+        registry = HookRegistry()
+        for hook in plugin.get_hooks():
+            await registry.register_hook(HookType.PRE_LLM_CALL, f"message_validator.{hook['name']}",
+                                         plugin, category=hook.get("category"))
+        return registry
+
+    @staticmethod
+    async def _send(registry, messages):
+        from agent_system.hooks import HookContext, HookType
+
+        context = HookContext(hook_type=HookType.PRE_LLM_CALL, request_id="r",
+                              session_id="s", messages=messages)
+        return (await registry.execute_hooks(HookType.PRE_LLM_CALL, context)).messages
+
+    async def test_issue_without_repair_leaves_every_request_a_prefix_of_the_next(self):
+        """A tool result that only looks like JSON is a warning with nothing
+        to repair; the history must not change from call to call because of
+        it (it used to strip the previous turn's reasoning_details)."""
+        registry = await self._registry()
+        history = [ChatMessage(role="user", content="go")]
+        requests = []
+        for step in range(3):
+            sent = await self._send(registry, list(history))
+            requests.append([m.model_dump(exclude_none=True) for m in sent])
+            history = list(sent)
+            history.append(ChatMessage(role="assistant", content=None, tool_calls=[_call(f"c{step}")],
+                                       reasoning_details=[{"type": "reasoning.encrypted", "data": f"x{step}"}]))
+            history.append(ChatMessage(role="tool", tool_call_id=f"c{step}",
+                                       content="[1/3] fetched" if step == 0 else "ok"))
+
+        for earlier, later in zip(requests, requests[1:]):
+            assert later[:len(earlier)] == earlier
+
+    async def test_invalid_tool_name_is_renamed(self):
+        """ChatMessage.tool_calls holds dicts; the repair only knew objects
+        with a `function` attribute and renamed nothing."""
+        registry = await self._registry()
+        sent = await self._send(registry, [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1", "file_ops.read")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+        ])
+
+        assert sent[1].tool_calls[0]["function"]["name"] == "file_ops_read"
+
+    async def test_repair_keeps_the_reasoning_of_turns_before_it(self):
+        """Invalidation starts at the first repaired message: an earlier turn
+        came from an unchanged history, and stripping its reasoning moved the
+        cache break to the front of the conversation."""
+        registry = await self._registry()
+        sent = await self._send(registry, [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c0")],
+                        reasoning_details=[{"type": "reasoning.encrypted", "data": "x0"}]),
+            ChatMessage(role="tool", tool_call_id="c0", content="ok"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")],
+                        reasoning_details=[{"type": "reasoning.encrypted", "data": "x1"}]),
+            ChatMessage(role="user", content="and?"),
+        ])
+
+        assert sent[1].reasoning_details == [{"type": "reasoning.encrypted", "data": "x0"}]
+        assert sent[3].tool_calls is None
+        assert sent[3].rd_orphaned is True
+
+    async def test_issue_without_repair_is_no_change(self):
+        """A warning with nothing to repair must not report a change: the
+        agent loop takes a changed list as a rewrite of the session history
+        and saves it again on every call."""
+        registry = await self._registry()
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c0")]),
+            ChatMessage(role="tool", tool_call_id="c0", content="[1/3] fetched"),
+        ]
+        sent = await self._send(registry, messages)
+
+        assert sent is messages
+
+
+class TestBlocksAndPasses:
+    """Pairing is per tool block, a dropped call keeps its turn, and the
+    repair runs until nothing changes."""
+
+    def test_placeholder_is_not_glued_onto_a_final_answer(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="assistant", content="Here is the answer."),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, m.content, m.tool_calls) for m in repaired] == [
+            ("user", "go", None), ("assistant", "Here is the answer.", None)]
+
+    def test_placeholder_on_a_turn_left_with_nothing(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="user", content="and?"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert repaired[1].content == "Tool execution was interrupted"
+        assert repaired[1].tool_calls is None
+
+    def test_answer_after_a_later_call_turn_is_removed(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1"), _call("c2")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c3")]),
+            ChatMessage(role="tool", tool_call_id="c3", content="ok"),
+            ChatMessage(role="tool", tool_call_id="c2", content="ok"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, m.tool_call_id, [tc["id"] for tc in m.tool_calls or []]) for m in repaired] == [
+            ("user", None, []), ("assistant", None, ["c1"]), ("tool", "c1", []),
+            ("assistant", None, ["c3"]), ("tool", "c3", [])]
+
+    def test_call_id_reused_across_turns(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="user", content="again"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert repaired[1].tool_calls is None
+        assert [tc["id"] for tc in repaired[3].tool_calls] == ["c1"]
+        assert repaired[4].tool_call_id == "c1"
+
+    def test_head_removal_keeps_a_later_answer_with_the_same_id(self):
+        messages = [
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="old"),
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="new"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, m.content, [tc["id"] for tc in m.tool_calls or []]) for m in repaired] == [
+            ("user", "go", []), ("assistant", None, ["c1"]), ("tool", "new", [])]
+
+    def test_unanswered_call_of_an_earlier_block_moves_nothing(self):
+        """A late answer to a closed block is removed; the messages before it
+        were never inside an open block and are not reported as interleaved."""
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1")]),
+            ChatMessage(role="user", content="again"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c2")]),
+            ChatMessage(role="tool", tool_call_id="c2", content="ok"),
+            ChatMessage(role="user", content="more"),
+            ChatMessage(role="tool", tool_call_id="c1", content="late"),
+        ]
+        result = InternalMessageValidator().validate_and_repair(messages)
+
+        assert "interleaved_message_in_tool_block" not in [i.type for i in result.issues]
+        assert [m.content for m in result.repaired_messages if m.role == "user"] == ["go", "again", "more"]
+        assert result.repaired_messages[-1].content == "more"
+
+    def test_duplicate_id_answer_goes_to_the_call_that_stays(self):
+        """With one id twice in a block and one of the names unusable, the
+        answer belongs to the usable call; pairing it with the dropped one
+        lost the valid call as unanswered."""
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_call("c1", "!!"), _call("c1")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, [tc["function"]["name"] for tc in m.tool_calls or []], m.tool_call_id)
+                for m in repaired] == [("user", [], None), ("assistant", ["t"], None), ("tool", [], "c1")]
+
+    def test_unusable_tool_name_drops_only_that_call_and_its_answer(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content="x", tool_calls=[_call("c1", "!!"), _call("c2")]),
+            ChatMessage(role="tool", tool_call_id="c1", content="ok"),
+            ChatMessage(role="tool", tool_call_id="c2", content="ok"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, m.content, m.tool_call_id, [tc["id"] for tc in m.tool_calls or []])
+                for m in repaired] == [
+            ("user", "go", None, []), ("assistant", "x", None, ["c2"]), ("tool", "ok", "c2", [])]
+
+    def test_merge_exposed_by_a_removal_happens_in_the_same_call(self):
+        messages = [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(role="assistant", content="a"),
+            ChatMessage(role="tool", tool_call_id="zz", content="stray"),
+            ChatMessage(role="assistant", content="b"),
+        ]
+        repaired = InternalMessageValidator().validate_and_repair(messages).repaired_messages
+
+        assert [(m.role, m.content) for m in repaired] == [("user", "go"), ("assistant", "a\n\nb")]
+
+
+def _provider_violations(messages):
+    """What a provider refuses, checked without the validator: the first
+    non-instruction message asks, every call turn is followed directly by
+    exactly its answers, no stray tool answer, no two assistant turns in a row."""
+    from agent_system.llm.message_roles import INSTRUCTION_ROLES, is_input
+
+    found = []
+    first = next((m for m in messages if m.role not in INSTRUCTION_ROLES or is_input(m)), None)
+    if first is not None and not is_input(first):
+        found.append("first")
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.role == "tool":
+            found.append(f"stray@{i}")
+        elif m.role == "assistant" and m.tool_calls:
+            j = i + 1
+            while j < len(messages) and messages[j].role == "tool":
+                j += 1
+            answers = sorted(t.tool_call_id for t in messages[i + 1:j])
+            if answers != sorted(tc["id"] for tc in m.tool_calls):
+                found.append(f"block@{i}")
+            i = j
+            continue
+        i += 1
+    found += [f"consecutive@{k}" for k in range(len(messages) - 1)
+              if messages[k].role == messages[k + 1].role == "assistant"]
+    return found
+
+
+def _random_history(rng):
+    messages = [ChatMessage(role="system", content="sys")] if rng.random() < 0.8 else []
+    ids = [f"c{k}" for k in range(rng.randint(1, 5))]
+    for n in range(rng.randint(1, 12)):
+        r = rng.random()
+        if r < 0.25:
+            messages.append(ChatMessage(role="user", content=f"U{n}"))
+        elif r < 0.55:
+            calls = [_call(rng.choice(ids), rng.choice(["t", "t", "a.b", "!!"]))
+                     for _ in range(rng.randint(0, 3))]
+            messages.append(ChatMessage(role="assistant", content=rng.choice([None, "", " ", f"A{n}"]),
+                                        tool_calls=calls or None))
+        elif r < 0.9:
+            messages.append(ChatMessage(role="tool", tool_call_id=rng.choice(ids + [None]),
+                                        content=rng.choice(["ok", "[1/2]", "{}"])))
+        else:
+            messages.append(ChatMessage(role=rng.choice(["system", "developer"]), content="note"))
+    return messages
+
+
+VALID_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _usable_name(name):
+    """Whether a provider can take the name after the documented rewrite
+    (/ -> __, . and space -> _, other characters dropped, 3+ underscores ->
+    two, underscores trimmed). Written from the guide, not from hooks.py."""
+    if VALID_TOOL_NAME.match(name):
+        return True
+    rewritten = name.replace("/", "__").replace(".", "_").replace(" ", "_")
+    rewritten = re.sub(r"[^a-zA-Z0-9_-]", "", rewritten)
+    rewritten = re.sub(r"_{3,}", "__", rewritten).strip("_")
+    return bool(rewritten) and bool(VALID_TOOL_NAME.match(rewritten))
+
+
+def _answerable(history):
+    """Tool answers a complete repair keeps: in the block of the latest call
+    turn, for a call with a usable name, paired first in, first out."""
+    pending, count = {}, 0
+    for m in history:
+        if m.role == "assistant" and m.tool_calls:
+            pending = {}
+            for tc in m.tool_calls:
+                if _usable_name(tc["function"]["name"]):
+                    pending[tc["id"]] = pending.get(tc["id"], 0) + 1
+        elif m.role == "tool" and m.tool_call_id and pending.get(m.tool_call_id):
+            pending[m.tool_call_id] -= 1
+            count += 1
+    return count
+
+
+def test_random_histories_come_out_valid_complete_and_stable():
+    """Seeded fuzz, judged by _provider_violations, not by the validator."""
+    import random
+
+    rng = random.Random(20260930)
+    for _ in range(300):
+        history = _random_history(rng)
+        repaired = InternalMessageValidator().validate_and_repair(list(history)).repaired_messages
+
+        assert _provider_violations(repaired) == [], history
+        assert all(VALID_TOOL_NAME.match(tc["function"]["name"])
+                   for m in repaired for tc in m.tool_calls or [])
+        assert all(m.content or m.tool_calls for m in repaired if m.role == "assistant")
+        opening = next((m for m in history if m.role not in ("system", "developer")), None)
+        if opening is not None and opening.role == "user":
+            assert sum(m.role == "tool" for m in repaired) == _answerable(history), history
+        assert [m.content for m in repaired if m.role == "user"] == \
+            [m.content for m in history if m.role == "user"]
+        assistants = [m for m in history if m.role == "assistant"]
+        final = assistants[-1] if assistants else None
+        if (final is not None and not final.tool_calls and (final.content or "").strip()
+                and any(m.role == "user" for m in history[:history.index(final)])):
+            assert any(final.content in (m.content or "") for m in repaired if m.role == "assistant")
+        again = InternalMessageValidator().validate_and_repair(list(repaired)).repaired_messages
+        assert [m.model_dump() for m in again] == [m.model_dump() for m in repaired]
