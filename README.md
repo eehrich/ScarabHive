@@ -8,6 +8,17 @@ ScarabHive is a self-hosted framework for LLM agents, built around plugins. You 
 in YAML: its model, its prompt and the tools it may use. You run it in the browser, from the
 command line or through an OpenAI-compatible API.
 
+It is made for **developers and content creators who build agent workflows and want them to run
+well**: several agents that hand work to each other, a person who approves at the right step,
+and a clear view of what every call costs and why a run went the way it did.
+
+- **Developers** write plugins in plain Python, script runs from the command line, call agents
+  as models from their own code, and get a coding agent that works in their repositories.
+- **Content creators** build workflows in a graph editor, with research, image, audio and video
+  tools and n8n automations as steps, with little or no code.
+- **Both** see every LLM request and response, the tokens, the cache hits and the cost per call,
+  agent and model -- the numbers a workflow is tuned by.
+
 **Everything is a plugin** -- tools, hooks around the model call, panels in the UI, even the LLM
 providers. About 75 ship with it, and a new one is a folder with three small files.
 
