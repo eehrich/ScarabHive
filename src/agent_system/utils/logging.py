@@ -108,7 +108,7 @@ class ColorizedFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None, style='%', use_colors=None):
         super().__init__(fmt, datefmt, style)
         if use_colors is None:
-            self.use_colors = sys.stdout.isatty()
+            self.use_colors = console_colours()
         else:
             self.use_colors = use_colors
     
@@ -198,8 +198,23 @@ class SafeUnicodeFormatter(logging.Formatter):
         return formatted
 
 
+def console_colours() -> bool:
+    """Whether log lines on stdout get colours: a terminal, no NO_COLOR, not a dumb one.
+
+    The TERM check is cli_utils.common.dumb_terminal's; not imported from there, as cli_utils pulls the agent
+    runtime in. agent-cli then sets its console handler after --color (agent_cli.colour_console_logs), so an
+    explicit --color always colours them under NO_COLOR too.
+    """
+    try:
+        terminal = sys.stdout.isatty()
+    except Exception:
+        return False
+    return (terminal and not os.environ.get("NO_COLOR")
+            and os.environ.get("TERM", "").lower() not in ("dumb", "unknown"))
+
+
 def setup_logging(
-    enabled: bool, 
+    enabled: bool,
     level: str, 
     file_path: str,
     rotation_enabled: bool = True,
@@ -310,7 +325,7 @@ def setup_logging(
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(lvl)
     
-    # Use colored formatter for console output if it's a TTY
+    # Use colored formatter for console output if it's a TTY (whether it colours: console_colours)
     if sys.stdout.isatty():
         console_formatter: logging.Formatter = ColorizedFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     else:

@@ -30,7 +30,7 @@ from .tools.base import ToolServerRegistry
 from .tools.status import status_bus
 from .tools.integration import ToolServerIntegration, initialize_tools, shutdown_tools
 from .llm.batch.initialization import init_batch_system, shutdown_batch_system
-from .utils.logging import setup_role_logging
+from .utils.logging import ColorizedFormatter, setup_role_logging
 from .servers.agent.server import Agent
 from .servers.agent.entry import NotAnAgent, entry_agent
 
@@ -388,6 +388,13 @@ def close_cli_loop() -> None:
         # closed loop in the slot instead would hand later get_event_loop()
         # callers a dead loop and "Event loop is closed" errors.
         asyncio.set_event_loop(None)
+
+
+def colour_console_logs() -> None:
+    """On a terminal, log lines follow --color as the rest of agent-cli's output does."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler.formatter, ColorizedFormatter):
+            handler.formatter.use_colors = _supports_color()
 
 
 def _exit_on_unknown_profile(config: AgentSystemConfig, profile: str) -> None:
@@ -1091,6 +1098,7 @@ def _main() -> None:
     # logs/agent-cli.log), so it and the API do not write into one. Console
     # level is adjusted below.
     log_file = setup_role_logging(config.logging, "cli")
+    colour_console_logs()
     logger = logging.getLogger(__name__)
     # If verbose not set, reduce console output to WARNING to avoid noisy logs on stdout
     if not args.verbose:

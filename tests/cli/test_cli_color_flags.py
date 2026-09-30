@@ -33,6 +33,35 @@ def test_users_colour_on_a_terminal_unless_it_is_dumb(monkeypatch, term, expecte
     assert users._supports_color() is expected
 
 
+@pytest.mark.parametrize("env, expected", [({}, True), ({"NO_COLOR": "1"}, False), ({"TERM": "dumb"}, False)])
+def test_log_lines_colour_on_a_terminal_unless_it_says_otherwise(monkeypatch, env, expected):
+    """The console log handler (utils.logging) reads the same signals as the rest of agent-cli."""
+    from agent_system.utils import logging as log_utils
+
+    monkeypatch.setattr(log_utils.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert log_utils.ColorizedFormatter("%(message)s").use_colors is expected
+
+
+@pytest.mark.parametrize("mode, expected", [("never", False), ("always", True)])
+def test_agent_cli_log_lines_follow_color(monkeypatch, mode, expected):
+    """--color never silences them on a terminal, --color always colours them under NO_COLOR."""
+    import logging
+
+    from agent_system.utils.logging import ColorizedFormatter
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorizedFormatter("%(message)s", use_colors=not expected))
+    monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(common, "color_mode", mode)
+    cli.colour_console_logs()
+    assert handler.formatter.use_colors is expected
+
+
 @pytest.mark.parametrize("flags, wants_ansi", [
     (["--no-color"], False),
     (["--color", "never"], False),

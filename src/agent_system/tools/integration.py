@@ -191,13 +191,15 @@ class ToolServerIntegration:
             # The instance's own hook default lives in its MERGED server
             # config (raw and merged differ; agents get the merged form).
             # Guarded: one server whose merge does not validate must not
-            # take down startup -- it just registers on schema defaults.
+            # take down startup -- it registers on the default it was built with.
             try:
                 server_cfg = get_tool_server_config(server_name, config)
-                instance_hook_config = getattr(server_cfg, 'hook_config', None) if server_cfg else None
             except Exception:
                 logger.debug("No merged config for '%s'", server_name, exc_info=True)
-                instance_hook_config = None
+                server_cfg = None
+            # Not in this config: the one the instance was built with (PluginToolRegistry keeps its hook_config).
+            instance_hook_config = (getattr(server_cfg, 'hook_config', None) if server_cfg
+                                    else getattr(server, 'instance_hook_config', None))
 
             try:
                 registered_hooks = await register_plugin_hooks(

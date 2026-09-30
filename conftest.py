@@ -987,6 +987,53 @@ def _reset_all_global_state():
         pass
 
 
+_REAL_PLUGINS = (Path(__file__).parent / "src" / "plugins").resolve()
+
+
+def _from_the_real_plugins(module) -> bool:
+    places = [getattr(module, "__file__", None), *(getattr(module, "__path__", None) or [])]
+    return any(place and Path(place).resolve().is_relative_to(_REAL_PLUGINS) for place in places)
+
+
+@pytest.fixture(autouse=True)
+def the_plugins_package_stays_the_real_one():
+    """A test with plugin_dirs=[tmp_path / "plugins"] makes discovery register hand-built packages named after the
+    directories -- "plugins", pointing into tmp_path, when nothing imported the real one yet, and "plugins.<name>"
+    for a plugin the real package has too. Left behind, they are what `plugins.x` imports and where the LLM
+    provider registry reads its manifests for the rest of the run: later tests find no provider and no plugin.
+    Put back what the test found."""
+    def ours(name: str) -> bool:
+        return name == "plugins" or name.startswith("plugins.")
+
+    # Copies of sys.modules: another thread may import meanwhile. Classified first, changed after: a stray
+    # namespace package reads its parent from sys.modules when asked for its __path__.
+    before = {name: module for name, module in list(sys.modules.items()) if ours(name)}
+    yield
+    stray = [(name, module) for name, module in list(sys.modules.items())
+             if ours(name) and module is not before.get(name) and not _from_the_real_plugins(module)]
+    for name, module in stray:
+        if sys.modules.get(name) is not module:
+            continue
+        if name in before:
+            sys.modules[name] = before[name]
+        else:
+            del sys.modules[name]
+    if any(name == "plugins" for name, _module in stray):
+        from agent_system.llm import registry as llm_registry
+        llm_registry.reset_for_tests()  # its manifest scan read the stray directory
+
+
+@pytest.fixture(autouse=True)
+def root_log_handlers_keep_their_levels():
+    """agent-cli run in process (without --verbose) sets every console handler on the root logger to WARNING --
+    pytest's own capture handlers too, which then drop INFO/DEBUG from caplog and the failure reports for the rest
+    of the session. Put the levels back."""
+    levels = [(handler, handler.level) for handler in logging.getLogger().handlers]
+    yield
+    for handler, level in levels:
+        handler.setLevel(level)
+
+
 @pytest.fixture(autouse=True)
 def reset_global_state():
     """Reset all global state before and after each test."""

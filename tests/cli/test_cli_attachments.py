@@ -26,6 +26,7 @@ from agent_system.config.models import (
     ToolServerConfig,
     PluginsConfig,
 )
+from agent_stand_in import stand_in_for_agent
 
 
 @pytest.fixture
@@ -147,14 +148,14 @@ def booted(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "load_settings", lambda path=None: config)
     monkeypatch.setattr(agent_run, "load_settings", lambda path=None: config)
     monkeypatch.setattr(InitializationService, "initialize_for_cli", fake_init)
-    monkeypatch.setattr("agent_system.servers.agent.server.Agent", _DummyAgent)
-    monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _DummyAgent)
+    stand_in_for_agent(monkeypatch, _DummyAgent)
 
     async def fake_initialize_system(cfg):
         return ToolServerRegistry(), service
 
     async def fake_create_agent(cfg, registry, agent_name, session_service=None):
-        return _DummyAgent()
+        from agent_system.servers.agent.server import Agent
+        return Agent()
 
     async def fake_request(agent, request, session_id, llm_override=None,
                            llm_profile_info=None):
@@ -603,8 +604,7 @@ class TestAFinishedRunAlwaysPrintsItsResult:
                 yield {"type": "final", "summary": "done"}
                 yield {"type": "end"}
 
-        monkeypatch.setattr("agent_system.servers.agent.server.Agent", _SetResultAgent)
-        monkeypatch.setattr("agent_system.servers.agent.entry.Agent", _SetResultAgent)
+        stand_in_for_agent(monkeypatch, _SetResultAgent)
 
     @pytest.mark.parametrize("flag", ["--raw", "--verbose"])
     def test_agent_cli(self, booted, monkeypatch, capsys, flag):

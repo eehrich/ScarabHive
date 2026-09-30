@@ -510,7 +510,7 @@ dem er gestartet ist, und meldet eine Änderung auf der Platte im Bericht
 | `AGENT_CONFIG_PATH` | Config-Datei, wenn `--config` fehlt (sonst `config/config.yaml`) |
 | `AGENT_SERVER_URL` | Server für `reload` |
 | `AGENT_ADMIN_API_KEY`, `AGENT_API_KEY` | Schlüssel für `reload` |
-| `NO_COLOR`, `TERM=dumb` | keine Farben, solange `--color` auf `auto` steht (Warnungen des Loggers bleiben auf einem Terminal farbig) |
+| `NO_COLOR`, `TERM=dumb` | keine Farben, solange `--color` auf `auto` steht (auch in Log-Zeilen) |
 
 API-Schlüssel der LLM-Anbieter stehen in `config/local.env` (dieser Rechner) oder `config/secrets.env` neben der Config.
 
