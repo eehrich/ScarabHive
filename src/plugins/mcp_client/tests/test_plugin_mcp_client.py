@@ -43,6 +43,12 @@ def make_config(**overrides):
     return config
 
 
+def _live_children():
+    """This process's child processes that still run (zombies do not count)."""
+    return [p for p in psutil.Process().children(recursive=True)
+            if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+
+
 def tool_config(blocked=None, allowed=None):
     return types.SimpleNamespace(blocked=blocked or [], allowed=allowed or [])
 
@@ -133,6 +139,31 @@ class TestImageResults:
         saved = Path(items[0]["path"])
         assert saved.suffix == ".wav" and saved.read_bytes() == b"RIFFxxxxWAVE"
 
+    async def test_a_foreign_tool_name_cannot_leave_the_media_directory(self):
+        """The file name carries the tool name, which the foreign server picks."""
+        import base64
+        from plugins.mcp_client import connection as conn_mod
+        block = types.SimpleNamespace(
+            type="image", data=base64.b64encode(b"\x89PNG").decode(), mimeType="image/png")
+        items = conn_mod._persist_media_blocks(
+            types.SimpleNamespace(content=[block]), "probe", "../../escape")
+        saved = Path(items[0]["path"]).resolve()
+        assert saved.is_relative_to((self.media_dir / "probe").resolve())
+
+    async def test_media_files_never_share_a_path(self, monkeypatch):
+        """'a/b' and 'a_b' sanitize alike, and one tool twice in a millisecond
+        has the same time stamp: the later file replaced the earlier."""
+        import base64
+        from plugins.mcp_client import connection as conn_mod
+        monkeypatch.setattr(conn_mod, "time", types.SimpleNamespace(time=lambda: 1.0))
+        paths = []
+        for tool, payload in (("a/b", b"one"), ("a_b", b"two"), ("a_b", b"three")):
+            block = types.SimpleNamespace(type="image", data=base64.b64encode(payload).decode(),
+                                          mimeType="image/png")
+            paths.append(conn_mod._persist_media_blocks(types.SimpleNamespace(content=[block]), "probe", tool)[0]["path"])
+        assert len(set(paths)) == 3
+        assert [Path(p).read_bytes() for p in paths] == [b"one", b"two", b"three"]
+
     async def test_text_only_results_keep_the_old_shape(self, connection):
 
         assert await connection.call_tool("echo", {"text": "hi"}) == "hi"
@@ -174,6 +205,22 @@ class TestHandshake:
         with pytest.raises(MCPConnectionError):
             await conn.start()
         assert not conn.connected  # and it cleaned up after itself
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_never_answers_initialize_fails_in_time(self, monkeypatch):
+        """A stdio process that stays silent held start() -- and the pool lock
+        with every other connect and close_all behind it -- forever."""
+        from plugins.mcp_client import connection as conn_mod
+        monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
+        conn = ServerConnection(
+            "silent", make_config(args=["-c", "import time; time.sleep(60)"]), timeout=1.0,
+        )
+        try:
+            with pytest.raises(MCPConnectionError, match="handshake"):
+                await asyncio.wait_for(conn.start(), timeout=15)
+            assert not conn.connected
+        finally:
+            await conn.stop()
 
     @pytest.mark.asyncio
     async def test_connect_errors_name_the_actual_cause(self):
@@ -326,25 +373,44 @@ class TestCalls:
             await conn.stop()
 
     @pytest.mark.asyncio
-    async def test_first_text_block_wins(self):
-        """The contract is the FIRST text block, not just "some" text.
+    async def test_a_timed_out_call_does_not_stay_on_the_session(self):
+        """The caller got its timeout, but the call kept a task pinned to the
+        session until stop() -- one per hung call."""
+        conn = ServerConnection("probe", make_config(), timeout=1.0)
+        await conn.start()
+        try:
+            before = set(asyncio.all_tasks())
+            with pytest.raises(MCPConnectionError, match="did not answer"):
+                await conn.call_tool("sleep", {"seconds": 3})
+            await asyncio.sleep(0.3)
+            leftover = [t for t in asyncio.all_tasks() - before if not t.done()]
+            assert not leftover, f"hung call still running: {leftover}"
+            # Cancelling the call must not take the session down with it.
+            assert await conn.call_tool("add", {"a": 1, "b": 1}) == "2"
+        finally:
+            await conn.stop()
 
-        Consumers read this as the tool's answer. A server that prepends a
-        note and appends the payload would otherwise change meaning depending
-        on which block happened to be picked.
+    @pytest.mark.asyncio
+    async def test_every_text_block_reaches_the_model_in_order(self):
+        """All text blocks, in order, a blank line apart.
+
+        This test used to pin "the first text block wins". That rule was
+        carried over from the hand-written client (23d2fe5af), not chosen:
+        a server that splits its answer into several blocks lost everything
+        after the first, and a note before the payload hid the payload.
         """
         from types import SimpleNamespace
 
-        from plugins.mcp_client.connection import _first_text
+        from plugins.mcp_client.connection import _text
 
         result = SimpleNamespace(content=[
             SimpleNamespace(type="image", data="..."),
             SimpleNamespace(type="text", text="first"),
             SimpleNamespace(type="text", text="second"),
         ])
-        assert _first_text(result) == "first"
-        assert _first_text(SimpleNamespace(content=[])) is None
-        assert _first_text(SimpleNamespace(content=None)) is None
+        assert _text(result) == "first\n\nsecond"
+        assert _text(SimpleNamespace(content=[])) is None
+        assert _text(SimpleNamespace(content=None)) is None
 
     @pytest.mark.asyncio
     async def test_a_result_without_text_survives_json_dumps(self):
@@ -462,6 +528,128 @@ class TestPool:
             assert by_name["add"]["blocked"] is False
         finally:
             await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_foreign_text_is_capped(self):
+        """A result lands in the conversation whole, a description in every
+        request: both are cut, marked with the full length."""
+        pool = ExternalServerPool(timeout=30.0, max_result_chars=10, max_description_chars=5)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        try:
+            assert await pool.call_tool("probe", "echo", {"text": "x" * 30}) == "x" * 10 + "…[30 chars]"
+            assert await pool.call_tool("probe", "echo", {"text": "short"}) == "short"
+            structured = await pool.call_tool("probe", "resource_only", {})
+            assert isinstance(structured, str) and structured.endswith(" chars]")
+            add = next(t for t in (await pool.list_tools_by_server())["probe"] if t["name"] == "add")
+            assert add["description"].startswith("Add t…[")
+            # The server's error text reaches the model as str(error).
+            with pytest.raises(RuntimeError) as failed:
+                await pool.call_tool("probe", "boom", {})
+            assert str(failed.value).startswith("Tool call ") and str(failed.value).endswith(" chars]")
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_every_long_error_is_capped_and_keeps_its_type_where_it_can(self):
+        """McpError is no RuntimeError and needs ErrorData; an error with a
+        required second argument turned into a TypeError when rebuilt."""
+        from mcp.shared.exceptions import McpError
+        from mcp.types import ErrorData
+
+        class Needy(RuntimeError):
+            def __init__(self, message, code):
+                super().__init__(message)
+
+        errors = {"mcp": McpError(ErrorData(code=-1, message="x" * 100)),
+                  "needy": Needy("y" * 100, 7),
+                  "plain": MCPConnectionError("z" * 100)}
+
+        async def failing(tool, arguments):
+            raise errors[tool]
+
+        pool = ExternalServerPool(max_result_chars=10)
+        pool.configure({"fake": make_config()})
+        pool._connections["fake"] = types.SimpleNamespace(connected=True, call_tool=failing)
+        raised = {}
+        for tool in errors:
+            with pytest.raises(Exception) as failed:
+                await pool.call_tool("fake", tool, {})
+            raised[tool] = failed.value
+        assert str(raised["mcp"]) == "x" * 10 + "…[100 chars]"
+        assert type(raised["needy"]) is RuntimeError and str(raised["needy"]).endswith("…[100 chars]")
+        assert type(raised["plain"]) is MCPConnectionError and str(raised["plain"]).endswith("…[100 chars]")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_start_leaves_no_program_behind(self, monkeypatch):
+        from plugins.mcp_client import connection as conn_mod
+        monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
+        silent = ["-c", "import time; time.sleep(60)"]
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"quiet1": make_config(args=silent), "quiet2": make_config(args=silent)})
+        connecting = asyncio.create_task(pool.connect_all())
+        await asyncio.sleep(1.0)  # both programs are running, the handshakes hang
+        connecting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await connecting
+        await pool.close_all()
+        await asyncio.sleep(1.0)
+        assert _live_children() == []
+
+    @pytest.mark.asyncio
+    async def test_close_all_during_the_handshake_wins(self):
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        connecting = asyncio.create_task(pool.connect("probe"))
+        await asyncio.sleep(0.1)  # the handshake is under way
+        await pool.close_all()
+        with pytest.raises(MCPConnectionError, match="disconnected while connecting"):
+            await connecting
+        assert pool.list_connected() == []
+        await asyncio.sleep(1.0)
+        assert _live_children() == []
+
+    @pytest.mark.asyncio
+    async def test_silent_servers_cost_one_deadline_not_one_each(self, monkeypatch):
+        """connect_all went one server after another under one pool lock: two
+        silent servers held the start up for two handshake deadlines."""
+        import time
+        from plugins.mcp_client import connection as conn_mod
+        monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
+        silent = ["-c", "import time; time.sleep(60)"]
+        pool = ExternalServerPool(timeout=4.0)
+        pool.configure({"quiet1": make_config(args=silent), "quiet2": make_config(args=silent),
+                        "probe": make_config()})
+        started = time.monotonic()
+        try:
+            results = await pool.connect_all()
+            elapsed = time.monotonic() - started
+            assert results["probe"] is None
+            assert "handshake" in results["quiet1"] and "handshake" in results["quiet2"]
+            # One deadline (4 s) plus ending the programs; two would be past 8.
+            assert elapsed < 8.0, f"connect_all took {elapsed:.1f}s"
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_during_the_handshake_wins(self):
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        connecting = asyncio.create_task(pool.connect("probe"))
+        await asyncio.sleep(0.1)  # the handshake is under way
+        await pool.disconnect("probe")
+        try:
+            with pytest.raises(MCPConnectionError, match="disconnected while connecting"):
+                await connecting
+            assert pool.list_connected() == []
+        finally:
+            await pool.close_all()
+
+    def test_an_invalid_cap_setting_means_the_default(self):
+        from plugins.mcp_client.server import _positive_int
+        assert _positive_int("200", 5) == 200
+        for bad in (None, "lots", 0, -1, True, float("inf")):
+            assert _positive_int(bad, 5) == 5
 
     @pytest.mark.asyncio
     async def test_blocked_tool_cannot_be_called(self):
@@ -630,6 +818,27 @@ class TestPluginRole:
         finally:
             await plugin.stop_plugin()
             capabilities.reset()
+
+    @pytest.mark.asyncio
+    async def test_blocked_tools_are_not_offered_to_the_model(self):
+        """The core builds the model's tool list from list_external_tools and
+        ignores the blocked flag, so a blocked tool must not be in it. A person
+        still sees it in the management listing; a call is still refused."""
+        from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+        from plugins.mcp_client.server import MCPClientServer
+
+        plugin = MCPClientServer("mcp_client", AgentSystemConfig(), ToolServerConfig(type="mcp_client"))
+        plugin.pool.configure({"probe": make_config(tools=tool_config(blocked=["echo"]))})
+        await plugin.pool.connect("probe")
+        try:
+            offered = {t["name"] for t in (await plugin.list_external_tools())["probe"]}
+            assert "add" in offered and "echo" not in offered
+            shown = {t["name"]: t for t in (await plugin.tools({}))["servers"]["probe"]}
+            assert shown["echo"]["blocked"] is True
+            with pytest.raises(PermissionError):
+                await plugin.call_external_tool("probe", "echo", {"text": "hi"})
+        finally:
+            await plugin.pool.close_all()
 
     @pytest.mark.asyncio
     async def test_connect_reports_failure_instead_of_raising(self):

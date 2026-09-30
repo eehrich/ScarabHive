@@ -309,9 +309,9 @@ class ToolServerIntegration:
                 for tool in tools
             ]
 
-        # Get tools from external servers. The client plugin already marks
-        # blocked tools (marked, not removed -- the permission layer above
-        # decides), so this half is a straight hand-through now.
+        # Get tools from external servers. The client plugin leaves blocked
+        # tools out (its management tool still lists them), so this half is a
+        # straight hand-through.
         provider = self.external_provider
         if provider is not None:
             try:

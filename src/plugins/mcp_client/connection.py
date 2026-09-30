@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +46,10 @@ logger = logging.getLogger(__name__)
 _STREAMABLE_HTTP_ALIASES = {"streaming", "streamable_http", "streamable-http", "http", "smithery"}
 _SSE_ALIASES = {"sse", "http_sse", "http+sse"}
 _STDIO_ALIASES = {"stdio", "local"}
+
+#: Seconds a new connection gets for its handshake at least, whatever the
+#: server's answer timeout. Tests lower it.
+_HANDSHAKE_FLOOR = 60.0
 
 
 class MCPConnectionError(RuntimeError):
@@ -123,7 +129,30 @@ class ServerConnection:
         self._task = loop.create_task(self._run(), name=f"mcp-client:{self.name}")
 
         try:
-            await self._ready
+            # Bounded: a server that never answers initialize (a stdio
+            # process that reads and stays silent) held start() -- and the
+            # pool lock, and with it every other connect and close_all --
+            # forever. The HTTP transports were bounded by httpx; stdio not.
+            # The floor: a stdio program has to start first (npx may download
+            # its package), and self.timeout is sized for answers, not that.
+            limit = max(self.timeout, _HANDSHAKE_FLOOR)
+            await asyncio.wait_for(self._ready, timeout=limit)
+        except asyncio.TimeoutError:
+            task, self._task = self._task, None
+            if task is not None:
+                task.cancel()
+                await asyncio.wait({task})
+            raise MCPConnectionError(
+                f"MCP server '{self.name}' did not complete the handshake within {limit}s"
+            ) from None
+        except asyncio.CancelledError:
+            # Not an Exception: without this branch a start cancelled
+            # mid-handshake left the task -- and a stdio child -- running.
+            task, self._task = self._task, None
+            if task is not None:
+                task.cancel()
+                await asyncio.wait({task})
+            raise
         except Exception:
             await self._reap_task()
             raise
@@ -214,6 +243,11 @@ class ServerConnection:
                 if command.future.cancelled():
                     continue
                 task = asyncio.create_task(self._run_command(session, command))
+                # A caller that gave up (timeout, cancel) takes the call with
+                # it; otherwise every hung call stayed pinned to the session
+                # until stop().
+                command.future.add_done_callback(
+                    lambda future, task=task: task.cancel() if future.cancelled() else None)
                 in_flight.add(task)
                 task.add_done_callback(in_flight.discard)
         finally:
@@ -413,11 +447,11 @@ class ServerConnection:
         return await self._submit(run)
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        """Call *name* and return its first text block, or the raw payload.
+        """Call *name* and return its text blocks, or the raw payload.
 
-        The return shape is the one the agent core has always seen: the text of
-        the first text content item, falling back to the structured result.
-        Changing it here would ripple into every consumer of an external tool.
+        The return shape is the one the agent core has always seen: text,
+        falling back to the structured result. Changing the shape here would
+        ripple into every consumer of an external tool.
         """
         request_id = arguments.get("request_id") or arguments.get("requestId")
         await self._publish(
@@ -438,7 +472,7 @@ class ServerConnection:
             raise
 
         if getattr(result, "isError", False):
-            message = _first_text(result) or "unknown error"
+            message = _text(result) or "unknown error"
             await self._publish(
                 f"Tool call failed: {name}", StatusPhase.ERROR, request_id,
                 {"tool": name, "server": self.name, "error": message},
@@ -470,7 +504,7 @@ class ServerConnection:
             )
             return payload
 
-        text = _first_text(result)
+        text = _text(result)
         if text is not None:
             await self._publish(
                 f"Tool call completed: {name}", StatusPhase.END, request_id,
@@ -555,7 +589,13 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
             raw = base64.b64decode(data)
             target_dir = (_MEDIA_DIR or data_path("media", "external_mcp")) / server
             target_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{tool}-{int(time.time() * 1000)}-{index}{_MIME_EXT.get(mime, '.bin')}"
+            # The tool name is the foreign server's: "../../x" wrote outside
+            # the media directory.
+            safe_tool = re.sub(r"[^A-Za-z0-9_.-]", "_", tool)
+            # The random part: 'a/b' and 'a_b', or one tool twice in the same
+            # millisecond, wrote to one path and the later file replaced the first.
+            filename = (f"{safe_tool}-{int(time.time() * 1000)}-{index}-{uuid.uuid4().hex[:8]}"
+                        f"{_MIME_EXT.get(mime, '.bin')}")
             target = target_dir / filename
             target.write_bytes(raw)
         except Exception:
@@ -571,12 +611,17 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
     return items
 
 
-def _first_text(result: Any) -> Optional[str]:
-    """Return the first text block of a CallToolResult, if there is one."""
-    for item in getattr(result, "content", None) or []:
-        if getattr(item, "type", None) == "text":
-            return getattr(item, "text", "") or ""
-    return None
+def _text(result: Any) -> Optional[str]:
+    """Every text block of a CallToolResult, in order, a blank line apart.
+
+    None when there is no text block. Only the first used to be kept -- a
+    rule carried over from the hand-written client, and every further
+    block was lost to the model.
+    """
+    texts = [getattr(item, "text", "") or ""
+             for item in getattr(result, "content", None) or []
+             if getattr(item, "type", None) == "text"]
+    return "\n\n".join(texts) if texts else None
 
 
 def _structured(result: Any) -> Any:

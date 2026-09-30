@@ -37,6 +37,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: Any, default: int) -> int:
+    """*value* as a positive int; anything else is *default*."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if number > 0 and not isinstance(value, bool) else default
+
+
 class MCPClientServer(SchemaBasedToolServer):
     """Connects to external MCP servers and federates their tools."""
 
@@ -52,6 +61,8 @@ class MCPClientServer(SchemaBasedToolServer):
             ssl_verify=getattr(network, "ssl_verify", True) if network else True,
             timeout=getattr(connection_cfg, "timeout", 30.0) if connection_cfg else 30.0,
             cache_ttl=getattr(cache_cfg, "tool_list_ttl", 300.0) if cache_cfg else 300.0,
+            max_result_chars=_positive_int(getattr(server_config, "max_result_chars", None), 50000),
+            max_description_chars=_positive_int(getattr(server_config, "max_description_chars", None), 1024),
         )
         if external is not None:
             self.pool.configure(getattr(external, "remote_servers", None) or {})
@@ -94,8 +105,13 @@ class MCPClientServer(SchemaBasedToolServer):
     # ------------------------------------------------- ExternalToolProvider role
 
     async def list_external_tools(self, *, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """``{server: [{name, description, input_schema, blocked}]}`` for the core."""
-        return await self.pool.list_tools_by_server(force_refresh=force_refresh)
+        """``{server: [{name, description, input_schema, blocked}]}`` for the core.
+
+        Blocked tools are left out: the core offers the model whatever it gets
+        here and ignores the flag. The management tool still shows them.
+        """
+        by_server = await self.pool.list_tools_by_server(force_refresh=force_refresh)
+        return {server: [t for t in tools if not t["blocked"]] for server, tools in by_server.items()}
 
     async def call_external_tool(self, server: str, tool: str, arguments: Dict[str, Any]) -> Any:
         """Route one call to one external server."""
