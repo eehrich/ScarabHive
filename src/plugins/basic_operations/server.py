@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,16 @@ logger = logging.getLogger(__name__)
 # Below this a wake costs more than it saves: the woken turn reads the whole
 # conversation again, while waiting here costs nothing but the seconds.
 WAKE_MIN_SECONDS = 60.0
+# The schema's maxLength, which nothing enforces: the message is echoed in the
+# answer and repeated in every status line.
+MESSAGE_MAX_CHARS = 100
+
+
+def _flag(value: Any) -> bool:
+    """A boolean argument; the text "false" is false, not a non-empty string."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
 
 
 class BasicOperationsServer(SchemaBasedToolServer):
@@ -106,17 +117,21 @@ class BasicOperationsServer(SchemaBasedToolServer):
         Method name matches tool name in schema.yaml.
         """
         try:
-            seconds = float(params["seconds"])
+            try:
+                seconds = float(params.get("seconds"))
+            except (TypeError, ValueError):  # missing, null, a list, "abc"
+                seconds = math.nan
             # Always use server-configured default_update_interval. Ignore caller-supplied update_interval.
             update_interval = float(self.default_update_interval)
-            message = params.get("message", "Waiting")
-            
+            message = str(params.get("message") or "Waiting")[:MESSAGE_MAX_CHARS]
+            wake = _flag(params.get("wake"))
+
             # Get status context for updates (mandatory from framework)
             status = params["_status"]
             
             # Validate parameters
-            if seconds <= 0:
-                return {"status": "error", "error": "Wait time must be positive"}
+            if not seconds > 0:  # NaN too: it never counts down and would wait forever
+                return {"status": "error", "error": "seconds must be a number above 0"}
             if seconds > self.max_wait_seconds:
                 return {"status": "error", "error": f"Wait time exceeds maximum of {self.max_wait_seconds} seconds"}
             if update_interval <= 0:
@@ -128,11 +143,11 @@ class BasicOperationsServer(SchemaBasedToolServer):
             # A long wait need not hold the turn: the session can be woken when
             # it is over. Only where a wake reaches it -- otherwise waiting here
             # is the only thing that works.
-            if params.get("wake") and seconds >= WAKE_MIN_SECONDS:
+            if wake and seconds >= WAKE_MIN_SECONDS:
                 refused = await self._wake_refused(session_id, user_id)
                 if not refused:
                     task = asyncio.create_task(self._wake_after(
-                        seconds, session_id, user_id, str(message)[:60], current_request_id.get() or ""))
+                        seconds, session_id, user_id, message[:60], current_request_id.get() or ""))
                     self._wakes.add(task)
                     task.add_done_callback(self._wakes.discard)
                     await status.end(f"{message}: waking the session in {seconds:.1f}s")
@@ -246,13 +261,8 @@ class BasicOperationsServer(SchemaBasedToolServer):
             # default END overwrote it with a bare "completed" and the elapsed
             # time was lost.
             elapsed = time.time() - start_time
-            # str(): `params.get("message", "Waiting")` returns None when the
-            # model sends "message": null, and nothing validates tool params
-            # against the schema at runtime. The old line interpolated it
-            # ("None: completed"), this one subscripts it -- so without this
-            # a completed wait would return an error.
             await status.end(
-                f"Waited {elapsed:.1f}s of {seconds:.1f}s -- {str(message)[:60]}")
+                f"Waited {elapsed:.1f}s of {seconds:.1f}s -- {message[:60]}")
             
             logger.info(f"Wait completed after {elapsed:.1f} seconds")
             
@@ -264,13 +274,9 @@ class BasicOperationsServer(SchemaBasedToolServer):
                 "user_message": message,
                 # Asked to be woken and waited anyway: say why, or the model reads this as a wake that worked.
                 **({"wake_note": refused or f"a wake needs at least {WAKE_MIN_SECONDS:.0f} s"}
-                   if params.get("wake") else {})
+                   if wake else {})
             }
             
-        except ValueError as e:
-            error_msg = f"Invalid numeric parameter: {e}"
-            logger.error(error_msg)
-            return {"status": "error", "error": error_msg}
         except Exception as e:
             error_msg = f"Wait operation failed: {e}"
             logger.error(error_msg)
@@ -284,10 +290,9 @@ class BasicOperationsServer(SchemaBasedToolServer):
         Method name matches tool name in schema.yaml.
         """
         try:
-            include_details = params.get("include_details", False)
+            include_details = _flag(params.get("include_details"))
             
-            current_time = datetime.now()
-            timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Include milliseconds
+            timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
             
             result = {
                 "status": "success",
