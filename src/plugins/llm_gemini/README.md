@@ -1,54 +1,21 @@
 # Google Gemini Providers
 
-Two ways to reach Gemini directly, the batch backend, and the TTS client.
+Google's Gemini models, reached directly -- no gateway in between. An LLM provider plugin: no tools, no hooks, no
+panel.
 
-## What it provides
+- **`gemini`** -- Gemini's REST API over httpx.
+- **`gemini_sdk`** -- the same API through Google's `google-genai` SDK.
+- **`gemini` (batch)** -- the Gemini Batch API, for `provider: batch` entries.
+- **`gemini_tts`** -- text to speech with Gemini's TTS models.
 
-| Name | Kind | Module | Transport |
-|---|---|---|---|
-| `gemini` | LLM | `gemini_client.py` | httpx against Gemini's native REST API |
-| `gemini_sdk` | LLM | `gemini_sdk_client.py` | official `google-genai` SDK |
-| `gemini` | batch | `gemini_batch.py` | Batch API |
-| `gemini_tts` | TTS | `gemini_tts_client.py` | speech synthesis |
+Nothing to enable: name one of the providers in a model entry of `config/llm.yaml` and point a profile at it. The
+API key is the entry's `api_key`, else `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Unlike Gemini behind OpenRouter, these
+providers honour `safety_settings`.
 
-```yaml
-my-model:
-  provider: gemini_sdk
-  model: gemini-3-pro
-  api_key: ${GOOGLE_API_KEY}
-```
-
-`dependencies = ["google-genai>=1.50.0"]`, imported lazily in the factory.
-The `gemini` client speaks the native REST API rather than Google's
-OpenAI-compatibility layer on purpose: that layer mishandles `tool_calls`
-indices and the `thought_signature` requirement.
-
-## Direct vs. via OpenRouter
-
-Gemini is also reachable through `llm_openai_compat` (`provider:
-openai_responses` with an `openrouter.ai` base URL). One difference decides
-which to use: **`safety_settings` only work on the direct route.** OpenRouter
-drops the field on `/responses` (measured 2026-09-01), and its own default
-sets every harm category to `OFF`. So the `gemini-3-*` entries — the ones
-that carry thresholds — use this plugin; the `openrouter-gemini*` entries
-carry none.
-
-Consecutive same-role messages and system messages need reshaping for the
-Gemini content format; both clients do that and both have tests for it
-(`test_gemini_consecutive_messages.py`,
-`test_gemini_client_system_messages.py`), because the two clients drifted
-apart on exactly this before.
-
-## TTS
-
-`gemini_tts` is dispatched through the same registry seam as the LLM
-providers (`provides_tts` in `plugin.toml`). Since 2026-08-26 the core's
-`agent_system/llm/tts.py` is service definition only — no client code.
-
-## Tests
-
-`tests/` next to the code, including batch cancel and the TTS client.
+The full manual -- which provider to take, every model entry key, timeouts and streaming, retries, thinking, what
+the hooks and cost figures see, errors, batch and speech -- is the plugin's guide, `llm_gemini.guide`, in the Help
+panel.
 
 ## License
 
-Apache-2.0 — see `LICENSE`.
+Apache-2.0 -- see `LICENSE`.

@@ -1,0 +1,469 @@
+@database "llm_gemini"
+@author "Enrico Ehrich"
+@$VER: llm_gemini.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Google Gemini LLM providers"
+@{h1}Google Gemini LLM providers
+
+This plugin lets agents talk to Google's Gemini models directly, without a
+gateway in between: over Gemini's own REST API, or through Google's official
+@{tt}google-genai@{utt} SDK. It also serves Gemini batch jobs and Gemini text
+to speech. It is an LLM provider plugin: it has no tools, no hooks and no
+panel. You use it by naming one of its providers in a model entry of
+@{tt}config/llm.yaml@{utt}; agents reach that entry through a profile.
+
+@{table}
+Provider name | Kind | Endpoint
+gemini | chat | POST <base_url>/models/<model>:streamGenerateContent (streamed) or :generateContent, over httpx
+gemini_sdk | chat | the same API through the google-genai SDK
+gemini | batch | the Gemini Batch API, through the SDK
+gemini_tts | text to speech | generateContent with an audio answer, through the SDK
+@{body}
+
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+these providers do with an entry.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  Which provider to take  " link routes}
+  @{"  Model entry keys  " link keys}
+  @{"  Timeouts and streaming  " link timeouts}
+  @{"  Retries  " link retries}
+  @{"  Thinking  " link reasoning}
+  @{"  Usage, cost and the hooks  " link usage}
+  @{"  Errors  " link errors}
+  @{"  Batch and speech  " link batch}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node routes "Which provider to take"
+@{h1}Which provider to take
+
+Both chat providers send the same request -- the same message conversion,
+generation settings, safety settings and thinking configuration -- and
+return the same answer shape. They differ in the transport and in what you
+can see and set:
+
+@{table}
+Difference | gemini | gemini_sdk
+transport | httpx, one connection per request | the google-genai SDK (aiohttp when installed, else httpx)
+base_url | used | ignored: always Google's endpoint
+timeouts | connect, read, write, pool | only read (see @{" Timeouts and streaming " link timeouts})
+TLS verification | follows the app's setting | the SDK's default
+request in the message debugger | the full request body | only counts: contents_count, has_tools, has_system
+tool call without a thought signature in the history | sent without one | sent with Google's bypass token
+MALFORMED_FUNCTION_CALL | retried when streamed or not | retried only when streamed
+rate-limit retries | up to 3, sharing the attempts | up to 2, with 0-50 % jitter
+@{body}
+
+The shipped @{tt}gemini-3-*@{utt} entries use gemini_sdk.
+
+@{h2}Direct or via OpenRouter
+
+Gemini is also reachable through an OpenRouter entry of
+@{" OpenAI-compatible providers " link llm_openai_compat/routes}. One
+difference decides which to take: @{b}safety_settings only work on the
+direct route.@{ub} OpenRouter drops the field on @{tt}/responses@{utt}
+(measured 2026-09-01), and its own default sets every harm category to off.
+An entry that needs its own thresholds uses this plugin.
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The keys of a model entry these providers read. Everything else in
+@{tt}LLMModelConfig@{utt} is either handled by the core (@{tt}extends@{utt},
+profiles) or not read here. The keys of other providers' dialects
+(@{tt}tool_schema_dialect@{utt}, @{tt}assistant_reasoning_field@{utt},
+@{tt}reasoning_details_mode@{utt}, @{tt}thinking_request_shape@{utt},
+@{tt}stream_silence_timeout@{utt}, @{tt}provider_affinity_minutes@{utt})
+are logged as "not wired ... will be ignored" when the client is built.
+
+@{table}
+Key | Default | What the clients do with it
+provider | -- | gemini or gemini_sdk
+model | -- | the model id, e.g. gemini-3.1-pro-preview
+api_key | GEMINI_API_KEY, else GOOGLE_API_KEY | building the client fails without one
+base_url | https://generativelanguage.googleapis.com/v1beta | gemini only; gemini_sdk ignores it
+context_window | the model-config default 32768, 200000 if 0 | only reported to the core, never sent
+max_tokens | none | generationConfig.maxOutputTokens; null sends nothing
+temperature | 1.0 | generationConfig.temperature. topP 0.95 and topK 40 are always sent
+thinking_level | none | thinkingConfig.thinkingLevel (Gemini 3); see @{" Thinking " link reasoning}
+thinking_budget | none | thinkingConfig.thinkingBudget (Gemini 2.5); 0 turns thinking off
+include_thoughts | none | thinkingConfig.includeThoughts: whether thought summaries come back
+safety_settings | none | a map category: threshold, sent as safetySettings whenever set
+capabilities | all defaults | streaming decides the path; structured_output allows response formats
+request_timeout, httpx_timeouts | see @{" Timeouts and streaming " link timeouts} |
+parallel_tool_calls | -- | accepted, never sent: Gemini has no such field
+prompt_cache_key, prompt_cache_mode, ... | -- | not read: Gemini caches implicitly (see @{" Usage, cost and the hooks " link usage})
+@{body}
+
+@{code yaml}
+llm_system:
+  models:
+    gemini-3-pro:
+      provider: gemini_sdk
+      model: gemini-3.1-pro-preview
+      api_key: ${GOOGLE_API_KEY}
+      request_timeout: 240
+      max_tokens: 16384
+      thinking_level: high
+      include_thoughts: true
+      safety_settings:
+        HARM_CATEGORY_DANGEROUS_CONTENT: BLOCK_ONLY_HIGH
+        HARM_CATEGORY_HARASSMENT: BLOCK_ONLY_HIGH
+    gemini-3-pro-nostream:
+      extends: gemini-3-pro
+      include_thoughts: false
+      capabilities:
+        streaming: false
+@{body}
+
+Note that @{tt}${VAR}@{utt} of an unset variable expands to an empty
+string, which counts as "no key" -- as does a key of only spaces: the
+environment variables above apply then. A key is sent without surrounding
+spaces.
+@endnode
+
+@node timeouts "Timeouts and streaming"
+@{h1}Timeouts and streaming
+
+@{h2}Streaming or not
+
+A model streams unless its entry says @{tt}capabilities.streaming:
+false@{utt}. Streaming lets the web UI show the answer as it arrives, and it
+changes what the read timeout means. With it off, the client waits for the
+whole answer in one response.
+
+@{h2}The read timeout
+
+Both providers take their read timeout from the same place:
+
+@{bullet}a @{tt}read@{utt} in the entry's @{tt}httpx_timeouts@{utt} wins;
+@{bullet}else the entry's own @{tt}request_timeout@{utt};
+@{bullet}else 180 s.
+
+An entry without its own @{tt}httpx_timeouts@{utt} gets the system default
+@{tt}llm_system.httpx_timeouts@{utt} from the core, whose read is the entry's
+@{tt}request_timeout@{utt} when the entry sets one (the shipped
+@{tt}config/llm.yaml@{utt} sets read 180 s). A @{tt}request_timeout@{utt}
+that only comes from the model-config default (120) does not count.
+
+@{b}Streamed:@{ub} the longest gap between two pieces of the stream -- a
+longer gap is a stalled stream and is retried. @{b}Not streamed:@{ub} the
+longest wait for the whole answer, so a long answer needs a long read
+timeout.
+
+@{h2}gemini
+
+The other three come from @{tt}httpx_timeouts@{utt} too; a key it leaves
+out falls back to connect 10 s, write 10 s, pool 5 s.
+
+@{h2}gemini_sdk
+
+The SDK is built without a timeout of its own. The client enforces the read
+timeout itself: for the first response of a stream and between its pieces,
+and for the whole answer when not streamed. Connect, write and pool are not
+used. When the connection cannot be opened, the SDK itself waits 1-10 s and
+tries once more before the error reaches the client.
+
+@{h2}How a stream ends
+
+@{bullet}A stream that ends is the answer, whatever finish reason it had --
+except MALFORMED_FUNCTION_CALL and MAX_TOKENS, which are retried (see
+@{" Retries " link retries}).
+@{bullet}A stream that stalls, or repeats the same thought (five identical
+thought pieces of 20 characters or more among the last 20), or sends 100
+pieces of thinking in a row with nothing else, is given up and retried.
+@{bullet}A run cancelled while the stream is out stops when the next piece
+arrives (gemini) or within half a second (gemini_sdk). The cancellation
+reaches the agent as a cancellation, never as an answer.
+@{bullet}A gemini request that is not streamed notices a cancelled run only
+between attempts, or when its task is cancelled; gemini_sdk checks every
+half second.
+@endnode
+
+@node retries "Retries"
+@{h1}Retries
+
+Every retry is reported to the post_llm_response hooks as its own row
+(@{tt}[RETRY n/m] ...@{utt}, finish reason @{tt}retry@{utt}) and most as a
+status line in the chat. A cancelled run interrupts every wait. A retry
+starts from scratch: when the caller has already received pieces of the
+failed attempt, the stream first sends one @{tt}{"type":
+"stream_restart"}@{utt} chunk, and the caller drops what it has shown of
+that attempt.
+
+Every retry also asks for less thinking: a thinking_level above minimal
+becomes low, and a thinking_budget is halved per attempt (below 512 it
+becomes 0, thinking off). After a MALFORMED_FUNCTION_CALL the retries force
+function calling (@{tt}mode ANY@{utt}); a 400 on such a retry drops that
+again.
+
+@{h2}gemini
+
+Up to four attempts in all, shared by every kind of retry below.
+
+@{table}
+What happened | What the client does
+HTTP 5xx | retry after 1, 2, 4 s; then LLMServerError
+HTTP 400 "too many states" | retry after 2, 4, 8 s
+rate limit (the error names 429, rate limit, quota, resource_exhausted or too many requests) | retry after the delay Google names plus 2 s, else 60 s; then LLMQuotaExhaustedError if it says quota or exhausted, else LLMRateLimitError
+any other HTTP 4xx (not 408) | no retry: httpx.HTTPStatusError at once, so the fallback and the block of a dead key or model come without delay
+timeout, stall, dropped connection, thinking loop | retry after 1, 2, 4 s; then LLMConnectionError
+MALFORMED_FUNCTION_CALL (streamed: only without text and tool calls) | retry after 1, 2, 3 s with mode ANY; the last one is handed over as it is
+MAX_TOKENS without a tool call, streamed | retry after 1 s; the last one is handed over as it is
+@{body}
+
+@{h2}gemini_sdk
+
+Up to four attempts in all.
+
+@{table}
+What happened | What the client does
+rate limit (as above) | up to 2 retries after the delay Google names plus 2 s, else 60 s, plus 0-50 % jitter; then LLMQuotaExhaustedError / LLMRateLimitError
+"too many states" | retry after 2, 4, 8 s
+500 INTERNAL | retry after 5, 10, 20 s; then LLMServerError
+other 5xx | retry after 1, 2, 4 s; then LLMServerError
+any other HTTP 4xx (not 408) | no retry: httpx.HTTPStatusError at once
+timeout, stall, connection error, thinking loop | retry after 1, 2, 4 s; then LLMConnectionError
+MALFORMED_FUNCTION_CALL without a tool call, or with a tool call whose arguments are empty (streamed) | retry after 1, 2, 3 s with mode ANY
+MAX_TOKENS without a tool call, streamed | retry after 1 s
+@{body}
+
+The agent server's own fallback chain (@{tt}llm_profile@{utt} with more than
+one profile) takes over where these retries end; see
+@{" Writing an agent " link scarabhive/agentdev}.
+@endnode
+
+@node reasoning "Thinking"
+@{h1}Thinking
+
+@{h2}Asking for it
+
+Gemini 3 models always think; @{tt}thinking_level@{utt} says how much
+(minimal, low, medium, high). The config also accepts OpenRouter's levels:
+none becomes minimal, xhigh and max become high. Gemini 2.5 models take
+@{tt}thinking_budget@{utt} in tokens instead; 0 turns thinking off, a
+negative value is not sent. Without either, the model's default applies.
+@{tt}include_thoughts: true@{utt} asks for the model's thought summaries
+back; without it Gemini thinks just the same but shows nothing.
+
+@{h2}Watching it
+
+Thought summaries stream to the chat as they arrive, as thinking (the
+agent server's thinking deltas): the chat shows them apart from the answer,
+and the agent server's reasoning-loop watch and llm_progress hooks see them.
+The stored message keeps them apart too: the answer as its content,
+the thinking as @{tt}reasoning_content@{utt}. Thinking is not sent back on
+later turns; the thought signatures on tool calls are (see
+@{" What the model sees " link model}).
+
+@{h2}Usage
+
+Gemini counts the thinking apart from the answer and bills it as output.
+@{tt}completion_tokens@{utt} is both, and the thinking is also given as
+@{tt}completion_tokens_details.reasoning_tokens@{utt} -- a detail of the
+completion, never computed from it.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+Each request is reported to the @{tt}pre_llm_request@{utt} hooks before it
+is sent, and to the @{tt}post_llm_response@{utt} hooks when it ends. The
+message debugger, the OpenTelemetry chat span and the cost figures are built
+from these reports (@{" Hooks " link scarabhive/hooks},
+@{" The capture hooks " link message_debugger/hooks},
+@{" What gets exported " link otel/spans},
+@{" What it records " link context_usage_tracker/hooks}). gemini sends the
+request body with the report (the URL without the key); gemini_sdk only
+counts: contents, whether tools and a system instruction were sent.
+
+@{h2}One report per ending
+
+@{table}
+The request ended with | post_llm_response carries
+an answer | usage; finish reason (gemini not streamed: Gemini's own, e.g. STOP, with response_data; gemini streamed: Gemini's last one; gemini_sdk: tool_calls or stop)
+an answer without content (a blocked prompt) | usage, and on gemini the response_data with its promptFeedback
+a retry | an error @{tt}[RETRY n/m] ...@{utt}, finish reason retry, no usage
+a refusal after the retries | the raised error's text (@{tt}HTTP 404: ...@{utt}, @{tt}Rate limit exceeded: ...@{utt}, @{tt}ReadTimeout: ...@{utt}, ...)
+a cancellation while the stream was out | the error @{tt}Request cancelled during streaming@{utt}, or @{tt}cancelled@{utt} when the task was cancelled
+a cancellation of a request not streamed | @{tt}cancelled@{utt}; on gemini_sdk a cancelled run gives @{tt}Request cancelled during execution@{utt}, also for a stream whose first piece had not come
+a cancellation during a retry wait | the error @{tt}Request cancelled during retry wait@{utt}, after the retry's row
+a cancellation before it was sent | the error @{tt}Request cancelled before attempt@{utt}
+a stream the caller stopped reading | the error @{tt}stream abandoned by the caller@{utt}
+anything unexpected | the exception's text
+@{body}
+
+A streamed ending that is not an answer carries the usage that had arrived
+by then. A cancelled stream is billed for what Gemini generated, but its
+usage usually comes last, so the report mostly has none.
+
+@{h2}The usage
+
+@{bullet}From Gemini's usageMetadata: @{tt}prompt_tokens@{utt} (cached
+tokens included), @{tt}completion_tokens@{utt} (answer plus thinking),
+@{tt}total_tokens@{utt}; @{tt}prompt_tokens_details.cached_tokens@{utt}
+and @{tt}completion_tokens_details.reasoning_tokens@{utt} as the subsets
+when there are any. A streamed answer takes the last chunk that carried
+usage, with or without content.
+@{bullet}Caching is Gemini's implicit caching: nothing is marked in the
+request, and the cached tokens are what Gemini reports. Cache markers the
+core put into the prompt are removed before sending.
+@{bullet}Cost: the core prices the tokens from
+@{tt}config/llm_pricing.yaml@{utt}.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What reaches the agent server when a request cannot be answered. The server
+decides from the type whether to fall back to the next profile of the chain
+(@{" Writing an agent " link scarabhive/agentdev}); a plain Exception ends
+the run.
+
+@{table}
+Raised | When
+LLMRateLimitError | a rate limit after the retries
+LLMQuotaExhaustedError | the same, with "quota" or "exhausted" in the error
+LLMServerError | 5xx after the retries
+httpx.HTTPStatusError | any other 4xx, without retries (except the two 400s retried above); its status is Google's (gemini_sdk too)
+LLMConnectionError | timeout, stall, dropped connection or thinking loop after the retries
+Exception | anything else after the retries, e.g. an answer that is no JSON (@{tt}Gemini request failed: ...@{utt}, @{tt}Gemini SDK request failed: ...@{utt})
+asyncio.CancelledError | the run was cancelled
+ValueError at build time | no API key
+ImportError at build time | gemini_sdk without the google-genai package
+@{body}
+
+An answer cut off by its output cap is handed over with what it has, after
+the MAX_TOKENS retries when streamed. An answer the safety settings blocked
+comes back empty.
+@endnode
+
+@node batch "Batch and speech"
+@{h1}Batch and speech
+
+@{h2}Batch
+
+A model entry with @{tt}provider: batch@{utt} and @{tt}batch_provider:
+gemini@{utt} runs its requests through the Gemini Batch API: the requests go
+inline in one job, the job is polled, the answers come back inline. Each
+request carries its messages, system instruction, tools, max_tokens,
+thinking settings and safety settings -- no temperature. Network errors
+while submitting, polling or fetching are retried three times (1 s
+doubling, at most 30 s). A batch answer has the same shape as a chat answer:
+thinking as @{tt}reasoning_content@{utt}, thinking tokens as output. The key
+is the entry's @{tt}api_key@{utt}, GEMINI_API_KEY or GOOGLE_API_KEY; without
+one there is no batch backend and the requests run one by one. The queue and
+its settings belong to the core; see
+@{" Batch Monitor " link batch_monitor/main}.
+
+@{h2}Speech
+
+@{tt}provider: gemini_tts@{utt} in @{tt}tts_models@{utt} synthesises with a
+Gemini TTS model.
+
+@{table}
+Key | Default | Meaning
+model | gemini-2.5-flash-preview-tts | the speech model
+api_key | GEMINI_API_KEY, else GOOGLE_API_KEY | building the client fails without one
+voice | Kore | the voice when the caller names none; one of Gemini's 30 prebuilt voices
+request_timeout | 300 | seconds per attempt
+max_retries | 3 | retries on 5xx, 429 and transport errors, after 2, 4, 8 ... s (at most 30 s)
+@{body}
+
+@{bullet}Audio comes back as raw PCM, 24 kHz, 16 bit mono.
+@{bullet}Several speakers in one call are supported, each with its own
+voice.
+@{bullet}A style prompt goes in front of the text: the TTS models refuse a
+system instruction.
+@{bullet}The usage is reported like a chat call's.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Messages
+
+@{bullet}All system messages become one systemInstruction, after a fixed
+first paragraph: "CRITICAL: When calling functions, output the function name
+exactly as defined. Do NOT prepend 'default_api.' or any other namespace.
+Always generate valid JSON for function arguments. Properly escape all
+special characters in JSON strings (quotes, backslashes, newlines)."
+@{bullet}A developer note goes as a user turn wrapped as a note: the API
+has no other role for it, and a model entry asking for more is told so in
+the log.
+@{bullet}Assistant turns become the model's; every other role a user turn.
+Consecutive user turns are merged, and the answers to parallel tool calls
+go back in one turn, as Gemini requires.
+@{bullet}Tool results go as function responses: the result's JSON, or
+@{tt}{"result": <text>}@{utt}. Images a tool returns travel in the same turn.
+@{bullet}Tool calls and results of tools the agent no longer has become text
+summaries, so Gemini does not refuse the history.
+@{bullet}Text, images and audio (as data URLs) and attached text files are
+sent; an external URL is dropped with a warning, other parts are not sent.
+@{bullet}A request over 100 MB has its oldest inline data replaced by
+placeholders until it is under 80 MB.
+@{bullet}A request with nothing left to send gets the user turn "Continue
+with the task."
+
+@{h2}Thought signatures
+
+Gemini 3 marks each tool call with a thought signature that must come back
+on the next turn. It is stored on the tool call
+(@{tt}extra_content.google.thought_signature@{utt}); parallel calls without
+one get the first call's. gemini sends back the signatures it has;
+gemini_sdk sends Google's bypass token for a call without one, e.g. after a
+switch from another model.
+
+@{h2}Tools
+
+Tool schemas go out as function declarations, with the keywords Gemini
+refuses removed. Function calling is automatic, and forced (mode ANY) only
+on the retries after a MALFORMED_FUNCTION_CALL.
+
+@{h2}Structured output
+
+A response format is sent as @{tt}responseMimeType@{utt} (JSON mode) plus
+@{tt}responseJsonSchema@{utt} for a schema, when the entry declares
+@{tt}capabilities.structured_output@{utt}. Gemini 3 takes a schema beside
+function declarations, earlier models refuse the combination. A client
+asked for a format the entry does not declare refuses the call rather than
+return free text.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds LLM provider plugins by their
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt}) and loads
+@{tt}provider.py@{utt} when a model entry names one of its providers. There
+is no entry in @{tt}config/plugins.yaml@{utt} and no allowlist line. A
+misspelt provider name fails when the configuration loads.
+
+@{table}
+Manifest key | Names
+provides | gemini, gemini_sdk
+provides_batch | gemini
+provides_tts | gemini_tts
+@{body}
+
+@{h2}Dependencies
+
+@{tt}google-genai@{utt} (1.50 or later) for gemini_sdk, the batch backend
+and speech; gemini_sdk imports it on its first call, not when the agent is
+built.
+gemini needs only @{tt}httpx@{utt}, which the core requires anyway.
+
+@{h2}Where things live
+
+Nothing on disk. Changes to @{tt}llm.yaml@{utt} reach an agent when it
+builds its client, i.e. after a restart.
+@endnode
