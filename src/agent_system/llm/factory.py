@@ -403,6 +403,10 @@ def resolve_llm_config_for_agent(
         # (model_copy(update=...) applies update values AS-IS, so the deep
         # copy below does not cover this one.)
         updates["httpx_timeouts"] = config.llm_system.httpx_timeouts.model_copy()
+        if "request_timeout" in model_config.model_fields_set:
+            # The model's own request_timeout is its read timeout; the system
+            # default must not override it (deepseek-pro: 480 s ran with 180).
+            updates["httpx_timeouts"].read = float(model_config.request_timeout)
     provider_routing = _resolve_provider_routing(config.llm_system, model_config)
     if provider_routing != model_config.provider_routing:
         # deepcopy for the same reason as httpx_timeouts above: update values

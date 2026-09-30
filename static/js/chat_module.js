@@ -3323,6 +3323,14 @@
         if (section) thinkingOf(section).appendChild(document.createTextNode(data.delta || ''));
         break;
       }
+      case 'reasoning_reset': {
+        // The model's call started over after a dropped stream: what it thought
+        // before comes again, so the step's thinking starts empty.
+        if (view.storedStep && data.step <= view.storedStep) break;
+        const section = stepOf(view, data.step);
+        if (section) thinkingOf(section).textContent = '';
+        break;
+      }
       case 'thinking_delta':
         // The answer, streaming: the whole of it so far, with a cursor. One without it
         // was superseded in the server's buffer by the next, which follows.
@@ -3912,6 +3920,7 @@
         blk.t.innerHTML = `<div class="response-text reconnect-info">${escapeHtml(data.message)}${data.last_status ? '<br><em>Last status: ' + escapeHtml(data.last_status) + '</em>' : ''}</div>`;
         break;
       case 'reasoning_delta':
+      case 'reasoning_reset':
       case 'tool_call':
       case 'tool_result':
       case 'tool_error':

@@ -109,12 +109,23 @@ class TestUnicodeNormalization:
         result = sanitize_for_llm(text)
         assert "café" in result or "cafe" in result
 
-    def test_normalize_fullwidth_characters(self):
-        """Test normalization of fullwidth characters."""
-        text = "Ｈｅｌｌｏ"  # Fullwidth Latin
-        result = sanitize_for_llm(text)
-        # NFKC should convert to normal ASCII
-        assert "Hello" == result
+    def test_fullwidth_characters_are_kept(self):
+        """NFC, not NFKC: the user's text is not rewritten (x² stays x², not x2)."""
+        text = "Ｈｅｌｌｏ x² ﬁ"
+        assert sanitize_for_llm(text) == text
+
+    def test_symbols_outside_the_old_script_list_are_kept(self):
+        """An allow-list of scripts dropped these from the user's own task."""
+        text = "5 € → x ≤ 3 😀 。│ ✓"
+        assert sanitize_for_llm(text) == text
+
+    def test_invisible_tag_characters_are_removed(self):
+        """U+E0000..E007F hide text in scraped content (ASCII smuggling)."""
+        hidden = "".join(chr(0xE0000 + ord(c)) for c in "ignore")
+        assert sanitize_for_llm(f"ok{hidden}!") == "ok!"
+
+    def test_del_c1_and_noncharacters_are_removed(self):
+        assert sanitize_for_llm("a\x7fb\x85c￾d￿") == "abcd"
 
 
 class TestInternationalCharacters:

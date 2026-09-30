@@ -2784,76 +2784,92 @@ class Agent(ToolServer):
             reasoning_chars = 0
             reasoning_ticked_at = 0
 
-            async for chunk in llm.chat_tools_streaming(
+            # Closed when the loop is left early (a ReasoningLoopError, a cancel):
+            # the client reports that call's end at once, not when GC finds it.
+            async with contextlib.aclosing(llm.chat_tools_streaming(
                 messages, tools_schema,
                 cancellation_token=cancellation_token,
                 status_scope=status_scope,
                 **wire_format,
-            ):
-                chunk_type = chunk.get("type")
+            )) as stream:
+                async for chunk in stream:
+                    chunk_type = chunk.get("type")
 
-                if chunk_type == "thinking_delta":
-                    # Gemini reasoning/thinking tokens (not content)
-                    yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
+                    if chunk_type == "thinking_delta":
+                        # Gemini reasoning/thinking tokens (not content)
+                        yield {"type": "reasoning_delta", "step": step + 1, "delta": chunk["delta"]}
 
-                    # Watch the thinking for a loop. What arrives here is
-                    # whatever the client calls a thinking delta: raw
-                    # reasoning for most models, and for the OpenAI family a
-                    # SUMMARY of it — the threshold was calibrated on raw
-                    # reasoning, so for those models this guards the
-                    # degenerate case rather than measuring a known shape.
-                    for _detector in reasoning_detectors:
-                        loop_reason = _detector.record(chunk["delta"])
-                        if loop_reason:
-                            logger.warning(
-                                "[%s] Aborting the call: %s (model=%s, %d characters "
-                                "of thinking so far)",
-                                self.name, loop_reason, getattr(llm, "model", "?"),
-                                _detector.characters_seen)
-                            raise ReasoningLoopError(
-                                loop_reason,
-                                characters=_detector.characters_seen)
+                        # Watch the thinking for a loop. What arrives here is
+                        # whatever the client calls a thinking delta: raw
+                        # reasoning for most models, and for the OpenAI family a
+                        # SUMMARY of it — the threshold was calibrated on raw
+                        # reasoning, so for those models this guards the
+                        # degenerate case rather than measuring a known shape.
+                        for _detector in reasoning_detectors:
+                            loop_reason = _detector.record(chunk["delta"])
+                            if loop_reason:
+                                logger.warning(
+                                    "[%s] Aborting the call: %s (model=%s, %d characters "
+                                    "of thinking so far)",
+                                    self.name, loop_reason, getattr(llm, "model", "?"),
+                                    _detector.characters_seen)
+                                raise ReasoningLoopError(
+                                    loop_reason,
+                                    characters=_detector.characters_seen)
 
-                    if on_reasoning_progress is not None:
-                        reasoning_parts.append(chunk["delta"])
-                        reasoning_chars += len(chunk["delta"])
-                        if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
-                            try:
-                                await on_reasoning_progress(
-                                    "".join(reasoning_parts), reasoning_chars,
-                                    reasoning_ticked_at)
-                            except Exception as exc:  # an observer never breaks the call
-                                logger.warning("[%s] llm_progress hooks failed: %s",
-                                               self.name, exc)
-                            reasoning_ticked_at = reasoning_chars
+                        if on_reasoning_progress is not None:
+                            reasoning_parts.append(chunk["delta"])
+                            reasoning_chars += len(chunk["delta"])
+                            if reasoning_chars - reasoning_ticked_at >= _REASONING_PROGRESS_TICK:
+                                try:
+                                    await on_reasoning_progress(
+                                        "".join(reasoning_parts), reasoning_chars,
+                                        reasoning_ticked_at)
+                                except Exception as exc:  # an observer never breaks the call
+                                    logger.warning("[%s] llm_progress hooks failed: %s",
+                                                   self.name, exc)
+                                reasoning_ticked_at = reasoning_chars
 
-                    # Check status events after each token (zero overhead)
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                        # Check status events after each token (zero overhead)
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
 
-                elif chunk_type == "content_delta":
-                    # Yield token delta for real-time display
-                    yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
-                    accumulated_content.append(chunk["delta"])
+                    elif chunk_type == "content_delta":
+                        # Yield token delta for real-time display
+                        yield {"type": "thinking_delta", "step": step + 1, "delta": chunk["delta"], "accumulated": chunk["accumulated"]}
+                        accumulated_content.append(chunk["delta"])
 
-                    # Check status events after each token (zero overhead)
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                        # Check status events after each token (zero overhead)
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
 
-                elif chunk_type == "tool_call_delta":
-                    # Tool calls are accumulated server-side, we can skip yielding deltas for now
-                    # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
-                    # Still yield status events to prevent delays
-                    for status_event in yield_pending_status_fn():
-                        yield status_event
+                    elif chunk_type == "stream_restart":
+                        # The client retries from scratch after deltas went out:
+                        # this call's buffers and loop windows start over, and the
+                        # chat empties the step's thinking (the answer re-renders
+                        # from `accumulated` by itself).
+                        accumulated_content = []
+                        reasoning_detectors = build_detectors(
+                            enabled=bool(self._reasoning_loop_config["enabled"]) and watch_reasoning,
+                            repetition_threshold=float(
+                                self._reasoning_loop_config["repetition_threshold"]))
+                        reasoning_parts, reasoning_chars, reasoning_ticked_at = [], 0, 0
+                        yield {"type": "reasoning_reset", "step": step + 1}
 
-                elif chunk_type == "final":
-                    final_assistant = chunk["assistant"]
-                    # Preserve usage data from final chunk
-                    if "usage" in chunk:
-                        final_usage = chunk["usage"]
-                    if chunk.get("finish_reason"):
-                        final_finish_reason = chunk["finish_reason"]
+                    elif chunk_type == "tool_call_delta":
+                        # Tool calls are accumulated server-side, we can skip yielding deltas for now
+                        # Future: could yield tool_call_delta events for UI to show "Calling get_weather..."
+                        # Still yield status events to prevent delays
+                        for status_event in yield_pending_status_fn():
+                            yield status_event
+
+                    elif chunk_type == "final":
+                        final_assistant = chunk["assistant"]
+                        # Preserve usage data from final chunk
+                        if "usage" in chunk:
+                            final_usage = chunk["usage"]
+                        if chunk.get("finish_reason"):
+                            final_finish_reason = chunk["finish_reason"]
 
             # Yield any remaining status events after streaming completes
             for status_event in yield_pending_status_fn():
@@ -3549,8 +3565,9 @@ class Agent(ToolServer):
                     ):
                         event_type = event.get("type")
 
-                        if event_type == "reasoning_delta":
-                            # Yield Gemini reasoning/thinking tokens to WebUI
+                        if event_type in ("reasoning_delta", "reasoning_reset"):
+                            # Yield Gemini reasoning/thinking tokens to WebUI; a
+                            # reset empties the step's thinking after a stream restart.
                             yield event
                         elif event_type == "thinking_delta":
                             # Yield real-time token deltas to WebUI

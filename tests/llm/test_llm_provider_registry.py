@@ -487,6 +487,20 @@ class TestSystemHttpxTimeoutDefault:
             "the spec aliases the system config object — a factory mutating "
             "it would edit the system default process-wide")
 
+    def test_the_models_own_request_timeout_is_its_read_timeout(self):
+        """deepseek-pro set request_timeout: 480 and ran with the system's 180."""
+        from agent_system.llm.factory import resolve_llm_config_for_agent
+        from agent_system.config.models import AgentConfig
+        config = self._config()
+        config.llm_system.models["m"] = config.llm_system.models["m"].model_copy(
+            update={"request_timeout": 480})
+        config.llm_system.models["m"].model_fields_set.add("request_timeout")
+        resolved = resolve_llm_config_for_agent(config, AgentConfig(llm_profile="p"))
+        assert resolved.spec.httpx_timeouts.read == 480.0
+        assert config.llm_system.httpx_timeouts.read == 123.0, "the system default was edited"
+        # Unset, the system default still applies.
+        assert resolve_llm_config_for_agent(self._config(), AgentConfig(llm_profile="p")).spec.httpx_timeouts.read == 123.0
+
     def test_a_model_override_beats_the_system_default(self):
         from agent_system.llm.factory import resolve_llm_config_for_agent
         from agent_system.config.models import AgentConfig, HTTPXTimeoutConfig
