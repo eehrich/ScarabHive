@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_operations"
-      description: Comprehensive date/time operations including current time, formatting, calculations, timezone conversions, and calendar functions.
+      description: Date and time operations.
       parameters:
         type: object
         properties:
@@ -15,13 +15,13 @@ tools:
             description: "Timezone (e.g., 'UTC', 'Europe/Berlin', 'America/New_York')"
           format:
             type: string
-            description: "Output format ('iso', 'human', 'short', 'long', or custom strftime pattern)"
+            description: "Output format ('iso', 'human', 'date_only', 'time_only' or a strftime pattern)"
           datetime:
             type: string
-            description: "Input date/time string (ISO format or human readable)"
+            description: "Input date/time, ISO 8601 (parse/format: also Unix timestamp)"
           input_format:
             type: string
-            description: "Format pattern for input datetime parsing"
+            description: "strptime pattern of datetime (format only)"
           years:
             type: integer
             description: "Years to add/subtract"
@@ -30,7 +30,7 @@ tools:
             description: "Months to add/subtract"
           days:
             type: integer
-            description: "Days to add/subtract"
+            description: "Days to add/subtract; business_days: business days to add"
           hours:
             type: integer
             description: "Hours to add/subtract"
@@ -42,6 +42,6 @@ tools:
             description: "Seconds to add/subtract"
           target_date:
             type: string
-            description: "Target date for day calculations"
+            description: "End date for days_until and business_days"
         required: [operation]
         additionalProperties: false
