@@ -54,7 +54,11 @@ A bug you can state -- what is wrong, how it should be -- is fixed, not document
   green. Pattern: `exec(compile(src.replace(old, new), mod.__file__, "exec"), mod.__dict__)` with
   `PYTHONPATH=src`. Every fix's mutant must turn a test red;
 - a schema description that tells the model something false is a bug too: correct the text; remove
-  `default:` values the code does not apply.
+  `default:` values the code does not apply. The tools section is sent to the model on EVERY call and
+  costs tokens: the corrected text is as short as or shorter than the old one -- never add explanations,
+  internals (retries, redirects, caching) or restated defaults there. Those texts are for the LLM, not
+  for people: a sentence stays only if the model calls the tool better because of it. The rest goes in
+  the guide.
 Only a fix that would change behaviour other code or agents rely on in a way you cannot judge: do not
 build it, report it.
 
