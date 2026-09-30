@@ -179,7 +179,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_list_workflows"
-      description: "Workflows managed by ScarabHive, newest first."
+      description: "Workflows managed by ScarabHive."
       parameters:
         type: object
         properties:

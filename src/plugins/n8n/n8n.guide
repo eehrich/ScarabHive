@@ -1,0 +1,741 @@
+@database "n8n"
+@author "Enrico Ehrich"
+@$VER: n8n.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "n8n"
+@{h1}n8n
+
+Builds n8n workflows from a request and proves that they run. You tell
+the agent @{b}n8n_agent@{ub} what should happen -- "when a form is sent,
+put the row into a sheet and post it to Slack" -- and it finds the nodes,
+writes the workflow, creates it in your n8n as an unpublished draft and
+runs it once with test data, every call to the outside world mocked. What
+you get back is the workflow's id, its editor link, what ran for real,
+what was mocked, and what you still have to do (credentials, choices).
+When you ask for it, it also publishes the workflow, takes it offline,
+archives it or runs it for real.
+
+The plugin rebuilds none of n8n. It forwards a chosen set of n8n's own
+@{b}instance MCP@{ub} tools -- node search, parameter definitions,
+validation, creating from SDK code, test runs with pinned data -- and lays
+ScarabHive's policy on top: it only touches workflows it created, it
+refuses shell, file and legacy code nodes, and in a test it pins
+everything that could act outside the run. Tested against n8n 2.39.9
+(Community, Docker, SQLite).
+
+@{code}
+For users
+  @{"  Asking it  " link use}
+  @{"  How a test run works  " link testing}
+  @{"  Publishing and running for real  " link live}
+  @{"  What it will not do  " link policy}
+
+For agents and developers
+  @{"  Node knowledge tools  " link knowledge}
+  @{"  Workflow tools  " link workflows}
+  @{"  Test and execution tools  " link tests}
+  @{"  Publish, unpublish, archive  " link publish}
+  @{"  Triggering and the wake  " link trigger}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node use "Asking it"
+@{h1}Asking it
+
+In the web UI, pick @{b}n8n_agent@{ub} as the agent of a chat (see
+@{" Choosing an agent " link scarabhive/agents}). From the command line:
+
+@{code sh}
+agent-cli chat --agent n8n_agent
+agent-cli run --agent n8n_agent "A webhook that takes {name} and answers Hello <name>"
+@{body}
+
+A good request names the trigger (webhook, schedule, form, chat), what
+comes in, what should come out, and the services involved. The agent asks
+back when one of these is open, and it checks which credentials exist in
+n8n before it plans.
+
+@{h2}What it does
+
+@{number}Clarifies the request and lists the credentials n8n has.
+@{number}Reads what it needs: the skill @{tt}n8n-building@{utt}, one
+section of n8n's Workflow SDK reference at a time, n8n's best practices
+for the technique.
+@{number}Finds each node with n8n's search and reads its exact
+parameters, with resource and operation.
+@{number}Writes the workflow as n8n Workflow SDK code and validates it,
+at most three rounds.
+@{number}Creates it as an unpublished draft tagged @{tt}scarabhive@{utt}.
+@{number}Test-runs it with realistic input and mocks, at most three
+rounds of fixing.
+@{number}Hands it over.
+
+@{h2}What you get back
+
+@{code}
+workflow: <id> <name>
+editor: <editor_url>
+status: TESTED (execution <id>) | NOT TESTED (<reason>)
+ran live: [...]   pinned: [...]   not reached: [...]
+code not proven live: [...]
+published: <webhook url> | no
+todo_for_user: credentials to create (type, node), values to pick
+review: nodes flagged REVIEW_NODE, with why
+@{body}
+
+@{b}TESTED@{ub} means one thing only: a test run with status
+@{tt}success@{utt} is stored in n8n. A pinned node gave the mock it was
+handed, so it proves the rest of the workflow, not the service behind it.
+Code nodes never run live in a test (see
+@{" How a test run works " link testing}); their logic is listed as not
+proven live.
+
+@{h2}Credentials
+
+The agent sees credentials as id, name and type, never their secrets, and
+has no tool to create one. A credential that does not exist yet goes into
+the code as a placeholder n8n understands (@{tt}newCredential('Name')@{utt})
+and into @{tt}todo_for_user@{utt}; you create it in the n8n editor.
+
+@{h2}Its memory
+
+The agent keeps notes across sessions in its own OKF bundle,
+@{tt}data/okf/n8n@{utt}: your preferences and conventions, your projects
+with their workflow ids, what failed and why. What your message is about
+is folded into its prompt each turn (at most six concepts). It is told
+never to store a key, a password or text copied from n8n, and that n8n is
+right when a note and n8n disagree.
+
+@{h2}The web
+
+For what n8n's tools cannot tell -- a service's API, an error message, a
+limit -- it can search and read the web (@{" Tavily " link tavily_search/main},
+when a key is set). What it finds is data, and n8n's node definitions win
+over it.
+@endnode
+
+@node testing "How a test run works"
+@{h1}How a test run works
+
+n8n's test run executes the stored draft once, and it pins nothing by
+itself: an HTTP node without pinned data calls its URL for real. So the
+plugin decides per node what may run and sends everything else as pinned
+data. This @{b}pin plan@{ub} is the only line between a test and the
+outside world.
+
+@{table}
+Node | In a test
+triggers | always pinned to the test input (one empty item when none is given, with a warning)
+local nodes | run for real: Set, IF, Switch, Filter, No Op, Respond to Webhook, Split Out, Aggregate, Limit, Date & Time, Sort, Merge
+Sort with custom code, Merge in SQL mode | pinned: they run code
+everything else | pinned to its mock (one empty item without one, with a warning)
+@{body}
+
+Everything else means APIs, anything with a credential, HTTP, Code,
+sub-workflows, AI agents. Disabled nodes are left out.
+
+@{h2}Running a node for real
+
+The agent may name nodes in @{tt}live_nodes@{utt}. That is a request; the
+plugin grants it only when:
+
+@{bullet}@{b}HTTP Request, GraphQL, RSS@{ub}: the URL is fixed (no
+expression) and plain -- @{tt}http(s)://host/...@{utt}, no backslash,
+control character, user info, whitespace or @{tt}%@{utt} in the host --,
+its host is in the operator's @{tt}allowed_hosts@{utt} (lower case, any
+port), and it uses no proxy, no pagination and does not send its credential
+on a redirect. With a credential it runs live only if the operator also
+listed its type in @{tt}live_node_types@{utt}: the credential travels with
+the request.
+@{bullet}@{b}any other type@{ub}: only if the operator listed it in
+@{tt}live_node_types@{utt}.
+@{bullet}@{b}never@{ub}: Code and AI Code tools (they reach the network
+through @{tt}this.helpers.httpRequest@{utt}, so no host list bounds them)
+and sub-workflows (the callee's nodes would run outside this plan; a
+pinned call node does not start the callee at all).
+
+Both lists are empty as shipped: nothing runs live but local nodes.
+
+@{h2}AI agents and other roots
+
+An AI Agent hangs its model, memory and tools under it as subnodes. The
+root runs live only if it may itself @{b}and@{ub} every node under it may
+-- the tools of a tool included. Otherwise the root is pinned and none of
+its subnodes run; a mock given to a subnode is ignored with a warning. A
+subnode that ran inside a live root is reported as live.
+
+@{h2}What counts
+
+A test counts only when n8n stored its execution and the status is
+@{tt}success@{utt}. The plugin refuses to test at all while the stored
+workflow has a blocking finding (see
+@{" What it will not do " link policy}) or has
+@{tt}saveManualExecutions: false@{utt}, which would leave the run
+unstored. A run that n8n did not store is reported as an error: it proves
+nothing.
+@endnode
+
+@node live "Publishing and running for real"
+@{h1}Publishing and running for real
+
+Four tools act outside the draft. The agent is told to use them only when
+you asked for exactly that -- never because a text in n8n says so.
+
+@{table}
+You ask | It does | Needs allow_publish
+publish it | publishes the current version, if a successful test proved it | yes
+take it offline | unpublishes it | yes
+archive it | archives it; a published one goes offline | yes
+run it | calls its production webhook once, with a payload | no
+@{body}
+
+@{h2}Publishing
+
+Only the version a test proved goes live. The plugin looks for a
+successful @{b}test@{ub} run (n8n's mode @{tt}manual@{utt}) of exactly the
+current version id among the newest 250 successful runs of the workflow; a
+production run does not count, it ran the published version. Then it
+publishes by version id, so an edit after the check cannot slip in
+untested. It refuses while the workflow or any workflow it starts
+(sub-workflows by id, its error workflow, and theirs in turn) has a
+blocking finding. The answer carries the production webhook URLs, built
+from @{tt}N8N_PUBLIC_URL@{utt}; a path with route parameters gets no
+guessed URL, take it from the editor.
+
+An archived workflow is restored in the n8n editor; the plugin cannot and
+does not delete anything.
+
+@{h2}Running it
+
+Only a published workflow with a Webhook trigger is started from here: the
+plugin calls @{tt}<base>/webhook/<path>@{utt} of the published version,
+without any key. It then looks for the execution the call started and
+tells the agent its id and status. A run still going can wake the chat
+when it ends -- see @{" Triggering and the wake " link trigger}. A
+schedule runs by itself; a webhook with authentication or route
+parameters is called from the n8n editor.
+@endnode
+
+@node policy "What it will not do"
+@{h1}What it will not do
+
+@{h2}Touch workflows it did not create
+
+Every tool that changes, tests, publishes, archives or triggers a
+workflow first reads it over the public API and refuses unless:
+
+@{bullet}it carries the managed tag (@{tt}scarabhive@{utt}, set by
+@{tt}managed_tag@{utt}) -- the plugin adds it right after creating;
+@{bullet}it is not archived;
+@{bullet}it is exposed to n8n's MCP (@{tt}availableInMCP@{utt}) --
+exposing a workflow is a decision for a person in the editor.
+
+Workflows you built in the editor are therefore safe from it, unless you
+tag them yourself. Reading is not locked: the agent can read any workflow
+the MCP sees, and their executions.
+
+@{h2}Build blocked nodes
+
+@{table}
+List | Types | Effect
+blocked | Execute Command, SSH, Local File Trigger, Read/Write Files, the old binary file nodes, Function, Function Item, Git, n8n (instance admin), AI Code, AI HTTP Request Tool | error: no test, no publish
+review | Code, AI Code tool, HTTP Request, GraphQL, RSS, FTP, Execute Workflow, AI Workflow tool, MCP clients | warning: named in the handover
+@{body}
+
+A type's agent-tool variant counts as the type (@{tt}gitTool@{utt} is
+@{tt}git@{utt}). The binding check runs on what n8n really stored, before
+every test and publish; the checks before creating (type names in the
+code) and on @{tt}addNode@{utt} are early hints. Before publishing, the
+block list is also applied to every workflow the new one can start. A
+person in the editor can still build anything.
+
+@{h2}Other findings that block
+
+@{table}
+Code | Means
+UNKNOWN_TYPE_VERSION | a type or version n8n does not know (n8n's own validators let @{tt}typeVersion: 99@{utt} pass)
+EXECUTE_WORKFLOW_SOURCE | a sub-workflow not taken from the database by a fixed id: inline JSON, a file or a URL runs unchecked
+SUB_WORKFLOW_UNCHECKED | a sub-workflow id that is not an n8n id, or a workflow that does not exist (at publish and trigger)
+WEBHOOK_PATH_EMPTY, WEBHOOK_PATH_UNSAFE | no path, or one that would reach another n8n URL (@{tt}..@{utt}, @{tt}?@{utt}, @{tt}#@{utt}, @{tt}%@{utt})
+RESPOND_NODE_MISSING | responseMode responseNode without a Respond to Webhook after it
+EXPRESSION_UNBALANCED | a @{tt}{{@{utt} without @{tt}}}@{utt}
+CREDENTIAL_UNKNOWN_ID, CREDENTIAL_TYPE_MISMATCH | a credential id n8n does not have, or of the wrong type
+MISSING_REQUIRED_INPUT, INVALID_PARAMETER, SET_INVALID_ASSIGNMENT | warnings n8n marks valid that are real errors
+N8N_ERROR, N8N_NODE_CONFIG | n8n's own validators
+@{body}
+
+@{h2}Change what marks a workflow as ours
+
+@{tt}n8n_update_workflow@{utt} refuses to remove the managed tag, to add a
+blocked node, to set a credential that does not exist or has the wrong
+type, and to set @{tt}saveManualExecutions@{utt} to false.
+
+@{h2}Things it has no tool for
+
+Deleting a workflow, n8n's own @{tt}execute_workflow@{utt}, creating or
+reading credentials' secrets, exposing a workflow to the MCP, restoring
+an archived one.
+@endnode
+
+@node knowledge "Node knowledge tools"
+@{h1}Node knowledge tools
+
+Six tools that only read n8n's knowledge. They need the MCP key only
+(@{tt}N8N_BASE_URL@{utt} and @{tt}N8N_MCP_KEY@{utt}); every other tool
+needs @{tt}N8N_API_KEY@{utt} as well.
+
+@{table}
+Tool | Forwards to n8n | Answer
+n8n_search_nodes | search_nodes | @{tt}data@{utt} (untrusted text, at most 13,000 chars), @{tt}truncated@{utt}
+n8n_get_node_types | get_node_types | @{tt}data@{utt} (untrusted, at most 20,000 chars), @{tt}errors@{utt}, @{tt}truncated@{utt}
+n8n_explore_node_resources | explore_node_resources | @{tt}data@{utt} (untrusted, at most 8,000 chars), @{tt}truncated@{utt}
+n8n_get_best_practices | get_workflow_best_practices | @{tt}result@{utt} (at most 8,000 chars), @{tt}truncated@{utt}
+n8n_get_sdk_reference | get_workflow_sdk_reference | @{tt}result@{utt} (at most 16,000 chars), @{tt}truncated@{utt}
+n8n_list_credentials | list_credentials | @{tt}count@{utt}, @{tt}data@{utt} (untrusted list of id, name, type)
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Name | Used by | Meaning
+queries | search_nodes | one or two search terms; a string counts as one; more than two is refused
+usage | search_nodes | @{tt}agentTool@{utt}: only nodes an AI Agent can use as a tool; @{tt}workflow@{utt}; anything else is left out
+nodes | get_node_types | one to three @{tt}{node_id, version?, resource?, operation?, mode?}@{utt}; without resource and operation n8n gives only the list of operations
+node_type, version, method_name, method_type, credential_type, credential_id | explore_node_resources | all required; method_type @{tt}listSearch@{utt} or @{tt}loadOptions@{utt}; version a finite number
+filter, pagination_token, current_node_parameters | explore_node_resources | passed on when given
+technique | get_best_practices | one of 18: @{tt}list@{utt} names them
+section | get_sdk_reference | patterns, patterns_detailed, expressions, functions, rules, import, guidelines, design
+type | list_credentials | only this credential type
+@{body}
+
+@{tt}errors@{utt} of get_node_types names types and versions n8n does not
+know, read from the @{tt}# Errors@{utt} section n8n puts anywhere in an
+otherwise successful answer. list_credentials asks n8n for 200 and returns
+at most 100.
+
+@{code}
+n8n_get_node_types(nodes=[{"node_id": "n8n-nodes-base.slack", "version": "2.3",
+                           "resource": "message", "operation": "post"}])
+@{body}
+@endnode
+
+@node workflows "Workflow tools"
+@{h1}Workflow tools
+
+@{table}
+Tool | What it does
+n8n_validate_node_config | 1 to 50 node configs checked by n8n, plus the block and review lists
+n8n_validate_workflow | SDK code checked as a whole workflow
+n8n_create_workflow | validate, create as a draft, tag, check what was stored
+n8n_update_workflow | n8n's atomic update operations on a managed workflow, then the stored check
+n8n_get_workflow | a workflow's nodes, connections, settings and version id
+n8n_list_workflows | the managed workflows
+@{body}
+
+@{h2}Parameters
+
+@{table}
+Name | Used by | Meaning
+nodes | validate_node_config | 1 to 50 of @{tt}{name, type, typeVersion, parameters, subnodes, isToolNode}@{utt}
+code | validate_workflow, create_workflow | the workflow as n8n Workflow SDK code; required
+name | create_workflow | required
+description | create_workflow | passed on when given
+workflow_id | update_workflow, get_workflow | required; for update, letters and digits only
+operations | update_workflow | 1 to 100 operations, each with a @{tt}type@{utt}
+expected_version_id | update_workflow | the version id last read; refused when the workflow moved on
+detail | get_workflow | @{tt}full@{utt} (default) or @{tt}execution@{utt}: metadata, version id and triggers, no nodes
+name, limit, cursor | list_workflows | part of the name; 1 to 50, default 20; the page from @{tt}next_cursor@{utt}
+@{body}
+
+@{h2}Answers
+
+@{bullet}@{b}validate_*@{ub}: @{tt}ok@{utt} (false on any error),
+@{tt}errors@{utt}, @{tt}warnings@{utt}, each a finding
+@{tt}{code, level, node, message, fix_hint}@{utt}. n8n's
+@{tt}valid: true@{utt} never decides alone: three of its warning codes
+are real errors.
+@{bullet}@{b}create_workflow@{ub}: with validation errors nothing is
+created (@{tt}"validation failed; nothing was created"@{utt} with the
+findings). Otherwise @{tt}workflow_id@{utt}, @{tt}editor_url@{utt},
+@{tt}ok@{utt}, @{tt}findings@{utt} on the stored workflow,
+@{tt}warnings@{utt}, @{tt}auto_assigned_credentials@{utt} (n8n assigns
+existing credentials by itself). The tag is tried twice; a workflow that
+stays untagged is named, and the plugin will not touch it.
+@{bullet}@{b}update_workflow@{ub}: @{tt}workflow_id@{utt},
+@{tt}version_id@{utt}, @{tt}ok@{utt}, @{tt}findings@{utt},
+@{tt}n8n_warnings@{utt}.
+@{bullet}A write whose check afterwards fails is an error that says the
+write happened and carries the id: @{tt}workflow w2 was created and
+tagged, but the check afterwards failed (...); do not repeat it --
+test_workflow checks it anew@{utt}.
+@{bullet}@{b}get_workflow@{ub}: @{tt}workflow_id@{utt}, @{tt}editor_url@{utt},
+@{tt}data@{utt} (untrusted). A workflow over 40,000 chars in full is
+refused, pointing to @{tt}detail: execution@{utt} and the editor.
+@{bullet}@{b}list_workflows@{ub}: only workflows with the managed tag:
+@{tt}id, name, active, is_archived, updated_at, editor_url@{utt},
+@{tt}next_cursor@{utt}.
+
+@{code}
+n8n_update_workflow(workflow_id="Ab12Cd34Ef56Gh78", expected_version_id="9f1c...",
+    operations=[{"type": "setNodeParameter", "nodeName": "Hook", "path": "path", "value": "orders"}])
+@{body}
+@endnode
+
+@node tests "Test and execution tools"
+@{h1}Test and execution tools
+
+@{h2}n8n_test_workflow
+
+Runs the stored draft of a managed workflow once under the pin plan (see
+@{" How a test run works " link testing}).
+
+@{table}
+Name | Meaning
+workflow_id | required
+trigger_node | the trigger to start from; default the first trigger in the workflow; one that is no trigger is refused
+trigger_input | the items the trigger emits; a plain object is wrapped as @{tt}{"json": ...}@{utt}
+mocks | @{tt}{node name: [items]}@{utt}, what each pinned node outputs; a name that is no node is warned about
+live_nodes | node names to run for real, granted per the rules
+timeout_s | 5 to 300, default 60; the call waits 30 s longer
+@{body}
+
+The answer: @{tt}tested@{utt} (true only with status success),
+@{tt}execution_id@{utt}, @{tt}execution_status@{utt}, n8n's
+@{tt}error@{utt}, @{tt}warnings@{utt} of the plan, @{tt}editor_url@{utt},
+and @{tt}nodes@{utt} (untrusted), one entry per node:
+
+@{table}
+Field | Meaning
+run | @{tt}live@{utt}, @{tt}pinned@{utt} or @{tt}not_reached@{utt}
+reason | why: the rule that pinned it or let it run
+node_status | n8n's status of the node's first run
+items_out | items over all outputs; @{tt}items_per_output@{utt} for IF and Switch
+sample | the first item, at most 1,000 chars; 12,000 chars for all samples together
+error | the node's error message, at most 500 chars
+@{body}
+
+When a sample was cut or left out for the budget, the answer also has
+@{tt}samples_truncated: true@{utt}; @{tt}n8n_get_execution@{utt} reads the
+nodes' data.
+
+@{h2}n8n_get_execution
+
+@{table}
+Name | Meaning
+workflow_id, execution_id | required
+include_data | the nodes' output, n8n cutting each at 2,000 chars
+nodes | only these nodes' data, at most 10
+@{body}
+
+The answer's @{tt}data@{utt} (untrusted) is at most 12,000 chars, with
+@{tt}truncated@{utt}. A run this session was watching also carries
+@{tt}watch: {status, note}@{utt} -- see
+@{" Triggering and the wake " link trigger}.
+
+@{h2}n8n_list_executions
+
+@{table}
+Name | Meaning
+workflow_id | only this workflow's
+status | success, error, running, waiting, canceled, crashed, new, unknown
+limit | 1 to 20, default 10
+@{body}
+
+Newest first: @{tt}id, workflow_id, status, mode, started_at,
+stopped_at@{utt}. Without a status, running and waiting runs are asked for
+too: n8n's plain list leaves them out. Neither execution tool is locked to
+managed workflows.
+@endnode
+
+@node publish "Publish, unpublish, archive"
+@{h1}Publish, unpublish, archive
+
+All three take only @{tt}workflow_id@{utt}, go through the managed lock,
+and answer @{tt}"... switched off ... (allow_publish)"@{utt} unless the
+operator set @{tt}allow_publish: true@{utt} -- the value true itself;
+@{tt}"yes"@{utt} or @{tt}1@{utt} leave it off.
+
+@{table}
+Tool | Checks | Answer
+n8n_publish_workflow | no blocking finding in it or in any workflow it starts; a successful test of the current version | @{tt}active_version_id@{utt}, @{tt}proven_by_execution@{utt}, @{tt}webhooks@{utt} (untrusted: node, methods, url or a note), @{tt}editor_url@{utt}
+n8n_unpublish_workflow | -- | @{tt}was_published@{utt}
+n8n_archive_workflow | -- | @{tt}archived: true@{utt}, a note that restoring is done in the editor
+@{body}
+
+The test is looked for among the newest 250 successful runs; the test
+runs among them are read one by one, at most 20. A workflow with more
+than 250 successful production runs since its last test is refused and has to be
+tested again. The workflows it starts are sub-workflow nodes with a fixed
+id and the error workflow setting, followed to their own callees, both
+their draft and their published nodes, at most 19 of them.
+
+Refusals, verbatim:
+
+@{code}
+w1: its current version has no successful test run among the newest 250
+successful runs -- run n8n_test_workflow on it first
+the workflow has blocking findings; fix and test it first   (+ findings)
+publishing is switched off by the operator (allow_publish)
+@{body}
+
+n8n's own refusal (for example a webhook path another workflow uses) comes
+back as the error text.
+@endnode
+
+@node trigger "Triggering and the wake"
+@{h1}Triggering and the wake
+
+@{h2}n8n_trigger_workflow
+
+@{table}
+Name | Meaning
+workflow_id | required; must be managed and published
+payload | a JSON object, at most 64,000 chars as JSON; for GET and HEAD flat values sent as query parameters, at most 8,000 chars
+method | only when the webhook takes several methods
+webhook_node | only when the published version has several Webhook triggers
+wait | @{tt}wake@{utt} (default) or @{tt}none@{utt}
+timeout_s | how long to wait for the webhook's answer: 5 to 300, default 60
+@{body}
+
+Refused before any call: a workflow that is not published, a published
+version without an enabled Webhook trigger, several without
+@{tt}webhook_node@{utt}, a webhook with authentication, a path with route
+parameters or anything but letters, digits and @{tt}- _ . ~ :@{utt}
+between single slashes, a method it does not take, a published version
+with a blocked node (a person may have published it in the editor) or
+one that picks a sub-workflow by expression (the payload could choose any
+workflow), and a workflow it starts that has a blocked node or such a
+sub-workflow by now. Triggering does not need
+@{tt}allow_publish@{utt}.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+http_status, response | the webhook's status and answer (untrusted, at most 8,000 chars)
+execution_id, correlation | @{tt}exact@{utt} when the workflow answered with its @{tt}executionId@{utt} (a Respond to Webhook node can); @{tt}heuristic@{utt} for the one new webhook run since the call
+candidates | several new runs started at once: pick by their data
+execution_status | the run's status when the answer was written
+note | what is uncertain; without an execution id it ends in "do not call the webhook again, look with n8n_list_executions"
+wake, wake_note | for a run still going with wait: wake
+@{body}
+
+Once the webhook was called, nothing reads as "nothing happened": no
+answer, a failed lookup, even a 404 or 413 that n8n might have sent is a
+result with a note, unless the lookup found no run at all -- only then is
+n8n's refusal believed (@{tt}n8n does not know this webhook -- is the
+workflow still published?@{utt}).
+
+@{h2}The wake
+
+With @{tt}wake: true@{utt} the plugin watches the run over the public API
+(every 2 s at first, backing off to 30 s) and, when it ends, starts a new
+run of the chat's agent with the framework's wake sentence. The agent is
+told to give you the execution id and end its turn, and when woken to read
+the run with @{tt}n8n_get_execution@{utt}, whose @{tt}watch@{utt} field
+then says how it ended. Reading the ended run before the wake comes
+cancels the wake.
+
+No wake is armed -- @{tt}wake: false@{utt}, and the note ends in "you are
+not woken -- give execution id 7 to whoever asked and read it later with
+n8n_get_execution, do not poll it" -- when no execution was found, the run
+was itself woken, session presence or waking is switched off, the call
+has no session, the session is a sub-agent's, or the ids cannot name a file.
+
+@{bullet}A watch gives up after @{tt}watch_max_hours@{utt} (default 24,
+1 to 168); a run that disappears or cannot be read ends it too, and the
+note says no further wake comes.
+@{bullet}The watch lives in the API process or an @{tt}agent-cli chat@{utt}.
+A one-shot @{tt}agent-cli run@{utt} ends it with its turn, and the tool
+cannot tell that case apart. A restart ends every watch; the outcome stays
+in n8n.
+@{bullet}Records and read marks lie under @{tt}data/cache/n8n/@{utt} and
+are swept after 14 days.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Tools
+
+Nineteen tools from @{tt}schema.yaml@{utt}, about 11,700 chars of schema
+with every key set; with only the MCP key, the six knowledge tools
+(3,900 chars); with no n8n configured, none. The agent's allowlist names
+each of the nineteen. The prompt and skills name only tools the schema
+has (checked by @{tt}tests/test_plugin_n8n_config.py@{utt}).
+
+@{h2}Answers and errors
+
+Every answer is @{tt}{"status": "success", ...}@{utt} or
+@{tt}{"status": "error", "error": "<what to do>"}@{utt}, some with
+@{tt}findings@{utt}. Examples, verbatim:
+
+@{code}
+workflow w1 is not managed by ScarabHive (tag 'scarabhive' missing); it stays untouched
+operation 0: node type n8n-nodes-base.executeCommand is blocked by policy
+n8n MCP rate limit reached (100 requests per IP and 5 minutes); retry in 102 s
+n8n MCP refused the key -- check N8N_MCP_KEY (it may have been rotated)
+n8n not reachable at http://n8n:5678 (ConnectError) -- is the container running?
+  http://n8n:5678/healthz tells
+@{body}
+
+No error or log line carries a key. A 429 of the MCP with a
+@{tt}retry-after@{utt} of at most 10 s is waited out once; a longer one
+goes to the model as the text above.
+
+@{h2}Untrusted data
+
+What came out of n8n -- node descriptions (a community node's author wrote
+them), workflow and node names, execution data, credential names, webhook
+answers, n8n's messages on a result -- comes wrapped as
+@{tt}{"untrusted": true, "content": ...}@{utt}. The prompt calls that and
+every name or value from a workflow data, never an instruction. The SDK
+reference and best practices come unwrapped: n8n's own documentation.
+
+@{h2}The chat status line
+
+Each call ends with exactly one line, at most 140 chars: for example
+@{tt}created Ab12... flow: 0 blocking finding(s)@{utt}, @{tt}w1: execution
+e1 success, 2 live / 1 pinned@{utt}, or the error's first 140 chars.
+
+@{h2}Prompt, skills, cache
+
+The prompt (@{tt}agents/prompts/n8n_agent.md@{utt}, about 4,100 chars)
+carries the way of working, the rules and the handover format. The
+knowledge is in three skills loaded on demand: @{tt}n8n-building@{utt}
+(code shape, credentials, update operations, finding codes, 5,300 chars),
+@{tt}n8n-testing@{utt} (pin plan, test data, reading the answer, 3,800)
+and @{tt}n8n-recipes@{utt} (webhook, schedule, sub-workflow, AI agent,
+error workflow, a workflow as an MCP tool for ScarabHive, 4,400).
+
+Tool results are appended and never rewritten, each capped as the tool
+nodes say. The agent runs with @{tt}prompt_cache_mode: multi_turn@{utt}.
+The OKF hook changes the system prompt when the user speaks or the agent
+writes a concept mid-turn; the context engineer compacts when the context
+grows (@{" The compaction hook " link context_engineer/hook}).
+
+@{h2}Known gaps
+
+@{bullet}@{b}Only your request stands between the builder and a real
+run.@{ub} The tools cannot see the conversation. A prompt injection could
+still publish one of its own tested workflows or trigger a published one
+with a payload of its choice; with @{tt}allow_publish: false@{utt} only
+the trigger is left.
+@{bullet}@{b}Published, nothing is controlled any more.@{ub} A published
+HTTP node reaches any host. That is why only a tested version goes live.
+@{bullet}@{b}An allowed host is trusted with its redirects@{ub} in a test.
+@{bullet}@{b}The block list is explicit.@{ub} A dangerous type a later n8n
+adds is not caught until it is listed; the upgrade checklist in
+@{" docs/deploy/README.md " link docs/deploy/README.md} re-checks it.
+@{bullet}@{b}The code pre-check is a hint.@{ub} Code can assemble a type
+name; the stored check is the binding one.
+@{bullet}@{b}The MCP key acts as its n8n user@{ub} (today the owner). Keep
+it like a password.
+@{bullet}@{b}The memory is the agent's own words@{ub}, folded into later
+prompts unwrapped; only the prompt's rule keeps n8n text out of it.
+@{bullet}@{b}No panel@{ub}, and n8n cannot call ScarabHive
+(@{" docs/design.md " link docs/design.md} §6.3, §7).
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+@{h2}n8n
+
+Deploy n8n with @{tt}docs/deploy/@{utt} (Docker Compose with the instance
+MCP switched on) and run @{tt}setup_owner.sh@{utt} on the Docker host: it
+creates the owner, a public API key with read scopes only
+(@{tt}workflow:read@{utt}, @{tt}workflow:list@{utt},
+@{tt}execution:read@{utt}, @{tt}execution:list@{utt}) and the MCP key.
+The steps: @{" docs/deploy/README.md " link docs/deploy/README.md}.
+
+@{h2}ScarabHive
+
+Put the values into @{tt}config/secrets.env@{utt}:
+
+@{table}
+Variable | Meaning
+N8N_BASE_URL | where ScarabHive reaches n8n, e.g. http://localhost:5678
+N8N_MCP_KEY | the MCP key; every write goes through the MCP with it
+N8N_API_KEY | the read-only public API key; the plugin only ever sends GET with it
+N8N_PUBLIC_URL | where browsers and webhook callers reach n8n, when that is another address; editor links and webhook URLs are built from it
+@{body}
+
+Then restart ScarabHive. Without the three required values the instance
+offers no tools, so an installation without n8n loses nothing; the start
+logs a warning when an enabled agent allows the tools, and names what is
+missing when only some are set. A plain-HTTP base URL other than localhost
+is logged: both keys travel unencrypted.
+
+@{h2}The entries
+
+Nothing to add to @{tt}config/plugins.yaml@{utt}: @{tt}agents/n8n.yaml@{utt}
+is picked up by the include @{tt}../src/plugins*/*/agents/*.yaml@{utt} and
+defines three instances, the skills by @{tt}skills.skill_dirs@{utt}.
+
+@{code yaml}
+n8n:
+  type: n8n
+  enabled: true
+  managed_tag: scarabhive
+  allowed_hosts: []
+  live_node_types: []
+  allow_publish: true
+  watch_max_hours: 24
+  tested_n8n_version: "2.39.9"
+
+n8n_okf:
+  type: okf
+  enabled: true
+  allowed_directories:
+    - data/okf/n8n
+  hook_max_concepts: 6
+  hook_graph_depth: 1
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default in code | Meaning
+managed_tag | scarabhive | the tag that marks a workflow as ScarabHive's
+allowed_hosts | none | hosts an HTTP node may reach live in a test (lower case, any port)
+live_node_types | none | other node types that may run live in a test when named
+blocked_node_types | the list in @{tt}validate.py@{utt} | a configured list REPLACES it: copy it and change it
+review_node_types | the list in @{tt}validate.py@{utt} | replaces the default the same way
+allow_publish | off | only the value true switches publishing, unpublishing and archiving on (shipped: true)
+watch_max_hours | 24 | how long a trigger's wake waits, 1 to 168
+timeout | 60 | seconds per HTTP request to n8n
+base_url, api_key, mcp_key, public_url | the environment | set here only if not from secrets.env
+tested_n8n_version | -- | not read by the code; the version the plugin was measured against
+@{body}
+
+@{h2}The agent
+
+@{table}
+Key | Value
+type | multi_turn_agent: the context engineer's tools and compaction
+llm_profile | [structured, deepseek-chat]: the same model, the second over the direct API
+max_steps | 60
+skills.on_demand | n8n-building, n8n-testing, n8n-recipes
+tools.allowed | the nineteen n8n tools, @{tt}skills/*@{utt}, @{tt}n8n_okf/*@{utt}, @{tt}tavily_search/*@{utt}
+hooks | context engineer, Markdown formatter, the OKF context injection on @{tt}data/okf/n8n@{utt}
+visibility | both: the UI and a tool
+@{body}
+
+Another agent calls it as a tool with @{tt}"+n8n_agent/*"@{utt} in its
+allowlist (@{tt}n8n_agent_execute_task@{utt}). It is not among the shared
+sub-agent manager's @{tt}allowed_agents@{utt}; add it there to spawn it as
+a sub-agent (@{" Sub-agents and the SAM " link scarabhive/subagents}).
+
+@{h2}Where data lives
+
+The workflows and executions in n8n; the agent's memory in
+@{tt}data/okf/n8n@{utt}; watch records in @{tt}data/cache/n8n/@{utt}.
+
+The live tests (@{tt}tests/test_plugin_n8n_live.py@{utt}) run only
+with @{tt}N8N_LIVE=1@{utt} and a separate @{tt}N8N_TEST_API_KEY@{utt}
+against a test instance; the rest runs against a fake n8n.
+@endnode
