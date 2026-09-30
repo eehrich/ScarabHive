@@ -122,6 +122,14 @@ def parse_frontmatter(text: str) -> Tuple[Optional[Dict[str, Any]], str, Optiona
     raw_yaml, body = split_frontmatter(text)
     if raw_yaml is None:
         return None, body, None
+    # Drop the single conventional blank-line separator between the closing
+    # fence and the body content (handles both LF and CRLF endings) -- on the
+    # error paths too, or a rewrite that keeps the body adds a blank line.
+    # dump_frontmatter re-adds it, so read → modify → write stays idempotent.
+    if body.startswith("\r\n"):
+        body = body[2:]
+    elif body.startswith("\n"):
+        body = body[1:]
     try:
         data = _yaml().load(io.StringIO(raw_yaml))
     except YAMLError as e:
@@ -130,13 +138,6 @@ def parse_frontmatter(text: str) -> Tuple[Optional[Dict[str, Any]], str, Optiona
         data = {}
     if not isinstance(data, dict):
         return None, body, "frontmatter is not a mapping"
-    # Drop the single conventional blank-line separator between the closing
-    # fence and the body content (handles both LF and CRLF endings).
-    # dump_frontmatter re-adds it, so read → modify → write stays idempotent.
-    if body.startswith("\r\n"):
-        body = body[2:]
-    elif body.startswith("\n"):
-        body = body[1:]
     return data, body, None
 
 

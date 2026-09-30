@@ -14,6 +14,7 @@ consumer (file_ops disables its own semantic search to avoid ChromaDB conflicts)
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import math
 import os
@@ -27,6 +28,7 @@ from filelock import FileLock, Timeout
 
 from agent_system.paths import data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import remote_outside
 from agent_system.utils.suggest import siblings_of, suggest_path
 
 from . import core
@@ -37,7 +39,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
+# Unicode word characters: an ASCII class cut "Straße" into "stra" and "e".
+_WORD_RE = re.compile(r"\w+")
 
 
 def _tokens(text: str) -> List[str]:
@@ -66,6 +69,26 @@ class _NullStatus:
 _NULL_STATUS = _NullStatus()
 
 
+def _valid(shape: str, value: str, kind: Any) -> bool:
+    """``value`` has the shape AND names a real date/time (no 2026-13-45)."""
+    if not re.match(shape, value):
+        return False
+    try:
+        kind.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _concept_key(path: Any) -> str:
+    """A concept path as the bundle keys it: one leading slash.
+
+    read/write accept ``tables/x.md`` too; the graph tools compared it verbatim,
+    and subgraph silently dropped such a seed.
+    """
+    return "/" + str(path or "").lstrip("/")
+
+
 def _status_of(params: Dict[str, Any]) -> Any:
     """The caller's status reporter, or a no-op one."""
     return params.get("_status") or _NULL_STATUS
@@ -92,6 +115,24 @@ def _atomic_write(path: Path, text: str) -> None:
                 tmp.unlink()
             except OSError:  # pragma: no cover - best effort
                 pass
+
+
+def _keep_frontmatter(index_path: Path, text: str) -> str:
+    """``text`` under the frontmatter the existing index.md carries, if any.
+
+    The root index declares ``okf_version`` there; a regenerated body alone
+    dropped it on every reindex.
+    """
+    try:
+        old = index_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):  # missing or broken: nothing to keep
+        return text
+    fm, _body, _err = core.parse_frontmatter(old)
+    return core.dump_frontmatter(fm, text) if fm else text
+
+
+#: Most concepts one list answer carries; the rest is counted, not listed.
+LIST_LIMIT = 200
 
 
 #: Cross-process guard file, one per bundle root. It lives IN the bundle on
@@ -202,7 +243,7 @@ class OkfServer(SchemaBasedToolServer):
         self._hook_seed: Optional[str] = cfg.get("hook_seed_concept")  # optional anchor
 
         # Loaded-bundle cache keyed by root -> (signature, Bundle). The signature
-        # (file count + newest mtime) lets repeated tool calls and the per-turn
+        # (every file's path, mtime and size) lets repeated tool calls and the per-turn
         # hook skip re-walking an unchanged bundle.
         self._cache: Dict[str, Any] = {}
 
@@ -223,6 +264,11 @@ class OkfServer(SchemaBasedToolServer):
         Raises ValueError with an agent-actionable message otherwise."""
         if not bundle:
             raise ValueError("missing 'bundle' path")
+        # A host path would be opened by resolve() below -- a connection to the
+        # host with the user's credentials -- before containment could refuse it.
+        if remote_outside(str(bundle), Path.cwd(), self._roots):
+            raise ValueError(
+                f"bundle '{bundle}' is outside the allowed OKF directories")
         # data/... lands in the data directory (agent_system/paths.py)
         p = resolve_data_path(bundle)
         p = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
@@ -242,10 +288,22 @@ class OkfServer(SchemaBasedToolServer):
         rel = (rel_path or "").lstrip("/")
         if not rel:
             raise ValueError("missing concept 'path'")
+        if remote_outside(rel, bundle_root, (bundle_root,)):
+            raise ValueError(f"concept path '{rel_path}' escapes the bundle")
         p = (bundle_root / rel).resolve()
         if p != bundle_root and bundle_root not in p.parents:
             raise ValueError(f"concept path '{rel_path}' escapes the bundle")
         return p
+
+    @staticmethod
+    def _resolve_dir(bundle_root: Path, subdir: str) -> Optional[Path]:
+        """A bundle subdirectory, or None when it leads out of the bundle."""
+        if not subdir:
+            return bundle_root
+        if remote_outside(subdir, bundle_root, (bundle_root,)):
+            return None
+        p = (bundle_root / subdir).resolve()
+        return p if p == bundle_root or bundle_root in p.parents else None
 
     def _bundle_rel(self, bundle_root: Path, abs_path: Path) -> str:
         """Absolute path -> bundle-relative leading-slash POSIX path."""
@@ -257,7 +315,7 @@ class OkfServer(SchemaBasedToolServer):
 
     def _load_bundle(self, bundle_root: Path) -> core.Bundle:
         """Walk a bundle directory and build an in-memory :class:`core.Bundle`,
-        cached by (file count, newest mtime) so an unchanged bundle isn't
+        cached by every file's (path, mtime, size) so an unchanged bundle isn't
         re-read on every tool call / LLM turn.
 
         Concepts that fail to parse are still loaded (with their parse error
@@ -267,8 +325,11 @@ class OkfServer(SchemaBasedToolServer):
         as sandbox-safe as _resolve_concept, since its content flows into search
         results and the context-injection hook (and thus to the LLM)."""
         mds = sorted(bundle_root.rglob("*.md"))[: self._max_files]
+        # Every path with its mtime and size: a rename keeps both the count
+        # and the newest mtime, so those two alone served the old bundle.
         try:
-            sig = (len(mds), max((p.stat().st_mtime_ns for p in mds), default=0))
+            sig = tuple((str(p), st.st_mtime_ns, st.st_size)
+                        for p in mds for st in (p.stat(),))
         except OSError:
             sig = None
         key = str(bundle_root)
@@ -292,7 +353,7 @@ class OkfServer(SchemaBasedToolServer):
                                    rel, self._max_file_kb)
                     continue
                 text = md.read_text(encoding="utf-8")
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 logger.warning("okf: skipping unreadable %s: %s", rel, e)
                 continue
             if core.is_reserved(rel):
@@ -400,69 +461,69 @@ class OkfServer(SchemaBasedToolServer):
         text = abs_path.read_text(encoding="utf-8")
         fm, body, err = core.parse_frontmatter(text)
 
-        # Seitenweise lesen. Eine Wiki-Seite kann gross werden, ohne die
-        # harte Grenze zu reissen — der Fall-Ledger eines Buchs lag
-        # gemessen bei 70 KB (2026-08-06), also rund 17.000 Token fuer
-        # EINEN Aufruf. Das flutet den Kontext, lange bevor irgendetwas
-        # abgeschnitten wird. Zeilenbasiert und mit denselben Parameter-
-        # namen wie `writer_content_batch_scene`, damit ein Agent nicht
-        # zwei Konventionen lernen muss.
-        alle = body.split("\n")
-        # Ein abschliessender Umbruch ist KEINE Zeile. `split` liefert dafuer
-        # ein leeres Endstueck; wer es mitzaehlt, meldet dem Leser einer
-        # vollstaendig gelesenen Seite noch eine Phantom-Zeile — und schickt
-        # ihn per Hinweis danach los. `render_faelle_md` schreibt genau so,
-        # also traefe das die Datei, fuer die das Blaettern gebaut wurde.
-        schluss_umbruch = bool(alle) and alle[-1] == ""
-        if schluss_umbruch:
-            alle = alle[:-1]
+        # Paged reading. A page can grow large without hitting the hard cap --
+        # one measured at 70 KB (2026-08-06), about 17,000 tokens for ONE call,
+        # which floods the context long before anything is cut. Line based.
+        all_lines = body.split("\n")
+        # A final line break is NOT a line. `split` yields an empty tail for
+        # it; counting that reports a phantom line to a reader who has read
+        # the whole page -- and the hint sends them after it.
+        trailing_newline = bool(all_lines) and all_lines[-1] == ""
+        if trailing_newline:
+            all_lines = all_lines[:-1]
 
         start = max(1, int(params.get("start_line") or 1))
-        anzahl = params.get("line_count")
-        # Das Schema sagt minimum: 1, aber in diesem Pfad prueft es niemand
-        # nach. Ein negativer Wert wuerde vom Ende her schneiden und
-        # irgendeinen Ausschnitt als den angeforderten ausgeben.
-        anzahl = max(1, int(anzahl)) if anzahl else None
+        count = params.get("line_count")
+        # The schema says minimum: 1, but nothing checks it on this path. A
+        # negative value would cut from the end and return some other slice
+        # as the one asked for.
+        count = max(1, int(count)) if count else None
 
-        if alle and start > len(alle):
-            msg = (f"start_line={start} liegt hinter dem Ende der Seite — "
-                   f"sie hat {len(alle)} Zeile(n). Nichts gelesen.")
+        if all_lines and start > len(all_lines):
+            msg = (f"start_line={start} is past the end: the page has "
+                   f"{len(all_lines)} line(s). Nothing read.")
             await status.error(msg)
             return {"status": "error", "error": msg, "path": params.get("path"),
-                    "lines_total": len(alle), "line_start": start}
+                    "lines_total": len(all_lines), "line_start": start}
 
-        ausschnitt = alle[start - 1:(start - 1 + anzahl) if anzahl else None]
-        rest = len(alle) - (start - 1) - len(ausschnitt)
-        gelesen = "\n".join(ausschnitt)
-        # Der Schluss-Umbruch gehoert an den letzten Ausschnitt zurueck:
-        # `dump_frontmatter` schreibt den Body verbatim, ein Lese-Schreib-
-        # Umlauf wuerde ihn sonst abschneiden.
-        if schluss_umbruch and ausschnitt and rest == 0:
-            gelesen += "\n"
+        piece = all_lines[start - 1:(start - 1 + count) if count else None]
+        rest = len(all_lines) - (start - 1) - len(piece)
+        read_text = "\n".join(piece)
+        # The final line break belongs to the last slice: `dump_frontmatter`
+        # writes the body verbatim, so a read-write round trip would drop it.
+        if trailing_newline and piece and rest == 0:
+            read_text += "\n"
+        # The answer is bounded by the bundle walk's per-file cap; a larger
+        # page (a log only grows) stays readable in slices.
+        if len(read_text.encode("utf-8")) > self._max_file_kb * 1024:
+            msg = (f"the text asked for is larger than {self._max_file_kb} KB "
+                   f"— read fewer lines with start_line/line_count")
+            await status.error(msg)
+            return {"status": "error", "error": msg, "path": params.get("path"),
+                    "lines_total": len(all_lines), "line_start": start}
 
         await status.end(
             f"read {params.get('path')} — {len(text)} chars"
-            + (f", Zeilen {start}-{start + len(ausschnitt) - 1} von {len(alle)}"
-               if (anzahl or start > 1) else "")
+            + (f", lines {start}-{start + len(piece) - 1} of {len(all_lines)}"
+               if (count or start > 1) else "")
             + (f", type={fm.get('type')}" if fm and fm.get("type") else "")
             + (" (frontmatter parse error)" if err else "")
         )
         out = {"status": "ok", "path": params.get("path"),
                "frontmatter": dict(fm) if fm else None,
-               "body": gelesen,
+               "body": read_text,
                "parse_error": err,
-               "lines_total": len(alle),
+               "lines_total": len(all_lines),
                "line_start": start,
-               "lines_returned": len(ausschnitt)}
-        # Der Rest darf NICHT stillschweigend fehlen: wer eine halbe Seite
-        # fuer die ganze haelt, urteilt ueber Text, den er nie gesehen hat.
+               "lines_returned": len(piece)}
+        # The rest must NOT go missing silently: whoever takes half a page for
+        # the whole judges text they never saw.
         if rest > 0:
             out["lines_remaining"] = rest
             out["hint"] = (
-                f"{rest} Zeile(n) folgen noch — weiterlesen mit "
-                f"start_line={start + len(ausschnitt)}. Diesen Ausschnitt NICHT "
-                f"als 'body' zurueckschreiben: das kuerzt die Seite auf das "
-                f"gelesene Stueck."
+                f"{rest} more line(s) — continue with "
+                f"start_line={start + len(piece)}. Do NOT write this slice "
+                f"back as 'body': that cuts the page to it."
             )
         return out
 
@@ -489,9 +550,17 @@ class OkfServer(SchemaBasedToolServer):
                    f"(index.md/log.md) — use okf_append_log / okf_reindex")
             await status.error(msg)
             return {"status": "error", "error": msg}
+        # Only .md files are concepts: anything else answered ok and was never
+        # seen by list, search or validate again.
+        if not abs_path.name.endswith(".md"):
+            msg = f"concept path '{rel_path}' must end in .md"
+            await status.error(msg)
+            return {"status": "error", "error": msg}
 
         frontmatter = params.get("frontmatter")
-        body = params.get("body") or ""
+        # None = not sent: an update of the frontmatter alone keeps the body
+        # instead of wiping the page.
+        body = params.get("body")
         if not isinstance(frontmatter, dict):
             msg = "'frontmatter' must be an object with at least a 'type'"
             await status.error(msg)
@@ -504,14 +573,15 @@ class OkfServer(SchemaBasedToolServer):
             # Overwrite deep-merges the caller's frontmatter INTO the existing
             # one, mutating the parsed CommentedMap so comments/order/quoting
             # and nested producer keys survive (spec: preserve unknown keys).
-            existing_fm = None
+            existing_fm, existing_body = None, ""
             existed = abs_path.is_file()
             if existed:
-                existing_fm, _b, _e = core.parse_frontmatter(
+                existing_fm, existing_body, _e = core.parse_frontmatter(
                     abs_path.read_text(encoding="utf-8"))
             merged = core.merge_frontmatter(existing_fm, frontmatter)
 
-            text = core.dump_frontmatter(merged, body)
+            text = core.dump_frontmatter(
+                merged, existing_body if body is None else str(body))
             findings = core.validate_concept_text(rel_path, text)
             errors = [f for f in findings if f.severity == "error"]
             if errors:
@@ -555,23 +625,30 @@ class OkfServer(SchemaBasedToolServer):
         subdir = (params.get("dir") or "").strip("/")
         bundle = self._load_bundle(root)
         prefix = "/" + subdir + "/" if subdir else "/"
-        # ``lifecycle`` (spec §5.4) gehoert in die Uebersicht: OKF loescht
-        # nicht, es setzt ``deprecated`` ("kept for links and history").
-        # Ohne diese Spalte muesste ein Leser jedes Konzept einzeln oeffnen,
-        # um zurueckgezogenes Wissen von aktuellem zu unterscheiden — und
-        # zitiert es bis dahin als gaeltig.
+        # ``lifecycle`` (spec §5.4) belongs in the overview: OKF does not
+        # delete, it sets ``deprecated`` ("kept for links and history").
+        # Without it a reader would have to open every concept to tell retired
+        # knowledge from current -- and quote it as valid until then.
         items = [
             {"path": p, "type": c.type, "title": c.title,
              "description": c.description, "lifecycle": c.lifecycle_status}
             for p, c in sorted(bundle.concepts.items())
             if p.startswith(prefix)
         ]
+        total = len(items)
+        out = {"status": "ok", "bundle": params.get("bundle"),
+               "count": total, "concepts": items[:LIST_LIMIT],
+               "version": bundle.version}
+        # Bounded: a bundle may hold thousands of concepts.
+        if total > LIST_LIMIT:
+            out["omitted"] = total - LIST_LIMIT
+            out["hint"] = (f"{total - LIST_LIMIT} more concept(s) not listed — "
+                           f"narrow with 'dir' or use search.")
         await status.end(
-            f"{len(items)} concept(s) under {prefix} in {params.get('bundle')}"
+            f"{total} concept(s) under {prefix} in {params.get('bundle')}"
+            + (f", first {LIST_LIMIT} listed" if total > LIST_LIMIT else "")
         )
-        return {"status": "ok", "bundle": params.get("bundle"),
-                "count": len(items), "concepts": items,
-                "version": bundle.version}
+        return out
 
     async def neighbors(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Return the concepts a given concept links to (its graph neighbors),
@@ -582,7 +659,7 @@ class OkfServer(SchemaBasedToolServer):
         except ValueError as e:
             await status.error(str(e))
             return {"status": "error", "error": str(e)}
-        path = params.get("path", "")
+        path = _concept_key(params.get("path", ""))
         bundle = self._load_bundle(root)
         if path not in bundle.concepts:
             known = list(bundle.concepts)
@@ -614,7 +691,9 @@ class OkfServer(SchemaBasedToolServer):
             await status.error(str(e))
             return {"status": "error", "error": str(e)}
         seeds = params.get("seeds") or ([params["seed"]] if params.get("seed") else [])
-        depth = int(params.get("depth", 1))
+        seeds = [_concept_key(s) for s in seeds]
+        depth = params.get("depth")
+        depth = min(5, max(0, int(1 if depth is None else depth)))
         bundle = self._load_bundle(root)
         paths = bundle.subgraph(list(seeds), depth=depth)
         await status.end(
@@ -633,16 +712,14 @@ class OkfServer(SchemaBasedToolServer):
             await status.error(str(e))
             return {"status": "error", "error": str(e)}
         query = params.get("query", "")
-        limit = int(params.get("limit", 8))
+        limit = min(50, max(1, int(params.get("limit") or 8)))
         await status.progress(f"Searching {params.get('bundle')} for '{query}'")
         bundle = self._load_bundle(root)
         ranked = self._rank_lexical(bundle, query, limit)
-        # ``lifecycle`` gehoert auch hierher, nicht nur in ``list``: eine
-        # Suche ist fuer die meisten Leser der EINSTIEG ins Bundle (der
-        # book_launcher wird fuer Details ausdruecklich hierher geschickt).
-        # Faende er zurueckgezogenes Wissen ohne Kennzeichnung, zitierte er
-        # es als gueltig — dann waere ``deprecated`` genau dort unsichtbar,
-        # wo es zaehlt.
+        # ``lifecycle`` belongs here too, not only in ``list``: for most
+        # readers a search is the WAY INTO the bundle. Retired knowledge found
+        # unmarked is quoted as valid -- ``deprecated`` would be invisible
+        # exactly where it counts.
         results = [
             {"path": p, "score": round(s, 4),
              "type": bundle.concepts[p].type,
@@ -675,19 +752,19 @@ class OkfServer(SchemaBasedToolServer):
         date = params.get("date")
         action = params.get("action", "Update")
         desc = params.get("description", "")
-        if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", str(date)):
+        if not date or not _valid(r"^\d{4}-\d{2}-\d{2}$", str(date), dt.date):
             await status.error("'date' must be YYYY-MM-DD")
             return {"status": "error", "error": "'date' must be YYYY-MM-DD"}
 
         time_str = str(params.get("time") or "").strip()
         if time_str:
-            if not re.match(r"^\d{2}:\d{2}(:\d{2})?$", time_str):
+            if not _valid(r"^\d{2}:\d{2}(:\d{2})?$", time_str, dt.time):
                 await status.error("'time' must be HH:MM or HH:MM:SS")
                 return {"status": "error", "error": "'time' must be HH:MM or HH:MM:SS"}
         else:
             time_str = self._clock_time_for(str(date))
-        log_dir = (root / subdir).resolve() if subdir else root
-        if log_dir != root and root not in log_dir.parents:
+        log_dir = self._resolve_dir(root, subdir)
+        if log_dir is None:
             await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
         log_path = log_dir / core.LOG_FILENAME
@@ -777,8 +854,8 @@ class OkfServer(SchemaBasedToolServer):
             await status.error(str(e))
             return {"status": "error", "error": str(e)}
         subdir = (params.get("dir") or "").strip("/")
-        index_dir = (root / subdir).resolve() if subdir else root
-        if index_dir != root and root not in index_dir.parents:
+        index_dir = self._resolve_dir(root, subdir)
+        if index_dir is None:
             await status.error("'dir' escapes the bundle")
             return {"status": "error", "error": "'dir' escapes the bundle"}
         prefix = "/" + subdir + "/" if subdir else "/"
@@ -803,7 +880,7 @@ class OkfServer(SchemaBasedToolServer):
                     entries.append((p, self._index_description(c)))
                 text = core.render_index(entries, heading=heading)
                 index_dir.mkdir(parents=True, exist_ok=True)
-                _atomic_write(index_path, text)
+                _atomic_write(index_path, _keep_frontmatter(index_path, text))
                 return len(entries), 1
 
             # Root mode: recursive. One index.md per directory with concepts;
@@ -845,7 +922,8 @@ class OkfServer(SchemaBasedToolServer):
                 text = core.render_index(entries, heading=d_heading)
                 target_dir = (root / d) if d else root
                 target_dir.mkdir(parents=True, exist_ok=True)
-                _atomic_write(target_dir / core.INDEX_FILENAME, text)
+                target = target_dir / core.INDEX_FILENAME
+                _atomic_write(target, _keep_frontmatter(target, text))
                 written += 1
             return subtree.get("", 0), written
 
@@ -873,8 +951,8 @@ class OkfServer(SchemaBasedToolServer):
     # ------------------------------------------------------------------
 
     async def on_pre_llm_call(self, context: "HookContext") -> "HookResult":
-        """Inject relevant OKF concepts into the system prompt before the LLM
-        call ('wiki as context'). Dual retrieval: a few lexical seeds against
+        """Append relevant OKF concepts to the history before the LLM call
+        ('wiki as context'). Dual retrieval: a few lexical seeds against
         the user's latest message, graph-EXPANDED to include the concepts they
         link to, then capped.
 
@@ -898,6 +976,7 @@ class OkfServer(SchemaBasedToolServer):
             depth = int(hc.get("hook_graph_depth", self._hook_graph_depth))
             seed_count = int(hc.get("hook_seed_count", self._hook_seed_count))
             seed_anchor = hc.get("hook_seed_concept", self._hook_seed)
+            seed_anchor = _concept_key(seed_anchor) if seed_anchor else None
 
             try:
                 root = self._resolve_bundle(bundle_path)
@@ -972,12 +1051,11 @@ class OkfServer(SchemaBasedToolServer):
             if not c:
                 continue
             header = f"## {c.title or p} ({c.type or 'concept'}) — {p}"
-            # Der gefaehrlichste Lesepfad ueberhaupt: dieser Text landet
-            # ungefragt im System-Prompt und wird als geltendes Wissen
-            # gelesen. Zurueckgezogenes Wissen (spec §5.4) MUSS deshalb
-            # hier stehen — es bleibt im Bundle "for links and history",
-            # aber ein Modell, das es unmarkiert bekommt, zitiert es als
-            # aktuell.
+            # The riskiest read path of all: this text reaches the model
+            # unasked and is read as valid knowledge. Retired knowledge
+            # (spec §5.4) MUST be marked here -- it stays in the bundle "for
+            # links and history", but a model given it unmarked quotes it as
+            # current.
             if c.lifecycle_status == "deprecated":
                 header += "  [DEPRECATED — retired, do not treat as current]"
             body = c.body.strip()

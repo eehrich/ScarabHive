@@ -1,0 +1,625 @@
+@database "okf"
+@author "Enrico Ehrich"
+@$VER: okf.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OKF knowledge bundles"
+@{h1}OKF knowledge bundles
+
+Agents forget; a knowledge bundle does not. This plugin lets agents read,
+search and write curated knowledge kept as plain markdown files in the
+Open Knowledge Format (OKF v0.1): a runbook for a host, the conventions of a
+code base, what a tool is for and how it relates to others. Because a bundle
+is only a folder of text files, you can read and edit it yourself, keep it
+in git, and hand it to other OKF tools.
+
+A @{b}bundle@{ub} is a folder. Every @{tt}.md@{utt} file in it is a
+@{b}concept@{ub}: a YAML header with at least a non-empty @{tt}type@{utt},
+then a markdown body. Concepts link to each other with ordinary markdown
+links (@{tt}[Customers](/tables/customers.md)@{utt}), and those links make the
+bundle a graph an agent can walk. @{tt}index.md@{utt} and @{tt}log.md@{utt}
+are reserved: an overview and a change history, not concepts.
+
+The plugin has nine tools and one hook, which folds the concepts that fit
+the question into the conversation before each model call. It has no panel.
+Tools and hook only touch folders inside the directories the server entry
+allows.
+
+@{code}
+For users
+  @{"  The format  " link format}
+  @{"  Agents that use it  " link agents}
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Finding concepts: list, search  " link find}
+  @{"  Reading a concept  " link read}
+  @{"  The link graph: neighbors, subgraph  " link graph}
+  @{"  Writing a concept  " link write}
+  @{"  Log and index  " link logindex}
+  @{"  Checking a bundle  " link validate}
+  @{"  The context hook  " link hook}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node format "The format"
+@{h1}The format
+
+A concept is a markdown file with a YAML header between two @{tt}---@{utt}
+lines:
+
+@{code markdown}
+---
+type: Runbook
+title: Restart the backup job
+description: What to do when the nightly backup hangs.
+tags: [backup, storage]
+---
+
+# Steps
+Check the [storage host](/hosts/storage.md) first ...
+@{body}
+
+@{h2}Header fields
+
+@{table}
+Field | Meaning
+type | required, any non-empty text; the only hard rule of the format
+title, description, resource, tags, timestamp | optional; title and description are what lists and indexes show
+status | the lifecycle: @{tt}draft@{utt}, @{tt}stable@{utt} or @{tt}deprecated@{utt}; missing or empty means stable
+anything else | kept as it is; the plugin never drops a key it does not know
+@{body}
+
+@{tt}deprecated@{utt} is how OKF retires knowledge: the concept stays for its
+links and history, and every tool that shows it marks it as retired. Case
+and spaces around the value do not matter. A @{tt}status@{utt} holding
+something else (@{tt}publishable@{utt}, @{tt}true@{utt}, a date) reads as
+stable everywhere and is reported by @{" the check " link validate}.
+
+@{h2}Paths and links
+
+Concept paths are relative to the bundle, with a leading slash:
+@{tt}/hosts/storage.md@{utt}. Every tool also takes them without the slash.
+A link in the body is an edge of the graph when it is an inline markdown
+link @{tt}[text](target)@{utt} whose target is:
+
+@{bullet}@{tt}/hosts/storage.md@{utt} -- bundle-relative;
+@{bullet}@{tt}./other.md@{utt} or @{tt}../hosts/x.md@{utt} -- relative to the concept's own folder;
+@{bullet}either with an anchor, @{tt}/hosts/x.md#disks@{utt} -- the anchor is dropped.
+
+Images (@{tt}![alt](...)@{utt}), web addresses, @{tt}mailto:@{utt} and bare
+@{tt}#anchors@{utt} are not edges. A path written in plain prose is invisible
+to the graph.
+
+@{h2}Reserved files
+
+@{tt}index.md@{utt} in any folder and @{tt}log.md@{utt} in any folder are
+never concepts: the write tool refuses them, list and search do not show
+them. The root @{tt}index.md@{utt} may carry @{tt}okf_version@{utt} in its
+header; the list tool reports it. The file @{tt}.okf.lock@{utt} in the
+bundle root is the plugin's write lock (see @{" Writing a concept " link write}).
+@endnode
+
+@node agents "Agents that use it"
+@{h1}Agents that use it
+
+@{table}
+Agent | How
+okf_agent | curates and answers from bundles with the @{tt}okf@{utt} tools; asks which bundle when you name none
+sysadmin | tools of @{tt}okf@{utt}, and the hook folds @{tt}data/okf/infra@{utt} into every turn
+amiga_coder | searches and writes @{tt}data/okf/amiga@{utt} with the @{tt}okf@{utt} tools
+coder | its own instance @{tt}coder_okf@{utt}, sandboxed to @{tt}data/okf/coder@{utt}, with the hook
+@{body}
+
+The shared instance @{tt}okf@{utt} allows all of @{tt}data/okf@{utt}: an
+agent with its tools can write every bundle there, including one another
+agent gets injected into its prompt. Where that matters, give the agent an
+instance of its own whose @{tt}allowed_directories@{utt} is only its bundle,
+as the coder does -- then the sandbox keeps the boundary, not the prompt.
+
+Bundles are not separated by user: whoever runs an agent with the tools
+reads and writes the same folders.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+okf:
+  type: okf
+  enabled: true
+  allowed_directories:
+    - data/okf
+  # hook_bundle: data/okf/<bundle>
+  hook_max_concepts: 6
+  hook_graph_depth: 1
+@{body}
+
+Allow the tools in an agent's list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+okf/*"
+@{body}
+
+The hook is switched on per agent, see @{" The context hook " link hook}.
+
+@{h2}Server settings
+
+Written directly in the entry or under a @{tt}config:@{utt} block; when both
+name a key, the block wins.
+
+@{table}
+Key | Default | Meaning
+allowed_directories | the data directory's @{tt}okf@{utt} | the folders bundles may lie in; a relative path counts from the project root
+read_only | false | the three write tools are not offered to the model, and refuse when called anyway
+max_concept_file_kb | 512 | a larger file is skipped by list, search, check and hook; the read tool returns at most this much text per call
+max_bundle_files | 5000 | only the first this-many @{tt}.md@{utt} files (sorted by path) are loaded; the rest is ignored without notice
+hook_bundle | none | the bundle the hook uses; without it the hook does nothing
+hook_max_concepts | 6 | at most this many concepts per hook block
+hook_graph_depth | 1 | link hops the hook follows from its seeds
+hook_seed_count | 3 | search hits the hook starts from
+hook_seed_concept | none | a fixed starting concept instead of a search
+@{body}
+
+@{h2}Where data lives
+
+Bundles are folders under the allowed directories, in this repository
+@{tt}data/okf/<bundle>/@{utt}. The write tools create a missing bundle or
+folder. Each write also leaves @{tt}.okf.lock@{utt} in the bundle root
+(Windows removes it again, other systems do not); add it to
+@{tt}.gitignore@{utt} if you version a bundle.
+
+@{h2}Dependencies
+
+@{tt}ruamel.yaml@{utt} (keeps the header's order, comments and quoting on
+rewrite) and @{tt}filelock@{utt}, both declared in @{tt}plugin.toml@{utt}.
+@endnode
+
+@node find "Finding concepts: list, search"
+@{h1}Finding concepts
+
+Every tool takes @{tt}bundle@{utt}, the bundle's folder: absolute, relative
+to the project root, or @{tt}data/...@{utt}. It must lie in an allowed
+directory; a path naming another host (@{tt}//host/share@{utt}) is refused
+before anything is opened.
+
+@{h2}okf_list
+
+The overview: every concept with its header fields.
+
+@{table}
+Parameter | Meaning
+bundle | required
+dir | only concepts under this folder, @{tt}/hosts@{utt} or @{tt}hosts@{utt}; missing: the whole bundle
+@{body}
+
+Answer: @{tt}status@{utt} "ok", @{tt}bundle@{utt}, @{tt}count@{utt},
+@{tt}version@{utt} (the root index's @{tt}okf_version@{utt} or null) and
+@{tt}concepts@{utt}, sorted by path, each with @{tt}path@{utt},
+@{tt}type@{utt}, @{tt}title@{utt}, @{tt}description@{utt} and
+@{tt}lifecycle@{utt}. At most 200 concepts are listed; @{tt}count@{utt} is
+the full number, and beyond 200 the answer adds @{tt}omitted@{utt} and a
+@{tt}hint@{utt} to narrow with @{tt}dir@{utt} or search. A bundle folder that
+does not exist lists nothing.
+
+@{h2}okf_search
+
+Ranks concepts by the words of a query.
+
+@{table}
+Parameter | Meaning
+bundle | required
+query | required; words are letters, digits and underscores in any script, compared in lower case
+limit | 1 to 50, default 8; a value outside is moved to the nearest end, 0 or missing means 8
+@{body}
+
+A concept's text is its title, description, type, tags and body. The score
+adds, for every distinct query word the concept contains, how often it
+occurs times log(1 + concepts / (1 + concepts containing it)): rare words
+count more. Only concepts with a score above 0 are returned, best first,
+equal scores by path. There are no stems or synonyms: "backup" does not find
+"backups".
+
+Answer: @{tt}query@{utt}, @{tt}count@{utt} and @{tt}results@{utt}, each with
+@{tt}path@{utt}, @{tt}score@{utt} (4 decimals), @{tt}type@{utt},
+@{tt}description@{utt} and @{tt}lifecycle@{utt}.
+
+@{code json}
+{"bundle": "data/okf/infra", "query": "backup hangs", "limit": 3}
+@{body}
+
+@{code json}
+{"status": "ok", "query": "backup hangs", "count": 1,
+ "results": [{"path": "/runbooks/backup.md", "score": 4.1589,
+              "type": "Runbook",
+              "description": "What to do when the nightly backup hangs.",
+              "lifecycle": "stable"}]}
+@{body}
+
+@{h2}Errors of every tool
+
+Answers with @{tt}status@{utt} "error" and @{tt}error@{utt}:
+
+@{table}
+error | When
+missing 'bundle' path | no bundle given
+bundle '<bundle>' is outside the allowed OKF directories | not in an allowed directory, or on another host
+@{body}
+@endnode
+
+@node read "Reading a concept"
+@{h1}Reading a concept
+
+@{tt}okf_read_concept@{utt} returns a concept's header and body. Any file in
+the bundle can be read this way, @{tt}index.md@{utt} and @{tt}log.md@{utt}
+included.
+
+@{table}
+Parameter | Meaning
+bundle | required
+path | required; the file, with or without leading slash
+start_line | first body line, from 1; smaller values mean 1
+line_count | how many body lines; missing or 0: all from start_line on; negative: 1
+@{body}
+
+Line numbers count the body only, without the header. A final line break
+is not a line.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+path | as asked
+frontmatter | the header with every key, or null without a header or when it cannot be parsed
+parse_error | why the header could not be parsed, else null
+body | the body, or the asked lines of it
+lines_total, line_start, lines_returned | where the slice lies
+lines_remaining, hint | only when lines follow the slice
+@{body}
+
+The hint names the next @{tt}start_line@{utt} and warns not to write the
+slice back as the body -- the page would be cut to it:
+"35 more line(s) — continue with start_line=16. Do NOT write this slice
+back as 'body': that cuts the page to it."
+
+Without @{tt}line_count@{utt} the whole body comes back. An answer is at
+most @{tt}max_concept_file_kb@{utt} (512 KB by default); a larger page, such
+as a long log, is read in slices.
+
+@{h2}Errors
+
+@{table}
+error | When, and what else comes with it
+missing concept 'path' | no path
+concept path '<path>' escapes the bundle | the path leads out of the bundle, or names another host
+concept not found: <path> | no such file; " — did you mean '<other>'?" when a concept's path is close. Also @{tt}did_you_mean@{utt} and @{tt}available@{utt}, the concepts in the same folder
+the text asked for is larger than <n> KB — read fewer lines with start_line/line_count | the slice (or whole body) is over @{tt}max_concept_file_kb@{utt}; with @{tt}lines_total@{utt}
+start_line=<n> is past the end: the page has <m> line(s). Nothing read. | start beyond the last line; with @{tt}lines_total@{utt}
+@{body}
+
+No suggestion is made when the paths differ only in a number: a missing
+@{tt}step_15.md@{utt} beside @{tt}step_16.md@{utt} is a gap, not a typo, and
+the listing in @{tt}available@{utt} shows it. A file that is not UTF-8 text
+fails the call.
+@endnode
+
+@node graph "The link graph: neighbors, subgraph"
+@{h1}The link graph
+
+@{h2}okf_neighbors
+
+The concepts one concept links to.
+
+@{table}
+Parameter | Meaning
+bundle | required
+path | required; with or without leading slash
+@{body}
+
+Answer: @{tt}path@{utt}, @{tt}neighbors@{utt} (existing concepts in the
+order the links appear, each once) and @{tt}broken_links@{utt} (targets that
+are neither a concept nor @{tt}index.md@{utt}/@{tt}log.md@{utt}, as often
+as they occur). An unknown path answers "concept not found" with
+@{tt}did_you_mean@{utt} and @{tt}available@{utt}, as the read tool does.
+
+@{h2}okf_subgraph
+
+Everything reachable from one or more starting concepts within a number of
+link hops, following links outward.
+
+@{table}
+Parameter | Meaning
+bundle | required
+seeds | a list of concept paths
+seed | one path, used when @{tt}seeds@{utt} is missing or empty
+depth | 0 to 5, default 1; a value outside is moved to the nearest end
+@{body}
+
+Answer: @{tt}seeds@{utt} (with leading slash), @{tt}depth@{utt},
+@{tt}concepts@{utt} in breadth-first order, the seeds first, and
+@{tt}count@{utt}. A seed that is no concept is left out without an error;
+with none left the answer is empty.
+
+@{code json}
+{"bundle": "data/okf/infra", "seed": "/hosts/storage.md", "depth": 1}
+@{body}
+
+@{code json}
+{"status": "ok", "seeds": ["/hosts/storage.md"], "depth": 1,
+ "concepts": ["/hosts/storage.md", "/runbooks/backup.md"], "count": 2}
+@{body}
+@endnode
+
+@node write "Writing a concept"
+@{h1}Writing a concept
+
+@{tt}okf_write_concept@{utt} creates a concept or changes one.
+
+@{table}
+Parameter | Meaning
+bundle | required
+path | required; must end in @{tt}.md@{utt} and may not be @{tt}index.md@{utt} or @{tt}log.md@{utt}; missing folders are created
+frontmatter | required, an object
+body | the markdown body; missing or null: a new concept has none, an existing one keeps its body; "" empties it
+@{body}
+
+@{h2}Changing a concept
+
+The given header is merged into the existing one: a key given replaces the
+old value, a nested object is merged key by key, a key set to null is
+removed, every other key stays -- with its comments, order and quoting.
+Lists are replaced, not merged. So retiring a concept needs no body:
+
+@{code json}
+{"bundle": "data/okf/infra", "path": "/runbooks/old-backup.md",
+ "frontmatter": {"status": "deprecated"}}
+@{body}
+
+A body that is sent replaces the old one whole. Never send a slice read
+with @{tt}start_line@{utt}/@{tt}line_count@{utt}.
+
+After merging, the result must have a non-empty @{tt}type@{utt}; otherwise
+nothing is written. The file is written to a scratch file first and then
+put in place, so nobody ever reads half a concept.
+
+@{h2}The answer
+
+@{tt}status@{utt} "ok", @{tt}path@{utt} as given and @{tt}bytes@{utt}, the
+length of the written text in characters.
+
+@{h2}Errors
+
+@{table}
+error | When
+OKF server is read-only | @{tt}read_only@{utt} is set
+'<path>' is a reserved OKF filename (index.md/log.md) — use okf_append_log / okf_reindex | a reserved name
+concept path '<path>' must end in .md | anything but a concept file
+'frontmatter' must be an object with at least a 'type' | no object
+frontmatter is missing a non-empty 'type' field | no type after merging; also @{tt}findings@{utt}
+another writer is holding the OKF bundle lock (> 30s) — try again | see below
+@{body}
+
+@{h2}Several writers
+
+The three write tools read a file, change it and write it back. Two writers
+at once would lose one change silently, so each write holds two locks for
+the bundle: one inside the process (parallel tool calls and sub-agents) and
+the file @{tt}.okf.lock@{utt} for other processes (the API, workers, the
+command line). A writer that cannot get them within 30 seconds gets the
+lock error instead of hanging the turn.
+@endnode
+
+@node logindex "Log and index"
+@{h1}Log and index
+
+@{h2}okf_append_log
+
+Adds an entry to a folder's @{tt}log.md@{utt}.
+
+@{table}
+Parameter | Meaning
+bundle | required
+dir | the folder whose log it is; missing: the bundle root
+date | required, a real date @{tt}YYYY-MM-DD@{utt}
+time | @{tt}HH:MM@{utt} or @{tt}HH:MM:SS@{utt}, a real time; missing: see below
+action | the entry's short label, default "Update"
+description | what changed; links are allowed
+@{body}
+
+Without @{tt}time@{utt} the server stamps the current time -- but only when
+@{tt}date@{utt} is today in the timezone of @{tt}context.timezone@{utt} in
+@{tt}config/config.yaml@{utt} (UTC without it), the same zone the agent's
+own date comes from. An entry for an earlier day gets no time at all rather
+than a wrong one.
+
+@{code markdown}
+# Update Log
+
+## 2026-09-30
+* 14:03:07 **Update**: Disk layout of [storage](/hosts/storage.md)
+* 09:12:44 **Creation**: Backup runbook
+
+## 2026-09-28
+* **Deprecation**: Old backup runbook
+@{body}
+
+A new log starts with @{tt}# Update Log@{utt}. An entry goes directly under
+its date heading, so the newest comes first; a new date gets its heading
+before the first older date, and after all of them when it is the oldest.
+Headings that are no date are left where they are.
+
+Answer: @{tt}path@{utt} of the log, @{tt}date@{utt} and @{tt}time@{utt}
+(null when none was written). Errors: "'date' must be YYYY-MM-DD", "'time'
+must be HH:MM or HH:MM:SS", "'dir' escapes the bundle", and the read-only
+and lock errors of @{" Writing a concept " link write}.
+
+@{h2}okf_reindex
+
+Writes @{tt}index.md@{utt} from the concepts' descriptions.
+
+@{table}
+Parameter | Meaning
+bundle | required
+dir | one folder only; missing: the whole bundle
+heading | the heading of the index; without @{tt}dir@{utt} only the root's
+@{body}
+
+With @{tt}dir@{utt}: that folder's @{tt}index.md@{utt}, listing the concepts
+directly in it, not deeper; the heading defaults to the folder name with a
+capital. Without: one @{tt}index.md@{utt} in every folder that holds
+concepts at any depth, each listing its own concepts and linking the index
+of every subfolder with the number of concepts below it; the root heading
+defaults to "Contents", the others to the folder name.
+
+@{code markdown}
+# Contents
+
+* [hosts](/hosts/index.md) - 4 concept(s)
+* [runbooks](/runbooks/index.md) - 7 concept(s)
+@{body}
+
+A line reads @{tt}* [name](/path.md) - description@{utt}; a retired concept's
+description begins with @{tt}[deprecated]@{utt}. An index is written anew:
+text added by hand is lost, only the header of an existing index (such as
+@{tt}okf_version@{utt}) is kept.
+
+Answer: @{tt}path@{utt} (the index of @{tt}dir@{utt} or of the root),
+@{tt}entries@{utt} (concepts counted) and @{tt}indexes@{utt} (files
+written).
+@endnode
+
+@node validate "Checking a bundle"
+@{h1}Checking a bundle
+
+@{tt}okf_validate@{utt} checks every concept of a bundle. It takes only
+@{tt}bundle@{utt}.
+
+@{table}
+rule | Severity | Found when
+frontmatter-parseable | error | the header is no valid YAML, or no mapping
+frontmatter-required | error | the file has no header
+type-required | error | @{tt}type@{utt} is missing or empty
+status-vocabulary | warning | @{tt}status@{utt} is set to something other than draft, stable or deprecated
+link-resolves | warning | a link leads to no concept and no index or log
+@{body}
+
+Answer: @{tt}concepts@{utt} (the number checked), @{tt}conformant@{utt}
+(true without errors), @{tt}errors@{utt} and @{tt}warnings@{utt} (counts),
+and @{tt}findings@{utt}, each with @{tt}path@{utt}, @{tt}rule@{utt},
+@{tt}severity@{utt} and @{tt}message@{utt}.
+
+Files the loader skips -- over the size cap, beyond
+@{tt}max_bundle_files@{utt}, unreadable or not UTF-8, or symbolic links pointing out of the bundle --
+are neither checked nor reported; the server log names them.
+@endnode
+
+@node hook "The context hook"
+@{h1}The context hook
+
+@{tt}okf_context_injection@{utt} runs before every model call of an agent
+that switched it on. It finds the concepts that fit the conversation and
+appends them to the history, so the model has the bundle's knowledge
+without calling a tool.
+
+@{h2}Switching it on
+
+In the agent's YAML, with the server instance's name in front:
+
+@{code yaml}
+hooks:
+  enabled: true
+  overrides:
+    okf.okf_context_injection:
+      enabled: true
+      hook_bundle: data/okf/infra
+      hook_max_concepts: 5
+@{body}
+
+Every setting of the table in @{" Setting it up " link setup} that starts
+with @{tt}hook_@{utt} can stand here and wins over the server entry. The
+bundle must lie in that instance's allowed directories.
+
+@{h2}What it does
+
+@{bullet}It takes the last message a person wrote -- a user message with text that no loop or hook added.
+@{bullet}With @{tt}hook_seed_concept@{utt} set and present in the bundle, that concept is the only seed and the message is not used; otherwise the seeds are the best @{tt}hook_seed_count@{utt} search hits for the message (at most @{tt}hook_max_concepts@{utt}).
+@{bullet}From the seeds it follows links @{tt}hook_graph_depth@{utt} hops outward and keeps the first @{tt}hook_max_concepts@{utt} concepts.
+@{bullet}It renders them as one block and appends it to the end of the history as a developer message, marked as coming from @{tt}okf@{utt}.
+
+The block:
+
+@{code text}
+[OKF knowledge context — relevant curated concepts]
+
+## Restart the backup job (Runbook) — /runbooks/backup.md
+# Steps
+Check the [storage host](/hosts/storage.md) first ...
+
+## storage (Host) — /hosts/storage.md  [DEPRECATED — retired, do not treat as current]
+...
+@{body}
+
+The header line has the title (the path without one), the type
+("concept" without one) and the path; the body follows, cut after 1,500
+characters with @{tt}…[truncated]@{utt}. Header fields are not included.
+
+@{h2}When it does nothing
+
+@{bullet}no @{tt}hook_bundle@{utt}, or one outside the allowed directories;
+@{bullet}the bundle holds no concepts;
+@{bullet}no seed: no person's message and no seed concept, or no search hit;
+@{bullet}the block would be the same as the last block it appended.
+
+An error inside the hook is logged as a warning and the model call goes on
+without a block. The hook has 5 seconds.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}, the names prefixed with the instance's name
+(@{tt}okf_search@{utt}, @{tt}coder_okf_search@{utt}). The nine tools are
+about 7,400 characters in every request of an agent that has them. The
+schema's limits are not checked by the framework; the tools enforce them
+themselves, as described in each node.
+
+@{h2}The status line
+
+@{table}
+Tool | The chat shows
+list | "4 concept(s) under /hosts/ in data/okf/infra", with ", first 200 listed" when cut
+search | "Searching <bundle> for '<query>'", then "'<query>': 3 hit(s) — best /x.md (4.1589)" or "(searched N concepts)"
+read | "read /x.md — 2345 chars", with ", lines 1-40 of 120" for a slice and ", type=Runbook"
+neighbors | "/x.md: 2 neighbor(s)", with ", 1 broken link(s)"
+subgraph | "5 concept(s) within depth 1 of /x.md"
+write | "created /x.md — 812 bytes, type=Runbook" or "updated ..."
+append_log | "logged to /log.md — 2026-09-30 14:03:07 Update"
+reindex | "regenerated 3 index file(s), 11 concept(s) -- <bundle>"
+validate | "<bundle>: 11 concept(s), 0 error(s), 2 warning(s) — conformant"
+error | the error text
+@{body}
+
+@{h2}Tokens and cache
+
+Tool answers are ordinary results appended to the history. The hook
+appends too: its block is a new message at the end, the history before it
+stays byte-identical, and the provider's prompt cache holds. Within one
+question the block is the same on every step and is written once. A new
+question that selects other concepts appends a new block; the earlier ones
+stay where they are, so a long session carries every block it was given --
+at most @{tt}hook_max_concepts@{utt} times about 1,600 characters each.
+A block that compaction removed comes back at the next call.
+
+@{h2}Known gaps
+
+@{bullet}Search is by words only; there is no semantic search.
+@endnode

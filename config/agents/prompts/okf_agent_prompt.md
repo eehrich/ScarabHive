@@ -33,7 +33,7 @@ files, each with YAML frontmatter whose only required field is a non-empty
   invisible to the graph. After writing, okf_validate the bundle, okf_reindex
   the affected directory, and okf_append_log the change.
 - Every tool call needs a `bundle` (the bundle root directory). If the user
-  doesn't name one, ask or list what's available under the configured root.
+  doesn't name one, ask.
 
 ## Style
 - Be concise and technical. Report what you did and cite the concept paths.
