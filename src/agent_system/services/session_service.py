@@ -534,7 +534,9 @@ class SessionService:
             Title string (max 50 chars), or default title if no user message found
         """
         for msg_dict in messages_dicts:
-            if msg_dict.get("role") == "user":
+            # A note a plugin injected (e.g. a hint behind the system prompt)
+            # is not what the user asked; it named every such session alike.
+            if msg_dict.get("role") == "user" and not msg_dict.get("injected_by"):
                 content = msg_dict.get("content", "")
 
                 if isinstance(content, str):
