@@ -873,7 +873,9 @@ def test_the_real_config_every_agent_reads_and_dry_runs_touch_only_the_edit():
     assert not snap.errors and not snap.resolve_errors
     classes = sources.agent_classes(None, sources.catalog_for(snap.config))
     agents = [name for name, resolved in snap.resolved.items() if resolved.type in classes]
-    assert len(agents) > 100, "the real config should hold well over a hundred agents"
+    # ~134 with the writer's agents, ~41 in the open-source checkout, which has no src/plugins_writer.
+    least = 100 if (REPO / "src" / "plugins_writer").is_dir() else 25
+    assert len(agents) > least, f"the real config should hold more than {least} agents, found {len(agents)}"
     editable = [name for name in agents if store.readonly_reason(name) is None]
     assert editable, "no editable agent: the dry runs below would check nothing"
     unchanged, stray, refused = {}, {}, {}

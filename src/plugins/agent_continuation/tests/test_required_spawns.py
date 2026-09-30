@@ -9,6 +9,7 @@ not what the answer claims.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -174,6 +175,8 @@ def panel():
     written as a method is deprecated in pytest 9 (its instance attributes never reach the tests)."""
     from agent_system.config.settings import get_tool_server_config, load_settings
     cfg = get_tool_server_config("v6_story_panel", load_settings())
+    if cfg is None and importlib.util.find_spec("plugins_writer") is None:
+        pytest.skip("v6_story_panel is the writer's, which the open-source checkout does not carry")
     assert cfg is not None, "v6_story_panel not in the loaded config"
     return cfg.agent_config
 

@@ -115,15 +115,18 @@ def final_of(events: list[dict[str, Any]]) -> dict[str, Any]:
 # ------------------------------------------------------------------ the answer and v4's contract
 
 async def test_the_answer_is_the_output_as_json_and_v4_finds_the_story_id(env):
-    from plugins_writer.writer_pipeline_v4.phase_0_analyze import Phase0AnalyzeMixin
-    from plugins_writer.writer_pipeline_v4.phase_1_design import Phase1DesignMixin
-
     answer = final_of(await env.ask("Nachtzug|a thriller"))
 
     assert answer["type"] == "final", answer
     assert json.loads(answer["summary"]) == {"story_id": 812, "title": "Nachtzug"}
     assert answer["story_id"] == 812, "promoted onto the final event for writer_jobs"
     assert answer["run_id"].startswith("req1_sg"), "cost, status and cancel stay under the caller's request id"
+    # v4's side of the contract; the writer is not in the open-source checkout. Only the root package is
+    # optional: a module that breaks under it must fail, not skip.
+    pytest.importorskip("plugins_writer")
+    from plugins_writer.writer_pipeline_v4.phase_0_analyze import Phase0AnalyzeMixin
+    from plugins_writer.writer_pipeline_v4.phase_1_design import Phase1DesignMixin
+
     assert Phase0AnalyzeMixin._extract_story_id(answer["summary"]) == 812
     assert Phase1DesignMixin._inspect_designer_result(answer["summary"])[0] not in ("error", "cancelled")
 

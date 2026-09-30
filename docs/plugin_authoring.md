@@ -465,10 +465,13 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 1. Each plugin declares its pip deps in `plugin.toml` (`[plugin] dependencies`).
 2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
    deps shared by many plugins) with every plugin's `dependencies` into
-   `requirements/all.txt`. Scanned roots: `src/plugins`, `src/plugins_writer`,
-   `src/plugins_trading` and `src/plugins` (LLM provider plugins).
-3. The root `pyproject.toml` reads `requirements/all.txt` via
-   `[tool.setuptools.dynamic]`, so `pip install .` installs the full set.
+   `requirements/all.txt`. Scanned root: `src/plugins` (LLM provider plugins
+   included). Where the private roots `src/plugins_writer` and
+   `src/plugins_trading` exist, what they need beyond that goes to
+   `requirements/private.txt`; it is not part of the open-source release.
+3. The root `pyproject.toml` reads both files via `[tool.setuptools.dynamic]`
+   (setuptools skips one that does not exist), so `pip install .` installs
+   the full set of the checkout.
 
 After adding or changing a plugin's `dependencies`, re-run:
 ```

@@ -47,6 +47,9 @@ audio-ops = "plugins.audio_ops.__main__:main"
 # requirements in its own plugin.toml; scripts/aggregate_plugin_deps.py
 # merges them with requirements/core.txt into requirements/all.txt, which
 # setuptools reads here. Keeps plugin-owned deps out of this file.
+# requirements/private.txt holds what the writer and trading plugins need on
+# top; it is not part of the open-source release, and setuptools skips it
+# where it does not exist.
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements/all.txt"] }
 

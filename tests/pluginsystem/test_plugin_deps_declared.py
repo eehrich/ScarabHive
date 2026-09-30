@@ -18,6 +18,7 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -68,7 +69,9 @@ def _norm(name: str) -> str:
 def _core_dists() -> set[str]:
     out = set()
     for req in (REPO_ROOT / "requirements").glob("*.txt"):
-        if req.name == "all.txt":
+        # all.txt is the aggregate itself; private.txt is the private
+        # roots' own declarations, not something a public plugin may lean on.
+        if req.name in ("all.txt", "private.txt"):
             continue
         for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.split("#")[0].strip()
@@ -87,7 +90,7 @@ def _aggregator_roots() -> tuple[str, ...]:
         "_aggregate_plugin_deps", REPO_ROOT / "scripts" / "aggregate_plugin_deps.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # import-safe: main() is behind __main__
-    return tuple(p.name for p in module.PLUGIN_DIRS)
+    return tuple(p.name for p in (*module.PLUGIN_DIRS, *module.PRIVATE_PLUGIN_DIRS))
 
 
 PLUGIN_ROOTS = _aggregator_roots()
@@ -171,6 +174,8 @@ def test_scan_covers_packages_without_a_manifest():
     own test: with every offender declared, reverting the enumeration would
     leave the suite green and the hole open.
     """
+    if not (REPO_ROOT / "src" / "plugins_writer").is_dir():
+        pytest.skip("the example, writer_core, lives in the private writer root")
     dirs = _plugin_dirs()
     manifestless = [d for d in dirs if not (d / "plugin.toml").exists()]
     assert manifestless, (
@@ -192,7 +197,8 @@ def test_every_import_is_declared_in_core_or_the_plugins_toml():
     assert len(PLUGIN_ROOTS) >= 3, (
         f"aggregator reports only {PLUGIN_ROOTS} — root list did not load")
     scanned_roots = {d.parent.name for d in plugins}
-    assert scanned_roots == set(PLUGIN_ROOTS), (
+    present_roots = {r for r in PLUGIN_ROOTS if (REPO_ROOT / "src" / r).is_dir()}
+    assert scanned_roots == present_roots, (
         f"scan covers {sorted(scanned_roots)}, aggregator collects from "
         f"{sorted(PLUGIN_ROOTS)} — a root only the aggregator sees is unguarded")
 

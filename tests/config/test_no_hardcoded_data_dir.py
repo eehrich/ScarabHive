@@ -113,6 +113,10 @@ def test_no_code_spells_the_data_directory():
 def test_every_allowed_file_still_needs_its_exception():
     """An exception whose file no longer spells the path is dead weight -- and
     the next spelling in that file would slip through unseen."""
+    # An entry under a package root this checkout does not have (the writer is
+    # not in the open-source one) cannot be judged here; a missing file under a
+    # root that is there still fails.
     stale = [rel for rel in sorted(ALLOWED)
-             if not spellings((SRC / rel).read_text(encoding="utf-8"))]
+             if (SRC / rel.split("/")[0]).is_dir()
+             and not spellings((SRC / rel).read_text(encoding="utf-8"))]
     assert not stale, f"no longer needed in ALLOWED: {stale}"

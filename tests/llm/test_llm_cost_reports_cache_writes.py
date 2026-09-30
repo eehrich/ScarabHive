@@ -51,6 +51,9 @@ def test_session_costs_prices_cache_writes(tmp_path, details_key):
 
 @pytest.mark.parametrize("details_key", ["cache_creation_tokens", "cache_write_tokens"])
 def test_analyze_costs_prices_cache_writes(tmp_path, monkeypatch, details_key):
+    # The writer is not part of the open-source checkout. Only the root package is optional:
+    # a module that breaks under it must fail, not skip.
+    pytest.importorskip("plugins_writer")
     import plugins_writer.writer_pipeline_v4.analyze_costs as ac
 
     db = tmp_path / "debugger.db"

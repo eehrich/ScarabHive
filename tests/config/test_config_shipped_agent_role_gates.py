@@ -53,6 +53,14 @@ EXPECTED_ADMIN = frozenset({
 LOWER = {"state_graph_agent": "user", "state_graph_agent_ui": "user"}
 
 
+def _needs_the_exception(shipped: dict) -> None:
+    """The exception agents and their terminal belong to the writer, which the open-source checkout does not
+    carry; there is nothing to hold then, and EXPECTED_ADMIN still holds everything else. Keyed on the agents,
+    not the terminal: an agent still at ``user`` whose terminal was renamed or switched off must turn red."""
+    if not LOWER.keys() & shipped.keys():
+        pytest.skip("the state_graph agents ship with the writer, not in this checkout")
+
+
 @pytest.fixture(scope="module")
 def shipped():
     """{name: merged ToolServerConfig} of every enabled server in the shipped configuration."""
@@ -185,6 +193,7 @@ def test_the_exceptions_hold_only_a_whitelisted_terminal(shipped, default_file_d
     The terminal refuses control characters before it asks a pattern; the entries do not lean on that."""
     import re
 
+    _needs_the_exception(shipped)
     granted = _granted(shipped, _powerful(shipped, default_file_dirs))
 
     for name in LOWER:
@@ -218,6 +227,7 @@ def _build_state_graph_terminal(shipped, tmp_path, monkeypatch):
 @pytest.fixture
 def state_graph_terminal(shipped, tmp_path, monkeypatch):
     """The shipped state_graph_terminal, built from its resolved config (its plugin cache under tmp_path)."""
+    _needs_the_exception(shipped)
     return _build_state_graph_terminal(shipped, tmp_path, monkeypatch)
 
 
@@ -305,6 +315,7 @@ def test_the_exception_terminal_starts_in_the_checkout_wherever_the_cli_was_star
     started elsewhere the script is not found (it fails closed)."""
     from agent_system import paths
 
+    _needs_the_exception(shipped)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)                 # where the person stands

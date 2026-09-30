@@ -109,6 +109,8 @@ class TestPluginDirsConfiguration:
     
     def test_all_configured_plugin_dirs_are_discovered(self):
         """Verify plugins from ALL configured directories are found."""
+        if not (Path(__file__).resolve().parents[2] / 'src' / 'plugins_writer').is_dir():
+            pytest.skip("the second root, src/plugins_writer, is not in the open-source checkout")
         # No clearing of plugins_writer.* from sys.modules here: a later test that
         # imported a function before this ran would then patch a fresh module
         # object while its function reads the old one.

@@ -17,9 +17,9 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
-  # CPU-only PyTorch: requirements/all.txt pulls in torch (sentence-transformers,
-  # voicefixer, ...), and from PyPI torch on Linux brings several GB of CUDA
-  # libraries that no test uses.
+  # CPU-only PyTorch, for a checkout with requirements/private.txt (the writer's
+  # dependencies pull in torch): from PyPI torch on Linux brings several GB of
+  # CUDA libraries that no test uses. requirements/all.txt needs no torch.
   TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
 
   # ==========================================================================
@@ -111,8 +111,11 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip "setuptools>=77" wheel
-          python -m pip install --index-url "$TORCH_INDEX_URL" torch torchaudio
-          python -m pip freeze | grep -iE '^(torch|torchaudio)==' > "$RUNNER_TEMP/torch-constraints.txt"
+          : > "$RUNNER_TEMP/torch-constraints.txt"
+          if [ -f requirements/private.txt ]; then
+            python -m pip install --index-url "$TORCH_INDEX_URL" torch torchaudio
+            python -m pip freeze | grep -iE '^(torch|torchaudio)==' > "$RUNNER_TEMP/torch-constraints.txt"
+          fi
           python -m pip install -c "$RUNNER_TEMP/torch-constraints.txt" -e ".[dev,test]"
 
       # Non-blocking: mypy reports several hundred errors at the time CI was

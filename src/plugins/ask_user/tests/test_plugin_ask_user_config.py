@@ -59,7 +59,8 @@ def test_the_instance_is_on_and_reads_its_config(config):
 
 def test_only_the_chosen_chat_agents_may_ask(config):
     writer = _writer_agents()
-    assert len(writer) > 20, "fixture: the writer's agents were not found"
+    if (ROOT / "src" / "plugins_writer").is_dir():  # not in the open-source checkout
+        assert len(writer) > 20, "fixture: the writer's agents were not found"
     asking = {}
     for name in config.plugins.servers:
         cfg = get_tool_server_config(name, config)
