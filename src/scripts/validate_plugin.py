@@ -57,7 +57,7 @@ MANIFEST_NAME = "plugin.toml"
 #: manifests. ``--all`` and ``--plugin`` used to name only the first two, so
 #: plugins_trading was unreachable by either; the LLM providers had their own
 #: root as well until they moved into ``plugins``.
-PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading")
+PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading", "plugins_priv")
 
 
 def has_manifest(path: Path) -> bool:

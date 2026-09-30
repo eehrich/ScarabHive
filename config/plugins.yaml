@@ -11,6 +11,7 @@ plugins:
     - src/plugins
     - src/plugins_writer
     - src/plugins_trading
+    - src/plugins_priv        # proprietary, not in the open-source release (its LICENSE)
 
   # Default configuration for all plugins
   default_config:
