@@ -45,12 +45,17 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any, TYPE_CHECKING
 
+import psutil
+
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.path_sandbox import remote_outside
 
 if TYPE_CHECKING:
     from agent_system.config.models import AgentSystemConfig, ToolServerConfig
@@ -68,6 +73,8 @@ CHECK_SCRIPT = Path(__file__).parent / "scripts" / "check_scripts.gd"
 MAX_RESULT_CHARS = 60_000
 #: A game screenshot at max_width 900 is ~1 MB of base64; leave room.
 MAX_WS_BYTES = 32 * 1024 * 1024
+#: Screenshot width caps, as the schema states them.
+MIN_SHOT_WIDTH, MAX_SHOT_WIDTH = 128, 4096
 #: One status row (``tools/base.py`` and ``tests/plugins/test_status_end_lines.py``).
 STATUS_LINE_LIMIT = 140
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -249,26 +256,71 @@ class GodotServer(SchemaBasedToolServer):
 
     # ── the headless channel ────────────────────────────────────────────
 
-    def _run_binary(self, args: list[str], timeout: float) -> dict[str, Any]:
-        """The binary, blocking, in a thread. ``timed_out`` keeps partial output."""
+    def _run_binary(self, args: list[str], timeout: float,
+                    started: list[subprocess.Popen | None] | None = None) -> dict[str, Any]:
+        """The binary, blocking, in a thread. ``timed_out`` keeps partial output.
+
+        A timeout kills the whole process tree, not just the binary: the
+        Windows ``_console.exe`` is a wrapper around the real exe, and a game
+        or script may start processes of its own. Killing only the direct
+        child left those running, and the wait for the pipes they still held
+        kept the call from answering until they ended. ``started`` receives
+        the process so a cancelled call can kill it too; a ``None`` in it is
+        that cancel, arrived before the process was there to kill.
+        """
         cmd = [*self._godot, *args]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            return {"exit": None, "timed_out": True,
-                    "stdout": _decode(exc.stdout), "stderr": _decode(exc.stderr)}
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
             raise GodotNotReachable(
                 f"cannot start the Godot binary {self._godot[0]!r} ({exc}). "
                 "Set `godot_binary` in the plugin config to the console executable."
             ) from exc
-        return {"exit": proc.returncode, "timed_out": False,
-                "stdout": proc.stdout, "stderr": proc.stderr}
+        if started is not None:
+            started.append(proc)
+            if None in started:
+                _kill_tree(proc)
+        # Own readers rather than communicate(): on Windows a communicate()
+        # that times out raises without the output read so far, so an orphan
+        # still holding the pipes after the kill took everything printed.
+        out: list[bytes] = []
+        err: list[bytes] = []
+        readers = [threading.Thread(target=_drain, args=(stream, sink), daemon=True)
+                   for stream, sink in ((proc.stdout, out), (proc.stderr, err))]
+        for reader in readers:
+            reader.start()
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_tree(proc)
+        # Bounded, one deadline for both: a process outside the tree may hold
+        # the pipes open for good.
+        deadline = time.monotonic() + 5
+        for reader in readers:
+            reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        return {"exit": None if timed_out else proc.returncode, "timed_out": timed_out,
+                "stdout": _text(out), "stderr": _text(err)}
+
+    async def _run_raw(self, args: list[str], timeout: float) -> dict[str, Any]:
+        """``_run_binary`` in a thread; a cancelled call kills the process."""
+        started: list[subprocess.Popen | None] = []
+        try:
+            return await asyncio.to_thread(self._run_binary, args, timeout, started)
+        except asyncio.CancelledError:
+            # The thread cannot be cancelled; the process can. Without this a
+            # stopped call left the run going until its timeout.
+            # Not waited for: this runs on the event loop.
+            started.append(None)
+            for proc in [p for p in started if p is not None]:
+                _kill_tree(proc, wait_s=0)
+            raise
 
     async def _godot_run(self, args: list[str], timeout: float | None = None) -> dict[str, Any]:
         timeout = timeout or self._long_timeout
-        raw = await asyncio.to_thread(self._run_binary, args, timeout)
+        raw = await self._run_raw(args, timeout)
         blocks, rest = split_godot_stderr(raw["stderr"])
         errors = dedupe_load_failures(blocks)
         return {
@@ -392,6 +444,10 @@ class GodotServer(SchemaBasedToolServer):
         if not value:
             raise ValueError("'project' is required: a name or path below "
                              f"{self._projects_root}")
+        # A share or device path is refused on its text: resolving it would
+        # already connect to the host (and sign in) before containment could say no.
+        if remote_outside(value, self._projects_root, (self._projects_root,)):
+            raise ValueError(f"'{value}' resolves outside the projects root ({self._projects_root})")
         candidate = (Path(value) if Path(value).is_absolute()
                      else self._projects_root / value).resolve()
         root = self._projects_root.resolve()
@@ -406,6 +462,9 @@ class GodotServer(SchemaBasedToolServer):
         return candidate
 
     def _resolve_output(self, filename: str) -> Path:
+        if remote_outside(filename, self._out_dir, (self._out_dir,)):
+            raise ValueError(f"'{filename}' resolves outside the output directory ({self._out_dir}); "
+                             "pass a plain name or a path below it")
         candidate = (self._out_dir / filename).resolve()
         root = self._out_dir.resolve()
         if candidate != root and root not in candidate.parents:
@@ -424,6 +483,9 @@ class GodotServer(SchemaBasedToolServer):
         it never was absolute, and on POSIX "/levels/one.tscn" went to Godot as a path it did
         not know.
         """
+        if remote_outside(script.strip(), Path.cwd(), ()):
+            # Godot would open it -- load a scene or script from another host.
+            raise ValueError(f"'{script}' is on a network share; give a res:// path")
         script = script.strip().replace("\\", "/")
         path = Path(script)
         if (script.startswith("res://") or PureWindowsPath(script).drive
@@ -569,7 +631,7 @@ class GodotServer(SchemaBasedToolServer):
         status = params["_status"]
         binary: dict[str, Any] = {"command": self._godot[0]}
         try:
-            raw = await asyncio.to_thread(self._run_binary, ["--version"], 30)
+            raw = await self._run_raw(["--version"], 30)
             binary["version"] = (raw["stdout"].strip().splitlines() or [""])[-1]
             binary["ok"] = raw["exit"] == 0 and bool(binary["version"])
         except GodotNotReachable as exc:
@@ -611,7 +673,7 @@ class GodotServer(SchemaBasedToolServer):
                 # The feature tag comes from the binary. A binary that does
                 # not answer --version is a setup that cannot continue, not
                 # one that guesses a version.
-                raw = await asyncio.to_thread(self._run_binary, ["--version"], 30)
+                raw = await self._run_raw(["--version"], 30)
                 version = raw["stdout"].strip().splitlines()[-1] if raw["stdout"].strip() else ""
                 if raw["exit"] != 0 or not version:
                     raise GodotNotReachable(
@@ -945,6 +1007,12 @@ class GodotServer(SchemaBasedToolServer):
         if not preset:
             await status.error("no export preset given")
             return {"status": "error", "error": "'preset' is required", "error_type": "ValueError"}
+        if preset.startswith("-"):
+            # Godot's first argument pass reads the preset as an option of its own
+            # (main.cpp: the export flag does not consume it), so "--path" would take over.
+            error = f"'preset' must not start with '-' ({preset!r})"
+            await status.error(self._short(error))
+            return {"status": "error", "error": error, "error_type": "ValueError"}
         try:
             project = self._resolve_project(params.get("project"))
             target = self._resolve_output(params.get("filename") or f"{project.name}_{preset}.export")
@@ -1084,6 +1152,8 @@ class GodotServer(SchemaBasedToolServer):
                 result = await self._call("game_time_step_until", forward)
             elif action == "input":
                 forward = _pick(params, "inputs", "report", "screenshot_at_ms", "screenshot_max_width")
+                if "screenshot_max_width" in forward:
+                    forward["screenshot_max_width"] = _width(forward["screenshot_max_width"])
                 if not forward.get("inputs"):
                     raise ValueError("input needs a non-empty 'inputs' list")
                 result = await self._call("execute_input_sequence", forward)
@@ -1167,7 +1237,7 @@ class GodotServer(SchemaBasedToolServer):
         target = self._resolve_output(name)
         if target.suffix.lower() != ".png":
             target = target.with_suffix(".png")
-        forward: dict[str, Any] = {"max_width": int(params.get("max_width") or 900)}
+        forward: dict[str, Any] = {"max_width": _width(params.get("max_width") or 900)}
         if source == "editor":
             if params.get("viewport"):
                 forward["viewport"] = params["viewport"]
@@ -1227,6 +1297,53 @@ class GodotServer(SchemaBasedToolServer):
 
 
 # ── module helpers ──────────────────────────────────────────────────────
+
+def _kill_tree(proc: subprocess.Popen, wait_s: float = 5) -> None:
+    """The process and everything it started, and back once they are gone
+    (at most ``wait_s``). Only while the Popen is not reaped: after that its
+    pid may already belong to another process."""
+    if proc.returncode is not None:
+        return
+    try:
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        children = []
+    for p in children:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    # The root through the Popen, not wait_procs: psutil would reap it behind
+    # the Popen's back (POSIX), returncode would stay None and the guard above
+    # would no longer hold.
+    try:
+        proc.wait(timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        pass
+    psutil.wait_procs(children, timeout=wait_s)
+
+
+def _width(value: Any) -> int:
+    """A screenshot width cap within the schema's 128..4096. The addon scales
+    only when the cap is positive and below the picture: 0, a negative value
+    or a huge one returned the full resolution."""
+    return max(MIN_SHOT_WIDTH, min(MAX_SHOT_WIDTH, int(value)))
+
+
+def _drain(stream: Any, sink: list[bytes]) -> None:
+    # read1: what is there now, so a pipe that never closes still leaves its
+    # output in the sink (a text read(n) holds it until n chars or EOF).
+    for chunk in iter(lambda: stream.read1(65536), b""):
+        sink.append(chunk)
+
+
+def _text(chunks: list[bytes]) -> str:
+    return b"".join(chunks).decode("utf-8", "replace").replace("\r\n", "\n")
+
 
 def _decode(value: Any) -> str:
     if value is None:

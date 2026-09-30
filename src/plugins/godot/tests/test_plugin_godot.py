@@ -388,6 +388,167 @@ async def test_a_run_that_never_quits_is_killed_and_reported_as_timeout(server, 
     assert "timeout" in line
 
 
+def _gone(pid: int) -> bool:
+    import psutil
+    try:
+        psutil.Process(pid).wait(timeout=5)
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.TimeoutExpired:
+        return False
+    return True
+
+
+async def test_a_timeout_kills_what_the_binary_started_and_answers_at_once(server, project):
+    """The console exe is a wrapper around the real one, and a game may start
+    processes. Killing only the direct child left the grandchild running, and
+    the wait for the pipes it held kept the call from answering until it ended
+    (20 s here)."""
+    import time
+    began = time.monotonic()
+    result, _ = await run_tool(server, "godot_run",
+                               {"project": "shmup", "scene": "spawn.tscn", "timeout": 2})
+    elapsed = time.monotonic() - began
+    child = int((project / "child.pid").read_text(encoding="utf-8"))
+    assert result["timed_out"] is True
+    assert _gone(child), "the child the binary started is still running"
+    assert elapsed < 12, f"the call answered after {elapsed:.0f}s"
+
+
+async def test_a_cancelled_run_kills_the_binary(server, project):
+    """The thread running the binary cannot be cancelled; without killing the
+    process a stopped call left the game running until its timeout."""
+    task = asyncio.create_task(server.call_with_status(
+        "godot_run", {"project": "shmup", "scene": "hang.tscn", "timeout": 25}))
+    pid_file = project / "stub.pid"
+    for _ in range(200):
+        if pid_file.exists() and pid_file.read_text(encoding="utf-8"):
+            break
+        await asyncio.sleep(0.05)
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _gone(pid), "the binary outlived the cancelled call"
+
+
+async def test_a_timeout_keeps_what_was_printed_when_an_orphan_holds_the_pipes(server, project):
+    """The tree kill cannot reach a process whose parent already ended. On
+    Windows communicate() then timed out once more and raised WITHOUT the
+    output read so far: the answer carried nothing the game had printed."""
+    import time
+
+    import psutil
+    began = time.monotonic()
+    try:
+        result, _ = await run_tool(server, "godot_run",
+                                   {"project": "shmup", "scene": "orphan.tscn", "timeout": 2})
+    finally:
+        orphan = project / "orphan.pid"
+        if orphan.exists():
+            try:
+                psutil.Process(int(orphan.read_text(encoding="utf-8"))).kill()
+            except psutil.Error:
+                pass
+    assert result["timed_out"] is True
+    assert "printed before the hang" in result["output"], result
+    assert time.monotonic() - began < 15
+
+
+async def test_a_run_whose_orphan_keeps_the_pipes_answers_within_one_grace_period(server, project):
+    """Both readers share one five-second deadline; one after the other was ten."""
+    import time
+
+    import psutil
+    began = time.monotonic()
+    try:
+        result, _ = await run_tool(server, "godot_run", {"project": "shmup", "scene": "orphan_exit.tscn"})
+    finally:
+        orphan = project / "orphan.pid"
+        if orphan.exists():
+            try:
+                psutil.Process(int(orphan.read_text(encoding="utf-8"))).kill()
+            except psutil.Error:
+                pass
+    assert result["exit"] == 0 and "printed before the hang" in result["output"], result
+    assert time.monotonic() - began < 8.5
+
+
+def test_the_tree_kill_reaps_through_the_popen():
+    """psutil's wait would reap the root behind the Popen's back (POSIX): its
+    returncode stayed None and the reaped-process guard no longer held."""
+    import subprocess
+
+    from plugins.godot import server as mod
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+    mod._kill_tree(proc)
+    assert proc.returncode is not None
+
+
+def test_the_binary_gets_no_stdin(server, project, monkeypatch):
+    import subprocess
+
+    from plugins.godot import server as mod
+    seen = {}
+    real = subprocess.Popen
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", spy)
+    server._run_binary(["--version"], 10)
+    assert seen.get("stdin") is subprocess.DEVNULL
+
+
+def test_a_character_split_across_two_reads_is_decoded_whole():
+    from plugins.godot import server as mod
+    data = "Größe ✓".encode("utf-8")
+    chunks = [data[:3], data[3:9], data[9:]]  # both multibyte characters cut
+    assert mod._text(chunks) == "Größe ✓"
+
+
+def test_the_tree_kill_leaves_a_reaped_process_alone(monkeypatch):
+    """Once reaped, the pid may belong to someone else (POSIX reuses it)."""
+    import subprocess
+
+    import psutil
+
+    from plugins.godot import server as mod
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    touched = []
+    monkeypatch.setattr(psutil, "Process", lambda pid: touched.append(pid))
+    mod._kill_tree(proc)
+    assert not touched
+
+
+async def test_a_cancelled_status_kills_the_version_probe(server, tmp_path, monkeypatch):
+    pid_file = tmp_path / "version.pid"
+    monkeypatch.setenv("GODOT_STUB_HANG_VERSION", str(pid_file))
+    task = asyncio.create_task(server.call_with_status("godot_status", {}))
+    for _ in range(200):
+        if pid_file.exists() and pid_file.read_text(encoding="utf-8"):
+            break
+        await asyncio.sleep(0.05)
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _gone(pid), "--version outlived the cancelled status call"
+
+
+async def test_a_cancel_that_comes_before_the_binary_started_still_kills_it(server, project):
+    """The cancel can land while the thread has not started the process yet;
+    it leaves a None in the list, and the process kills itself on arrival."""
+    import time
+    began = time.monotonic()
+    raw = await asyncio.to_thread(server._run_binary,
+                                  ["--path", str(project), "hang.tscn"], 25, [None])
+    assert raw["timed_out"] is False and raw["exit"] != 0
+    assert time.monotonic() - began < 10, "the process ran on after the cancel"
+
+
 # ── script ───────────────────────────────────────────────────────────────
 
 async def test_script_prepends_extends_and_removes_its_temp_file(server, project):
@@ -405,9 +566,9 @@ async def test_script_keeps_an_explicit_extends(server, project, monkeypatch):
     seen = {}
     real = server._run_binary
 
-    def spy(args, timeout):
+    def spy(args, timeout, *rest):
         seen["code"] = Path(args[args.index("-s") + 1]).read_text(encoding="utf-8")
-        return real(args, timeout)
+        return real(args, timeout, *rest)
 
     monkeypatch.setattr(server, "_run_binary", spy)
     await run_tool(server, "godot_script", {"project": "shmup", "code": "extends MainLoop\nfunc _init():\n\tpass\n"})
@@ -683,6 +844,59 @@ async def test_a_project_outside_the_root_is_refused_before_anything_runs(server
     assert not stub_calls(server)
 
 
+# \??\UNC\... is refused too, but on Windows it is not absolute: joined onto the
+# root it lands below the drive, so without the guard it is refused all the same.
+REMOTE = ["//host/share/p", r"\\host\share\p", r"\\?\UNC\host\share\p"]
+
+
+@pytest.fixture
+def no_remote_resolve(monkeypatch):
+    """Resolving a share path connects to the host (and signs in) on Windows;
+    it must be refused on its text, before any such call."""
+    import pathlib
+    real = pathlib.Path.resolve
+
+    def guard(self, *a, **kw):
+        text = str(self).replace("/", "\\")
+        assert not text.startswith((r"\\", r"\??")), f"resolved {self}"
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", guard)
+
+
+@pytest.mark.parametrize("value", REMOTE)
+async def test_a_project_on_a_share_is_refused_before_any_file_system_call(server, value, no_remote_resolve):
+    result, _ = await run_tool(server, "godot_check", {"project": value})
+    assert result["status"] == "error" and "outside the projects root" in result["error"], result
+    assert not stub_calls(server)
+
+
+@pytest.mark.parametrize("value", REMOTE)
+async def test_an_output_file_on_a_share_is_refused(server, addon, value, no_remote_resolve):
+    result, _ = await run_tool(server, "godot_observe",
+                               {"action": "screenshot", "filename": value + "/x.png"})
+    assert result["status"] == "error" and "outside the output directory" in result["error"], result
+    assert not addon.calls
+
+
+@pytest.mark.parametrize("value", REMOTE)
+async def test_a_scene_on_a_share_never_reaches_godot(server, project, value):
+    """Godot would load it -- a scene and its scripts from another host."""
+    result, _ = await run_tool(server, "godot_run", {"project": "shmup", "scene": value + "/level.tscn"})
+    assert result["status"] == "error" and "network share" in result["error"], result
+    assert not stub_calls(server)
+
+
+async def test_a_preset_that_reads_as_an_option_is_refused(server, project):
+    """Godot's first pass over the arguments does not consume the preset after
+    --export-release; "--path" there would repoint the project."""
+    result, _ = await run_tool(server, "godot_export",
+                               {"project": "shmup", "preset": "--path", "filename": "a/b/p.zip"})
+    assert result["status"] == "error" and "preset" in result["error"], result
+    assert not stub_calls(server)
+    assert not (server._out_dir / "a").exists(), "a refused call left folders behind"
+
+
 async def test_a_missing_project_points_at_setup(server, project):
     result, _ = await run_tool(server, "godot_run", {"project": "nothing_here"})
     assert result["status"] == "error" and "setup" in result["error"]
@@ -791,6 +1005,17 @@ async def test_screenshot_cannot_escape_the_output_directory(server, addon, esca
     result, _ = await run_tool(server, "godot_observe", {"action": "screenshot", "filename": escape})
     assert result["status"] == "error" and "outside the output directory" in result["error"]
     assert not addon.calls
+
+
+@pytest.mark.parametrize("given, sent", [(100000, 4096), (5, 128), (-1, 128), (640, 640)])
+async def test_screenshot_widths_stay_within_the_schemas_range(server, addon, given, sent):
+    """The addon scales only for a positive cap below the picture: 0, a
+    negative or a huge value returned the full resolution."""
+    await run_tool(server, "godot_observe", {"action": "screenshot", "max_width": given})
+    await run_tool(server, "godot_play", {"action": "input", "inputs": [{"action_name": "jump"}],
+                                          "screenshot_at_ms": [10], "screenshot_max_width": given})
+    assert addon.calls[0] == ("capture_game_screenshot", {"max_width": sent})
+    assert addon.calls[1][1]["screenshot_max_width"] == sent
 
 
 async def test_logs_carry_the_cursor_forward(server, addon):

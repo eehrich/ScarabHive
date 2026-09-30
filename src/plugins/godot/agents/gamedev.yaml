@@ -58,9 +58,10 @@ plugins:
             gamedev_okf.okf_context_injection:
               enabled: true
               hook_bundle: data/okf/gamedev
-            # Off for the same reason coder_sam's is off in the coder: it
-            # rewrites the cached prompt prefix mid-turn, and the agent can
-            # list its sub-agents with a tool call when it needs to.
+            # Off, like coder_sam's in the coder: the agent lists its
+            # sub-agents with a tool call when it needs to. Switched on, the
+            # hook appends a developer turn whenever that list changes; it
+            # no longer touches the cached prefix.
             gamedev_sam.inject_sub_agent_context:
               enabled: false
 

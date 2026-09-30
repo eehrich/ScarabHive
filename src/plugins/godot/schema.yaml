@@ -271,7 +271,7 @@ tools:
             description: "run: start with the clock frozen."
           duration_ms:
             type: integer
-            description: "step: game time to advance (max 50000)."
+            description: "step: game time to advance."
           frames:
             type: integer
             description: "step: frames to advance instead of a duration (max 1200)."
@@ -295,7 +295,7 @@ tools:
             description: "input: capture the game at these offsets inside the sequence; each lands as a PNG path in the result."
           screenshot_max_width:
             type: integer
-            description: "input: width cap for those captures (default 900)."
+            description: "input: width cap for those captures, 128-4096."
           text:
             type: string
             description: "type_text: text to type into the focused control."
