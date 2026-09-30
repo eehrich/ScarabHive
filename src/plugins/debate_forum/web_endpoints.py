@@ -1,6 +1,7 @@
 """Web endpoints of the debate forum: the Debate Forum panel and the calls it makes."""
 from __future__ import annotations
 
+import asyncio
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -84,15 +85,19 @@ class DebateForumWebFactory:
         channel["message_count"] = self.db.get_message_count(channel_id)
         verdict = channel.get("verdict_json")
         summary = channel.get("verdict_summary") or (verdict.get("summary") if isinstance(verdict, dict) else None)
-        channel["verdict_summary_html"] = rendered(summary) if summary else None
+        # Rendering can take seconds (a paragraph of many lines): off the event loop.
+        channel["verdict_summary_html"] = await asyncio.to_thread(rendered, summary) if summary else None
         return channel
 
     async def api_get_messages(self, request: Request, channel_id: int) -> dict:
         """Every post, oldest first, its Markdown rendered as ``content_html``; ``content`` stays raw for copying."""
         self._channel(channel_id)
         messages = self.db.get_messages(channel_id)
-        for message in messages:
-            message["content_html"] = rendered(message["content"])
+        def render_all() -> None:
+            for message in messages:
+                message["content_html"] = rendered(message["content"])
+
+        await asyncio.to_thread(render_all)  # off the event loop, as above
         return {"messages": messages}
 
     async def api_post_message(self, request: Request, channel_id: int, post: NewPost) -> dict:

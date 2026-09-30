@@ -1,6 +1,8 @@
 """The panel's JSON API on the real plugin and database: what it answers, and how it refuses."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,6 +39,24 @@ def test_a_verdict_summary_comes_rendered_from_the_summary_or_the_verdict(client
     assert client.get(f"{API}/channels/1").json()["verdict_summary_html"] is None
     client.post("/__stub/conclude", params={"channel": 1, "summary": ""})
     assert client.get(f"{API}/channels/1").json()["verdict_summary_html"] == "<p><em>From the verdict</em></p>"
+
+
+def test_posts_and_verdicts_are_rendered_off_the_event_loop(client, monkeypatch):
+    """Rendering a paragraph of many lines takes seconds; on the loop it would stall the server."""
+    on_loop = []
+
+    def spy(text):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(text)
+        except RuntimeError:  # a worker thread has no running loop
+            pass
+        return text
+
+    monkeypatch.setattr(web_endpoints, "markdown_to_html", spy)
+    client.get(f"{API}/channels/1/messages")
+    client.get(f"{API}/channels/2")
+    assert on_loop == []
 
 
 def test_a_post_goes_into_the_latest_round_and_is_refused_when_it_cannot(client):
