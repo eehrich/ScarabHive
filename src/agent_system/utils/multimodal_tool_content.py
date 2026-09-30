@@ -33,11 +33,13 @@ import base64
 import io
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # A stored data/... path (session history, a media store's index) lands in
 # the data directory, wherever it is configured.
 from agent_system.paths import resolve_data_path
+from agent_system.utils.path_sandbox import remote_outside
 
 if TYPE_CHECKING:
     from ..llm.models import MultimodalToolContent
@@ -52,6 +54,22 @@ DEFAULT_MAX_AUDIO_SIZE_MB = 25.0
 # OpenAI only supports these audio formats
 OPENAI_SUPPORTED_AUDIO_FORMATS = {"wav", "mp3"}
 OPENAI_AUDIO_CONVERSION_TARGET = "mp3"  # Convert unsupported formats to MP3
+
+
+def _local_path(value: Any) -> Optional[Path]:
+    """A history path as it will be opened, or None for a host or device path.
+
+    This runs on every LLM request for every path in the history, and any tool
+    can write one there. On Windows, exists()/stat() on ``\\\\host\\share\\...``
+    (or ``\\\\?\\UNC\\...``, ``\\??\\UNC\\...``) connects to that host and signs
+    in with the user's NTLM credentials -- so it is refused on the text alone,
+    before any file system call. The caller treats None like a missing file.
+    """
+    path = resolve_data_path(value)
+    if remote_outside(str(path), Path.cwd(), ()):
+        logger.warning("Multimodal host/device path refused: %s", path)
+        return None
+    return path
 
 
 def _convert_audio_for_openai(
@@ -222,16 +240,18 @@ def encode_multimodal_item(
     """
     # Handle both Pydantic model and dict
     if hasattr(item, "path"):
-        path = resolve_data_path(item.path)
+        path = _local_path(item.path)
         content_type = item.type
         mime_type = item.mime_type
         description = getattr(item, "description", None)
     else:
-        path = resolve_data_path(item.get("path", ""))
+        path = _local_path(item.get("path", ""))
         content_type = item.get("type", "image")
         mime_type = item.get("mime_type", "application/octet-stream")
         description = item.get("description")
-    
+
+    if path is None:
+        return None
     if not path.exists():
         logger.warning("Multimodal file not found: %s", path)
         return None
@@ -446,14 +466,17 @@ def create_multimodal_injection(
     # Collect info about all items (for both vision and non-vision models)
     items_info = []
     error_items = []
-    
+    missing = set()  # checked once here; the vision loop below reuses it
+
     for item in multimodal_content:
         item_type = getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else 'unknown')
         desc = getattr(item, 'description', None) or (item.get('description') if isinstance(item, dict) else None)
         path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
-        
-        if path and not resolve_data_path(path).exists():
-            # File doesn't exist - this is an error!
+
+        local = _local_path(path) if path else None
+        if path and (local is None or not local.exists()):
+            # File doesn't exist (or is a refused host path) - this is an error!
+            missing.add(path)
             error_items.append({
                 'type': item_type,
                 'path': path,
@@ -497,7 +520,7 @@ def create_multimodal_injection(
         for item in multimodal_content:
             path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
             
-            if path and not resolve_data_path(path).exists():
+            if path in missing:
                 # File doesn't exist - add error note
                 item_type = item.get('type') if isinstance(item, dict) else getattr(item, 'type', 'unknown')
                 text_notes.append(f"⚠️ {item_type} file not found: {path}")
