@@ -623,3 +623,116 @@ async def test_the_status_line_of_evidence_not_counted_fits_its_own_session(serv
                           "_status": status})
 
     assert status.end.call_args.args[0].startswith("Not counted, this session gave or made it")
+
+
+# ---------------------------------------------------------------------------- a person's "inactive" holds
+
+
+def panel(tmp_path):
+    """The panel's handlers on a server of their own."""
+    from plugins.lessons_learned.plugin import PLUGIN_FACTORY
+
+    return PLUGIN_FACTORY("lessons_learned", SimpleNamespace(),
+                          SimpleNamespace(database_path=str(tmp_path / "lessons.db"))).web_factory
+
+
+async def save_in_panel(web, lesson_id, status):
+    """The panel's editor: every field of the lesson as stored, the status as chosen."""
+    from plugins.lessons_learned.web_endpoints import LessonForm
+
+    lesson = await web.server.get_lesson(lesson_id)
+    form = LessonForm(**{key: lesson[key] for key in LessonForm.model_fields if key not in ("tags", "status")},
+                      status=status)
+    await web.update_lesson(None, lesson_id, form)
+
+
+async def revived(server, lesson_id, session="s-other"):
+    """Whether a confirming evidence turns the lesson active."""
+    await server.add_evidence(lesson_id, session, "a")
+    return (await server.get_lesson(lesson_id))["status"] == "active"
+
+
+async def test_evidence_does_not_revive_a_lesson_a_person_set_inactive(tmp_path):
+    """Evidence made any inactive lesson active again once its confidence rose
+    to 0.4 -- also one a person had switched off in the panel."""
+    web = panel(tmp_path)
+    by_person = (await web.server.store_lesson("a", "One", "C", status="active"))["lesson_id"]
+    by_agent = (await web.server.store_lesson("a", "Two", "C", status="active"))["lesson_id"]
+    await save_in_panel(web, by_person, "inactive")
+    await web.server.execute({"operation": "update", "lesson_id": by_agent, "status": "inactive",
+                              "_agent_name": "a", "_session_id": "s"})
+
+    assert not await revived(web.server, by_person)
+    assert await revived(web.server, by_agent)  # an agent's "inactive" is the model's, evidence may overrule it
+
+
+async def test_a_lesson_a_person_creates_inactive_stays_inactive(tmp_path):
+    from plugins.lessons_learned.web_endpoints import LessonForm
+
+    web = panel(tmp_path)
+    created = await web.create_lesson(None, LessonForm(agent_name="a", title="One", content="C", category="general",
+                                                       priority=5, status="inactive", source_type="manual",
+                                                       confidence=0.8))
+
+    assert not await revived(web.server, created["lesson_id"])
+
+
+async def test_the_pin_goes_with_any_other_status_and_a_person_can_set_it_again(tmp_path):
+    """Activated in the panel, then switched off by an agent, the lesson is the
+    agent's again; a person saving it inactive pins it once more."""
+    web = panel(tmp_path)
+    lesson = (await web.server.store_lesson("a", "One", "C", status="active"))["lesson_id"]
+    await save_in_panel(web, lesson, "inactive")
+    await save_in_panel(web, lesson, "active")
+    await web.server.update_lesson(lesson, status="inactive")
+
+    assert await revived(web.server, lesson, "s-1")
+    await web.server.update_lesson(lesson, status="inactive")
+    await save_in_panel(web, lesson, "inactive")  # inactive already, kept so by a person
+    await web.server.update_lesson(lesson, status="inactive")  # an agent's again changes nothing
+    assert not await revived(web.server, lesson, "s-2")
+
+
+async def test_an_inactive_lesson_from_before_the_pin_counts_as_a_persons(tmp_path):
+    """Evidence never turns a lesson inactive, so an old inactive lesson was set so by
+    the panel or an agent; taken as the panel's. Active lessons are not pinned."""
+    import sqlite3
+
+    first = make_server(tmp_path)
+    inactive = (await first.store_lesson("a", "One", "C", status="inactive"))["lesson_id"]
+    active = (await first.store_lesson("a", "Two", "C", status="active"))["lesson_id"]
+    conn = sqlite3.connect(first.db_path)
+    conn.execute("ALTER TABLE lessons DROP COLUMN inactive_by_person")
+    conn.commit()
+    conn.close()
+
+    server = make_server(tmp_path)
+    make_server(tmp_path)  # a second start does not add it again
+
+    assert not await revived(server, inactive)
+    assert (await server.get_lesson(active))["inactive_by_person"] == 0
+
+
+async def test_an_agent_cannot_switch_on_what_a_person_switched_off(tmp_path):
+    web = panel(tmp_path)
+    lesson = (await web.server.store_lesson("a", "One", "C", status="active"))["lesson_id"]
+    await save_in_panel(web, lesson, "inactive")
+
+    answer = await web.server.update_lesson(lesson, status="active")  # an agent's update
+
+    assert "only the panel" in answer.get("error", ""), answer
+    assert (await web.server.get_lesson(lesson))["status"] == "inactive"
+    assert "error" not in await web.server.update_lesson(lesson, title="Renamed")  # other fields stay open
+
+
+async def test_only_a_set_pin_reaches_a_list(tmp_path):
+    """The flag is zero on nearly every lesson: tokens for nothing in each answer."""
+    web = panel(tmp_path)
+    pinned = (await web.server.store_lesson("a", "One", "C", status="active"))["lesson_id"]
+    (await web.server.store_lesson("a", "Two", "C", status="active"))
+    await save_in_panel(web, pinned, "inactive")
+
+    listed = {lesson["title"]: lesson for lesson in (await web.server.list_lessons(agent_name="a"))["lessons"]}
+
+    assert listed["One"]["inactive_by_person"] == 1
+    assert "inactive_by_person" not in listed["Two"]

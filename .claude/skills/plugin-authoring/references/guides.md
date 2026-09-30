@@ -52,7 +52,9 @@ A bug you can state -- what is wrong, how it should be -- is fixed, not document
   the module source, replaces one marker (assert the marker occurs exactly once), `exec`s it into the
   imported module's `__dict__`, runs pytest; plus a CONTROL mutant (a comment change) that must stay
   green. Pattern: `exec(compile(src.replace(old, new), mod.__file__, "exec"), mod.__dict__)` with
-  `PYTHONPATH=src`. Every fix's mutant must turn a test red;
+  `PYTHONPATH=src`. Rebind what other modules imported from the mutated one (`plugin.py`'s
+  `from .server import X`, the test module's imports) -- else the tests run the original and the mutant
+  "survives". Every fix's mutant must turn a test red;
 - a schema description that tells the model something false is a bug too: correct the text; remove
   `default:` values the code does not apply. The tools section is sent to the model on EVERY call and
   costs tokens: the corrected text is as short as or shorter than the old one -- never add explanations,

@@ -84,7 +84,8 @@ editor has every field -- agent, category, title (200 characters), text
 (2000), status, source, priority 1 to 10, confidence 0 to 1 and tags,
 comma-separated. Changing the agent moves the lesson to that agent. A save
 sends every field; the confidence you set holds until the next evidence
-(see @{" Confidence " link rules}). When a save worked but the search index
+(see @{" Confidence " link rules}), a lesson you save as inactive stays
+inactive whatever evidence comes. When a save worked but the search index
 could not take the lesson, a warning says so: it is listed, but search and
 the duplicate check miss it until the index works again.
 
@@ -259,7 +260,15 @@ count toward an agent's limit.
 
 A status changes by hand -- the panel, or @{tt}update@{utt}. Evidence
 changes it only in one direction: an inactive lesson whose confidence is
-0.4 or more after new evidence becomes active again.
+0.4 or more after new evidence becomes active again -- unless a person set
+it inactive. A lesson saved or created as inactive in the panel stays
+inactive whatever evidence comes, until a person gives it another status
+in the panel: an agent's @{tt}update@{utt} to any other status is refused.
+One an agent set inactive with @{tt}update@{utt} is the model's judgement,
+and evidence may overrule it. Lessons already inactive before this rule
+count as set so by a person. Such a lesson carries
+@{tt}inactive_by_person: 1@{utt} in search and list answers; on every
+other lesson the field is left out.
 @endnode
 
 @node inject "The inject_lessons hook"
@@ -415,6 +424,8 @@ plugin's @{tt}schema.yaml@{utt}. A refused call answers
 @{tt}{"error": "Both 'title' and 'content' are required."}@{utt},
 @{tt}{"error": "'title' is longer than 200 characters."}@{utt},
 @{tt}{"error": "Lesson 'coder_les_009' not found."}@{utt},
+@{tt}{"error": "A person switched lesson 'coder_les_009' off in the panel;
+only the panel can switch it on again."}@{utt},
 @{tt}{"error": "Lesson limit (500) reached for agent 'coder'. Archive or
 delete older lessons."}@{utt} and the like. In the chat, the call's status
 line ends with the result: "Lesson stored: coder_les_004", "Not stored:
@@ -438,7 +449,7 @@ a mark, and each such change appends the full list again.
 it, and the hook does not use it, until it is activated.
 @{bullet}Evidence never makes a lesson inactive: its confidence cannot fall
 below half its start, and the switch waits for 0.2. It does make an
-inactive lesson active again -- also one a person set inactive.
+inactive lesson active again, unless a person set it inactive in the panel.
 @{bullet}Messages still waiting for @{tt}min_turns@{utt} company -- up to
 @{tt}min_turns@{utt} minus one -- are lost when a compaction removes them
 before the next reading. Closing that would need the extraction to run

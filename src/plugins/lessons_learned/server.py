@@ -56,6 +56,13 @@ EXTRACTION_BUDGET = 15.0
 AUTO_DEACTIVATE_THRESHOLD = 0.2
 AUTO_REACTIVATE_THRESHOLD = 0.4
 
+
+def _drop_unset_pin(lesson: Dict[str, Any]) -> None:
+    """Only a set `inactive_by_person` goes into an answer: on every other lesson it is a zero."""
+    if not lesson.get("inactive_by_person"):
+        lesson.pop("inactive_by_person", None)
+
+
 # Validation constants
 VALID_EVIDENCE_TYPES = {"confirm", "contradict", "neutral"}
 VALID_LESSON_STATUSES = {"draft", "active", "inactive", "archived"}
@@ -166,6 +173,8 @@ CREATE TABLE IF NOT EXISTS lessons (
     expires_at      TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- A person set it inactive in the panel: evidence does not make it active again.
+    inactive_by_person INTEGER NOT NULL DEFAULT 0,
     CHECK (priority BETWEEN 1 AND 10),
     CHECK (confidence BETWEEN 0.0 AND 1.0),
     CHECK (status IN ('draft', 'active', 'inactive', 'archived')),
@@ -319,6 +328,19 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e):
                     raise
+            # The column and its first values as one: a start cut short between them left them unset for good.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("ALTER TABLE lessons ADD COLUMN inactive_by_person INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise
+            else:
+                # Evidence never deactivates (see add_evidence), so an inactive lesson from
+                # before the column was set so by the panel or an agent's update -- which one,
+                # the row does not say. Taken as the panel's: a person's decision undone by
+                # evidence is what the column is for; an agent's held is only a revival missed.
+                conn.execute("UPDATE lessons SET inactive_by_person = 1 WHERE status = 'inactive'")
             # Seed default categories if empty
             count = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
             if count == 0:
@@ -470,8 +492,9 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         source_session: Optional[str] = None,
         status: str = "draft",
         confidence: Optional[float] = None,
+        by_person: bool = False,
     ) -> Dict[str, Any]:
-        """Store a new lesson in SQLite + VectorStore."""
+        """Store a new lesson in SQLite + VectorStore; `by_person`: from the panel, see update_lesson."""
         # Validate inputs
         if status not in VALID_LESSON_STATUSES:
             return {
@@ -508,11 +531,11 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
                     """INSERT INTO lessons
                        (lesson_id, agent_name, category, title, content, priority, confidence,
                         status, source_type, source_agent, source_session, tags,
-                        last_confirmed_at, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        last_confirmed_at, created_at, updated_at, inactive_by_person)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (lesson_id, agent_name, category, title, content, priority, confidence,
                      status, source_type, source_agent, source_session, tags_json,
-                     now, now, now),
+                     now, now, now, int(by_person and status == "inactive")),
                 )
                 conn.commit()
             except sqlite3.IntegrityError as e:
@@ -651,6 +674,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             if lesson and len(results) < limit:
                 lesson["similarity"] = r["similarity"]
                 lesson["tags"] = _tags(lesson.get("tags"))
+                _drop_unset_pin(lesson)
                 results.append(lesson)
 
         answer: Dict[str, Any] = {"query": query, "results": results, "count": len(results)}
@@ -704,6 +728,7 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             for r in rows:
                 lesson = dict(r)
                 lesson["tags"] = _tags(lesson.get("tags"))
+                _drop_unset_pin(lesson)
                 lessons.append(lesson)
 
             return {"lessons": lessons, "total": total, "limit": limit, "offset": offset}
@@ -734,8 +759,12 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         finally:
             conn.close()
 
-    async def update_lesson(self, lesson_id: str, **updates: Any) -> Dict[str, Any]:
-        """Update a lesson's fields."""
+    async def update_lesson(self, lesson_id: str, by_person: bool = False, **updates: Any) -> Dict[str, Any]:
+        """Update a lesson's fields.
+
+        `by_person`: the panel, a person's hand. A lesson a person saves as inactive stays so
+        whatever evidence comes; an agent's update is the model's judgement, which evidence
+        may overrule, as it does the system's."""
         allowed = {"title", "content", "category", "priority", "status", "confidence",
                     "tags", "context_filter", "expires_at", "agent_name", "source_type"}
         to_update = {k: v for k, v in updates.items() if k in allowed and v is not None}
@@ -746,14 +775,23 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
         conn = self._get_connection()
         try:
             old_lesson = conn.execute(
-                "SELECT agent_name, title, content FROM lessons WHERE lesson_id = ?", (lesson_id,)
+                "SELECT agent_name, title, content, inactive_by_person FROM lessons WHERE lesson_id = ?",
+                (lesson_id,),
             ).fetchone()
             if not old_lesson:
                 return {"error": f"Lesson '{lesson_id}' not found."}
+            if old_lesson["inactive_by_person"] and not by_person and to_update.get("status") not in (None, "inactive"):
+                return {"error": f"A person switched lesson '{lesson_id}' off in the panel; only the panel can switch it on again."}
             old_agent_name = old_lesson["agent_name"]
             old_text = (old_lesson["title"], old_lesson["content"])
         finally:
             conn.close()
+
+        # A person saving it inactive pins it, any other status forgets the pin; an agent
+        # setting it inactive leaves the pin as it was (none, unless inactive already).
+        status = to_update.get("status")
+        if status and (by_person or status != "inactive"):
+            to_update["inactive_by_person"] = int(by_person and status == "inactive")
 
         if "tags" in to_update:
             to_update["tags"] = json.dumps(_tags(to_update["tags"]))
@@ -1022,7 +1060,8 @@ class LessonsLearnedServer(SchemaBasedHookToolServer):
             current_status = row["status"]
             if new_confidence < AUTO_DEACTIVATE_THRESHOLD and current_status == "active":
                 update_fields["status"] = "inactive"
-            elif new_confidence >= AUTO_REACTIVATE_THRESHOLD and current_status == "inactive":
+            elif (new_confidence >= AUTO_REACTIVATE_THRESHOLD and current_status == "inactive"
+                  and not row["inactive_by_person"]):
                 update_fields["status"] = "active"
 
             set_clause = ", ".join(f"{k} = ?" for k in update_fields)
