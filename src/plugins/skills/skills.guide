@@ -1,0 +1,259 @@
+@database "skills"
+@author "Enrico Ehrich"
+@$VER: skills.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Skills"
+@{h1}Skills
+
+A skill is a folder of agent knowledge: a @{tt}SKILL.md@{utt} with the
+instructions, and often further files next to it -- references, scripts,
+templates -- that are only worth reading when a task needs them. This
+plugin gives an agent two tools to browse that knowledge: one lists the
+skills and the files each one carries, the other reads a skill's
+instructions or one of its files. It only reads; it changes nothing and
+stores nothing. It has no hooks and no panel.
+
+What skills are, where they are found, and how an agent gets one into its
+prompt (@{tt}always@{utt}, @{tt}on_demand@{utt}) or a person runs one from
+the chat (@{tt}/skill-name@{utt}) is part of the core, see
+@{" Skills " link scarabhive/skills}. An agent whose skills all sit in its
+prompt as @{tt}always@{utt} does not need this plugin; an agent with
+@{tt}on_demand@{utt} skills does, because those arrive only as a one-line
+entry and the agent loads the rest with these tools.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Listing skills  " link list}
+  @{"  Reading a skill  " link read}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt} is there, switched on:
+
+@{code yaml}
+plugins:
+  servers:
+    skills:
+      type: skills
+      enabled: true
+@{body}
+
+Allow the tools in an agent's list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+skills/*"
+@{body}
+
+@{h2}Which skills it sees
+
+The plugin sees every skill the core finds, not only the ones the agent
+names in its @{tt}skills@{utt} block: an agent with these tools can list
+and read any of them. The roots are @{tt}skills.skill_dirs@{utt} in
+@{tt}config/config.yaml@{utt}, the same list the prompt uses. When that key
+is missing or empty, the environment variable
+@{tt}AGENT_SKILL_DIRS@{utt} (roots separated by the system's path
+separator) is used, and without that, @{tt}skills@{utt} and
+@{tt}.claude/skills@{utt}. When two roots hold a skill of the same name,
+the first root wins.
+
+The roots are scanned once per process, and again only when the list of
+roots changes. A skill added later, or a changed name, description or
+version in a @{tt}SKILL.md@{utt} header, shows up after a restart. The
+files themselves are read at every call: an edited instruction or
+reference is seen at once, and so is a file added to a skill already known.
+
+@{h2}Server settings and dependencies
+
+None. The plugin has no settings of its own -- the read limit of 100,000
+characters is fixed in the code -- and needs nothing beyond the core.
+@endnode
+
+@node list "Listing skills"
+@{h1}Listing skills
+
+@{tt}skills_list@{utt} (the prefix follows the plugin instance) answers
+which skills there are and what files each carries. Without a name it lists
+all of them; with a name, only that one.
+
+@{h2}Parameters
+
+The framework does not check arguments against the schema; this is what
+the code does with them.
+
+@{table}
+Parameter | Meaning
+name | a skill's name; spaces around it are removed. Missing, null or empty: all skills. A value that is not text is taken as text (5 is "5")
+@{body}
+
+@{h2}The answer
+
+Without a name: @{tt}status@{utt} "success", @{tt}count@{utt} and
+@{tt}skills@{utt}, sorted by name. With a name: @{tt}status@{utt} and
+@{tt}skill@{utt}, one entry. Each entry has:
+
+@{table}
+Field | Meaning
+name | the name from the @{tt}SKILL.md@{utt} header; the folder's name when the header has none or one that breaks the naming rules
+version | the header's @{tt}version@{utt} or @{tt}metadata.version@{utt}; "0.0.0" without either
+description | the header's description, at most 1,024 characters; without one, the first paragraph of the instructions
+tags | the header's @{tt}tags@{utt} (a list or comma-separated text); empty without
+files | the files in the skill's folder and its subfolders, as paths relative to the folder with @{tt}/@{utt}, sorted; @{tt}SKILL.md@{utt} included
+@{body}
+
+The file list leaves out hidden files and folders (a name starting with a
+dot), @{tt}__pycache__@{utt} folders and a leftover @{tt}skill.toml@{utt}
+manifest. Everything else is listed, also
+files that cannot be read as text, such as images.
+
+An unknown name answers @{tt}status@{utt} "error" with
+@{tt}error@{utt} "Unknown skill '<name>'", plus " — did you mean
+'<other>'?" when one name is close enough, @{tt}did_you_mean@{utt} (that
+name or null) and @{tt}available@{utt} (all names).
+
+@{h2}An example
+
+@{code json}
+{"name": "tdd"}
+@{body}
+
+@{code json}
+{"status": "success",
+ "skill": {"name": "tdd", "version": "0.0.0",
+           "description": "Test-driven development. Use when ...",
+           "tags": [],
+           "files": ["SKILL.md", "agents/openai.yaml", "mocking.md", "tests.md"]}}
+@{body}
+@endnode
+
+@node read "Reading a skill"
+@{h1}Reading a skill
+
+@{tt}skills_read@{utt} reads a skill's instructions, or one file it
+carries.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+name | required; the skill's name, spaces around it removed. A value that is not text is taken as text
+path | a file in the skill, relative to its folder (@{tt}references/catalog.md@{utt}); spaces around it removed. Missing, null or empty: the instructions from @{tt}SKILL.md@{utt}
+@{body}
+
+Without @{tt}path@{utt} the answer is the instructions without the YAML
+header and without the blank lines after it -- the agent already has name
+and description from the list. With @{tt}path@{utt} "SKILL.md" it is the
+whole file, header included. Any file is read as UTF-8; a byte order mark
+at the start is dropped.
+
+@{h2}What may be read
+
+Only files inside the skill's folder. A path is refused when it is
+absolute, or when it leads out of the folder -- with @{tt}..@{utt} or
+through a link that points elsewhere; both sides are resolved first. A
+folder is not a file and answers "not found".
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | "success" or "error"
+skill | the skill's name
+path | the path asked for, or "SKILL.md"
+truncated | true when the text was longer than 100,000 characters
+content | the text, cut after 100,000 characters
+@{body}
+
+There is no way to read beyond the first 100,000 characters of a file:
+the tool has no offset. A longer reference has to be split in the skill
+itself.
+
+@{h2}Errors
+
+All errors are answers with @{tt}status@{utt} "error" and
+@{tt}error@{utt}:
+
+@{table}
+error | When, and what else comes with it
+'name' is required | no name, or only spaces; @{tt}available@{utt}
+Unknown skill '<name>' | as with the list: @{tt}did_you_mean@{utt}, @{tt}available@{utt}
+'<path>' must be relative to the skill directory | an absolute path; @{tt}did_you_mean@{utt}, @{tt}files@{utt}
+'<path>' escapes skill '<name>' | the path leads out of the folder; @{tt}did_you_mean@{utt}, @{tt}files@{utt}
+'<path>' not found in skill '<name>' | no such file; @{tt}did_you_mean@{utt}, @{tt}files@{utt}
+Cannot read '<path>': <reason> | the file is not UTF-8 text, or reading it failed; nothing else
+@{body}
+
+For the three path errors, " — did you mean '<file>'?" is added when a
+file of the skill is close enough -- @{tt}reference/@{utt} where the skill
+has @{tt}references/@{utt}, for instance. @{tt}files@{utt} is the skill's
+file list, as in @{" Listing skills " link list}.
+
+@{h2}An example
+
+@{code json}
+{"name": "tdd", "path": "mocking.md"}
+@{body}
+
+@{code json}
+{"status": "success", "skill": "tdd", "path": "mocking.md",
+ "truncated": false, "content": "# Mocking\n\n..."}
+@{body}
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+Tool and parameter descriptions come from the plugin's
+@{tt}schema.yaml@{utt}; together they are about 1,060 characters in every
+request of an agent that has the tools.
+
+An agent with @{tt}on_demand@{utt} skills also gets an entry in its
+system prompt, written by the core: "Available skills", a line per skill
+with its description, and the sentence that it can read them with
+@{tt}<instance>_read@{utt} and list their files with
+@{tt}<instance>_list@{utt} -- the names of the tools this agent has.
+An agent with @{tt}on_demand@{utt} skills but without these tools gets no
+entry at all; the log shows an error, once per agent, to allow them.
+
+@{h2}The status line
+
+@{table}
+Call | The chat shows
+list, all | "3 skill(s) available: a, b, c", or "no skills found (searched <roots>)"
+list, one | "tdd v0.0.0: 4 file(s) — SKILL.md, agents/openai.yaml, ..."
+read | "Reading tdd/mocking.md", then "tdd/mocking.md — 2345 chars", with " (truncated at 100000)" when cut
+error | the error text; path errors begin with the skill's name, "tdd: ..."
+@{body}
+
+@{h2}Size of an answer
+
+The list of all skills carries every file of every skill. With the 42
+skills of this repository that was 273 files and about 25,700 characters
+in one answer -- asking for one skill by name is far smaller. A read is
+at most 100,000 characters of content.
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results, appended to the history; nothing
+earlier is changed, so the prompt cache stays intact.
+
+@{h2}Skills are instructions
+
+What a skill says, the model is meant to follow. A skill copied in from
+elsewhere is trusted the moment its folder lies under a root: this plugin
+hands its text over unchanged. A skill's header may name
+@{tt}allowed-tools@{utt}; this system does not restrict the agent's tools
+by it (the core logs a warning).
+@endnode

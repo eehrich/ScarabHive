@@ -1,42 +1,15 @@
-# skills plugin
+# Skills
 
-Read access to **skill bundles** — packaged agent knowledge. See
-`docs/skills_design.md` for the concept and `skills/README.md` for how to author
-a skill.
+Lets an agent browse skill bundles -- folders with a `SKILL.md` and the reference files, scripts and templates next
+to it -- and read the instructions or one file when a task needs it. Read-only; it stores nothing. It sees every skill
+the core finds under `skills.skill_dirs`; what a skill is and how one gets into a prompt is the core's "Skills" node
+in the ScarabHive guide. It has no hooks and no panel.
 
-A skill is a bundle: `SKILL.md` is the index/instructions, and files next to it
-(`references/…`) carry depth that is loaded only when a task needs it. This
-plugin is what lets an agent browse and read that bundle.
+- **Tools** `skills_list` (all skills, or one by `name`, with their files) and `skills_read` (`name`, optional
+  `path`; without a path the instructions from `SKILL.md`).
 
-## Tools
+It is enabled in `config/plugins.yaml` (`skills: {type: skills, enabled: true}`); allow `+skills/*` in an agent's
+tool list. Agents with `on_demand` skills need it; agents that only use `always` skills do not.
 
-| Tool | Purpose |
-|---|---|
-| `skills_list()` | All available skills: name, version, description, bundled files |
-| `skills_list(name)` | One skill in detail |
-| `skills_read(name)` | The skill's `SKILL.md` |
-| `skills_read(name, path)` | A bundled file, e.g. `references/catalog.md` |
-
-## Enabling it
-
-```yaml
-agent_config:
-  tools:
-    allowed:
-      - "+skills/*"
-```
-
-Agents that only use `skills.always` (body merged into the system prompt) do
-**not** need this plugin — it is for reading bundled reference material on
-demand.
-
-## Notes
-
-* The registry lives in `agent_system.skills` (core), because the prompt
-  renderer needs it for `always` skills; this plugin is the tool surface over
-  it — the same split as `agent_system.hooks` vs. hook plugins.
-* Reads are confined to the skill directory: no `..`, no absolute paths,
-  symlinks resolved. Content is truncated at 100k characters so a single file
-  cannot flood the context (`truncated: true` is reported).
-* Discovery roots come from `skills.skill_dirs` in `config/config.yaml`
-  (fallback: `skills/`, or `$AGENT_SKILL_DIRS`).
+The full manual -- the answers and every error text, which paths may be read, the 100,000-character limit, when new
+skills show up, and what the model sees -- is the plugin's guide, `skills.guide`, in the Help panel.

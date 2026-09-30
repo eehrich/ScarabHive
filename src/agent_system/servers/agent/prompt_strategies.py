@@ -367,9 +367,25 @@ class PromptRenderer:
 
         if not lines:
             return ""
+        # The tools carry their instance's name: name the ones this agent has.
+        # The type is compared after inheritance (`kb2: {type: kb}`, `kb: {type: skills}`).
+        from agent_system.config.settings import get_tool_server_config
+
+        tools = set(context.available_tools)
+        servers = getattr(context.system_config.plugins, "servers", None) or {}
+        instance = next((name for name in servers if f"{name}_read" in tools
+                         and getattr(get_tool_server_config(name, context.system_config), "type", None) == "skills"),
+                        None)
+        if instance is None:
+            key = (context.agent_name, "")
+            if key not in _reported_missing_skills:
+                _reported_missing_skills.add(key)
+                logger.error("Agent %s has on_demand skills but no skills tool to read them "
+                             "(allow e.g. skills/*) — the index is left out.", context.agent_name)
+            return ""
         return (
             "## Available skills\n\n"
             "Reference material you can load when a task needs it. Read a skill with "
-            "the skills tools (`skills_read`); list its bundled files with `skills_list`.\n\n"
+            f"`{instance}_read`; list its bundled files with `{instance}_list`.\n\n"
             + "\n".join(lines)
         )

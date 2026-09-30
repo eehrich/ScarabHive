@@ -205,3 +205,26 @@ class TestNotFoundGuidance:
                               "_status": status})
         assert res["did_you_mean"] is None
         assert res["files"] == ["SKILL.md", "reference/deep.md"]
+
+
+class TestArgumentsThatAreNotText:
+    """The framework does not check arguments against the schema: a model
+    that sends a number must get an answer, not an AttributeError."""
+
+    async def test_list_with_a_number_as_name_answers(self, server, status):
+        srv, _ = server
+        res = await srv.list({"name": 5, "_status": status})
+        assert res["status"] == "error"
+        assert res["available"] == ["alpha"]
+
+    async def test_read_with_a_number_as_name_answers(self, server, status):
+        srv, _ = server
+        res = await srv.read({"name": 5, "_status": status})
+        assert res["status"] == "error"
+        assert res["available"] == ["alpha"]
+
+    async def test_read_with_a_number_as_path_answers(self, server, status):
+        srv, _ = server
+        res = await srv.read({"name": "alpha", "path": 5, "_status": status})
+        assert res["status"] == "error"
+        assert res["files"] == ["SKILL.md", "reference/deep.md"]

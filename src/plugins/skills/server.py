@@ -51,7 +51,7 @@ class SkillsServer(SchemaBasedToolServer):
         """List skills; with ``name`` restrict to one and show its files."""
         status = params["_status"]  # Status is mandatory from framework
         registry = self._registry()
-        wanted = (params.get("name") or "").strip()
+        wanted = str(params.get("name") or "").strip()
 
         if wanted:
             skill = registry.get(wanted)
@@ -107,7 +107,7 @@ class SkillsServer(SchemaBasedToolServer):
         """Read SKILL.md, or a bundled file when ``path`` is given."""
         status = params["_status"]  # Status is mandatory from framework
         registry = self._registry()
-        name = (params.get("name") or "").strip()
+        name = str(params.get("name") or "").strip()
         if not name:
             await status.error("'name' is required")
             return {"status": "error", "error": "'name' is required",
@@ -123,7 +123,7 @@ class SkillsServer(SchemaBasedToolServer):
             return {"status": "error", "error": msg,
                     "did_you_mean": hint, "available": names}
 
-        rel = (params.get("path") or "").strip()
+        rel = str(params.get("path") or "").strip()
         await status.progress(f"Reading {name}/{rel or DEFAULT_ENTRY}")
         try:
             target = skill.resolve(rel) if rel else skill.entry_path
