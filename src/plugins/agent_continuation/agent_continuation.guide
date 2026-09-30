@@ -1,0 +1,359 @@
+@database "agent_continuation"
+@author "Enrico Ehrich"
+@$VER: agent_continuation.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Agent Continuation"
+@{h1}Agent Continuation
+
+An agent that answers "I will now look at the config file" and stops has
+not done its work, but the run ends there all the same: a reply without a
+tool call is taken as the final answer. Agent Continuation reads every such
+reply of an agent that switched it on and decides whether it is a result
+or only a status report. For a status report it has the run add one more
+message -- "continue" -- and the agent goes on. The same hook can send a
+fixed list of follow-up questions after the agent's answer ("check your
+result once more"), and can send an answer back when the agent skipped a
+sub-agent it must start. It has no tools and no panel.
+
+@{code}
+For agents and developers
+  @{"  The continuation hook  " link hook}
+  @{"  Deciding: rules and judges  " link judges}
+  @{"  Follow-ups and required spawns  " link scripted}
+  @{"  What stops it  " link limits}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node hook "The continuation hook"
+@{h1}The continuation hook
+
+@{tt}evaluate_completion@{utt} runs after every LLM call of an agent that
+switched it on, before message_debugger's hooks. It is off by default.
+
+@{h2}When it does something
+
+@{bullet}A reply with tool calls, or with no text, is left alone -- the run
+goes on or handles it anyway. (Tool calls are still looked at for
+@{" required spawns " link scripted}.)
+@{bullet}A text reply is checked in this order: the
+@{" budget " link limits} (used up: the reply is final); the
+@{" required spawns " link scripted}; the configured
+@{" rules or judge " link judges}; when that says final, the next
+@{" follow-up " link scripted}, if one is due. Otherwise the reply is the
+final answer.
+
+The hook itself changes nothing. It returns @{tt}continue: true@{utt}
+with the message to send, and the agent loop does the rest: it appends
+that message to the history as a @{tt}user@{utt} message and makes the
+next LLM call. The loop does so only while a step is left -- on the
+agent's last step (@{tt}max_steps@{utt}) the signal is dropped and the
+reply stands as the answer.
+
+@{h2}What it appends
+
+For a status report, unless the agent sets its own
+@{tt}continue_message@{utt}, the text is:
+
+@{code text}
+Your previous response appears to be an intermediate status update, not a final result.  Continue executing the remaining steps of your task.  Do not repeat status information — proceed with the next action.
+@{body}
+
+A follow-up sends its configured text, a missing spawn its configured
+message (see @{" Follow-ups and required spawns " link scripted}). Each
+message carries an @{tt}injected_by@{utt} mark that says who wrote it:
+
+@{table}
+injected_by | The message
+agent_continuation | a status report was sent back to work
+agent_continuation.followup | a scripted follow-up
+agent_continuation.required_spawns | an answer that skipped a required sub-agent
+@{body}
+
+The marks are fixed strings, the same whatever the plugin instance is
+called. The mark is what tells the rest of the system that nobody typed
+the message: the plugin counts its own follow-ups by it, and the context
+summarizer keeps the turn open across it
+(see @{" The summarizing hook " link context_summarizer/hook}). The mark
+is never sent to the model.
+
+The chat shows a status line @{i}Auto-continue #2: keyword_continue
+match: 'next I'@{ui} -- the count and the reason.
+
+@{h2}Switching it on
+
+In the agent's YAML; its settings go in the same entry:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      agent_continuation.evaluate_completion:
+        enabled: true
+        strategy: rules
+        default: final
+        max_continuations: 5
+        rules:
+          - type: keyword_continue
+            keywords: ["I will now", "next I"]
+@{body}
+
+@{h2}Where the settings come from
+
+@{bullet}The agent's override, as above, without @{tt}enabled@{utt},
+@{tt}timeout@{utt} and @{tt}order@{utt}. When anything is left, that
+entry is the agent's configuration.
+@{bullet}Otherwise @{tt}agent_rules.<agent name>@{utt} in the plugin's
+server entry. The two are not merged: an override with one setting hides
+the agent's @{tt}agent_rules@{utt} entry completely.
+@{bullet}A key missing in both takes the plugin-wide value (see
+@{" Setting it up " link setup}).
+
+@{table}
+Key (per agent) | Default | Meaning
+strategy | rules | rules, llm, decision or hybrid; see @{" Deciding " link judges}
+default | final | rules: what an answer no rule matched is
+rules | none | the rule list; see @{" Deciding " link judges}
+continue_message | the text above | what a status report is answered with; empty takes the default
+max_continuations | 10 | continuations per request; see @{" What stops it " link limits}
+llm_prompt | the plugin's | the llm judge's prompt
+hybrid_fallback | llm | hybrid: the judge when no rule matched
+decision_profile, decision_question, decision_final_means, decision_continue_means, decision_threshold | the plugin's | the decision judge
+followups | none | follow-up messages; see @{" Follow-ups " link scripted}
+followups_on_continue | true | false: follow-ups on a session's first request only
+required_spawns | none | sub-agents the answer needs; see @{" Required spawns " link scripted}
+@{body}
+
+@{tt}llm_profile@{utt} (the llm judge's model) is plugin-wide only.
+@endnode
+
+@node judges "Deciding: rules and judges"
+@{h1}Deciding: rules and judges
+
+@{table}
+strategy | Decides by | Costs
+rules | the agent's rules | nothing
+llm | a chat model answering FINAL or CONTINUE | one call per text reply
+decision | a decision model's probability that the reply is final | one call per text reply
+hybrid | the rules; when none matched, hybrid_fallback (llm or decision) | a call only when no rule matched
+@{body}
+
+An unknown strategy logs a warning and makes every reply final.
+
+@{h2}Rules
+
+@{table}
+type | Settings | Fires when
+keyword_continue | keywords, regex | a keyword is in the reply
+keyword_final | keywords, regex | a keyword is in the reply
+min_length | min_chars (200) | the reply is shorter
+step_check | min_steps (3) | the reply comes in the request's first min_steps LLM calls
+@{body}
+
+Keywords match anywhere in the reply, ignoring case; with
+@{tt}regex: true@{utt} they are regular expressions (an invalid one is
+logged and skipped). The keywords of all rules are collected first; when a
+continue and a final keyword both match, continue wins. A
+@{tt}min_length@{utt} or @{tt}step_check@{utt} rule that fires means
+continue, whatever the keywords say. When nothing matched,
+@{tt}default@{utt} decides -- except under hybrid, where the judge does.
+
+@{h2}The llm judge
+
+The model of the plugin-wide @{tt}llm_profile@{utt} gets
+@{tt}llm_prompt@{utt} as its only message, with @{tt}{{ agent_name }}@{utt}
+and @{tt}{{ response }}@{utt} replaced (written exactly so, with the
+spaces) -- the reply cut at 3000 characters. An answer containing
+@{tt}CONTINUE@{utt} anywhere continues; anything else is final. The
+client is made on first use and kept until a restart.
+
+@{h2}The decision judge
+
+A decision model (@{tt}decision_profile@{utt}, empty: the system's
+default decision profile) is asked @{tt}decision_question@{utt} about
+the agent's name and the reply (cut at 3000 characters), with
+@{tt}decision_final_means@{utt} and @{tt}decision_continue_means@{utt}
+as the meaning of yes and no -- both, or neither when one is empty. It
+answers the probability that the reply is final; the run continues while
+that is below @{tt}decision_threshold@{utt} (0.5). A threshold outside
+0.0 to 1.0 -- 70 meant as a percent -- is refused with a warning: in an
+agent's entry the plugin-wide value is used, in the plugin's own entry 0.5. The probability is in the log and in the
+status line's reason: @{i}decision model: p(final)=0.03 < 0.5@{ui}.
+
+@{h2}When a judge fails
+
+No profile, no prompt or question, an error or a timeout: the reply is
+final. Stopping is the safe mistake; a judge that cannot answer must not
+keep a loop running.
+@endnode
+
+@node scripted "Follow-ups and required spawns"
+@{h1}Follow-ups and required spawns
+
+@{h2}Follow-ups
+
+Agents often find their own mistakes when asked to look again.
+@{tt}followups@{utt} is a list of messages sent one per final answer, in
+order:
+
+@{code yaml}
+agent_continuation.evaluate_completion:
+  enabled: true
+  followups:
+    - "Check your result against the source once more. Fix what is wrong."
+    - "Now give the complete final result again, in the required format."
+@{body}
+
+@{bullet}A follow-up comes only after an answer the strategy calls final;
+a status report gets the continue message first.
+@{bullet}The caller gets the last answer only. If the agent has an output
+format, the last follow-up must ask for the whole result again.
+@{bullet}The plugin keeps no list of what it sent: it counts the messages
+marked @{tt}agent_continuation.followup@{utt} since the message that
+opened the request (what a person or a caller wrote, or the wake of a
+woken run). A new request starts the list again. A single text written
+without the list dash counts as one follow-up.
+@{bullet}@{tt}followups_on_continue: false@{utt} sends them only on a
+session's first request: when an assistant answer comes before the
+request's opening message, the request continues an earlier one and gets
+none. Only true or false count; anything else logs a warning and keeps
+the follow-ups on.
+
+@{h2}Required spawns
+
+Some agents must hand their work to a sub-agent before they answer.
+@{tt}required_spawns@{utt} checks it before any strategy runs, and sends
+an answer back when a required sub-agent was never started:
+
+@{code yaml}
+agent_continuation.evaluate_completion:
+  enabled: true
+  max_continuations: 2
+  required_spawns:
+    agents: "reviewers if review_enabled else []"
+    tool: my_sam_manage_sub_agent
+    message: "The review is missing: {missing} was never started."
+@{body}
+
+@{table}
+Key | Meaning
+agents | a Jinja expression over the agent's @{tt}template_vars@{utt} (the session's on top) that gives a list of agent types, or one
+tool | the sub-agent manager tool the agent starts them with
+message | the text sent back; @{tt}{missing}@{utt} is replaced by the missing types. Without it: "Required sub-agents were never spawned: {missing}. Spawn them and finish the step they belong to."
+@{body}
+
+@{bullet}Started means a @{tt}create@{utt} through that tool (or a call
+with @{tt}agent_type@{utt} and no operation) whose result names an
+instance and did not end in @{tt}error@{utt} or @{tt}cancelled@{utt}.
+@{bullet}The hook remembers every create it sees, per session, until an
+answer of that session is final or its budget runs out. A create that pruning later took out of
+the history still counts.
+@{bullet}Missing @{tt}agents@{utt} or @{tt}tool@{utt}, an expression that
+fails, or one that gives no list: the check is off for that answer, with a
+warning. It can cost a continuation, never block an answer.
+@endnode
+
+@node limits "What stops it"
+@{h1}What stops it
+
+@{bullet}@{b}The budget@{ub}: @{tt}max_continuations@{utt} (10) messages
+per request, counting all three kinds together. At the limit the reply is
+final and no follow-up is sent. The agent's own value wins over the
+plugin's. A value that is not a whole number of at least 1 (0, a word,
+@{tt}true@{utt}, 2.5, @{tt}.inf@{utt}) is refused with a warning -- in the agent's entry the
+plugin's value is used, in the plugin's entry 10.
+@{bullet}@{b}The steps@{ub}: every continuation is one more LLM call of
+the agent's @{tt}max_steps@{utt}. On the last step the loop ignores the
+signal and ends with the reply. Follow-ups need steps left for them.
+@{bullet}@{b}A final answer@{ub} clears the count of the request, and so
+does reaching the budget. If the run goes on after that -- a person wrote
+into it -- the budget starts again.
+@{bullet}@{b}Failures@{ub}: a judge that fails, and a hook that runs past
+its 30 seconds, leave the reply final.
+
+The counts live in the server process, at most 10000 requests and as many
+sessions; a request that continues moves to the newest place, so the
+oldest -- mostly runs that ended without a final answer -- go first.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+After a reply the hook sends back, the model sees one more message from
+the user: the continue message, a follow-up or the spawn message, exactly
+as configured. Nothing marks it as not typed by a person -- the mark stays
+inside the system -- so write these texts as a person would say them.
+
+@{h2}Tokens and cache
+
+The message is appended at the end of the history; nothing earlier is
+rewritten, so the provider's prompt cache still covers everything before
+it. Each continuation costs one more call of the agent's model with the
+whole history. The llm and decision judges cost a call of their own
+model per text reply they judge (hybrid: only when no rule matched); they
+do not touch the agent's history or its cache. The messages stay in the
+session like any other.
+
+@{h2}Known gaps
+
+@{bullet}Follow-ups are counted from the history. When the context
+summarizer or pruning has removed the marked messages, a follow-up is sent
+again, and a continued request can look like a session's first one to
+@{tt}followups_on_continue@{utt}. The budget is the ceiling.
+@{bullet}The llm and decision judges read only the first 3000 characters
+of a reply; a status line at the end of a long one is not seen.
+@{bullet}The plugin cannot reload its settings: a change in its server
+entry takes effect after a restart, and so do the judges' clients.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration (@{tt}config/plugins.yaml@{utt});
+the hook still runs only for agents that switch it on:
+
+@{code yaml}
+plugins:
+  servers:
+    agent_continuation:
+      type: agent_continuation
+      enabled: true
+      config:
+        max_continuations: 10
+        strategy: "rules"
+        llm_profile: "turbo"
+        default_continue_message: >
+          Your previous response appears to be an intermediate status update,
+          not a final result.  Continue executing the remaining steps of your
+          task.  Do not repeat status information — proceed with the next
+          action.
+@{body}
+
+No tool, so no allowlist line. No extra packages.
+
+@{h2}Server settings
+
+These go under @{tt}config:@{utt}; what is not set there takes the default
+below. They apply to every agent that has not set the key itself.
+
+@{table}
+Key | Default | Meaning
+max_continuations | 10 | continuations per request
+default_continue_message | the text in @{" The continuation hook " link hook} | what a status report is answered with
+strategy | rules | rules, llm, decision or hybrid
+llm_profile | turbo | the llm judge's model
+llm_prompt | see schema.yaml | the llm judge's prompt
+hybrid_fallback | llm | hybrid's judge when no rule matched
+decision_profile | empty: the default decision profile | the decision judge's model
+decision_question | Is this the agent's FINAL answer to its task? | what the decision judge is asked
+decision_final_means | A finished result: ... | what yes means
+decision_continue_means | An intermediate status report, ... | what no means
+decision_threshold | 0.5 | continue while p(final) is below it
+agent_rules | none | per agent name, the same keys an agent's override takes
+@{body}
+
+The plugin stores nothing on disk.
+@endnode

@@ -24,7 +24,6 @@ config:
     type: integer
     default: 10
     minimum: 1
-    maximum: 50
     description: "Maximum number of times the loop may be continued per request"
 
   # Default user message injected to keep the agent going
