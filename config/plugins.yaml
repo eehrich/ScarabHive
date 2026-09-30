@@ -1045,7 +1045,7 @@ plugins:
           api_url: http://192.0.2.27:8929/api/v4
           token_env: FORGE_GITLAB_TOKEN
           webhook_secret_env: FORGE_GITLAB_WEBHOOK_SECRET
-      # GitLab's project webhook starts and wakes the coder (forge README, "Webhook").
+      # GitLab's project webhook starts and wakes the coder (forge.guide, node "webhook").
       webhook:
         user: admin                     # whose session list the webhook's sessions join
         llm: or-deepseek-flash          # cheap while this is the test instance

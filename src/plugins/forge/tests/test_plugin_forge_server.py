@@ -142,6 +142,22 @@ def test_a_repo_without_its_token_is_left_out(tmp_path, monkeypatch):
     assert tool_names(server) == set()
 
 
+@pytest.mark.parametrize("api_url, warned", [("http://192.168.1.5:8929/api/v4", True),
+                                             ("https://gl.test/api/v4", False),
+                                             ("http://localhost:8929/api/v4", False)])
+def test_a_plain_http_host_is_warned_about_once(tmp_path, monkeypatch, caplog, api_url, warned):
+    monkeypatch.setenv("FORGE_TEST_TOKEN", "tok")
+    cfg = ToolServerConfig()
+    cfg.hosts = {"gl": {"provider": "gitlab", "api_url": api_url, "token_env": "FORGE_TEST_TOKEN"}}
+    cfg.repos = {name: {"host": "gl", "project": f"team/{name}", "path": str(tmp_path / name)}
+                 for name in ("app", "docs")}
+    with caplog.at_level("WARNING", logger=server_module.__name__):
+        ForgeServer("forge", AgentSystemConfig(), cfg)
+    lines = [r.getMessage() for r in caplog.records if "unencrypted" in r.getMessage()]
+    assert lines == (["forge forge: host gl is plain HTTP (%s): its token travels unencrypted, to the API and "
+                      "to git" % api_url] if warned else [])
+
+
 def test_pr_merge_is_offered_only_where_a_repo_allows_it(tmp_path, monkeypatch):
     assert "forge_pr_merge" in tool_names(make_server(tmp_path, monkeypatch, allow_merge=True))
     names = tool_names(make_server(tmp_path, monkeypatch, allow_merge="yes"))     # only a real true counts

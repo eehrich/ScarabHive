@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlsplit
 
 from agent_system.paths import PROJECT_ROOT, data_path, resolve_data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -57,6 +58,7 @@ _GITLAB_SECTION = re.compile(r"section_(?:start|end):\d+:[A-Za-z0-9_.-]+(?:\[[^\
 _RUNNER_PREFIX = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z [0-9a-f]{2}[OE](?:(\+)| )?(.*)", re.S)
 _ACTIONS_PREFIX = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")
 _WAITING = ("pending", "running")
+_LOOPBACK = ("localhost", "127.0.0.1", "::1")
 
 
 class _NoStatus:
@@ -203,6 +205,10 @@ class ForgeServer(SchemaBasedToolServer):
                 logger.warning("forge %s: repo %s is left out: %s", self.name, repo_name, problem)
         if repos and not self.repos:
             logger.warning("forge %s: no usable repository -- no tools are offered", self.name)
+        for host, api_url in sorted({(r.host, r.api_url) for r in self.repos.values()}):
+            if urlsplit(api_url).scheme == "http" and urlsplit(api_url).hostname not in _LOOPBACK:
+                logger.warning("forge %s: host %s is plain HTTP (%s): its token travels unencrypted, to the "
+                               "API and to git", self.name, host, api_url)
 
     def _repo_problem(self, repo_name: str, spec: Any, hosts: dict) -> Optional[str]:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}", repo_name):

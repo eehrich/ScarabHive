@@ -213,7 +213,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_pr_merge"
-      description: "Merge a merge/pull request -- only where the repository allows it. Refuses unless it is open, not a draft, has no open thread, the platform finds it mergeable and CI is green on the head commit; that head is what gets merged, so a push in between makes the platform refuse. Pass sha = the head you reviewed."
+      description: "Merge a merge/pull request -- only where the repository allows it. Refuses unless it is open, not a draft, no open thread, the platform finds it mergeable and required CI is green on the head; that head is what gets merged, so a push in between makes the platform refuse. Pass sha = the head you reviewed."
       parameters:
         type: object
         properties:
