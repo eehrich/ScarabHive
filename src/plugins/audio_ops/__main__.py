@@ -23,8 +23,16 @@ from pathlib import Path
 
 from agent_system.paths import data_path, resolve_data_path
 
+from .server import export_audio
+
 # Global workdir override (set by CLI --workdir)
 _workdir_override: Path | None = None
+
+
+def _run(cmd: list[str]):
+    """ffmpeg for export_audio; the CLI sets no timeout."""
+    import subprocess
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def get_config() -> dict:
@@ -213,7 +221,7 @@ async def cmd_cut(args: argparse.Namespace) -> int:
             result = before + after
             operation = f"Removed {args.start}s-{args.end}s"
         
-        result.export(str(dest_path), format=dest_ext[1:])
+        export_audio(result, dest_path, dest_ext[1:], _run)
         
         result_duration = len(result) / 1000.0
         print(f"Created: {dest_path.name}")
@@ -292,7 +300,7 @@ async def cmd_merge(args: argparse.Namespace) -> int:
             for segment in segments:
                 result += segment
         
-        result.export(str(dest_path), format=dest_ext[1:])
+        export_audio(result, dest_path, dest_ext[1:], _run)
         
         result_duration = len(result) / 1000.0
         print(f"\nCreated: {dest_path.name}")
@@ -511,7 +519,7 @@ async def cmd_mix(args: argparse.Namespace) -> int:
             result = adjusted1.overlay(adjusted2)
         
         dest_format = dest_path.suffix[1:].lower()
-        result.export(str(dest_path), format=dest_format)
+        export_audio(result, dest_path, dest_format, _run)
         
         result_duration = len(result) / 1000.0
         print(f"\nCreated: {dest_path.name}")
@@ -584,7 +592,7 @@ async def cmd_volume(args: argparse.Namespace) -> int:
                 print("Already at or above 0 dB, no normalization needed")
         
         dest_format = dest_path.suffix[1:].lower()
-        result.export(str(dest_path), format=dest_format)
+        export_audio(result, dest_path, dest_format, _run)
         
         final_peak = result.max_dBFS
         duration = len(result) / 1000.0
@@ -649,7 +657,7 @@ async def cmd_create(args: argparse.Namespace) -> int:
             silent = silent.set_channels(2)
         
         dest_format = ext[1:]
-        silent.export(str(dest_path), format=dest_format)
+        export_audio(silent, dest_path, dest_format, _run)
         
         print(f"\nCreated: {dest_path.name}")
         print(f"   Duration: {duration_ms}ms ({duration_ms/1000:.2f}s)")
@@ -694,6 +702,9 @@ async def cmd_detect_silence(args: argparse.Namespace) -> int:
     ]
     
     result = subprocess.run(detect_cmd, capture_output=True, text=True)
+    if result.returncode != 0:  # else an unreadable file reads as "no silences"
+        print(f"Error: ffmpeg silencedetect failed: {result.stderr[-500:]}", file=sys.stderr)
+        return 1
     
     silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
     silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
@@ -781,6 +792,9 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     ]
     
     result = subprocess.run(detect_cmd, capture_output=True, text=True)
+    if result.returncode != 0:  # else an unreadable file reads as "no silences"
+        print(f"Error: ffmpeg silencedetect failed: {result.stderr[-500:]}", file=sys.stderr)
+        return 1
     
     silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
     silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
@@ -882,7 +896,7 @@ async def cmd_compress_silence(args: argparse.Namespace) -> int:
     ext = dest_path.suffix.lower()
     if ext == '.flac':
         ffmpeg_cmd.extend(["-c:a", "flac"])
-    else:
+    elif ext == '.mp3':  # .wav: ffmpeg writes PCM
         ffmpeg_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
     
     ffmpeg_cmd.append(str(dest_path))

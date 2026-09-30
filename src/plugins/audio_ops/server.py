@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import contextvars
 import logging
+import math
+import os
+import subprocess
+import time
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent_system.paths import data_path
 from agent_system.tools.schema_based import SchemaBasedToolServer
+from agent_system.utils.multimodal_tool_content import DEFAULT_MAX_AUDIO_SIZE_MB
+from agent_system.utils.path_sandbox import remote_outside
 
 if TYPE_CHECKING:
     import numpy as np
@@ -19,6 +26,114 @@ logger = logging.getLogger(__name__)
 
 # Supported audio formats
 SUPPORTED_FORMATS = {".flac", ".mp3", ".wav"}
+# Temp files export_audio writes next to a destination; list skips them.
+TEMP_PREFIX = ".audio_ops_"
+
+
+# Server settings: an invalid value (missing, not a positive number) means the default.
+DEFAULTS = {"max_duration_seconds": 3600, "max_input_mb": 200, "ffmpeg_timeout_seconds": 300}
+
+
+def _setting(server_config: Any, key: str) -> float:
+    value = getattr(server_config, key, None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        return DEFAULTS[key]
+    return value
+
+
+# pydub starts ffmpeg itself (decoding MP3/FLAC, encoding) and waits without a
+# limit. Its Popen is swapped for one whose communicate() takes the timeout of
+# the calling context: only this plugin's worker threads set one, so every
+# other pydub user in the process keeps pydub's own behaviour.
+_PYDUB_TIMEOUT: contextvars.ContextVar[float | None] = contextvars.ContextVar("audio_ops_pydub_timeout", default=None)
+
+
+def _timed_popen(*args: Any, **kwargs: Any) -> Any:
+    # subprocess.Popen is looked up per call and wrapped, not subclassed:
+    # whoever replaced it (a test harness) still gets the timeout applied.
+    process = subprocess.Popen(*args, **kwargs)
+    limit = _PYDUB_TIMEOUT.get()
+    if limit is not None:
+        communicate = process.communicate
+
+        def bounded(input: Any = None, timeout: float | None = None) -> Any:
+            try:
+                return communicate(input, timeout if timeout is not None else limit)
+            except subprocess.TimeoutExpired:
+                process.kill()  # ffmpeg starts no child processes (measured)
+                communicate()
+                raise
+
+        process.communicate = bounded
+    return process
+
+
+class _PydubSubprocess:
+    """Stands in for the subprocess module inside pydub.audio_segment."""
+    Popen = staticmethod(_timed_popen)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(subprocess, name)
+
+
+def _bound_pydub() -> None:
+    import pydub.audio_segment
+    import pydub.utils
+    pydub.audio_segment.subprocess = _PydubSubprocess()  # type: ignore[assignment]
+    pydub.utils.Popen = _timed_popen  # type: ignore[assignment]
+
+
+def _codec_args(fmt: str, mp3_bitrate: int = 192) -> builtins.list[str]:
+    """ffmpeg output arguments per destination format."""
+    return {
+        "flac": ["-c:a", "flac"],
+        "mp3": ["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"],
+        "wav": [],  # ffmpeg writes PCM for .wav
+    }[fmt]
+
+
+def _replace(source: Path, dest: Path) -> None:
+    """os.replace, retried briefly on Windows, where a destination another
+    process holds open for a moment (a reader, a virus scanner) refuses."""
+    for attempt in range(5):
+        try:
+            os.replace(source, dest)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 4:
+                raise
+            time.sleep(0.1)
+
+
+def export_audio(audio: Any, dest_path: Path, fmt: str, run: Any) -> None:
+    """Write ``audio`` to dest_path; ``run(cmd)`` runs ffmpeg (CompletedProcess).
+
+    pydub's own MP3/FLAC export truncates the destination first and leaves
+    its temp files behind when ffmpeg is stopped -- with dest == source that
+    destroyed the source. So pydub only writes WAV (no ffmpeg) to a temp file
+    next to dest, ffmpeg encodes into a second one, and dest is replaced only
+    by a finished file. Used by the server and by the audio-ops CLI.
+    """
+    import tempfile
+    fmt = fmt.lower()
+    made = []
+    try:
+        for suffix in (".wav", f".{fmt}"):
+            fd, name = tempfile.mkstemp(prefix=TEMP_PREFIX, suffix=suffix, dir=dest_path.parent)
+            os.close(fd)
+            made.append(Path(name))
+        tmp_wav, tmp_dest = made
+        audio.export(str(tmp_wav), format="wav").close()  # pydub returns the open file
+        if fmt == "wav":
+            tmp_dest = tmp_wav
+        else:
+            encoded = run(["ffmpeg", "-y", "-i", str(tmp_wav), *_codec_args(fmt), str(tmp_dest)])
+            if encoded.returncode != 0:
+                raise AudioOpsError(f"ffmpeg failed: {encoded.stderr[-500:]}", error_type="ProcessingError")
+        _replace(tmp_dest, dest_path)
+    finally:
+        for name in made:
+            name.unlink(missing_ok=True)
 
 
 class AudioOpsError(Exception):
@@ -77,6 +192,9 @@ class AudioOpsServer(SchemaBasedToolServer):
         # Don't create directory on init - only when needed for write operations
         # Legacy: self.storage_path for backward compatibility (uses base path)
         self.storage_path = self._storage_path_base
+        self.max_duration_seconds = _setting(server_config, "max_duration_seconds")
+        self.max_input_mb = _setting(server_config, "max_input_mb")
+        self.ffmpeg_timeout_seconds = _setting(server_config, "ffmpeg_timeout_seconds")
         
         logger.info(f"AudioOpsServer initialized: storage_path={self.storage_path}")
     
@@ -184,14 +302,24 @@ class AudioOpsServer(SchemaBasedToolServer):
                 filename = str(Path(*filename_parts[overlap_len:]))
         
         # Prevent path traversal
-        if ".." in filename:
+        if ".." in Path(filename).parts:
             raise AudioOpsError(
                 f"Invalid filename: {filename}. Path traversal not allowed.",
                 error_type="SecurityError",
                 details={"file": filename, "reason": "path_traversal_attempt"}
             )
         
-        resolved = (effective_storage / filename).resolve()
+        candidate = effective_storage / filename
+        # A host or device path (\\host\share) is refused on its text alone:
+        # resolve() opens it, and Windows signs in to that host with the user's
+        # NTLM credentials before containment could refuse it.
+        if remote_outside(str(candidate), Path.cwd(), (Path(os.path.abspath(effective_storage)),)):
+            raise AudioOpsError(
+                f"File must be within storage directory: {filename}",
+                error_type="SecurityError",
+                details={"file": filename, "storage_path": str(effective_storage)}
+            )
+        resolved = candidate.resolve()
         
         # Ensure still within storage path
         try:
@@ -230,6 +358,60 @@ class AudioOpsServer(SchemaBasedToolServer):
             )
         return ext[1:]  # Remove leading dot
     
+    def _check_length(self, seconds: float) -> None:
+        """Refuse a result longer than max_duration_seconds, before it is built."""
+        if seconds > self.max_duration_seconds:
+            raise AudioOpsError(
+                f"Result would be {seconds:.0f} s long (limit {self.max_duration_seconds:g} s)",
+                error_type="TooLong",
+                details={"seconds": round(seconds, 2), "limit": self.max_duration_seconds}
+            )
+
+    def _check_input_size(self, filepath: Path) -> None:
+        """Refuse an input above max_input_mb, before it is decoded."""
+        try:
+            size_mb = filepath.stat().st_size / (1024 * 1024)
+        except FileNotFoundError:
+            raise AudioOpsError(
+                f"Audio file not found: {filepath.name}",
+                error_type="FileNotFoundError",
+                details={"file": filepath.name}
+            )
+        if size_mb > self.max_input_mb:
+            raise AudioOpsError(
+                f"Input file is too large: {size_mb:.1f} MB (limit {self.max_input_mb:g} MB): {filepath.name}",
+                error_type="FileTooLarge",
+                details={"file": filepath.name, "size_mb": round(size_mb, 1)}
+            )
+
+    def _timeout_error(self, what: str) -> AudioOpsError:
+        return AudioOpsError(
+            f"{what} timed out after {self.ffmpeg_timeout_seconds:g} s",
+            error_type="Timeout",
+            details={"timeout_seconds": self.ffmpeg_timeout_seconds}
+        )
+
+    def _pydub(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a pydub call (worker thread) with ffmpeg bounded by the timeout."""
+        token = _PYDUB_TIMEOUT.set(self.ffmpeg_timeout_seconds)
+        try:
+            return func(*args, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise self._timeout_error("ffmpeg")
+        finally:
+            _PYDUB_TIMEOUT.reset(token)
+
+    def _run(self, cmd: builtins.list[str]) -> subprocess.CompletedProcess:
+        """ffmpeg/ffprobe (worker thread); subprocess.run kills it on timeout."""
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=self.ffmpeg_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            raise self._timeout_error(cmd[0])
+
+    def _export(self, audio: Any, dest_path: Path, fmt: str) -> None:
+        """Write ``audio`` to dest_path (worker thread), ffmpeg under the timeout."""
+        export_audio(audio, dest_path, fmt, self._run)
+
     async def _load_audio(self, filepath: Path):
         """Load audio file using pydub.
 
@@ -254,11 +436,18 @@ class AudioOpsServer(SchemaBasedToolServer):
                 error_type="DependencyError",
                 details={"missing": "pydub"}
             )
+        _bound_pydub()
 
         fmt = self._validate_format(filepath)
+        self._check_input_size(filepath)
 
         try:
-            return await asyncio.to_thread(AudioSegment.from_file, str(filepath), format=fmt)
+            # Decoding stops after the limit: a small file of long silence
+            # must not expand to gigabytes of PCM before any check could run.
+            audio = await asyncio.to_thread(self._pydub, AudioSegment.from_file, str(filepath), format=fmt,
+                                            duration=self.max_duration_seconds + 1)
+        except AudioOpsError:
+            raise
         except FileNotFoundError:
             raise AudioOpsError(
                 f"Audio file not found: {filepath.name}",
@@ -271,6 +460,13 @@ class AudioOpsServer(SchemaBasedToolServer):
                 error_type="AudioLoadError",
                 details={"file": filepath.name, "error": str(e)}
             )
+        if len(audio) > self.max_duration_seconds * 1000:
+            raise AudioOpsError(
+                f"Input is longer than {self.max_duration_seconds:g} s (limit): {filepath.name}",
+                error_type="TooLong",
+                details={"file": filepath.name, "limit": self.max_duration_seconds}
+            )
+        return audio
     
     async def cut(self, params: dict[str, Any]) -> dict[str, Any]:
         """Cut audio: extract or remove a segment.
@@ -388,7 +584,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 operation_desc = f"Removed {start_time}s-{end_time}s"
             
             # Export
-            await asyncio.to_thread(result_audio.export, str(dest_path), format=dest_format)
+            await asyncio.to_thread(self._export, result_audio, dest_path, dest_format)
             
             result_duration = len(result_audio) / 1000.0
             
@@ -484,6 +680,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             # Load all audio files
             segments = []
             total_source_duration = 0.0
+            expected_ms = 0  # the result's length, crossfades as applied below
             for i, filename in enumerate(source_files):
                 source_path = self._validate_path(filename, session_id)
                 if not source_path.exists():
@@ -493,6 +690,8 @@ class AudioOpsServer(SchemaBasedToolServer):
                         details={"file": filename, "index": i}
                     )
                 audio = await self._load_audio(source_path)
+                expected_ms += len(audio) - min(crossfade_ms, expected_ms, len(audio))
+                self._check_length(expected_ms / 1000.0)
                 segments.append(audio)
                 total_source_duration += len(audio) / 1000.0
                 
@@ -520,7 +719,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                     result += segment
             
             # Export
-            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
+            await asyncio.to_thread(self._export, result, dest_path, dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -649,7 +848,8 @@ class AudioOpsServer(SchemaBasedToolServer):
         
         try:
             from pydub import AudioSegment
-            
+            _bound_pydub()
+
             dest_file = params.get("dest_file")
             duration_ms = params.get("duration_ms")
             sample_rate = params.get("sample_rate", 44100)
@@ -677,6 +877,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                     error_type="ValidationError",
                     details={"duration_ms": duration_ms}
                 )
+            self._check_length(duration_ms / 1000.0)
             
             # Validate sample_rate
             try:
@@ -733,7 +934,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 silent_audio = silent_audio.set_channels(2)
             
             # Export
-            await asyncio.to_thread(silent_audio.export, str(dest_path), format=dest_format)
+            await asyncio.to_thread(self._export, silent_audio, dest_path, dest_format)
             
             duration_sec = duration_ms / 1000.0
             
@@ -804,7 +1005,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             if pattern:
                 # Reject path-traversal in the user-supplied glob (Path.glob
                 # honours '..' segments and can escape the storage root).
-                if ".." in pattern:
+                if ".." in Path(pattern).parts:
                     raise AudioOpsError(
                         f"Invalid pattern: {pattern}. Path traversal not allowed.",
                         error_type="SecurityError",
@@ -819,6 +1020,8 @@ class AudioOpsServer(SchemaBasedToolServer):
                     matching_files.extend(effective_storage.glob(f"*{ext}"))
             
             for filepath in sorted(matching_files):
+                if filepath.name.startswith(TEMP_PREFIX):
+                    continue
                 if filepath.is_file() and filepath.suffix.lower() in SUPPORTED_FORMATS:
                     try:
                         audio = await self._load_audio(filepath)
@@ -830,9 +1033,13 @@ class AudioOpsServer(SchemaBasedToolServer):
                         })
                     except Exception as e:
                         # Include file but note it couldn't be read
+                        try:
+                            size_bytes = filepath.stat().st_size
+                        except OSError:
+                            continue  # gone meanwhile
                         files.append({
                             "name": filepath.name,
-                            "size_bytes": filepath.stat().st_size,
+                            "size_bytes": size_bytes,
                             "error": f"Cannot read: {str(e)}"
                         })
             
@@ -968,7 +1175,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 )
                 tmp.close()
                 segment_path = Path(tmp.name)
-                await asyncio.to_thread(segment.export, str(segment_path), format="wav")
+                (await asyncio.to_thread(self._pydub, segment.export, str(segment_path), format="wav")).close()  # pydub returns the open file
                 output_path = segment_path
                 
                 segment_info = {
@@ -977,6 +1184,20 @@ class AudioOpsServer(SchemaBasedToolServer):
                     "segment_duration_seconds": round(segment_duration, 2)
                 }
             
+            # The attachment is encoded per request by multimodal_tool_content,
+            # which silently drops audio above its limit: refuse it here instead
+            # of answering success for a file the model never hears.
+            size_mb = output_path.stat().st_size / (1024 * 1024)
+            if size_mb > DEFAULT_MAX_AUDIO_SIZE_MB:
+                if segment_info:
+                    output_path.unlink(missing_ok=True)
+                raise AudioOpsError(
+                    f"Audio is too large for the context: {size_mb:.1f} MB "
+                    f"(limit {DEFAULT_MAX_AUDIO_SIZE_MB:g} MB). Load a shorter segment.",
+                    error_type="FileTooLarge",
+                    details={"file": filename, "size_mb": round(size_mb, 1)}
+                )
+
             # Build multimodal content for LLM
             mime_type = self._get_mime_type(output_path)
             
@@ -1184,7 +1405,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 mixed_result = self._mix_with_factor(audio1, audio2, validated_factor)
             
             # Export
-            await asyncio.to_thread(mixed_result.export, str(dest_path), format=dest_format)
+            await asyncio.to_thread(self._export, mixed_result, dest_path, dest_format)
             
             result_duration = len(mixed_result) / 1000.0
             
@@ -1405,6 +1626,10 @@ class AudioOpsServer(SchemaBasedToolServer):
         """
         import numpy as np
 
+        # Same rate, channels and width for both, as overlay() does: the raw
+        # sample arrays are mixed index by index below.
+        audio1, audio2 = audio1._sync(audio1, audio2)
+
         # Both segments are pre-padded to the same length by the caller.
         # Take format metadata from audio1 (audio2 is overlaid onto it).
         sample_rate = audio1.frame_rate
@@ -1570,7 +1795,7 @@ class AudioOpsServer(SchemaBasedToolServer):
             
             # Load audio
             audio = await self._load_audio(source_path)
-            
+
             if use_envelope and validated_envelope is not None:
                 if status:
                     await status.progress(f"Applying {len(validated_envelope)}-point volume envelope")
@@ -1595,7 +1820,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                     result = result - peak_amplitude  # Boost to 0 dB peak
             
             # Export
-            await asyncio.to_thread(result.export, str(dest_path), format=dest_format)
+            await asyncio.to_thread(self._export, result, dest_path, dest_format)
             
             result_duration = len(result) / 1000.0
             
@@ -1838,7 +2063,6 @@ class AudioOpsServer(SchemaBasedToolServer):
         Returns:
             Dict with status and list of silence segments
         """
-        import subprocess
         import re
         import json
         
@@ -1876,6 +2100,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                     f"Source file not found: {source_file}",
                     error_type="FileNotFoundError"
                 )
+            self._check_input_size(source_path)
 
             # Run ffmpeg silencedetect
             detect_cmd = [
@@ -1884,7 +2109,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 "-f", "null", "-"
             ]
             
-            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(self._run, detect_cmd)
 
             # Check ffmpeg succeeded - otherwise an empty match list would
             # incorrectly report "no silences" for a broken/unreadable file.
@@ -1913,7 +2138,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(self._run, probe_cmd)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -1971,7 +2196,6 @@ class AudioOpsServer(SchemaBasedToolServer):
         Returns:
             Dict with status and compression statistics
         """
-        import subprocess
         import re
         import json
         
@@ -2017,6 +2241,10 @@ class AudioOpsServer(SchemaBasedToolServer):
                     f"Source file not found: {source_file}",
                     error_type="FileNotFoundError"
                 )
+            self._check_input_size(source_path)
+
+            dest_format = self._validate_format(dest_path)
+            codec_args = _codec_args(dest_format, mp3_bitrate)
             
             # Step 1: Detect silences with low threshold to find ALL silences
             min_detect_duration = 0.3
@@ -2026,7 +2254,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 "-f", "null", "-"
             ]
             
-            result = await asyncio.to_thread(subprocess.run, detect_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(self._run, detect_cmd)
 
             # Check ffmpeg succeeded - otherwise an empty match list would
             # incorrectly report "no silences" for a broken/unreadable file.
@@ -2045,10 +2273,12 @@ class AudioOpsServer(SchemaBasedToolServer):
                 # No silences found, just copy file
                 if status:
                     await status.progress("No silences detected, copying file...")
-                await asyncio.to_thread(subprocess.run, [
+                copied = await asyncio.to_thread(self._run, [
                     "ffmpeg", "-y", "-i", str(source_path),
-                    "-c", "copy", str(dest_path)
-                ], capture_output=True, check=True)
+                    *codec_args, str(dest_path)
+                ])
+                if copied.returncode != 0:
+                    raise AudioOpsError(f"ffmpeg failed: {copied.stderr[-500:]}", error_type="ProcessingError")
 
                 if status:
                     await status.end(
@@ -2074,7 +2304,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                         "ffprobe", "-v", "quiet", "-print_format", "json",
                         "-show_format", str(source_path)
                     ]
-                    probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
+                    probe_result = await asyncio.to_thread(self._run, probe_cmd)
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         end_sec = float(probe_data.get("format", {}).get("duration", start_sec))
@@ -2089,10 +2319,12 @@ class AudioOpsServer(SchemaBasedToolServer):
                 # No silences exceed threshold, copy file
                 if status:
                     await status.progress("No silences exceed max duration, copying file...")
-                await asyncio.to_thread(subprocess.run, [
+                copied = await asyncio.to_thread(self._run, [
                     "ffmpeg", "-y", "-i", str(source_path),
-                    "-c", "copy", str(dest_path)
-                ], capture_output=True, check=True)
+                    *codec_args, str(dest_path)
+                ])
+                if copied.returncode != 0:
+                    raise AudioOpsError(f"ffmpeg failed: {copied.stderr[-500:]}", error_type="ProcessingError")
 
                 if status:
                     await status.end(
@@ -2117,7 +2349,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(source_path)
             ]
-            probe_result = await asyncio.to_thread(subprocess.run, probe_cmd, capture_output=True, text=True)
+            probe_result = await asyncio.to_thread(self._run, probe_cmd)
             total_duration = 0.0
             if probe_result.returncode == 0:
                 probe_data = json.loads(probe_result.stdout)
@@ -2151,6 +2383,7 @@ class AudioOpsServer(SchemaBasedToolServer):
                     "No valid segments to extract",
                     error_type="ProcessingError"
                 )
+            self._check_length(sum(end - start for start, end in segments if end > start))
             
             # Concat all segments
             segment_labels = "".join(f"[s{i}]" for i in range(len(filter_parts)))
@@ -2163,15 +2396,10 @@ class AudioOpsServer(SchemaBasedToolServer):
                 "-map", "[out]",
             ]
             
-            # Add codec settings
-            if dest_path.suffix.lower() == '.flac':
-                ffmpeg_cmd.extend(["-c:a", "flac"])
-            else:
-                ffmpeg_cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{mp3_bitrate}k"])
-            
+            ffmpeg_cmd.extend(codec_args)
             ffmpeg_cmd.append(str(dest_path))
             
-            result = await asyncio.to_thread(subprocess.run, ffmpeg_cmd, capture_output=True, text=True)
+            result = await asyncio.to_thread(self._run, ffmpeg_cmd)
             
             if result.returncode != 0:
                 raise AudioOpsError(
@@ -2180,10 +2408,10 @@ class AudioOpsServer(SchemaBasedToolServer):
                 )
             
             # Get new duration
-            probe_result = await asyncio.to_thread(subprocess.run, [
+            probe_result = await asyncio.to_thread(self._run, [
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", str(dest_path)
-            ], capture_output=True, text=True)
+            ])
             
             new_duration = 0.0
             if probe_result.returncode == 0:
