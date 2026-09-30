@@ -124,6 +124,14 @@ the platform still checks mergeability or names a blocker. After the
 merge it deletes only a source branch under the prefix. See
 @{" pr_merge " link merge}.
 
+@{h2}Act for anybody
+
+Every tool acts with the bot's token -- the ones that only read as well:
+they show what the bot may see, private repositories included. Only the
+users in @{tt}allowed_users@{utt}, compared by user id, may call them;
+empty or unset means nobody. Everybody else gets an error before the
+repository is even looked up (@{" Setting it up " link setup}).
+
 @{h2}Take orders from the platform
 
 Titles, descriptions, comments, diffs and job logs come back as
@@ -203,7 +211,8 @@ session is rung through session presence: an idle one is continued by a
 new @{tt}agent-cli@{utt} process, a busy one reads it at its next step
 (@{" The hooks " link hook}).
 
-A new session belongs to @{tt}webhook.user@{utt}, runs
+A new session belongs to @{tt}webhook.user@{utt} -- who must be in
+@{tt}allowed_users@{utt}, or every forge call of the session is refused -- runs
 @{tt}webhook.agent@{utt} (default @{tt}coder@{utt}) with
 @{tt}webhook.llm@{utt} or that agent's default profile, and is titled
 @{tt}forge: <repo> <#12 or !14>@{utt}.
@@ -702,6 +711,8 @@ Every answer is @{tt}{"status": "success", ...}@{utt} or
 verbatim:
 
 @{code}
+forge acts with the operator's bot token and user 'bob' may not use it -- ask
+  the operator to add the user id to forge allowed_users
 repo must be one of: app, docs
 forge pushes only to branches under 'scarabhive/': pass remote_branch=scarabhive/main or similar
 never to the default branch: open a merge/pull request instead
@@ -779,6 +790,7 @@ plugins:
   servers:
     forge:
       type: forge
+      allowed_users: [admin, cli_user]
       hosts:
         git.example.com:
           provider: gitlab
@@ -831,6 +843,7 @@ path | data/workspace/forge/<name> | the local clone, relative to the project
 
 @{table}
 Key | Default | Meaning
+allowed_users | none | user ids that may call any forge tool; empty: nobody. @{tt}cli_user@{utt} is the @{tt}agent-cli@{utt}'s user; @{tt}webhook.user@{utt} must be listed too (a warning in the log at start otherwise)
 branch_prefix | scarabhive/ | where forge pushes and new branches start
 merge_method | squash | merge, squash or rebase; anything else is logged and taken as squash
 delete_branch_after_merge | on | only the value true keeps it on; deletes only branches under the prefix
@@ -897,9 +910,10 @@ repository, only with their environment set; the rest runs against fakes.
 @node gaps "Known gaps"
 @{h1}Known gaps
 
-@{bullet}@{b}Anyone who may use the coder uses the bot's token.@{ub} The
-plugin has no user list: every user of an agent that allows
-@{tt}+forge/*@{utt} pushes, comments and merges as the bot.
+@{bullet}@{b}One bot for every listed user.@{ub} Whoever is in
+@{tt}allowed_users@{utt} pushes, comments and merges as the same bot; the
+platform cannot tell them apart. The tools stay in the tool list of users
+who are not listed -- they are refused when they call one.
 @{bullet}@{b}The token is no secret from the coder's shell.@{ub} It lives
 in @{tt}config/secrets.env@{utt}, which the coder's shell can read like any
 file. What forge guarantees is narrower: its own git calls carry the token

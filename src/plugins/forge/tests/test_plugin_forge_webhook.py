@@ -123,6 +123,7 @@ def make_server(tmp_path, monkeypatch, webhook=True, secret=True, presence=True,
     cfg.hosts = {"gl": {"provider": "gitlab", "api_url": "https://gl.test/api/v4", "token_env": "FORGE_TEST_TOKEN",
                         "webhook_secret_env": "FORGE_TEST_HOOK_SECRET"}}
     cfg.repos = {"app": {"host": "gl", "project": "team/app", "path": str(tmp_path / "clone")}}
+    cfg.allowed_users = ["admin", "alice", "u"]
     cfg.hosts["gh"] = {"provider": "github", "token_env": "FORGE_TEST_TOKEN",
                        "webhook_secret_env": "FORGE_TEST_HOOK_SECRET"}           # no repo on it
     if webhook:

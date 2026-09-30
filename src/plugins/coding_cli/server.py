@@ -139,7 +139,9 @@ class CodingCliServer(SchemaBasedToolServer):
                 continue
             self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []]}
         # The subscription belongs to one person (concept §7).
-        self.allowed_users = frozenset(str(u) for u in getattr(server_config, "allowed_users", None) or ())
+        users = getattr(server_config, "allowed_users", None) or ()
+        # `allowed_users: admin` is one user, not five letters.
+        self.allowed_users = frozenset([users] if isinstance(users, str) else map(str, users))
         self.allowed_commands = [str(c) for c in getattr(server_config, "allowed_commands", None) or ()]
         self.pass_env = [str(v) for v in getattr(server_config, "pass_env", None) or ()]
         self.model = str(getattr(server_config, "model", "") or "")

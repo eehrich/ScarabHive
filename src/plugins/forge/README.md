@@ -16,7 +16,7 @@ that works on a commented request or a failed pipeline.
 
 The instance comes enabled with the plugin and offers no tools until a repository is configured: hosts and
 repositories go under `plugins.servers.forge` in `config/plugins.yaml`, the tokens into `config/secrets.env`.
-The coder allows `+forge/*`.
+The coder allows `+forge/*`; only the users in `allowed_users` may call the tools (empty: nobody).
 
 The full manual -- the ticket loop, the policy, the webhook, every tool, what the model sees and the settings --
 is the plugin's guide, `forge.guide`, in the Help panel. Design and measured facts:

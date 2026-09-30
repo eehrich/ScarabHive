@@ -104,6 +104,11 @@ def make_server(repo, **config):
     return server
 
 
+def test_a_single_name_without_brackets_is_one_user(tmp_path):
+    """`allowed_users: admin` became the letters a, d, m, i, n."""
+    assert make_server(tmp_path, allowed_users="admin").allowed_users == {"admin"}
+
+
 async def call(server, tool, user="admin", session="s1", **params):
     status = Status()
     result = await getattr(server, tool)({**params, "_status": status, "_user_id": user, "_session_id": session})

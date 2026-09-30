@@ -1039,6 +1039,10 @@ plugins:
     # bot account scarabhive-bot (Developer); its token is in secrets.env.
     forge:
       type: forge
+      # Every forge tool acts with the bot's token: only these ScarabHive users
+      # may call them (reads included). Empty or unset: nobody. webhook.user
+      # below must be listed, or the sessions the webhook starts get no tool.
+      allowed_users: [admin, cli_user]
       hosts:
         gitlab-test:
           provider: gitlab

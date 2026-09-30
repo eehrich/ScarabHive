@@ -180,6 +180,10 @@ class ForgeServer(SchemaBasedToolServer):
         # Only a real false turns it off, only a real true keeps it: a string is a typo, taken as off.
         self.delete_branch = getattr(server_config, "delete_branch_after_merge", True) is True
         self.timeout = float(getattr(server_config, "timeout", 30) or 30)
+        # Every tool acts with the bot's token, reads included: only these ScarabHive users may. Unset: nobody.
+        users = getattr(server_config, "allowed_users", None) or ()
+        # `allowed_users: admin` is one user, not five letters.
+        self.allowed_users = frozenset([users] if isinstance(users, str) else map(str, users))
         self.repos: dict[str, Repo] = {}
         self._apis: dict[str, Api] = {}
         self._backends: dict[str, Any] = {}
@@ -189,6 +193,9 @@ class ForgeServer(SchemaBasedToolServer):
         # The webhook (docs/konzept.md §7): its inbox is read in every process a
         # session runs in -- the hook -- and its route only in the API's.
         self.webhook = WebhookConfig.read(getattr(server_config, "webhook", None))
+        if self.webhook is not None and self.webhook.user not in self.allowed_users:
+            logger.warning("forge %s: webhook.user %s is not in allowed_users -- the sessions the webhook starts "
+                           "are refused every forge tool", name, self.webhook.user)
         self.events = Store(data_path("forge", "events.db"))
         self.hooks_plugin = ForgeHooks(name, self.events)
         self._intake = Intake(self)
@@ -315,6 +322,12 @@ class ForgeServer(SchemaBasedToolServer):
         """One tool call: the repository resolved, ForgeError turned into the
         error shape with its status line, anything else logged and reported."""
         status = params.get("_status") or _NoStatus()
+        user = str(params.get("_user_id") or "")
+        if not user or user not in self.allowed_users:
+            message = (f"forge acts with the operator's bot token and user {_short(user or '(none)', 40)!r} may not "
+                       f"use it -- ask the operator to add the user id to forge allowed_users")
+            await status.error(_short(message, 140))
+            return {"status": "error", "error": message}
         try:
             repo = self._repo(params)
             return await work(repo, self._backend(repo), status)
