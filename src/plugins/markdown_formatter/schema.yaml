@@ -35,7 +35,7 @@ config:
       - DO NOT wrap the complete response in markdown code blocks.
       - Use tables and lists where appropriate.
       - Put code snippets in triple backtick blocks with language specified.
-    description: "System prompt to inject at session start"
+    description: "Appended to the first system message before each LLM call"
     
   # Enable/disable markdown to HTML conversion
   convert_to_html:
@@ -47,17 +47,12 @@ config:
   enable_code_highlighting:
     type: boolean
     default: true
-    description: "Enable syntax highlighting for code blocks"
+    description: "Recognise ``` code blocks (language-* classes for Prism)"
     
   enable_tables:
     type: boolean
     default: true
     description: "Enable table formatting"
-    
-  enable_autolinks:
-    type: boolean
-    default: true
-    description: "Automatically convert URLs to links"
     
   # HTML sanitization
   sanitize_html:

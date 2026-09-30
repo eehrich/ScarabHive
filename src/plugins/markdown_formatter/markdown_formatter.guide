@@ -1,0 +1,267 @@
+@database "markdown_formatter"
+@author "Enrico Ehrich"
+@$VER: markdown_formatter.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Markdown Formatter"
+@{h1}Markdown Formatter
+
+Makes an agent's answers readable where they are shown. Models write
+Markdown; without this plugin the web chat shows it as plain text, with the
+asterisks and pipes. With it, the answer arrives in the chat as HTML --
+headings, lists, tables, code blocks coloured by the browser -- and in the
+terminal it is drawn with colours. What is stored in the session stays the
+Markdown the model wrote; only the copy that is shown is converted.
+
+A second, optional hook asks the model to write Markdown in the first
+place, by adding a short instruction to its system prompt.
+
+The plugin has no tools and no panel. It is switched on in the shipped
+configuration, but both hooks are off for every agent until the agent's
+YAML turns one on.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+  @{"  What you see where  " link where}
+  @{"  Limits and safety  " link limits}
+
+For agents and developers
+  @{"  The format hook  " link format}
+  @{"  The prompt hook  " link prompt}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    markdown_formatter:
+      type: markdown_formatter
+      enabled: true
+@{body}
+
+No allowlist line is needed -- the plugin has no tools. It needs the
+Python packages @{tt}markdown@{utt} (the conversion to HTML) and
+@{tt}markdownify@{utt} (HTML back to Markdown for the terminal, see
+@{" The format hook " link format}); both come with the installation.
+
+@{h2}Switching the hooks on for an agent
+
+The @{tt}default_config@{utt} at the top of @{tt}config/plugins.yaml@{utt}
+switches both hooks off for all agents:
+
+@{code yaml}
+      hooks:
+        enabled: true
+        overrides:
+          markdown_formatter.format_markdown_output:
+             enabled: false
+          markdown_formatter.inject_markdown_system_prompt:
+             enabled: false
+@{body}
+
+An agent turns a hook on in its own YAML; the two lists are merged, so the
+other hook stays off:
+
+@{code yaml}
+agent_config:
+  hooks:
+    enabled: true
+    overrides:
+      markdown_formatter.format_markdown_output:
+        enabled: true
+@{body}
+
+Most agents that talk to people -- the chat agents, the sysadmin, the
+coder, the research agent -- do this for the format hook. No shipped agent
+turns on the prompt hook.
+
+@{h2}Settings
+
+The settings go in a @{tt}config:@{utt} block of the server entry. They are
+read once, when the plugin starts, and hold for every agent; an agent's
+override can only switch a hook on or off.
+
+@{code yaml}
+    markdown_formatter:
+      type: markdown_formatter
+      enabled: true
+      config:
+        enable_tables: false
+@{body}
+
+@{table}
+Key | Default | Meaning
+convert_to_html | true | false: the web chat gets the Markdown as plain text
+enable_tables | true | Markdown tables become HTML tables
+enable_code_highlighting | true | fenced code blocks are recognised and marked with their language for the browser's colouring; false: a fence becomes inline code
+sanitize_html | true | clean the HTML before it reaches the browser -- see @{" Limits and safety " link limits}
+allowed_html_tags | headings, p, br, hr, strong, em, code, pre, ul, ol, li, table, thead, tbody, tr, th, td, a, blockquote | the tags the cleaning keeps
+inject_system_prompt | true | false: the prompt hook does nothing even where it is on
+system_prompt_template | see @{" The prompt hook " link prompt} | the instruction the prompt hook adds
+@{body}
+@endnode
+
+@node where "What you see where"
+@{h1}What you see where
+
+@{h2}Web chat
+
+Each step's text streams in as HTML, and so does the final answer: headings,
+lists and tables as such, code blocks with their language so the browser
+colours them. A single line break in the answer stays a line break. A list
+the model wrote into one line ("Options - a - b - c") is split into a list.
+An answer that is wholly wrapped in a @{tt}```markdown@{utt} code block is
+unwrapped first.
+
+When a session is opened again, its answers are converted anew, with the
+hooks of the agent that held the session; if that agent is not loaded, the
+history shows as plain text. Answers of a run that asked for structured
+output (JSON) are never converted.
+
+Without the hook -- off for the agent, @{tt}convert_to_html: false@{utt},
+or the @{tt}markdown@{utt} package missing -- the chat shows the text as it
+is, escaped, with its line breaks.
+
+@{h2}Terminal
+
+@{tt}agent-cli@{utt} and @{tt}agent-run@{utt} ask for the format their
+@{tt}--color@{utt} option names. With colour (@{tt}auto@{utt} on a terminal
+that can show it, @{tt}always@{utt}, @{tt}ansi@{utt}), the hook hands the
+Markdown back and the terminal draws it with colours. With
+@{tt}never@{utt} or @{tt}text@{utt} the Markdown is printed as it is. A
+wrapping @{tt}```markdown@{utt} block is removed in both cases.
+@endnode
+
+@node limits "Limits and safety"
+@{h1}Limits and safety
+
+@{h2}What the cleaning removes
+
+A model's answer carries whatever a tool fetched, including HTML someone
+else wrote. With @{tt}sanitize_html: true@{utt} only the allowed tags stay,
+each with only a few attributes (a link's address and title, a code block's
+language, a list's start number); a link to anything but an http, https
+or mailto address (javascript:, data:) loses its address. Script and style blocks are removed with their content; other
+tags lose the tag and keep their text. There are no images by default: a
+remote image is a request the reader's browser makes to an address the
+text chose.
+
+@{b}sanitize_html: false@{ub} hands the model's raw HTML to the browser as
+it is, scripts included. Leave it on. Adding a tag to
+@{tt}allowed_html_tags@{utt} lets it through with the attributes listed
+above only -- @{tt}img@{utt} with its @{tt}src@{utt}.
+
+@{h2}Cost
+
+The conversion runs in a worker thread, so the server goes on answering
+while it runs. Measured on this machine:
+
+@{table}
+Answer | Time
+a few kilobytes | milliseconds
+1 MB of ordinary Markdown (headings, tables, code) | 5 s
+200 KB cut off inside a code block (no closing fence) | 0.1 s
+200 KB of 100,000 short lines in one paragraph | stopped after 10 s
+@{body}
+
+A paragraph made of very many lines costs the Markdown library time that
+grows with the square of the line count (20,000 lines: 1 s; 100,000: about
+48 s). The hook's 10-second timeout ends the wait for that answer: it is
+then shown as plain text. The thread itself runs on to the end, and other
+conversions wait for it meanwhile. The same text is converted again each
+time the session is opened.
+@endnode
+
+@node format "The format hook"
+@{h1}The format hook
+
+@{tt}format_markdown_output@{utt}, type @{tt}format_output@{utt}. It is
+called by whoever shows an answer, with the format wanted, and changes only
+that copy -- never the message in the session:
+
+@{bullet}the agent loop, for every step's text, as HTML;
+@{bullet}the API, for each answer of a session opened again, as HTML;
+@{bullet}the terminal clients, for the final answer, as ansi or text.
+
+First, an answer wholly wrapped in @{tt}```markdown@{utt} or
+@{tt}```md@{utt} is unwrapped. Then, by format:
+
+@{table}
+Format | What it returns | content_format
+html | the HTML; unchanged if @{tt}convert_to_html@{utt} is false or the conversion is not possible | html (text when unchanged)
+ansi | the Markdown, for the terminal to draw; text that starts with < and contains </p>, </h1> or </h2> is taken for HTML and turned back into Markdown | ansi
+text | the Markdown; text that starts with < and contains <p>, <h1> or <pre> is taken for HTML and reduced to plain text | text
+anything else | the text unchanged | the format asked for
+@{body}
+
+The HTML path uses the renderer shared with the debate forum
+(@{tt}agent_system/utils/markdown_render.py@{utt}): tables, fenced code with
+@{tt}class="language-..."@{utt}, single line breaks kept, the one-line list
+rescue, then the cleaning described in
+@{" Limits and safety " link limits}. Links are what Markdown writes as
+links -- @{tt}[text](address)@{utt} and @{tt}<https://...>@{utt}; a bare
+address stays text.
+
+The HTML check on the ansi and text paths exists for text that is HTML
+already. An answer that is itself HTML the model wrote unfenced and that
+starts with a tag is converted along with it.
+
+An error inside the hook is logged and the answer is shown unchanged.
+@endnode
+
+@node prompt "The prompt hook"
+@{h1}The prompt hook
+
+@{tt}inject_markdown_system_prompt@{utt}, type @{tt}pre_llm_call@{utt}.
+Before every LLM call of the agent -- every step, not once per session --
+it adds this text, the default of @{tt}system_prompt_template@{utt}:
+
+@{code}
+Format your responses using Markdown for better readability:
+- DO NOT wrap the complete response in markdown code blocks.
+- Use tables and lists where appropriate.
+- Put code snippets in triple backtick blocks with language specified.
+@{body}
+
+@{bullet}If the call has system messages, the text is appended to the
+@{b}first@{ub} one -- the agent's own prompt, which the agent loop renders
+anew before each step -- after a blank line, unless that message contains
+it already. The other system messages and the conversation are not
+touched.
+@{bullet}If there is no system message, the text becomes one, at the start.
+@{bullet}With @{tt}inject_system_prompt: false@{utt} it does nothing.
+
+System messages are built fresh for each run and are not saved with the
+session, so the text is never stored and never doubles. The hook runs
+before @{tt}message_validation@{utt}. It runs for every agent that turns it
+on, sub-agents included; the chat is an agent like any other.
+
+It is worth turning on for a model that answers in plain prose or wraps
+everything in a code block. Most models write Markdown unasked.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{b}The format hook@{ub} changes nothing the model sees: it works on the
+copy that is shown, after the model has answered. The session keeps the
+Markdown, so the next call sends the model its own words, not HTML. It
+costs no tokens.
+
+@{b}The prompt hook@{ub} adds the instruction in
+@{" The prompt hook " link prompt} to the first system message, about
+60 tokens with the default text, on every call. The text is the same at
+every step and in every run, so the system prompt stays one fixed prefix
+and the provider's prompt cache keeps working; the hook rewrites no
+earlier message. A template changed in the settings changes that prefix
+once, at the next start.
+
+Neither hook reads or changes tool calls, their arguments or tool results.
+@endnode

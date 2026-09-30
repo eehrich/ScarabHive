@@ -5,6 +5,7 @@ Injects system prompt to guide LLM to generate Markdown output.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -51,7 +52,6 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
         self.convert_to_html = get_config_value('convert_to_html', True)
         self.enable_code_highlighting = get_config_value('enable_code_highlighting', True)
         self.enable_tables = get_config_value('enable_tables', True)
-        self.enable_autolinks = get_config_value('enable_autolinks', True)
         self.sanitize_html = get_config_value('sanitize_html', True)
         
         allowed_tags = config.get('allowed_html_tags', [
@@ -111,9 +111,14 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                     msg_role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', None)
                     if msg_role == 'system' and not already_appended:
                         existing_content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
-                        # Check if already injected to avoid duplication
+                        # Check if already injected to avoid duplication. The first
+                        # system message is the only target: without marking it done,
+                        # an agent prompt that already carries the template pushed it
+                        # into the next system message, one further per step (tools
+                        # prompt, then a note mid-history).
                         if self.system_prompt_template in existing_content:
                             modified_messages.append(msg)
+                            already_appended = True
                             continue
                         new_content = f"{existing_content}\n\n{self.system_prompt_template}"
                         if isinstance(msg, dict):
@@ -220,7 +225,11 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Returns None when disabled here or when markdown is unavailable.
                 html_content = None
                 if self.convert_to_html:
-                    html_content = markdown_to_html(
+                    # Off the event loop: a long answer of many lines takes
+                    # seconds in Python-Markdown, and only an awaited thread
+                    # lets the hook's timeout end the wait.
+                    html_content = await asyncio.to_thread(
+                        markdown_to_html,
                         output,
                         tables=self.enable_tables,
                         code=self.enable_code_highlighting,
@@ -303,9 +312,11 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                 # Input is already Markdown - return as-is for Rich Console rendering
                 logger.debug(f"Markdown content ready for ANSI rendering (length: {len(output)})")
                 
+                # modified=False made the registry drop the unwrapped text, and
+                # the terminal showed the ```markdown fence as a code block.
                 return HookResult(
                     success=True,
-                    modified=False,
+                    modified=output != context.output,
                     context=replace(context, output=output),
                     metadata={
                         'content_format': 'ansi',
@@ -348,11 +359,12 @@ class MarkdownFormatterPlugin(SchemaBasedPluginHook):
                     except Exception as e:
                         logger.warning(f"Error converting HTML to text: {e}")
                 
-                # Return text content
+                # Return text content -- compared with what came in, so an
+                # unwrapped ```markdown fence counts as a change too.
                 return HookResult(
                     success=True,
-                    modified=(text_content != output),
-                    context=replace(context, output=text_content) if text_content != output else context,
+                    modified=(text_content != context.output),
+                    context=replace(context, output=text_content) if text_content != context.output else context,
                     metadata={
                         'content_format': 'text',
                         'converted': text_content != output,

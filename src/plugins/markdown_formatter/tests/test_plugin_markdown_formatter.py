@@ -341,3 +341,111 @@ async def test_allowed_html_tags_config_is_applied():
 
     assert "<table" not in result.context.output
     assert "<strong>fett</strong>" in result.context.output
+
+
+@pytest.mark.asyncio
+async def test_template_already_in_the_agent_prompt_touches_no_other_message():
+    """Through the real HookRegistry, as the agent loop drives it: each step
+    gets the list the previous one returned, with the first system message
+    rendered fresh. An agent prompt that already carries the template pushed
+    it into the next system message instead, one further per step -- the tools
+    prompt, then a note mid-history -- rewriting the cached prefix each time."""
+    from types import SimpleNamespace
+    from agent_system.hooks.registry import HookRegistry
+    from agent_system.plugins.discovery import register_plugin_hooks
+    from plugins.markdown_formatter.plugin import PLUGIN_FACTORY
+
+    plugin = PLUGIN_FACTORY("markdown_formatter", None, SimpleNamespace(config={}))
+    registry = HookRegistry()
+    await register_plugin_hooks("markdown_formatter", plugin, plugin.get_schema_data(), registry=registry)
+    agent_prompt = f"agent prompt\n\n{plugin.system_prompt_template}"
+    messages = [ChatMessage(role="system", content=agent_prompt),
+                ChatMessage(role="system", content="tools prompt"),
+                ChatMessage(role="user", content="hi"),
+                ChatMessage(role="system", content="note mid-history"),
+                ChatMessage(role="user", content="more")]
+    for step in range(1, 4):
+        messages[0] = ChatMessage(role="system", content=agent_prompt)
+        out = await registry.execute_hooks(HookType.PRE_LLM_CALL, HookContext(
+            hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="s",
+            agent_name="a", messages=messages, step=step))
+        messages = out.messages
+
+    assert [m.content for m in messages] == [
+        agent_prompt, "tools prompt", "hi", "note mid-history", "more"]
+
+
+@pytest.mark.asyncio
+async def test_template_is_appended_to_the_fresh_agent_prompt_at_every_step():
+    """The loop renders the first system message anew before each step; the
+    template goes back onto it once, and nowhere else."""
+    from types import SimpleNamespace
+    from agent_system.hooks.registry import HookRegistry
+    from agent_system.plugins.discovery import register_plugin_hooks
+    from plugins.markdown_formatter.plugin import PLUGIN_FACTORY
+
+    plugin = PLUGIN_FACTORY("markdown_formatter", None, SimpleNamespace(config={}))
+    registry = HookRegistry()
+    await register_plugin_hooks("markdown_formatter", plugin, plugin.get_schema_data(), registry=registry)
+    messages = [ChatMessage(role="system", content="agent prompt"),
+                ChatMessage(role="system", content="tools prompt"),
+                ChatMessage(role="user", content="hi")]
+    for step in range(1, 4):
+        messages[0] = ChatMessage(role="system", content="agent prompt")
+        out = await registry.execute_hooks(HookType.PRE_LLM_CALL, HookContext(
+            hook_type=HookType.PRE_LLM_CALL, request_id="r", session_id="s",
+            agent_name="a", messages=messages, step=step))
+        messages = out.messages
+        assert [m.content for m in messages] == [
+            f"agent prompt\n\n{plugin.system_prompt_template}", "tools prompt", "hi"]
+
+
+@pytest.mark.parametrize("target", ["ansi", "text"])
+@pytest.mark.asyncio
+async def test_answer_wrapped_in_a_markdown_fence_is_unwrapped_for_the_terminal(target):
+    """Through the real HookRegistry: the hook unwrapped the fence but answered
+    modified=False, so the registry kept the original and the terminal showed
+    the whole answer as a code block."""
+    from types import SimpleNamespace
+    from agent_system.hooks.registry import HookRegistry
+    from agent_system.plugins.discovery import register_plugin_hooks
+    from plugins.markdown_formatter.plugin import PLUGIN_FACTORY
+
+    plugin = PLUGIN_FACTORY("markdown_formatter", None, SimpleNamespace(config={}))
+    registry = HookRegistry()
+    await register_plugin_hooks("markdown_formatter", plugin, plugin.get_schema_data(), registry=registry)
+    out = await registry.execute_hooks(HookType.FORMAT_OUTPUT, HookContext(
+        hook_type=HookType.FORMAT_OUTPUT, request_id="r", session_id="s", agent_name="a",
+        output="```markdown\n# Title\n\n**x**\n```", output_format=target))
+
+    assert out.output == "# Title\n\n**x**"
+    assert out.metadata["content_format"] == target
+
+
+@pytest.mark.asyncio
+async def test_html_conversion_runs_off_the_event_loop_thread(monkeypatch):
+    """A long answer of many lines takes seconds to convert; on the loop
+    thread it blocked the server and the hook's timeout could not end it."""
+    import threading
+    from types import SimpleNamespace
+    from agent_system.hooks.registry import HookRegistry
+    from agent_system.plugins.discovery import register_plugin_hooks
+    from plugins.markdown_formatter import hooks
+    from plugins.markdown_formatter.plugin import PLUGIN_FACTORY
+
+    seen = []
+
+    def fake_markdown_to_html(text, **kwargs):
+        seen.append(threading.get_ident())
+        return "<p>converted</p>"
+
+    monkeypatch.setattr(hooks, "markdown_to_html", fake_markdown_to_html)
+    plugin = PLUGIN_FACTORY("markdown_formatter", None, SimpleNamespace(config={}))
+    registry = HookRegistry()
+    await register_plugin_hooks("markdown_formatter", plugin, plugin.get_schema_data(), registry=registry)
+    out = await registry.execute_hooks(HookType.FORMAT_OUTPUT, HookContext(
+        hook_type=HookType.FORMAT_OUTPUT, request_id="r", session_id="s", agent_name="a",
+        output="# Title", output_format="html"))
+
+    assert out.output == "<p>converted</p>"
+    assert len(seen) == 1 and seen[0] != threading.get_ident()
