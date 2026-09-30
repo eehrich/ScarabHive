@@ -1219,7 +1219,7 @@ Two smaller extensions came with them: `vars` may be one template that renders t
 machine passes its whole var set per call), and a cancel that reaches the run's token terminates the
 run (§5.8).
 
-**The machine.** `src/plugins_writer/writer_pipeline_v6/machines/v6_story.yaml` is S0-S24 with the
+**The machine.** `v6_story.yaml` is S0-S24 with the
 ritual as the submachine `v6_ritual.yaml`; its companion modules hold the parsing, the checks and the
 DB transfer. Its facade entry is `v6_story_machine`. Where it deliberately differs from the
 coordinator's prompt, and what the mapping found wrong in today's v6, is in
