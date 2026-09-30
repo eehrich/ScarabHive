@@ -69,7 +69,9 @@ call answer "Failed to initialize decision client: ..." with the reason.
 
 Timeout and retries belong to the decision model's entry, not to this
 plugin: @{tt}request_timeout@{utt} (60 seconds) and @{tt}max_retries@{utt}
-(2, so three attempts, waiting 2 and 4 seconds) apply per item.
+(2, so three attempts, waiting 2 and 4 seconds, or the host's Retry-After up
+to 60 s -- asked for more, the item fails at once) apply per item; see
+@{"llm_decisions" link "llm_decisions/retries"}.
 
 @{h2}Server settings
 

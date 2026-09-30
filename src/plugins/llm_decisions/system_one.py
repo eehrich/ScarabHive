@@ -7,7 +7,7 @@ OpenRouter says so themselves on the model page -- "chat completions SDKs will
 not work with it". The TTS clients live beside the chat clients for the same
 reason, with their own contract (``agent_system/llm/tts.py``). Why this lives
 in its own package and not in ``llm_openrouter`` or ``llm_openai_compat``:
-see the README beside this file.
+see the comment in plugin.toml beside this file.
 
 The wire is TypeSafe's ("System One"). Two of its hosts were measured with
 one questionnaire (2026-09-25); TypeSafe's own is taken from its API
@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, Union
@@ -69,6 +70,19 @@ logger = logging.getLogger(__name__)
 _DECIDING_FIELD = {"noul": "noul", "choice": "choice", "score": "score"}
 
 State = Union[str, Mapping[str, Any], Sequence[Any]]
+
+#: The longest Retry-After this client sits out. A host asking for more gets no
+#: further attempt: the call fails at once and says how long it was asked to wait.
+MAX_RETRY_AFTER = 60.0
+
+
+def _retry_after(response: httpx.Response) -> Optional[float]:
+    """The host's Retry-After in seconds; None when absent or no duration."""
+    try:
+        seconds = float(response.headers.get("retry-after", ""))
+    except ValueError:  # absent, or an HTTP date
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 @dataclass(frozen=True)
@@ -278,10 +292,15 @@ class DecisionsClient:
         """The retry loop. Everything it raises is reported by its caller."""
         last_error: Optional[Exception] = None
         for attempt in range(max(0, self.max_retries) + 1):
+            asked: Optional[float] = None
             try:
                 response = await self._post(payload, headers, cancellation_token)
                 if response.status_code in RETRYABLE_STATUS:
                     last_error = DecisionsError(f"HTTP {response.status_code}: {response.text[:300]}")
+                    asked = _retry_after(response)
+                    if asked is not None and asked > MAX_RETRY_AFTER:
+                        raise DecisionsError(f"Decisions API busy (HTTP {response.status_code}), asks to retry "
+                                             f"after {asked:.0f}s -- model={self.model}")
                 elif response.status_code >= 400:
                     raise DecisionsError(f"Decisions API error {response.status_code}: "
                                          f"{response.text[:500]} -- model={self.model}")
@@ -297,7 +316,7 @@ class DecisionsClient:
             except httpx.TransportError as e:  # includes TimeoutException
                 last_error = e
             if attempt < self.max_retries:
-                delay = 2.0 * (attempt + 1)
+                delay = asked if asked is not None else 2.0 * (attempt + 1)
                 logger.warning("Decisions attempt %d/%d failed (%s) -- retrying in %.0fs",
                                attempt + 1, self.max_retries + 1, last_error, delay)
                 await _notify_response(
@@ -338,16 +357,24 @@ class DecisionsClient:
                 f"Decisions API answered {response.status_code} with {type(data).__name__}, not an object "
                 f"({str(data)[:200]}) -- model={self.model}")
         usage = data.get("usage") or {}
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        cost = None if usage.get("cost") is None else float(usage["cost"])
+        try:
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            cost = None if usage.get("cost") is None else float(usage["cost"])
+        except (AttributeError, TypeError, ValueError) as e:
+            raise DecisionsError(f"Decisions API answered a usage this client cannot read "
+                                 f"({str(usage)[:200]}) -- model={self.model}") from e
         # An answer refused below was billed all the same: the error carries what
         # it cost, when the answer said so at all.
         billed = ({"input_tokens": input_tokens, "output_tokens": output_tokens, "cost": cost}
                   if usage else None)
         answers = {}
-        for name, answer in (data.get("answers") or {}).items():
-            kind = answer.get("type")
+        received = data.get("answers") or {}
+        if not isinstance(received, Mapping):
+            raise DecisionsError(f"Decisions API answered {type(received).__name__} where the answers object "
+                                 f"belongs ({str(received)[:200]}) -- model={self.model}", usage=billed)
+        for name, answer in received.items():
+            kind = answer.get("type") if isinstance(answer, Mapping) else None
             field = _DECIDING_FIELD.get(kind)
             # `field not in answer` would let a present-but-null value through, and
             # a None reaches the caller's threshold as a TypeError far from here.
@@ -356,7 +383,7 @@ class DecisionsClient:
                 # missing: reported, never guessed. A silently dropped answer
                 # would read as "the model did not answer that question".
                 raise DecisionsError(
-                    f"Decisions answer {name!r} has type {kind!r} with no usable value ({answer!r}) "
+                    f"Decisions answer {name!r} has type {kind!r} with no usable value ({str(answer)[:200]}) "
                     f"-- this client knows {', '.join(sorted(_DECIDING_FIELD))}", usage=billed)
             answers[name] = Answer(
                 name=name, type=kind, value=answer[field],
