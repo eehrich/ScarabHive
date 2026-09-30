@@ -96,3 +96,6 @@ config:
   # Where `download` may write. Empty = no download tool at all.
   allowed_directories: []
   max_download_mb: 100
+  # A page is read into memory and parsed whole; a larger one is refused
+  # with a pointer to `download`.
+  max_page_mb: 10
