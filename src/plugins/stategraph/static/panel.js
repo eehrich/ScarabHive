@@ -386,7 +386,7 @@ function drawHead() {
     : badge('valid', 'ok')}
     ${m.writable ? '' : html`<span class="pk-badge" title="Not in a writable machine root: shown, run and debugged, not edited">read-only</span>`}
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="copy-id" title="Copy the machine id">${icon('copy', { size: 'sm' })}</button>
-    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="duplicate-machine" title="A copy under a new id in the writable machine root">${icon('layers', { size: 'sm' })} Duplicate</button>
+    <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-act="duplicate-machine" title="A copy under a new id among your own machines">${icon('layers', { size: 'sm' })} Duplicate</button>
     ${m.writable ? html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="delete-machine" title="Delete the machine" aria-label="Delete the machine">${icon('trash-2', { size: 'sm' })}</button>` : ''}`);
   $('yamlCount').textContent = hasDrafts() ? 'unsaved' : '';
 }
@@ -2436,7 +2436,7 @@ function askMachineId(message, { title, value = '' }) {
 }
 
 $('newMachine').addEventListener('click', async () => {
-  const trimmed = await askMachineId('Id of the new machine (it is saved as <id>.yaml in the writable machine root):',
+  const trimmed = await askMachineId('Id of the new machine (it is saved as <id>.yaml among your own machines):',
     { title: 'New machine' });
   if (!trimmed) return;
   try {

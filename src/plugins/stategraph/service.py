@@ -79,7 +79,7 @@ TERMINATE_WAIT = 10.0
 CONTROL_WAIT = 5.0
 #: The statuses a run row has.
 RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
-#: The folder of machines in the writable roots that name none: the author's own.
+#: The folder of machines in the first writable root that name none: the author's own.
 OWN_GROUP = "My machines"
 
 
@@ -734,9 +734,9 @@ __all__ = ["ServiceError", "StateGraphService", "load_snapshot", "Path"]
 
 
 def _origin(machine: Any) -> str:
-    """The folder a machine that names no group shows in: the author's own for the writable roots, else the folder
-    that holds its machines/ directory -- the plugin it comes with."""
-    if machine.writable:
+    """The folder a machine that names no group shows in: the author's own for the first writable root, else the
+    folder that holds its machines/ directory -- the plugin it comes with, writable in place or not."""
+    if machine.own:
         return OWN_GROUP
     folder = Path(machine.path).parent
     return folder.parent.name if folder.name == "machines" else folder.name

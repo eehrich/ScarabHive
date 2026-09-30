@@ -138,7 +138,7 @@ def writer_task(ctx, params):
 | `stategraph` | `1` | yes | Format version: the integer `1`. The loader refuses anything else, `true` and `1.0` included (SG001). |
 | `id` | name | yes | Machine id, unique across all machine roots. The file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
-| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the writable root, else the plugin folder that holds its `machines/` directory. |
+| `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
 | `machines` | name → machine | | Machines inside this file: a mapping like a machine file without `stategraph`, `id`, `python`, `imports`, `group`, `machines`, `agent`. `do: {machine: <name>}` runs one in its own frame, like an import (machine id `<id>.<name>` in frames and traces). They share the file's companion module and its imports; one runs no other machine of the file, and its name is no import alias. Problems are reported at `machines.<name>....` in the file. |
@@ -991,14 +991,17 @@ src/plugins/stategraph/
 
 - `data/stategraph/machines` is writable and not versioned.
 - `src/plugins*/*/machines` is versioned; writer machines live next to their plugin.
-- The first root that has an id wins, and writable roots come first.
+- The first root that has an id wins; by default the writable root comes first.
+- A shipped folder named in `writable_machine_dirs` (a developer's local config, never a server's:
+  a pull would meet its edits) is edited in place; its machines keep their plugin's folder and stay
+  the catalog's `examples`. New machines still go into the first writable root.
 - **Saves** write a machine tree all or nothing: each file goes into a temp file next to its
   target first, then the temp files replace the targets; if one replace fails, the files
   replaced so far get their old bytes back (a new one is removed) and the error says so. Files
   are written as UTF-8 with LF line endings on every OS, and the versions a save returns are of
   the text as a read gives it back.
 - **Folders.** The panel lists machines in folders: a machine's `group` (§2.2), else the folder
-  of its origin ("My machines" for the writable root, else the plugin folder that holds its
+  of its origin ("My machines" for the first writable root, else the plugin folder that holds its
   `machines/`).
 
 ---
@@ -1070,7 +1073,7 @@ composite goes with it), **Group** puts the states into a new composite (placed 
 an undo puts their positions back too);
 narrow, the state palette is a menu and the machine list folds
 away once a machine is open. **Duplicate** copies a machine (a shipped one too) under a new id into
-the writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
+the first writable root, its companion module as `<id>.py`; what it imports from a file it names by machine id. The error badge in the head opens the overview
 with every problem, each a link to its place. The machine's settings stand first in the overview;
 an agent, tool, `by`, `profile` or `machine` field offers the catalog's names (`GET /api/catalog`),
 every field says what it is for, and a transition's trigger has **New event…**, which declares the

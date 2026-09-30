@@ -54,10 +54,11 @@ The panel has three parts; the toolbar buttons fold the outer two away.
 Every machine in the machine folders, in folders by the machine's
 @{tt}group@{utt} (@{tt}Reviews/nightly@{utt} is a folder inside another).
 A machine without a group sits in "My machines" when it lies in the
-writable folder, else in a folder named after the plugin it comes with.
+folder new machines are saved to, else in a folder named after the plugin
+it comes with -- also when that folder is made writable.
 Each entry shows title, id, description and a badge: @{i}valid@{ui}, the
 number of errors or warnings, and @{i}read-only@{ui} for a machine outside
-the writable folder. Folders you close stay closed on your next visit; a
+the writable folders. Folders you close stay closed on your next visit; a
 search (id, title, description, group) opens every folder it finds
 something in. @{b}New@{ub} asks for an id and creates
 @{tt}<id>.yaml@{utt} with two states, @{tt}start@{utt} and
@@ -67,7 +68,7 @@ something in. @{b}New@{ub} asks for an id and creates
 
 The head shows title, id and file, the problems (a click lists them all in
 the inspector), and buttons to copy the id, @{b}Duplicate@{ub} the machine
-(a copy under a new id in the writable folder, its Python module copied
+(a copy under a new id in the folder new machines are saved to, its Python module copied
 as @{tt}<id>.py@{utt}, even of a shipped machine) and delete it (writable
 machines only: its file, its layout and its Python module unless another
 machine uses it; refused while another machine imports it; its runs stay
@@ -433,7 +434,8 @@ machine may run -- not the runner, not a machine agent, not an agent that
 can use a stategraph tool beyond the read-only ones), @{tt}runner@{utt}, @{tt}tools@{utt} (every
 tool the runner's allowlist lets through: flat name, description,
 parameters, required), @{tt}decision_profiles@{utt} and
-@{tt}examples@{utt} (the ids of the read-only machines).
+@{tt}examples@{utt} (the ids of the machines the plugins ship: all but
+those in the folder new machines are saved to).
 
 @{h2}stategraph_list_machines
 
@@ -465,7 +467,8 @@ path, file, line), @{tt}valid@{utt} (no error).
 
 @{h2}stategraph_save_machine
 
-Validates, then writes all files or none into the writable folder.
+Validates, then writes all files or none next to the machine's file; a
+new machine goes into the folder new machines are saved to.
 
 @{table}
 Parameter | Meaning
@@ -895,7 +898,7 @@ or all: @{tt}"+stategraph/*"@{utt}.
 @{table}
 Key | Default in code | Meaning
 machine_dirs | stategraph/machines in the data folder, src/plugins*/*/machines | machine folders in search order; the first with an id wins
-writable_machine_dirs | stategraph/machines in the data folder | where saves go
+writable_machine_dirs | stategraph/machines in the data folder | folders whose machines may be edited, no globs; new ones go into the first
 runs_db | stategraph/runs.db in the data folder | runs and their journals (SQLite)
 runner_agent | stategraph_runner | host of runs; its allowlist bounds tool activities
 allowed_users | [] | fnmatch patterns of users who may validate, save, run and control besides admins

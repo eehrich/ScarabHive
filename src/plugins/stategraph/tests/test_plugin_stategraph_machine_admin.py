@@ -62,8 +62,9 @@ def test_delete_refuses_a_machine_outside_the_writable_roots_and_removes_nothing
     assert (shipped / "ex.yaml").is_file() and (own / "m.yaml").is_file() and (shipped / "shared.py").is_file()
 
 
-def service_over(tmp_path: Path, *files: tuple[str, str]):
-    """The plugin's service over an own root (writable) and a plugin's machines/ folder (shipped, read-only)."""
+def service_over(tmp_path: Path, *files: tuple[str, str], writable: tuple[str, ...] = ("own",)):
+    """The plugin's service over an own root (writable) and a plugin's machines/ folder (shipped, read-only unless
+    ``writable`` names it too)."""
     import types
 
     from plugins.stategraph.engine.journal import RunStore
@@ -77,7 +78,9 @@ def service_over(tmp_path: Path, *files: tuple[str, str]):
         (own if where == "own" else shipped).joinpath(name).write_text(text, encoding="utf-8")
     runs = RunStore(tmp_path / "runs.db")
     server = types.SimpleNamespace(name="stategraph", system_config=None, runner_agent="r", inject_params={},
-                                   machines=MachineStore([str(own), str(shipped)], [str(own)], base=tmp_path),
+                                   machines=MachineStore([str(own), str(shipped)],
+                                                         [str({"own": own, "shipped": shipped}[w]) for w in writable],
+                                                         base=tmp_path),
                                    run_store=runs, run_manager=RunManager(runs), agents_of=lambda machine_id: [])
     return StateGraphService(server), own, shipped
 
@@ -94,6 +97,37 @@ def test_the_list_names_each_machines_folder(tmp_path):
     groups = {m["id"]: m["group"] for m in service.list_machines()}
 
     assert groups == {"mine": "My machines", "grouped": "Writer/v6", "example": "some_plugin"}
+
+
+def test_a_shipped_folder_made_writable_keeps_its_plugins_folder(tmp_path):
+    service, _, _ = service_over(tmp_path, ("own", "mine.yaml", MACHINE.format(id="mine")),
+                                 ("shipped", "example.yaml", MACHINE.format(id="example")),
+                                 writable=("own", "shipped"))
+
+    listed = {m["id"]: (m["group"], m["writable"]) for m in service.list_machines()}
+
+    assert listed == {"mine": ("My machines", True), "example": ("some_plugin", True)}
+
+
+async def test_the_catalogs_examples_are_the_shipped_machines_writable_or_not(tmp_path):
+    from agent_system.config.models import AgentSystemConfig
+
+    from plugins.stategraph.server import StateGraphServer
+    from plugins.stategraph.tests.stategraph_testkit import tool_config
+
+    own, shipped = tmp_path / "machines", tmp_path / "some_plugin" / "machines"
+    shipped.mkdir(parents=True)
+    server = StateGraphServer("stategraph", AgentSystemConfig.model_validate({}),
+                              tool_config(tmp_path, machine_dirs=[str(own), str(shipped)],
+                                          writable_machine_dirs=[str(own), str(shipped)]))
+    (own / "mine.yaml").write_text(MACHINE.format(id="mine"), encoding="utf-8")
+    (shipped / "example.yaml").write_text(MACHINE.format(id="example"), encoding="utf-8")
+    try:
+        examples = server._catalog()["examples"]
+    finally:
+        await server.stop_plugin()
+
+    assert examples == ["example"]
 
 
 def test_delete_through_the_service_removes_a_module_only_this_machine_uses(tmp_path):

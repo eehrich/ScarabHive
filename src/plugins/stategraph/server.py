@@ -269,7 +269,7 @@ class StateGraphServer(SchemaBasedToolServer):
         llm = getattr(self.system_config, "llm_system", None)
         return {"kinds": kinds, "agents": agents, "runner": self.runner_agent,
                 "tools": patterns, "decision_profiles": sorted((getattr(llm, "decision_profiles", None) or {})),
-                "examples": [m.id for m in self.machines.list() if not m.writable]}
+                "examples": [m.id for m in self.machines.list() if not m.own]}
 
     async def _runner_tools(self, pattern: str) -> list[dict[str, Any]]:
         """The tools a machine's tool activity may call: every registered tool the runner's allowlist lets through

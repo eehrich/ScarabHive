@@ -58,7 +58,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_save_machine"
-      description: "Validate, then write the machine tree into the writable machine root. Refused if validation finds errors, or if a file changed since the versions you read (pass expected_versions from get_machine; omit for new files)."
+      description: "Validate, then write the machine tree next to the machine's file (a new machine: into the first writable machine root). Refused if validation finds errors, or if a file changed since the versions you read (pass expected_versions from get_machine; omit for new files)."
       parameters:
         type: object
         properties:
