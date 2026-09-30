@@ -107,16 +107,20 @@ bundle root is the plugin's write lock (see @{" Writing a concept " link write})
 @{table}
 Agent | How
 okf_agent | curates and answers from bundles with the @{tt}okf@{utt} tools; asks which bundle when you name none
-sysadmin | tools of @{tt}okf@{utt}, and the hook folds @{tt}data/okf/infra@{utt} into every turn
+sysadmin | its own instance @{tt}sysadmin_okf@{utt}, sandboxed to @{tt}data/okf/infra@{utt}, with the hook
 amiga_coder | searches and writes @{tt}data/okf/amiga@{utt} with the @{tt}okf@{utt} tools
 coder | its own instance @{tt}coder_okf@{utt}, sandboxed to @{tt}data/okf/coder@{utt}, with the hook
 @{body}
 
-The shared instance @{tt}okf@{utt} allows all of @{tt}data/okf@{utt}: an
-agent with its tools can write every bundle there, including one another
-agent gets injected into its prompt. Where that matters, give the agent an
-instance of its own whose @{tt}allowed_directories@{utt} is only its bundle,
-as the coder does -- then the sandbox keeps the boundary, not the prompt.
+The shared instance @{tt}okf@{utt} allows all of @{tt}data/okf@{utt} but
+the bundles of the agents with an instance of their own (@{tt}infra@{utt},
+@{tt}coder@{utt}, @{tt}gamedev@{utt}, @{tt}n8n@{utt}): an agent with its tools can write every other bundle
+there, including one another agent gets injected into its prompt. Where
+that matters, give the agent an instance of its own whose
+@{tt}allowed_directories@{utt} is only its bundle, and list that bundle in
+the shared instance's @{tt}excluded_directories@{utt}, as is done for those
+four -- then the sandbox keeps the boundary, not the prompt. An own
+instance alone keeps the agent in, not the others out.
 
 Bundles are not separated by user: whoever runs an agent with the tools
 reads and writes the same folders.
@@ -133,6 +137,11 @@ okf:
   enabled: true
   allowed_directories:
     - data/okf
+  excluded_directories:
+    - data/okf/infra
+    - data/okf/coder
+    - data/okf/gamedev
+    - data/okf/n8n
   # hook_bundle: data/okf/<bundle>
   hook_max_concepts: 6
   hook_graph_depth: 1
@@ -157,6 +166,7 @@ name a key, the block wins.
 @{table}
 Key | Default | Meaning
 allowed_directories | the data directory's @{tt}okf@{utt} | the folders bundles may lie in; a relative path counts from the project root
+excluded_directories | none | folders inside those that this instance may not touch, because another instance owns them; a bundle inside one, or containing one, is refused
 read_only | false | the three write tools are not offered to the model, and refuse when called anyway
 max_concept_file_kb | 512 | a larger file is skipped by list, search, check and hook; the read tool returns at most this much text per call
 max_bundle_files | 5000 | only the first this-many @{tt}.md@{utt} files (sorted by path) are loaded; the rest is ignored without notice
@@ -186,8 +196,10 @@ rewrite) and @{tt}filelock@{utt}, both declared in @{tt}plugin.toml@{utt}.
 
 Every tool takes @{tt}bundle@{utt}, the bundle's folder: absolute, relative
 to the project root, or @{tt}data/...@{utt}. It must lie in an allowed
-directory; a path naming another host (@{tt}//host/share@{utt}) is refused
-before anything is opened.
+directory and neither inside nor around an excluded one; a path naming
+another host (@{tt}//host/share@{utt}) is refused before anything is
+opened. The examples use the sysadmin's bundle, which only
+@{tt}sysadmin_okf@{utt} reaches.
 
 @{h2}okf_list
 
@@ -249,7 +261,7 @@ Answers with @{tt}status@{utt} "error" and @{tt}error@{utt}:
 @{table}
 error | When
 missing 'bundle' path | no bundle given
-bundle '<bundle>' is outside the allowed OKF directories | not in an allowed directory, or on another host
+bundle '<bundle>' is outside the allowed OKF directories | not in an allowed directory, inside or around an excluded one, or on another host
 @{body}
 @endnode
 
@@ -398,7 +410,7 @@ length of the written text in characters.
 @{table}
 error | When
 OKF server is read-only | @{tt}read_only@{utt} is set
-'<path>' is a reserved OKF filename (index.md/log.md) — use okf_append_log / okf_reindex | a reserved name
+'<path>' is a reserved OKF filename (index.md/log.md) — use <instance>_append_log / <instance>_reindex | a reserved name
 concept path '<path>' must end in .md | anything but a concept file
 'frontmatter' must be an object with at least a 'type' | no object
 frontmatter is missing a non-empty 'type' field | no type after merging; also @{tt}findings@{utt}
@@ -535,7 +547,7 @@ In the agent's YAML, with the server instance's name in front:
 hooks:
   enabled: true
   overrides:
-    okf.okf_context_injection:
+    sysadmin_okf.okf_context_injection:
       enabled: true
       hook_bundle: data/okf/infra
       hook_max_concepts: 5
@@ -571,7 +583,7 @@ characters with @{tt}…[truncated]@{utt}. Header fields are not included.
 
 @{h2}When it does nothing
 
-@{bullet}no @{tt}hook_bundle@{utt}, or one outside the allowed directories;
+@{bullet}no @{tt}hook_bundle@{utt}, or one the instance may not reach (see @{" Setting it up " link setup});
 @{bullet}the bundle holds no concepts;
 @{bullet}no seed: no person's message and no seed concept, or no search hit;
 @{bullet}the block would be the same as the last block it appended.

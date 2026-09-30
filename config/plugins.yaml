@@ -99,6 +99,14 @@ plugins:
       # Sandbox: tools may only touch bundles under these directories.
       allowed_directories:
         - data/okf
+      # Bundles with an instance of their own (sysadmin_okf, coder_okf,
+      # godot's and n8n's). Without this carve-out every agent holding okf/*
+      # could rewrite what those agents get injected into their prompts.
+      excluded_directories:
+        - data/okf/infra
+        - data/okf/coder
+        - data/okf/gamedev
+        - data/okf/n8n
       # Consumer hook (context injection) is opt-in per agent via
       # hooks.overrides; set hook_bundle on the agent that should use it.
       # hook_bundle: data/okf/<bundle>

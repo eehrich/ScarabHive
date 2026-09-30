@@ -155,12 +155,10 @@ plugins:
     # The harness's own knowledge bundle (OKF: git-versioned markdown concepts
     # with a link graph, agent-writable).
     #
-    # A DEDICATED instance, not the shared `okf` server, and that is the whole
-    # point: the shared one is sandboxed to all of `data/okf`, so an agent
-    # using it can write into every other agent's bundle -- the sysadmin's
-    # `infra` runbooks included, which are injected into that agent's prompt.
-    # Rooting this instance at one bundle makes the boundary something the
-    # sandbox enforces rather than something the prompt asks for.
+    # A DEDICATED instance, not the shared `okf` server: rooted at one bundle,
+    # it keeps this agent out of the others, and the shared one excludes
+    # `data/okf/coder` (config/plugins.yaml), which keeps the others out.
+    # The sandbox enforces the boundary, not the prompt.
     coder_okf:
       type: okf
       enabled: true

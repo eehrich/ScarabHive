@@ -581,6 +581,43 @@ class TestReadOnly:
         assert "read-only" in res["error"]
 
 
+class TestExcludedDirectories:
+    """A bundle another instance owns, carved out of a wider root: the shared
+    ``okf`` keeps ``data/okf`` but must not reach the sysadmin's ``infra``."""
+
+    @pytest.fixture
+    def carved(self, mock_system_config, tmp_path, bundle):
+        cfg = ToolServerConfig(type="okf", enabled=True, config={
+            "allowed_directories": [str(tmp_path)],
+            "excluded_directories": [str(bundle)]})
+        return OkfServer("okf", mock_system_config, cfg)
+
+    @pytest.mark.asyncio
+    async def test_the_excluded_bundle_cannot_be_written(self, carved, bundle):
+        res = await carved.write_concept({
+            "bundle": str(bundle), "path": "/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "error"
+        assert not (bundle / "x.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_parent_bundle_cannot_reach_into_it(self, carved, bundle, tmp_path):
+        """Bundle = the root, concept path = into the carve-out."""
+        res = await carved.write_concept({
+            "bundle": str(tmp_path), "path": f"/{bundle.name}/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "error"
+        assert not (bundle / "x.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_bundle_still_works(self, carved, tmp_path):
+        res = await carved.write_concept({
+            "bundle": str(tmp_path / "other"), "path": "/x.md",
+            "frontmatter": {"type": "T"}, "body": "x"})
+        assert res["status"] == "ok", res
+        assert (tmp_path / "other" / "x.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # consumer hook
 # ---------------------------------------------------------------------------

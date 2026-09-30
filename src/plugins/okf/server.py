@@ -228,6 +228,15 @@ class OkfServer(SchemaBasedToolServer):
             self._roots.append(p.resolve() if p.is_absolute()
                                else (project_root / p).resolve())
 
+        # Carve-outs inside the roots: a bundle another instance owns. Resolved
+        # like the roots. A bundle inside one is refused, and so is a bundle
+        # that contains one -- its concept paths and reindex would reach in.
+        self._excluded: List[Path] = []
+        for d in cfg.get("excluded_directories") or []:
+            p = Path(d)
+            self._excluded.append(p.resolve() if p.is_absolute()
+                                  else (project_root / p).resolve())
+
         self._read_only: bool = bool(cfg.get("read_only", False))
         # Resource bounds — a bundle is walked/read fully per call, so cap it.
         self._max_file_kb: int = int(cfg.get("max_concept_file_kb", 512))
@@ -272,6 +281,10 @@ class OkfServer(SchemaBasedToolServer):
         # data/... lands in the data directory (agent_system/paths.py)
         p = resolve_data_path(bundle)
         p = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
+        if any(p == ex or ex in p.parents or p in ex.parents for ex in self._excluded):
+            logger.warning("okf: rejected bundle %r overlapping an excluded directory", bundle)
+            raise ValueError(
+                f"bundle '{bundle}' is outside the allowed OKF directories")
         for root in self._roots:
             if p == root or root in p.parents:
                 return p
@@ -547,7 +560,7 @@ class OkfServer(SchemaBasedToolServer):
         rel_path = params.get("path", "")
         if core.is_reserved(rel_path):
             msg = (f"'{rel_path}' is a reserved OKF filename "
-                   f"(index.md/log.md) — use okf_append_log / okf_reindex")
+                   f"(index.md/log.md) — use {self.name}_append_log / {self.name}_reindex")
             await status.error(msg)
             return {"status": "error", "error": msg}
         # Only .md files are concepts: anything else answered ok and was never
