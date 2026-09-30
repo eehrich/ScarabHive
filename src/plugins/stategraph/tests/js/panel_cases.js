@@ -43,6 +43,7 @@ const TWO_COMPOSITES = { ...MACHINE, graph: { ...MACHINE.graph, states: [...MACH
   stateLike('loop', 'review', { parent: null, initial: 'inner', line: 90 }),
   stateLike('inner', 'verdict', { parent: 'loop', line: 93 })] } };
 let reviewAnswer = MACHINE;  // GET of the review machine
+const WITH_NOTE = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'why', text: 'Because the review\nneeds a second look.\n' }] } };  // a | block: a line break at the end
 let layoutsKept = false;  // a layout PUT to review changes what its GET answers, as the server's does
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
@@ -1975,7 +1976,7 @@ const CASES = {
   async a_text_over_lines_is_a_text_area() {
     await boot('?machine=fields');
     await choose('idle');
-    check(/name="description" data-shape="text"[^>]*>\nline one\nline two/.test($('side-inspect').innerHTML),
+    check(/name="description" data-shape="prose"[^>]*>\nline one\nline two/.test($('side-inspect').innerHTML),
       'a description over two lines sits in a one-line field');
   },
 
@@ -2324,6 +2325,105 @@ const CASES = {
     await settle();
     check(!confirms() && TOASTS.some(([, text]) => text.includes('review keeps at least one state')), `read and verdict: ${JSON.stringify(TOASTS)}`);
     check(!CALLS.some(([, path]) => path.endsWith('/edit')), 'an edit went out');
+  },
+  async a_note_from_the_bar_goes_into_the_file_and_the_middle_of_the_view() {
+    await boot('?machine=review');
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
+    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'note_1', text: 'New note' }), `sent: ${JSON.stringify(lastEdit())}`);
+    const puts = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions);
+    const { k, client } = canvasGeometry();
+    const [tx, ty] = [client(0, 0).clientX, client(0, 0).clientY];
+    const middle = { x: Math.round((450 - tx) / k) - 110, y: Math.round((300 - ty) / k) - 30 };  // the fake canvas: 900 x 600
+    check(JSON.stringify(puts().pop()?.['note:note_1']) === JSON.stringify(middle), `placed: ${JSON.stringify(puts().pop())}, the middle ${JSON.stringify(middle)}`);
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'the new note is not the one shown');
+    check($('canvas').querySelectorAll('.sg-note').length === 1, 'the note is not drawn');
+    await $('undo').fire('click', {});
+    await settle();
+    check(puts().length === 2 && !('note:note_1' in puts().pop()), `an undo keeps the new note's place: ${JSON.stringify(puts())}`);
+    reviewAnswer = editAnswer;  // the redo's reload reads the file with the note again
+    await $('redo').fire('click', {});
+    await settle();
+    check($('canvas').querySelectorAll('.sg-note').length === 1, 'the redo did not bring the note back');
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'the note the undo took stayed chosen, and the redo showed it again');
+  },
+
+  async a_note_s_text_is_applied_and_an_emptied_note_is_removed_after_asking() {
+    reviewAnswer = WITH_NOTE;
+    editAnswer = WITH_NOTE;
+    await boot('?machine=review');
+    const note = $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    check(note, 'the note is not drawn');
+    await $('canvas').fire('keydown', { key: 'Enter', target: note, preventDefault() {} });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'Enter on the note does not show it');
+    await $('canvas').fire('keydown', { key: 'Escape', target: $('canvas'), preventDefault() {} });
+    await settle();
+    await $('canvas').fire('dblclick', { target: note, clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"'), 'a double click on the note does not open it');
+    await $('canvas').fire('keydown', { key: 'Escape', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'Escape left the note chosen');
+    await $('canvas').fire('pointerdown', { button: 0, target: note, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: note, clientX: 10, clientY: 10 });
+    await settle();
+    check($('side-inspect').innerHTML.includes('data-form="note"') && $('side-inspect').innerHTML.includes('needs a second look'),
+      'a click on the note shows its text');
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Because the review\nneeds a second look.\n'] }) });
+    await settle();
+    check(!lastEdit() && TOASTS.some(([, text]) => text === 'Nothing changed'), `sent: ${JSON.stringify(lastEdit())}`);
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', 'Look twice.'] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: 'Look twice.' }), `sent: ${JSON.stringify(lastEdit())}`);
+    ANSWERS.confirm = false;
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', '  \n'] }) });
+    await settle();
+    check(confirms() === 1 && lastEdit().text === 'Look twice.', 'an emptied note went without asking');
+    ANSWERS.confirm = true;
+    await $('side-inspect').fire('submit', { target: formOf('note', { text: ['kind', '', ''] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: null }), `sent: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_note_dragged_keeps_its_place_and_delete_removes_it_with_its_place() {
+    reviewAnswer = { ...WITH_NOTE, layout: { version: 1, positions: { 'note:why': { x: 500, y: 50 } } } };
+    await boot('?machine=review');
+    const { client } = canvasGeometry();
+    const note = () => $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    await $('canvas').fire('pointerdown', { button: 0, target: note(), pointerId: 1, ...client(510, 60) });
+    await $('canvas').fire('pointermove', { target: note(), ...client(610, 100) });
+    await $('canvas').fire('pointerup', { target: note(), ...client(610, 100) });
+    await settle();
+    const put = () => CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/review/layout')).map(([, , json]) => json.layout.positions).pop();
+    check(JSON.stringify(put()?.['note:why']) === JSON.stringify({ x: 600, y: 90 }), `kept: ${JSON.stringify(put())}`);
+    check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'a drag chose the note');
+    editAnswer = MACHINE;
+    await $('canvas').fire('pointerdown', { button: 0, target: note(), pointerId: 1, ...client(600, 100) });
+    await $('canvas').fire('pointerup', { target: note(), ...client(600, 100) });
+    await settle();
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(confirms() === 1 && JSON.stringify(lastEdit()) === JSON.stringify({ op: 'set_note', name: 'why', text: null }),
+      `sent: ${JSON.stringify(lastEdit())}`);
+    check(put() && !('note:why' in put()), `the removed note's place stays: ${JSON.stringify(put())}`);
+    await $('undo').fire('click', {});
+    await settle();
+    check(JSON.stringify(put()?.['note:why']) === JSON.stringify({ x: 600, y: 90 }), `an undo does not put the place back: ${JSON.stringify(put())}`);
+  },
+
+  async a_state_s_description_is_free_text_at_the_top_and_applies_alone() {
+    await boot('?machine=fields');
+    await choose('judge');
+    const shown = $('side-inspect').innerHTML;
+    check(/data-form="state-description"[^]*?<textarea[^>]*id="sd-description" name="description" data-shape="prose"[^]*?<\/form>/.test(shown)
+      && shown.indexOf('id="sd-description"') < shown.indexOf('data-form="activity"'), 'no description box at the top');
+    check(!/id="sf-description"/.test(shown), 'the description is in the settings as well');
+    await $('side-inspect').fire('submit', { target: formOf('state-description', { description: ['prose', '', 'Judges\nthe draft.'] }) });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'judge', fields: { description: 'Judges\nthe draft.' } }),
+      `sent: ${JSON.stringify(lastEdit())}`);
   },
 };
 

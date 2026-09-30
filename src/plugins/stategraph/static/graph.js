@@ -212,7 +212,8 @@ export function applyPositions(layout, positions) {
 }
 
 /** The selection of these state names and transition ids: null, one state {kind: 'state', id}, one transition
- * {kind: 'transition', id}, or several of either {kind: 'many', states, transitions}. */
+ * {kind: 'transition', id}, or several of either {kind: 'many', states, transitions}. (A note is chosen alone:
+ * {kind: 'note', id}.) */
 export function selectionOf(states = [], transitions = []) {
   const names = [...new Set(states)];
   const ids = [...new Set(transitions)];
@@ -232,7 +233,7 @@ export function selectedTransitions(selection) {
 }
 
 export function sameSelection(a, b) {
-  const key = (s) => (s ? [s.kind, ...selectedStates(s), '', ...selectedTransitions(s)].join('\n') : '');
+  const key = (s) => (s ? [s.kind, s.kind === 'note' ? s.id : '', ...selectedStates(s), '', ...selectedTransitions(s)].join('\n') : '');
   return key(a) === key(b);
 }
 
@@ -704,6 +705,50 @@ export function groupedSpots(nodes, names, name) {
   return Object.fromEntries([[name, { x, y }], ...names.map((one, i) => [one, { x: spots[i].x - x, y: spots[i].y - y }])]);
 }
 
+/** A note (notes: in the file, free text) on the canvas: this wide, its text wrapped in lines of this height. */
+export const NOTE = { w: 220, pad: 10, line: 15, lines: 16, fold: 12, gap: 16 };
+/** A note's position in the layout sidecar: beside the states' (a state name has no colon). */
+export const noteKey = (name) => `note:${name}`;
+
+/** A note's text as the lines it is drawn in: its own line breaks kept, words wrapped to the note's width (a word
+ * wider than the note cut), at most NOTE.lines -- the last one ends in … when there is more. */
+export function noteLines(text, width = NOTE.w - 2 * NOTE.pad, px = 12) {
+  const most = Math.max(1, Math.floor(width / (px * 0.56)));  // the characters textWidth fits in `width`
+  const lines = [];
+  for (const paragraph of String(text ?? '').replace(/\s+$/, '').split('\n')) {
+    let line = '';
+    for (const word of paragraph.split(/\s+/).filter(Boolean).map((one) => shorten(one, most))) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && textWidth(next, px) > width) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length > NOTE.lines ? [...lines.slice(0, NOTE.lines - 1), `${shorten(lines[NOTE.lines - 1], most - 2)} …`] : lines;
+}
+
+/** The notes' boxes {name: {x, y, w, h, lines}}: where the layout placed them, else stacked right of the states --
+ * each in its own slot of the stack, which a dragged one leaves empty (the others do not jump while it moves). */
+export function notePlaces(notes, positions, nodes) {
+  const boxes = Object.values(nodes || {});
+  const x = boxes.length ? Math.max(...boxes.map((b) => b.x + b.w)) + 48 : 24;
+  let y = boxes.length ? Math.min(...boxes.map((b) => b.y)) : 24;
+  const places = {};
+  for (const note of notes || []) {
+    const lines = noteLines(note.text);
+    const h = 2 * NOTE.pad + lines.length * NOTE.line;
+    const spot = positions?.[noteKey(note.name)];
+    const placed = Number.isFinite(spot?.x) && Number.isFinite(spot?.y);
+    places[note.name] = placed ? { x: spot.x, y: spot.y, w: NOTE.w, h, lines } : { x, y, w: NOTE.w, h, lines };
+    y += h + NOTE.gap;
+  }
+  return places;
+}
+
 // ---------------------------------------------------------------------------------------------------- the canvas
 
 function el(name, attrs = {}, parent = null) {
@@ -729,7 +774,8 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
 
 /**
  * The canvas. Callbacks: onSelect(a selection, see selectionOf), onConnect(source, target),
- * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click,
+ * onMove({name: {x, y}}) with every position the drag changed (a note's under noteKey), onOpen({kind, id}) on a
+ * double click (kind state, transition or note),
  * onReparent(name, into, spot, here) when one state is dropped on a composite it is not in: `spot` its position in
  * that one, `here` in the one it is in.
  */
@@ -757,6 +803,7 @@ export class Canvas {
     this.viewport = el('g', { class: 'sg-viewport' }, svg);
     // composites under the transitions: their filled box would hide the ones inside them
     this.compositeLayer = el('g', { class: 'sg-composites' }, this.viewport);
+    this.noteLayer = el('g', { class: 'sg-notes' }, this.viewport);
     this.edgeLayer = el('g', { class: 'sg-edges' }, this.viewport);
     this.nodeLayer = el('g', { class: 'sg-nodes' }, this.viewport);
     this.dragLayer = el('g', { class: 'sg-drag' }, this.viewport);
@@ -811,8 +858,11 @@ export class Canvas {
     const { nodes, moved } = applyPositions(this.auto, this.positions);
     this.nodes = nodes;
     this.compositeLayer.replaceChildren();
+    this.noteLayer.replaceChildren();
     this.edgeLayer.replaceChildren();
     this.nodeLayer.replaceChildren();
+    this.notes = notePlaces(this.graph.notes, this.positions, nodes);
+    for (const note of this.graph.notes || []) this.drawNote(note, this.notes[note.name]);
     const byName = new Map(this.graph.states.map((state) => [state.name, state]));
     // outer composites first, so the ones nested in them are drawn on top
     const order = Object.keys(nodes).sort((a, b) => depth(nodes, a) - depth(nodes, b));
@@ -895,6 +945,19 @@ export class Canvas {
     el('g', { class: 'sg-badges', 'data-x': box.x + box.w, 'data-y': box.y, 'data-left': box.x }, group);
   }
 
+  drawNote(note, box) {
+    const group = el('g', { class: 'sg-note', 'data-note': note.name, tabindex: 0, role: 'button', 'aria-label': `Note ${note.name}` },
+      this.noteLayer);
+    el('title', {}, group).textContent = note.text;
+    const { x, y, w, h } = box;
+    const f = NOTE.fold;
+    el('path', { class: 'sg-note-box', d: `M${x} ${y} H${x + w - f} L${x + w} ${y + f} V${y + h} H${x} Z` }, group);
+    el('path', { class: 'sg-note-fold', d: `M${x + w - f} ${y} V${y + f} H${x + w}` }, group);
+    box.lines.forEach((line, i) => {
+      if (line) text(group, line, { x: x + NOTE.pad, y: y + NOTE.pad + 11 + i * NOTE.line, class: 'sg-note-text' });
+    });
+  }
+
   drawEdge(transition, drawn) {
     const kind = transition.trigger === 'error' ? 'error' : transition.trigger !== 'done' ? 'event' : 'done';
     const group = el('g', {
@@ -950,6 +1013,9 @@ export class Canvas {
       if (visits) badge(`×${visits}`, 'sg-badge--info');
       if (breakpoints.has(name)) el('circle', { cx: Number(badges.dataset.left), cy: top, r: 5, class: 'sg-breakpoint' }, badges);
     }
+    for (const group of this.noteLayer.querySelectorAll('.sg-note')) {
+      group.classList.toggle('is-selected', this.selected?.kind === 'note' && this.selected.id === group.dataset.note);
+    }
     for (const group of this.edgeLayer.querySelectorAll('.sg-link')) {
       const id = group.dataset.transition;
       const pinned = problems.transitions[id];
@@ -970,7 +1036,7 @@ export class Canvas {
   }
 
   bounds() {
-    const boxes = Object.values(this.nodes || {});
+    const boxes = [...Object.values(this.nodes || {}), ...Object.values(this.notes || {})];
     if (!boxes.length) return { x: 0, y: 0, w: 1, h: 1 };
     const x = Math.min(...boxes.map((b) => b.x));
     const y = Math.min(...boxes.map((b) => b.y)) - 24;
@@ -1009,6 +1075,13 @@ export class Canvas {
     }
   }
 
+  /** The middle of what is in view, in canvas units: where a new note goes (null while the canvas is hidden). */
+  viewCenter() {
+    const rect = this.svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return { x: Math.round((rect.width / 2 - this.view.x) / this.view.k), y: Math.round((rect.height / 2 - this.view.y) / this.view.k) };
+  }
+
   toCanvas(event) {
     const rect = this.svg.getBoundingClientRect();
     return [(event.clientX - rect.left - this.view.x) / this.view.k, (event.clientY - rect.top - this.view.y) / this.view.k];
@@ -1035,6 +1108,7 @@ export class Canvas {
       if (event.button !== 0) return;
       const handle = event.target.closest?.('[data-handle]');
       const node = event.target.closest?.('.sg-node');
+      const note = event.target.closest?.('.sg-note');
       const link = event.target.closest?.('.sg-link');
       const [x, y] = this.toCanvas(event);
       const adding = event.shiftKey || event.ctrlKey || event.metaKey;
@@ -1055,6 +1129,9 @@ export class Canvas {
         const { nodes } = applyPositions(this.auto, this.positions);
         const from = Object.fromEntries(names.map((one) => [one, relativeSpot(nodes, stateId(one))]));
         gesture = { type: 'move', name, names, from, x, y, moved: false };
+      } else if (note && this.notes?.[note.dataset.note]) {
+        const box = this.notes[note.dataset.note];
+        gesture = { type: 'note', name: note.dataset.note, from: { x: box.x, y: box.y }, x, y, moved: false };
       } else if (link) {
         this.select({ kind: 'transition', id: link.dataset.transition }, { quiet: false });
         return;
@@ -1096,6 +1173,12 @@ export class Canvas {
       // screen pixels, not canvas units: zoomed out, 4 units are less than a pixel and a click became a drag
       if (!gesture.moved && (Math.abs(dx) + Math.abs(dy)) * this.view.k < 4) return;
       gesture.moved = true;
+      if (gesture.type === 'note') {
+        const spot = { x: Math.round(gesture.from.x + dx), y: Math.round(gesture.from.y + dy) };
+        this.positions = { ...this.positions, [noteKey(gesture.name)]: spot };
+        this.draw();
+        return;
+      }
       const moved = Object.fromEntries(gesture.names.map((name) => [name,
         { x: gesture.from[name].x + dx, y: gesture.from[name].y + dy }]));
       this.positions = { ...this.positions, ...moved };
@@ -1125,6 +1208,10 @@ export class Canvas {
         } else if (!done.moved && done.item) {
           this.select(toggled(this.selected, done.item), { quiet: false });
         }
+      } else if (done.type === 'note') {
+        const key = noteKey(done.name);
+        if (done.moved) this.handlers.onMove?.({ [key]: this.positions[key] });
+        else this.select({ kind: 'note', id: done.name }, { quiet: false });
       } else if (done.type === 'move') {
         const into = this.drop;
         this.drop = null;
@@ -1150,11 +1237,19 @@ export class Canvas {
       // clicked is what lies under the pointer
       const hit = document.elementFromPoint(event.clientX, event.clientY) || event.target;
       const node = hit.closest?.('.sg-node');
+      const note = hit.closest?.('.sg-note');
       const link = hit.closest?.('.sg-link');
       if (node) this.handlers.onOpen?.({ kind: 'state', id: node.dataset.state });
+      else if (note) this.handlers.onOpen?.({ kind: 'note', id: note.dataset.note });
       else if (link) this.handlers.onOpen?.({ kind: 'transition', id: link.dataset.transition });
     });
     svg.addEventListener('keydown', (event) => {
+      const note = event.target.closest?.('.sg-note');
+      if (note && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        this.select({ kind: 'note', id: note.dataset.note }, { quiet: false });
+        return;
+      }
       const node = event.target.closest?.('.sg-node');
       if (node && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();

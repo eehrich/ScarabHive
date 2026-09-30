@@ -138,6 +138,7 @@ def writer_task(ctx, params):
 | `stategraph` | `1` | yes | Format version: the integer `1`. The loader refuses anything else, `true` and `1.0` included (SG001). |
 | `id` | name | yes | Machine id, unique across all machine roots. The file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
+| `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
 | `group` | string | | The machine's folder in the panel's machine list, nested by `/` (`Writer/v6`). Empty: the folder of its origin -- "My machines" for the first writable root, else the plugin folder that holds its `machines/` directory. |
 | `python` | path | | Companion module, relative to the file (`\` reads as `/`; an absolute path is SG004: a run's snapshot holds only relative files). Its public names are in scope for all code of this machine. |
 | `imports` | alias → ref | | Submachines this machine uses. A ref is a relative path (`./x.yaml`; `\` reads as `/`, an absolute path is SG006) or a machine id. `do: {machine: …}` names an alias, never an id. |
@@ -1036,7 +1037,7 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
+  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: set_note, name, text}` sets a note of `notes:` (text empty or null removes it, the last one takes `notes:` along); `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.
 - **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
   the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
@@ -1052,7 +1053,9 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 **The panel.** The machine list shows collapsible folders by group (the open ones are
 remembered; a search opens every folder it finds something in). The machines pane and the
 inspector fold away (toolbar buttons). A writable machine has a delete button. Double-click on
-a state renames it. The inspector has a form for every field of a state (its activity's fields
+a state renames it. **Note** in the palette adds a note (`notes:`, free text) in the middle of the view; it is
+dragged like a state, a click opens its text in the inspector, and emptied or deleted it goes. A state's
+`description` is a free-text box at the top of its inspector. The inspector has a form for every field of a state (its activity's fields
 come from the kind's JSON schema, `GET /api/kinds`) and of the machine; Apply sends only the
 changed keys as `update_state` / `update_machine` (objects as YAML text, `{"$yaml": ...}`), set
 in place with the file's comments; a value with an anchor, alias or merge in it is edited in the

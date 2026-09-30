@@ -420,6 +420,31 @@ def _update_machine(edit: "_Edit", op: dict[str, Any]) -> str:
     return edit.result()
 
 
+def _set_note(edit: "_Edit", op: dict[str, Any]) -> str:
+    """One note of ``notes:`` -- its text, or none ("" or null removes it; the last one takes ``notes:`` along)."""
+    name, text = op.get("name"), op.get("text")
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
+        raise EditError(f"name: a note name (lowercase letters, digits and _), not {name!r}")
+    if text is not None and not isinstance(text, str):
+        raise EditError("text: the note's text")
+    text = (text or "").rstrip()
+    notes = edit.doc.get("notes")
+    if notes is not None and not isinstance(notes, CommentedMap):
+        raise EditError("notes: is not a mapping of names to texts: change it in the YAML tab")
+    if not text:
+        if notes is None or name not in notes:
+            raise EditError(f"there is no note {name!r}")
+        _put(edit, "notes", notes, name, None)
+        if not notes:
+            _put(edit, "the machine", edit.doc, "notes", None)
+        return edit.result()
+    if notes is None:
+        _put(edit, "the machine", edit.doc, "notes", CommentedMap(), before=("initial", "states"))
+        notes = edit.doc["notes"]
+    _put(edit, "notes", notes, name, text)
+    return edit.result()
+
+
 def _value(value: Any, where: str) -> Any:
     """A form's value: "" is none, {"$yaml": text} the nodes the text reads as (its comments kept)."""
     if isinstance(value, dict) and set(value) == {"$yaml"}:
@@ -484,6 +509,7 @@ _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
     "move_state": _move_state,
     "update_state": _update_state,
     "update_machine": _update_machine,
+    "set_note": _set_note,
 }
 
 

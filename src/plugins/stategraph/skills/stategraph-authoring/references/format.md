@@ -37,6 +37,7 @@ no `on`, `yes` or `no` key, so YAML 1.1 readers cannot corrupt a file.
 | `stategraph` | `1` | yes | Format version: the integer `1`. Other values are refused, `true` and `1.0` too. |
 | `id` | name | yes | Machine id, unique across all roots; the file is `<id>.yaml`. |
 | `title`, `description` | string | | Shown in the panel and the catalog. |
+| `notes` | name → text | | Free text for the reader: each note is drawn on the panel's canvas, where its place is kept in the layout. The engine never reads it. |
 | `group` | string | | Its folder in the panel's machine list, nested by `/` (`Reviews/nightly`). Empty: the folder of where it comes from ("My machines" for the first writable root, where new machines go, else the plugin that ships it). |
 | `python` | path | | Companion module, relative to this file (`\` reads as `/`; not an absolute path). |
 | `imports` | alias → ref | | Submachines: `./file.yaml` (relative; `\` reads as `/`, not an absolute path) or a machine id. |

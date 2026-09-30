@@ -7,6 +7,7 @@ import {
   applyPositions, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
+  NOTE, noteKey, noteLines, notePlaces,
 } from '../../static/graph.js';
 
 const results = [];
@@ -570,6 +571,29 @@ test('toggled / selectionOf / sameSelection: Ctrl or Shift+click adds a state or
   assert(sameSelection(null, null) && !sameSelection(state('a'), edge('a')), 'none is none; a state is no transition');
   equal([selectedStates(mixed), selectedTransitions(mixed), selectedTransitions(edge('x#0'))], [['b'], ['a#0'], ['x#0']],
     'what a selection holds');
+});
+
+test('noteLines: a note keeps its line breaks, wraps its words, cuts a word wider than it and ends in …', () => {
+  equal(noteLines('one\n\ntwo\n'), ['one', '', 'two'], 'its own lines, an empty one included, none after the last');
+  const wrapped = noteLines('word '.repeat(40));
+  assert(wrapped.length > 1 && wrapped.every((line) => line.length * 12 * 0.56 <= NOTE.w - 2 * NOTE.pad), `wrapped: ${JSON.stringify(wrapped)}`);
+  equal(wrapped.join(' '), 'word '.repeat(40).trim(), 'no word lost or split');
+  const long = noteLines('x'.repeat(100))[0];
+  assert(long.length < 100 && long.endsWith('…'), `a word wider than the note: ${long}`);
+  const many = noteLines('line\n'.repeat(40));
+  assert(many.length === NOTE.lines && many[NOTE.lines - 1].endsWith('…'), `at most ${NOTE.lines} lines: ${many.length}`);
+});
+
+test('notePlaces: a note sits where it was dragged, the others stacked right of the states', () => {
+  const nodes = { 's:a': { x: 10, y: 40, w: 100, h: 30 }, 's:b': { x: 200, y: 20, w: 80, h: 30 } };
+  const notes = [{ name: 'one', text: 'a' }, { name: 'two', text: 'b\nc' }, { name: 'three', text: 'd' }];
+  const places = notePlaces(notes, { [noteKey('two')]: { x: -50, y: 300 }, two: { x: 1, y: 1 } }, nodes);
+  equal([places.one.x, places.one.y, places.three.x], [328, 20, 328], 'right of the rightmost state, from the topmost');
+  equal(places.three.y, 20 + places.one.h + places.two.h + 2 * NOTE.gap, 'the next one in its own slot: a dragged one leaves its slot empty');
+  equal([places.two.x, places.two.y, places.two.h], [-50, 300, 2 * NOTE.pad + 2 * NOTE.line], 'dragged: its own place, under its key');
+  equal([notePlaces(notes, {}, {}).one.x, notePlaces(notes, {}, {}).one.y], [24, 24], 'no states: at the corner');
+  assert(sameSelection({ kind: 'note', id: 'one' }, { kind: 'note', id: 'one' })
+    && !sameSelection({ kind: 'note', id: 'one' }, { kind: 'note', id: 'two' }), 'two notes are two selections');
 });
 
 test('groupedSpots: grouped states stay where they are drawn, inside the new composite\'s box', () => {

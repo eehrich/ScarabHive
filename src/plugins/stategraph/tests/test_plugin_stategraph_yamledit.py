@@ -542,3 +542,34 @@ def test_invalid_edits_are_refused_with_a_reason(op, message):
 def test_an_unparseable_file_is_refused_not_rewritten():
     with pytest.raises(EditError, match="does not parse"):
         apply_op("states: [unclosed\n", {"op": "add_state", "name": "a"})
+
+
+NOTED = "stategraph: 1\nid: m\ntitle: T  # the title\ninitial: a\nstates:\n  a:\n    type: final\n"
+
+
+def test_set_note_writes_notes_and_the_last_one_removed_takes_the_key_along():
+    one = apply_op(NOTED, {"op": "set_note", "name": "why", "text": "Because the review\nneeds a second look.  \n"})
+    assert one == ("stategraph: 1\nid: m\ntitle: T  # the title\nnotes:\n  why: |-\n    Because the review\n"
+                   "    needs a second look.\ninitial: a\nstates:\n  a:\n    type: final\n"), one
+    two = apply_op(one, {"op": "set_note", "name": "todo", "text": "retry"})
+    assert data(two)["notes"] == {"why": "Because the review\nneeds a second look.", "todo": "retry"}
+    changed = apply_op(two, {"op": "set_note", "name": "todo", "text": "retry twice"})
+    assert data(changed)["notes"]["todo"] == "retry twice" and "Because the review\n" in changed
+    gone = apply_op(apply_op(changed, {"op": "set_note", "name": "todo", "text": ""}), {"op": "set_note", "name": "why", "text": None})
+    assert gone == NOTED, gone
+
+
+@pytest.mark.parametrize("op, refusal", [
+    ({"name": "Why"}, "a note name"),
+    ({"name": "why", "text": 3}, "the note's text"),
+    ({"name": "gone", "text": ""}, "there is no note 'gone'"),
+])
+@pytest.mark.parametrize("text", [NOTED, NOTED.replace("initial: a", "notes:\n  why: kept\ninitial: a")])
+def test_set_note_refuses_what_is_no_note(op, refusal, text):
+    with pytest.raises(EditError, match=refusal):
+        apply_op(text, {"op": "set_note", **op})
+
+
+def test_set_note_leaves_notes_it_cannot_read_to_the_yaml_tab():
+    with pytest.raises(EditError, match="change it in the YAML tab"):
+        apply_op(NOTED.replace("initial: a", "notes: [a list]\ninitial: a"), {"op": "set_note", "name": "why", "text": "x"})

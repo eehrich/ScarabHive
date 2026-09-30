@@ -16,6 +16,10 @@ group: stategraph                          # its folder in the panel's machine l
 python: showcase.py                        # companion module: its public names are in scope everywhere
 imports:                                   # submachines from other files
   critique_round: ./critique_round.yaml
+notes:                                     # free text for the reader, drawn as notes on the canvas; never run
+  reading_order: |
+    Read it the way it runs: plan, draft, review, judge,
+    polish, approve, save. The comments explain the rest.
 
 # `agent:` offers the machine as an agent without a config entry -- every process then declares it as it
 # starts. It stays a comment so this example does not add an agent to every installation; the test checks

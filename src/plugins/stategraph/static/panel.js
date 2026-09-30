@@ -8,8 +8,8 @@ import {
   trusted, update, withBusy, yamlCode,
 } from '/static/kit/panel-kit.js';
 import {
-  Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, outermost, posixPath, problemIndex, putTyped,
-  renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
+  Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
+  problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
 } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
@@ -34,7 +34,7 @@ const S = {
   machines: [],
   machine: null,        // get_machine: id, file, writable, root_file, files, versions, problems, graph, layout
   kinds: [],
-  selection: null,      // {kind: 'state' | 'transition', id} or {kind: 'many', states, transitions} (graph.js selectionOf)
+  selection: null,      // {kind: 'state' | 'transition' | 'note', id} or {kind: 'many', states, transitions} (graph.js selectionOf)
   problems: { states: {}, transitions: {}, machine: [] },
   drafts: {},           // path -> unsaved text: the YAML tab's, and the graph edits' without auto-save
   autosave: recall('autosave', false),  // graph edits and the layout written at once, not by Save
@@ -65,6 +65,7 @@ const badge = (text, kind = '') => html`<span class="pk-badge${kind ? ` pk-badge
 const statusBadge = (status) => badge(status || 'unknown', STATUS_KIND[status] ?? '');
 const stateOf = (name) => S.machine?.graph?.states?.find((state) => state.name === name) || null;
 const transitionOf = (id) => S.machine?.graph?.transitions?.find((t) => t.id === id) || null;
+const noteOf = (name) => S.machine?.graph?.notes?.find((note) => note.name === name) || null;
 const hasDrafts = () => Object.keys(S.drafts).length > 0;
 const unsaved = () => hasDrafts() || S.layoutDirty || S.inspectorDrafts.size > 0;
 const savable = () => hasDrafts() || S.layoutDirty;
@@ -73,7 +74,8 @@ const rootText = () => yamlText(S.machine.root_file);
 /** The root text the graph is drawn from: a draft edit's, else the saved file's. */
 const drawnText = (m) => m.draft ?? m.files[m.root_file];
 /** The inspector form an input belongs to, as S.inspectorDrafts names it. */
-const FORM_DRAFTS = { 'set-state': 'state', activity: 'activity', 'state-fields': 'fields', 'machine-fields': 'machine' };
+const FORM_DRAFTS = { 'set-state': 'state', activity: 'activity', 'state-fields': 'fields', 'machine-fields': 'machine',
+  'state-description': 'description', note: 'note' };
 const draftKey = (form) => (FORM_DRAFTS[form?.dataset.form]
   || (form?.dataset.transition ? `transition:${form.dataset.transition}` : null));
 const liveRun = () => (S.run && !TERMINAL.has(S.run.status) && S.run.active ? S.run : null);
@@ -108,7 +110,7 @@ const canvas = new Canvas($('canvas'), {
   onSelect: (selection) => choose(selection),
   onConnect: (source, target) => connect(source, target),
   onMove: (spots) => savePositions(spots),
-  onOpen: (target) => (target.kind === 'state' ? renameState(target.id) : choose(target)),
+  onOpen: (target) => (target.kind === 'state' ? renameState(target.id) : target.kind === 'note' ? openNote(target.id) : choose(target)),
   onReparent: (name, into, spot, here) => moveState(name, into, { spot, here }),
 });
 
@@ -357,6 +359,7 @@ function showMachine(machine) {
   S.problems = problemIndex(machine.graph, machine.problems, machine.file || machine.root_file);
   if (S.selection?.kind === 'state' && !stateOf(S.selection.id)) S.selection = null;
   if (S.selection?.kind === 'transition' && !transitionOf(S.selection.id)) S.selection = null;
+  if (S.selection?.kind === 'note' && !noteOf(S.selection.id)) S.selection = null;
   // states and transitions gone meanwhile (an undo, another editor) leave the selection: one left is selected alone
   if (S.selection?.kind === 'many') {
     S.selection = selectionOf(S.selection.states.filter((name) => stateOf(name)),
@@ -425,6 +428,8 @@ function drawPalette() {
       title="${`Add a ${kind.title} state: ${kind.summary}`}" ${writable ? '' : 'disabled'}>${icon(kind.icon || 'square', { size: 'sm' })}${kind.title}</button>`),
     ...PSEUDO.map((p) => html`<button type="button" class="${look}${ghost}" data-add-type="${p.type}"
       title="${p.hint}" ${writable ? '' : 'disabled'}>${icon(p.icon, { size: 'sm' })}${p.title}</button>`),
+    html`<button type="button" class="${look}${ghost}" data-add-note title="A note of free text on the canvas: kept in the file under notes:, never run"
+      ${writable ? '' : 'disabled'}>${icon('notebook-pen', { size: 'sm' })}Note</button>`,
   ];
   render($('palette'), items('pk-btn pk-btn--sm', ' pk-btn--ghost'));
   render($('paletteMenu'), items('pk-menu-item', ''));
@@ -893,6 +898,46 @@ async function moveState(name, into, { spot = null, here = null } = {}) {
   choose({ kind: 'state', id: name });
 }
 
+/** A new note in the middle of the view, its text chosen to be typed over. */
+async function addNote() {
+  if (readOnly()) return;
+  const taken = new Set((S.machine.graph.notes || []).map((note) => note.name));
+  let n = 1;
+  while (taken.has(`note_${n}`)) n += 1;
+  const name = `note_${n}`;
+  const key = noteKey(name);
+  const middle = canvas.viewCenter();
+  if (!await edit({ op: 'set_note', name, text: 'New note' }, { places: [key] })) return;
+  if (middle) await savePositions({ [key]: { x: middle.x - NOTE.w / 2, y: middle.y - 30 } });
+  await choose({ kind: 'note', id: name });
+  focusNote(name, true);
+}
+
+async function openNote(name) {
+  await choose({ kind: 'note', id: name });
+  focusNote(name, false);
+}
+
+/** The note's text box, focused (`all`: its text chosen, to be typed over) -- if the note is the one shown: a choice
+ * turned down (unapplied text elsewhere) leaves another form there. */
+function focusNote(name, all) {
+  if (S.selection?.kind !== 'note' || S.selection.id !== name) return;
+  const area = $('side-inspect').querySelector('[data-form="note"] textarea');
+  if (!area || area.readOnly) return;
+  area.focus();
+  if (all) area.select();
+}
+
+async function removeNote(name) {
+  if (readOnly() || !noteOf(name)) return;
+  if (!await confirm(`Remove the note ${name}?`, { title: 'Remove note', danger: true, confirmLabel: 'Remove' })) return;
+  const key = noteKey(name);
+  const placed = Object.hasOwn(positions(), key);
+  if (!await edit({ op: 'set_note', name, text: null }, { from: 'note', places: placed ? [key] : null })) return;
+  if (placed) await saveLayout({ positions: patched(positions(), { [key]: null }) });
+  choose(null);
+}
+
 async function connect(source, target) {
   const before = S.machine.graph.transitions.filter((t) => t.source === source);
   const index = before.length ? Math.max(...before.map((t) => t.index)) + 1 : 0;
@@ -1016,6 +1061,21 @@ function drawInspector() {
     </div>`);
     return;
   }
+  const note = sel?.kind === 'note' ? noteOf(sel.id) : null;
+  if (note) {
+    render(pane, html`<div class="sg-section">
+      <div class="sg-inspect-head">${icon('notebook-pen')}<h3 class="sg-inspect-name">Note</h3><span class="pk-mono pk-muted">${note.name}</span></div>
+      <form data-form="note" class="pk-stack">
+        <textarea class="pk-textarea sg-note-input" name="text" rows="10" aria-label="The note's text" data-orig="${note.text}"
+          placeholder="Free text: what the machine is for, what to watch, what is left to do" ${m.writable ? '' : 'readonly'}>
+${note.text}</textarea>
+        <p class="pk-help">Kept in the file under notes: and drawn on the canvas; the engine never reads it. Drag the note to move it.</p>
+        ${m.writable ? html`<div class="pk-form-actions">
+          <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-note">${icon('trash-2', { size: 'sm' })} Remove</button>
+          <button type="submit" class="pk-btn pk-btn--sm pk-btn--primary">${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
+      </form></div>`);
+    return;
+  }
   if (sel?.kind === 'many') {
     const names = sel.states.filter((name) => stateOf(name));
     const edges = sel.transitions.map((id) => transitionOf(id)).filter(Boolean);
@@ -1067,7 +1127,12 @@ function drawInspector() {
         ${parentInitial === state.name ? badge('initial', 'info') : ''}
       </div>
       ${state.label ? html`<div class="sg-mono">${state.label}</div>` : ''}
-      ${state.description ? html`<div class="pk-help">${state.description}</div>` : ''}
+      <form data-form="state-description" class="pk-stack sg-description">
+        <div class="sg-fields">${field('description', STATE_FIELD_SCHEMA.description, state.description,
+          { locked: state.locked?.includes('description'), prefix: 'sd' })}</div>
+        ${m.writable && !state.locked?.includes('description') ? html`<div class="pk-form-actions">
+          <button type="submit" class="pk-btn pk-btn--sm">${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
+      </form>
       <div class="pk-row sg-actions">
         <button type="button" class="pk-btn pk-btn--sm" data-act="rename" ${m.writable ? '' : 'disabled'}>${icon('pencil', { size: 'sm' })} Rename</button>
         <button type="button" class="pk-btn pk-btn--sm" data-act="initial" ${m.writable && parentInitial !== state.name ? '' : 'disabled'} title="Make it the initial state of its region">${icon('play', { size: 'sm' })} Initial</button>
@@ -1178,7 +1243,8 @@ function machineOverview() {
         <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(lineStyle(m.layout?.line))}</select></div>
       <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
         Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box the states in it: drag
-        one to move them all, Delete removes them, Group puts the states into a new composite.</p>
+        one to move them all, Delete removes them, Group puts the states into a new composite. Note in the bar adds a
+        note of free text: drag it anywhere, click it to edit it.</p>
     </div>
     ${m.problems.length ? html`<div class="sg-section"><h4 class="sg-section-title">Problems</h4>${problemButtons(m.problems)}</div>` : ''}
     <div class="sg-section"><h4 class="sg-section-title">Settings</h4>
@@ -1199,7 +1265,7 @@ function machineOverview() {
 /** A state's own keys (StateSpec, model/spec.py), in the shape a kind's JSON schema gives its fields. */
 const STATE_FIELD_SCHEMA = {
   type: { enum: ['state', 'choice', 'junction', 'final'], description: 'state: may run an activity; choice / junction: decided within a transition; final: ends its region' },
-  description: { type: 'string' },
+  description: { type: 'string', description: 'free text for whoever reads the machine: shown with the state, never run' },
   max_visits: { type: 'integer', description: 'entries of this state per frame; one more raises loop_limit' },
   timeout: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'wait state: raise wait_timeout after this long (30s, 5m)' },
   after: { anyOf: [{ type: 'number' }, { type: 'string' }], description: 'timer state: complete this long after entry (10m); an event it takes may come first' },
@@ -1229,17 +1295,19 @@ const MACHINE_FIELD_SCHEMA = {
 const COMMON_FIELDS = ['timeout', 'retry', 'idempotent', 'description'];  // every kind has them: listed last
 const SHARED_HINT = 'Some of this is shared with another place through a YAML anchor, alias or merge: those fields are edited in the YAML tab.';
 
+/** The Settings form's fields: the description has a form of its own, at the top. */
 function stateFieldNames(state) {
-  if (state.composite) return ['description', 'max_visits', 'entry', 'exit', 'finally'];
-  if (state.type === 'final') return ['type', 'description', 'status', 'output'];
-  if (state.type !== 'state') return ['type', 'description'];
-  return ['type', 'description', 'max_visits', ...(state.wait || state.timeout != null ? ['timeout'] : []),
+  if (state.composite) return ['max_visits', 'entry', 'exit', 'finally'];
+  if (state.type === 'final') return ['type', 'status', 'output'];
+  if (state.type !== 'state') return ['type'];
+  return ['type', 'max_visits', ...(state.wait || state.timeout != null ? ['timeout'] : []),
     ...(state.kind ? [] : ['after']), 'entry', 'exit', 'finally'];
 }
 
 const stateValue = (state, name) => (name === 'type' ? state.type : state[name] ?? undefined);
 
-/** How a field is edited: enum, bool, number, duration (a number or 30s), line, text (a template), code, yaml. */
+/** How a field is edited: enum, bool, number, duration (a number or 30s), line, text (a template), code, yaml -- and
+ * a description, prose (free text over lines; see field). */
 function shapeOf(p = {}, value) {
   if (value !== null && typeof value === 'object') return 'yaml';
   if (p['x-yaml']) return 'yaml';
@@ -1258,6 +1326,7 @@ function shapeOf(p = {}, value) {
 /** One labelled control; data-orig holds what it showed, so a submit sends only what changed. */
 function field(name, p = {}, value, { text, locked = false, required = false, prefix = 'af' } = {}) {
   let shape = shapeOf(p, value);
+  if (name === 'description' && shape === 'line') shape = 'prose';  // free text, lines of its own
   const id = `${prefix}-${name}`;
   const orig = shape === 'yaml' ? (text ?? (value === undefined || value === null ? '' : JSON.stringify(value)))
     : value === undefined || value === null ? '' : String(value);
@@ -1271,10 +1340,11 @@ function field(name, p = {}, value, { text, locked = false, required = false, pr
       <option value="">${required ? '(choose)' : '(default)'}</option>
       ${options.map((o) => html`<option value="${o}" ${String(o) === orig ? 'selected' : ''}>${o}</option>`)}</select>${fieldHelp(p)}`;
   }
-  if (shape === 'yaml' || shape === 'text' || shape === 'code') {
-    const rows = Math.min(8, Math.max(2, orig.split('\n').length));
-    return html`${label}<div class="pk-stack"><textarea class="pk-textarea pk-input--mono sg-field-text" rows="${rows}" spellcheck="false"
-      placeholder="${shape === 'yaml' ? 'YAML' : shape === 'code' ? 'Python' : 'text, {{ templates }}'}" ${attrs(common)}>
+  if (shape === 'yaml' || shape === 'text' || shape === 'code' || shape === 'prose') {
+    const prose = shape === 'prose';
+    const rows = Math.min(8, Math.max(prose ? 3 : 2, orig.split('\n').length));
+    return html`${label}<div class="pk-stack"><textarea class="pk-textarea${prose ? '' : ' pk-input--mono'} sg-field-text" rows="${rows}" spellcheck="${String(prose)}"
+      placeholder="${{ yaml: 'YAML', code: 'Python', prose: 'free text' }[shape] ?? 'text, {{ templates }}'}" ${attrs(common)}>
 ${orig}</textarea>
       ${locked ? html`<span class="pk-help">Uses a YAML anchor, alias or merge: edit it in the YAML tab.</span>` : ''}</div>${fieldHelp(p)}`;
   }
@@ -1343,7 +1413,7 @@ function fieldValue(control) {
     }
     case 'duration': return raw.trim() === '' ? null : /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : raw.trim();
     case 'bool': return raw === '' ? null : raw === 'true';
-    case 'text': case 'code': return raw.replace(/\s+$/, '') || null;
+    case 'text': case 'code': case 'prose': return raw.replace(/\s+$/, '') || null;
     default: return raw.trim() || null;
   }
 }
@@ -1385,6 +1455,7 @@ const FIELD_FORMS = {
     const fields = state && nonEmpty(changedFields(form));
     return fields ? { op: 'update_state', name: state.name, fields } : null;
   },
+  'state-description': (form, state) => FIELD_FORMS['state-fields'](form, state),
   'machine-fields': (form) => {
     const fields = nonEmpty(changedFields(form));
     return fields ? { op: 'update_machine', fields } : null;
@@ -1413,6 +1484,7 @@ $('side-inspect').addEventListener('click', async (event) => {
     return edit({ op: 'set_initial', name, parent: state?.parent ?? null });
   }
   if (act === 'remove' && name) return removeState(name);
+  if (act === 'remove-note' && S.selection?.kind === 'note') return removeNote(S.selection.id);
   const form = target.closest('[data-transition]');
   if (!form) return;
   const t = transitionOf(form.dataset.transition);
@@ -1446,6 +1518,13 @@ $('side-inspect').addEventListener('submit', async (event) => {
       await edit(request, { from: FORM_DRAFTS[form.dataset.form] });
     } else if (form.dataset.form === 'set-state' && S.selection?.kind === 'state') {
       await edit({ op: 'set_state', name: S.selection.id, yaml: form.elements.yaml.value }, { from: 'state' });
+    } else if (form.dataset.form === 'note' && S.selection?.kind === 'note') {
+      const name = S.selection.id;
+      const text = form.elements.text.value.replace(/\s+$/, '');
+      // what the file holds as the textarea shows it: a | block ends in a line break the typed text loses here
+      if (text === (noteOf(name)?.text ?? '').replace(/\s+$/, '')) return toast('Nothing changed', { kind: 'info' });
+      if (!text.trim()) return removeNote(name);  // emptied: the note goes, after asking
+      await edit({ op: 'set_note', name, text }, { from: 'note' });
     } else if (form.dataset.form === 'add-transition' && S.selection?.kind === 'state') {
       await connect(S.selection.id, form.elements.target.value);
     } else if (form.dataset.transition) {
@@ -2761,6 +2840,7 @@ function addFrom(event) {
   $('paletteMenu').hidePopover?.();
   if (button.dataset.addKind) addState({ kind: S.kinds.find((k) => k.key === button.dataset.addKind), type: 'state' });
   else if (button.dataset.addType) addState({ type: button.dataset.addType });
+  else if (button.dataset.addNote !== undefined) addNote();
 }
 $('palette').addEventListener('click', addFrom);
 $('paletteMenu').addEventListener('click', addFrom);
@@ -2813,6 +2893,7 @@ $('canvas').addEventListener('keydown', (event) => {
     event.preventDefault();
     if (S.selection.kind === 'many') removeSelection(S.selection.states, S.selection.transitions);
     else if (S.selection.kind === 'state') removeState(S.selection.id);
+    else if (S.selection.kind === 'note') removeNote(S.selection.id);
     else removeTransition(S.selection.id);
   }
 });

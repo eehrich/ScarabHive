@@ -1719,6 +1719,14 @@
       "title": "Machines",
       "type": "object"
     },
+    "notes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "name -> free text for the reader, drawn as a note on the canvas; the engine ignores it",
+      "title": "Notes",
+      "type": "object"
+    },
     "params": {
       "additionalProperties": {
         "$ref": "#/$defs/ParamSpec"

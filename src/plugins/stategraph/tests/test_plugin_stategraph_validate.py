@@ -918,3 +918,12 @@ def test_sg108_submachine_with_run_timeout():
     assert problem.file == "sub.yaml"
     root_alone = validate({"m.yaml": sub.replace("id: sub", "id: m")})
     assert found(root_alone, "SG108") == [], "a root machine's run timeout is honoured, no warning"
+
+
+
+@pytest.mark.parametrize("notes, says", [("  Why: x\n", "note name"), ("  why: [x]\n", "notes")])
+def test_notes_are_names_to_texts(notes, says):
+    text = "stategraph: 1\nid: m\nnotes:\n" + notes + "initial: a\nstates:\n  a: {type: final}\n"
+    assert any(says in p.message or says in (p.path or "") for p in errors(validate({"m.yaml": text}))), \
+        [p.as_dict() for p in validate({"m.yaml": text}).problems]
+    assert not errors(validate({"m.yaml": text.replace(notes, "  why: free text\n")}))

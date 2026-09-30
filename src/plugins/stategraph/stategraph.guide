@@ -101,6 +101,7 @@ arrange the view.
 On the graph | Does
 drag a state | moves it; the position is kept in a layout file next to the machine
 drag a state onto a composite | puts it inside, where it was dropped (the composite is marked while it is over it)
+drag a note | moves it; click it to edit its text, double-click to type into it at once
 drag from a state's handle to another state | adds a transition
 double-click a state | renames it; every transition and initial naming it follows
 Ctrl or Shift+click | adds a state or transition to the selection
@@ -136,7 +137,8 @@ group, params, events, context, vars, imports, resources, limits, finally
 machine, and the @{tt}agent:@{utt} block that would offer it as one (see
 @{" Machines " link machines}).
 @{bullet}A state: @{b}Rename@{ub}, @{b}Initial@{ub} (makes it the first
-state of its region), @{b}Remove@{ub}; breakpoints on enter, exit or error
+state of its region), @{b}Remove@{ub}; its description, a box of free
+text for whoever reads the machine (lines of its own are kept); breakpoints on enter, exit or error
 (only the hooks that can stop there -- a choice or a top-level final has
 none, and the panel says why); its activity (the kind, and a field for
 each setting of that kind, with the agents, tools and decision profiles
@@ -145,6 +147,11 @@ exit, finally, a final's status and output); its transitions, in the
 order they are tried; and its YAML, to edit the state as text.
 @{b}Inside@{ub} names the composite it sits in: another one, or the top
 level, moves it there -- out of a composite too, which dragging cannot.
+@{bullet}A note: its text, @{b}Apply@{ub} and @{b}Remove@{ub}. @{b}Note@{ub}
+in the bar above the graph adds one in the middle of the view. Notes are
+free text in the file, under @{tt}notes:@{utt}; where each one sits is
+kept in the layout file, and the engine never reads them. A note emptied
+and applied is removed, after asking.
 @{bullet}A transition: trigger (with @{b}New event...@{ub}, which declares
 a new event and picks it), target, guard, effect, and how its line is
 drawn; move it up or down in the order, or remove it.
@@ -298,6 +305,44 @@ bounds a loop (one entry more raises @{tt}loop_limit@{utt}),
 @{bullet}@{tt}python: <id>.py@{utt} names a @{b}companion module@{ub}: its
 public functions are in scope in guards, effects and templates, and can be
 @{tt}call@{utt} activities.
+
+@{h2}Handling errors in one place
+
+A transition on a composite holds for every state inside it. An
+@{tt}error@{utt}, and every named event, is offered to the active state
+first, then to its composite, then to that one's composite and so on
+outward, each in list order. So one @{tt}error@{utt} transition on a
+composite catches what its states do not handle themselves; a state that
+does handle an error (a retry on @{tt}wait_timeout@{utt}, say) keeps it.
+A guard picks the kinds: @{tt}error.type == "tool_failed"@{utt}. In the
+panel, drag from the composite's handle, top right of its box.
+
+For the whole machine, put its states into one composite: select them all
+(Ctrl+drag a box around them) and click @{b}Group@{ub}; they keep their
+places. Beside it, a final state with @{tt}status: failed@{utt} takes the
+errors (the @{tt}do:@{utt} of plan and write left out here):
+
+@{code yaml}
+initial: main
+states:
+  main:
+    initial: plan
+    states:
+      plan: {transitions: [{target: write}]}
+      write: {transitions: [{target: done}]}
+    transitions:
+      - trigger: error
+        target: aborted
+  done: {type: final}
+  aborted: {type: final, status: failed}
+@{body}
+
+The machine itself has no transitions. An error nothing handles ends the
+run as failed anyway; @{tt}finally:@{utt} on the machine runs on every
+end, for cleanup. Completion is the exception to the rule: a state that
+finishes takes only its own transitions without a trigger, never its
+composite's -- the composite completes when one of its final states is
+entered.
 
 @{h2}Activity kinds
 

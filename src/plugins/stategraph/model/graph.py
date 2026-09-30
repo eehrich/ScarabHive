@@ -26,7 +26,7 @@ STATE_TYPES = ("state", "choice", "junction", "final")
 
 def empty_graph(machine_id: Optional[str] = None) -> dict[str, Any]:
     return {"id": machine_id, "title": "", "description": "", "initial": None, "states": [], "transitions": [],
-            "imports": {}, "params": {}, "events": {}, "context": {}}
+            "imports": {}, "params": {}, "events": {}, "context": {}, "notes": []}
 
 
 def graph_view(tree: MachineTree) -> dict[str, Any]:
@@ -49,6 +49,7 @@ def graph_view(tree: MachineTree) -> dict[str, Any]:
     graph["events"] = {str(name): to_plain(event) if isinstance(event, dict) else {}
                        for name, event in _mapping(doc.get("events")).items()}
     graph["context"] = to_plain(_mapping(doc.get("context")))
+    graph["notes"] = [{"name": str(name), "text": _text(text) or ""} for name, text in _mapping(doc.get("notes")).items()]
     for key in ("group", "python", "vars_from"):
         graph[key] = _text(doc.get(key))
     graph["yaml"], graph["locked"] = _texts({key: doc[key] for key in MACHINE_OBJECTS if key in doc})
