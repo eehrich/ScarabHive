@@ -479,3 +479,59 @@ async def test_an_audio_attachment_becomes_a_note_not_a_silent_gap(realtime, tmp
     note = " ".join(part.get("text", "") for part in _request(socket)["input"][-1]["content"])
     # The tool note names the attachment; the adapter's fallback note could not.
     assert "Audio file: the take - audio input not supported" in note, _request(socket)["input"][-1]
+
+
+def _post_errors(client) -> list:
+    seen: list = []
+
+    async def post(info):
+        seen.append(info.get("error"))
+
+    client.set_llm_hooks(on_post_response=post)
+    return seen
+
+
+async def test_a_cancel_mid_call_reaches_the_post_response_hook_once(realtime):
+    """The socket was open and the model generating: the call is billed, so it is reported."""
+    client, _, _ = realtime(TEXT_ANSWER[:3], hang=True, timeout=30)
+    seen = _post_errors(client)
+    token = SimpleNamespace(is_cancelled=False)
+    asyncio.get_running_loop().call_later(0.2, setattr, token, "is_cancelled", True)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(client.chat_tools([ChatMessage(role="user", content="hi")], [], token), timeout=5)
+
+    assert seen == ["Request cancelled by user"]
+
+
+@pytest.mark.parametrize("status", [401, 404])
+async def test_a_refused_handshake_is_the_status_error_the_server_blocks_on(realtime, monkeypatch, status):
+    """A dead key or model: as an error answer the server never blocked it and asked it again every step."""
+    import httpx
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    client, _, _ = realtime(TEXT_ANSWER)
+    seen = _post_errors(client)
+
+    async def refuse(url, **kwargs):
+        raise InvalidStatus(Response(status, "No", Headers(), b"invalid_api_key"))
+
+    monkeypatch.setattr(websockets, "connect", refuse)
+    with pytest.raises(httpx.HTTPStatusError) as refused:
+        await client.chat_tools([ChatMessage(role="user", content="hi")], [])
+
+    assert refused.value.response.status_code == status
+    assert seen == [f"HTTP {status}: invalid_api_key"]
+
+
+async def test_a_stream_the_caller_abandons_is_reported_at_once(realtime):
+    client, socket, _ = realtime(TEXT_ANSWER[:3], hang=True, timeout=30)
+    seen = _post_errors(client)
+    stream = client.chat_tools_streaming([ChatMessage(role="user", content="hi")], [])
+
+    assert (await stream.__anext__())["type"] == "content_delta"
+    await stream.aclose()
+
+    assert seen == ["stream abandoned by the caller"] and socket.closed
