@@ -169,7 +169,8 @@ with `await sg.tool(name, args)`. Details: `references/format.md` §14.
   mock is `{"value": 0.8, "confidence": null, "probabilities": null}`.
 - `{"$visits": [first, second, ...]}` answers per use of that path in the run (the last repeats),
   also across repeated calls of a submachine;
-  `{"$error": {"type": "tool_failed", "message": "..."}}` fails the activity.
+  `{"$error": {"type": "tool_failed", "message": "..."}}` fails the activity;
+  `{"$timeout": true}` at a wait state with `timeout` (or a timer state) makes its time up at once.
 - `call` activities run for real even in a mock-only run; mock them if they reach
   outside.
 

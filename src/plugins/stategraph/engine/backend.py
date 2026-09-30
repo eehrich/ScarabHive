@@ -216,6 +216,7 @@ class ScarabHiveBackend:
         self._busy.add(instance_id)
         register_request_user(request_id, user)
         work: Optional[asyncio.Future[str]] = None
+        spend = _Spend(getattr(getattr(agent, "llm", None), "model", None))
         try:
             try:
                 # the stored vars too: a save merges into them, and a sub-agent the instance starts
@@ -228,13 +229,15 @@ class ScarabHiveBackend:
             tracker.clear_session_template_vars(instance_id)
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
-            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced))
+            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend))
             text = await self._guarded(act, agent.name, work)
             if not await service.save_session(agent, user, instance_id, agent.name, profile, was_new_session=new):
                 logger.warning("stategraph: instance %s of %s was not saved; a continue after a restart "
                                "would miss its conversation", instance_id, agent.name)
             return text
         finally:
+            spend.into(act.meta)  # what it cost so far: a failed or stopped run cost too
+
             def release(*_: Any) -> None:
                 self._busy.discard(instance_id)
                 release_request_user_tree(request_id)  # with the ids its tool calls registered
@@ -246,14 +249,17 @@ class ScarabHiveBackend:
                 release()
 
     @staticmethod
-    async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool) -> str:
-        """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure."""
+    async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool,
+                      spend: _Spend) -> str:
+        """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure.
+        ``spend`` adds up what its calls cost."""
         from contextlib import aclosing
 
         text = ""
         async with aclosing(agent.run_events(task=message, request_id=request_id, session_id=instance_id,
                                              use_advanced_model=advanced)) as events:
             async for event in events:
+                spend.add(event)
                 kind = event.get("type")
                 if kind == "final":
                     text = event.get("summary") or ""  # read on to "end": the run stores its messages there
@@ -491,6 +497,61 @@ def _control_tools() -> tuple[str, ...]:
 
     text = (Path(__file__).resolve().parents[1] / "schema.yaml").read_text(encoding="utf-8")
     return tuple(tool for tool in re.findall(r'name: "\{\{ name \}\}_(\w+)"', text) if tool not in READ_ONLY_TOOLS)
+
+
+class _Spend:
+    """What an agent run cost: its LLM calls and its sub-agents' (their events come as ``sub_run``), each priced by
+    the core's rule -- the provider's billed cost wins, else the price table's estimate. A final event repeats its
+    run's last call: it counts only when it differs (the CLI counts so). LLM calls a tool makes itself are not in
+    the run's events and not in here."""
+
+    def __init__(self, model: Optional[str]) -> None:
+        self.models: dict[str, Optional[str]] = {"": model}  # by run: "" the agent's own, else a sub-agent's run id
+        self.batch: dict[str, bool] = {}
+        self.last: dict[str, Any] = {}
+        self.tokens = {"prompt": 0, "completion": 0, "cached": 0}
+        self.cost = 0.0
+        self.estimated = False
+        self.unpriced = 0
+
+    def add(self, event: dict[str, Any]) -> None:
+        from agent_system.llm.pricing import normalize_usage, resolve_call_cost
+
+        run = ""
+        if event.get("type") == "sub_run" and isinstance(event.get("event"), dict):
+            run, event = str(event.get("run_id") or "?"), event["event"]
+        kind, usage = event.get("type"), event.get("usage")
+        if kind not in ("thinking_complete", "final") or not isinstance(usage, dict):
+            return
+        if kind == "final" and usage == self.last.get(run):
+            return
+        if kind == "thinking_complete" and isinstance(event.get("model"), str) and event["model"]:
+            self.models[run] = event["model"]  # a final names no model, nor a batch: its run's last call does
+            self.batch[run] = event.get("batch") is True
+        self.last[run] = usage
+        call = normalize_usage(usage)
+        self.tokens["prompt"] += call.prompt_tokens
+        self.tokens["completion"] += call.completion_tokens
+        self.tokens["cached"] += call.cached_tokens
+        cost, estimated = resolve_call_cost(usage, self.models.get(run), is_batch=self.batch.get(run, False))
+        if cost is None:
+            self.unpriced += 1
+            return
+        self.cost += cost
+        self.estimated = self.estimated or estimated
+
+    def into(self, meta: dict[str, Any]) -> None:
+        """Add to the activity's meta: a feedback round's run adds to the rounds before it."""
+        tokens = meta.setdefault("tokens", {"prompt": 0, "completion": 0, "cached": 0})
+        for key, value in self.tokens.items():
+            tokens[key] = tokens.get(key, 0) + value
+        meta["cost"] = round((meta.get("cost") or 0.0) + self.cost, 6)
+        if self.models.get(""):
+            meta["model"] = self.models[""]
+        if self.estimated:
+            meta["cost_is_estimate"] = True
+        if self.unpriced:  # the cost leaves these out: no billed figure, no price for their model
+            meta["cost_unpriced_calls"] = meta.get("cost_unpriced_calls", 0) + self.unpriced
 
 
 def _protect(act: "ActivityRun", request_id: str) -> None:

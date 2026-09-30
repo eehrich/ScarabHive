@@ -71,14 +71,14 @@ tools:
   - type: function
     function:
       name: "{{ name }}_run_machine"
-      description: "Run a machine. mocks {state path: out} answer instead of the activity ({\"$visits\": [out1, out2]} per use of the path in the run, {\"$error\": {type, message}} to fail it); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key makes it the same request again: the run with that key is attached to while it runs, resumed when interrupted, and answered again (ended: its status) once it ended; only a transient failure starts a new run."
+      description: "Run a machine. mocks {state path: out} answer instead of the activity ({\"$visits\": [out1, out2]} per use of the path in the run, {\"$error\": {type, message}} to fail it, {\"$timeout\": true} on a wait or timer state for its time up at once); mock_only refuses every unmocked agent, tool or decision. With wait=finish the call returns when the run ends, pauses at a breakpoint or waits for an event (at most max_wait seconds). run_key makes it the same request again: the run with that key is attached to while it runs, resumed when interrupted, and answered again (ended: its status) once it ended; only a transient failure starts a new run."
       parameters:
         type: object
         properties:
           machine_id: {type: string, description: "id of the machine to run"}
           request: {type: string, description: "instead of machine_id: '<machine id> {json params}' or '<machine id> key=value ...' (the slash command's line)"}
           params: {type: object, description: "the machine's params (run input)"}
-          mocks: {type: object, description: "state path -> out; {\"$visits\": [...]} per visit; {\"$error\": {type, message}} to fail"}
+          mocks: {type: object, description: "state path -> out; {\"$visits\": [...]} per visit; {\"$error\": {type, message}} to fail; {\"$timeout\": true} times a wait state out"}
           mock_only: {type: boolean, default: false, description: "refuse every unmocked agent, tool or decision"}
           breakpoints: {type: array, items: {}, description: "state names, 'state@exit', or {state, at, condition}"}
           watchpoints: {type: array, items: {}, description: "Python expressions over the scope, or {expr, condition}"}
@@ -110,7 +110,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_control_run"
-      description: "Debugger and lifecycle: pause, continue, step, run_to (state), terminate, resume (an interrupted run), fork (from top-level step at_step), set_breakpoints, set_watchpoints, evaluate (expr, read-only), set (path, expr; only while paused)."
+      description: "Debugger and lifecycle: pause, continue, step, run_to (state), terminate, resume (an interrupted run), fork (from top-level step at_step), set_breakpoints, set_watchpoints, evaluate (expr, read-only), set (path, expr; only while paused). Of a run another process holds, pause, continue, step and terminate go to that process."
       parameters:
         type: object
         properties:
@@ -133,7 +133,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_send_event"
-      description: "Send a declared event to a run. It goes to the frame whose active states accept it; name frame when several do. An event nobody accepts yet waits in the run's inbox."
+      description: "Send a declared event to a run. It goes to the frame whose active states accept it; name frame when several do. A frame that waits has taken it when the answer comes; one busy with an activity takes it when it next waits. An event nobody accepts yet waits in the run's inbox."
       parameters:
         type: object
         properties:

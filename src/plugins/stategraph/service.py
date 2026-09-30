@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .engine.backend import NoBackend, ScarabHiveBackend, make_config_check
 from .engine.debugger import Breakpoint, UnknownState, Watchpoint, parse_points
-from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore
+from .engine.journal import ACTIVE_STATUSES, TERMINAL_STATUSES, RunStore, utc_now
 from .engine.machine import CompileError
-from .engine.runner import RunManager, failed_transiently
+from .engine.runner import REMOTE_CONTROLS, RunManager, failed_transiently
 from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
 from .model.spec import agent_entry
@@ -75,6 +75,8 @@ _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: How long terminate waits for the run to end (its finally activities run first) before it answers.
 TERMINATE_WAIT = 10.0
+#: How long a control request waits for the process that holds the run to take it (it looks each second).
+CONTROL_WAIT = 5.0
 #: The statuses a run row has.
 RUN_STATUSES = ("running", "paused", "waiting", "interrupted", "succeeded", "failed", "cancelled")
 #: The folder of machines in the writable roots that name none: the author's own.
@@ -438,14 +440,40 @@ class StateGraphService:
             raise ServiceError(409, str(exc)) from None
 
     async def _await_end(self, run_id: str, timeout: float) -> None:
-        """Until the run's task here has ended, at most ``timeout`` seconds (the run itself is never cancelled)."""
+        """Until the run's task here -- or another process's run, by its row -- has ended, at most ``timeout``
+        seconds (the run itself is never cancelled)."""
         live = self.runs.live.get(run_id)
         if live is None:
+            deadline = time.monotonic() + timeout
+            while ((self.run_store.get_run(run_id) or {}).get("status") not in TERMINAL_STATUSES
+                   and time.monotonic() < deadline):
+                await asyncio.sleep(0.2)
             return
         try:
             await asyncio.wait_for(asyncio.shield(live.task), timeout)
         except asyncio.TimeoutError:
             logger.info("stategraph: run %s still ends after %.0fs (finally activities)", run_id, timeout)
+
+    async def _control_elsewhere(self, run_id: str, action: str) -> bool:
+        """Hand ``action`` to the process that holds the run (it looks each second): whether one holds it. One that
+        does not take it within CONTROL_WAIT gets it withdrawn, and the caller hears so."""
+        request = {"action": action, "id": os.urandom(6).hex()}  # its own: a withdraw leaves another's alone
+        asked = self.run_store.request_control(run_id, request, now=utc_now()) if action in REMOTE_CONTROLS else ""
+        if asked == "open":
+            raise ServiceError(409, f"run {run_id}: another control request waits for the process that holds it; "
+                                    "try again in a moment")
+        if asked != "requested":
+            return False
+        try:
+            deadline = time.monotonic() + CONTROL_WAIT
+            while (self.run_store.get_run(run_id) or {}).get("control") == request and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+        finally:  # not taken in time, or the asker stopped: taken back, so no later resume meets it
+            withdrawn = self.run_store.withdraw_control(run_id, request)
+        if withdrawn:
+            raise ServiceError(409, f"run {run_id} is held by {(self.run_store.get_run(run_id) or {}).get('owner')},"
+                                    f" which did not take the {action} within {CONTROL_WAIT:.0f}s")
+        return True
 
     async def _terminate_elsewhere(self, run_id: str) -> None:
         """A run no process here runs: resume it into its termination, so its finally activities run (§3.10).
@@ -523,12 +551,13 @@ class StateGraphService:
             if action == "terminate":
                 if run_id in self.runs.live:
                     self.runs.control(run_id, action)
-                else:
+                elif not await self._control_elsewhere(run_id, action):  # none holds it: resumed into its end here
                     await self._terminate_elsewhere(run_id)
                 await self._await_end(run_id, TERMINATE_WAIT)  # its finally activities run first
             elif action in ("pause", "continue", "step", "run_to"):
                 state = _required(kwargs, "state") if action == "run_to" else kwargs.get("state")
-                self.runs.control(run_id, action, state=state, machine=kwargs.get("machine"))
+                if run_id in self.runs.live or not await self._control_elsewhere(run_id, action):
+                    self.runs.control(run_id, action, state=state, machine=kwargs.get("machine"))
             elif action == "resume":
                 await self._resume(run_id)
             elif action == "fork":

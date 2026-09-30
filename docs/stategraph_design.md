@@ -248,7 +248,8 @@ checks of an `agent:` (SG005, SG007). `machine` is always a literal alias.
   `stategraph-call`; context variables copied), so the event
   loop -- terminate, timeouts, the lease heartbeat -- goes on meanwhile. A thread cannot be
   killed: on a timeout or terminate the activity ends at once and the thread's late result is
-  dropped. `sg.tool()` works only on the event loop: a sync function may return
+  dropped; `sg.cancelled` (a `threading.Event`, set once nobody waits for the answer) lets a long
+  function return early. `sg.tool()` works only on the event loop: a sync function may return
   `sg.tool(...)`, which is then awaited there, but not run it itself; an async function awaits
   it as usual.
 
@@ -751,7 +752,7 @@ frame := "" | frame "s" N "/" ("m" | "b." NAME | "i." INDEX) "/"
 
 | Kind | Key | Content |
 |---|---|---|
-| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `inputs` (the rendered fields the hash covers -- kept in the done or error row, what the activity was given), `out` or `error`, meta (instance id, request id, vars, cost, mocked, attempts, `failures`: `[{attempt, type, message}]` of the attempts a retry ran again, also in the started rows so a resume keeps them). An error raised by Python code (a `call`, a kind or backend bug) keeps the last frames of its traceback in `error.data.traceback` (2,000 characters from the end) and is logged. A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
+| `activity` | activity key | `status` started → done / error. `data`: kind, state path, `input_hash`, attempt, `inputs` (the rendered fields the hash covers -- kept in the done or error row, what the activity was given), `out` or `error`, meta (instance id, request id, vars, model, cost -- an agent's also `tokens`, `cost_is_estimate`, `cost_unpriced_calls` --, mocked, attempts, `failures`: `[{attempt, type, message}]` of the attempts a retry ran again, also in the started rows so a resume keeps them). An error raised by Python code (a `call`, a kind or backend bug) keeps the last frames of its traceback in `error.data.traceback` (2,000 characters from the end) and is logged. A composite activity (`parallel`, `map`, `machine`) records its aggregate outcome under its own key; its children have their own rows. |
 | `event` | `pending:<id>`, then `<frame>s<N>:event` once consumed | name and data (the inbox) |
 | `edit` | `<frame>s<N>:<hook>:<n>` | a debugger `set`: path and the evaluated JSON value |
 | `timer` | `<frame>s<N>:timer` | a fired wait timeout |
@@ -877,7 +878,13 @@ A run executes as an asyncio task in the process that started it (usually the AP
 - **Controls follow the lease.** Debugger commands, `set`, `evaluate` and events act in
   the owning process only; a process that has lost the run refuses them ("another process
   owns run ... now"), and a debugger edit it could not journal leaves its context
-  unchanged. Breakpoints of a run that no process holds a live lease on are stored in its
+  unchanged. Another process asks for pause, continue, step or terminate through the run's
+  row (`control`, a request with its own id): the owner takes its runs' requests each second
+  (a partial index holds only the rows with one open) and carries them out; one it does not
+  take within 5 s -- or whose asker stopped -- is withdrawn and refused (409). One request at a
+  time: a second one while the first is open is refused, not written over it; a sweep or a
+  new owner drops a request nobody took. `run_to` and breakpoints need the owner's
+  machine to check them, `evaluate` and `set` an answer back: they stay in the owning process. Breakpoints of a run that no process holds a live lease on are stored in its
   row and apply when it is resumed; while another process holds it they are refused with
   that owner's name.
 - **`run_key`.** A caller may pass a `run_key` (e.g. its request id): the same request again
@@ -1007,11 +1014,11 @@ src/plugins/stategraph/
 | `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
-| `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
+| `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`, `{"$timeout": true}` for a wait state), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
 | `list_runs` | `machine_id?`, `status?`, `limit?` | the newest runs the caller may see (own and nobody's; an admin every run) |
 | `get_run` | `run_id`, `steps?`, `after?` (a journal seq: the rows after it), `kinds?`, `state?`, `wait?` (`finish`: wait for a running run's end, pause or wait; `max_wait`), `full_output?` | `run_status`, `state`, `output`, `error`, `frames` (with their context, and a wait state's `waiting_since`/`deadline`), `inbox`, journal rows (texts over 2,000 characters cut, the output over 20,000) |
 | `control_run` | `run_id`, `action` (pause, continue, step, run_to, terminate, resume, fork, set_breakpoints, set_watchpoints, evaluate, set), + action args (a fork: `at_step`, `definition`, `pause`, `mocks`), `steps?` | run state (with `steps`: its journal rows) |
-| `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not |
+| `send_event` | `run_id`, `name`, `data?`, `frame?` | accepted, or why not -- a waiting frame has taken it when the answer comes, so a read right after shows what it started (a frame busy with an activity takes it when it next waits) |
 
 `get_run`, `control_run` and `send_event` answer another user's run as missing unless the asker
 is an admin or auth is off (§8.3).
@@ -1234,9 +1241,9 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 
 ## 11. Known limits of the prototype
 
-- **Cross-process debugging.** Runs of other processes cannot be paused from the panel.
-  Commands would go through the run row, polled at hooks. That is the next step once runs
-  execute in writer_jobs.
+- **Cross-process debugging.** Of a run another process holds, pause, continue, step and
+  terminate go through its row (§5.7); `run_to`, breakpoints, `evaluate` and `set` act only in
+  the owning process.
 - **Browser tests.** The panel is checked for syntax and logic with JavaScriptCore (`jsc`), or
   with node where `jsc` is missing (`tests/js/node_jsc.mjs` gives node jsc's `print`, `load` and
   `readFile`, so one test source serves both), not in a browser. The first real browser session
@@ -1244,5 +1251,6 @@ is configuration only (`story_designer_agent` plus `v4_sam.allowed_agents`, and
 - **The v6 machine has not run live yet.** It is tested against a simulated v6 world (store
   semantics, forum, story row, agents as fakes, a crash and resume in the beats); its first run
   with real panels is a manual step, best with a breakpoint after the worlds.
-- **Cost.** An agent run reports no usage to the backend. `run.cost` and `limits.max_cost` need the usage
-  tracker's per-request-id sums; only `decide` reports cost today.
+- **Cost.** An agent activity reports its LLM calls' tokens and cost, its sub-agents' included (their
+  events reach the run's stream), priced per call by the core's rule; LLM calls a tool makes on its own
+  are not in it. `run.cost` and `limits.max_cost` are not built.

@@ -58,6 +58,9 @@ Special forms:
 - `{"$error": {"type": "tool_failed", "message": "doc not found", "data": {...}}}` --
   the activity fails with that error. Combine: `{"$visits": [{"$error": {...}},
   "second try works"]}`.
+- `{"$timeout": true}` at a wait state with a `timeout` (or a timer state, `after`) -- its
+  time is up at once, so the test drives the timeout path without waiting it out; in
+  `$visits`, any other value lets that visit wait as usual.
 
 ### Proving a machine
 

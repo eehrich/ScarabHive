@@ -409,6 +409,21 @@ const CASES = {
     check(bar.includes('data-control="terminate"') && !/data-control="terminate" disabled/.test(bar), 'Terminate is off');
   },
 
+  async a_run_of_another_process_can_be_paused_continued_and_terminated_but_not_run_to_a_state() {
+    const enabled = (bar, control) => bar.includes(`data-control="${control}"`)
+      && !new RegExp(`data-control="${control}" disabled`).test(bar);
+    runAnswer = { ...RUN, status: 'running', active: false, debug: { ...RUN.debug, paused: null } };
+    await boot('?machine=review&run=r1');
+    let bar = $('debugBar').innerHTML;
+    check(enabled(bar, 'pause') && enabled(bar, 'terminate') && !enabled(bar, 'run_to') && bar.includes('in another process'),
+      `running elsewhere: ${bar}`);
+    runAnswer = { ...runAnswer, status: 'paused' };
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await settle();
+    bar = $('debugBar').innerHTML;
+    check(enabled(bar, 'continue') && enabled(bar, 'step') && !enabled(bar, 'pause'), `paused elsewhere: ${bar}`);
+  },
+
   async a_click_on_a_states_handle_connects_nothing() {
     await boot('?machine=review');
     const node = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === 'write');

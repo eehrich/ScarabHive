@@ -137,6 +137,183 @@ async def test_run_machine_wait_finish_returns_when_the_run_waits(server):
     assert finished["run_status"] == "succeeded", finished
 
 
+async def test_a_read_right_after_send_event_shows_what_the_event_started(server):
+    result, _ = await run_tool(server, "stategraph_run_machine",
+                               {"machine_id": "approval", "mock_only": True, "max_wait": 20})
+    await run_tool(server, "stategraph_send_event", {"run_id": result["run_id"], "name": "approve"})
+
+    now, _ = await run_tool(server, "stategraph_get_run", {"run_id": result["run_id"]})
+
+    assert "inbox" not in now and (now["run_status"], now["state"]) != ("waiting", "waiting_for_ok"), now
+
+
+async def test_get_run_wait_finish_waits_while_a_waiting_frame_has_not_taken_its_event_yet(server):
+    result, _ = await run_tool(server, "stategraph_run_machine",
+                               {"machine_id": "approval", "mock_only": True, "max_wait": 20})
+    # the service's own send_event only queues it -- as the panel and a callback URL send one
+    server.service.send_event(result["run_id"], "approve")
+
+    finished, _ = await run_tool(server, "stategraph_get_run", {"run_id": result["run_id"], "wait": "finish"})
+
+    assert finished["run_status"] == "succeeded", finished
+
+
+async def test_run_manager_wait_goes_on_until_the_run_took_its_event_here_and_in_another_process(server, monkeypatch):
+    result, _ = await run_tool(server, "stategraph_run_machine",
+                               {"machine_id": "approval", "mock_only": True, "max_wait": 20})
+    server.service.send_event(result["run_id"], "approve")
+
+    here = await server.run_manager.wait(result["run_id"], timeout=5.0)
+
+    assert here["status"] == "succeeded", here
+    due = {"id": "x", "status": "waiting", "view": {"frames": [{"prefix": "", "accepts": ["approve"]}],
+                                                     "inbox": [{"name": "approve", "frame": None}]}}
+    rows = iter([due, {"id": "x", "status": "succeeded", "view": {}}])
+    monkeypatch.setattr(server.run_manager.store, "get_run", lambda run_id: next(rows))
+    elsewhere = await server.run_manager.wait("x", timeout=5.0)  # not live here: read from its row
+    assert elsewhere["status"] == "succeeded", elsewhere
+
+
+async def test_get_run_goes_on_waiting_while_another_processs_run_has_not_taken_its_event(server, monkeypatch):
+    due = {"id": "x", "status": "waiting", "view": {"frames": [{"prefix": "", "accepts": ["approve"]}],
+                                                     "inbox": [{"name": "approve", "frame": None}]}}
+    rows = iter([due, {"id": "x", "status": "succeeded", "view": {}}])
+
+    async def wait(run_id, timeout=None):  # run_manager.wait answering at its timeout: still due, then done
+        return next(rows)
+
+    monkeypatch.setattr(server.run_manager, "wait", wait)
+
+    assert (await server._wait("x", 5.0, None, terminate=False))["status"] == "succeeded"
+
+
+async def test_another_process_pauses_continues_and_terminates_a_run_it_does_not_hold(server, tmp_path):
+    """Two servers on one runs.db are two processes: the second controls the first's run through the row."""
+    from plugins.stategraph.service import ServiceError
+
+    # its finally activity takes a moment: a terminate from elsewhere answers once the run ended, not before
+    (tmp_path / "machines" / "lingering.yaml").write_text(
+        APPROVAL.replace("id: approval", "id: lingering\npython: lingering.py\nfinally: {call: linger}"), encoding="utf-8")
+    (tmp_path / "machines" / "lingering.py").write_text(
+        "import asyncio\n\nasync def linger():\n    await asyncio.sleep(0.5)\n", encoding="utf-8")
+    other = StateGraphServer("stategraph", AgentSystemConfig(), tool_config(tmp_path, allowed_users=["ops_*"]))
+    try:
+        result, _ = await run_tool(server, "stategraph_run_machine",
+                                   {"machine_id": "lingering", "mock_only": True, "max_wait": 20})
+        run_id = result["run_id"]
+        owner = server.run_manager.live[run_id].ctx.debugger
+        assert run_id not in other.run_manager.live, "fixture: the second holds nothing"
+
+        with pytest.raises(ServiceError) as refused:  # its state is checked against the machine where the run is
+            await other.service.control_run(run_id, "run_to", state="approved")
+        assert refused.value.status == 409 and owner.run_to is None, refused.value.message
+        paused = await other.service.control_run(run_id, "pause")
+        assert (owner.mode, paused["debug"]["mode"]) == ("pause", "pause"), paused["debug"]
+        await other.service.control_run(run_id, "continue")
+        assert owner.mode == "run"
+        await other.service.control_run(run_id, "step")
+        assert owner.mode == "step"
+        ended = await other.service.control_run(run_id, "terminate")
+        assert ended["status"] == "cancelled", ended
+    finally:
+        await other.stop_plugin()
+
+
+async def test_a_control_request_its_holder_does_not_take_is_withdrawn_and_refused(server, monkeypatch):
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import ServiceError
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 0.3)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")
+
+    with pytest.raises(ServiceError) as refused:
+        await server.service.control_run("held", "pause")
+
+    assert refused.value.status == 409 and "elsewhere:1:x" in refused.value.message, refused.value.message
+    assert server.run_store.get_run("held")["control"] is None, "withdrawn: a late holder must not pause it anyway"
+
+
+async def test_one_control_request_at_a_time_and_a_stopped_asker_takes_its_own_back(server, monkeypatch):
+    import asyncio
+
+    from plugins.stategraph import service as service_module
+    from plugins.stategraph.service import ServiceError
+    from plugins.stategraph.tests.stategraph_testkit import seed_run
+
+    monkeypatch.setattr(service_module, "CONTROL_WAIT", 1.0)
+    seed_run(server.run_store, "held", {"m.yaml": APPROVAL.replace("id: approval", "id: m")},
+             owner="elsewhere:1:x", lease=60, status="waiting")  # nobody polls: requests stay open
+    first = asyncio.ensure_future(server.service.control_run("held", "terminate"))
+    await _tick()
+    assert server.run_store.get_run("held")["control"]["action"] == "terminate", "fixture: the first is open"
+
+    with pytest.raises(ServiceError) as second:
+        await server.service.control_run("held", "pause")
+
+    assert second.value.status == 409 and "another control request" in second.value.message, second.value.message
+    assert server.run_store.get_run("held")["control"]["action"] == "terminate", "the second wrote over the first"
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert server.run_store.get_run("held")["control"] is None, "a stopped asker left its request for a later resume"
+
+
+def test_a_sweep_or_a_new_owner_drops_a_request_nobody_took(tmp_path):
+    from plugins.stategraph.engine.journal import RunStore
+    from plugins.stategraph.tests.stategraph_testkit import seed_run, utc_at
+
+    store = RunStore(tmp_path / "runs.db")
+    machine = {"m.yaml": APPROVAL.replace("id: approval", "id: m")}
+    for run_id in ("swept", "taken", "mine"):
+        seed_run(store, run_id, machine, owner="old:1:x", lease=60, status="waiting")
+        assert store.request_control(run_id, {"action": "pause", "id": run_id}, now=utc_at(0)) == "requested"
+    expire = "UPDATE runs SET lease_until = ? WHERE id = ?"
+
+    store._db().execute(expire, (utc_at(-5), "swept"))
+    store.mark_expired(now=utc_at(0))
+    store._db().execute(expire, (utc_at(-5), "taken"))  # after the sweep: only the new owner can drop it
+    store.take_lease("taken", "new:2:y", utc_at(60), now=utc_at(0))
+    store.take_lease("mine", "old:1:x", utc_at(60), now=utc_at(0))  # its own owner again: it still takes it
+
+    assert [store.get_run(r)["control"] for r in ("swept", "taken")] == [None, None]
+    assert store.get_run("mine")["control"] == {"action": "pause", "id": "mine"}
+    store.close()
+
+
+def test_an_old_runs_db_gets_the_control_column_and_its_index(tmp_path):
+    import sqlite3
+
+    from plugins.stategraph.engine.journal import RunStore
+
+    first = RunStore(tmp_path / "runs.db")
+    first._db().execute("DROP INDEX runs_control")
+    first._db().execute("ALTER TABLE runs DROP COLUMN control")  # as a runs.db from before it
+    first.close()
+
+    RunStore(tmp_path / "runs.db")._db()
+
+    db = sqlite3.connect(tmp_path / "runs.db")
+    assert "control" in {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+    assert "runs_control" in {row[1] for row in db.execute("PRAGMA index_list(runs)")}
+    db.close()
+
+
+def test_a_row_names_an_event_due_only_for_a_frame_that_waits_for_it():
+    from plugins.stategraph.engine.runner import row_event_due
+
+    def row(status="waiting", accepts=("approve",), inbox=({"name": "approve", "frame": None},)):
+        return {"status": status, "view": {"frames": [{"prefix": "", "accepts": list(accepts)}], "inbox": list(inbox)}}
+
+    assert row_event_due(row())
+    assert row_event_due(row(inbox=[{"name": "approve", "frame": ""}]))
+    assert not row_event_due(row(inbox=[{"name": "approve", "frame": "s3/m/"}])), "for another frame"
+    assert not row_event_due(row(accepts=["reject"])), "an event no frame takes stays queued: no wait for it"
+    assert not row_event_due(row(inbox=[])), "nothing sent"
+    assert not row_event_due(row(status="paused")), "a paused run takes nothing"
+
+
 async def test_send_event_line_does_not_call_an_accepted_event_queued(server):
     result, _ = await run_tool(server, "stategraph_run_machine",
                                {"machine_id": "approval", "mock_only": True, "max_wait": 20})

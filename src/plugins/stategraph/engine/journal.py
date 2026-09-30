@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS runs (
     owner TEXT,
     lease_until TEXT,
     journal_format INTEGER,
-    nesting TEXT
+    nesting TEXT,
+    control TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
 CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine_id, created_at);
@@ -86,9 +87,9 @@ CREATE TABLE IF NOT EXISTS scheduler_leases (
 );
 """
 
-_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting")
+_JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control")
 #: Columns a runs.db from before them lacks: added when it is opened.
-_ADDED_COLUMNS = {"nesting": "TEXT"}
+_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT"}
 
 
 def utc_now() -> str:
@@ -128,6 +129,9 @@ class RunStore:
                     except sqlite3.OperationalError as exc:  # another process added it meanwhile
                         if "duplicate column" not in str(exc):
                             raise
+            # the owners' poll for control requests (request_control) reads this, not the rows: it holds only
+            # the few runs with a request open, and control lies behind the payloads of the rows
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_control ON runs(owner) WHERE control IS NOT NULL")
             self._conn = conn
         return self._conn
 
@@ -244,7 +248,8 @@ class RunStore:
             swept = []
             for row in rows:  # the condition again AT WRITE TIME: a run renewed or finished meanwhile is left alone
                 cursor = self._db().execute(
-                    f"UPDATE runs SET status = 'interrupted', updated_at = ? WHERE id = ? AND status IN ({active})"
+                    f"UPDATE runs SET status = 'interrupted', control = NULL, updated_at = ?"  # nobody takes it now
+                    f" WHERE id = ? AND status IN ({active})"
                     " AND (lease_until IS NULL OR lease_until < ?)", (utc_now(), row["id"], *ACTIVE_STATUSES, now))
                 if cursor.rowcount == 1:
                     swept.append(row["id"])
@@ -261,13 +266,43 @@ class RunStore:
                 (_dumps(debug), utc_now(), run_id, now))
             return cursor.rowcount == 1
 
+    def request_control(self, run_id: str, request: dict[str, Any], *, now: str) -> str:
+        """Ask the process that holds a live lease on the run for a control action: it takes the request within a
+        second (take_controls). ``requested``; ``open`` while another request waits for it (one at a time: a second
+        would replace the first unseen); ``unheld`` when nobody holds a live lease -- no process would take it."""
+        with self._lock:
+            db = self._db()
+            if db.execute("UPDATE runs SET control = ?, updated_at = ? WHERE id = ? AND owner IS NOT NULL"
+                          " AND lease_until >= ? AND control IS NULL",
+                          (_dumps(request), utc_now(), run_id, now)).rowcount:
+                return "requested"
+            row = db.execute("SELECT control, lease_until FROM runs WHERE id = ?", (run_id,)).fetchone()
+            return "open" if row and row["control"] is not None and (row["lease_until"] or "") >= now else "unheld"
+
+    def take_controls(self, owner: str) -> list[tuple[str, dict[str, Any]]]:
+        """The control requests for the runs ``owner`` holds, each cleared as it is taken."""
+        with self._lock:
+            db = self._db()
+            rows = db.execute("SELECT id, control FROM runs WHERE owner = ? AND control IS NOT NULL",
+                              (owner,)).fetchall()
+            return [(row["id"], _loads(row["control"])) for row in rows
+                    if db.execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
+                                  (row["id"], row["control"])).rowcount]
+
+    def withdraw_control(self, run_id: str, request: dict[str, Any]) -> bool:
+        """Take back a request its owner has not taken: whether it was still there."""
+        with self._lock:
+            return self._db().execute("UPDATE runs SET control = NULL WHERE id = ? AND control = ?",
+                                      (run_id, _dumps(request))).rowcount == 1
+
     def take_lease(self, run_id: str, owner: str, until: str, *, now: str) -> bool:
         """Take the run for ``owner`` if nobody holds a live lease on it (one conditional update)."""
         with self._lock:
             cursor = self._db().execute(
-                "UPDATE runs SET owner = ?, lease_until = ?, updated_at = ? WHERE id = ?"
+                "UPDATE runs SET control = CASE WHEN owner = ? THEN control END,"  # asked of the owner before
+                " owner = ?, lease_until = ?, updated_at = ? WHERE id = ?"
                 " AND (lease_until IS NULL OR lease_until < ? OR owner = ?)",
-                (owner, until, utc_now(), run_id, now, owner))
+                (owner, owner, until, utc_now(), run_id, now, owner))
             return cursor.rowcount == 1
 
     def add_callback(self, digest: str, run_id: str, event: str, frame: Optional[str], expires_at: float, *,

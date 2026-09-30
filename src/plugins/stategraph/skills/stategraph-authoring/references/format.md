@@ -565,7 +565,9 @@ raises `call_failed`.
 A sync function runs in a worker thread (the plugin's own pool of 8), so terminate and
 `timeout` take effect while it works. A hung call holds its thread; once all 8 are held, the
 next sync call waits, and the wait counts against its `timeout`. A thread cannot be killed: on a timeout or terminate the activity ends at once and the
-thread's late result is dropped, but the thread runs on to its end. `sg.tool()` works only on
+thread's late result is dropped, but the thread runs on to its end -- unless the function checks `sg.cancelled`, a
+`threading.Event` set once nobody waits for its answer (`if sg.cancelled.wait(1.0): return` instead of
+`time.sleep(1.0)`). `sg.tool()` works only on
 the run's event loop: make a function that calls tools `async` (a sync one may only
 `return sg.tool(...)`, which is then awaited).
 

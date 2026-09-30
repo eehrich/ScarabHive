@@ -356,6 +356,7 @@ PANEL_CASES = [
     "tab_in_a_read_only_file_types_nothing",
     "a_run_that_ended_leaves_the_debug_lists_to_the_next_run",
     "an_interrupted_run_can_be_terminated",
+    "a_run_of_another_process_can_be_paused_continued_and_terminated_but_not_run_to_a_state",
     "a_click_on_a_states_handle_connects_nothing",
     "a_double_click_renames_the_state_under_the_pointer",
     "a_click_zoomed_out_selects_and_moves_nothing",

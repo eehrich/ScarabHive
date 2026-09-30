@@ -1830,14 +1830,16 @@ function drawDebugBar() {
   bar.dataset.status = run.status;
   const paused = run.debug?.paused;
   const live = liveRun();
+  // held by another process: the server hands pause, continue, step and terminate over to it (a second at most)
+  const elsewhere = !run.active && ['running', 'waiting', 'paused'].includes(run.status);
   // run_to stops on a state's enter hook: offer only states that have one
   const states = (S.machine?.graph?.states || []).filter((s) => hooksOf(s).hooks.includes('enter')).map((s) => s.name);
   const can = {
-    pause: live && run.status === 'running',
-    resume: live && run.status === 'paused',
+    pause: (live || elsewhere) && run.status === 'running',
+    resume: (live || elsewhere) && run.status === 'paused',
     runTo: live && ['running', 'paused'].includes(run.status),
     // an interrupted run is live nowhere: terminating it runs its finally here and ends it (service: terminate)
-    terminate: (live && !TERMINAL.has(run.status)) || run.status === 'interrupted',
+    terminate: (live && !TERMINAL.has(run.status)) || elsewhere || run.status === 'interrupted',
     restart: run.status === 'interrupted',
   };
   const answers = run.status === 'waiting' ? acceptedEvents(run) : [];
@@ -1848,7 +1850,7 @@ function drawDebugBar() {
     ${run.machine_id !== S.machine?.id ? badge(`machine ${run.machine_id}`, 'warn') : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
-    ${!live && !TERMINAL.has(run.status) && run.status !== 'interrupted' ? html`<span class="pk-muted" title="Runs of other processes are shown from their journal; they cannot be paused from here">not in this process</span>` : ''}
+    ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; pause, continue, step and terminate reach it within a second -- run to, breakpoints and edits only in its own process">in another process</span>` : ''}
     ${S.pollError ? html`<span class="pk-text--warn" title="${S.pollError}">${icon('circle-alert', { size: 'sm' })} not refreshed</span>` : ''}
     <span class="pk-grow"></span>
     <button type="button" class="pk-btn pk-btn--sm" data-control="continue" ${can.resume ? '' : 'disabled'} title="Continue">${icon('play', { size: 'sm' })} Continue</button>

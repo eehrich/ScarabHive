@@ -159,8 +159,9 @@ activities still run), @{b}Resume@{ub} for an interrupted run, and
 @{b}Fork@{ub}: a new run that replays this one up to a top-level step and
 goes on live from there (with Shift: on the machine as it is now, not as
 it was when the run started). A run waiting for an event has a button per
-event it takes. "not in this process" marks a run another process runs:
-you see its journal, but cannot pause it from here.
+event it takes. "in another process" marks a run another process runs:
+you see its journal; Pause, Continue, Step and Terminate reach it within a
+second, Run to and breakpoints only in its own process.
 @{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
 with breakpoints.
 @{bullet}The @{b}Result@{ub} card: output or error, the final state of each
@@ -369,7 +370,10 @@ mock is keyed by the state path (@{tt}review@{utt}, or
 @{body}
 
 @{tt}$visits@{utt} answers each use of the path in turn, and the last one
-for every use after that; @{tt}$error@{utt} fails the activity.
+for every use after that; @{tt}$error@{utt} fails the activity. On a wait
+state with a @{tt}timeout@{utt}, or a timer state (@{tt}after@{utt}),
+@{tt}{"$timeout": true}@{utt} makes its time up at once: a test drives the
+timeout path without waiting it out.
 With @{b}mock only@{ub}, an agent, tool or decide activity without a mock
 fails with @{tt}unmocked@{utt}; a @{tt}call@{utt} activity runs, as it is
 local Python. A run lists the mocks it never used in
@@ -629,7 +633,11 @@ steps | 1 to 500: the answer carries that many journal rows; without it none
 
 Every argument is checked before anything acts; a wrong type, or an
 argument the table does not name, is refused (@{tt}http_422@{utt}). Evaluate and set on a run that
-is not paused, or not in this process, are refused (@{tt}http_409@{utt}).
+is not paused, or not in this process, are refused (@{tt}http_409@{utt}). Pause, continue, step
+and terminate reach a run another process holds: it takes them within a
+second, and one it does not take within 5 seconds is withdrawn and
+refused (@{tt}http_409@{utt}), as is a second request while one is open;
+run_to and breakpoints act in the owning process only.
 The answer is the run as run_machine gives it plus @{tt}action@{utt} --
 for evaluate and set @{tt}value@{utt}, for fork the new
 @{tt}run_id@{utt} and @{tt}forked_from@{utt}. The debugger's state (a
@@ -644,9 +652,11 @@ data | the event's payload; checked against the event's declared data schema
 frame | the frame to send it to, when several accept it
 @{body}
 
-@{tt}accepted: true@{utt} with the @{tt}frame@{utt} that takes it; an event
-no frame accepts yet is kept in the run's inbox (@{tt}queued: true@{utt})
-until one does. Refused (@{tt}http_409@{utt}): an undeclared event, data
+@{tt}accepted: true@{utt} with the @{tt}frame@{utt} that takes it. A frame
+that waits has taken it when the answer comes, so a @{tt}get_run@{utt}
+right after shows what the event started; a frame busy with an activity
+takes it when it next waits. An event no frame accepts yet is kept in the
+run's inbox (@{tt}queued: true@{utt}) until one does. Refused (@{tt}http_409@{utt}): an undeclared event, data
 that does not fit ("data does not match its declared schema"), several
 frames that accept it without @{tt}frame@{utt}, a run that has ended or
 runs in another process.
@@ -806,18 +816,18 @@ runs' own sessions.
 
 @{h2}Known gaps
 
-@{bullet}Right after @{tt}send_event@{utt}, the run takes the event a
-moment later: a @{tt}get_run@{utt} at once -- also with
-@{tt}wait: finish@{utt} -- can still show the old wait, with the event in
-@{tt}inbox@{utt}. Read again.
-@{bullet}An agent activity's answer carries no token count or cost; a
-@{tt}decide@{utt} activity carries its model and cost.
-@{bullet}A mock-only test cannot drive a wait state's timeout without
-waiting it out.
-@{bullet}Runs of another process can be read, not paused, from here.
+@{bullet}An agent activity's cost counts its LLM calls and its
+sub-agents'; LLM calls a tool makes on its own are not in it. A call with
+neither a billed cost nor a price for its model counts in
+@{tt}cost_unpriced_calls@{utt}, not in @{tt}cost@{utt}.
+@{bullet}Of a run another process holds, pause, continue, step and
+terminate reach it; run_to, breakpoints, evaluate and set act only in its
+own process.
 @{bullet}A synchronous @{tt}call@{utt} function runs in a worker thread:
-terminate and timeouts end the activity at once, but the thread runs on
-to its end and its answer is dropped.
+terminate and timeouts end the activity at once, and Python cannot stop
+the thread -- a long function checks @{tt}sg.cancelled@{utt} (a
+@{tt}threading.Event@{utt}, set once nobody waits for its answer) and
+returns early.
 @endnode
 
 @node setup "Setting it up"

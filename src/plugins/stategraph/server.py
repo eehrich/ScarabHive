@@ -23,7 +23,7 @@ from agent_system.tools.schema_based import SchemaBasedToolServer
 
 from . import kinds as _kinds  # noqa: F401  -- registers the built-in activity kinds
 from .engine.journal import RunStore
-from .engine.runner import RunManager
+from .engine.runner import RunManager, row_event_due as _event_due
 from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
 from .model.validate import agent_params_problems
@@ -392,7 +392,7 @@ class StateGraphServer(SchemaBasedToolServer):
         deadline = loop.time() + max_wait
         while True:
             row = await self.run_manager.wait(run_id, timeout=1.0)
-            if (row["status"] != "running" and not _timed(row)) or loop.time() >= deadline:
+            if (row["status"] != "running" and not _timed(row) and not _event_due(row)) or loop.time() >= deadline:
                 return row
             if _timed(row):  # run_manager.wait answers a wait at once: look again in a moment, not in a spin
                 await asyncio.sleep(max(0.0, min(1.0, deadline - loop.time())))
@@ -418,7 +418,7 @@ class StateGraphServer(SchemaBasedToolServer):
                                             user_id=params.get("_user_id"), after=params.get("after"),
                                             kinds=[kinds] if isinstance(kinds, str) else kinds, state=params.get("state"))
             row = read()  # the user's right to see it, and the filters, before any wait
-            if wait == "finish" and (row["status"] == "running" or _timed(row)):  # another process's too: polled
+            if wait == "finish" and (row["status"] == "running" or _timed(row) or _event_due(row)):  # polled elsewhere
                 await self._wait(row["id"], max_wait, params.get("_cancellation_token"), terminate=False)
                 row = read()
             if not self._holds_tokens(params.get("_user_id"), row.get("user_id")):
@@ -461,6 +461,8 @@ class StateGraphServer(SchemaBasedToolServer):
                                              params.get("frame"), user_id=params.get("_user_id"))
             if not result.get("accepted"):
                 raise ServiceError(409, result.get("reason") or "not accepted")
+            if not result.get("queued"):  # a read right after shows what the event started, not the old wait
+                await self.run_manager.taken(_need(params, "run_id"))
             return result
         return await self._run_tool(params, "send_event", body,
                                     lambda r: "event queued: no frame accepts it yet" if r.get("queued")

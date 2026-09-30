@@ -27,6 +27,7 @@ import itertools
 import json
 import logging
 import re
+import threading
 import time
 import traceback
 import types
@@ -152,9 +153,14 @@ class ActivityRun:
         Every ``await sg.tool(name, args)`` is a child tool activity of this call, keyed ``<key>/t.<n>`` in
         call order within the attempt and journaled like a ``tool`` activity: on resume the function runs
         again from the top and the finished calls replay. The path is ``<path>/<tool>`` (for mocks).
+
+        ``sg.cancelled`` (a threading.Event) is set once nobody waits for the answer any more -- a timeout, a
+        terminate, or the call returned: a sync function's thread cannot be stopped, a long one checks it (or
+        waits on it instead of sleeping) and returns early.
         """
         counter = itertools.count()
         closed = False
+        cancelled = threading.Event()
         loop = asyncio.get_running_loop()
 
         async def tool(name: str, args: Optional[dict[str, Any]] = None, *, idempotent: bool = False) -> Any:
@@ -172,8 +178,10 @@ class ActivityRun:
         def close() -> None:
             nonlocal closed
             closed = True
+            cancelled.set()
 
-        api = types.SimpleNamespace(**self.scope(), tool=tool, Error=ActivityError)  # except sg.Error as exc
+        api = types.SimpleNamespace(**self.scope(), tool=tool, Error=ActivityError,  # except sg.Error as exc
+                                    cancelled=cancelled)
         api._close = close
         return api
 

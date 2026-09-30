@@ -543,6 +543,101 @@ async def test_wait_timeout_raises_in_the_waiting_state(harness):
     assert time.monotonic() - started >= 0.2
 
 
+TIMED = """\
+    events: {go: {}}
+    context: {err: null, rounds: 0}
+    initial: w
+    states:
+      w:
+        timeout: 1h
+        transitions:
+          - trigger: go
+            target: pause
+          - trigger: error
+            target: expired
+            effect: ctx.err = [error.type, error.state]
+      pause:
+        after: 1h
+        transitions:
+          - target: done
+      done: {type: final, output: "{{ ctx.err }}"}
+      expired: {type: final, output: "{{ ctx.err }}"}
+    """
+
+
+async def test_a_mock_times_a_wait_out_at_once_with_the_timeout_path_a_real_one_takes(harness):
+    started = time.monotonic()
+
+    row = await harness.run(files(TIMED), mocks={"w": {"$timeout": True}}, mock_only=True, timeout=3)
+
+    assert (row["final_state"], row["output"]) == ("expired", ["wait_timeout", "w"]), row
+    assert time.monotonic() - started < 2, "the mock waited the hour out"
+    assert not (row.get("view") or {}).get("mocks_unused"), "the wait's mock counts as used"
+    timers = harness.store.rows(row["id"], kinds=("timer",))
+    assert [(r["state"], r["status"]) for r in timers] == [("w", "fired")], "journaled as a real time up: replay takes it"
+
+
+VISITED = """\
+    events: {go: {}, note: {}}
+    context: {err: null, notes: 0}
+    initial: w
+    states:
+      w:
+        timeout: 1h
+        transitions:
+          - trigger: note
+            effect: ctx.notes += 1
+          - trigger: go
+            target: again
+          - trigger: error
+            target: expired
+            effect: ctx.err = [error.type, ctx.notes]
+      again:
+        transitions: [{target: w}]
+      expired: {type: final, output: "{{ ctx.err }}"}
+    """
+
+
+async def test_a_time_up_mocks_visit_is_one_entry_of_the_state_and_a_resume_counts_on(harness):
+    manager = harness.manager()
+    run_id = await manager.start(runnable(files(VISITED)), mock_only=True,
+                                 mocks={"w": {"$visits": ["waits", {"$timeout": True}]}})
+    await until(lambda: _status(manager, run_id) == "waiting", what="the first entry waits")
+    manager.send_event(run_id, "note")  # an internal transition: the same entry, not the second visit
+    await asyncio.sleep(0.05)
+    assert _status(manager, run_id) == "waiting", "an internal transition took the next visit's mock"
+    await manager.shutdown()  # the process stops: a resume in another one goes on from the journal
+    other = harness.manager()
+    await other.resume(run_id)
+    await until(lambda: _status(other, run_id) == "waiting", what="the first entry waits again, as it did")
+
+    other.send_event(run_id, "go")  # the second entry: its visit's mock is the time up
+    row = await settle(other, run_id, 3)
+
+    assert row["output"] == ["wait_timeout", 1], row
+
+
+async def test_a_time_up_mock_on_a_wait_without_timeout_is_reported_unused(harness):
+    manager = harness.manager()
+    run_id = await manager.start(runnable(files(WAITER)), mock_only=True, mocks={"w": {"$timeout": True}})
+
+    await until(lambda: _status(manager, run_id) == "waiting", what="it waits: nothing to time out")
+
+    assert manager.live[run_id].ctx.view()["mocks_unused"] == ["w"], "a mock that does nothing must say so"
+
+
+async def test_a_timer_states_mock_goes_on_at_once_and_visits_pick_the_wait_that_times_out(harness):
+    manager = harness.manager()
+    run_id = await manager.start(runnable(files(TIMED)), mock_only=True,
+                                 mocks={"w": {"$visits": ["waits for its event"]}, "pause": {"$timeout": True}})
+    await until(lambda: _status(manager, run_id) == "waiting", what="w waits: its visit's mock is no time up")
+    manager.send_event(run_id, "go")
+
+    row = await settle(manager, run_id, 3)
+
+    assert (row["final_state"], row["output"]) == ("done", None), row
+
+
 async def test_run_stays_waiting_while_another_frame_still_waits(harness):
     manager = harness.manager()
     run_id = await manager.start(runnable(files("""\
@@ -791,6 +886,37 @@ async def test_retry_on_limits_the_retried_types(harness):
     assert row["status"] == "failed"
     assert row["error"]["type"] == "agent_failed"
     assert backend.count("a") == 1
+
+
+PATIENT = '''
+def patient(sg, path):
+    """Works 30 s in its worker thread -- unless nobody waits for its answer any more."""
+    import pathlib
+    stopped = sg.cancelled.wait(30)
+    pathlib.Path(path).write_text("stopped" if stopped else "ran out", encoding="utf-8")
+'''
+
+
+async def test_a_sync_call_learns_that_its_activity_timed_out_and_returns_early(harness, tmp_path):
+    seen = tmp_path / "seen.txt"
+    row = await harness.run(files(f"""\
+        context: {{err: null}}
+        initial: a
+        states:
+          a:
+            do: {{call: patient, args: {{path: "{seen.as_posix()}"}}, timeout: 100ms}}
+            transitions:
+              - target: done
+              - trigger: error
+                target: failed
+                effect: ctx.err = error.type
+          done: {{type: final}}
+          failed: {{type: final, output: "{{{{ ctx.err }}}}"}}
+        """, **{"m.py": HELPERS + PATIENT}), timeout=5)
+
+    assert row["output"] == "timeout", row
+    await until(seen.exists, timeout=5, what="the thread to return: it was told, it did not wait out its 30 s")
+    assert seen.read_text(encoding="utf-8") == "stopped"
 
 
 @pytest.mark.parametrize("on,calls,error", [("", 1, "timeout"), (", errors: [timeout]", 3, "timeout")],

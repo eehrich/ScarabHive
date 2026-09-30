@@ -127,10 +127,12 @@ class FakeAgent:
     so far -- and ends like ``Agent.run_events``: the answer on "final", the
     conversation stored in the tracker before "end". ``answer`` is a value, an
     exception instance (an "error" event), or a callable taking the call record and
-    returning either (sync or async).
+    returning either (sync or async). ``spent``: events a real run yields on its way (thinking_complete with
+    usage, sub_run), each run; ``final_usage`` rides on its final event, as a real run's repeats its last call.
     """
 
-    def __init__(self, name: str, answer: Any = None, *, template_vars: Optional[dict[str, Any]] = None):
+    def __init__(self, name: str, answer: Any = None, *, template_vars: Optional[dict[str, Any]] = None,
+                 spent: Any = (), final_usage: Optional[dict[str, Any]] = None):
         from types import SimpleNamespace
 
         from agent_system.servers.agent.components.session_tracking import SessionTracker
@@ -141,6 +143,8 @@ class FakeAgent:
         self._session_tracker = SessionTracker()
         self._session_service: Any = None
         self.calls: list[dict[str, Any]] = []
+        self.spent = list(spent)
+        self.final_usage = final_usage
 
     async def run_events(self, task: str, request_id: Optional[str] = None, session_id: Optional[str] = None,
                          llm_override: Any = None, llm_profile_info_override: Any = None,
@@ -158,6 +162,8 @@ class FakeAgent:
         self.calls.append(call)
         try:
             yield {"type": "start"}
+            for event in self.spent:
+                yield dict(event)
             answer = self.answer(call) if callable(self.answer) else self.answer
             if asyncio.iscoroutine(answer):
                 answer = await answer
@@ -169,7 +175,7 @@ class FakeAgent:
                 return
             tracker.set_session_messages(session_id, [*history, ChatMessage(role="user", content=task),
                                                       ChatMessage(role="assistant", content=answer)])
-            yield {"type": "final", "summary": answer}
+            yield {"type": "final", "summary": answer, **({"usage": self.final_usage} if self.final_usage else {})}
             yield {"type": "end"}
         finally:
             manager.unregister_request(request_id)

@@ -108,6 +108,44 @@ async def test_an_agent_runs_directly_on_a_sub_session_of_the_run(harness, tmp_p
     assert call["request_id"].startswith(f"{run_id}_"), "a terminate cancels the run's sub-requests by this prefix"
 
 
+async def test_an_agent_activity_carries_what_its_calls_and_its_sub_agents_cost_over_its_feedback_rounds(
+        harness, tmp_path, monkeypatch):
+    from agent_system.llm import pricing
+
+    monkeypatch.setattr(pricing, "estimate_cost",
+                        lambda model, *a, is_batch=False, **k: (0.005 if is_batch else 0.01) if model == "m-table" else None)
+
+    def used(prompt, completion, cost=None):
+        return {"prompt_tokens": prompt, "completion_tokens": completion, **({"cost": cost} if cost is not None else {})}
+
+    last = used(200, 20, 0.25)
+    agent = FakeAgent("writer", lambda call: '{"ok": true}' if len(agent.calls) > 1 else "not json", spent=[
+        {"type": "thinking_complete", "usage": used(100, 10, 0.5), "model": "m-billed"},
+        {"type": "sub_run", "run_id": "r1", "event": {"type": "thinking_complete", "usage": used(50, 5), "model": "m-table",
+                                                "batch": True}},
+        {"type": "sub_run", "run_id": "r1", "event": {"type": "final", "usage": used(50, 5)}},  # its last call again
+        {"type": "sub_run", "run_id": "r2", "event": {"type": "thinking_complete", "usage": used(7, 1), "model": "m-none"}},
+        {"type": "sub_run", "run_id": "r3", "event": {"type": "thinking_complete", "usage": used(10, 1), "model": "m-table",
+                                                    "batch": True}},
+        {"type": "sub_run", "run_id": "r3", "event": {"type": "final", "usage": used(20, 2)}},  # a call of its own
+        {"type": "thinking_complete", "usage": last, "model": "m-billed"}], final_usage=last)  # the last call again
+    host = AgentHost(tmp_path / "sessions", agent)
+
+    run_id, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: rate it, schema: {type: object}}
+          transitions: [{target: done}]
+        done: {type: final}
+        """))
+
+    assert row["status"] == "succeeded", row["error"]
+    meta = next(r for r in harness.store.rows(run_id, kinds=("activity",)) if r["state"] == "a")["data"]["meta"]
+    assert meta["feedback_rounds"] == 1, "fixture: two runs of the agent"
+    assert meta["tokens"] == {"prompt": 2 * 387, "completion": 2 * 39, "cached": 0}, meta
+    assert (meta["cost"], meta["cost_is_estimate"], meta["cost_unpriced_calls"], meta["model"]) == (
+        2 * 0.765, True, 2, "m-billed"), meta  # r3's final priced as its run's calls: batch
+
+
 async def test_a_continue_carries_the_instance_s_conversation(harness, tmp_path):
     host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
     _, row = await run(harness, host, machine(CREATE_THEN_CONTINUE, head="context: {inst: null}\n"))
