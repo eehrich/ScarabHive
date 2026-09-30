@@ -10,7 +10,7 @@ A skill is a folder of agent knowledge: a @{tt}SKILL.md@{utt} with the
 instructions, and often further files next to it -- references, scripts,
 templates -- that are only worth reading when a task needs them. This
 plugin gives an agent two tools to browse that knowledge: one lists the
-skills and the files each one carries, the other reads a skill's
+skills, or the files one skill carries, the other reads a skill's
 instructions or one of its files. It only reads; it changes nothing and
 stores nothing. It has no hooks and no panel.
 
@@ -76,15 +76,17 @@ reference is seen at once, and so is a file added to a skill already known.
 @{h2}Server settings and dependencies
 
 None. The plugin has no settings of its own -- the read limit of 100,000
-characters is fixed in the code -- and needs nothing beyond the core.
+characters per call is fixed in the code -- and needs nothing beyond the
+core.
 @endnode
 
 @node list "Listing skills"
 @{h1}Listing skills
 
 @{tt}skills_list@{utt} (the prefix follows the plugin instance) answers
-which skills there are and what files each carries. Without a name it lists
-all of them; with a name, only that one.
+which skills there are, and what files one of them carries. Without a name
+it lists all of them, each with name and description only; with a name,
+that one in detail, files included.
 
 @{h2}Parameters
 
@@ -99,8 +101,9 @@ name | a skill's name; spaces around it are removed. Missing, null or empty: all
 @{h2}The answer
 
 Without a name: @{tt}status@{utt} "success", @{tt}count@{utt} and
-@{tt}skills@{utt}, sorted by name. With a name: @{tt}status@{utt} and
-@{tt}skill@{utt}, one entry. Each entry has:
+@{tt}skills@{utt}, sorted by name, each entry only @{tt}name@{utt} and
+@{tt}description@{utt}. With a name: @{tt}status@{utt} and
+@{tt}skill@{utt}, one entry with all of these fields:
 
 @{table}
 Field | Meaning
@@ -148,6 +151,7 @@ carries.
 Parameter | Meaning
 name | required; the skill's name, spaces around it removed. A value that is not text is taken as text
 path | a file in the skill, relative to its folder (@{tt}references/catalog.md@{utt}); spaces around it removed. Missing, null or empty: the instructions from @{tt}SKILL.md@{utt}
+offset | where to start, in characters of the text described below; 0 when missing, null or empty. A whole number >= 0, also as text ("5"); anything else is an error. Equal to the text's length: empty content; beyond it: an error
 @{body}
 
 Without @{tt}path@{utt} the answer is the instructions without the YAML
@@ -170,13 +174,17 @@ Field | Meaning
 status | "success" or "error"
 skill | the skill's name
 path | the path asked for, or "SKILL.md"
-truncated | true when the text was longer than 100,000 characters
-content | the text, cut after 100,000 characters
+truncated | true when text is left after this piece
+content | at most 100,000 characters, starting at @{tt}offset@{utt}
+next_offset | only when @{tt}truncated@{utt}: the offset to send next (@{tt}offset@{utt} + 100,000)
 @{body}
 
-There is no way to read beyond the first 100,000 characters of a file:
-the tool has no offset. A longer reference has to be split in the skill
-itself.
+A longer file is read in pieces: call again with the same @{tt}name@{utt}
+and @{tt}path@{utt} and @{tt}offset@{utt} set to @{tt}next_offset@{utt},
+until an answer has no @{tt}next_offset@{utt}. The pieces joined are the
+whole text. Offsets count characters of the text as handed over -- for
+the instructions without @{tt}path@{utt}, that is the text without its
+header.
 
 @{h2}Errors
 
@@ -191,6 +199,8 @@ Unknown skill '<name>' | as with the list: @{tt}did_you_mean@{utt}, @{tt}availab
 '<path>' escapes skill '<name>' | the path leads out of the folder; @{tt}did_you_mean@{utt}, @{tt}files@{utt}
 '<path>' not found in skill '<name>' | no such file; @{tt}did_you_mean@{utt}, @{tt}files@{utt}
 Cannot read '<path>': <reason> | the file is not UTF-8 text, or reading it failed; nothing else
+'offset' must be a whole number >= 0, got <value> | anything but plain digits (at most 18): a negative number, one with a decimal point (5.0 too), other text; nothing else
+'offset' <n> is past the end (<length> chars) | the offset lies beyond the text; nothing else
 @{body}
 
 For the three path errors, " — did you mean '<file>'?" is added when a
@@ -216,7 +226,7 @@ file list, as in @{" Listing skills " link list}.
 @{h2}The tools
 
 Tool and parameter descriptions come from the plugin's
-@{tt}schema.yaml@{utt}; together they are about 1,060 characters in every
+@{tt}schema.yaml@{utt}; together they are about 1,130 characters in every
 request of an agent that has the tools.
 
 An agent with @{tt}on_demand@{utt} skills also gets an entry in its
@@ -232,17 +242,22 @@ entry at all; the log shows an error, once per agent, to allow them.
 @{table}
 Call | The chat shows
 list, all | "3 skill(s) available: a, b, c", or "no skills found (searched <roots>)"
-list, one | "tdd v0.0.0: 4 file(s) — SKILL.md, agents/openai.yaml, ..."
-read | "Reading tdd/mocking.md", then "tdd/mocking.md — 2345 chars", with " (truncated at 100000)" when cut
-error | the error text; path errors begin with the skill's name, "tdd: ..."
+list, one | "tdd v0.0.0: 4 file(s) — SKILL.md, agents/openai.yaml, mocking.md, tests.md"
+read | "Reading tdd/mocking.md", then "tdd/mocking.md — 2345 of 2345 chars", with " from <offset>" when an offset was given and " (truncated, next_offset <n>)" when text is left
+error | the error text; path and offset errors begin with the skill's name, "tdd: ..."
 @{body}
+
+The end lines are cut to 140 characters, ending in " …": a long list of
+skills or files would not fit one row.
 
 @{h2}Size of an answer
 
-The list of all skills carries every file of every skill. With the 42
-skills of this repository that was 273 files and about 25,700 characters
-in one answer -- asking for one skill by name is far smaller. A read is
-at most 100,000 characters of content.
+The list of all skills carries name and description only; with the 42
+skills of this repository that is about 14,500 characters, most of it
+descriptions (up to 1,024 characters each). It carried every file of every
+skill before -- 273 files and about 25,700 characters -- and the files now
+come with a name: 4,200 characters for the largest skill (61 files). A
+read is at most 100,000 characters of content.
 
 @{h2}Tokens and cache
 

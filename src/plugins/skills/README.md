@@ -5,11 +5,11 @@ to it -- and read the instructions or one file when a task needs it. Read-only; 
 the core finds under `skills.skill_dirs`; what a skill is and how one gets into a prompt is the core's "Skills" node
 in the ScarabHive guide. It has no hooks and no panel.
 
-- **Tools** `skills_list` (all skills, or one by `name`, with their files) and `skills_read` (`name`, optional
-  `path`; without a path the instructions from `SKILL.md`).
+- **Tools** `skills_list` (all skills with their description, or one by `name` with its files) and `skills_read`
+  (`name`, optional `path`; without a path the instructions from `SKILL.md`; `offset` continues a cut-off read).
 
 It is enabled in `config/plugins.yaml` (`skills: {type: skills, enabled: true}`); allow `+skills/*` in an agent's
 tool list. Agents with `on_demand` skills need it; agents that only use `always` skills do not.
 
-The full manual -- the answers and every error text, which paths may be read, the 100,000-character limit, when new
+The full manual -- the answers and every error text, which paths may be read, the 100,000-character limit per read, when new
 skills show up, and what the model sees -- is the plugin's guide, `skills.guide`, in the Help panel.

@@ -105,12 +105,13 @@ tools:
 
 It provides:
 
-- `skills_list()` — available skills, their descriptions and bundled files
+- `skills_list()` — available skills and their descriptions; `skills_list(name)` adds its bundled files
 - `skills_read(name)` — the skill's `SKILL.md`
 - `skills_read(name, path="references/catalog.md")` — a bundled file
 
 Reads are confined to the skill directory (no `..`, no absolute paths, symlinks
-resolved) and truncated at 100k characters so one file cannot flood the context.
+resolved) and truncated at 100k characters so one file cannot flood the context; `offset`
+continues a cut-off read.
 
 A miss returns `files` (what the bundle actually holds) and, when the request was
 close enough to be a typo, `did_you_mean`. Agents slip on `reference/` vs
