@@ -48,8 +48,12 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
         **temp_kw,
         api_key=api_key,
         base_url=cfg.base_url,
-        context_window=cfg.context_window or 200000,
-        request_timeout=cfg.request_timeout or 180,
+        # Set in the entry, not merely present: both fields have model defaults
+        # (32768, 120), and truthiness left this route's own unreachable.
+        context_window=(cfg.context_window if "context_window" in cfg.model_fields_set
+                        and cfg.context_window else 200000),
+        request_timeout=(cfg.request_timeout if "request_timeout" in cfg.model_fields_set
+                         and cfg.request_timeout else 180),
         max_retries=3,
         max_tokens=cfg.max_tokens or 8192,
         include_thinking=cfg.include_thoughts or False,
