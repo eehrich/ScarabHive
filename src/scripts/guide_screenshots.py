@@ -181,6 +181,9 @@ SHOTS = {
         document.querySelector('[data-tab="list"]').click();"""),
         ("map.png", "plugins.sub_agent_manager.tests.sam_panel_shot", "panel_app",
          "/plugins/sub_agent_manager/?session_id=s-1", (1000, 520))],
+    # not a plugin: the README's picture of the whole shell, written to docs/images/
+    "readme": [("shell.png", "scripts.readme_showcase", "showcase_app",
+                "/?panel=/plugins/context_usage_tracker/?session_id=5f2c8a41", (1440, 1000))],
 }
 
 
@@ -222,7 +225,7 @@ def shoot(browser: str, url: str, out: Path, size: tuple[int, int]) -> None:
     try:
         # the virtual time budget lets the page load its data and draw before the picture is taken
         subprocess.run([browser, "--headless=new", "--disable-gpu", f"--user-data-dir={profile}", "--no-first-run",
-                        "--disable-extensions", "--hide-scrollbars", "--force-device-scale-factor=1",
+                        "--disable-extensions", "--hide-scrollbars", "--force-device-scale-factor=1", "--lang=en-US",
                         "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
                         f"--window-size={size[0]},{size[1]}", "--virtual-time-budget=5000",
                         f"--screenshot={out}", url],
@@ -282,7 +285,8 @@ def main(plugins: list[str]) -> None:
                     with urllib.request.urlopen(url, timeout=30) as answer:
                         if answer.status != 200:
                             raise SystemExit(f"{url} answered {answer.status}")
-                    out = REPO / "src" / "plugins" / plugin / "docs" / name
+                    docs = REPO / "docs" / "images" if plugin == "readme" else REPO / "src" / "plugins" / plugin / "docs"
+                    out = docs / name
                     out.parent.mkdir(exist_ok=True)
                     shoot(browser, url, out, size)
                     print(f"{out.relative_to(REPO)}")

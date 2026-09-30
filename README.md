@@ -8,6 +8,15 @@ ScarabHive is a self-hosted framework for LLM agents, built around plugins. You 
 in YAML: its model, its prompt and the tools it may use. You run it in the browser, from the
 command line or through an OpenAI-compatible API.
 
+![The chat with an agent's steps, tool calls and a sub-agent, next to the cost and context of the session](docs/images/shell.png)
+
+> [!WARNING]
+> **ScarabHive is beta software.** It is under heavy development and **may contain serious
+> bugs**, including ones that lose data, run up LLM costs or weaken security. Behaviour,
+> configuration and APIs can change without notice. Do not expose it to the internet or to
+> people you do not trust. Keep backups of everything under `data/`, and watch your providers'
+> spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
+
 It is made for **developers and content creators who build agent workflows and want them to run
 well**: several agents that hand work to each other, a person who approves at the right step,
 and a clear view of what every call costs and why a run went the way it did.
@@ -23,13 +32,6 @@ and a clear view of what every call costs and why a run went the way it did.
 providers. About 75 ship with it, and a new one is a folder with three small files.
 
 ![A workflow as a state machine: an agent builds, a second one reviews, a person approves](src/plugins/stategraph/docs/readme.png)
-
-> [!WARNING]
-> **ScarabHive is beta software.** It is under heavy development and **may contain serious
-> bugs**, including ones that lose data, run up LLM costs or weaken security. Behaviour,
-> configuration and APIs can change without notice. Do not expose it to the internet or to
-> people you do not trust. Keep backups of everything under `data/`, and watch your providers'
-> spending limits. Please report problems (security issues privately, see [SECURITY.md](SECURITY.md)).
 
 ## Built on plugins
 
