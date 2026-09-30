@@ -109,6 +109,7 @@ const canvas = new Canvas($('canvas'), {
   onConnect: (source, target) => connect(source, target),
   onMove: (spots) => savePositions(spots),
   onOpen: (target) => (target.kind === 'state' ? renameState(target.id) : choose(target)),
+  onReparent: (name, into, spot, here) => moveState(name, into, { spot, here }),
 });
 
 function positions() {
@@ -791,6 +792,11 @@ function keepNextPoints(change) {
 async function removeState(name) {
   if (readOnly()) return;
   const state = stateOf(name);
+  const emptied = emptiedBy([name], (n) => { for (let s = n; s; s = stateOf(s)?.parent) if (s === name) return true; return false; });
+  if (emptied) {
+    toast(`${emptied} keeps at least one state: add or move another one into it first, or remove ${emptied} instead.`, { kind: 'warn' });
+    return;
+  }
   const incoming = S.machine.graph.transitions.filter((t) => t.target === name).length;
   const inner = S.machine.graph.states.filter((s) => s.parent === name).length;
   const message = [`Remove the state ${name}${inner ? ` with the states inside it` : ''}?`,
@@ -814,12 +820,23 @@ function removal(names, ids) {
 const counted = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const arrow = (t) => `${t.source} → ${t.target ?? '(internal)'}`;
 
+/** The composite that removing `states` would leave empty -- one that stays itself (`within`: the state goes). */
+function emptiedBy(states, within) {
+  return S.machine.graph.states.find((c) => c.composite && !within(c.name)
+    && S.machine.graph.states.every((s) => s.parent !== c.name || states.includes(s.name)))?.name || null;
+}
+
 /** Remove states and transitions in one edit (one undo step); a state inside another of them goes with it. */
 async function removeSelection(names, ids) {
   const { states, transitions, within } = removal(names, ids);
   if ((!states.length && !transitions.length) || readOnly()) return;
   if (states.length && S.machine.graph.states.every((s) => s.parent || states.includes(s.name))) {
     toast('A machine needs at least one state: keep one of the top level.', { kind: 'warn' });
+    return;
+  }
+  const emptied = emptiedBy(states, within);
+  if (emptied) {
+    toast(`${emptied} keeps at least one state: add or move another one into it first, or remove ${emptied} too.`, { kind: 'warn' });
     return;
   }
   const incoming = S.machine.graph.transitions.filter((t) => within(t.target) && !within(t.source)).length;
@@ -853,6 +870,26 @@ async function groupStates(names) {
   const spots = placed ? groupedSpots(canvas.nodes, outer, name) : null;
   if (!await edit({ op: 'group_states', names: outer, name }, { places: spots ? Object.keys(spots) : null })) return;
   if (spots) await savePositions(spots);
+  choose({ kind: 'state', id: name });
+}
+
+/** A state into another composite (`into`; null: the top level). Dropped there: at `spot` in it -- refused, it
+ * stays where it was dropped (`here`, in its own). Chosen in the inspector: the layout places it. */
+async function moveState(name, into, { spot = null, here = null } = {}) {
+  if (!S.machine.writable) {  // a read-only machine is only moved around: the drop is a plain move
+    if (here) await savePositions({ [name]: here });
+    return;
+  }
+  const placed = spot || Object.hasOwn(positions(), name) ? [name] : null;
+  const machine = S.machine.id;
+  if (!await edit({ op: 'move_state', name, into }, { places: placed })) {
+    if (here && S.machine?.id === machine) await savePositions({ [name]: here });  // not in another machine opened meanwhile
+    return;
+  }
+  const next = { ...positions() };
+  if (spot) next[name] = spot;
+  else delete next[name];  // a position counts from its parent: the old one would place it anywhere
+  if (placed) await saveLayout({ positions: next });
   choose({ kind: 'state', id: name });
 }
 
@@ -1036,6 +1073,11 @@ function drawInspector() {
         <button type="button" class="pk-btn pk-btn--sm" data-act="initial" ${m.writable && parentInitial !== state.name ? '' : 'disabled'} title="Make it the initial state of its region">${icon('play', { size: 'sm' })} Initial</button>
         <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove" ${m.writable ? '' : 'disabled'}>${icon('trash-2', { size: 'sm' })} Remove</button>
       </div>
+      <label class="pk-field sg-parent">Inside
+        <select class="pk-select pk-select--sm" data-act="parent" ${m.writable ? '' : 'disabled'} title="The composite it sits in: another one moves it there">
+          ${parentChoices(state).map((one) => html`<option value="${one}" ${one === (state.parent || '') ? 'selected' : ''}>${one || '(top level)'}</option>`)}
+        </select>
+      </label>
       ${problemList(pinned?.problems)}
     </div>
     <div class="sg-section">
@@ -1418,9 +1460,23 @@ $('side-inspect').addEventListener('submit', async (event) => {
   });
 });
 
+/** The composites a state can go into, and '' for the top level: not itself, nor one inside it. */
+function parentChoices(state) {
+  const inside = (name) => { for (let n = name; n; n = stateOf(n)?.parent) if (n === state.name) return true; return false; };
+  return ['', ...S.machine.graph.states.filter((s) => s.composite && !inside(s.name)).map((s) => s.name)];
+}
+
 $('side-inspect').addEventListener('change', async (event) => {
   // line styles: layout, set at once (no Apply, no undo -- like a drag)
   if (event.target.dataset.lineDefault !== undefined) return saveLayout({ line: event.target.value });
+  if (event.target.dataset.act === 'parent' && S.selection?.kind === 'state') {
+    const name = S.selection.id;
+    const into = event.target.value || null;
+    if (into === (stateOf(name)?.parent ?? null)) return;
+    await moveState(name, into);
+    event.target.value = stateOf(name)?.parent || '';  // refused or cancelled: where it still is (moved: redrawn)
+    return;
+  }
   if (event.target.dataset.line !== undefined) {
     const ids = event.target.dataset.line === '*' ? (S.selection?.kind === 'many' ? S.selection.transitions : []) : [event.target.dataset.line];
     return setLines(ids, event.target.value);

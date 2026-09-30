@@ -88,7 +88,9 @@ unsaved first. The browser remembers the choice.
 @{b}Graph@{ub} -- the machine as a diagram. The bar adds a state of each
 activity kind, or a plain State, Choice, Junction, Final or Composite (a
 composite comes with a first state inside it); new states go into the
-selected composite. @{b}Find a state@{ub} selects a state by name.
+selected composite. A composite keeps at least one state: its last one
+cannot be removed or moved out -- add or move another in first, or remove
+the composite. @{b}Find a state@{ub} selects a state by name.
 @{b}Undo@{ub} and @{b}Redo@{ub} put the machine back as it was before or
 after an edit (the last 20 edits): the unsaved text, or with auto-save the
 file. @{b}Fit@{ub}, the zoom buttons and
@@ -98,6 +100,7 @@ arrange the view.
 @{table}
 On the graph | Does
 drag a state | moves it; the position is kept in a layout file next to the machine
+drag a state onto a composite | puts it inside, where it was dropped (the composite is marked while it is over it)
 drag from a state's handle to another state | adds a transition
 double-click a state | renames it; every transition and initial naming it follows
 Ctrl or Shift+click | adds a state or transition to the selection
@@ -124,7 +127,9 @@ Save. The problem list below the text leads to each problem's line.
 @{h2}The inspector (right)
 
 @{bullet}Nothing selected: the machine's overview -- initial state, counts,
-how transitions are drawn (right-angled or straight), every problem as a
+how transitions are drawn (right-angled or straight; between a composite
+and a state inside it either line goes to the composite's nearest border
+but the top), every problem as a
 link to its place, a form for the machine's settings (title, description,
 group, params, events, context, vars, imports, resources, limits, finally
 ...), the machines it imports, and "As an agent": which agents run this
@@ -138,6 +143,8 @@ each setting of that kind, with the agents, tools and decision profiles
 there are to pick from); its settings (type, max_visits, timeout, entry,
 exit, finally, a final's status and output); its transitions, in the
 order they are tried; and its YAML, to edit the state as text.
+@{b}Inside@{ub} names the composite it sits in: another one, or the top
+level, moves it there -- out of a composite too, which dragging cannot.
 @{bullet}A transition: trigger (with @{b}New event...@{ub}, which declares
 a new event and picks it), target, guard, effect, and how its line is
 drawn; move it up or down in the order, or remove it.

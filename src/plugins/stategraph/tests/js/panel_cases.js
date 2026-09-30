@@ -37,6 +37,11 @@ let journalOf = { r1: RUN.journal, r2: JOURNAL2 };
 const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
   profiles: ['fast'] };
 let editAnswer = null;
+// review and loop, both composites; loop holds one state, inner
+const stateLike = (name, from, fields) => ({ ...MACHINE.graph.states.find((s) => s.name === from), name, ...fields });
+const TWO_COMPOSITES = { ...MACHINE, graph: { ...MACHINE.graph, states: [...MACHINE.graph.states,
+  stateLike('loop', 'review', { parent: null, initial: 'inner', line: 90 }),
+  stateLike('inner', 'verdict', { parent: 'loop', line: 93 })] } };
 let reviewAnswer = MACHINE;  // GET of the review machine
 let layoutsKept = false;  // a layout PUT to review changes what its GET answers, as the server's does
 let runAnswer = RUN;
@@ -601,6 +606,81 @@ const CASES = {
     check(saved && !('read' in saved), `read moved on its own too: ${JSON.stringify(saved)}`);
     check(Math.abs(saved.review.x - (before.x + 40 / k)) <= 1 && Math.abs(saved.review.y - before.y) <= 1,
       `review at ${JSON.stringify(saved.review)}, expected x ${before.x + 40 / k}, y ${before.y}`);
+  },
+
+  async a_state_dropped_on_a_composite_goes_into_it_and_keeps_its_place() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const read = boxOf('read');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), pointerId: 1, ...client(read.x + 5, read.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('read'), ...client(read.x + 25, read.y + 5) });
+    await $('canvas').fire('pointerup', { target: node('read'), ...client(read.x + 25, read.y + 5) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `a move inside its own composite went into it again: ${JSON.stringify(lastEdit())}`);
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    check(node('review').getAttribute('class').includes('sg-node--drop'), 'the composite under the pointer is not marked');
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'move_state', name: 'write', into: 'review' }), `sent: ${JSON.stringify(lastEdit())}`);
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.positions;
+    check(saved?.write && saved.write.x >= 0 && saved.write.y >= 0 && saved.write.x < into.w,
+      `its place counts from the composite now: ${JSON.stringify(saved?.write)}`);
+    check(!$('canvas').querySelectorAll('.sg-node--drop').length, 'the drop mark stays');
+  },
+
+  async a_refused_drop_keeps_the_state_where_it_was_dropped() {
+    await boot('?machine=review');
+    editAnswer = new ApiError(422, "'write' cannot go there");
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    const saved = CALLS.filter(([method, path]) => method === 'PUT' && path.endsWith('/layout')).pop()?.[2].layout.positions;
+    check(saved?.write && Math.abs(saved.write.x - (into.x + into.w / 2 - 5)) <= 1,
+      `a refused move is a plain move: ${JSON.stringify(saved?.write)}`);
+  },
+
+  async a_drop_on_a_read_only_machine_is_a_plain_move() {
+    await boot('?machine=ro');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && !TOASTS.some(([, text]) => text.includes('read-only')),
+      `a read-only machine was edited or refused a drag: ${JSON.stringify(TOASTS)}`);
+    check(!$('canvas').querySelectorAll('.sg-node--drop').length, 'the drop mark stays');
+  },
+
+  async the_inspector_moves_a_state_to_another_composite_or_the_top_level() {
+    await boot('?machine=review');
+    await choose('review');
+    const choices = ($('side-inspect').innerHTML.match(/data-act="parent"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || '';
+    check(choices.includes('(top level)') && !choices.includes('value="review"'), `a composite goes into itself: ${choices}`);
+    await choose('read');
+    const select = element('select', { 'data-act': 'parent' });
+    select.value = '';
+    await $('side-inspect').fire('change', { target: select });
+    await settle();
+    check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'move_state', name: 'read', into: null }), `sent: ${JSON.stringify(lastEdit())}`);
+    editAnswer = new ApiError(422, "'read' cannot go there");
+    await choose('read');
+    const refused = element('select', { 'data-act': 'parent' });
+    refused.value = '';
+    await $('side-inspect').fire('change', { target: refused });
+    await settle();
+    check(refused.value === 'review', `a refused move leaves the choice at ${JSON.stringify(refused.value)}`);
   },
 
   async a_composite_named_like_its_first_state_gets_another_one() {
@@ -2176,6 +2256,74 @@ const CASES = {
     await removing;
     check(localStorage.getItem('stategraph:autosave') !== 'true' && /data-act="autosave" aria-pressed="false"/.test($('machineHead').innerHTML)
       && DIRTY && $('yamlText').value === 'drafted', 'auto-save switched while the edit was on its way, or the edit lost');
+  },
+  async a_selection_dragged_by_a_state_inside_its_composite_moves_the_composite_only() {
+    reviewAnswer = TWO_COMPOSITES;
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    await choose('review');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('read'), clientX: 10, clientY: 10 });
+    await settle();
+    const read = boxOf('read');
+    const loop = boxOf('loop');
+    const at = client(loop.x + loop.w / 2, loop.y + loop.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('read'), pointerId: 1, ...client(read.x + 5, read.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('loop'), ...at });
+    await $('canvas').fire('pointerup', { target: node('loop'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `the state it was dragged by went into loop: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_cancelled_drag_puts_nothing_into_a_composite() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    await $('canvas').fire('pointercancel', { target: node('review'), ...at });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), `a cancelled drag moved write into review: ${JSON.stringify(lastEdit())}`);
+  },
+
+  async a_drop_answered_after_another_machine_opened_leaves_that_ones_layout_alone() {
+    await boot('?machine=review');
+    const { client, boxOf, node } = canvasGeometry();
+    const from = boxOf('write');
+    const into = boxOf('review');
+    const at = client(into.x + into.w / 2, into.y + into.h - 6);
+    HOLD = (method, path) => path.endsWith('/edit');
+    await $('canvas').fire('pointerdown', { button: 0, target: node('write'), pointerId: 1, ...client(from.x + 5, from.y + 5) });
+    await $('canvas').fire('pointermove', { target: node('review'), ...at });
+    const dropping = $('canvas').fire('pointerup', { target: node('review'), ...at });
+    await settle();
+    await clickMachine('other');
+    await settle();
+    await release();
+    await dropping;
+    await settle();
+    check(!CALLS.some(([method, path]) => method === 'PUT' && path.endsWith('/machines/other/layout')),
+      'the drop went into the layout of the machine opened meanwhile');
+  },
+
+  async a_composites_last_state_is_not_removed_after_asking() {
+    reviewAnswer = TWO_COMPOSITES;
+    await boot('?machine=review');
+    await choose('inner');
+    await $('side-inspect').fire('click', { target: element('button', { 'data-act': 'remove' }) });
+    await settle();
+    check(!confirms() && TOASTS.some(([, text]) => text.includes('loop keeps at least one state')), `inner: ${JSON.stringify(TOASTS)}`);
+    await choose('read');
+    const { node } = canvasGeometry();
+    await $('canvas').fire('pointerdown', { button: 0, target: node('verdict'), ctrlKey: true, clientX: 10, clientY: 10, pointerId: 1 });
+    await $('canvas').fire('pointerup', { target: node('verdict'), clientX: 10, clientY: 10 });
+    await settle();
+    await $('canvas').fire('keydown', { key: 'Delete', target: $('canvas'), preventDefault() {} });
+    await settle();
+    check(!confirms() && TOASTS.some(([, text]) => text.includes('review keeps at least one state')), `read and verdict: ${JSON.stringify(TOASTS)}`);
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')), 'an edit went out');
   },
 };
 

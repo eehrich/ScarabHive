@@ -335,6 +335,10 @@ export function edgeRoute(route, source, target, moved, lane = null) {
  * on a level segment of its own (`span`: a Z's level leg or middle segment, an L's level leg) at its place along it
  * (`at`); a pair's beside the middle, on the side its lane bends to (`side`).
  */
+/** Box `a` lies inside box `b` (a state in its composite); not itself: a self-transition keeps its loop. */
+const inside = (a, b) => a.w * a.h < b.w * b.h
+  && a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h;
+
 export function orthogonalRoute(source, target, lane = null) {
   const spread = lane ? lane.spread ?? Math.abs(lane.offset || 0) : 0;
   // ponytail: fixed steps, not the exact fit -- each step is one more try of three short loops
@@ -364,9 +368,7 @@ function rightAngle(source, target, lane) {
     return { points: [place(u)(out, across), place(u)(into, across)], label: null,
       ...(crowd || (offset ? { side: right.map((c) => c * Math.sign(offset)) } : {})) };
   };
-  const within = (a, b) => a.w * a.h < b.w * b.h  // not itself: a self-transition keeps its loop
-    && a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h;
-  const inner = within(source, target) ? source : within(target, source) ? target : null;
+  const inner = inside(source, target) ? source : inside(target, source) ? target : null;
   if (inner) {  // a composite and a state inside it: straight between the state and the composite's nearest border
     const outer = inner === source ? target : source;
     const gaps = [inner.x - outer.x, outer.x + outer.w - inner.x - inner.w, inner.y - outer.y, outer.y + outer.h - inner.y - inner.h];
@@ -425,7 +427,12 @@ function rightAngle(source, target, lane) {
 /** A transition drawn in its line `style` (LINE_STYLES): straight, or right-angled -- ELK's route while both ends
  * are where ELK put them, else ours (straight where no right angle fits). Anything but 'straight' is right-angled. */
 export function transitionRoute(style, route, source, target, moved, lane) {
-  if (style === 'straight') return edgeRoute(null, source, target, true, lane);
+  // straight: centre to centre -- but between a composite and a state inside it, that line would leave through the
+  // state and end on the far border: the right angle's line to the nearest border is a straight one too
+  if (style === 'straight') {
+    return ((inside(source, target) || inside(target, source)) && orthogonalRoute(source, target, lane))
+      || edgeRoute(null, source, target, true, lane);
+  }
   if (route?.points.length && !moved) return edgeRoute(route, source, target, false, lane);
   // a self-transition fits no right angle: edgeRoute draws its loop
   return orthogonalRoute(source, target, lane) || edgeRoute(null, source, target, true, lane);
@@ -671,6 +678,22 @@ export function relativeSpot(nodes, id) {
   return { x: Math.round(box.x - (parent ? parent.x : 0)), y: Math.round(box.y - (parent ? parent.y : 0)) };
 }
 
+/** The composite a state dropped at (x, y) goes into: the innermost of `composites` whose box holds the point -- not
+ * the state itself, nor one inside it, nor one it sits in (those grow around it while it is dragged, so they would
+ * hold the point wherever it goes). null: none there. */
+export function dropInto(nodes, composites, name, x, y) {
+  const moved = nodes[stateId(name)];
+  const chain = (box) => { const up = []; for (let at = box; at; at = at.parent ? nodes[at.parent] : null) up.push(at); return up; };
+  const around = new Set(chain(moved));
+  let best = null;
+  for (const one of composites) {
+    const box = nodes[stateId(one)];
+    if (!box || around.has(box) || chain(box).includes(moved) || x < box.x || x > box.x + box.w || y < box.y || y > box.y + box.h) continue;
+    if (!best || box.w * box.h < best.box.w * best.box.h) best = { one, box };  // a composite inside another is smaller
+  }
+  return best ? best.one : null;
+}
+
 /** Positions that keep states side by side where they are drawn (`nodes`) once they are grouped into a new
  * composite `name`: the composite's box around theirs, each of them relative to it. (Close to the top of a composite
  * they sit in, the new one's title band pushes them down: applyPositions keeps it inside that one's padding.) */
@@ -706,12 +729,14 @@ function spriteIcon(parent, name, x, y, size, cls = 'sg-icon') {
 
 /**
  * The canvas. Callbacks: onSelect(a selection, see selectionOf), onConnect(source, target),
- * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click.
+ * onMove({name: {x, y}}) with every position the drag changed, onOpen({kind, id}) on a double click,
+ * onReparent(name, into, spot, here) when one state is dropped on a composite it is not in: `spot` its position in
+ * that one, `here` in the one it is in.
  */
 export class Canvas {
-  constructor(svg, { onSelect, onConnect, onMove, onOpen } = {}) {
+  constructor(svg, { onSelect, onConnect, onMove, onOpen, onReparent } = {}) {
     this.svg = svg;
-    this.handlers = { onSelect, onConnect, onMove, onOpen };
+    this.handlers = { onSelect, onConnect, onMove, onOpen, onReparent };
     this.graph = { states: [], transitions: [] };
     this.takeLayout({});
     this.auto = { nodes: {}, edges: {} };
@@ -830,7 +855,7 @@ export class Canvas {
   drawState(state, box) {
     const kind = state.composite ? 'composite' : state.type;
     const group = el('g', {
-      class: `sg-node sg-node--${kind}${state.wait ? ' sg-node--wait' : ''}`,
+      class: `sg-node sg-node--${kind}${state.wait ? ' sg-node--wait' : ''}${state.name === this.drop ? ' sg-node--drop' : ''}`,
       'data-state': state.name, tabindex: 0, role: 'button', 'aria-label': `State ${state.name}`,
     }, state.composite ? this.compositeLayer : this.nodeLayer);
     const title = el('title', {}, group);
@@ -1074,6 +1099,11 @@ export class Canvas {
       const moved = Object.fromEntries(gesture.names.map((name) => [name,
         { x: gesture.from[name].x + dx, y: gesture.from[name].y + dy }]));
       this.positions = { ...this.positions, ...moved };
+      // a state dragged alone -- not a composite of a selection, dragged by a state inside it -- goes into the one
+      // it is dropped on
+      if (gesture.names.length === 1 && gesture.names[0] === gesture.name && this.nodes) {
+        this.drop = dropInto(this.nodes, this.graph.states.filter((s) => s.composite).map((s) => s.name), gesture.name, x, y);
+      }
       this.draw();
     });
     const finish = (event) => {
@@ -1096,7 +1126,15 @@ export class Canvas {
           this.select(toggled(this.selected, done.item), { quiet: false });
         }
       } else if (done.type === 'move') {
-        if (done.moved) {
+        const into = this.drop;
+        this.drop = null;
+        if (done.moved && into && event.type === 'pointerup') {  // a cancelled drag puts nothing anywhere
+          const { nodes } = applyPositions(this.auto, this.positions);
+          const box = nodes[stateId(done.name)];
+          const holder = nodes[stateId(into)];
+          this.handlers.onReparent?.(done.name, into, { x: Math.round(box.x - holder.x), y: Math.round(box.y - holder.y) },
+            relativeSpot(nodes, stateId(done.name)));
+        } else if (done.moved) {
           const { nodes } = applyPositions(this.auto, this.positions);
           this.handlers.onMove?.(Object.fromEntries(done.names.map((name) => [name, relativeSpot(nodes, stateId(name))])));
         } else {

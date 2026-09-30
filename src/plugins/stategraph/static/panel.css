@@ -156,6 +156,7 @@
 .sg-node:hover > .sg-box, .sg-node:hover > .sg-shape { stroke: var(--accent); }
 .sg-node:focus-visible > .sg-box { stroke: var(--focus-ring); stroke-width: 2.5; }
 .sg-node.is-selected > .sg-box, .sg-node.is-selected > .sg-shape { stroke: var(--accent); stroke-width: 2.5; }
+.sg-node--drop > .sg-box { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6 3; fill: var(--accent-subtle); }
 .sg-node.has-warning > .sg-box { stroke: var(--warn); }
 .sg-node.has-error > .sg-box, .sg-node.has-error > .sg-shape { stroke: var(--danger); }
 .sg-node.is-active > .sg-box { fill: var(--info-subtle); }

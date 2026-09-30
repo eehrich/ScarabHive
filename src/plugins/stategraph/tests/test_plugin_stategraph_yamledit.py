@@ -238,23 +238,102 @@ def test_removing_every_transition_of_a_state_drops_its_transitions_key():
     assert "transitions" not in read and loads_cleanly(out)
 
 
-def test_removing_the_last_child_turns_the_composite_back_into_a_simple_state():
+def test_the_last_state_of_a_composite_stays_and_says_what_to_do():
+    """Removed, it would turn the composite into a simple state -- one that waits, where a composite was drawn."""
     text = apply_op(MACHINE, {"op": "remove_state", "name": "verdict"})
 
-    out = apply_op(text, {"op": "remove_state", "name": "read"})
+    with pytest.raises(EditError, match="'read' is the last state in 'review', and a composite keeps one"):
+        apply_op(text, {"op": "remove_state", "name": "read"})
+    with pytest.raises(EditError, match="last state in 'review'"):
+        apply_op(text, {"op": "move_state", "name": "read", "into": None})
 
-    review = data(out)["states"]["review"]
-    assert "states" not in review and "initial" not in review
-    assert review["transitions"] == [{"target": "done"}]
 
+def test_move_state_puts_a_state_last_into_a_composite_and_keeps_the_file_as_it_was():
+    out = apply_op(MACHINE, {"op": "move_state", "name": "done", "into": "review"})
 
-def test_a_composite_left_with_nothing_else_becomes_an_empty_mapping_not_null():
-    text = "stategraph: 1\nid: m\ninitial: b\nstates:\n  b:\n    initial: x\n    states:\n      x:\n        type: final\n"
-
-    out = apply_op(text, {"op": "remove_state", "name": "x"})
-
-    assert data(out)["states"]["b"] == {}, "lines alone would leave `b:` (null); the check falls back to ruamel"
+    expected = (MACHINE.replace("      verdict:\n        type: final\n",
+                                "      verdict:\n        type: final\n      done:\n        type: final\n")
+                .replace("\n  done:\n    type: final\n  failed:", "\n  failed:"))
+    assert out == expected, out
     assert loads_cleanly(out)
+
+
+def test_move_state_out_of_a_composite_gives_its_region_the_first_state_left_as_initial():
+    text = MACHINE.replace("    initial: read\n", "    initial: read   # first\n")
+
+    out = apply_op(text, {"op": "move_state", "name": "read", "into": None})
+
+    moved = data(out)
+    assert moved["states"]["review"]["initial"] == "verdict" and "    initial: verdict   # first\n" in out
+    assert list(moved["states"])[-1] == "read" and moved["states"]["read"]["transitions"] == [{"target": "verdict"}]
+    assert all(comment in out for comment in COMMENTS) and loads_cleanly(out)
+    three = ("stategraph: 1\nid: m\ninitial: c\nstates:\n  c:\n    initial: b\n    states:\n      a:\n        type: final\n"
+             "      b:\n        type: final\n      d:\n        type: final\n  e:\n    type: final\n")
+    assert data(apply_op(three, {"op": "move_state", "name": "b", "into": None}))["states"]["c"]["initial"] == "a"
+
+
+def test_move_state_parts_the_state_by_a_blank_line_where_its_new_region_does():
+    text = ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a:\n    transitions:\n      - target: b\n\n"
+            "  b:\n    type: final\n\n  c:\n    initial: x\n    states:\n      x:\n        type: final\n"
+            "      y:\n        type: final\n")
+
+    out = apply_op(text, {"op": "move_state", "name": "y", "into": None})
+
+    assert out == ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a:\n    transitions:\n      - target: b\n\n"
+                   "  b:\n    type: final\n\n  c:\n    initial: x\n    states:\n      x:\n        type: final\n"
+                   "\n  y:\n    type: final\n"), out
+
+
+def test_move_state_into_a_simple_state_makes_it_a_composite_and_every_comment_stays_once():
+    text = ("stategraph: 1\nid: m\ninitial: a\nstates:\n  # a waits\n  a:\n    description: waits  # here\n"
+            "    # its way on\n    transitions:\n      - target: c\n\n  # b handles errors\n  b:\n    type: final\n\n"
+            "  # c is the good end\n  c:\n    type: final\n")
+
+    out = apply_op(text, {"op": "move_state", "name": "b", "into": "a"})
+
+    assert out == ("stategraph: 1\nid: m\ninitial: a\nstates:\n  # a waits\n  a:\n    description: waits  # here\n"
+                   "    initial: b\n    states:\n      # b handles errors\n      b:\n        type: final\n"
+                   "    # its way on\n    transitions:\n      - target: c\n\n  # c is the good end\n  c:\n    type: final\n"), out
+
+
+def test_move_state_leaves_no_second_blank_line_where_the_state_ended_the_entry_it_now_follows():
+    text = ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a:\n    transitions:\n      - target: c\n\n  c:\n"
+            "    initial: x\n    states:\n      x:\n        type: final\n\n      y:\n        type: final\n\n"
+            "limits: {max_steps: 5}\n")
+
+    out = apply_op(text, {"op": "move_state", "name": "y", "into": None})
+
+    assert out == ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a:\n    transitions:\n      - target: c\n\n  c:\n"
+                   "    initial: x\n    states:\n      x:\n        type: final\n\n  y:\n    type: final\n\n"
+                   "limits: {max_steps: 5}\n"), out
+
+
+@pytest.mark.parametrize("text, name, into", [
+    # a scalar anchor would follow its alias: the planned text does not read
+    ("stategraph: 1\nid: m\ninitial: a\nstates:\n  # the writer\n  a:\n    description: &d shared  # anchored\n"
+     "    transitions:\n      - target: b\n  # the reviewer\n  b:\n    description: *d\n    transitions:\n"
+     "      - target: c\n  c:\n    initial: x\n    states:\n      x:\n        type: final\n", "a", "c"),
+    # a flow mapping as the region: no lines to plan
+    ("stategraph: 1\nid: m\ninitial: a\nstates:\n  a:\n    initial: x\n    states: {x: {type: final}}\n"
+     "  # about b\n  b:\n    type: final\n", "b", "a"),
+])
+def test_move_state_refuses_a_layout_it_cannot_plan_rather_than_move_comments_wrongly(text, name, into):
+    with pytest.raises(EditError, match="change it in the YAML tab"):
+        apply_op(text, {"op": "move_state", "name": name, "into": into})
+
+
+@pytest.mark.parametrize("name, into, refusal", [
+    ("review", "review", "cannot go into itself or a state inside it"),
+    ("review", "read", "cannot go into itself or a state inside it"),
+    ("done", "write", "'write' cannot hold states"),
+    ("done", "failed", "'failed' cannot hold states"),
+    ("read", "review", "'read' is in 'review' already"),
+    ("done", None, "'done' is in the top level already"),
+    ("done", "nowhere", "no state 'nowhere'"),
+])
+def test_move_state_refuses_what_it_cannot_do(name, into, refusal):
+    with pytest.raises(EditError, match=refusal):
+        apply_op(MACHINE, {"op": "move_state", "name": name, "into": into})
 
 
 def test_the_last_state_of_a_machine_cannot_be_removed():

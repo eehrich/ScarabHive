@@ -1036,7 +1036,7 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
-  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
+  `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
   `DELETE /api/machines/{id}` with `{expected_version}`.
 - **Delete** (panel and REST only; no tool deletes). It removes the machine's file (the version
   the caller saw: 409 on a change), its layout sidecar and its companion module -- unless
@@ -1073,9 +1073,9 @@ on, it saves what is unsaved first.
 
 **Working in the panel.** the graph bar finds a state by name, **Undo** (Ctrl+Z) puts back the root file as it was
 before the last edit -- the draft, or with auto-save the file -- **Redo** (Ctrl+Shift+Z, Ctrl+Y) what the undo replaced, **Auto layout** asks before it drops the positions dragged by hand (a state placed by hand takes its region's
-start dot along, left of it; transitions between the same two states are drawn side by side; a transition's **Line** -- right-angled (the default: ELK's route, re-routed when a state is moved) or straight; moving never changes it -- is set in its inspector, for all of a selection, or for the machine in the overview, and kept in the layout); the wheel
+start dot along, left of it; transitions between the same two states are drawn side by side; a transition's **Line** -- right-angled (the default: ELK's route, re-routed when a state is moved) or straight; moving never changes it; between a composite and a state inside it both go to the composite's nearest border but the top -- is set in its inspector, for all of a selection, or for the machine in the overview, and kept in the layout); the wheel
 scrolls the graph, Ctrl+wheel zooms; the palette adds a **Composite** with a first state inside (one edit,
-one undo step); Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
+one undo step); a state dragged onto a composite goes into it where it was dropped (the composite is marked on the way), **Inside** in its inspector moves it into another composite or out to the top level; Ctrl or Shift+click selects several states and transitions (on a state also +Enter), a Ctrl or Shift+drag box
 the states in it -- dragging one moves them all, Delete removes them in one edit (a state inside a selected
 composite goes with it), **Group** puts the states into a new composite (placed by hand, they keep their place;
 an undo puts their positions back too);

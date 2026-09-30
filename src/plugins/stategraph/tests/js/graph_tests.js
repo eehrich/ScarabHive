@@ -4,7 +4,7 @@
 // The layout test loads the vendored ELK the way the panel does (a classic script defining the global ELK).
 
 import {
-  applyPositions, clipToBox, compositeTitleWidth, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
+  applyPositions, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
 } from '../../static/graph.js';
@@ -112,6 +112,28 @@ const AUTO = {
   edges: {},
 };
 
+test('dropInto takes the innermost composite under the point, never the dragged state or one inside it', () => {
+  const nodes = {
+    's:outer': { x: 0, y: 0, w: 400, h: 400, parent: null },
+    's:inner': { x: 50, y: 50, w: 100, h: 100, parent: 's:outer' },
+    's:leaf': { x: 60, y: 60, w: 20, h: 20, parent: 's:inner' },
+    's:a': { x: 500, y: 0, w: 40, h: 40, parent: null },
+  };
+  const composites = ['outer', 'inner'];
+  equal(dropInto(nodes, composites, 'a', 60, 60), 'inner', 'the inner one, not the one around it');
+  equal(dropInto(nodes, composites, 'a', 300, 300), 'outer', 'outside the inner one');
+  equal(dropInto(nodes, composites, 'a', 520, 20), null, 'no composite there');
+  equal(dropInto(nodes, composites, 'inner', 60, 60), null, 'not into itself, nor the one it sits in');
+  equal(dropInto(nodes, composites, 'outer', 60, 60), null, 'not into one inside it');
+  // its composite grew around it while it was dragged, over a bigger one: the bigger one takes it
+  const grown = {
+    's:p': { x: 0, y: 0, w: 260, h: 160, parent: null },
+    's:kid': { x: 200, y: 100, w: 40, h: 40, parent: 's:p' },
+    's:q': { x: 150, y: 50, w: 600, h: 600, parent: null },
+  };
+  equal(dropInto(grown, ['p', 'q'], 'kid', 220, 120), 'q', 'not the grown composite it sits in');
+});
+
 test('applyPositions: a moved composite takes its children along', () => {
   const { nodes, moved } = applyPositions(AUTO, { c: { x: 300, y: 50 } });
   equal([nodes['s:c'].x, nodes['s:c'].y], [300, 50], 'the composite moved');
@@ -209,6 +231,19 @@ test('orthogonalRoute: out of the facing side, one bend half way, in through the
   const beside = orthogonalRoute(a, facing, { offset: 6 });
   equal([beside.points, beside.side], [[[54, 40], [54, 70]], [-1, 0]], 'a lane of it: right of its way');
   equal(orthogonalRoute(a, { x: 105, y: 45, w: 10, h: 10 }), null, 'all but meeting at a corner: no right angle fits');
+});
+
+test('a straight line between a composite and a state inside it goes to the nearest border, not through the state', () => {
+  const box = { x: 0, y: 0, w: 300, h: 200 };
+  const kid = { x: 150, y: 150, w: 96, h: 34 };  // nearest the bottom; the centre-to-centre line leaves at the right
+  equal(transitionRoute('straight', null, kid, box, true, null).points, [[198, 184], [198, 200]], 'down to the bottom');
+  equal(transitionRoute('straight', null, box, kid, true, null).points, [[198, 200], [198, 184]], 'and back up');
+  const other = { x: 400, y: 0, w: 96, h: 34 };
+  equal(transitionRoute('straight', null, kid, other, true, null).points, edgeRoute(null, kid, other, true).points,
+    'between two states side by side: centre to centre as before');
+  const filling = { x: 2, y: 2, w: 96, h: 36 };
+  equal(transitionRoute('straight', null, filling, { x: 0, y: 0, w: 100, h: 40 }, true, null).points,
+    edgeRoute(null, filling, { x: 0, y: 0, w: 100, h: 40 }, true).points, 'no room for a line to a border: as before');
 });
 
 test('orthogonalRoute: a group of lanes takes one way, squeezed where it must; a composite and a state inside it', () => {

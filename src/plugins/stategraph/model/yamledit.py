@@ -121,18 +121,68 @@ def _remove_state(edit: "_Edit", op: dict[str, Any]) -> str:
             removals.append((state.body, "transitions"))
         else:
             removals.extend((seq, index) for index in doomed)
-    if len(found.region) > 1:
-        removals.append((found.region, found.name))
-    elif found.owner is edit.doc:
-        raise EditError("a machine needs at least one state: this is its last one")
-    else:
-        # the composite's last child: it becomes a simple state again
-        removals.extend((found.owner, key) for key in ("initial", "states") if key in found.owner)
+    _keeps_one(found)
+    removals.append((found.region, found.name))
     edit.untied(f"remove state {found.name!r}", *(container for container, _ in removals))
     blocks = [edit.block(container, key) for container, key in removals]
     for container, key in sorted(removals, key=lambda pair: pair[1] if isinstance(pair[1], int) else 0, reverse=True):
         del container[key]
     return edit.result(cut=blocks)
+
+
+def _keeps_one(found: _State) -> None:
+    """Refuse to take the last state out of its region: a machine needs one, and a composite would turn into a
+    simple state -- one that waits, where the author drew a composite."""
+    if len(found.region) > 1:
+        return
+    if found.parent is None:
+        raise EditError("a machine needs at least one state: this is its last one")
+    raise EditError(f"{found.name!r} is the last state in {found.parent!r}, and a composite keeps one: add or move "
+                    f"another state into it first, or remove {found.parent!r}")
+
+
+def _move_state(edit: "_Edit", op: dict[str, Any]) -> str:
+    """State ``name`` into the state ``into`` -- a composite, or a simple state without do, which becomes one -- as
+    its last state; ``into`` null: to the top level. Transitions keep their targets: names are unique within a
+    machine. The region it leaves gets the first state left there as initial when it was that one's. Only planned
+    lines write it: a rendering would take the state's comments along wrongly, and reads back all the same."""
+    found = edit.state(op.get("name"))
+    into = op.get("into")
+    target = None
+    if into is None:
+        holder, place = edit.doc, "the top level"
+    else:
+        target = edit.state(into)
+        if target.name == found.name or target.name in {inner.name for inner in _states(found.body)}:
+            raise EditError(f"{found.name!r} cannot go into itself or a state inside it")
+        holder, place = _state_body(target), repr(target.name)
+        if holder.get("type", "state") != "state" or "do" in holder:
+            raise EditError(f"{target.name!r} cannot hold states: only a simple state without do becomes a composite")
+    region = holder.get("states")
+    if region is found.region:
+        raise EditError(f"{found.name!r} is in {place} already")
+    _keeps_one(found)
+    what = f"move state {found.name!r} into {place}"
+    edit.untied(what, found.region, found.owner, holder, *([region] if isinstance(region, CommentedMap) else []))
+    if edit.tied(found.body, whole=True):
+        raise EditError(_shared(what))
+    body = found.region[found.name]
+    successor = next(key for key in found.region if key != found.name) if found.owner.get("initial") == found.name \
+        else None
+    lines = edit.relocate(found, target, holder, successor)
+    del found.region[found.name]
+    if successor is not None:
+        found.owner["initial"] = _like(found.owner["initial"], successor)
+    if isinstance(region, CommentedMap) and region:
+        region[found.name] = body
+    else:
+        # the first state makes it a composite; its keys go before the transitions, where readers look
+        for stale in ("initial", "states"):
+            holder.pop(stale, None)
+        at = list(holder).index("transitions") if "transitions" in holder else len(holder)
+        holder.insert(at, "initial", found.name)
+        holder.insert(at + 1, "states", CommentedMap([(found.name, body)]))
+    return edit.result(lines=lines, render=False)
 
 
 def _rename_state(edit: "_Edit", op: dict[str, Any]) -> str:
@@ -431,6 +481,7 @@ _OPS: dict[str, Callable[["_Edit", dict[str, Any]], str]] = {
     "move_transition": _move_transition,
     "set_initial": _set_initial,
     "group_states": _group_states,
+    "move_state": _move_state,
     "update_state": _update_state,
     "update_machine": _update_machine,
 }
@@ -778,6 +829,73 @@ class _Edit:
         lines = self._cut(blocks[1:]) if len(blocks) > 1 else list(self.lines)  # type: ignore[arg-type]
         return lines[:start] + chunk + lines[end:]  # the cut blocks all lie below the first one
 
+    def relocate(self, found: "_State", target: Optional["_State"], holder: CommentedMap,
+                 initial: Optional[str]) -> Optional[list[str]]:
+        """The lines with ``found``'s entry cut out and put, indented to its new depth, into ``holder`` (the machine,
+        or ``target``'s mapping): after its region's last entry -- parted from it by a blank line where that region
+        parts its states so --, or, where it has no states yet, as its ``initial`` and ``states`` before its
+        transitions. The initial line of the region it leaves names ``initial`` when that is given."""
+        moved = self.block(found.region, found.name)
+        if moved is None:
+            return None
+        start, end = moved
+        region, head, apart = holder.get("states"), [], False
+        try:
+            if isinstance(region, CommentedMap) and region:
+                last = list(region)[-1]
+                after = self.block(region, last)
+                if after is None:
+                    return None
+                column, at = region.lc.key(last)[1], after[1]
+                apart = after[0] > 0 and not self.lines[after[0] - 1].strip()
+            else:  # a simple state becomes a composite
+                keys = list(holder)
+                line, column = target.region.lc.key(target.name)  # type: ignore[union-attr]
+                if not keys or holder.lc.key(keys[0])[0] == line:
+                    return None  # nothing below its key, or a flow mapping on it
+                pad = holder.lc.key(keys[0])[1]
+                if "transitions" in holder:
+                    block = self.block(holder, "transitions")
+                    if block is None:
+                        return None
+                    at = block[0]
+                else:
+                    at = _body_end(self.lines, line, column)
+                head = [f"{' ' * pad}initial: {found.name}\n", f"{' ' * pad}states:\n"]
+                column = pad + self.indent[0]
+        except (KeyError, AttributeError, TypeError):
+            return None  # no line numbers there: not plain block style
+        shift = column - found.region.lc.key(found.name)[1]
+        chunk = []
+        for text in self.lines[start:end]:
+            if not text.strip():
+                chunk.append(text)
+            elif shift >= 0:
+                chunk.append(" " * shift + text)
+            elif text[:-shift].strip():
+                return None  # a line (a block scalar's) shallower than the shift: not plain block style
+            else:
+                chunk.append(text[-shift:])
+        lines = list(self.lines)
+        if initial is not None:
+            number = found.owner.lc.key("initial")[0]
+            match = re.fullmatch(rf"(\s*initial:\s*)(['\"]?){re.escape(found.name)}\2(\s*(?:#.*)?\n?)", lines[number])
+            if match is None:
+                return None
+            lines[number] = f"{match.group(1)}{match.group(2)}{initial}{match.group(2)}{match.group(3)}"
+        if start > 0 and not lines[start - 1].strip():  # as _cut: one blank line goes with the entry
+            if end < len(lines) and not lines[end].strip():
+                end += 1
+            elif end == len(lines):
+                start -= 1
+        # where it goes once it is out: its own place when it was the tail of the entry it now follows
+        at = start if start < at < end else at - (end - start) if at >= end else at
+        rest = lines[:start] + lines[end:]
+        if not head:
+            while at > 0 and not rest[at - 1].strip():  # right after that entry, before the blank lines ending it
+                at -= 1
+        return rest[:at] + head + (["\n"] if apart else []) + chunk + rest[at:]
+
     def value_text(self, region: CommentedMap, name: str) -> list[str]:
         """The texts a state's value is shown as (the panel's stateFragment): the lines below its key, dedented; or
         the value on the key line, with and without its trailing comment. A key line the inspector cannot stand in
@@ -827,13 +945,14 @@ class _Edit:
 
     # -- writing
     def result(self, *, cut: Optional[list[Optional[tuple[int, int]]]] = None,
-               lines: Optional[list[str]] = None, tied: str = "") -> str:
+               lines: Optional[list[str]] = None, tied: str = "", render: bool = True) -> str:
         """The edited document as text: planned lines first, then the splice, then ruamel's own rendering.
 
         ``tied`` (what the edit is about): the edit touches an anchor or an alias, so only the planned lines may
-        write it -- a rendering would expand the alias into a copy or drop the anchor."""
+        write it -- a rendering would expand the alias into a copy or drop the anchor. ``render=False``: only the
+        planned lines either, for an edit a rendering would get wrong while it reads back right."""
         expected = to_plain(self.doc)
-        for candidate in self._candidates(cut, lines, render=not tied):
+        for candidate in self._candidates(cut, lines, render=render and not tied):
             if _reads_as(candidate, expected):
                 return candidate
         if tied:
