@@ -183,7 +183,7 @@ anyway). Three parts:
 3. **Known gaps** — deliberate limits with the reason.
 
 Example of the new form: `src/plugins/todo/todo.guide` (with its short README). Still in the old
-form, the parts in the README: `src/plugins/terminal/README.md`, `media_ops`, `agent_watchdog`.
+form, the parts in the README: `media_ops`, `agent_watchdog`. A security-heavy example: `src/plugins/terminal/terminal.guide`.
 
 ## User documentation: the Help panel
 

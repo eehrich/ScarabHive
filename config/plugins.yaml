@@ -1202,7 +1202,7 @@ plugins:
       # Security settings
       security:
         # Whitelist: only these patterns, one command per call, no cwd/env_vars.
-        # This example is a convenience filter, not a boundary (patterns: terminal README).
+        # This example is a convenience filter, not a boundary (patterns: terminal.guide, "A whitelist").
         # whitelist:
         #   - "^git .*"
         #   - "^python .*"
