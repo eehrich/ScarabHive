@@ -8,9 +8,11 @@ is the worst of them.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -26,8 +28,20 @@ _LEVELS = ("ok", "warn", "error")
 _started: dict[str, Any] = {"at": None, "commit": None}
 
 
-def git_commit(cwd: Path = _REPO_ROOT) -> Optional[dict]:
-    """The checked-out commit: hash, committer date, subject. None without git."""
+#: Written by `git archive` (GitHub/GitLab "Download ZIP"): .gitattributes marks
+#: it export-subst, so an archive carries the hash it was made from. In a clone
+#: its placeholders stay as they are.
+_ARCHIVE_COMMIT = Path(__file__).resolve().parents[1] / "_commit.json"
+
+
+def git_commit(cwd: Path = _REPO_ROOT, archive: Path = _ARCHIVE_COMMIT) -> Optional[dict]:
+    """The checked-out commit: hash, committer date, subject. Without a git
+    checkout, the commit an archive of it names; None when neither says.
+
+    Git is asked only when *cwd* is a checkout itself: an unpacked archive
+    inside another repository would otherwise report that one's commit."""
+    if not (cwd / ".git").exists():  # a worktree has a .git file
+        return archived_commit(archive)
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%H%x00%cI%x00%s"],
@@ -39,6 +53,20 @@ def git_commit(cwd: Path = _REPO_ROOT) -> Optional[dict]:
         return None
     commit, date, subject = (result.stdout.strip().split("\x00") + ["", ""])[:3]
     return {"hash": commit, "date": date, "subject": subject}
+
+
+def archived_commit(path: Path = _ARCHIVE_COMMIT) -> Optional[dict]:
+    """The commit *path* names once `git archive` filled it in; None for the
+    placeholders of a clone, a missing file or anything that is not a hash."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    commit = data.get("hash") if isinstance(data, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+        return None
+    date = data.get("date")
+    return {"hash": commit, "date": date if isinstance(date, str) else "", "subject": ""}
 
 
 def record_start() -> None:
