@@ -221,7 +221,6 @@ class TestWeatherCLI:
             '--source', 'weather.gov',
             '--days', '5',
             '--units', 'imperial',
-            '--include-marine',
             '--summary-format', 'hourly',
             '--include-radiation',
             '--server',
@@ -232,7 +231,6 @@ class TestWeatherCLI:
         assert args.source == 'weather.gov'
         assert args.days == 5
         assert args.units == 'imperial'
-        assert args.include_marine is True
         assert args.summary_format == 'hourly'
         assert args.include_radiation is True
         assert args.server is True
@@ -247,7 +245,6 @@ class TestWeatherCLI:
         assert args.source is None
         assert args.days == 3
         assert args.units == 'metric'
-        assert args.include_marine is False
         assert args.summary_format == 'daily'
         assert args.include_radiation is False
         assert args.server is False
@@ -271,7 +268,6 @@ class TestWeatherCLI:
         assert output['source'] == 'met.no'
         assert output['days'] == 3
         assert output['units'] == 'metric'
-        assert output['include_marine'] is False
         assert output['server_mode'] is False
         assert output['port'] == 8080
 
@@ -330,7 +326,7 @@ class TestWeatherServer:
         assert "source" in params["properties"]
         assert "days" in params["properties"]
         assert "units" in params["properties"]
-        assert "include_marine" in params["properties"]
+        assert "include_marine" not in params["properties"]  # it made sea data up
 
         # Check required fields
         assert "location" in params["required"]
@@ -468,30 +464,6 @@ class TestWeatherServer:
             assert result["status"] == "success"
             # met.no API only provides metric units, so units will be "metric" regardless of request
             assert result["units"] == "metric"
-
-    @pytest.mark.asyncio
-    async def test_weather_server_marine_parameter(self, mock_system_config, mock_server_config):
-        """Test weather server marine parameter handling."""
-        server = WeatherServer("weather", mock_system_config, mock_server_config)
-
-        # Mock response for marine data
-        mock_response = {
-            "location": "Berlin",
-            "source": "marine.weather.gov",
-            "units": "metric",
-            "current": {"temperature": 20},
-            "forecast": [{"date": "2025-09-08", "max_temp": 22}]
-        }
-
-        with patch('plugins.weather.sources.fetch_marine_weather_gov', new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = mock_response
-
-            # Test marine data request - should switch to marine source
-            mock_status = AsyncMock()
-            result = await server.call("weather_forecast", {"location": "Berlin", "include_marine": True, "_status": mock_status})
-            assert result["status"] == "success"
-            # Should switch to marine.weather.gov when marine data is requested
-            assert result["source"] in ["marine.weather.gov", "met.no"]
 
     @pytest.mark.asyncio
     async def test_weather_server_source_switching_logic(self, mock_system_config, mock_server_config):
@@ -942,31 +914,6 @@ def test_summary_shows_weather_gov_day_and_night_temperatures(mock_system_config
 
 
 @pytest.mark.asyncio
-async def test_marine_geocodes_with_user_agent_and_reports_noaa_failure():
-    routes = {"nominatim": _Resp([{"lat": "53.55", "lon": "10.0"}]),
-              "/points/": _Resp({}, status_code=404)}
-    with _fake_httpx(routes):
-        res = await sources.fetch_marine_weather_gov("Hamburg", 1, "metric", True, True)
-    kwargs = _FakeClient.instances[0].kwargs
-    assert "User-Agent" in (kwargs.get("headers") or {})  # Nominatim answers 403 without one
-    assert kwargs.get("follow_redirects") is True
-    assert "404" in res["atmospheric_data_error"]
-    assert res["units"] == "imperial"
-
-
-@pytest.mark.asyncio
-async def test_marine_pairs_periods_by_daytime():
-    routes = {"nominatim": _Resp([{"lat": "25.79", "lon": "-80.13"}]),
-              "/points/": _Resp({"properties": {"forecast": "https://api.weather.gov/gridpoints/MFL/1,2/forecast"}}),
-              "gridpoints": _Resp({"properties": {"periods": _EVENING_PERIODS}})}
-    with _fake_httpx(routes):
-        res = await sources.fetch_marine_weather_gov("Miami Beach", 2, "metric", True, False)
-    tonight, wednesday = res["forecast"][0], res["forecast"][1]
-    assert tonight["max_temp"] == tonight["min_temp"] == 53
-    assert (wednesday["max_temp"], wednesday["min_temp"]) == (63, 52)
-
-
-@pytest.mark.asyncio
 async def test_fetch_failure_answers_an_error_instead_of_raising(mock_system_config, mock_server_config):
     server = WeatherServer("weather", mock_system_config, mock_server_config)
     with patch("plugins.weather.sources.fetch_met_no", new_callable=AsyncMock,
@@ -990,14 +937,14 @@ async def test_days_is_validated_and_clamped(mock_system_config, mock_server_con
 
 
 @pytest.mark.asyncio
-async def test_include_marine_wins_over_the_wttr_fallback(mock_system_config, mock_server_config):
+async def test_the_made_up_marine_source_is_gone(mock_system_config, mock_server_config):
+    """marine.weather.gov was weather.gov's forecast plus sea temperatures and
+    wave heights computed from latitude and month -- invented, not measured."""
     server = WeatherServer("weather", mock_system_config, mock_server_config)
-    marine = {"location": "Miami", "source": "marine.weather.gov", "units": "imperial", "current": {}, "forecast": []}
-    with patch("plugins.weather.sources.fetch_marine_weather_gov", new_callable=AsyncMock, return_value=marine) as fetch:
-        result = await server.call("weather_forecast", {"location": "Miami", "source": "wttr.in", "days": 5,
-                                                        "include_marine": True, "_status": AsyncMock()})
-    assert fetch.await_count == 1
-    assert result["source"] == "marine.weather.gov"
+    result = await server.call("weather_forecast", {"location": "Miami", "source": "marine.weather.gov",
+                                                    "_status": AsyncMock()})
+    assert result == {"status": "error", "error": "Unsupported weather source: marine.weather.gov"}
+    assert not hasattr(sources, "fetch_marine_weather_gov")
 
 
 @pytest.mark.asyncio
@@ -1118,9 +1065,7 @@ async def test_nws_night_after_midnight_is_dated_the_day_before():
               "/points/": _Resp(points), "gridpoints": _Resp(forecast)}
     with _fake_httpx(routes):
         gov = await sources.fetch_weather_gov("1 Main St, Seattle, WA", 2, "metric", True)
-        marine = await sources.fetch_marine_weather_gov("Seattle", 2, "metric", True, False)
     assert [d["date"] for d in gov["forecast"]] == ["2026-09-30", "2026-10-01"]
-    assert [d["date"] for d in marine["forecast"]] == ["2026-09-30", "2026-10-01"]
 
 
 @pytest.mark.asyncio
@@ -1131,16 +1076,6 @@ async def test_days_null_takes_the_default(mock_system_config, mock_server_confi
         await server.call("weather_forecast", {"location": "Oslo", "days": None, "_status": AsyncMock()})
         await server.call("weather_forecast", {"location": "Oslo", "days": 0, "_status": AsyncMock()})
     assert [c.args[1] for c in fetch.call_args_list] == [3, 1]
-
-
-@pytest.mark.asyncio
-async def test_include_marine_as_the_string_false_does_not_switch(mock_system_config, mock_server_config):
-    server = WeatherServer("weather", mock_system_config, mock_server_config)
-    met_no = {"location": "Oslo", "source": "met.no", "units": "metric", "current": None, "forecast": []}
-    with patch("plugins.weather.sources.fetch_met_no", new_callable=AsyncMock, return_value=met_no):
-        result = await server.call("weather_forecast", {"location": "Oslo", "include_marine": "false",
-                                                        "_status": AsyncMock()})
-    assert result["source"] == "met.no"
 
 
 # --- Third review round -------------------------------------------------------

@@ -4,8 +4,8 @@ Current weather and a forecast of up to seven days for a place, from free public
 worldwide, the US National Weather Service for places in the US. No key, no account. The answer starts with a
 short text summary; the full data follows.
 
-- **Tool** `weather_forecast` -- one tool with `location`, `source`, `days`, `units`, `include_marine` and
-  `summary_format`. `include_marine` adds estimated (not measured) sea data.
+- **Tool** `weather_forecast` -- one tool with `location`, `source`, `days`, `units` and
+  `summary_format`.
 - No hooks, no panel.
 
 Enable it in `config/plugins.yaml` (`weather: {type: weather, enabled: true}`) and allow `+weather/*` in an agent's

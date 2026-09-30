@@ -2,7 +2,7 @@ tools:
   - type: function
     function:
       name: "{{ name }}_forecast"
-      description: Get current weather and multi-day forecasts. weather.gov and marine.weather.gov cover only the US.
+      description: Get current weather and multi-day forecasts. weather.gov covers only the US.
       parameters:
         type: object
         properties:
@@ -11,7 +11,7 @@ tools:
             description: "City or coordinates ('Munich', '48.1351,11.5820'); weather.gov: US street address"
           source:
             type: string
-            enum: [wttr.in, weather.gov, met.no, marine.weather.gov]
+            enum: [wttr.in, weather.gov, met.no]
             default: met.no
           days:
             type: integer
@@ -24,10 +24,6 @@ tools:
             enum: [metric, imperial]
             default: metric
             description: "Units; only wttr.in follows them"
-          include_marine:
-            type: boolean
-            default: false
-            description: "Estimated sea data (not measured); switches to marine.weather.gov"
           summary_format:
             type: string
             enum: [daily, hourly]

@@ -40,10 +40,9 @@ follows is what the code does with them.
 @{table}
 Parameter | Meaning
 location | the place; required. What a source accepts differs, see @{" The sources " link sources}
-source | met.no (default), wttr.in, weather.gov or marine.weather.gov; case does not matter. Anything else answers an error
+source | met.no (default), wttr.in or weather.gov; case does not matter. Anything else answers an error
 days | forecast days, counted from today; default 3, also when null. A value below 1 is taken as 1, above 7 as 7, a fraction is cut (2.9 is 2). Not a number: an error
 units | metric (default) or imperial. Only wttr.in follows it; the other sources answer in their own units
-include_marine | true: switch to marine.weather.gov and add estimated sea data. Only a real true counts -- the text "true" or "false" does not; default false
 summary_format | daily (default) or hourly. hourly adds each day's time steps to the met.no and wttr.in data; the summary is the same. Any other value counts as daily
 @{body}
 
@@ -52,14 +51,8 @@ An empty or null @{tt}source@{utt}, @{tt}units@{utt} or
 
 @{h2}Which source answers
 
-Two rules can change the source before anything is fetched, in this
-order:
-
-@{bullet}wttr.in with more than 3 days: met.no answers instead (wttr.in
-has only three).
-@{bullet}@{tt}include_marine: true@{utt}: marine.weather.gov answers,
-whatever source was asked for -- also after the first rule, and also for
-a source name that would otherwise be refused.
+wttr.in with more than 3 days: met.no answers instead (wttr.in has
+only three).
 
 The @{tt}source@{utt} field of the answer says which one it was.
 
@@ -73,9 +66,8 @@ location | the location as it was asked for
 source | the source that answered
 units | metric or imperial: the units the numbers are in, which need not be the requested ones
 coordinates | lat and lon the place was found at (not with wttr.in)
-current | the current conditions (met.no and wttr.in; empty with marine.weather.gov, missing with weather.gov)
+current | the current conditions (met.no and wttr.in; missing with weather.gov)
 forecast | one entry per day; what an entry holds depends on the source
-marine_data, atmospheric_data_error | marine.weather.gov only, see @{" The sources " link sources}
 @{body}
 
 The summary, for met.no:
@@ -108,7 +100,7 @@ period, a met.no first day of a single hour -- shows one value
 error | When
 Missing required parameter: location | location is empty or missing
 days must be a whole number from 1 to 7, got 'many' | days is not a number
-Unsupported weather source: <name> | an unknown source, and include_marine is not set
+Unsupported weather source: <name> | an unknown source
 Weather request cancelled by user | the agent's run was stopped before the lookup began; the answer also has @{tt}cancelled: true@{utt}
 @{body}
 
@@ -118,7 +110,7 @@ A failed lookup answers @{tt}status: error@{utt} with the failure in
 @{tt}error@{utt} texts:
 
 @{bullet}"Could not find coordinates for location: Xyz" -- the place was
-not found (met.no, marine.weather.gov).
+not found (met.no).
 @{bullet}"Could not find coordinates for US location: Seattle" --
 weather.gov found no US address.
 @{bullet}The HTTP error of a service, for example "Client error '404 Not
@@ -146,10 +138,9 @@ source | Where | Location | Days | Units
 met.no | worldwide | a place name, an address or "lat,lon" | 1 to 7 | always metric, wind in m/s
 wttr.in | worldwide | a place name or "lat,lon" | 1 to 3 | metric or imperial
 weather.gov | US only | a US street address with city and state | 1 to 7 | always imperial
-marine.weather.gov | forecast US only | a place name or an address | 1 to 7 | imperial; sea data metric
 @{body}
 
-met.no and marine.weather.gov find the place with OpenStreetMap's
+met.no finds the place with OpenStreetMap's
 Nominatim and take its first hit. Nominatim allows about one request per
 second; many lookups in a row can be refused.
 
@@ -216,28 +207,6 @@ night ("Tonight"), one issued after midnight with the rest of the night
 before ("Overnight", dated yesterday). The last date may have only its
 day. At most twice @{tt}days@{utt} periods are read, so the list can
 have one date more than asked for.
-
-@{h2}marine.weather.gov
-
-No service of that name is asked: the forecast comes from the National
-Weather Service like weather.gov, for the coordinates Nominatim found.
-
-@{bullet}@{tt}current@{utt} is always empty.
-@{bullet}@{tt}forecast@{utt}: per date max_temp and min_temp (°F) from
-the day and night period, avg_temp, and wind, description and detailed
-forecast of the first period. Dates as with weather.gov.
-@{bullet}Outside the US the Weather Service has no forecast: the answer
-is still a success, with an empty @{tt}forecast@{utt} and the reason in
-@{tt}atmospheric_data_error@{utt} ("NOAA weather API failed: Client
-error '404 Not Found' ...").
-@{bullet}@{tt}marine_data@{utt} is only filled with
-@{tt}include_marine: true@{utt} (otherwise null): per day from today, a
-sea surface temperature in °C and a significant wave height in metres,
-both marked @{tt}"source": "estimated"@{utt}. @{b}They are not
-measurements@{ub}: the temperature is 15 + (90 - |latitude|) / 3 plus a
-small seasonal term, the wave height |latitude| / 20 + 0.5 kept between
-0.5 and 4 metres. The formula is far off -- at Hamburg it gives 28 °C, at
-Miami 37 °C. @{tt}wind_waves@{utt} stays empty.
 @endnode
 
 @node model "What the model sees"
@@ -249,15 +218,14 @@ The description and the parameters come from the plugin's
 @{tt}schema.yaml@{utt}, the same for every instance but the name:
 
 @{code text}
-Get current weather and multi-day forecasts. weather.gov and marine.weather.gov cover only the US.
+Get current weather and multi-day forecasts. weather.gov covers only the US.
 @{body}
 
 The parameter texts are short: location "City or coordinates ('Munich',
 '48.1351,11.5820'); weather.gov: US street address", units "Units; only
-wttr.in follows them", include_marine "Estimated sea data (not measured);
-switches to marine.weather.gov", summary_format "hourly adds the time
+wttr.in follows them", summary_format "hourly adds the time
 steps"; source has only its list of values. The schema's defaults
-(met.no, 3, metric, false, daily) are the ones the code applies.
+(met.no, 3, metric, daily) are the ones the code applies.
 
 @{h2}Errors, word for word
 
@@ -280,15 +248,16 @@ The tool definition is the same on every request, so the prompt cache
 holds; the plugin adds nothing to the system prompt. The answer is an
 ordinary tool result, appended. Measured for Munich: met.no about 600
 characters for one day, 1,000 for three and 1,700 for seven; wttr.in
-about 1,100 for three days; weather.gov and marine.weather.gov 2,000 to
+about 1,100 for three days; weather.gov 2,000 to
 3,000. @{tt}summary_format: hourly@{utt} makes it many times larger --
 met.no 17,000 characters for seven days, wttr.in 5,200 for three -- so
 ask for it only when the course of a day matters.
 
 @{h2}Known gaps
 
-@{bullet}The estimated sea data is a rough formula, far from real sea
-temperatures (see @{" The sources " link sources}).
+@{bullet}No sea data: the former source marine.weather.gov computed sea
+temperature and wave height from latitude and month -- invented, so it
+was removed. A source name it knew now answers an error.
 @{bullet}Only wttr.in follows @{tt}units@{utt}; the answer's
 @{tt}units@{utt} field says what the numbers are.
 @{bullet}met.no's local day is estimated from the longitude and ignores

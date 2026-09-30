@@ -62,16 +62,11 @@ class WeatherServer(SchemaBasedToolServer):
 
         source = str(params.get("source") or "met.no").lower()
         units = str(params.get("units") or "metric").lower()
-        # Only a real true: the string "false" is truthy.
-        include_marine = params.get("include_marine") is True
         summary_format = str(params.get("summary_format") or "daily").lower()
         hourly = summary_format == "hourly"
 
         if days > 3 and source == "wttr.in":
             source = "met.no"
-        # Not elif: include_marine must win over the wttr.in fallback above.
-        if include_marine and source not in ["marine.weather.gov"]:
-            source = "marine.weather.gov"
 
         try:
             if source == "wttr.in":
@@ -80,8 +75,6 @@ class WeatherServer(SchemaBasedToolServer):
                 result = await sources.fetch_weather_gov(location, days, units, self.ssl_verify)
             elif source == "met.no":
                 result = await sources.fetch_met_no(location, days, units, self.ssl_verify, hourly)
-            elif source == "marine.weather.gov":
-                result = await sources.fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
             else:
                 error_msg = f"Unsupported weather source: {source}"
                 await status.error(error_msg)
