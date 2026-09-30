@@ -114,12 +114,10 @@ plugins:
               enabled: true
             # OFF on purpose, all three of them below.
             #
-            # Each inserts a system message directly behind the first one --
-            # inside the cached prompt prefix -- and each carries content that
+            # Each appends a turn whenever its content changes -- and it
             # changes MID-TURN: a task gets updated, a thought is added, a
-            # sub-agent finishes. So the prefix is invalidated exactly while
-            # the agent is working hardest, and every following call pays full
-            # price for a context it already has.
+            # sub-agent finishes. Every such turn is paid for again on every
+            # later call, for a context the agent already has.
             #
             # Nothing is lost. All three sources are the agent's OWN tool
             # calls, so they sit in the transcript already, and the tools are
@@ -142,12 +140,12 @@ plugins:
             # is ABOUT -- the lexical hit plus its linked neighbours -- so the
             # bundle can grow past what would fit in a prompt.
             #
-            # This one stays ON although it injects at the same place, because
-            # it does not churn the way the three above do: it keys on the last
+            # This one stays ON although it appends the same way, because it
+            # does not churn the way the three above do: it keys on the last
             # USER message, so the block is byte-identical across every LLM
-            # call within a turn, and only moves when the user speaks -- when
-            # the prefix changes anyway. The one exception is the agent writing
-            # a concept mid-turn; that is a deliberate, rare act.
+            # call within a turn and a new one is appended only when the user
+            # speaks. The one exception is the agent writing a concept
+            # mid-turn; that is a deliberate, rare act.
             #
             # hook_bundle is mandatory: without it the hook returns silently
             # without doing anything, which is indistinguishable from an empty

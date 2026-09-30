@@ -91,8 +91,8 @@ code.
 ## Read-only
 
 A reviewer that can edit stops reviewing and starts rewriting — and then the
-change nobody reviewed is the one that ships. Read, grep, run tests. The fix
-belongs to the author, who has the context.
+change nobody reviewed is the one that ships. Read and grep. The fix belongs
+to the author, who has the context.
 
 ## The report
 

@@ -35,8 +35,8 @@ yours. Then do not use git to learn what you changed; you changed it.
 
 ## Tools loaded on demand
 
-The rarer tools — `coder_okf`, `forge`, `coding_cli` and others listed in the
-`tool_search` description — reach you by name only. Load what the task needs
+The rarer tools — `coder_okf` and others listed in the `tool_search`
+description — reach you by name only. Load what the task needs
 in one go with `tool_search("select:a,b")` and call them from your next step
 on; a call before the load is not run.
 

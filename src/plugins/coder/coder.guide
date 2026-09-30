@@ -1,0 +1,412 @@
+@database "coder"
+@author "Enrico Ehrich"
+@$VER: coder.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Coder"
+@{h1}Coder
+
+A coding agent with a harness around it. @{b}coder@{ub} plans a change,
+edits the files, runs the tests and has the finished change attacked by a
+reviewer before it calls the work done. Three sub-agents do the parts that
+would cost it its own context or its own bias: @{b}coder_explorer@{ub}
+finds things, @{b}coder_reviewer@{ub} reviews read-only,
+@{b}coder_tester@{ub} runs the checks. What it learns about a project it
+keeps in a knowledge bundle that is folded into later sessions.
+
+The plugin is configuration only: four agents, their prompts, five tool
+instances and two skills. It has no tools, hooks or panel of its own.
+
+@{code}
+For users
+  @{"  Working with it  " link use}
+  @{"  The four agents  " link agents}
+  @{"  What it remembers  " link knowledge}
+
+For agents and developers
+  @{"  Calling it from another agent  " link tool}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node use "Working with it"
+@{h1}Working with it
+
+In the web UI, pick @{b}coder@{ub} as the agent of a chat (see
+@{" Choosing an agent " link scarabhive/agents}). From the command line:
+
+@{code sh}
+agent-cli chat --agent coder
+agent-cli run --agent coder "add a --dry-run flag to tools/sync.py"
+@{body}
+
+All four agents are gated at @{b}admin@{ub}: they have a shell and read
+the whole checkout, @{tt}config/secrets.env@{utt} included, so only an
+admin account (or the local operator of agent-cli) can start them.
+
+@{h2}What it reaches
+
+The file tools reach @{tt}data/workspace/@{utt}, @{tt}src/@{utt} and the
+repository root -- the coder works on this project itself, and can change
+its own configuration. The shell starts in the repository root, so one
+relative path names the same file in both. The shell is not sandboxed: it
+runs what an admin could run there, and its blacklist (@{tt}rm -rf /@{utt},
+@{tt}git push@{utt}, @{tt}git reset --hard@{utt}, @{tt}git checkout --@{utt},
+@{tt}git clean -@{utt} and a few more) is a guard against typos, not a
+boundary (see @{" What an agent can run " link terminal/security}).
+
+@{h2}What a report looks like
+
+The coder closes every answer with three lines:
+
+@{code}
+Ran:      <what it executed, and what came back>
+Check:    <the test or self-check it left behind, or why none is needed>
+Reviewed: <the coder_reviewer round and its findings, or "skipped: <reason>">
+@{body}
+
+A skipped review is allowed; an unmentioned one is not. When it cannot
+finish, it says where it stopped and what is missing.
+
+@{h2}Commits and git
+
+It never commits or pushes on its own. Asked to commit, it commits only
+the files it changed, by path. It first checks with
+@{tt}git rev-parse --show-toplevel@{utt} which repository git is talking
+about: a project under @{tt}data/workspace/@{utt} is ignored by this
+repository, so there git shows other people's changes and none of its own
+until the project is a repository of its own.
+
+@{h2}Undo
+
+Every file @{tt}coder_fs@{utt} writes is recorded:
+@{tt}/undo files@{utt} and @{tt}/rewind@{utt} put the files back (see
+@{" Undo and rewind in the chat " link file_checkpoints/using}). What the
+shell changed is only named, not recorded.
+
+@{h2}Claude Code and GitLab/GitHub
+
+Where Claude Code is installed (@{" Coding CLI " link coding_cli/main}),
+the coder can hand a self-contained task to it; the result comes back on a
+branch, and the coder reviews it like its own work before applying it.
+Where repositories are configured for @{" Forge " link forge/main}, it
+works tickets from issue to merge. Neither is there otherwise, and the
+prompt then does not mention them.
+
+@{h2}Limits
+
+@{table}
+Limit | Value
+Steps per run | coder 300, reviewer 200, explorer and tester 40
+Context window | 200,000 tokens, all four
+Answer cut off at the output cap | sent back with a note, up to twice in a row (coder only)
+Sub-agents | 4 per type not archived (a fifth archives the oldest), 20 per session
+Wait for a sub-agent | 3600 s
+@{body}
+@endnode
+
+@node agents "The four agents"
+@{h1}The four agents
+
+@{table}
+Agent | Does | Tools | Models
+coder | the change: plans, edits, runs, gets reviewed | everything below, writable files | code, code_fallback
+coder_explorer | "where is X, who calls Y" -- paths and lines, no judgement | read-only files | structured, structured_fallback
+coder_reviewer | attacks a finished change, reports only findings that survived a refutation attempt | read-only files, skills, sequential_thinking | code, code_fallback
+coder_tester | runs tests, lint, types; reports only the failing lines; mutation probe | shell, read-only files | structured, structured_fallback
+@{body}
+
+The model names are profiles of the installation's LLM configuration
+(see @{" LLM models and profiles " link scarabhive/llm}). The coder and
+the reviewer escalate to @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},
+the tester to @{tt}code@{utt}, @{tt}code_fallback@{utt}; the explorer has
+no escalation chain.
+
+@{h2}Why separate agents
+
+@{bullet}@{b}Context@{ub}: sweeping thirty files to answer one question
+costs the explorer its context, not the coder's. The same holds for the
+hundreds of lines of a failing test run.
+@{bullet}@{b}Fresh eyes@{ub}: the reviewer sees none of the coder's
+conversation, only what the coder hands it.
+@{bullet}@{b}Read-only by configuration@{ub}: explorer and reviewer get
+@{tt}coder_fs_ro@{utt}, a file_ops instance with @{tt}read_only: true@{utt};
+it offers no write tools at all. The tester has no file write tools
+either, but its shell can write -- the mutation probe needs that.
+
+None of the three has a sub-agent manager, so a review cannot start a
+review. The coder starts them through @{tt}coder_sam@{utt}, which allows
+exactly these three.
+@endnode
+
+@node knowledge "What it remembers"
+@{h1}What it remembers
+
+@{h2}The knowledge bundle
+
+@{tt}data/okf/coder@{utt} is an OKF bundle: markdown concepts with YAML
+front matter and links between them. The coder writes what a later
+session would otherwise rediscover the hard way -- a measured fact with
+its conditions, a trap with its evidence, a convention no file states, a
+decision with its reason -- and never what the code already says. The
+directory is created on the first write.
+
+Before each LLM call a hook picks the three concepts that best match the
+last message a person wrote, adds the concepts they link to, and appends
+at most ten of them as one turn. Each body is cut at 1,500 characters
+with @{tt}…[truncated]@{utt}; the skill therefore asks for concepts under
+that length. A retired concept is marked as such. The block is appended
+again only when the selection changed, which within one turn it does not
+-- unless the coder wrote a concept.
+
+The bundle has its own OKF instance, @{tt}coder_okf@{utt}, sandboxed to
+this one directory: the coder cannot write into another agent's bundle.
+
+@{h2}The skills
+
+@{table}
+Skill | Where it comes from | In the prompt
+coding-harness | this plugin | the coder's, in full: the working loop, when to delegate, what to carry forward, the report contract
+adversarial-review | this plugin | the reviewer's, in full; for the coder only its description
+tdd, diagnosing-bugs, codebase-design | @{tt}skills/coding/@{utt} | the coder's (and codebase-design the reviewer's), description only
+forge-workflow | the forge plugin | the coder's, description only
+@{body}
+
+The coder can edit the two skills of this plugin: they lie inside its
+sandbox.
+
+@{h2}The project's own instructions
+
+All four agents read the project's @{tt}AGENTS.md@{utt} from the
+repository root and keep that version for the session; see
+@{" Project Instructions " link project_instructions/main}.
+@endnode
+
+@node tool "Calling it from another agent"
+@{h1}Calling it from another agent
+
+The coder is visible in the UI and as a tool (@{tt}visibility: both@{utt});
+the three sub-agents only as tools. No shipped agent calls them as a tool;
+to let one, put @{tt}"+coder/*"@{utt} (or @{tt}"+coder_reviewer/*"@{utt} ...) into
+its @{tt}agent_config.tools.allowed@{utt}. The caller then has
+@{tt}coder_execute_task@{utt} and @{tt}coder_list_available_tools@{utt};
+see @{" execute_task " link basic_agent/execute_task}.
+@{tt}use_advanced_model@{utt} switches to the escalation chain named in
+@{" The four agents " link agents}. The admin gate applies to every way in.
+
+The plugin sets its own one-line descriptions for these tools, e.g. for
+@{tt}coder_execute_task@{utt}: "Implement, fix or refactor code in the
+workspace -- plans the change, edits files, runs the tests and has the
+result reviewed before reporting".
+
+The @{b}gamedev@{ub} agent of the Godot plugin inherits the coder
+(@{tt}type: coder@{utt}): its sandbox and shell, with its own prompt,
+skills, bundle and sub-agent manager. Its manager starts @{tt}coder_explorer@{utt} and
+@{tt}coder_reviewer@{utt} as well, and the Godot plugin's
+@{tt}godot_agent@{utt} uses @{tt}coder_fs@{utt}: a change to the
+instances or the roles here changes them too.
+
+@{h2}As sub-agents
+
+Another agent's manager can start @{tt}coder_explorer@{utt},
+@{tt}coder_reviewer@{utt} or @{tt}coder_tester@{utt} when they are in its
+@{tt}allowed_agents@{utt}; see
+@{" Sub-agents and the SAM " link scarabhive/subagents}. Give them
+everything in the task: they see nothing of the caller's conversation.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The prompts
+
+Read from @{tt}agents/prompts/@{utt} on every run. Rendered sizes:
+
+@{table}
+Agent | Characters | Contents
+coder | about 13,800; 16,000 with Claude Code and forge | sandbox, shell and commit rules, deferred tools, the bundle, the sub-agent table, the done bar, then the coding-harness skill and the index of five on-demand skills
+coder_explorer | about 2,600 | how to search (grep first, semantic search for an unknown word), what to report
+coder_reviewer | about 7,400 | what counts as a finding, the report format, then the adversarial-review skill and the codebase-design index
+coder_tester | about 2,700 | run what was asked, report failures verbatim, the mutation probe
+@{body}
+
+The coder's sections on Claude Code and on GitLab/GitHub are rendered
+only when @{tt}has_tool('coding_cli_run_task')@{utt} or
+@{tt}has_tool('forge_checkout')@{utt} finds the tool. The bundle path is
+filled in from @{tt}template_vars.okf_bundle@{utt}. No prompt renders a
+value that changes between calls.
+
+@{h2}The coder's tools
+
+@{table}
+Tool | From
+coder_fs_read_file, _list_directory, _search_files, _grep_search, _semantic_search, _replace_string_in_file, _manage | @{" file_ops " link file_ops/main}, instance @{tt}coder_fs@{utt}
+coder_shell_execute, _get_output, _kill_process | @{" terminal " link terminal/main}, instance @{tt}coder_shell@{utt}
+coder_sam_manage_sub_agent | the sub-agent manager, instance @{tt}coder_sam@{utt}
+skills_list, skills_read | @{" skills " link skills/main}
+todo | @{" todo " link todo/main}
+ask_user | @{" ask_user " link ask_user/main}
+context_engineer_list, _read, _store_fact, _compact | @{" context_engineer " link context_engineer/main}
+coder_okf_search, _read_concept, _neighbors, _subgraph, _list, _write_concept, _append_log, _validate, _reindex | deferred; OKF, instance @{tt}coder_okf@{utt}
+sequential_thinking and its two helpers, datetime_operations | deferred
+coding_cli_run_task, _get_run, _cancel_run | deferred; only where Claude Code is installed
+forge_* | deferred; only where repositories are configured
+@{body}
+
+Deferred tools reach the model as a name and one line in the description
+of @{tt}tool_search@{utt}; it loads them before the first call (see
+@{" Writing an agent " link scarabhive/agentdev}). The prompt names
+@{tt}coder_okf@{utt} as one of them and tells the model to pass
+@{tt}bundle@{utt} to every OKF call -- there is no default.
+
+The explorer has @{tt}coder_fs_ro@{utt}'s five read tools and the
+context engineer's; the reviewer adds the skills tools and
+sequential_thinking; the tester has @{tt}coder_shell@{utt} and the read
+tools.
+
+@{h2}Semantic search
+
+@{tt}coder_fs_semantic_search@{utt} answers a question in a sentence with
+functions and classes, each with file, line and signature. Only
+@{tt}coder_fs@{utt} builds the index, in the background, starting with
+its first semantic search; @{tt}coder_fs_ro@{utt} reads the same
+collection. The coder's prompt therefore tells it to ask one question
+early. Until the index is there the answer says so and points to grep:
+
+@{code}
+The semantic index is being built in the background. Use grep_search now and try again in a minute.
+This instance only reads the shared index 'file_ops_coder_tree', which another instance builds, and it is still empty. Use grep_search.
+@{body}
+
+See @{" Semantic search " link file_ops/semantic}.
+
+@{h2}Hooks that run for them
+
+@{table}
+Hook | coder | sub-agents
+context_engineer.engineer_context | on | on
+markdown_formatter.format_markdown_output | on | off
+coder_okf.okf_context_injection | on, bundle @{tt}data/okf/coder@{utt} | --
+project_instructions.inject_project_instructions | on, root @{tt}.@{utt} | on
+file_checkpoints.record_before_change, _after_change | on | on
+todo.inject_todo_tasks, sequential_thinking.inject_active_sessions, coder_sam.inject_sub_agent_context | off | off
+@{body}
+
+The last three are off on purpose: each would append the agent's own tool
+results again whenever they change, which is mid-turn, for content that is
+in the transcript already. The sub-agents switch on the checkpoint hooks
+although they write nothing, so the coder's checkpoint does not name them
+as spawns whose changes go unrecorded.
+
+@{h2}Prompt cache
+
+The system prompts are fixed for a run, and all four run with
+@{tt}prompt_cache_mode: multi_turn@{utt}. Injections are appended, not
+inserted; what breaks the cached prefix is the context engineer's
+compaction and loading a deferred tool, which appends its schema to the
+tool list once.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the files are found by convention.
+
+@{table}
+File | Picked up by
+agents/coder.yaml, coder_explorer.yaml, coder_reviewer.yaml, coder_tester.yaml | @{tt}config/config.yaml@{utt} includes @{tt}../src/plugins*/*/agents/*.yaml@{utt}
+agents/tools.yaml | the same include; defines the five tool instances
+agents/prompts/*.md | @{tt}system_template@{utt}, relative to the YAML
+skills/coding-harness, skills/adversarial-review | @{tt}skills.skill_dirs@{utt} lists @{tt}src/plugins*/*/skills@{utt}
+@{body}
+
+@{h2}What it needs
+
+The shared instances in @{tt}config/plugins.yaml@{utt}: @{tt}skills@{utt},
+@{tt}todo@{utt}, @{tt}ask_user@{utt}, @{tt}sequential_thinking@{utt},
+@{tt}datetime@{utt}, @{tt}context_engineer@{utt},
+@{tt}markdown_formatter@{utt}, @{tt}project_instructions@{utt},
+@{tt}file_checkpoints@{utt}; optionally @{tt}coding_cli@{utt} and
+@{tt}forge@{utt}. The LLM profiles @{tt}code@{utt},
+@{tt}code_fallback@{utt}, @{tt}code_adv@{utt}, @{tt}code_adv_fallback@{utt},
+@{tt}structured@{utt}, @{tt}structured_fallback@{utt}. On the server:
+whatever the projects build and test with.
+
+@{h2}The file sandboxes (coder_fs, coder_fs_ro)
+
+@{table}
+Key | Value
+allowed_directories | data/workspace/, src/plugins/coder/skills/, src/, . -- the same on both
+read_only | coder_fs_ro only
+max_unpaginated_file_size_kb | 200 (default in code 100)
+default_line_limit | 500
+search.collection_name | file_ops_coder_tree, both
+search.enable_indexing | coder_fs only; reindex every 300 s
+search.exclude_patterns | .git, __pycache__, node_modules, .venv, *.pyc, *.min.js, *.min.css, *.map, dist, build
+@{body}
+
+The two directory lists must stay identical: a reviewer that cannot read
+what the coder wrote reviews what it can reach and does not say so. To
+keep the coder out of this repository, drop @{tt}src/@{utt} and
+@{tt}.@{utt} from both. The exclude list replaces file_ops' default list,
+so it repeats it. See
+@{" Where an agent can read and write " link file_ops/sandbox}.
+
+@{h2}The shell (coder_shell)
+
+@{table}
+Key | Value | Default in code
+platform.initial_cwd | . | --
+security.blacklist | rm -rf /, dd if=, mkfs, chmod 777, git push, git reset --hard, git checkout --, git clean - | none
+security.allow_command_chains | true | true
+limits.max_output_size_kb | 60 | 60
+limits.default_timeout_seconds | 300 | 300
+limits.max_timeout_seconds | 1800 | 3600
+limits.max_concurrent_background | 5 | 10
+@{body}
+
+Blacklist entries are regular expressions, searched in the command
+ignoring case.
+
+@{h2}The bundle (coder_okf)
+
+@{table}
+Key | Value | Default in code
+allowed_directories | data/okf/coder | --
+hook_max_concepts | 10 | 6
+hook_graph_depth | 1 | 1
+max_concept_file_kb | 512 | 512
+max_bundle_files | 5000 | 5000
+@{body}
+
+The hook reads these from the instance; the coder's override sets only
+@{tt}hook_bundle@{utt}, without which the hook does nothing. A
+@{tt}hook_bundle@{utt} outside the instance's directory also makes it do
+nothing, silently.
+
+@{h2}The sub-agent manager (coder_sam)
+
+@{table}
+Key | Value | Default in code
+allowed_agents | coder_explorer, coder_reviewer, coder_tester | --
+max_nesting_depth | 2 | 5
+max_sub_agents_per_type | 4 | 3
+max_sub_agents_per_session | 20 | 10
+default_wait_timeout | 3600 | 3600
+auto_archive_on_limit | true | false
+@{body}
+
+A new role needs its YAML under @{tt}agents/@{utt} and an entry in
+@{tt}allowed_agents@{utt}, or it cannot be started.
+
+@{h2}Tests
+
+@{tt}tests/test_coder_harness.py@{utt} checks the configuration as it
+resolves: the read-only instance renders no write tools, both sandboxes
+cover the same tree and share one index with one builder, the exclude
+lists keep file_ops' defaults, every tool a prompt names exists and is
+allowed, the Claude Code section appears exactly when the tool does, the
+bundle is isolated and reachable by the hook, the churning hooks stay
+off, and every agent reads @{tt}AGENTS.md@{utt}.
+@endnode

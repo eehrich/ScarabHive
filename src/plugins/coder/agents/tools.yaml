@@ -57,12 +57,17 @@ plugins:
         # Every five minutes: a coder writes code and then looks for it. The
         # pass only reads what changed.
         auto_reindex_interval: 300
+        # Replaces file_ops' default list instead of extending it: the
+        # defaults are repeated here (a test holds that), dist/build added.
         exclude_patterns:
           - '**/.git/**'
           - '**/__pycache__/**'
           - '**/node_modules/**'
           - '**/.venv/**'
           - '**/*.pyc'
+          - '**/*.min.js'
+          - '**/*.min.css'
+          - '**/*.map'
           - '**/dist/**'
           - '**/build/**'
 
@@ -99,6 +104,9 @@ plugins:
           - '**/node_modules/**'
           - '**/.venv/**'
           - '**/*.pyc'
+          - '**/*.min.js'
+          - '**/*.min.css'
+          - '**/*.map'
           - '**/dist/**'
           - '**/build/**'
 
