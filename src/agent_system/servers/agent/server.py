@@ -33,7 +33,7 @@ import httpx
 
 from ...llm.message_roles import DEVELOPER, leading_instructions, role_of
 from ...llm.model_health import model_health
-from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError
+from ...llm.models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMServerError, LLMConnectionError, abandon_report
 from ...llm import schema_worker
 from ...llm.structured_output import (
     JSON_OBJECT, STRUCTURED_OUTPUT_INVALID, STRUCTURED_OUTPUT_UNAVAILABLE, STRUCTURED_OUTPUT_UNSUPPORTED,
@@ -2813,6 +2813,14 @@ class Agent(ToolServer):
                                     "of thinking so far)",
                                     self.name, loop_reason, getattr(llm, "model", "?"),
                                     _detector.characters_seen)
+                                # The client reports the stream it is left with;
+                                # its row takes the reason (see the handler).
+                                abandon_report.set({"reported": False, "fields": {
+                                    "error": f"reasoning loop aborted: {loop_reason}",
+                                    "finish_reason": "reasoning_loop_aborted",
+                                    "response_data": {"reasoning_loop": {
+                                        "characters": _detector.characters_seen,
+                                        "reason": loop_reason}}}})
                                 raise ReasoningLoopError(
                                     loop_reason,
                                     characters=_detector.characters_seen)
@@ -3717,7 +3725,15 @@ class Agent(ToolServer):
                     # entry carrying "error" is the shape it already uses for
                     # its own failed attempts, which is why it skips the
                     # latency stash and leaves cost attribution untouched.
-                    notify = getattr(current_llm, "_notify_post_response", None)
+                    #
+                    # A client that reports every ending already wrote the row
+                    # when the stream closed -- with its usage, and with the
+                    # reason set at the abort (abandon_report). Then this one
+                    # would be a second row for the same call.
+                    pending = abandon_report.get()
+                    abandon_report.set(None)
+                    notify = (None if pending is not None and pending.get("reported")
+                              else getattr(current_llm, "_notify_post_response", None))
                     if notify is not None:
                         await notify({
                             # Most clients name themselves in their own

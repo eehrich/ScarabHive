@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Optional, Any, List, Dict, Union, Literal
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
@@ -315,6 +316,15 @@ class ChatMessage(BaseModel):
         return count
 
 
+#: What the caller knows about why it abandons a streaming call, set just
+#: before it closes the stream: {"fields": {...}, "reported": False}. The
+#: client's own end report (the abandon) takes the fields and marks it
+#: reported, so the call leaves ONE row with the client's usage and the
+#: caller's reason. The stream closes in the caller's task, so the value is
+#: visible there.
+abandon_report: ContextVar[Optional[Dict[str, Any]]] = ContextVar("llm_abandon_report", default=None)
+
+
 class LLMClient:
     """Base class for LLM clients with streaming support."""
 
@@ -397,6 +407,10 @@ class LLMClient:
         # retry/error notifications (they carry an "error") so the value
         # reflects the response actually returned. Normal use runs one
         # chat_tools per client instance at a time → last-value is unambiguous.
+        pending = abandon_report.get()
+        if pending is not None and response_info.get("error") and not pending.get("reported"):
+            response_info = {**response_info, **pending.get("fields", {})}
+            pending["reported"] = True
         if not response_info.get("error") and response_info.get("duration_ms") is not None:
             self._last_response_duration_ms = response_info.get("duration_ms")
         # Here, not in the hooks: those are wired only while hooks are on.

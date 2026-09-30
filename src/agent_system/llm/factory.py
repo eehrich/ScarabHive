@@ -369,8 +369,10 @@ def resolve_llm_config_for_agent(
         getattr(agent_config, "llm_params", None), profile_name
     )
     if llm_params:
+        # exclude_unset: a full dump would mark every field as set, and
+        # providers and the timeout default below read model_fields_set.
         model_config = LLMModelConfig.model_validate(
-            {**model_config.model_dump(), **llm_params}
+            {**model_config.model_dump(exclude_unset=True), **llm_params}
         )
         logger.debug("Applied agent llm_params on model_ref=%s: %s", model_ref, llm_params)
 

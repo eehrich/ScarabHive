@@ -501,6 +501,15 @@ class TestSystemHttpxTimeoutDefault:
         # Unset, the system default still applies.
         assert resolve_llm_config_for_agent(self._config(), AgentConfig(llm_profile="p")).spec.httpx_timeouts.read == 123.0
 
+    def test_agent_llm_params_do_not_mark_every_field_as_set(self):
+        """A full dump marked request_timeout set: read fell from 180 to 120."""
+        from agent_system.llm.factory import resolve_llm_config_for_agent
+        from agent_system.config.models import AgentConfig
+        resolved = resolve_llm_config_for_agent(
+            self._config(), AgentConfig(llm_profile="p", llm_params={"temperature": 0.3}))
+        assert resolved.spec.httpx_timeouts.read == 123.0
+        assert "request_timeout" not in resolved.spec.model_fields_set
+
     def test_a_model_override_beats_the_system_default(self):
         from agent_system.llm.factory import resolve_llm_config_for_agent
         from agent_system.config.models import AgentConfig, HTTPXTimeoutConfig
