@@ -166,6 +166,34 @@ class TestBasicAgentIntegration:
         assert "Simulated runtime error" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_a_cancelled_run_is_not_answered_as_success(self):
+        """The run's own "cancelled" event (Agent._run_events) ends the call as cancelled,
+        not as "success" with an invented result."""
+        agent = PLUGIN_FACTORY("cancel_agent", self.system_config, self.server_config)
+        read_to_end = []
+
+        async def run_events(*args, **kwargs):
+            yield {"type": "start"}
+            yield {"type": "tool_call", "server": "files", "action": "files_read", "params": {"path": "a"}}
+            yield {"type": "cancelled", "request_id": "r1", "step": 2}
+            yield {"type": "end"}
+            read_to_end.append(True)
+
+        agent.run_events = run_events
+        status = AsyncMock()
+
+        result = await agent.call("cancel_agent_execute_task", {"task": "Long task", "_status": status})
+
+        assert result["status"] == "cancelled"
+        assert result["cancelled"] is True
+        assert result["error"] == "Task cancelled at step 2"
+        assert "result" not in result
+        assert [c["action"] for c in result["tool_calls"]] == ["files_read"]
+        assert read_to_end == [True]
+        status.error.assert_awaited_with("Task cancelled at step 2")
+        status.end.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_list_tools_integration(self):
         """Test list_tools integration with real registry."""
         agent = PLUGIN_FACTORY("list_agent", self.system_config, self.server_config)

@@ -1,0 +1,266 @@
+@database "basic_agent"
+@author "Enrico Ehrich"
+@$VER: basic_agent.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Basic agent"
+@{h1}Basic agent
+
+This plugin is the plain agent: it takes a message, runs the LLM loop with
+the tools the agent is allowed to use, and answers. It has no tools of its
+own for the chat and no prompt of its own -- what an agent of this type can
+do comes entirely from its configuration: its LLM profiles, its system
+prompt, its tool list and its hook settings. Many agents in the picker are
+of this type or inherit from one that is -- @{tt}chat_agent@{utt}, the
+default, among them. When another agent is allowed to, it can call such an
+agent as a tool and hand it a task. The plugin has no panel and no hooks.
+
+@{code}
+For users
+  @{"  Chatting with it  " link using}
+
+For agents and developers
+  @{"  Setting up an agent  " link setup}
+  @{"  execute_task  " link execute_task}
+  @{"  list_available_tools  " link list_available_tools}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node using "Chatting with it"
+@{h1}Chatting with it
+
+An agent of this type is an ordinary chat partner. Pick it with the
+@{b}Agent@{ub} button under the message box, or type
+@{tt}/agent NAME@{utt}; see @{" Choosing an agent " link scarabhive/agents}.
+What it knows and can do is set by whoever configured it:
+
+@{bullet}@{b}Its tools@{ub}: @{tt}/tools@{utt} lists what it really has.
+@{bullet}@{b}Its model@{ub}: it runs its own chain of LLM profiles unless
+the @{b}Model profile@{ub} button picks another; see
+@{" LLM models and profiles " link scarabhive/llm}.
+@{bullet}@{b}Its history@{ub}: every conversation is a session, see
+@{" Sessions " link scarabhive/sessions}.
+
+Nothing in the chat is specific to this plugin; everything the web UI shows
+is described in @{" The web UI " link scarabhive/webui}.
+@endnode
+
+@node setup "Setting up an agent"
+@{h1}Setting up an agent
+
+An agent of this type is a server entry with @{tt}type: basic_agent@{utt}
+-- or with the name of another such entry, whose configuration it
+inherits. The plugin needs no entry of its own. The shipped
+@{tt}chat_agent@{utt} (@{tt}config/agents/agents.yaml@{utt}):
+
+@{code yaml}
+plugins:
+  servers:
+    chat_agent:
+      type: basic_agent
+      enabled: true
+      description: "Simple chat agent"
+
+      agent_config:
+        llm_profile: [chat, or-gemini-flash-lite]
+        llm_profile_advanced: []
+        max_steps: 30
+
+        hooks:
+          enabled: true
+          overrides:
+            markdown_formatter.format_markdown_output:
+              enabled: true
+
+      metadata:
+        visibility: "both"
+@{body}
+
+Every key of @{tt}agent_config@{utt} -- the prompt, @{tt}max_steps@{utt},
+the tool allowlist, skills, timeouts -- belongs to the core agent, not to
+this plugin; they are described in
+@{" Writing an agent " link scarabhive/agentdev}. Entries without their own
+values take them from @{tt}plugins.default_config@{utt} in
+@{tt}config/plugins.yaml@{utt} (two profiles @{tt}[normal, think]@{utt},
+20 steps, @{tt}config/prompts/system_prompt.md@{utt}, the
+markdown_formatter hooks switched off).
+
+@{h2}What this plugin reads itself
+
+@{table}
+Key | Where | Meaning
+agent_config.llm_profile | the entry | the default chain; its profiles are what the @{tt}llm_profile@{utt} argument may pick
+agent_config.llm_profile_advanced | the entry | the chain @{tt}use_advanced_model@{utt} runs on; empty: the argument does nothing
+agent_config.llm_params | the entry | the agent's model settings; a profile picked by argument gets them too
+metadata.visibility | the entry | @{tt}tool@{utt} or @{tt}both@{utt}: other agents may call it as a tool
+@{body}
+
+@{tt}self_tool_descriptions: {<instance>_execute_task: "..."}@{utt} in the
+entry (beside @{tt}type@{utt}) replaces a tool's description for that
+agent, so a caller's model learns what this agent is for.
+
+@{h2}Hooks
+
+The plugin brings none. The agent's run fires the hooks of every enabled
+hook plugin; which of them apply to this agent, and with what settings, is
+its @{tt}agent_config.hooks@{utt} block, see
+@{" Hooks " link scarabhive/hooks}.
+
+@{h2}Called by another agent
+
+For another agent to use this one as a tool, both sides agree: this
+agent's @{tt}metadata.visibility@{utt} is @{tt}tool@{utt} or
+@{tt}both@{utt}, and the caller allows it in its own list:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+chat_agent/*"
+@{body}
+
+The caller then has @{tt}chat_agent_execute_task@{utt} and
+@{tt}chat_agent_list_available_tools@{utt}. For a sub-agent the caller
+starts and talks to over several turns, with limits and cancelling, the
+sub-agent manager is the better way: see
+@{" Sub-agents and the SAM " link scarabhive/subagents}.
+
+@{h2}Dependencies and data
+
+None beyond the core. The server is built when the system starts. The
+agent's conversations are sessions like any other; the plugin stores
+nothing of its own.
+@endnode
+
+@node execute_task "execute_task"
+@{h1}execute_task
+
+@{tt}<instance>_execute_task@{utt} hands the agent one task and waits for
+its answer. The agent runs its whole loop -- LLM calls, its own tools --
+and the call returns when it is done.
+
+@{h2}Parameters
+
+The framework does not check the arguments against the schema; what
+follows is what the code does with them.
+
+@{table}
+Parameter | Meaning
+task | required; the task as text. Missing or empty: an error
+llm_profile | offered only when the agent has more than one profile in its two chains together, and then only those. Runs on that profile with the agent's own llm_params; the agent's default chain is the fallback. Wins over use_advanced_model
+use_advanced_model | true runs on the first profile of @{tt}llm_profile_advanced@{utt}, with the advanced chain and then the default chain as fallback. No effect when that chain is empty, starts with the default profile, or llm_profile is given; default false
+@{body}
+
+Without either argument the agent runs its default chain -- or, when its
+@{tt}agent_config.inherit_parent_llm@{utt} is true and the calling run was
+switched to another profile, on the caller's profile.
+
+@{h2}Its session
+
+Called from a chat, the agent does not work in the caller's session but in
+one of its own below it, one per caller session and agent: a second call
+from the same conversation sees the first call's task and answer. Its user
+is the caller's. Called without a session (a plugin command, a script),
+every call starts a new one.
+
+@{h2}The answer
+
+@{table}
+Field | Meaning
+status | success, error or cancelled
+result | the agent's final answer; "Task completed successfully" when it answered with nothing
+tool_calls | every tool call of the run: tool (the plugin instance), action (the tool name), params (the arguments without the framework's @{tt}_@{utt} keys)
+steps | 1 plus the number of tool calls
+request_id | the id the run went under
+error | on error and cancelled: why
+error_type | on some errors: which refusal (see below)
+@{body}
+
+@{h2}Errors
+
+An error comes back as @{tt}{"status": "error", "error": ...}@{utt}; the
+tool does not raise.
+
+@{table}
+error | When
+Missing required parameter 'task' | no task, or an empty one
+LLM profile '<p>' not available for this agent. Available profiles: [...] | llm_profile names a profile outside the agent's chains
+LLM profile '<p>' not found in system configuration. Available system profiles: [...] | the profile is in the agent's chain but not under llm_system.profiles
+Failed to initialize LLM profile '<p>': <reason> | the client could not be built (a missing key, an unknown provider)
+<agent> is running above this call already (in session <s>): an agent does not call itself, ... | error_type recursive_call: the agent would call itself, directly or through other agents
+Session <s> belongs to another user | error_type foreign_session
+Session <s> is currently locked by another request (<r>). Please wait for that request to complete. | error_type session_locked: a second call from the same conversation while the first still runs
+the run's own error | the loop failed: max steps reached without an answer, a timeout, empty answers, ... -- with its error_type where the run gives one
+@{body}
+
+When the run is stopped, the answer is @{tt}{"status": "cancelled",
+"cancelled": true, "error": "Task cancelled at step <n>"}@{utt} with the
+tool calls made until then.
+
+@{h2}An example
+
+@{code json}
+{"task": "Which weekday is it in Tokyo right now?"}
+@{body}
+
+@{code json}
+{"status": "success", "result": "It is Thursday in Tokyo.",
+ "tool_calls": [{"tool": "datetime", "action": "datetime_operations",
+                 "params": {"operation": "current", "timezone": "Asia/Tokyo"}}],
+ "steps": 2, "request_id": "a1b2c3_4"}
+@{body}
+@endnode
+
+@node list_available_tools "list_available_tools"
+@{h1}list_available_tools
+
+@{tt}<instance>_list_available_tools@{utt} takes no arguments and answers
+with a list of @{tt}{"name": ..., "description": ...}@{utt}, one per tool
+the agent may call -- exactly the list its own LLM gets, after the
+allowlist, the blocklist and visibility. Deferred tools
+(@{tt}tools.deferred@{utt}) are in it although a run sends their schema
+only once the model loads them. A failure while listing is an error of the
+call, not an empty list.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The two tools come from the plugin's @{tt}schema.yaml@{utt}, rendered per
+agent: the names carry the instance's name, the @{tt}llm_profile@{utt}
+parameter appears only with more than one profile and lists them, and
+@{tt}use_advanced_model@{utt} tells the model it has no effect when the
+agent has no advanced profile other than its default. The rendered tools
+are kept for the life of the server; a change to the profiles needs a
+restart.
+
+@{h2}The chat status line
+
+While @{tt}execute_task@{utt} runs: "Using LLM profile: <profile>" when
+one was picked, "Starting basic agent task: <task, 100 characters>...",
+"Step <n> - Using <tool> (<action>)" per tool call, "Processing results
+from <tool>...", "Finalizing results...". At the end: "<n> step(s), <m>
+tool call(s), <k> chars -- <task, 60 characters>"; on failure "Task
+failed: <error>", "Task execution failed: <error>" or "Task cancelled at
+step <n>". A refusal before the run -- a recursive call, another user's
+session, a session that cannot be filed -- and a bad @{tt}llm_profile@{utt}
+show the bare error; a locked session and the role gate come from the run
+and show "Task failed: <error>". @{tt}list_available_tools@{utt} ends with "Listed available
+tools (<n> tools)".
+
+@{h2}Tokens and cache
+
+The caller gets one tool result, appended to its conversation; nothing
+earlier is rewritten, so its prompt cache stays intact. The result holds
+the final answer and every tool call's arguments -- a run with many large
+arguments (files written, long queries) makes a long result. The called
+agent's own LLM calls run in its own session and are counted there.
+
+@{h2}Known gaps
+
+@{bullet}@{tt}steps@{utt} does not count LLM calls; it is the tool calls
+plus one.
+@endnode
