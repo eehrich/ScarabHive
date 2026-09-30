@@ -65,13 +65,15 @@ hold for every agent; a change takes effect after a restart.
 Key | Default | Meaning
 prompt_text | empty | the text; empty means nothing is injected
 prompt_file | empty | a Markdown file whose content is the text; relative to the installation's @{tt}config/@{utt} directory, or absolute. When set, it replaces prompt_text -- an empty file injects nothing
-injection_position | before_last_user | @{tt}after_system@{utt}, @{tt}before_last_user@{utt} or @{tt}end@{utt}; see @{" Where the text goes " link position}
+injection_position | before_last_user | @{tt}after_system@{utt}, @{tt}task_start@{utt}, @{tt}before_last_user@{utt} or @{tt}end@{utt}; see @{" Where the text goes " link position}
 role | developer | @{tt}developer@{utt}, @{tt}user@{utt} or @{tt}system@{utt}
 @{body}
 
 An unknown position or role is logged as an error and the default is used.
 @{tt}role: system@{utt} always stands behind the system prompt: with another
 position the plugin logs an error and places it there anyway.
+@{tt}task_start@{utt} writes into the user's task, so its role is
+@{tt}user@{utt}; another role is logged as an error and ignored.
 
 @{h2}The file
 
@@ -136,6 +138,7 @@ hook on or off, it cannot change the text.
 @{table}
 Position | Where | What a new turn does
 after_system | right behind the system prompt (behind every system message at the head) | nothing: same place, same text
+task_start | in front of the task, inside the first user message a caller wrote | nothing: same place, same text
 before_last_user | just in front of the last message the model is asked to answer | the text moves in front of the new message
 end | appended at the end of the list | depends on the role, see below
 @{body}
@@ -147,6 +150,24 @@ written again only when the rendered text changes -- and then the whole
 history behind it has to be sent to the provider uncached once. Keep a text
 built from variables stable within a session. This is the position to use
 for a standing rule.
+
+@{h2}task_start
+
+The text stands at the start of the task itself, followed by a
+@{tt}---@{utt} line -- the first user message that no hook put there. The
+message stays the user's: it keeps no @{tt}injected_by@{utt} mark, so turn
+counters and @{tt}tool_preload@{utt} still find the task. What the hook
+wrote is recorded on the message (@{tt}prefixed_by@{utt}, saved with the
+session, never sent): an unchanged text is left alone, a changed one
+replaces the old, an empty one is taken out. Several entries can write in
+front of the same task. A copy the same entry left at another position
+(the setting changed over a restart) is taken out; a task sent back with
+the text already in front (a retry from the web chat) is taken over, not
+written twice; an archive placeholder of @{tt}context_engineer@{utt} is
+never the task. @{tt}tool_preload@{utt} matches its rules on the task
+without the text. On writer agents a list of overused motifs was
+followed a little more here than as a message of its own; the difference
+was not significant.
 
 @{h2}before_last_user
 
@@ -196,7 +217,10 @@ than one copy of the current text.
 out).
 @{bullet}The call carries no message list.
 @{bullet}The copy of the call before is still right: @{tt}after_system@{utt}
-with the same text at the same place, @{tt}end@{utt} with the same text.
+with the same text at the same place, @{tt}end@{utt} with the same text,
+@{tt}task_start@{utt} with the same text in the task.
+@{bullet}@{tt}task_start@{utt} finds no task (no user message without a
+mark) or no text in it.
 
 @{h2}Switching it off for an agent
 
@@ -239,6 +263,9 @@ behind the system prompt:
 If you start to repeat yourself with tool calls or thinking, try a different approach.
 @{body}
 
+With @{tt}task_start@{utt} it is no message of its own: the task begins
+with the text, a @{tt}---@{utt} line, then the task as written.
+
 A @{tt}developer@{utt} message goes out on the rung its client picks
 (@{tt}llm/message_roles.py@{utt}): a developer turn, a @{tt}system@{utt}
 turn, or a @{tt}user@{utt} turn wrapped in @{tt}<developer_note>@{utt}. A
@@ -254,6 +281,7 @@ file is paid for on every call. Whether it is cached depends on the place:
 @{table}
 Position and role | Every request a prefix of the next?
 after_system, any role | yes -- until the rendered text changes
+task_start (user) | yes -- until the rendered text changes
 end, user | yes
 end, developer | within a turn; each new turn loses the cache from the previous copy on
 before_last_user, any role | within a turn; each new turn loses the cache from the previous copy on

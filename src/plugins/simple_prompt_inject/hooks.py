@@ -18,13 +18,16 @@ from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 from agent_system.hooks import SchemaBasedPluginHook, HookContext, HookResult
 from agent_system.llm.message_roles import DEVELOPER, SYSTEM, USER, is_input, role_of
 from agent_system.llm.models import ChatMessage
+from agent_system.servers.agent.components.hook_integration import is_compaction_system_message
 from agent_system.utils.prompt_renderer import strip_prompt_comments
 
 logger = logging.getLogger(__name__)
 
 INJECTED_BY = "simple_prompt_inject"
-_POSITIONS = ("before_last_user", "end", "after_system")
+_POSITIONS = ("before_last_user", "end", "after_system", "task_start")
 _ROLES = (SYSTEM, DEVELOPER, USER)
+# Between the text and the task under "task_start".
+_TASK_SEPARATOR = "\n\n---\n\n"
 
 # Project config directory (config/)
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config"
@@ -42,7 +45,8 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     dropped when the session is saved, so each turn appends it anew),
     ``after_system`` keeps
     it right behind the system prompt and rewrites it there only when the
-    rendered text changed.
+    rendered text changed. ``task_start`` writes it in front of the task,
+    inside the first user message, and remembers it in ``prefixed_by``.
 
     Both ``prompt_text`` and ``prompt_file`` content support Jinja2 template
     syntax rendered with the agent's ``template_vars``.
@@ -50,7 +54,7 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
     Configuration (via plugins.yaml):
         prompt_text: Text to inject (empty = no-op)
         prompt_file: Path to .md file (relative to config/ or absolute)
-        injection_position: 'before_last_user', 'end' or 'after_system'
+        injection_position: 'before_last_user', 'end', 'after_system' or 'task_start'
         role: 'system', 'developer' or 'user'. A 'developer' message is what
             the RUN tells the model, and it keeps the position configured
             here. A 'system' message is part of the instructions and always
@@ -81,6 +85,11 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         if self.role not in _ROLES:
             logger.error("simple_prompt_inject: unknown role %r, using 'developer'", self.role)
             self.role = DEVELOPER
+        if self.injection_position == "task_start" and self.role != USER:
+            # The text goes into the task's own message, which is the user's.
+            logger.error("simple_prompt_inject: task_start writes into the user's "
+                         "task; role %r is ignored -- set 'user'", self.role)
+            self.role = USER
         if self.role == SYSTEM and self.injection_position != "after_system":
             # A system message belongs to the instructions at the head. Inside
             # the history Anthropic and Gemini hoist it there anyway, where it
@@ -157,6 +166,8 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         # Render prompt through Jinja2
         rendered = self._render_template(self.prompt_template, template_vars)
+        if self.injection_position == "task_start":
+            return self._prefix_task(context, rendered)
         if not rendered:
             # An empty rendering withdraws the note: a copy left from an
             # earlier call would go on speaking.
@@ -211,6 +222,82 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
 
         context.messages = messages
         return HookResult(success=True, modified=True, context=context)
+
+    def _prefix_task(self, context: HookContext, rendered: str) -> HookResult:
+        """``task_start``: the text stands in front of the task, inside its message.
+
+        The task is the first user message a caller wrote (no ``injected_by``);
+        it stays theirs. The session keeps what the hook wrote, so
+        ``prefixed_by`` records the exact prefix: an unchanged text is left
+        alone (the cached prefix holds), a changed one replaces the old, an
+        empty rendering takes it out. An archive placeholder standing where
+        the task was is compaction's, not the caller's, and is skipped.
+        """
+        # A copy this instance placed at another position goes: the config
+        # changed over a restart, and the session still held it.
+        messages = [m for m in context.messages if m.injected_by != self.injected_by]
+        dropped = len(messages) != len(context.messages)
+        idx = next((i for i, m in enumerate(messages)
+                    if role_of(m) == USER and not m.injected_by
+                    and not is_compaction_system_message(m)), None)
+        text = self._task_text(messages[idx].content) if idx is not None else None
+        if idx is not None and text is None:
+            logger.warning("simple_prompt_inject: task_start found no text in the task of "
+                           "%s; nothing injected", context.agent_name)
+        if text is None:
+            return self._settled(context, messages, dropped)
+        task = messages[idx]
+        mine = dict(task.prefixed_by or {})
+        old = mine.pop(self.injected_by, "")
+        # Stripped: a file ends in a newline, and the task would open on blank lines.
+        rendered = rendered.strip()
+        prefix = f"{rendered}{_TASK_SEPARATOR}" if rendered else ""
+        # ``in``, not startswith: a second instance may have put its own text in front.
+        if old == prefix and (not prefix or prefix in text):
+            return self._settled(context, messages, dropped)
+        base = text.replace(old, "", 1) if old and old != prefix else text
+        # A task sent back as written (a retry from the web chat) already
+        # carries the text but no record of it: taken over, not written twice.
+        new_text = base if prefix and prefix in base else prefix + base
+        if prefix:
+            mine[self.injected_by] = prefix
+        messages[idx] = task.model_copy(update={
+            "content": self._with_task_text(task.content, new_text),
+            "prefixed_by": mine or None})
+        context.messages = messages
+        return HookResult(success=True, modified=True, context=context)
+
+    @staticmethod
+    def _settled(context: HookContext, messages: list[ChatMessage], dropped: bool) -> HookResult:
+        """No change to the task; the list changed only if an old copy went."""
+        if dropped:
+            context.messages = messages
+        return HookResult(success=True, modified=dropped, context=context)
+
+    @staticmethod
+    def _task_text(content: Any) -> str | None:
+        """The task's text: the string, or the first text part of a list."""
+        if isinstance(content, str):
+            return content
+        for part in content or []:
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if isinstance(text, str):
+                return text
+        return None
+
+    @staticmethod
+    def _with_task_text(content: Any, text: str) -> Any:
+        if isinstance(content, str):
+            return text
+        parts = list(content)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts[i] = {**part, "text": text}
+                return parts
+            if isinstance(getattr(part, "text", None), str):
+                parts[i] = part.model_copy(update={"text": text})
+                return parts
+        return parts
 
     # ------------------------------------------------------------------
     # Helpers

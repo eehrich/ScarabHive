@@ -699,3 +699,12 @@ def test_the_title_skips_a_note_a_plugin_injected():
         {"role": "user", "content": "Schreibe Szenen für Beat B01"},
     ])
     assert title == "Schreibe Szenen für Beat B01"
+
+    # Written in front of the task (task_start), recorded in prefixed_by --
+    # in a string and in the first text part of a list alike.
+    prefix = "- **Schon oft gelesen**\n\n---\n\n"
+    for content in (prefix + "Schreibe Szenen",
+                    [{"type": "text", "text": prefix + "Schreibe Szenen"}, {"type": "image_url"}]):
+        title = SessionService._extract_session_title(None, [
+            {"role": "user", "content": content, "prefixed_by": {"hint": prefix}}])
+        assert title == "Schreibe Szenen", content

@@ -136,7 +136,7 @@ ContentItem = Union[TextContent, ImageContent, AudioContent, VideoContent, TextF
 
 #: Fields of a ChatMessage that are ours, not the conversation's: never sent to a provider.
 #: A client that serialises the whole message pops these (a list per client drifted).
-PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
+PRIVATE_MESSAGE_FIELDS = frozenset({"injected_by", "prefixed_by", "rd_orphaned", "served_by", "reasoning_model", "request_id",
                                     "tool_request_ids", "step"})
 
 
@@ -229,6 +229,12 @@ class ChatMessage(BaseModel):
     # Used by injection hooks to find and replace their previous injections
     # instead of fragile content-based matching.
     injected_by: Optional[str] = None
+    # What a hook put in FRONT of this message's own text, by the hook's
+    # injected_by name -> the exact prefix (simple_prompt_inject "task_start").
+    # The message stays the caller's -- injected_by would turn the task into a
+    # note that every turn counter skips -- so the hook finds its prefix here
+    # to keep, replace or withdraw it. Never sent.
+    prefixed_by: Optional[Dict[str, str]] = None
     # The id of the run this message opened, on the first message a run stores. A
     # session read back tells its runs apart by it. Never sent.
     request_id: Optional[str] = None

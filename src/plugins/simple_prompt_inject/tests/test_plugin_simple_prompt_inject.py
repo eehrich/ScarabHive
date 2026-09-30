@@ -873,3 +873,150 @@ class TestThroughTheDispatcher:
         agent._session_tracker.get_session_template_vars.return_value = {"flag": False}
         msgs = await _call(registry, msgs, agent=agent)
         assert [m.content for m in msgs if m.injected_by] == []
+
+
+# ============================================================================
+# task_start: in front of the task, inside the user's own message
+# ============================================================================
+
+def _task_start(text="Oft gelesen: Akten."):
+    return {"prompt_text": text, "injection_position": "task_start", "role": "user"}
+
+
+def _task(content="Schreibe Beat B01"):
+    return [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content=content)]
+
+
+def _agent(**session_vars):
+    agent = MagicMock()
+    agent.agent_config.template_vars = {}
+    agent._session_tracker.get_session_template_vars.return_value = session_vars
+    return agent
+
+
+class TestTaskStart:
+
+    @pytest.mark.asyncio
+    async def test_the_text_stands_in_front_of_the_task_which_stays_the_users(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs = await _call(registry, _task())
+
+        assert [m.role for m in msgs] == ["system", "user"]
+        assert msgs[1].content == "Oft gelesen: Akten.\n\n---\n\nSchreibe Beat B01"
+        assert msgs[1].injected_by is None, "a marked task is skipped by every turn counter"
+
+    @pytest.mark.asyncio
+    async def test_across_a_save_every_request_is_a_prefix_of_the_next(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs, requests = _task(), []
+        for turn in (1, 2):
+            msgs = await _call(registry, msgs)
+            requests.append([(m.role, m.content) for m in msgs])
+            # Saved and read back the way the session does it.
+            msgs = [ChatMessage(**m.model_dump(mode="json")) for m in msgs] + [
+                ChatMessage(role="assistant", content=f"answer {turn}"),
+                ChatMessage(role="user", content=f"turn {turn + 1}")]
+
+        assert requests[1][:len(requests[0])] == requests[0]
+        assert sum(c.count("Oft gelesen") for _, c in requests[-1]) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_text_leaves_the_list_alone(self, make_plugin):
+        # A new list would be synced into the session for nothing on every call.
+        p = make_plugin("H.", position="task_start", role="user")
+        first = await p.inject_prompt(_ctx(_task()))
+        again = await p.inject_prompt(_ctx(first.context.messages))
+
+        assert first.modified and again.modified is False
+
+    @pytest.mark.asyncio
+    async def test_a_changed_text_replaces_the_old_and_an_empty_one_takes_it_out(self):
+        registry = await _registry(("hint", _task_start("{{ note }}")))
+        msgs = await _call(registry, _task("Task"), agent=_agent(note="Alt."))
+        msgs = await _call(registry, msgs, agent=_agent(note="Neu."))
+        assert msgs[1].content == "Neu.\n\n---\n\nTask"
+
+        msgs = await _call(registry, msgs, agent=_agent(note=""))
+        assert msgs[1].content == "Task" and not msgs[1].prefixed_by
+
+    @pytest.mark.asyncio
+    async def test_a_note_injected_before_it_is_not_the_task(self):
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content="note", injected_by="other"),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [m.content for m in msgs[1:]] == ["note", "H.\n\n---\n\nTask"]
+
+    @pytest.mark.asyncio
+    async def test_two_instances_keep_their_own_prefix(self):
+        from plugins.simple_prompt_inject.plugin import PLUGIN_FACTORY
+
+        a, b = (PLUGIN_FACTORY(name=name, server_config=SimpleNamespace(config=_task_start(text)))
+                for name, text in (("hint_a", "A."), ("hint_b", "B.")))
+        msgs = _task("Task")
+        for p in (a, b):
+            msgs = (await p.inject_prompt(_ctx(msgs))).context.messages
+
+        # The next call: each finds its text behind the other's and leaves it.
+        assert [(await p.inject_prompt(_ctx(msgs))).modified for p in (a, b)] == [False, False]
+        assert msgs[1].content.count("A.") == msgs[1].content.count("B.") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_list_task_gets_it_in_its_first_text_part(self):
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"), ChatMessage(
+            role="user", content=[{"type": "text", "text": "Task"},
+                                  {"type": "image_url", "image_url": {"url": "u"}}])])
+
+        parts = msgs[1].content
+        assert parts[0].text == "H.\n\n---\n\nTask" and len(parts) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_copy_left_from_another_position_goes(self):
+        """The position changed over a restart; the saved session still held the
+        note after the system prompt, and the model read the text twice."""
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content="H.", injected_by="hint"),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [(m.role, m.content) for m in msgs] == [("system", "sys"),
+                                                       ("user", "H.\n\n---\n\nTask")]
+
+    @pytest.mark.asyncio
+    async def test_a_task_sent_back_with_the_text_is_taken_over(self):
+        """A retry from the web chat sends the first message again as the text
+        it showed -- with the note, without the record."""
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, _task("H.\n\n---\n\nTask"))
+
+        assert msgs[1].content == "H.\n\n---\n\nTask"
+        assert msgs[1].prefixed_by == {"hint": "H.\n\n---\n\n"}
+
+    @pytest.mark.asyncio
+    async def test_an_archive_placeholder_is_not_the_task(self):
+        import json
+
+        registry = await _registry(("hint", _task_start("H.")))
+        ref = json.dumps({"type": "archived_ref", "ref_id": "a1", "summary": "s"})
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys"),
+                                      ChatMessage(role="user", content=ref),
+                                      ChatMessage(role="user", content="Task")])
+
+        assert [m.content for m in msgs[1:]] == [ref, "H.\n\n---\n\nTask"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_task_nothing_happens(self):
+        registry = await _registry(("hint", _task_start()))
+        msgs = await _call(registry, [ChatMessage(role="system", content="sys")])
+
+        assert [(m.role, m.content) for m in msgs] == [("system", "sys")]
+
+    @pytest.mark.parametrize("role", ["developer", "system"])
+    def test_another_role_is_logged_and_the_task_stays_the_users(self, make_plugin, caplog, role):
+        with caplog.at_level("ERROR"):
+            p = make_plugin("H.", position="task_start", role=role)
+
+        assert (p.injection_position, p.role) == ("task_start", "user")
+        assert "task_start" in caplog.text

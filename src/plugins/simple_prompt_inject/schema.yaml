@@ -30,7 +30,7 @@ config:
 
   injection_position:
     type: string
-    enum: ["before_last_user", "end", "after_system"]
+    enum: ["before_last_user", "end", "after_system", "task_start"]
     default: "before_last_user"
     description: >
       Where to inject the prompt, for every role alike:
@@ -44,6 +44,10 @@ config:
         changes -- a changing head costs the cache of the whole history, so a
         text rendered from template_vars should be stable per session.
         role "system" always stands here.
+      - task_start: in front of the task, inside the first user message a
+        caller wrote, separated by a "---" line. The message stays the user's
+        (role must be "user"); the text is written once and replaced only when
+        it changes.
 
   role:
     type: string

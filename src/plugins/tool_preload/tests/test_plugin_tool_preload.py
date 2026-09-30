@@ -723,6 +723,22 @@ class TestRobustness:
         assert result.modified is False
 
     @pytest.mark.asyncio
+    async def test_a_note_written_in_front_of_the_task_is_not_matched(self, plugin):
+        """simple_prompt_inject ``task_start`` writes a note in front of the
+        task and records it in ``prefixed_by``. Matched along, a long note
+        pushed the directive behind it past the cap, and the preload vanished."""
+        from plugins.tool_preload.hooks import MATCH_TEXT_LIMIT
+
+        agent = FakeAgent()
+        rules = [{"match": "MARKER", "tool": "t", "params": {}}]
+        note = "n" * (MATCH_TEXT_LIMIT + 500) + "\n\n---\n\n"
+        task = ChatMessage(role="user", content=note + "do MARKER", prefixed_by={"hint": note})
+
+        await plugin.preload(make_context([task], rules, agent))
+
+        assert agent.calls == [("t", {})]
+
+    @pytest.mark.asyncio
     async def test_multimodal_user_message_matches_on_its_text_parts(self, plugin):
         agent = FakeAgent()
         rules = [{"match": "Dok\\s+(?P<doc>\\S+)", "tool": "json_store_read",

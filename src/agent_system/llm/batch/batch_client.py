@@ -12,7 +12,10 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from ..models import ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError, LLMConnectionError
+from ..models import (
+    PRIVATE_MESSAGE_FIELDS, ChatMessage, LLMClient, LLMRateLimitError, LLMQuotaExhaustedError,
+    LLMConnectionError,
+)
 
 if TYPE_CHECKING:
     from .queue_manager import BatchQueueManager
@@ -399,7 +402,8 @@ class BatchLLMClient(LLMClient):
             if hasattr(msg, 'model_dump'):
                 # Use mode='json' to convert datetime to ISO strings
                 msg_dict = msg.model_dump(mode='json')
-                msg_dict.pop('injected_by', None)  # Internal hook metadata
+                for key in PRIVATE_MESSAGE_FIELDS:  # ours, never the provider's
+                    msg_dict.pop(key, None)
                 messages_data.append(msg_dict)
             elif hasattr(msg, 'dict'):
                 messages_data.append(msg.dict())

@@ -538,14 +538,18 @@ class SessionService:
             # is not what the user asked; it named every such session alike.
             if msg_dict.get("role") == "user" and not msg_dict.get("injected_by"):
                 content = msg_dict.get("content", "")
-
+                text = None
                 if isinstance(content, str):
-                    return content[:50]
+                    text = content
                 elif isinstance(content, list) and len(content) > 0:
                     # Multimodal message - find first text part
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            return part.get("text", "")[:50]
+                    text = next((part.get("text", "") for part in content
+                                 if isinstance(part, dict) and part.get("type") == "text"), None)
+                if text is not None:
+                    # ...nor is what a hook wrote in front of the task.
+                    for prefix in (msg_dict.get("prefixed_by") or {}).values():
+                        text = text.replace(prefix, "", 1)
+                    return text[:50]
 
         return "New conversation"
 

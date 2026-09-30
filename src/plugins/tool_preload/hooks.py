@@ -69,24 +69,32 @@ _SLOW_MATCH_WARN_S = 0.1
 
 
 def _user_text(message: Any) -> str:
-    """The text of a user message, whichever content shape it arrived in."""
+    """The text of a user message, whichever content shape it arrived in --
+    without what a hook wrote in front of it (``prefixed_by``, e.g.
+    simple_prompt_inject ``task_start``): the rules look for the user's
+    directive, and a long note there pushed it past MATCH_TEXT_LIMIT."""
     content = getattr(message, "content", None)
-    if content is None and isinstance(message, dict):
-        content = message.get("content")
+    prefixed = getattr(message, "prefixed_by", None)
+    if isinstance(message, dict):
+        content = message.get("content") if content is None else content
+        prefixed = message.get("prefixed_by")
+    text = ""
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
+        text = content
+    elif isinstance(content, list):
         # Multimodal: join the text parts. Both shapes occur — plain dicts from
         # session files, pydantic TextContent objects once ChatMessage has
         # validated them (its validator upgrades dicts to models).
         parts = []
         for part in content:
-            text = (part.get("text") if isinstance(part, dict)
-                    else getattr(part, "text", None))
-            if isinstance(text, str):
-                parts.append(text)
-        return " ".join(parts)
-    return ""
+            part_text = (part.get("text") if isinstance(part, dict)
+                         else getattr(part, "text", None))
+            if isinstance(part_text, str):
+                parts.append(part_text)
+        text = " ".join(parts)
+    for prefix in (prefixed or {}).values():
+        text = text.replace(prefix, "", 1)
+    return text
 
 
 def _role(message: Any) -> str:
