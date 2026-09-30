@@ -1,0 +1,418 @@
+@database "llm_ollama"
+@author "Enrico Ehrich"
+@$VER: llm_ollama.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Ollama provider"
+@{h1}Ollama provider
+
+This plugin lets agents use models served by Ollama -- on this machine or on
+another one in the network. It is an LLM provider plugin: it has no tools, no
+hooks and no panel. You use it by writing @{tt}provider: ollama@{utt} in a
+model entry of @{tt}config/llm.yaml@{utt}; agents reach that entry through a
+profile.
+
+An entry runs in one of two modes, chosen by @{tt}ollama_mode@{utt}:
+
+@{table}
+ollama_mode | Endpoint | Client
+native | POST <base_url>/api/chat, streamed as NDJSON | this plugin's own httpx client
+openai_compat (the default) | POST <base_url>/chat/completions of Ollama's OpenAI-compatible endpoint | the client of @{" llm_openai " link llm_openai/main}, borrowed through the registry
+@{body}
+
+Use @{b}native@{ub}. It is the only mode that sends the context size, the
+thinking switch and the output cap in Ollama's own terms (see
+@{" The two modes " link modes}).
+
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}; this manual covers what
+this provider does with an entry.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  The two modes  " link modes}
+  @{"  Model entry keys  " link keys}
+  @{"  Context size and memory  " link context}
+  @{"  Thinking  " link thinking}
+  @{"  Timeouts, streaming and retries  " link retries}
+  @{"  Usage, cost and the hooks  " link usage}
+  @{"  Errors  " link errors}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node modes "The two modes"
+@{h1}The two modes
+
+@{h2}native
+
+The plugin's own client talks to Ollama's @{tt}/api/chat@{utt}. The
+@{tt}base_url@{utt} is the server root, without @{tt}/v1@{utt}; unset, it is
+@{tt}http://127.0.0.1:11434@{utt}. Everything else in this manual describes
+this mode.
+
+@{h2}openai_compat
+
+Nothing of this plugin's client is used. The entry is copied with
+@{tt}provider: openai@{utt} and handed to the @{tt}openai@{utt} provider of
+@{" llm_openai " link llm_openai/main}, which then does all the work: the
+request, its retries, its errors and its reports to the hooks are those
+described in @{" Retries " link llm_openai/retries},
+@{" Errors " link llm_openai/errors} and
+@{" Usage, cost and the hooks " link llm_openai/usage}. What this plugin
+changes on the copy:
+
+@{bullet}@{tt}base_url@{utt}: as set, else
+@{tt}http://127.0.0.1:11434/v1@{utt} -- here the path must end in
+@{tt}/v1@{utt}.
+@{bullet}@{tt}api_key@{utt}: as set, else the word @{tt}ollama@{utt}; Ollama
+checks none.
+@{bullet}@{tt}thinking_level@{utt}, @{tt}thinking_budget@{utt},
+@{tt}include_thoughts@{utt} and @{tt}prompt_cache_key@{utt} are removed with
+a warning; @{tt}modalities@{utt} and @{tt}prompt_cache_mode@{utt} are removed
+silently. The dialect keys (@{tt}reasoning_details_mode@{utt},
+@{tt}tool_schema_dialect@{utt}, ...) are warned about once, as not wired for
+provider=ollama, and removed.
+
+The price of this mode: @{tt}context_window@{utt} is not sent, so the model
+loads with the Ollama server's own default context length, whatever the entry
+says (see @{" Context size and memory " link context}); there is no thinking
+switch. The mode needs the llm_openai plugin and the @{tt}openai@{utt}
+package.
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The keys a @{b}native@{ub} entry reads. Everything else in
+@{tt}LLMModelConfig@{utt} is either handled by the core (@{tt}extends@{utt},
+profiles) or not read here.
+
+@{table}
+Key | Default | What the client does with it
+provider | -- | ollama
+ollama_mode | openai_compat | native selects this client
+model | -- | the model name as Ollama knows it (@{tt}gemma4:12b@{utt})
+base_url | http://127.0.0.1:11434 | the server root; requests go to @{tt}/api/chat@{utt}
+context_window | 32768 | sent as @{tt}options.num_ctx@{utt} on every request; 0 sends nothing. See @{" Context size and memory " link context}
+temperature | none | sent as @{tt}options.temperature@{utt}
+max_tokens | none | sent as @{tt}options.num_predict@{utt}; 0 or unset sends nothing
+request_timeout | 120 | seconds, see @{" Timeouts, streaming and retries " link retries}
+thinking_level | none | sent as @{tt}think@{utt}, see @{" Thinking " link thinking}
+include_thoughts | none | sent as @{tt}think@{utt} (true/false) when thinking_level is unset
+reasoning_details_mode | keep_all | which earlier thinking goes back to the model: keep_all, keep_last, strip
+capabilities | all defaults | streaming decides the path; structured_output allows response formats; image_input and audio_input shape tool attachments; developer_role; default_api_type must be unset or chat_completions (anything else fails when the client is built)
+@{body}
+
+@{tt}thinking_budget@{utt} has no Ollama counterpart: it is ignored with a
+warning. The other dialect keys (@{tt}tool_schema_dialect@{utt},
+@{tt}assistant_reasoning_field@{utt}, @{tt}thinking_request_shape@{utt},
+@{tt}stream_silence_timeout@{utt}, @{tt}provider_affinity_minutes@{utt}) are
+logged at build time as "not wired ... will be ignored". Not read at all:
+@{tt}api_key@{utt} (no key is sent), @{tt}httpx_timeouts@{utt},
+@{tt}modalities@{utt}, the prompt-cache keys.
+
+TLS verification of an @{tt}https://@{utt} base URL follows the app's setting
+(@{tt}network.ssl_verify@{utt}).
+
+@{code yaml}
+llm_system:
+  models:
+    ollama-gemma-4:
+      provider: ollama
+      model: gemma4:12b
+      base_url: http://127.0.0.1:11434
+      ollama_mode: native
+      context_window: 32768
+      request_timeout: 240
+      capabilities:
+        tools: true
+        function_calling: true
+        streaming: true
+        image_input: true
+@{body}
+@endnode
+
+@node context "Context size and memory"
+@{h1}Context size and memory
+
+In native mode @{tt}context_window@{utt} is sent as @{tt}num_ctx@{utt} with
+every request -- 32768 when the entry does not set it. The same number is
+the window the chat's context figures are measured against, so what the chat
+shows and what the model holds agree.
+
+For Ollama the context is memory: it reserves room for @{tt}num_ctx@{utt}
+tokens when it loads the model. A context that does not fit into the
+graphics card next to the model's weights makes Ollama run part of the model
+on the CPU, which is many times slower. Measured on a local setup: a 256k
+context pushed an 8B model onto the CPU. Set @{tt}context_window@{utt} to
+what the card holds, not to the most the model can take; @{tt}ollama ps@{utt}
+on the server shows how a loaded model is split between CPU and GPU.
+
+In openai_compat mode none of this applies: the context is the server's
+default, and the entry cannot change it.
+@endnode
+
+@node thinking "Thinking"
+@{h1}Thinking
+
+@{h2}Switching it
+
+Ollama's @{tt}think@{utt} field is a switch or a level. The entry sets it
+through @{tt}thinking_level@{utt}:
+
+@{table}
+thinking_level | think
+none | false
+minimal, low | "low"
+medium | "medium"
+high, xhigh, max | "high"
+@{body}
+
+Without @{tt}thinking_level@{utt}, @{tt}include_thoughts: true/false@{utt} is
+sent as it is; with neither, @{tt}think@{utt} is not sent and the model
+decides -- a thinking model then thinks. Whether a model honours
+@{tt}think: false@{utt} is up to the model.
+
+Ollama refuses @{tt}think@{utt} (true or a level) with a 400 for a model that
+cannot think. So before the first request that would send it, the client asks
+@{tt}/api/show@{utt} once (at most 10 s) whether the model has the thinking
+capability. If not, @{tt}think@{utt} is left out of every request, with one
+warning in the log. If the question fails, @{tt}think@{utt} is sent as
+configured. @{tt}false@{utt} is always sent without asking.
+
+@{h2}What happens to the thinking
+
+@{bullet}It streams as thinking deltas, which the chat shows and the
+reasoning-loop watchdog reads, and is kept on the answer as
+@{tt}reasoning_content@{utt}.
+@{bullet}It goes back to the model in the @{tt}thinking@{utt} field of the
+assistant message it belongs to, as far as @{tt}reasoning_details_mode@{utt}
+allows: @{tt}keep_all@{utt} (default) every earlier turn's,
+@{tt}keep_last@{utt} only the latest, @{tt}strip@{utt} none. The model's
+template decides how much of it it renders.
+@{bullet}Its tokens are part of @{tt}completion_tokens@{utt}; Ollama counts
+them apart nowhere.
+@endnode
+
+@node retries "Timeouts, streaming and retries"
+@{h1}Timeouts, streaming and retries
+
+@{h2}request_timeout
+
+One number, 120 s unless the entry sets it. It is httpx's timeout for every
+phase of a request (connect, read, write, pool) and, while streaming, the
+longest gap between two lines. A request that finds the model unloaded
+waits for the server to load it, so keep the timeout above that load
+time.
+
+@{h2}Streaming or not
+
+A model streams unless its entry says @{tt}capabilities.streaming:
+false@{utt}. Ollama streams one JSON object per line; text, thinking and
+tool calls are passed on as they arrive (a tool call comes whole, not in
+pieces). The last line carries the finish reason (@{tt}done_reason@{utt}:
+@{tt}stop@{utt}, @{tt}length@{utt} when @{tt}num_predict@{utt} cut the
+answer) and the token counts.
+
+@{h2}Retries
+
+Only the streaming path retries, and only these; the numbers are fixed in the
+code:
+
+@{table}
+What happened | What the client does
+HTTP 5xx | retry, then LLMServerError
+dropped connection, network or protocol error | retry, then LLMConnectionError
+timeout, or no line for request_timeout | no retry: LLMConnectionError at once
+HTTP 429 | no retry: LLMRateLimitError at once
+any other status (400, 404, ...) | no retry: httpx.HTTPStatusError
+@{body}
+
+Up to three retries (four attempts), after 1, 2 and 4 s. Every retry is
+reported to the post_llm_response hooks as its own row
+(@{tt}[RETRY n/4] Server error (503)@{utt},
+@{tt}[RETRY n/4] Stream interrupted: ...@{utt}; finish reason
+@{tt}retry@{utt}) and as a status line in the chat. A cancelled run
+interrupts every wait.
+
+A retry starts from scratch: when the caller has already received deltas of
+the failed attempt, the stream first sends one
+@{tt}{"type": "stream_restart"}@{utt} chunk, and the chat drops what it has
+shown of that attempt.
+
+The non-streaming path sends once; a failure is raised as the same types at
+once. Where the client stops, the agent server's fallback chain
+(@{tt}llm_profile@{utt} with more than one profile) takes over; see
+@{" Writing an agent " link scarabhive/agentdev}.
+
+@{h2}Cancel
+
+A cancelled run stops before the client reads the next line, and a blocking
+request is abandoned at once; the cancel reaches the agent as a cancel, never
+as an answer. A caller that stops reading a stream closes its HTTP connection
+at once.
+@endnode
+
+@node usage "Usage, cost and the hooks"
+@{h1}Usage, cost and the hooks
+
+Each request is reported to the @{tt}pre_llm_request@{utt} hooks before it is
+sent, with the full request body, and to the @{tt}post_llm_response@{utt}
+hooks when it ends -- exactly once, however it ends. The message debugger,
+the OpenTelemetry chat span and the cost figures are built from these reports
+(@{" Hooks " link scarabhive/hooks},
+@{" The capture hooks " link message_debugger/hooks},
+@{" What gets exported " link otel/spans},
+@{" What it records " link context_usage_tracker/hooks}).
+
+@{h2}One report per ending
+
+@{table}
+The request ended with | post_llm_response carries
+an answer | usage and finish reason; a blocking request also the whole response body
+a retry | an error @{tt}[RETRY n/4] ...@{utt}, finish reason retry
+a refusal | the error of the exception raised: @{tt}Ollama 404: model 'x' not found@{utt} (Ollama's own reason), @{tt}Network/protocol error: ...@{utt}, @{tt}Stream failed after 4 attempts: ...@{utt}, @{tt}Ollama answered 200 with a body that is no JSON: ...@{utt}
+an error line in the stream | @{tt}Ollama: <reason>@{utt}
+a cancel before it was sent, or while it was out | @{tt}Request cancelled by user@{utt} (@{tt}cancelled@{utt} when the run's task was cancelled)
+a cancel during a retry wait | @{tt}Request cancelled during retry wait@{utt}, after the retry's row
+a stream the caller stopped reading | @{tt}stream abandoned by the caller@{utt}; when the agent stopped it for a reasoning loop, that reason and finish reason @{tt}reasoning_loop_aborted@{utt} instead
+anything unexpected | the exception's text
+@{body}
+
+@{h2}The usage
+
+@{tt}prompt_eval_count@{utt} becomes @{tt}prompt_tokens@{utt},
+@{tt}eval_count@{utt} @{tt}completion_tokens@{utt} (thinking included), and
+their sum @{tt}total_tokens@{utt}. Ollama reports no cached tokens. A stream
+carries its counts only on its last line, so a cancelled or abandoned stream
+is reported without usage.
+
+The core prices the tokens from @{tt}config/llm_pricing.yaml@{utt}; a local
+model without a price entry is reported as unknown, not as free.
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What reaches the agent server when a request cannot be answered. The server
+decides from the type whether to fall back to the next profile of the chain,
+and whether to block the model for a while
+(@{" Writing an agent " link scarabhive/agentdev}).
+
+@{table}
+Raised | When
+httpx.HTTPStatusError | a 4xx other than 429, at once. The message carries Ollama's reason: @{tt}Ollama 404: model 'x' not found@{utt}, @{tt}Ollama 400: ... does not support tools@{utt}
+LLMRateLimitError | a 429, at once
+LLMServerError | a 5xx (streaming: after the retries); @{tt}Ollama 503: ...@{utt}
+LLMConnectionError | the server is unreachable, times out, or the stream stalls; streaming: a dropped stream after the retries, or a stream that ends without Ollama's closing @{tt}done@{utt} line
+LLMConnectionError | an answer that is no JSON -- a proxy, a captive portal or a web UI answered instead of Ollama: @{tt}Ollama answered 200 with a body that is no JSON: <first 200 characters>@{utt}
+asyncio.CancelledError | the run was cancelled
+NotImplementedError at build time | capabilities.default_api_type is something other than chat_completions
+@{body}
+
+@{h2}What the agent server does with them
+
+@{table}
+Failure | Fallback | Block of the model
+5xx | next profile at once | none
+timeout, unreachable, no JSON | next profile at once | none
+404 (also 401, 402, 403, e.g. behind an auth proxy) | next profile at once | for the agent's @{tt}fallback_recovery_seconds@{utt} (default 3600 s), for every agent
+400 (context too long, no tool support, ...) | next profile at once | none
+429 | next profile at once | a short rate-limit block that grows while it repeats
+@{body}
+
+A block holds for this model on this @{tt}base_url@{utt} only: the same
+model name on another Ollama host stays available. Until 30.09.2026 a
+streamed failure came as an error answer instead -- the server asked the same
+model once more before it fell back, and blocked nothing.
+
+@{h2}Errors that come as an answer
+
+When the stream has started (HTTP 200) and then sends an error line -- the
+model runner crashed or ran out of memory -- the answer is empty with an
+@{tt}error@{utt} of type @{tt}ollama_api_error@{utt} on the assistant
+message. The agent server asks the model once more, then falls back.
+
+@{h2}chat()
+
+The plain text call (used by summaries, routers and other one-shot requests)
+goes through the blocking path, reports like it and returns the answer's
+text; the exceptions above are raised as they are.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Messages
+
+@{bullet}Roles are @{tt}system@{utt}, @{tt}user@{utt}, @{tt}assistant@{utt}
+and @{tt}tool@{utt}; a tool result names its tool in @{tt}tool_name@{utt}.
+Internal bookkeeping fields are removed.
+@{bullet}Developer notes become system messages -- Ollama knows no other
+role, and a role the chat template does not know would be dropped
+silently. An entry whose template renders only the first system message
+sets @{tt}capabilities.developer_role: user@{utt}. A note that ends the
+request always goes as a user message wrapped in note tags: a request that
+ends on a system message asks for nothing and gets nothing.
+@{bullet}Content is plain text. Images go in the message's
+@{tt}images@{utt} field as base64 -- from data URLs and base64 image parts;
+an image given as a web URL is dropped. Text files become
+@{tt}[File: name]@{utt} followed by their text. Audio and video are dropped.
+@{bullet}Images a tool returns follow the tool result as a user message; a
+model without @{tt}image_input@{utt} gets a text note in their place.
+@{bullet}Tool call arguments go back as objects, as Ollama expects; a stored
+argument string that is no valid JSON is repaired if possible, else sent as
+@{tt}{}@{utt}.
+
+@{h2}Tools
+
+Tool schemas go out in @{tt}tools@{utt} as the agent built them; there is no
+@{tt}tool_choice@{utt}. A model without tool support answers with a 400
+("does not support tools"), raised as described in
+@{" Errors " link errors}. Tool calls without an id get one
+(@{tt}call_<id>@{utt}).
+
+@{h2}Structured output
+
+A response format goes in Ollama's @{tt}format@{utt} field: the word
+@{tt}json@{utt} for JSON mode, the schema itself for a JSON schema. The
+entry must declare @{tt}capabilities.structured_output@{utt}; a call asking
+for a format it does not declare is refused rather than answered with free
+text.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds LLM provider plugins by their
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt}) and loads
+@{tt}provider.py@{utt} when a model entry names one of its providers. There
+is no entry in @{tt}config/plugins.yaml@{utt} and no allowlist line.
+
+@{table}
+Manifest key | Names
+provides | ollama
+@{body}
+
+@{h2}Dependencies
+
+None of its own: native mode uses httpx, which the core requires.
+openai_compat mode needs the llm_openai plugin and its @{tt}openai@{utt}
+package.
+
+@{h2}The server
+
+An Ollama server reachable at @{tt}base_url@{utt}, with the model pulled
+(@{tt}ollama pull <model>@{utt}); a model it does not have answers 404. A
+server on another machine must listen on the network, not only on
+localhost.
+
+@{h2}Where things live
+
+Nothing on disk. Changes to @{tt}llm.yaml@{utt} reach an agent when it
+builds its client, i.e. after a restart.
+@endnode
