@@ -433,7 +433,7 @@ async def on_session_start(self, context: HookContext) -> HookResult:
 ```
 
 **Example Plugins:**
-- `request_logger`: Initializes session tracking
+- `request_logger`: Logs the start of a new session
 
 ### SESSION_END
 
@@ -469,7 +469,7 @@ async def on_session_end(self, context: HookContext) -> HookResult:
 ```
 
 **Example Plugins:**
-- `request_logger`: Logs session duration and statistics
+- `request_logger`: Logs the end of each run with its LLM call count and duration
 
 ### PRE_LLM_REQUEST / POST_LLM_RESPONSE
 
