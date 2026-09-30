@@ -37,7 +37,7 @@ A plugin in AgentSystem is a **tool server**: a Python object with a `call(tool,
 
 ### How Plugins Work
 
-1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins`, `src/plugins_writer`, `src/plugins_trading`) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers sit in the same directory but are found separately, by the LLM registry, which reads the manifests rather than the folder name.
+1. **Discovery**: AgentSystem finds plugins in the `plugins.plugin_dirs` of `config/plugins.yaml` (`src/plugins` by default) and in installed packages via the `agent_system.tool_plugins` entry point group. LLM providers sit in the same directory but are found separately, by the LLM registry, which reads the manifests rather than the folder name.
 2. **Schema**: Each plugin describes its tools in `schema.yaml` (what parameters, what they do)
 3. **Activation**: A server entry under `plugins: servers:` with `type: <plugin folder name>` and `enabled: true` (the default is `false`) builds an instance; an agent sees its tools only if its `agent_config.tools.allowed` admits them
 4. **Execution**: The agent calls tools via `call(tool_name, parameters)`
@@ -276,8 +276,7 @@ src/plugins/<plugin_name>/tests/
 
 **Example test file:** `src/plugins/hello_world/tests/test_plugin_hello_world_basic.py`
 
-`pytest.ini` collects these via the `src/plugins/*/tests`,
-`src/plugins_writer/*/tests` and `src/plugins_trading/*/tests` testpaths. The shared fixtures (`mock_system_config`,
+`pytest.ini` collects these via the `src/plugins/*/tests` testpath. The shared fixtures (`mock_system_config`,
 `reset_global_state`, the fake-LLM patch, …) live in the **root-level
 `conftest.py`**, so colocated tests inherit them exactly like tests under `tests/`.
 
@@ -382,8 +381,8 @@ Other single-capability examples: `type = ["web"]` (web UI/endpoints only),
 - `web`: Plugin provides web UI/endpoints
 - `hooks`: Plugin provides lifecycle event hooks
 - `library`: Config only — agents, skills, prompts, no code. Such a plugin has
-  **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`, `research`,
-  `writer_publish`)
+  **no `entrypoint` and no `plugin.py`** (`coder`, `amiga`,
+  `research`)
 - `llm-provider`: An LLM/TTS/batch/decisions backend under `src/plugins/`.
   Found by `agent_system.llm.registry` through its `provides` /
   `provides_batch` / `provides_tts` / `provides_decisions` manifest keys and
@@ -467,8 +466,8 @@ Plugin-owned requirements do **not** live in the root `pyproject.toml`. Instead:
 1. Each plugin declares its pip deps in `plugin.toml` (`[plugin] dependencies`).
 2. `scripts/aggregate_plugin_deps.py` merges `requirements/core.txt` (framework
    deps shared by many plugins) with every plugin's `dependencies` into
-   `requirements/all.txt`. Scanned roots: `src/plugins`, `src/plugins_writer`,
-   `src/plugins_trading` and `src/plugins` (LLM provider plugins).
+   `requirements/all.txt`. Scanned: every plugin folder in the plugin
+   directories, LLM provider plugins included.
 3. The root `pyproject.toml` reads `requirements/all.txt` via
    `[tool.setuptools.dynamic]`, so `pip install .` installs the full set.
 
@@ -716,7 +715,7 @@ web_ui:
     title: "My Plugin"                        # required
     description: "Plugin description for UI"  # shown and searched in the launcher
     icon: wrench                              # required: a symbol id in static/kit/icons.svg
-    category: agents                          # required: session, writer, context, agents, debug, system, admin
+    category: agents                          # required: session, context, agents, debug, system, admin
     keywords: [dashboard, data]               # optional search words
     window: {width: 800, height: 600}         # optional: size of the detached window
     contexts:                                 # optional entry points from the chat: session, request
@@ -757,7 +756,7 @@ not parse is left out of the catalogue with an error log.
 - `endpoint` (required): URL of the panel page; `{{ name }}` is the plugin instance
 - `title` (required): name in the launcher, on the tab and in the window bar
 - `icon` (required): a symbol id from `static/kit/icons.svg` (all of them render at `/ui/kit`)
-- `category` (required): one of `session`, `writer`, `context`, `agents`, `debug`, `system`, `admin`
+- `category` (required): one of `session`, `context`, `agents`, `debug`, `system`, `admin`
 - `description`: one sentence, shown and searched in the launcher
 - `keywords`: search words that are not in the title
 - `window`: `{width, height}` of the detached window
@@ -2256,8 +2255,6 @@ plugins:
   # Plugin discovery directories
   plugin_dirs:
     - src/plugins
-    - src/plugins_writer
-    - src/plugins_trading
 
   # Default configuration inherited by all plugins
   default_config:
@@ -2282,7 +2279,7 @@ servers, defaults belong in code.
 **Where to Add Plugin Configurations:**
 
 1. **Standard plugins**: Add to any file included by `config/config.yaml` (commonly in files under `config/` that are included)
-2. **Specialized namespaces**: Create separate config files (e.g., `config/agents_writer/plugin_configs.yaml`) that get auto-loaded via wildcard includes like `agents_writer/*.yaml`
+2. **Specialized namespaces**: Create separate config files (e.g., `config/agents_research/plugin_configs.yaml`) that get auto-loaded via the wildcard include `agents*/*.yaml`
 
 **Example - Standard Plugin Configuration:**
 
@@ -2302,17 +2299,15 @@ plugins:
 **Example - Specialized Namespace Configuration:**
 
 ```yaml
-# config/agents_writer/plugin_configs.yaml (auto-loaded via agents_writer/*.yaml include)
+# config/agents_research/plugin_configs.yaml (auto-loaded via the agents*/*.yaml include)
 # CRITICAL: Must have 'plugins:' wrapper to match the deep_merge structure!
 plugins:
   servers:
-    writer_content:
-      type: writer_content
+    research_scraper:     # a second instance of web_scraper
+      type: web_scraper
       enabled: true
-      database: "data/writer/books.db"
       config:
-        auto_linking: true
-        versioning: true
+        timeout: 60
 ```
 
 **Important Rules:**
@@ -2552,7 +2547,7 @@ on any network connection.)
 
 ### For Internal Plugins
 
-Internal plugins live in one of the `plugin_dirs` (`src/plugins/`, `src/plugins_writer/`, `src/plugins_trading/`) and are discovered automatically. No additional packaging needed.
+Internal plugins live in one of the `plugin_dirs` (`src/plugins/` by default) and are discovered automatically. No additional packaging needed.
 
 ### For External Distribution
 

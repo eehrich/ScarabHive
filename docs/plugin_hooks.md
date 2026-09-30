@@ -250,7 +250,7 @@ Web-Chat. Ist der Stream vorbei, etwa bei einem asynchronen Sub-Agent nach dem
 Ende seines Aufrufers, oder liest niemand mehr den Job des Laufs (Tab
 geschlossen), fragt niemand mehr. Ein Sub-Lauf fragt im Stream des Laufs über
 ihm; ein Call innerhalb eines `tool_script`-Skripts fragt nie. Alles andere (openai_api, agent-run, agent-cli,
-JSON-`/run`, die `/events`-Aufträge des Writers) ist unbeaufsichtigt, und der
+JSON-`/run`) ist unbeaufsichtigt, und der
 Hook entscheidet ohne Rückfrage. Die Frage selbst ist eine Status-Zeile unter
 eigener Kind-ID mit `meta.tool_approval`. Der Chat zeichnet dazu Knöpfe, und
 die letzte Zeile der Reihe (end/error) nimmt sie wieder weg. Die Maschinerie
@@ -666,13 +666,13 @@ config:
 ### Instance Default via `hook_config`
 
 The schema speaks for the plugin type. When the same plugin runs as several
-instances (e.g. `context_summarizer` and `writer_context_summarizer`), an
+instances (e.g. `context_summarizer` and `research_context_summarizer`), an
 instance's server config sets its own registration default:
 
 ```yaml
 # config/plugins.yaml or an included plugin config
 servers:
-  writer_context_summarizer:
+  research_context_summarizer:
     type: context_summarizer
     hook_config:
       enabled: false   # this instance starts OFF; agents switch it on

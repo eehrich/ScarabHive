@@ -118,8 +118,7 @@ The shipped configuration gates every agent with a shell (`terminal`,
 analysis script (`state_graph_terminal`: one command per call, started in the
 directory the server runs from -- the checkout, as every relative path of the
 configuration assumes; a whitelisted terminal takes no `cwd` and no `env_vars`
-from the model and refuses control characters), and are gated at `user`, so the
-writer's book runs keep working for ordinary accounts.
+from the model and refuses control characters), and are gated at `user`.
 Gate every agent you add with such tools, and every agent with file access to
 the checkout or above, to `config/`, to `data/` itself (it holds the user store
 and every user's sessions; a folder of the agent's own below it, such as
