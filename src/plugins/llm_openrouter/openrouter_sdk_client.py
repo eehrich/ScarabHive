@@ -46,16 +46,11 @@ then not an error at all: its ``raw_response`` carries the body we wanted.
 REQUEST-SIDE GAPS, DELIBERATELY LOUD
 ====================================
 Typed parameters cannot carry what the SDK's schema does not know, and they
-drop it without a word. Two payload keys this house sends have no SDK
-parameter, and BOTH are refused at construction: a declared config key is
-either honoured or it fails loudly — a key that is accepted and then does
-nothing is the failure this plugin was built to detect.
+drop it without a word. A declared config key is either honoured or it
+fails loudly — a key that is accepted and then does nothing is the failure
+this plugin was built to detect.
 
-``prompt_cache_marker_style: anthropic`` (per-part ``cache_control``): the
-httpx route does send it, so losing it here would cost cache hits with no
-error to show for it.
-
-``safety_settings``: the SDK's content-part schema has no such field.
+``safety_settings`` has no SDK parameter and is refused at construction.
 Measured 2026-09-01: OpenRouter drops the field on ``/responses`` itself —
 the same nonsense value that earns an HTTP 400 with the valid enum list on
 ``/chat/completions`` is swallowed with an HTTP 200 here, so the httpx route
@@ -73,7 +68,20 @@ results (``tools``, ``input``) travel as typed parameters.
 
 The OpenAI-style cache marker this route actually uses —
 ``prompt_cache_breakpoint`` — IS in the SDK schema and travels unchanged
-(measured).
+(measured). So does the top-level ``cache_control`` the inherited builder
+sends for ``prompt_cache_marker_style: anthropic`` (measured 2026-09-30,
+``ttl`` included).
+
+A typed parameter that fails the SDK's validation either degrades to
+``Unset`` and is left out whole, without an error (a numeric
+``provider.max_price`` — the SDK types its prices as strings — takes the
+entire routing object with it), or raises a pydantic ``ValidationError``
+before anything is sent (an ``input_image`` without ``detail``, a
+``function_call`` whose ``call_id`` is None). So: ``provider_routing`` and
+``plugins`` are checked through the SDK's types when the client is built;
+``detail`` is filled with the API's default ``auto``; ``_post`` compares the
+bytes the SDK is about to send with what it was given; and whatever the SDK
+still refuses becomes one loud ``ValueError`` — nothing leaves either way.
 
 ONE SUBSTITUTED DEFAULT
 =======================
@@ -86,10 +94,12 @@ queue, but not a byte-identical request. Pinned by the tier-drop test.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
 import httpx
+import pydantic
 
 from plugins.llm_openai_compat.openai_responses_client import OpenAIResponsesClient
 
@@ -99,7 +109,7 @@ logger = logging.getLogger(__name__)
 #: name. Anything the payload builder produces that is NOT listed here is
 #: dropped by the typed signature, so it gets a warning instead of silence.
 _SDK_PARAMS = frozenset({
-    "input", "instructions", "max_output_tokens", "metadata", "model",
+    "cache_control", "input", "instructions", "max_output_tokens", "metadata", "model",
     "models", "parallel_tool_calls", "plugins", "presence_penalty",
     "previous_response_id", "prompt_cache_key", "prompt_cache_options",
     "provider", "reasoning", "safety_identifier", "service_tier", "session_id",
@@ -112,6 +122,75 @@ _SDK_PARAMS = frozenset({
 _SDK_HANDLES_ITSELF = {
     "store": "the SDK always sends store=false on this endpoint",
 }
+
+
+def _first_loss(ours: Any, sent: Any, path: str) -> Optional[str]:
+    """The first path of ``ours`` the sent body does not carry as given.
+
+    A ``None`` of ours counts as nothing to carry: the SDK leaves nulls out.
+    """
+    if ours is None:
+        return None
+    if isinstance(ours, dict):
+        if not isinstance(sent, dict):
+            return path
+        for key, value in ours.items():
+            lost = _first_loss(value, sent.get(key), f"{path}.{key}")
+            if lost:
+                return lost
+        return None
+    if isinstance(ours, (list, tuple)):
+        if not isinstance(sent, list) or len(sent) != len(ours):
+            return path
+        for i, (mine, theirs) in enumerate(zip(ours, sent)):
+            lost = _first_loss(mine, theirs, f"{path}[{i}]")
+            if lost:
+                return lost
+        return None
+    return None if ours == sent else path
+
+
+def _with_image_detail(item: Any) -> Any:
+    """``detail: "auto"`` on every ``input_image`` of a message item.
+
+    The API defaults a missing ``detail`` to ``auto``; the SDK's typed part
+    requires the field, and without it refuses the whole ``input`` -- no
+    image could ever reach this route.
+    """
+    content = item.get("content") if isinstance(item, dict) else None
+    if not isinstance(content, list):
+        return item
+    return {**item, "content": [
+        {**part, "detail": "auto"}
+        if isinstance(part, dict) and part.get("type") == "input_image"
+        and not part.get("detail") else part
+        for part in content]}
+
+
+def _refuse_what_the_sdk_cannot_type(model: str, name: str, value: Any) -> None:
+    """Build-time check of a config-derived parameter through the SDK's type.
+
+    What the SDK would drop or refuse here it would drop or refuse on every
+    request; the entry is refused once, when the client is built.
+    """
+    from typing import List
+
+    from openrouter import components, utils
+    from openrouter.types import OptionalNullable
+
+    typ = (OptionalNullable[components.ProviderPreferences] if name == "provider_routing"
+           else Optional[List[components.ResponsesRequestPlugin]])
+    try:
+        lost = _first_loss(value, json.loads(
+            utils.marshal_json(utils.get_pydantic_model(value, typ), typ)), name)
+    except pydantic.ValidationError:
+        lost = name
+    if lost:
+        raise ValueError(
+            f"provider 'openrouter_sdk' cannot send {lost!r} as declared "
+            f"(model={model!r}): the SDK would drop or refuse it (it types "
+            f"max_price values as strings, e.g. \"1\"). Fix the entry or use "
+            f"provider: openai_responses.")
 
 
 class OpenRouterSDKClient(OpenAIResponsesClient):
@@ -145,10 +224,10 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
         travelling is the failure this plugin was built to detect.
 
         This is the BACKSTOP, for a payload key a future builder change adds.
-        A key that a MODEL ENTRY causes (safety_settings, Anthropic cache
-        markers) never gets this far: the factory refuses to build such a
-        client at all, because that loss is a config error with a one-line
-        fix, and mid-run is the wrong moment to learn about it.
+        A key that a MODEL ENTRY causes (safety_settings) never gets this
+        far: the factory refuses to build such a client at all, because that
+        loss is a config error with a one-line fix, and mid-run is the wrong
+        moment to learn about it.
         """
         kwargs: dict = {}
         for key, value in payload.items():
@@ -162,6 +241,8 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
                     "openrouter_sdk: payload field %r has no SDK parameter and "
                     "is NOT being sent (model=%s). The httpx route "
                     "(provider: openai_responses) does send it.", key, self.model)
+        if isinstance(kwargs.get("input"), list):
+            kwargs["input"] = [_with_image_detail(item) for item in kwargs["input"]]
         return kwargs
 
     async def _post(self, client: httpx.AsyncClient, url: str,
@@ -190,9 +271,26 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
         async def _capture(response: httpx.Response) -> None:
             captured.append(response)
 
+        kwargs = self._to_sdk_kwargs(payload)
+
+        async def _refuse_a_loss(request: httpx.Request) -> None:
+            # A typed parameter the SDK cannot validate degrades to Unset and
+            # is left out WITHOUT an error -- the whole object, not just the
+            # bad field (a numeric provider.max_price takes the pin, `only`
+            # and `data_collection` with it). Checked on the bytes that would
+            # travel, before they do.
+            lost = _first_loss(kwargs, json.loads(await request.aread()), "")
+            if lost:
+                raise ValueError(
+                    f"openrouter_sdk: the SDK would not send {lost.lstrip('.')!r} "
+                    f"as given (model={self.model}); refused instead of sending "
+                    f"the request without it. The httpx route "
+                    f"(provider: openai_responses) sends it.")
+
         previous_hooks = dict(client.event_hooks)
         client.event_hooks = {
             **previous_hooks,
+            "request": [*previous_hooks.get("request", []), _refuse_a_loss],
             "response": [*previous_hooks.get("response", []), _capture],
         }
         try:
@@ -205,9 +303,20 @@ class OpenRouterSDKClient(OpenAIResponsesClient):
             try:
                 await sdk.responses.send_async(
                     # Header, not a body field — the gateway only reports
-                    # which backend answered when it is asked to.
-                    x_open_router_metadata="enabled",
-                    **self._to_sdk_kwargs(payload))
+                    # which backend answered when it is asked to. OpenRouter
+                    # only, as on the httpx route's _headers().
+                    x_open_router_metadata="enabled" if self._is_openrouter else None,
+                    **kwargs)
+            except pydantic.ValidationError as e:
+                # Raised while the SDK types our arguments, before anything is
+                # sent. Untyped, 100+ lines of union noise, and it would end
+                # the run all the same: the loud refusal instead.
+                first = e.errors()[0] if e.errors() else {}
+                raise ValueError(
+                    f"openrouter_sdk: the SDK refuses the request as built "
+                    f"(model={self.model}), nothing was sent: "
+                    f"{str(first.get('input'))[:200]}. The httpx route "
+                    f"(provider: openai_responses) sends it.") from None
             except or_errors.OpenRouterError as e:
                 # Every SDK error carries the response it was raised from —
                 # including ResponseValidationError, which is how a perfectly
@@ -238,15 +347,12 @@ def build_openrouter_sdk_client(
     prompt_cache_marker_style: Optional[str],
     **kwargs: Any,
 ) -> OpenRouterSDKClient:
-    """Construct the client, refusing the two fields the SDK cannot send.
+    """Construct the client, refusing safety_settings, which the SDK cannot send.
 
-    Both refusals are the same rule: a declared key that cannot travel must
-    not be accepted, because the loss has no error to show for it. The
-    operator moves the entry back to ``provider: openai_responses`` in one
-    line — see the module docstring for the measurement behind each.
+    A declared key that cannot travel must not be accepted, because the loss
+    has no error to show for it. The operator moves the entry back to
+    ``provider: openai_responses`` in one line — see the module docstring.
     """
-    from agent_system.llm.cache_key import MARKER_STYLE_ANTHROPIC
-
     if safety_settings:
         raise ValueError(
             f"provider 'openrouter_sdk' cannot send safety_settings "
@@ -254,12 +360,10 @@ def build_openrouter_sdk_client(
             f"declared thresholds would silently not apply. Use provider: "
             f"openai_responses — or drop the field, which is what the "
             f"Gemini entries do (OpenRouter ignores it on /responses).")
-    if prompt_cache_marker_style == MARKER_STYLE_ANTHROPIC:
-        raise ValueError(
-            f"provider 'openrouter_sdk' cannot send Anthropic-style per-part "
-            f"cache_control (model={model!r}): the SDK's content-part schema "
-            f"has no such field and drops it silently, which costs cache hits "
-            f"without any error. Use provider: openai_responses.")
+    for name, value in (("provider_routing", kwargs.get("provider_routing")),
+                        ("plugins", kwargs.get("plugins"))):
+        if value:
+            _refuse_what_the_sdk_cannot_type(model, name, value)
     return OpenRouterSDKClient(
         model=model, api_key=api_key, base_url=base_url,
         safety_settings=None, prompt_cache_marker_style=prompt_cache_marker_style,

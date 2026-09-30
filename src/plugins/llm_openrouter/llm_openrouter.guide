@@ -1,0 +1,226 @@
+@database "llm_openrouter"
+@author "Enrico Ehrich"
+@$VER: llm_openrouter.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OpenRouter SDK provider"
+@{h1}OpenRouter SDK provider
+
+This plugin sends Responses API requests through OpenRouter's official
+Python SDK instead of plain httpx. It exists to be @{b}compared@{ub} with
+@{tt}openai_responses@{utt} from @{" OpenAI-compatible LLM providers " link llm_openai_compat/main}:
+its client is that client with one method replaced -- the one that sends the
+request. Payload building, prompt caching, the OpenRouter pin, the parsing
+of the answer, the retries and the hook reports are the sibling's, unchanged,
+so a comparison measures the transport and nothing else.
+
+It is an LLM provider plugin: no tools, no hooks, no panel. A model entry
+uses it by naming the provider:
+
+@{table}
+Provider name | Kind | Endpoint
+openrouter_sdk | chat | POST <base_url>/responses, through the SDK
+@{body}
+
+How models, profiles and fallback chains work in general is in
+@{" LLM models and profiles " link scarabhive/llm}.
+
+@{code}
+For users (the operator writing llm.yaml)
+  @{"  How it differs from openai_responses  " link differs}
+  @{"  Model entry keys  " link keys}
+  @{"  What the SDK carries, and what is refused  " link sdk}
+  @{"  Errors  " link errors}
+
+For agents and developers
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node differs "How it differs from openai_responses"
+@{h1}How it differs from openai_responses
+
+Everything not listed here behaves as described for openai_responses:
+@{" API keys and endpoints " link llm_openai_compat/apikeys} (the key
+follows the endpoint; the default endpoint is OpenRouter),
+@{" Retries and self-healing " link llm_openai_compat/retries},
+@{" Reasoning " link llm_openai_compat/reasoning},
+@{" Prompt caching " link llm_openai_compat/caching},
+@{" OpenRouter routing " link llm_openai_compat/openrouter} and
+@{" Usage, cost and the hooks " link llm_openai_compat/usage}.
+
+@{table}
+Difference | openai_responses | openrouter_sdk
+transport | httpx POST | the SDK's @{tt}responses.send_async@{utt} on the same httpx client
+streaming | when capabilities.streaming allows it | never: the answer arrives in one response, whatever the capabilities say
+stream_silence_timeout | honoured | not wired, logged as ignored when the client is built
+safety_settings | sent | refused when the client is built
+fields the SDK does not know | sent | see @{" What the SDK carries " link sdk}
+after a 429 on the flex tier | the retry omits service_tier | the retry sends @{tt}service_tier: "auto"@{utt} (the SDK's default)
+body fields the SDK adds | -- | @{tt}store: false@{utt}, @{tt}stream: false@{utt}, @{tt}service_tier: "auto"@{utt} when none is set
+extra headers | -- | the SDK's user agent; HTTP-Referer and X-OpenRouter-Title when the environment sets OPENROUTER_HTTP_REFERER or OPENROUTER_X_OPEN_ROUTER_TITLE (the SDK reads them itself)
+@{body}
+
+The SDK's own retries are switched off: every attempt is one request the
+inherited loop sees, retries and reports. The answer is read from the raw
+HTTP body, not from the SDK's typed result: that model makes @{tt}usage@{utt}
+vanish without an error when @{tt}cost_details@{utt} lacks the two
+upstream cost fields it requires, and refuses a body missing one of a dozen
+fields it requires. So tokens, @{tt}cost@{utt}, @{tt}cost_details@{utt},
+@{tt}is_byok@{utt} and the served-by backend arrive exactly as on
+openai_responses. Reasoning tokens are passed on as the provider counts
+them; they may exceed the completion tokens.
+
+Because nothing streams, the chat shows no text or thinking while the
+model works, and the read timeout is the longest wait for the whole answer
+(see @{" Timeouts and streaming " link llm_openai_compat/timeouts}).
+@endnode
+
+@node keys "Model entry keys"
+@{h1}Model entry keys
+
+The factory hands the entry to the client exactly as the openai_responses
+factory does; the keys mean what
+@{" Model entry keys " link llm_openai_compat/keys} says for the Responses
+route. The differences:
+
+@{table}
+Key | What happens here
+provider | openrouter_sdk
+safety_settings | a non-empty value is refused: building the client fails with "provider 'openrouter_sdk' cannot send safety_settings". An empty one builds
+prompt_cache_marker_style | all three styles work; @{tt}anthropic@{utt} travels as the one top-level @{tt}cache_control@{utt}, as on openai_responses
+thinking_budget | ignored, with a warning -- use thinking_level
+assistant_reasoning_field, thinking_request_shape, stream_silence_timeout | logged as "not wired ... will be ignored"
+provider_routing, plugins | checked through the SDK's types when the client is built; a value the SDK would drop or refuse (a numeric max_price, an unknown key or plugin id) fails the build (see @{" What the SDK carries " link sdk})
+context_window | 200000 when unset or 0
+request_timeout, httpx_timeouts | the Responses defaults: read 600 s unless the entry sets request_timeout, write 30 s, connect 10 s, pool 5 s
+@{body}
+
+Switching a model over is one word:
+
+@{code yaml}
+llm_system:
+  models:
+    or-gpt-sdk:
+      provider: openrouter_sdk
+      model: openai/gpt-5.4
+      api_key: ${OPENROUTER_API_KEY}
+      thinking_level: medium
+      prompt_cache_key: auto
+@{body}
+@endnode
+
+@node sdk "What the SDK carries, and what is refused"
+@{h1}What the SDK carries, and what is refused
+
+The SDK takes the request as typed parameters. Every field the payload
+builder produces is handed over under its own name: input, instructions,
+model, tools, tool_choice, parallel_tool_calls, reasoning, temperature,
+max_output_tokens, service_tier, provider, session_id, prompt_cache_key,
+prompt_cache_options, cache_control, plugins, safety_identifier, text
+(structured output) and the rest of the SDK's signature. Stored reasoning
+items, function calls, audio and the @{tt}prompt_cache_breakpoint@{utt}
+markers on content parts travel unchanged. An image without a
+@{tt}detail@{utt} is sent with @{tt}detail: "auto"@{utt}, the API's own
+default: the SDK requires the field.
+
+@{h2}A field the SDK has no parameter for
+
+It is left out of the request and logged once per field and process:
+@{tt}openrouter_sdk: payload field '<name>' has no SDK parameter and is NOT
+being sent@{utt}. @{tt}store@{utt} is the exception -- the SDK sends
+@{tt}store: false@{utt} itself.
+
+@{h2}A value the SDK cannot type
+
+A typed parameter that fails the SDK's validation is either dropped whole,
+without an error, or refused before anything is sent. A
+@{tt}provider_routing@{utt} with a numeric @{tt}max_price@{utt} (the SDK
+types prices as strings) would lose the entire routing object -- the pin,
+@{tt}only@{utt}, @{tt}data_collection@{utt} -- and a routing key the SDK
+does not know would be left out. Three checks keep that from happening
+silently:
+
+@{bullet}@{b}When the client is built@{ub}, provider_routing and plugins go
+through the SDK's types. A value it would drop or refuse fails the build:
+@{tt}provider 'openrouter_sdk' cannot send 'provider_routing' as declared
+...@{utt}. Write prices as strings (@{tt}max_price: {prompt: "1"}@{utt}) or
+use @{tt}provider: openai_responses@{utt}.
+@{bullet}@{b}Before each request leaves@{ub}, the body the SDK is about to
+send is compared with what it was given; a missing or changed value refuses
+the request: @{tt}openrouter_sdk: the SDK would not send '<field>' as given
+...@{utt}. A @{tt}null@{utt} of ours that the SDK leaves out counts as
+carried.
+@{bullet}@{b}A request the SDK refuses to type@{ub} -- for example a
+replayed tool call without an id -- is refused the same way:
+@{tt}openrouter_sdk: the SDK refuses the request as built ..., nothing was
+sent: <start of the refused value>@{utt}.
+
+In the last two cases nothing goes over the wire, the refusal is reported
+to the post_llm_response hooks once, and the error reaches the agent as a
+@{tt}ValueError@{utt} (see @{" Errors " link errors}).
+@endnode
+
+@node errors "Errors"
+@{h1}Errors
+
+What the loop does with a response is the sibling's
+(@{" Errors " link llm_openai_compat/errors}): LLMRateLimitError,
+LLMQuotaExhaustedError and LLMServerError after the retries, an
+httpx.HTTPStatusError for any other 4xx, the httpx timeout or transport
+error once its retries are spent. What the SDK adds:
+
+@{table}
+The SDK | What the client does
+raises one of its errors with a response attached (an error status, or a 200 its typed model refuses) | hands that response to the loop, which judges it by status and body like any other
+raises one of its errors without a response | reported as @{tt}httpx.TransportError@{utt}, so it is retried like a dropped connection
+raises an httpx error | passed on unchanged: timeouts and network errors are retried
+would drop or change a field, or refuses to type the request (see @{" What the SDK carries " link sdk}) | ValueError before sending, not retried
+@{body}
+
+The agent server's fallback chain takes over on the typed LLM errors and
+on httpx errors (@{" Writing an agent " link scarabhive/agentdev}). The
+ValueError of a refused field is not one of them: the run ends with its
+message, since every request of that entry would be refused the same way.
+
+At build time: ValueError for a missing key or an unknown dialect value (as
+on openai_responses), for safety_settings, and for provider_routing or
+plugins the SDK cannot carry.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+Exactly what openai_responses sends -- messages, media, tools and
+structured output are built by the same code; see
+@{" What the model sees " link llm_openai_compat/model}. Only the bytes
+around them differ as listed in
+@{" How it differs " link differs}. No thinking or text is streamed to
+the chat while the model works.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+Nothing to enable: the core finds the plugin by its
+@{tt}plugin.toml@{utt} (@{tt}type = ["llm-provider"]@{utt},
+@{tt}provides = ["openrouter_sdk"]@{utt}, default base_url
+https://openrouter.ai/api/v1) and loads @{tt}provider.py@{utt} when a model
+entry names the provider. No @{tt}config/plugins.yaml@{utt} entry, no
+allowlist line.
+
+@{h2}Dependencies
+
+@{tt}openrouter>=1.1.108@{utt}, declared in @{tt}plugin.toml@{utt} and
+folded into @{tt}requirements/all.txt@{utt}; it is imported when a request
+is sent, or already at build for an entry that sets
+@{tt}provider_routing@{utt} or @{tt}plugins@{utt}. The SDK pins @{tt}pydantic<2.13@{utt}, which caps the whole
+application. The plugin also needs llm_openai_compat, whose client and
+timeout defaults it uses.
+
+@{h2}Where things live
+
+Nothing on disk. Changes to @{tt}llm.yaml@{utt} reach an agent when it
+builds its client.
+@endnode

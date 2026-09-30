@@ -407,12 +407,19 @@ class TestConstructionHandlesWhatTheSdkCannotSend:
             safety_settings={}, prompt_cache_marker_style=None)
         assert client.safety_settings is None
 
-    def test_anthropic_cache_markers_are_refused(self):
-        with pytest.raises(ValueError, match="cache_control"):
-            build_openrouter_sdk_client(
-                model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
-                safety_settings=None,
-                prompt_cache_marker_style=MARKER_STYLE_ANTHROPIC)
+    @needs_the_sdk
+    @pytest.mark.asyncio
+    async def test_anthropic_cache_markers_travel_as_the_top_level_field(self, route):
+        """The inherited builder sends one top-level ``cache_control`` on this
+        route, and the SDK has that parameter. The entry used to be refused
+        on the premise of per-part markers the route no longer sends."""
+        client = build_openrouter_sdk_client(
+            model="anthropic/claude-haiku-4.5", api_key="k",
+            base_url="https://openrouter.ai/api/v1", safety_settings=None,
+            prompt_cache_marker_style=MARKER_STYLE_ANTHROPIC,
+            prompt_cache_mode="multi_turn", max_retries=0)
+        await client.chat_tools(MESSAGES, TOOLS)
+        assert route.bodies[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_the_declared_client_side_keys_arrive(self):
         """tool_schema_dialect and reasoning_details_mode shape the payload in
@@ -523,3 +530,107 @@ class TestStructuredOutputTravelsThroughTheSdk:
             await _client(capabilities=ModelCapabilitiesConfig(json_mode=True)).chat_tools(
                 MESSAGES, TOOLS, response_format=ResponseFormat(type=JSON_OBJECT))
         assert len(route.requests) == 1
+
+
+@needs_the_sdk
+class TestWhatTheSdkWouldDropIsRefused:
+    """A typed parameter the SDK cannot validate degrades to ``Unset`` and
+    leaves the request WHOLE, without an error: a numeric ``max_price`` (the
+    SDK types prices as strings) takes the pin and ``data_collection`` with
+    it, and a key the SDK does not know is left out. Refused before the
+    request leaves."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("routing, lost", [
+        ({"order": ["deepinfra"], "data_collection": "deny",
+          "max_price": {"prompt": 1}}, "'provider'"),
+        ({"order": ["deepinfra"], "a_key_the_sdk_does_not_know": 1},
+         "'provider.a_key_the_sdk_does_not_know'"),
+    ])
+    async def test_nothing_leaves_and_the_hooks_see_one_end(self, route, routing, lost):
+        ends: list[dict] = []
+        client = _client(provider_routing=routing)
+        client.set_llm_hooks(on_post_response=lambda i: _record(ends, i))
+        with pytest.raises(ValueError, match=lost):
+            await client.chat_tools(MESSAGES, TOOLS)
+        assert route.requests == []
+        assert len(ends) == 1 and lost in ends[0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_price_the_sdk_can_type_travels(self, route):
+        """Counter-check: the same routing with the price as a string."""
+        routing = {"order": ["deepinfra"], "data_collection": "deny",
+                   "max_price": {"prompt": "1"}}
+        await _client(provider_routing=routing).chat_tools(MESSAGES, TOOLS)
+        assert route.bodies[0]["provider"] == routing
+
+    @pytest.mark.asyncio
+    async def test_the_metadata_header_goes_to_openrouter_only(self, route):
+        """As on the httpx route: another host is not sent the gateway's header."""
+        await _client(base_url="http://127.0.0.1:9/v1").chat_tools(MESSAGES, TOOLS)
+        assert str(route.requests[0].url) == "http://127.0.0.1:9/v1/responses"
+        assert "x-openrouter-metadata" not in route.requests[0].headers
+
+
+@needs_the_sdk
+class TestWhatTheSdkWouldRefuseToType:
+    """The SDK raises a pydantic ValidationError for an argument it cannot
+    type -- before any request, untyped, and 100+ lines of union noise."""
+
+    @pytest.mark.asyncio
+    async def test_an_image_without_detail_reaches_the_wire(self, route):
+        """The builder sends ``detail`` only when the source names one; the SDK
+        requires it. ``auto`` is the API's own default."""
+        from agent_system.llm.capabilities import ModelCapabilities
+
+        client = _client(capabilities=ModelCapabilities(image_input=True))
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        await client.chat_tools(
+            [ChatMessage(role="user", content=[{"type": "text", "text": "look"}, image])], TOOLS)
+        part = route.bodies[0]["input"][0]["content"][1]
+        assert part == {"type": "input_image", "image_url": "data:image/png;base64,AAAA",
+                        "detail": "auto"}
+
+    @pytest.mark.asyncio
+    async def test_a_tool_call_without_an_id_is_refused_loudly_and_reported_once(self, route):
+        """A foreign assistant turn whose tool call has no id is rebuilt with
+        ``call_id: None``, which the SDK cannot type."""
+        ends: list[dict] = []
+        client = _client()
+        client.set_llm_hooks(on_post_response=lambda i: _record(ends, i))
+        messages = [ChatMessage(role="user", content="hi"),
+                    ChatMessage(role="assistant", content="",
+                                tool_calls=[{"type": "function",
+                                             "function": {"name": "search", "arguments": "{}"}}])]
+        with pytest.raises(ValueError, match="refuses the request as built") as exc:
+            await client.chat_tools(messages, TOOLS)
+        assert type(exc.value) is ValueError
+        assert route.requests == []
+        assert len(ends) == 1 and "refuses the request as built" in ends[0]["error"]
+
+
+@needs_the_sdk
+class TestTheBuildRefusesWhatTheSdkCannotCarry:
+    """A config value the SDK would drop or refuse would fail every request;
+    it fails once, when the client is built."""
+
+    @staticmethod
+    def _build(**kw):
+        return build_openrouter_sdk_client(
+            model="m", api_key="k", base_url="https://openrouter.ai/api/v1",
+            safety_settings=None, prompt_cache_marker_style=None, **kw)
+
+    @pytest.mark.parametrize("kw, lost", [
+        ({"provider_routing": {"order": ["a"], "max_price": {"prompt": 1}}}, "'provider_routing'"),
+        ({"provider_routing": {"order": ["a"], "a_key_the_sdk_does_not_know": 1}},
+         "'provider_routing.a_key_the_sdk_does_not_know'"),
+        ({"plugins": [{"id": "a-plugin-the-sdk-does-not-know"}]}, "'plugins'"),
+    ])
+    def test_it_fails_the_build(self, kw, lost):
+        with pytest.raises(ValueError, match=lost):
+            self._build(**kw)
+
+    def test_what_the_sdk_can_carry_builds(self):
+        client = self._build(provider_routing={"order": ["a"], "max_price": {"prompt": "1"}},
+                             plugins=[{"id": "response-healing"}])
+        assert client.provider_routing["max_price"] == {"prompt": "1"}
