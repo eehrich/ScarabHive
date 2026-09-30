@@ -328,6 +328,17 @@ class TestMergeDoc:
 
 class TestSetDelete:
     @pytest.mark.asyncio
+    async def test_set_value_index_on_an_object_is_refused(self, server):
+        # 'a[0].b' on an object used to store the int key 0: unreadable by
+        # any path, and "0" after a restart.
+        await server.write({**SID, "doc": "syn", "data": {"a": {"x": 1}}})
+        res = await server.set_value(
+            {**SID, "doc": "syn", "path": "a[0].b", "value": 2})
+        assert res["status"] == "error" and "array" in res["error"], res
+        assert json.loads((await server.read({**SID, "doc": "syn"}))["json"]) == {
+            "a": {"x": 1}}
+
+    @pytest.mark.asyncio
     async def test_set_value_creates_intermediates(self, server):
         await server.write({**SID, "doc": "syn", "data": {}})
         res = await server.set_value(
@@ -463,6 +474,70 @@ class TestMisc:
 # ---------------------------------------------------------------------------
 
 class TestManageJsonDispatch:
+    @pytest.mark.asyncio
+    async def test_read_over_the_limit_is_refused_not_cut(self, mock_system_config):
+        srv = JsonStoreServer("json_store", mock_system_config, ToolServerConfig(
+            type="json_store", enabled=True, config={"max_read_chars": 100}))
+        await srv.write({**SID, "doc": "d", "data": {"big": "x" * 200, "small": 1}})
+        res = await srv.manage_json({**SID, "operation": "read", "doc": "d"})
+        assert res["status"] == "error" and "over the read limit of 100" in res["error"], res
+        assert "json" not in res
+        part = await srv.manage_json({**SID, "operation": "read", "doc": "d", "path": "small"})
+        assert json.loads(part["json"]) == 1
+        for bad in ("lots", 0, -5):
+            srv = JsonStoreServer("json_store", mock_system_config, ToolServerConfig(
+                type="json_store", enabled=True, config={"max_read_chars": bad}))
+            assert srv._max_read_chars == 50000
+
+    @pytest.mark.asyncio
+    async def test_read_cap_follows_an_explicit_max_doc_bytes(self, mock_system_config):
+        # A store sized for its documents (max_doc_bytes set, no max_read_chars)
+        # must read a full-size document whole, indented.
+        def make(**cfg):
+            return JsonStoreServer("json_store", mock_system_config, ToolServerConfig(
+                type="json_store", enabled=True, config=cfg))
+        srv = make(max_doc_bytes=60000)
+        assert srv._max_read_chars == 120000
+        await srv.write({**SID, "doc": "d", "data": {"k": ["x" * 20] * 2000}})
+        res = await srv.manage_json({**SID, "operation": "read", "doc": "d"})
+        assert res["status"] == "ok" and res["chars"] > 50000, res.get("error")
+        assert make(max_doc_bytes=60000, max_read_chars=1000)._max_read_chars == 1000
+        assert make(max_doc_bytes=60000, max_read_chars="lots")._max_read_chars == 120000
+        assert make()._max_read_chars == 50000
+
+    @pytest.mark.asyncio
+    async def test_outline_and_top_level_are_bounded(self, mock_system_config):
+        srv = JsonStoreServer("json_store", mock_system_config, ToolServerConfig(
+            type="json_store", enabled=True, config={"max_read_chars": 500}))
+        res = await srv.manage_json({**SID, "operation": "write", "doc": "d",
+                                     "data": {f"key{i:03d}": {"x": 1} for i in range(40)}})
+        assert res["top_level"][-1] == "+25 more" and len(res["top_level"]) == 16, res
+        listed = (await srv.manage_json({**SID, "operation": "list"}))["docs"][0]
+        assert listed["top_level"][-1] == "+25 more"
+        res = await srv.manage_json({**SID, "operation": "outline", "doc": "d"})
+        assert res["status"] == "error" and "smaller 'depth'" in res["error"], res
+        res = await srv.manage_json({**SID, "operation": "outline", "doc": "d", "depth": 0})
+        assert res["outline"] == "object(40 keys)"
+
+    def test_namespace_text_follows_session_scoped(self, mock_system_config):
+        for scoped, text in ((True, "else your session"), (False, "else the default store")):
+            srv = JsonStoreServer("json_store", mock_system_config, ToolServerConfig(
+                type="json_store", enabled=True, config={"session_scoped": scoped}))
+            desc = json.dumps(srv.get_tools(), ensure_ascii=False)
+            assert text in desc and "{{" not in desc, desc
+
+    @pytest.mark.asyncio
+    async def test_wrong_parameter_type_answers_an_error(self, server):
+        status = RecordingStatus()
+        await server.manage_json(
+            {**SID, "operation": "write", "doc": "d", "data": {"a": 1}})
+        for call in ({"operation": "outline", "doc": "d", "depth": "abc"},
+                     {"operation": "read", "doc": 5}):
+            res = await server.manage_json({**SID, **call, "_status": status})
+            assert res["status"] == "error", res
+            assert res["error"].startswith("Invalid parameter for"), res
+        assert len(status.errors) == 2 and not status.ended, status.errors
+
     @pytest.mark.asyncio
     async def test_dispatch_write_read_list(self, server):
         res = await server.manage_json(
@@ -1415,6 +1490,274 @@ class TestPersistence:
         for doc, who in (("Beat1", "upper"), ("beat1", "lower")):
             res = await b.read({**COORD, "doc": doc})
             assert json.loads(res["json"]) == {"who": who}
+
+    @pytest.mark.asyncio
+    async def test_trailing_dot_namespace_gets_its_own_directory(
+            self, mock_system_config, tmp_path):
+        # Windows drops a trailing '.', so 'run.' used to open the directory
+        # of 'run' and read its documents.
+        assert not JsonStoreServer._safe_filename("run.").endswith(".")
+        a = _restartable(mock_system_config, tmp_path)
+        await a.write({**COORD, "namespace": "run", "doc": "d", "data": {"a": 1}})
+        b = _restartable(mock_system_config, tmp_path)
+        res = await b.list_docs({**COORD, "namespace": "run."})
+        assert res["count"] == 0, res
+
+    @pytest.mark.asyncio
+    async def test_sharing_violation_on_replace_and_read_is_retried(
+            self, mock_system_config, tmp_path, monkeypatch):
+        # Windows: os.replace onto a file another process reads, and a read
+        # during a replace, raise PermissionError for a moment.
+        import pathlib
+        from plugins.json_store import server as mod
+        monkeypatch.setattr(mod, "_SHARING_PAUSE_S", 0)
+        monkeypatch.setattr(mod, "_RETRY_SHARING", True)   # the Windows behaviour, on any OS
+
+        def flaky(real, fails):
+            def call(*args, **kwargs):
+                if fails:
+                    fails.pop()
+                    raise PermissionError(13, "sharing violation")
+                return real(*args, **kwargs)
+            return call
+
+        a = _restartable(mock_system_config, tmp_path)
+        monkeypatch.setattr(mod.os, "replace", flaky(mod.os.replace, [1, 1, 1]))
+        res = await a.write({**COORD, "doc": "d", "data": {"a": 1}})
+        assert "persist_error" not in res, res
+        monkeypatch.setattr(pathlib.Path, "read_text",
+                            flaky(pathlib.Path.read_text, [1, 1, 1]))
+        b = _restartable(mock_system_config, tmp_path)
+        assert json.loads((await b.read({**COORD, "doc": "d"}))["json"]) == {"a": 1}
+        assert not list(tmp_path.rglob("*.tmp"))
+
+    @pytest.mark.asyncio
+    async def test_a_failed_file_delete_does_not_bring_the_doc_back(
+            self, mock_system_config, tmp_path, monkeypatch):
+        import pathlib
+        from plugins.json_store import server as mod
+        monkeypatch.setattr(mod, "_SHARING_PAUSE_S", 0)
+        monkeypatch.setattr(mod, "_RETRY_SHARING", True)
+        a = _restartable(mock_system_config, tmp_path)
+        op = lambda **p: a.manage_json({**COORD, **p})  # noqa: E731
+        await op(operation="write", doc="stuck", data={"a": 1})
+        await op(operation="write", doc="brief", data={"a": 1})
+        real_unlink = pathlib.Path.unlink
+        fails = {"brief": 3, "stuck": 10 ** 6}   # a short lock, a lasting one
+
+        def unlink(self, *args, **kwargs):
+            for stem, left in fails.items():
+                if self.name == f"{stem}.json" and left:
+                    fails[stem] -= 1
+                    raise PermissionError(13, "sharing violation")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+        res = await op(operation="delete_doc", doc="brief")
+        assert res["status"] == "ok" and "persist_error" not in res, res
+        res = await op(operation="delete_doc", doc="stuck")
+        assert "persist_error" in res, res
+        assert (await op(operation="list"))["count"] == 0
+        files = sorted(p.name for p in tmp_path.rglob("*.json"))
+        assert files == ["stuck.json"], files
+
+    @pytest.mark.asyncio
+    async def test_permission_error_off_windows_is_not_retried(
+            self, mock_system_config, tmp_path, monkeypatch):
+        from plugins.json_store import server as mod
+        monkeypatch.setattr(mod, "_RETRY_SHARING", False)
+        calls = []
+
+        def replace(*args):
+            calls.append(args)
+            raise PermissionError(13, "denied")
+
+        a = _restartable(mock_system_config, tmp_path)
+        monkeypatch.setattr(mod.os, "replace", replace)
+        res = await a.write({**COORD, "doc": "d", "data": {"a": 1}})
+        assert "persist_error" in res and len(calls) == 1, (res, len(calls))
+
+    @pytest.mark.asyncio
+    async def test_a_file_replaced_right_after_ours_is_not_taken_for_ours(
+            self, mock_system_config, tmp_path, monkeypatch):
+        # Another process replaces the file between our replace and anything
+        # we do next, with the same size and even the same mtime: only the
+        # file's identity tells it apart.
+        import os
+        from plugins.json_store import server as mod
+        real_replace = mod.os.replace
+        other = {"on": False}
+
+        def replace(src, dst):
+            real_replace(src, dst)
+            if other["on"]:
+                other["on"] = False
+                mtime = os.stat(dst).st_mtime_ns
+                foreign = str(dst) + ".other"
+                with open(foreign, "w", encoding="utf-8") as fh:
+                    json.dump({"namespace": "grp", "doc": "d",
+                               "owner": None, "data": {"v": "b"}}, fh, ensure_ascii=False)
+                assert os.path.getsize(foreign) == os.path.getsize(dst)
+                os.utime(foreign, ns=(mtime, mtime))
+                real_replace(foreign, dst)
+
+        monkeypatch.setattr(mod.os, "replace", replace)
+        a = _restartable(mock_system_config, tmp_path)
+        await a.manage_json({**COORD, "operation": "write", "doc": "d",
+                             "data": {"v": "a"}, "write_access": "shared"})
+        other["on"] = True
+        await a.manage_json({**COORD, "operation": "set_value", "doc": "d",
+                             "path": "v", "value": "c"})
+        res = await a.manage_json({**COORD, "operation": "read", "doc": "d"})
+        assert json.loads(res["json"]) == {"v": "b"}, res
+
+    @pytest.mark.asyncio
+    async def test_files_under_the_old_trailing_dot_names_are_migrated(
+            self, mock_system_config, tmp_path):
+        store = tmp_path / "jsstore" / "json_store"
+
+        def put(folder, ns, doc, fname):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / fname).write_text(json.dumps(
+                {"namespace": ns, "doc": doc, "owner": None, "data": {"ns": ns}}),
+                encoding="utf-8")
+
+        # namespace 'run.' in its old folder (on Windows that IS 'run'), next
+        # to a document of 'run'; a document 'a.' under its old file name
+        legacy = store / JsonStoreServer._safe_filename("run.", hash_trailing_dot=False)
+        put(legacy, "run.", "x", "x.json")
+        put(store / "run", "run", "y", "y.json")
+        put(store / "grp", "grp", "a.", "a..json")
+        a = _restartable(mock_system_config, tmp_path)
+        op = lambda **p: a.manage_json({"_session_id": "s", **p})  # noqa: E731
+        assert [d["doc"] for d in (await op(operation="list", namespace="run"))["docs"]] == ["y"]
+        assert [d["doc"] for d in (await op(operation="list", namespace="run."))["docs"]] == ["x"]
+        assert json.loads((await op(operation="read", namespace="grp", doc="a."))["json"]) == {
+            "ns": "grp"}
+        names = sorted(str(p.relative_to(store)).replace("\\", "/")
+                       for p in store.rglob("*.json"))
+        assert names == sorted([
+            f"{JsonStoreServer._safe_filename('run.')}/x.json", "run/y.json",
+            f"grp/{JsonStoreServer._safe_filename('a.')}.json"]), names
+        b = _restartable(mock_system_config, tmp_path)
+        assert (await b.manage_json({"_session_id": "s", "operation": "list",
+                                     "namespace": "run."}))["count"] == 1
+
+    @staticmethod
+    def _put(folder, ns, doc, fname, data, mtime_ns=None):
+        import os
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / fname
+        path.write_text(json.dumps({"namespace": ns, "doc": doc, "owner": None,
+                                    "data": data}), encoding="utf-8")
+        if mtime_ns is not None:
+            os.utime(path, ns=(mtime_ns, mtime_ns))
+        return path
+
+    @pytest.mark.parametrize("hard_links", [True, False])
+    @pytest.mark.parametrize("old_is_newer", [True, False])
+    @pytest.mark.parametrize("where", ["doc_name", "ns_folder"])
+    @pytest.mark.asyncio
+    async def test_when_old_and_new_file_both_exist_the_later_one_wins(
+            self, mock_system_config, tmp_path, monkeypatch, old_is_newer, where,
+            hard_links):
+        # A process still running old code keeps writing the old name.
+        if not hard_links:
+            from plugins.json_store import server as mod
+
+            def no_link(*args):
+                raise OSError(1, "hard links not supported")
+
+            monkeypatch.setattr(mod.os, "link", no_link)
+        store = tmp_path / "jsstore" / "json_store"
+        ns, doc = ("grp", "a.") if where == "doc_name" else ("run.", "x")
+        new_dir = store / JsonStoreServer._safe_filename(ns)
+        old_dir = new_dir if where == "doc_name" else (
+            store / JsonStoreServer._safe_filename(ns, hash_trailing_dot=False))
+        old_name = "a..json" if where == "doc_name" else "x.json"
+        import time
+        # recent times: the startup retention sweep deletes folders idle for days
+        early, late = time.time_ns() - 60 * 10 ** 9, time.time_ns()
+        t_old, t_new = (late, early) if old_is_newer else (early, late)
+        self._put(old_dir, ns, doc, old_name, {"v": "old"}, t_old)
+        self._put(new_dir, ns, doc, JsonStoreServer._safe_filename(doc) + ".json",
+                  {"v": "new"}, t_new)
+        a = _restartable(mock_system_config, tmp_path)
+        res = await a.manage_json({"_session_id": "s", "namespace": ns,
+                                   "operation": "read", "doc": doc})
+        assert json.loads(res["json"]) == {"v": "old" if old_is_newer else "new"}, res
+        assert not (old_dir / old_name).exists()
+
+    @pytest.mark.asyncio
+    async def test_migration_never_overwrites_a_file_that_appeared_meanwhile(
+            self, mock_system_config, tmp_path, monkeypatch):
+        # Another process migrates (and writes newer data) between our check
+        # and our write: the move must not overwrite it.
+        import pathlib
+        store = tmp_path / "jsstore" / "json_store" / "grp"
+        target = store / (JsonStoreServer._safe_filename("a.") + ".json")
+        import time
+        now = time.time_ns()
+        self._put(store, "grp", "a.", "a..json", {"v": "old"}, now - 60 * 10 ** 9)
+        self._put(store, "grp", "a.", target.name, {"v": "theirs"}, now)
+        real_exists = pathlib.Path.exists
+        monkeypatch.setattr(pathlib.Path, "exists",
+                            lambda p, *a, **k: False if p.name == target.name
+                            else real_exists(p, *a, **k))
+        a = _restartable(mock_system_config, tmp_path)
+        res = await a.manage_json({**COORD, "operation": "read", "doc": "a."})
+        assert json.loads(res["json"]) == {"v": "theirs"}, res
+
+    @pytest.mark.asyncio
+    async def test_migration_without_hard_links_still_moves(
+            self, mock_system_config, tmp_path, monkeypatch):
+        from plugins.json_store import server as mod
+
+        def no_link(*args):
+            raise OSError(1, "hard links not supported")
+
+        monkeypatch.setattr(mod.os, "link", no_link)
+        store = tmp_path / "jsstore" / "json_store" / "grp"
+        self._put(store, "grp", "a.", "a..json", {"v": "old"})
+        a = _restartable(mock_system_config, tmp_path)
+        res = await a.manage_json({**COORD, "operation": "read", "doc": "a."})
+        assert json.loads(res["json"]) == {"v": "old"}
+        assert sorted(p.name for p in store.iterdir()) == [
+            JsonStoreServer._safe_filename("a.") + ".json"]
+
+    @pytest.mark.asyncio
+    async def test_migration_keeps_the_folder_windows_shares_with_the_old_name(
+            self, mock_system_config, tmp_path):
+        # On Windows the old folder of 'run.' IS the folder of 'run'.
+        store = tmp_path / "jsstore" / "json_store"
+        (store / "run").mkdir(parents=True)
+        legacy = store / JsonStoreServer._safe_filename("run.", hash_trailing_dot=False)
+        self._put(legacy, "run.", "x", "x.json", {"v": 1})
+        a = _restartable(mock_system_config, tmp_path)
+        await a.manage_json({"_session_id": "s", "namespace": "run.", "operation": "list"})
+        assert (store / "run").is_dir()
+
+    @pytest.mark.asyncio
+    async def test_two_processes_keep_each_others_changes(
+            self, mock_system_config, tmp_path):
+        # Two instances on one storage = two processes (API + CLI run). Each
+        # used to keep what it had loaded and overwrite the other's changes.
+        a = _restartable(mock_system_config, tmp_path)
+        b = _restartable(mock_system_config, tmp_path)
+        op = lambda srv, **p: srv.manage_json({**COORD, **p})  # noqa: E731
+        await op(a, operation="write", doc="d", data={"a": 1})
+        await op(a, operation="write", doc="gone", data={"x": 1})
+        assert (await op(b, operation="merge", doc="d", data={"bb": 2}))["status"] == "ok"
+        assert (await op(b, operation="delete_doc", doc="gone"))["status"] == "ok"
+        assert (await op(a, operation="merge", doc="d", data={"ccc": 3}))["status"] == "ok"
+        # A's snapshots describe a state that is no longer on disk
+        assert (await op(a, operation="undo", doc="d"))["status"] == "ok"   # its own merge
+        assert (await op(a, operation="undo", doc="d"))["status"] == "error"
+        await op(a, operation="merge", doc="d", data={"ccc": 3})
+        assert [d["doc"] for d in (await op(a, operation="list"))["docs"]] == ["d"]
+        c = _restartable(mock_system_config, tmp_path)
+        assert json.loads((await op(c, operation="read", doc="d"))["json"]) == {
+            "a": 1, "bb": 2, "ccc": 3}
 
     @pytest.mark.asyncio
     async def test_ttl_evicts_memory_but_reloads_from_disk(

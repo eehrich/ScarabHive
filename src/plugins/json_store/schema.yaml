@@ -14,7 +14,7 @@ tools:
         Operations: write (create/replace), read (whole doc or 'path'), merge
         (deep-merge object), merge_doc (merge one stored doc 'source' into 'doc',
         no JSON re-typing), set_value (one value at 'path'), delete_keys,
-        delete_doc, undo (revert your LAST change to 'doc' — call again to step
+        delete_doc, undo (revert the last change to 'doc' — call again to step
         further back; use it to recover from a mistake instead of re-typing the
         old JSON), list (existing docs), outline (structure without values).
         Write protection: a document belongs to whoever created it. You may READ
@@ -29,7 +29,7 @@ tools:
             description: "The action to perform"
           namespace:
             type: string
-            description: "Optional shared store id — pass the same value in different agents/sessions to share the document (else scoped to your session)."
+            description: "Optional shared store id — pass the same value in different agents/sessions to share the document (else {{ ns_default }})."
           doc:
             type: string
             description: "Document name/id. For 'write' OMIT it to get a fresh auto-generated collision-free id back (best for parallel writers — each gets its own doc). For merge_doc this is the TARGET. Required for everything except 'write' and 'list'."
@@ -132,6 +132,10 @@ config:
     type: string
     default: data/json_store
     description: "Root directory for persisted documents; the server name and namespace are appended (<storage_path>/<server>/<namespace>/<doc>.json)."
+  max_read_chars:
+    type: integer
+    default: 50000
+    description: "Largest read answer in characters (indented JSON). A bigger read is refused with a hint to read a part via 'path'; the JSON is never cut. Default: 2 x max_doc_bytes when max_doc_bytes is set, else 50000; an invalid or non-positive value means that default."
   file_retention_hours:
     type: number
     default: 336
