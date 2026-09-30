@@ -1,0 +1,368 @@
+@database "otel"
+@author "Enrico Ehrich"
+@$VER: otel.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "OpenTelemetry"
+@{h1}OpenTelemetry
+
+This plugin sends traces of what agents do to an OpenTelemetry collector
+(Jaeger, Tempo, Grafana, Honeycomb, any OTLP endpoint): one span per agent
+run, one per LLM request, one per tool call, nested the way the calls were
+made -- a sub-agent's run inside the run that started it. On request it also
+exports the two GenAI client metrics (token usage, request duration). It
+only watches: it has no tools, changes no message, call or result, and a
+failure in it never fails a run. It is off by default, and prompts, answers,
+tool arguments and results stay in the process unless you switch content
+capture on.
+
+@{code}
+For users
+  @{"  What gets exported  " link spans}
+  @{"  Privacy  " link privacy}
+
+For agents and developers
+  @{"  The hooks  " link hooks}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+  @{"  Export and shutdown  " link export}
+@{body}
+@endnode
+
+@node spans "What gets exported"
+@{h1}What gets exported
+
+Names and attributes follow the OpenTelemetry GenAI semantic conventions,
+spelled out as strings (the constants in
+@{tt}opentelemetry-semantic-conventions@{utt} are marked deprecated).
+
+@{code text}
+invoke_agent <agent>            one per run (request id)
++-- chat <model>                one per LLM request the client reports, retries included
++-- execute_tool <tool>         one per tool call
++-- invoke_agent <sub-agent>    a run whose request id extends this one's
+@{body}
+
+@{h2}Spans and their attributes
+
+@{table}
+Span | Kind | Attributes
+invoke_agent | INTERNAL | gen_ai.operation.name, gen_ai.agent.name, gen_ai.conversation.id, session.id, scarabhive.request_id, scarabhive.run.outcome, scarabhive.run.persisted, error.type when it did not complete
+chat | CLIENT | gen_ai.provider.name, gen_ai.request.model, gen_ai.request.stream, gen_ai.usage.input_tokens, gen_ai.usage.output_tokens, gen_ai.usage.cache_read.input_tokens, gen_ai.usage.cache_creation.input_tokens, gen_ai.response.finish_reasons, server.address, server.port, error.type, scarabhive.llm.retry
+execute_tool | INTERNAL | gen_ai.tool.name, gen_ai.tool.call.id, gen_ai.tool.type (always function), scarabhive.tool.server, scarabhive.tool.source, scarabhive.tool.outcome, error.type
+@{body}
+
+Every span also carries the agent name, @{tt}gen_ai.conversation.id@{utt},
+@{tt}session.id@{utt} and @{tt}scarabhive.request_id@{utt}, and
+@{tt}user.id@{utt} when @{tt}capture_user_id@{utt} is on. The conversation
+id is the session at the top of the chain: an agent called as a tool runs
+on a session of its own, and its spans carry its caller's conversation and
+its own session. Anything that failed has status ERROR.
+
+@{h2}The run span
+
+@{bullet}Opened by the run's first LLM request or tool call the model made,
+ended by the run's @{tt}session_end@{utt}. A run that made no call at all
+(it failed on its way in) still gets a span there, timed from its opening
+message.
+@{bullet}@{tt}scarabhive.run.outcome@{utt}: @{tt}completed@{utt},
+@{tt}error@{utt} (the run reported errors; @{tt}error.type@{utt} is
+@{tt}_OTHER@{utt}), @{tt}cancelled@{utt}, @{tt}incomplete@{utt} (ended
+without a final answer), @{tt}expired@{utt} (no event for
+@{tt}idle_timeout_seconds@{utt}), @{tt}evicted@{utt} (more than
+@{tt}max_open_runs@{utt} open, or a new run took its request id before its
+end was seen), @{tt}shutdown@{utt} (the plugin stopped first). For all but
+@{tt}completed@{utt} and @{tt}error@{utt}, @{tt}error.type@{utt} is the
+outcome itself.
+@{bullet}@{tt}scarabhive.run.persisted@{utt}: whether the run's messages
+were saved to the session.
+
+@{h2}The chat span
+
+@{bullet}One per request the LLM client reports -- a retried attempt is a
+span of its own, with @{tt}scarabhive.llm.retry@{utt} true. It ends when the
+client reported it and starts the reported duration earlier.
+@{bullet}@{tt}gen_ai.provider.name@{utt} is the client's own name
+(@{tt}openai_httpx@{utt}, for instance), @{tt}unknown@{utt} if it gives none.
+@{bullet}Input tokens include cached ones; cache reads and cache writes are
+also given on their own.
+@{bullet}@{tt}server.address@{utt} and @{tt}server.port@{utt} are the host
+of the request URL only -- a URL may carry a key in its query.
+@{bullet}A failed request has @{tt}error.type@{utt} set to the HTTP status
+its error text names (@{tt}429@{utt}, @{tt}503@{utt}), else
+@{tt}_OTHER@{utt}, and no finish reason.
+@{bullet}An LLM request a tool or hook makes inside a run is a child of that
+run.
+
+@{h2}The tool span
+
+@{bullet}Timed by the call's own start and end, not by the hook's clock:
+the post hooks run only once every call of a step is done.
+@{bullet}@{tt}scarabhive.tool.source@{utt}: @{tt}model@{utt}, or
+@{tt}tool_script@{utt} for a call a script made (its span sits in the run
+of the script's call).
+@{bullet}@{tt}scarabhive.tool.outcome@{utt}: @{tt}ok@{utt}, @{tt}error@{utt},
+@{tt}cancelled@{utt}, @{tt}blocked@{utt} (a @{tt}pre_tool_call@{utt} hook
+refused it), @{tt}unknown@{utt} (no result ever came: the run crashed, or
+the record expired).
+@{bullet}@{tt}error.type@{utt}: the @{tt}type@{utt} the error result names
+when it is a plain identifier, @{tt}ToolCallBlocked@{utt} for a blocked
+call, else @{tt}cancelled@{utt} or @{tt}tool_error@{utt}.
+@{bullet}A blocked, cancelled or unknown call did not run: its span has no
+duration.
+
+@{h2}Nesting
+
+Tool, sub-agent and tool_script request ids extend their run's
+(@{tt}<id>_007@{utt}, @{tt}<id>_007_sub_...@{utt},
+@{tt}<id>_007_ts01@{utt}); the plugin takes the id apart to find the run a
+span belongs to. An event of a nested run keeps the runs above it alive, so
+a parent waiting for its sub-agent does not expire. A job dispatched again
+under the same request id gets a run span of its own.
+
+@{h2}Metrics
+
+With @{tt}metrics: true@{utt}, two histograms:
+@{tt}gen_ai.client.operation.duration@{utt} (seconds, every LLM request,
+with @{tt}error.type@{utt} on failures) and
+@{tt}gen_ai.client.token.usage@{utt} (input and output tokens, as
+@{tt}gen_ai.token.type@{utt}, for every request that reported usage). Both
+carry operation, provider and model. With @{tt}exporter: none@{utt} no
+metrics are built.
+@endnode
+
+@node privacy "Privacy"
+@{h1}Privacy
+
+@{h2}What always leaves the process
+
+Names (agent, tool, tool server, model, provider), ids (conversation,
+session, request, tool call), token counts, timings, outcomes and the LLM
+host.
+
+@{h2}What stays in unless you ask
+
+Without @{tt}capture_content@{utt}, no prompt, answer, tool argument or
+tool result is exported -- not as an attribute and not as a status text.
+Error texts can quote content (a provider echoing the request, a validation
+error quoting its input), so they stay in as well; the status says only:
+
+@{table}
+Where | Status text
+LLM request | LLM request failed (HTTP 503), or LLM request failed
+Tool call | tool call error, tool call cancelled, blocked by a pre_tool_call hook, cancelled before it ran
+Run | run reported 2 error(s)
+@{body}
+
+@{h2}With capture_content: true
+
+@{table}
+Span | Attribute | Content
+invoke_agent | gen_ai.input.messages | the message that opened the run
+invoke_agent | gen_ai.output.messages | the run's last answer
+execute_tool | gen_ai.tool.call.arguments | the call's arguments
+execute_tool | gen_ai.tool.call.result | the call's result
+@{body}
+
+The two messages are in the GenAI format (role and text parts; images are
+left out). The error texts become the status: an LLM or run error capped at
+256 characters, a tool error at @{tt}content_max_chars@{utt}. Each content
+attribute is cut to @{tt}content_max_chars@{utt} characters, the mark
+@{tt}…[truncated]@{utt} included; long nested values are shortened before
+they are encoded, so a huge result costs no more than a small one.
+
+The prompt of each LLM request is not exported even then: only the
+@{tt}pre_llm_request@{utt} hook carries it, at the price of a copy of the
+whole payload on every call.
+
+@{h2}The user id
+
+@{tt}user.id@{utt} is put on the spans only with
+@{tt}capture_user_id: true@{utt}.
+@endnode
+
+@node hooks "The hooks"
+@{h1}The hooks
+
+Four hooks, all on as soon as the plugin instance is enabled, for every
+agent. Each returns success without changing anything, even when it fails
+itself: the first failure of a hook is logged at WARNING ("otel:
+record_llm_call failed, its spans are missing ..."), later ones at DEBUG.
+Each has a timeout of 2 seconds.
+
+@{table}
+Hook | Type | Does
+record_llm_call | post_llm_response | builds one chat span (and the metrics) from what the client reports
+open_tool_call | pre_tool_call | remembers the call until its post hook comes
+close_tool_call | post_tool_call | builds the call's execute_tool span
+close_run | session_end | ends the run span; resolves calls that got no post hook
+@{body}
+
+@{h2}record_llm_call
+
+Runs after every LLM request the client reports, retries included. An
+event of the agent's own loop opens the run span if it is not open yet. A
+request that is cut off before the client reports it -- a run cancelled
+mid-stream -- leaves no span.
+
+@{h2}open_tool_call and close_tool_call
+
+The pre hook keeps a small record of the call (at most
+@{tt}max_pending_tool_calls@{utt}; beyond it the oldest is reported as
+@{tt}unknown@{utt}). The post hook takes the record and builds the span.
+Calls that share a key -- a backend that sends no call ids -- are matched
+in call order. A call rejected before any hook (malformed arguments, an
+unknown tool) gets no span.
+
+@{h2}close_run
+
+Reads the session_end metadata (@{tt}errors@{utt}, @{tt}cancelled@{utt},
+@{tt}completed@{utt}, @{tt}persisted@{utt}) for the run's outcome and
+resolves the calls still waiting from their result messages:
+@{tt}blocked@{utt} when the result is a ToolCallBlocked error,
+@{tt}cancelled@{utt} when it says so, otherwise @{tt}cancelled@{utt} or
+@{tt}unknown@{utt} after the run's own flag. A call blocked by a hook that
+ran before this plugin's pre hook is found here by its blocked result. A
+tool_script call blocked by a hook is reported as @{tt}unknown@{utt}: the
+block reaches the script as an exception and leaves no result message.
+
+@{h2}Switching a hook off
+
+For one agent:
+
+@{code yaml}
+agent_config:
+  hooks:
+    overrides:
+      otel.record_llm_call:
+        enabled: false
+@{body}
+
+For every agent, the same key under @{tt}hooks.overrides@{utt} in
+@{tt}config/plugins.yaml@{utt}; the key @{tt}otel@{utt} alone applies to all
+four. The hooks take no per-agent settings: everything else is read from
+the plugin's server entry (see @{" Setting it up " link setup}).
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}Nothing
+
+The plugin has no tools, adds no message and changes no request, call or
+result; every hook returns unmodified. There is no status line in the chat.
+
+@{h2}Tokens and cache
+
+None. Every request stays a prefix of the next, so the prompt cache is
+untouched.
+
+@{h2}What it costs the process
+
+The plugin avoids the hook types that copy the whole conversation on every
+step (@{tt}pre_llm_call@{utt}, @{tt}post_llm_call@{utt},
+@{tt}pre_llm_request@{utt}). What it uses copies a call's arguments and
+result, the client's response data and, once per run, the conversation at
+@{tt}session_end@{utt}. Spans are exported on a background thread; no hook
+waits for the collector.
+
+@{h2}Known gaps
+
+@{bullet}A run span starts at the run's first LLM request or tool call, not
+at the request: prompt rendering before it is not in the span.
+@{bullet}A sub-agent's run nests under its parent run, not under the tool
+call that started it: that tool span is built only when the call ends.
+@{bullet}A run whose span expired or was evicted loses its outcome: its late
+session_end has no open span to end. The defaults (6 hours without an
+event, 1000 open runs) keep this to runs that hang.
+@{bullet}A model call sent without a call id and blocked by a hook is
+reported as @{tt}unknown@{utt}: its blocked result carries a made-up id.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The entry shipped in @{tt}config/plugins.yaml@{utt}:
+
+@{code yaml}
+plugins:
+  servers:
+    otel:
+      type: otel
+      enabled: false
+      config:
+        exporter: otlp          # otlp | console | none
+        # endpoint: "http://localhost:4317"
+        capture_content: false
+        metrics: false
+@{body}
+
+Set @{tt}enabled: true@{utt} and restart. No allowlist line is needed: the
+plugin has no tools, and its hooks run for every agent. For a first look
+without a collector, @{tt}exporter: console@{utt} prints every span to
+stdout.
+
+@{h2}Dependencies
+
+@{tt}opentelemetry-api@{utt}, @{tt}opentelemetry-sdk@{utt} and
+@{tt}opentelemetry-exporter-otlp-proto-grpc@{utt}. Without the SDK the
+plugin logs "otel: tracing is off -- the pipeline could not be built" once
+and does nothing. @{tt}protocol: http/protobuf@{utt} needs
+@{tt}opentelemetry-exporter-otlp-proto-http@{utt}, which is not installed
+with the plugin; without it an ERROR names the package and nothing is
+exported.
+
+@{h2}Settings
+
+All of them go in the entry's @{tt}config:@{utt} block.
+
+@{table}
+Key | Default | Meaning
+exporter | otlp | otlp: an OTLP collector; console: stdout; none: spans are built, nothing is exported
+protocol | (empty) | grpc or http/protobuf; empty: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL (for metrics ..._METRICS_PROTOCOL), then OTEL_EXPORTER_OTLP_PROTOCOL, else grpc
+endpoint | (empty) | the collector; empty: the exporter reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT itself (grpc: localhost:4317)
+headers | {} | extra headers, e.g. authorization: "${OTEL_TOKEN}"; names are sent lower case; empty: OTEL_EXPORTER_OTLP_HEADERS
+insecure | (empty) | grpc only: true for plaintext; empty: the endpoint's scheme and OTEL_EXPORTER_OTLP_TRACES_INSECURE decide
+service_name | (empty) | service.name; empty: OTEL_SERVICE_NAME, then OTEL_RESOURCE_ATTRIBUTES, else scarabhive
+capture_content | false | export the run's input and answer, tool arguments and results (see @{" Privacy " link privacy})
+content_max_chars | 2000 | cap per content attribute, at least 16
+capture_user_id | false | put user.id on the spans
+max_open_runs | 1000 | run spans held open at most; beyond it the oldest ends as evicted
+max_pending_tool_calls | 4096 | tool calls waiting for their post hook, at most
+idle_timeout_seconds | 21600 | a run with no event this long ends as expired; a waiting call whose run is gone is reported as unknown after it
+metrics | false | also export the two GenAI metrics
+metrics_export_interval_seconds | 60 | how often metrics are exported, at least 1
+shutdown_timeout_seconds | 5 | how long stopping waits for the last export, at least 0.1
+@{body}
+
+A value of the wrong kind -- @{tt}capture_content: maybe@{utt}, a number
+below its minimum, text where a number belongs -- falls back to its default
+with a WARNING naming the key; a typo never switches content capture on.
+The other standard variables (@{tt}OTEL_TRACES_SAMPLER@{utt},
+@{tt}OTEL_RESOURCE_ATTRIBUTES@{utt}, ...) work as usual. The plugin keeps
+no data of its own.
+@endnode
+
+@node export "Export and shutdown"
+@{h1}Export and shutdown
+
+@{h2}Where the spans go
+
+The plugin never installs a global TracerProvider or MeterProvider. If the
+process already has one -- an application embedding ScarabHive with its own
+tracing -- the spans go to it and the plugin's exporter settings do not
+apply (logged at INFO). Otherwise the plugin builds a private provider with
+a batch span processor, which exports on its own thread: a collector that
+is down or slow costs spans, never a run. The reason for staying private:
+a global provider can be set only once per process, so a plugin stopped
+and started again would find its own dead one.
+
+@{h2}Stopping
+
+When the plugin stops, it ends what is still open (runs with outcome
+@{tt}shutdown@{utt}, waiting calls as @{tt}unknown@{utt}), then flushes
+and shuts down its providers on a background thread, waiting at most
+@{tt}shutdown_timeout_seconds@{utt}; spans still buffered then may be lost
+("otel: flushing did not finish within ..."). A provider it borrowed is
+only flushed, never shut down.
+@endnode

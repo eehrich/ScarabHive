@@ -46,7 +46,7 @@ config:
   endpoint:
     type: string
     default: ""
-    description: "OTLP endpoint. Empty: the exporter reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT (default localhost:4317)"
+    description: "OTLP endpoint. Empty: the exporter reads OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT"
   headers:
     type: object
     default: {}

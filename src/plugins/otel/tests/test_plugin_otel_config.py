@@ -95,6 +95,44 @@ class TestDefaults:
         assert settings.exporter == "otlp"
         assert "jaeger" in caplog.text
 
+    @pytest.mark.parametrize("key, value", [
+        ("capture_content", "maybe"), ("insecure", "sometimes"), ("max_open_runs", True),
+        ("content_max_chars", "inf"), ("idle_timeout_seconds", "six hours"),
+        ("shutdown_timeout_seconds", 0)])
+    def test_a_value_that_does_not_fit_falls_back_with_a_warning(self, key, value, caplog):
+        default = False if key == "insecure" else getattr(TelemetrySettings(), key)
+        with caplog.at_level(logging.WARNING):
+            settings = TelemetrySettings.from_config({key: value})
+        assert getattr(settings, key) == default
+        assert key in caplog.text
+
+    def test_an_unset_value_takes_its_default_silently(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert TelemetrySettings.from_config({"max_open_runs": None, "content_max_chars": "", "metrics": ""}) \
+                == TelemetrySettings()
+        assert not caplog.text
+
+    def test_a_header_set_twice_ignoring_case_is_named(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            settings = TelemetrySettings.from_config(
+                {"headers": {"Authorization": "a", "authorization": "b", "x-other": "c"}})
+        assert settings.headers == {"authorization": "b", "x-other": "c"}
+        assert "'authorization' is set twice" in caplog.text
+        assert "x-other" not in caplog.text
+
+    def test_header_keys_reach_the_grpc_exporter_lower_case(self, monkeypatch):
+        """gRPC refuses an upper-case metadata key on every export
+        ("Illegal header key"); the config's Authorization must not kill export."""
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_PROTOCOL", raising=False)
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", raising=False)
+        settings = TelemetrySettings.from_config(
+            {"endpoint": "http://127.0.0.1:4317", "headers": {"Authorization": "Bearer t"}})
+        exporter = telemetry.build_span_exporter(settings)
+        try:
+            assert dict(exporter._headers) == {"authorization": "Bearer t"}
+        finally:
+            exporter.shutdown()
+
 
 class TestExporters:
 
