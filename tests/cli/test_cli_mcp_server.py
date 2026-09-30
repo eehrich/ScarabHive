@@ -71,8 +71,10 @@ class TestToolServerCLI:
         assert result.returncode == 0
         assert "LLM Router Tool Server" in result.stdout
         assert "--prompt" in result.stdout
-        assert "--provider" in result.stdout
-        assert "--model" in result.stdout
+        # The tool takes a profile, so does the CLI; provider and model are
+        # the profile's business.
+        assert "--profile" in result.stdout
+        assert "--provider" not in result.stdout
     
     # The Google Search plugin was removed from the project. Tests that
     # referenced it have been deleted or updated to use existing search
