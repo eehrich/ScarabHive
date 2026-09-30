@@ -52,7 +52,9 @@ The ones you need:
 5. **Screenshot only when the question is visual** — overlap, spacing,
    colours, a responsive breakpoint (`playwright_browser_resize` first).
    It costs far more than a snapshot, and a model without image input
-   gets only the file path.
+   gets only the file path. Leave `filename` out: without it the file goes
+   to the browser's output directory, with it into the working directory
+   of the server — the repository root.
 6. **Clean up.** Close the browser and kill the server you started
    (`coder_shell_kill_process`).
 
