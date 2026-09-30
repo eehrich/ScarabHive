@@ -1113,11 +1113,11 @@ plugins:
         max_checkpoints: 50
         retention_days: 0
 
-    # Fuehrt die vorhersagbaren Eroeffnungs-Tool-Calls (Dokument laden,
-    # Context-Var setzen) direkt nach dem User-Turn aus, VOR dem ersten
-    # LLM-Call — spart pro Call einen vollen LLM-Roundtrip. Die Regeln stehen
-    # per Agent in dessen hooks.overrides."tool_preload.preload"; ohne Regeln
-    # tut der Hook nichts.
+    # Runs the predictable opening tool calls (load a document, set a context
+    # var) right after the user's turn, BEFORE the first LLM call -- saves a full
+    # LLM round trip. The rules live per agent in its
+    # hooks.overrides."tool_preload.preload"; without rules the hook does nothing.
+    # Manual: src/plugins/tool_preload/tool_preload.guide.
     tool_preload:
       type: tool_preload
       enabled: true

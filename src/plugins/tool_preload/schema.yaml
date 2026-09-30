@@ -39,16 +39,17 @@ hooks:
 # Configuration (per agent, via hooks.overrides."tool_preload.preload")
 # -----------------------------------------------------------------
 # rules:                       ordered list; each rule fires at most once per user turn
-#   - match: "Szene\\s+(?P<sid>\\d+)"     # regex over the user message text
+#   - match: "chapter\\s+(?P<n>\\d+)"     # regex over the user message text
 #     calls:                              # sequential, in THIS order
-#       - tool: writer_session_set_var
-#         params: {name: current_scene, value: "{sid}"}
-#       - tool: writer_content_get_scene
-#         params: {scene_id: "{sid}"}
-#   - match: "(?P<doc>[\\w-]+)-Dokument"
-#     tool: json_store_read               # shorthand: one rule, one call
-#     params: {doc: "{doc}"}
+#       - tool: project_set_var
+#         params: {name: current_chapter, value: "{n}"}
+#       - tool: project_get_chapter
+#         params: {chapter: "{n}"}
+#   - match: "document\\s+(?P<doc>[\\w-]+)"
+#     tool: notes_manage_json             # shorthand: one rule, one call
+#     params: {operation: read, doc: "{doc}"}
 #
 # max_calls_per_turn: 5        # hard cap across all rules (regex runaway guard)
-# dedup: true                  # skip a call whose (tool, params) already ran
-#                              # earlier in this conversation
+# dedup: true                  # skip a rule whose calls are all in the history
+#                              # already, with the same (tool, params)
+# max_seconds: 45              # seconds for all calls of a turn; no call starts after it (keep below the hook timeout)

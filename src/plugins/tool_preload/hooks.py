@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 #: to turn one message into an unbounded tool storm.
 DEFAULT_MAX_CALLS_PER_TURN = 5
 
+#: Seconds the calls of one turn may take together (setting ``max_seconds``).
+#: Below the hook's 60 s timeout on purpose: when the registry cuts the hook
+#: off, every pair is lost, done calls included, and the model repeats them.
+DEFAULT_MAX_SECONDS = 45.0
+
+#: A call the budget left unrun: its id prefix (dedup does not count it as
+#: made) and the answer the model reads for it.
+SKIPPED_ID_PREFIX = "preload_skipped_"
+SKIPPED_TEXT = "Not run: the preload time budget was used up. Call the tool yourself if you need it."
+
 #: Characters of the user message the rules see. A preload trigger is a
 #: directive ("bearbeite Dokument X"), not something buried inside a pasted
 #: 200 KB file — so the cap costs nothing real and bounds the input to a regex
@@ -251,6 +261,14 @@ def _session_context_vars(context: Any) -> Dict[str, Any]:
     return out
 
 
+def _max_seconds(config: Dict[str, Any]) -> float:
+    """The ``max_seconds`` setting; anything but a positive number is the default."""
+    value = config.get("max_seconds", DEFAULT_MAX_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        return DEFAULT_MAX_SECONDS
+    return float(value)
+
+
 def _rule_calls(rule: Dict[str, Any]) -> List[Dict[str, Any]]:
     """A rule's calls, in order. ``calls: [...]`` or the one-call shorthand."""
     calls = rule.get("calls")
@@ -272,6 +290,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
     async def preload(self, context: HookContext) -> HookResult:
         """pre_llm_call: act exactly once per user turn, per the rules."""
         unchanged = HookResult(success=True, modified=False, context=context)
+        started = time.monotonic()
         try:
             messages = context.messages
             # The turn a person opened, behind any note the loop added after it
@@ -306,7 +325,8 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             if not plan:
                 return unchanged
 
-            appended = await self._execute_plan(plan, context)
+            appended = await self._execute_plan(
+                plan, context, deadline=started + _max_seconds(config))
             if not appended:
                 return unchanged
 
@@ -325,16 +345,18 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
     # ------------------------------------------------------------------
     def _plan_calls(self, rules: List[Any], text: str, config: Dict[str, Any],
                     messages: List[Any],
-                    ctx_vars: Dict[str, Any] | None = None) -> List[Tuple[str, Dict[str, Any]]]:
-        """Which (tool, params) to run, in order, after matching and dedup."""
+                    ctx_vars: Dict[str, Any] | None = None) -> List[Tuple[int, str, Dict[str, Any]]]:
+        """Which (rule number, tool, params) to run, in order, after matching
+        and dedup. The rule number keeps the chains apart: a failure ends only
+        the chain it happened in."""
         max_calls = int(config.get("max_calls_per_turn",
                                    DEFAULT_MAX_CALLS_PER_TURN))
         dedup = config.get("dedup", True)
         already = self._calls_in_history(messages) if dedup else set()
         ctx_vars = ctx_vars or {}
 
-        plan: List[Tuple[str, Dict[str, Any]]] = []
-        for rule in rules:
+        plan: List[Tuple[int, str, Dict[str, Any]]] = []
+        for rule_no, rule in enumerate(rules):
             if not isinstance(rule, dict):
                 continue
             pattern = rule.get("match")
@@ -404,7 +426,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                 continue
 
             already.update(keys)
-            plan.extend(resolved)
+            plan.extend((rule_no, tool, params) for tool, params in resolved)
         return plan
 
     @staticmethod
@@ -422,7 +444,7 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 name = fn.get("name")
-                if not name:
+                if not name or str(tc.get("id") or "").startswith(SKIPPED_ID_PREFIX):
                     continue
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
@@ -434,18 +456,22 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    async def _execute_plan(self, plan: List[Tuple[str, Dict[str, Any]]],
-                            context: HookContext) -> List[ChatMessage]:
+    async def _execute_plan(self, plan: List[Tuple[int, str, Dict[str, Any]]],
+                            context: HookContext,
+                            deadline: float = float("inf")) -> List[ChatMessage]:
         """Run the plan sequentially; return the message pairs to append.
 
         Sequential ON PURPOSE: "erst context_var setzen, dann Content laden" is
         a real dependency, so call k+1 must not start before call k finished.
 
         A call that the dispatcher rejects (unknown tool, not in the agent's
-        allowlist) is an operator error: logged, chain aborted, pairs so far
-        kept. A call whose TOOL returns an error is appended like any result —
+        allowlist) is an operator error: logged, the rest of its rule's chain
+        dropped, pairs so far kept; the next rule still runs. A call whose TOOL returns an error is appended like any result —
         error answers carry recovery context these days, and the agent would
-        have seen the same thing calling it itself.
+        have seen the same thing calling it itself. A tool that RAISES is
+        recorded as an error result, the way the loop records it, and ends
+        its rule's chain. Once ``deadline`` has passed no call starts; each one left
+        gets a "not run" answer instead.
         """
         from agent_system.servers.agent.components.tool_execution import ToolDispatchError
 
@@ -467,23 +493,41 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
             logger.debug(f"tool_preload: could not resolve user_id: {e}")
 
         appended: List[ChatMessage] = []
-        for tool, params in plan:
-            call_id = f"preload_{uuid.uuid4().hex[:10]}"
-            try:
-                result = await context.agent.dispatch_tool_call(
-                    tool, dict(params),
-                    session_id=context.session_id,
-                    user_id=user_id,
-                    request_id=context.request_id,
-                )
-            except ToolDispatchError as e:
-                logger.warning(f"tool_preload: {tool} not dispatchable: {e} — "
-                               f"chain aborted, later calls may depend on it")
-                break
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"tool_preload: {tool} raised: {e} — chain aborted",
-                             exc_info=True)
-                break
+        aborted = None  # the rule whose chain a failure ended
+        for rule_no, tool, params in plan:
+            if rule_no == aborted:
+                continue  # the rest of that chain may depend on the failed call
+            # Past the budget no call starts: the registry's timeout would
+            # discard every pair, done ones included. The rest is recorded as
+            # skipped, so the model makes those calls itself.
+            skipped = time.monotonic() >= deadline
+            call_id = f"{SKIPPED_ID_PREFIX if skipped else 'preload_'}{uuid.uuid4().hex[:10]}"
+            failed = False
+            if skipped:
+                logger.warning(f"tool_preload: time budget used up, {tool} not run")
+                result = {"error": SKIPPED_TEXT}
+            else:
+                try:
+                    result = await context.agent.dispatch_tool_call(
+                        tool, dict(params),
+                        session_id=context.session_id,
+                        user_id=user_id,
+                        request_id=context.request_id,
+                    )
+                except ToolDispatchError as e:
+                    logger.warning(f"tool_preload: {tool} not dispatchable: {e} — "
+                                   f"chain aborted, later calls may depend on it")
+                    aborted = rule_no
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    # The tool was called and failed -- possibly after a side
+                    # effect. Recorded as the model's own call would record it: with
+                    # nothing in the history the model called it again, blind.
+                    logger.error(f"tool_preload: {tool} raised: {e} — chain aborted",
+                                 exc_info=True)
+                    result = {"error": f"Tool '{tool}' execution failed: {e}",
+                              "type": type(e).__name__}
+                    failed = True
 
             # Own guard: the tool has ALREADY RUN at this point. Anything that
             # raises while building the pair would otherwise discard the pairs
@@ -531,8 +575,16 @@ class ToolPreloadPlugin(SchemaBasedPluginHook):
                     f"tool_preload: {tool} ran but its result could not be "
                     f"recorded ({e}) — chain aborted, earlier pairs kept so the "
                     f"model does not repeat those calls", exc_info=True)
-                break
+                aborted = rule_no
+                continue
             appended.extend(pair)
+            if failed:
+                # Ends this rule's chain only: its later calls may depend on
+                # this one, the next rule's do not.
+                aborted = rule_no
+                continue
+            if skipped:
+                continue
             logger.info(f"tool_preload: {tool}({params}) executed before the "
                         f"first LLM turn")
         return appended
