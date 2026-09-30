@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -447,6 +448,99 @@ async def test_a_symlink_to_the_projects_claude_md_is_followed(registered, proje
 
     [note] = model.notes(0)
     assert "the shared instructions" in note
+
+
+#: An unroutable host (TEST-NET-1), written as the platform names a share.
+_HOST = r"\\192.0.2.1\share" if os.name == "nt" else "//192.0.2.1/share"
+
+
+@pytest.fixture
+def resolved(project, monkeypatch) -> list[str]:
+    """Every path resolved while the test runs. Resolving is what opens a link
+    -- on Windows, a link to a share connects to the host and signs in."""
+    seen: list[str] = []
+    original = type(project).resolve
+
+    def spy(self, *args, **kwargs):
+        seen.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(project), "resolve", spy)
+    return seen
+
+
+@pytest.mark.parametrize("through", ["file link", "directory link"])
+async def test_a_link_to_a_host_is_refused_before_anything_opens_it(registered, project, resolved, through):
+    """A cloned repository can ship AGENTS.md -> \\\\host\\share\\x.md, or a
+    directory link to a share with AGENTS.md pointing into it. The link is
+    judged on its text: the hook never resolves it, so no host is contacted."""
+    if through == "file link":
+        (project / "AGENTS.md").symlink_to(Path(_HOST) / "x.md")
+    else:
+        (project / "docs").symlink_to(_HOST, target_is_directory=True)
+        (project / "AGENTS.md").symlink_to(project / "docs" / "x.md")
+    agent = _agent(project, hook={"enabled": True})
+
+    await _turn(agent, _Model(), "task")
+
+    snapshot = agent._session_tracker.get_session_template_vars("s1")[SESSION_VAR]
+    assert snapshot["root"] == str(project) and snapshot["file"] is None, snapshot
+    assert str(project / "AGENTS.md") not in resolved, "the link was resolved -- the host was opened"
+
+
+def _short_name(path: Path) -> Optional[str]:
+    """The Windows 8.3 name of ``path``, None where the volume keeps none."""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(512)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer)):
+        return None
+    short = Path(buffer.value).name
+    return short if short.lower() != path.name.lower() else None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="8.3 names are a Windows thing")
+async def test_a_short_name_does_not_hide_a_dot_folder(registered, project):
+    """SECRET~1 is .secret: the link text passes the dot rule, the file it
+    names does not."""
+    (project / ".secret").mkdir()
+    (project / ".secret" / "keys.md").write_text("the secret in a dot folder\n", encoding="utf-8")
+    short = _short_name(project / ".secret")
+    if short is None:
+        pytest.skip("this volume keeps no 8.3 names")
+    (project / "AGENTS.md").symlink_to(f"{short}\\keys.md")
+    model = _Model()
+
+    await _turn(_agent(project, hook={"enabled": True}), model, "task")
+
+    assert model.notes(0) == [], model.requests[0]
+    assert not any("the secret" in text for _role, text, *_ in model.requests[0])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows thing")
+async def test_a_junction_on_the_way_counts_as_a_link(registered, project):
+    import subprocess
+
+    (project / "docs").mkdir()
+    (project / "docs" / "CLAUDE.md").write_text("through the junction\n", encoding="utf-8")
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(project / "j"), str(project / "docs")],
+                   check=True, capture_output=True)
+    (project / "AGENTS.md").symlink_to("j\\CLAUDE.md")
+    model = _Model()
+
+    await _turn(_agent(project, hook={"enabled": True}), model, "task")
+
+    assert model.notes(0) == [], model.requests[0]
+
+
+async def test_a_named_root_on_a_host_outside_the_file_tools_is_never_resolved(registered, project, resolved):
+    agent = _agent(project, hook={"enabled": True, "root": _HOST})
+
+    await _turn(agent, _Model(), "task")
+
+    snapshot = agent._session_tracker.get_session_template_vars("s1")[SESSION_VAR]
+    assert snapshot["root"] is None, snapshot
+    assert not [path for path in resolved if "192.0.2.1" in path], resolved
 
 
 async def test_the_file_cannot_close_its_own_frame(registered, project):
