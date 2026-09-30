@@ -279,6 +279,11 @@ class ToolServerIntegration:
                 }
                 for name, server in self.configured_external_servers.items()
             },
+            # The connected set, taken BEFORE the listing: a server connected
+            # while this listing runs (connect: on_demand, from another run)
+            # would otherwise be frozen out -- this cache has no TTL, and the
+            # listing's set() would land after the connect's invalidate().
+            "connected": sorted(self.list_external_clients()),
             "plugins": self.plugin_registry.list_servers()
         }
         config_hash = self._tool_cache.compute_config_hash(cache_config)

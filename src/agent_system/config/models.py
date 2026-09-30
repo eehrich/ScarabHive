@@ -1040,6 +1040,13 @@ class RemoteMCPConfig(BaseModel):
     # cannot serve both.
     timeout: Optional[float] = None
 
+    # When the connection is made. "startup": every process that boots the
+    # plugins connects (and, for stdio, STARTS) the server. "on_demand": only
+    # a process running an agent whose tools.allowed names this server
+    # (``<name>.*`` or ``<name>.<tool>``) -- a browser server otherwise ran
+    # once per CLI worker, for nobody.
+    connect: Literal["startup", "on_demand"] = "startup"
+
     # Authentication and security
     auth: Optional[MCPAuthConfig] = None
 

@@ -628,6 +628,15 @@ def _structured(result: Any) -> Any:
     """Fall back to whatever the server sent when there is no text block."""
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
+        # _multimodal_content is OUR key: tool_execution reads the files it
+        # names and sends them to the model provider. A server that sets it
+        # itself would have us upload any local file -- only
+        # _persist_media_blocks may produce it. Renamed, not dropped: what
+        # the server sent stays readable as data.
+        if isinstance(structured, dict) and "_multimodal_content" in structured:
+            structured = dict(structured)
+            structured["server_multimodal_content"] = structured.pop("_multimodal_content")
+            logger.warning("MCP server result carried the reserved key _multimodal_content; renamed")
         return structured
     if hasattr(result, "model_dump"):
         # mode="json": a resource block carries its URL as a pydantic AnyUrl,

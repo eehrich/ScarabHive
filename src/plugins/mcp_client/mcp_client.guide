@@ -157,10 +157,23 @@ two seconds more to be ended), not once each. A disconnect that comes
 while a server is still shaking hands wins: the new connection is
 closed again.
 
+A server with @{tt}connect: on_demand@{utt} is left out of that start.
+It is connected when an agent of the process begins a run and names it
+in @{tt}tools.allowed@{utt} -- @{tt}<server>.*@{utt} or
+@{tt}<server>.<tool>@{utt}, the server spelled out; @{tt}*@{utt} does
+not count. Until then the process never starts the program, which is
+the point for heavy stdio servers such as a browser: every process that
+boots the plugins -- the API, each @{tt}agent-cli@{utt}, each task
+worker -- would otherwise start its own copy. Once connected it stays
+for the process. A connect that fails is logged and not tried again for
+five minutes; the run goes on without that server's tools. Views that
+only show an agent's tools (system prompt, token count) do not connect.
+
 When a connection drops -- a stdio program exits, a remote server goes
 away -- nothing reconnects it by itself. Its calls fail with "External MCP
 server '<server>' is not connected" until someone reconnects it with
 @{tt}/mcp-connect@{utt} or the management tool, or the process restarts.
+An on_demand server is reconnected by the next run that names it.
 The agents' tool list may keep showing the dropped server's tools until
 the next connect or disconnect.
 @endnode

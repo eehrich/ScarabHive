@@ -10,6 +10,7 @@
 #              tdd                 — pulled when it writes tests
 #              diagnosing-bugs     — pulled when it hunts a bug
 #              codebase-design     — pulled when the question is where a seam goes
+#              web-testing         — pulled when a page has to be checked in the browser
 # The last three already existed under skills/coding/ — the harness reuses them
 # rather than restating them.
 plugins:
@@ -65,7 +66,8 @@ plugins:
         skills:
           always: ["coding-harness"]
           # forge-workflow lives in the forge plugin: the ticket-to-merge loop.
-          on_demand: ["adversarial-review", "tdd", "diagnosing-bugs", "codebase-design", "forge-workflow"]
+          on_demand: ["adversarial-review", "tdd", "diagnosing-bugs", "codebase-design", "forge-workflow",
+                      "web-testing"]
 
         tools:
           allowed:
@@ -88,6 +90,11 @@ plugins:
             # Ask the person in the chat when a choice is theirs to make
             # (plugin ask_user); a run nobody watches gets "decide yourself".
             - "+ask_user/*"
+            # A headless browser for web work (external MCP server
+            # `playwright`, config/mcp_servers.yaml): pages, clicks, console,
+            # screenshots. connect: on_demand there -- naming it here is what
+            # starts it, in the process that runs the coder, and only there.
+            - "+playwright.*"
 
           # Sent as a name and one line until the model loads them with
           # tool_search (servers/agent/deferred_tools.py). The rare tools:
@@ -100,6 +107,7 @@ plugins:
             - "coding_cli/*"
             - "datetime/*"
             - "sequential_thinking/*"
+            - "playwright.*"
 
           # semantic_search is ON since 18.09.2026 and no longer blocked here:
           # the index stores one document per symbol, so a hit is a function

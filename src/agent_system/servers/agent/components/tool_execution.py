@@ -128,6 +128,42 @@ def inject_runtime_params(params: Dict[str, Any], *,
     return params
 
 
+def pop_multimodal_content(tool_result: Any, tool_name: str) -> Optional[List[Any]]:
+    """Take ``_multimodal_content`` ([{type, path, mime_type, description}]) out of a result.
+
+    The items ride on the tool message as real image/audio parts; left in the
+    result they reach the model as a JSON list of paths. External MCP results
+    carry them too (mcp_client persists image blocks) -- that path used to
+    skip this, and a screenshot never reached a model as an image.
+    """
+    if not isinstance(tool_result, dict):
+        return None
+    raw_multimodal = tool_result.pop("_multimodal_content", None)
+    if not raw_multimodal:
+        return None
+    from pydantic import ValidationError
+    from ....llm.models import MultimodalToolContent
+    # An invalid item is dropped on its own: raising here would replace the
+    # whole tool result -- a job that already ran -- with an error, and the
+    # model would run it again.
+    multimodal_content: List[Any] = []
+    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
+    for item in items:
+        if isinstance(item, dict):
+            try:
+                multimodal_content.append(MultimodalToolContent(**item))
+            except ValidationError as exc:
+                logger.warning(
+                    "Dropping invalid multimodal item from tool %s: %s",
+                    tool_name, exc.errors(include_url=False),
+                )
+        elif isinstance(item, MultimodalToolContent):
+            multimodal_content.append(item)
+    if multimodal_content:
+        logger.debug("Extracted %d multimodal items from tool %s", len(multimodal_content), tool_name)
+    return multimodal_content or None
+
+
 class ToolExecutionManager:
     """Manages execution of tools and handles results."""
 
@@ -884,6 +920,7 @@ class ToolExecutionManager:
             # Use serializable_params to avoid passing non-JSON-serializable objects (like CancellationToken) to external servers
             tool_result = await tool_integration.call_tool(server_name, actual_tool_name, serializable_params, "external")
             logger.info("External tool %s returned: %s", tool_name, str(tool_result)[:500])
+            multimodal_content = pop_multimodal_content(tool_result, tool_name)
 
             results.append({
                 "server": tool_name,
@@ -906,7 +943,8 @@ class ToolExecutionManager:
                 tool_call_id=tool_call_id,
                 name=sanitize_for_llm(openai_tool_name),
                 content=tool_msg_content,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
+                multimodal_content=multimodal_content,
             )
             return message, events, results
         except (Exception, GeneratorExit) as e:
@@ -1010,35 +1048,7 @@ class ToolExecutionManager:
 
             logger.info("Tool %s returned: %s", tool_name, str(tool_result)[:500])
 
-            # Extract multimodal content from tool result (if present)
-            # Tools can return _multimodal_content: [{type, path, mime_type, description}]
-            multimodal_content = None
-            if isinstance(tool_result, dict):
-                raw_multimodal = tool_result.pop("_multimodal_content", None)
-                if raw_multimodal:
-                    from pydantic import ValidationError
-                    from ....llm.models import MultimodalToolContent
-                    # Convert to Pydantic models. An invalid item is dropped on its
-                    # own: raising here would replace the whole tool result -- a job
-                    # that already ran -- with an error, and the model would run it again.
-                    multimodal_content = []
-                    items = raw_multimodal if isinstance(raw_multimodal, list) else [raw_multimodal]
-                    for item in items:
-                        if isinstance(item, dict):
-                            try:
-                                multimodal_content.append(MultimodalToolContent(**item))
-                            except ValidationError as exc:
-                                logger.warning(
-                                    "Dropping invalid multimodal item from tool %s: %s",
-                                    tool_name, exc.errors(include_url=False),
-                                )
-                        elif isinstance(item, MultimodalToolContent):
-                            multimodal_content.append(item)
-                    if multimodal_content:
-                        logger.debug(
-                            "Extracted %d multimodal items from tool %s",
-                            len(multimodal_content), tool_name
-                        )
+            multimodal_content = pop_multimodal_content(tool_result, tool_name)
 
             results.append({
                 "server": tool_name,

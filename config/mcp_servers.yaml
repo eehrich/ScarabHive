@@ -90,6 +90,40 @@ external_servers:
       features:
         tools: true
 
+    # A headless browser for the coder (Microsoft's Playwright MCP): open a
+    # page, read it as an accessibility snapshot, click, type, read the
+    # console and network, take a screenshot. The coder defers these tools
+    # (tools.deferred) -- a run that builds no web page never pays for them.
+    #
+    # --browser msedge drives the installed Edge: nothing to download. On a
+    # host without Edge (the Linux server) use --browser chromium and run
+    # `npx playwright install chromium` once. --isolated keeps the profile in
+    # memory, --idle-timeout closes a forgotten browser after 10 minutes (the
+    # value is MILLISECONDS: 600 closed it between two steps of a run).
+    # Screenshots and traces land in --output-dir.
+    playwright:
+      enabled: true
+      # Started only in a process that runs an agent naming `playwright.*`
+      # in tools.allowed. At startup every process -- API, each agent-cli,
+      # every task worker -- started its own copy, for nobody.
+      connect: on_demand
+      transport: stdio
+      # A page load or a click that waits for navigation outlasts the global
+      # 5 s connection timeout.
+      timeout: 60
+      command: npx
+      args: ["-y", "@playwright/mcp@0.0.83", "--browser", "msedge", "--headless", "--isolated",
+             "--idle-timeout", "600000", "--output-dir", "data/playwright_mcp"]
+      description: Headless browser (Playwright MCP) -- pages, clicks, console, screenshots
+      features:
+        tools: true
+      tools:
+        # run_code_unsafe runs Playwright code in the server's node process --
+        # on this host, with our rights. file_upload hands any local file to a
+        # page. Testing a web page needs neither; browser_evaluate (script in
+        # the page) stays.
+        blocked: ["browser_run_code_unsafe", "browser_file_upload"]
+
     # Bridge to a locally running Blender (blender-mcp 1.9.0): the stdio
     # server translates MCP into a socket on localhost:9876, where the Blender
     # addon listens.

@@ -23,6 +23,9 @@ from .connection import MCPConnectionError, ServerConnection
 
 logger = logging.getLogger(__name__)
 
+#: Seconds an on_demand server that failed to connect is left alone.
+ON_DEMAND_RETRY_S = 300
+
 
 def cap_text(text: str, limit: int) -> str:
     """*text* cut to *limit* characters, marked with its full length."""
@@ -53,6 +56,7 @@ class ExternalServerPool:
         #: under an older value is thrown away when it completes.
         self._epoch = 0
         self._name_epochs: Dict[str, int] = {}
+        self._on_demand_failed_at: Dict[str, float] = {}
 
         self._tools_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._tools_cache_at: float = 0.0
@@ -78,15 +82,22 @@ class ExternalServerPool:
 
     # -------------------------------------------------------------- connecting
 
+    def on_demand_servers(self) -> List[str]:
+        """Enabled servers that wait for an agent to name them (``connect: on_demand``)."""
+        return [name for name, cfg in self.configured_servers.items()
+                if getattr(cfg, "connect", "startup") == "on_demand"]
+
     async def connect_all(self) -> Dict[str, Optional[str]]:
-        """Connect every enabled server. Returns name -> error (None if fine).
+        """Connect every enabled startup server. Returns name -> error (None if fine).
 
         One unreachable server must not stop the others, and it must not stop
-        startup either -- the result is reported, not raised.
+        startup either -- the result is reported, not raised. ``on_demand``
+        servers are left to :meth:`connect_on_demand`.
         """
         # All at once: one after another, N silent servers held the start up
         # for N handshake deadlines.
-        names = list(self.configured_servers)
+        lazy = set(self.on_demand_servers())
+        names = [name for name in self.configured_servers if name not in lazy]
         outcomes = await asyncio.gather(*(self.connect(name) for name in names), return_exceptions=True)
         results: Dict[str, Optional[str]] = {}
         for name, outcome in zip(names, outcomes):
@@ -131,6 +142,36 @@ class ExternalServerPool:
 
         self.invalidate_cache()
         return connection
+
+    async def connect_on_demand(self, names: List[str]) -> bool:
+        """Connect those of *names* that are on_demand and not connected yet.
+
+        True if a connection was made (the tool catalogue changed). A failure
+        is logged, not raised: the agent runs on without that server, as it
+        would after a failed startup connect.
+        """
+        now = time.monotonic()
+        lazy = set(self.on_demand_servers())
+        pending = [name for name in names if name in lazy
+                   and not (self._connections.get(name) and self._connections[name].connected)
+                   # A server that failed waits: this runs before every run,
+                   # and a missing npx cost a handshake timeout each time.
+                   and now - self._on_demand_failed_at.get(name, -ON_DEMAND_RETRY_S) >= ON_DEMAND_RETRY_S]
+        if not pending:
+            return False
+        outcomes = await asyncio.gather(*(self.connect(name) for name in pending), return_exceptions=True)
+        made = False
+        for name, outcome in zip(pending, outcomes):
+            if isinstance(outcome, Exception):
+                self._on_demand_failed_at[name] = time.monotonic()
+                logger.warning("Could not connect external MCP server '%s' on demand (next try in %ds): %s",
+                               name, ON_DEMAND_RETRY_S, outcome)
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            else:
+                logger.info("External MCP server '%s' connected on demand", name)
+                made = True
+        return made
 
     async def disconnect(self, name: str) -> bool:
         """Close one server's connection. False if there was nothing to close."""

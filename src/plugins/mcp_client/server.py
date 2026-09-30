@@ -85,8 +85,8 @@ class MCPClientServer(SchemaBasedToolServer):
         results = await self.pool.connect_all()
         failed = {name: error for name, error in results.items() if error}
         logger.info(
-            "External MCP servers: %d connected, %d failed",
-            len(results) - len(failed), len(failed),
+            "External MCP servers: %d connected, %d failed, %d on demand",
+            len(results) - len(failed), len(failed), len(self.pool.on_demand_servers()),
         )
         # Await the invalidation: the caller's next tool listing must see
         # the new catalog, not a cache that a scheduled task has not
@@ -116,6 +116,18 @@ class MCPClientServer(SchemaBasedToolServer):
     async def call_external_tool(self, server: str, tool: str, arguments: Dict[str, Any]) -> Any:
         """Route one call to one external server."""
         return await self.pool.call_tool(server, tool, arguments)
+
+    async def connect_for_patterns(self, patterns: List[str]) -> None:
+        """Connect the on_demand servers an agent's ``tools.allowed`` names.
+
+        Named means ``<server>.*`` or ``<server>.<tool>`` -- the dot form that
+        selects external tools, with the server spelled out. ``*`` or a glob
+        over the server part does not count: an allow-all agent would
+        otherwise start every on_demand server there is.
+        """
+        names = {pattern.split(".", 1)[0] for pattern in patterns if "." in pattern}
+        if names and await self.pool.connect_on_demand(sorted(names)):
+            await capabilities.anotify_tool_catalog_changed()
 
     # -------------------------------------------------------- management tools
 

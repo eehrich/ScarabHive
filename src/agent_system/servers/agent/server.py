@@ -2327,6 +2327,7 @@ class Agent(ToolServer):
 
         # Initialize tool integration
         await self._tool_integration_manager.setup_tool_integration()
+        await self._tool_integration_manager.connect_on_demand_servers()
 
         # Get tools this agent can use (filtered by agent_config)
         # Returns tuple: (tools, allowed_patterns, blocked_patterns)
