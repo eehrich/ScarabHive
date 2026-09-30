@@ -16,8 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--days", type=int, default=3, help="Number of forecast days (1-7)")
     parser.add_argument("--units", choices=["metric", "imperial"], default="metric", help="Temperature units")
     parser.add_argument("--include-marine", action="store_true", help="Include marine data (SST, wave heights)")
-    parser.add_argument("--summary-format", choices=["detailed", "daily_summary", "hourly"], default="detailed")
-    parser.add_argument("--include-radiation", action="store_true", help="Include estimated solar radiation data")
+    parser.add_argument("--summary-format", choices=["daily", "hourly"], default="daily")
+    parser.add_argument("--include-radiation", action="store_true", help="Accepted and ignored: the tool has no radiation data")
 
     # Server mode options
     parser.add_argument("--server", action="store_true", help="Run in server mode (tool server)")
@@ -69,7 +69,7 @@ async def async_main():
         if args.source:
             params["source"] = args.source
             
-        result = await server.call("get_weather", params)
+        result = await server.call("forecast", params)
         print(f"Weather for {args.location}:")
         print(json.dumps(result, indent=2, ensure_ascii=False))
 

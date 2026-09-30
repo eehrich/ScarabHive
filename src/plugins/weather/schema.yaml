@@ -2,42 +2,37 @@ tools:
   - type: function
     function:
       name: "{{ name }}_forecast"
-      description: Get weather conditions and forecasts for any location. Supports current weather and multi-day forecasts.
+      description: Get current weather and multi-day forecasts. weather.gov and marine.weather.gov cover only the US.
       parameters:
         type: object
         properties:
           location:
             type: string
-            description: "Location name, city, or coordinates (e.g., 'Munich', 'New York', '48.1351,11.5820')"
+            description: "City or coordinates ('Munich', '48.1351,11.5820'); weather.gov: US street address"
           source:
             type: string
             enum: [wttr.in, weather.gov, met.no, marine.weather.gov]
             default: met.no
-            description: "Weather data source"
           days:
             type: integer
             minimum: 1
             maximum: 7
             default: 3
-            description: "Number of forecast days (1=current only, 2-7=forecast)"
+            description: "Number of forecast days"
           units:
             type: string
             enum: [metric, imperial]
             default: metric
-            description: "Temperature and measurement units"
+            description: "Units; only wttr.in follows them"
           include_marine:
             type: boolean
             default: false
-            description: "Include marine weather (auto-switches to marine.weather.gov source)"
+            description: "Estimated sea data (not measured); switches to marine.weather.gov"
           summary_format:
             type: string
-            enum: [detailed, daily_summary, hourly]
-            default: detailed
-            description: "Output format detail level"
-          include_radiation:
-            type: boolean
-            default: false
-            description: "Include solar radiation data when available"
+            enum: [daily, hourly]
+            default: daily
+            description: "hourly adds the time steps"
         required: [location]
         additionalProperties: false
 

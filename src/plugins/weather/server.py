@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, TYPE_CHECKING
 
 from agent_system.tools.schema_based import SchemaBasedToolServer
@@ -7,6 +8,8 @@ from . import sources
 
 if TYPE_CHECKING:
     from agent_system.config import AgentSystemConfig, ToolServerConfig
+
+logger = logging.getLogger(__name__)
 
 
 class WeatherServer(SchemaBasedToolServer):
@@ -42,6 +45,14 @@ class WeatherServer(SchemaBasedToolServer):
             await status.error(error_msg)
             return {"status": "error", "error": error_msg}
 
+        raw_days = params.get("days")
+        try:
+            days = max(1, min(int(3 if raw_days is None else raw_days), 7))
+        except (TypeError, ValueError, OverflowError):
+            error_msg = f"days must be a whole number from 1 to 7, got {raw_days!r}"
+            await status.error(error_msg)
+            return {"status": "error", "error": error_msg}
+
         # Check for cancellation before weather fetch
         if cancellation_token and cancellation_token.is_cancelled:
             return {"status": "error", "error": "Weather request cancelled by user", "cancelled": True}
@@ -49,24 +60,26 @@ class WeatherServer(SchemaBasedToolServer):
         # Publish status for operation progress
         await status.progress(f"Fetching weather for {location}")
 
-        source = params.get("source", "met.no").lower()
-        days = min(int(params.get("days", 3)), 7)
-        units = params.get("units", "metric").lower()
-        include_marine = params.get("include_marine", False)
-        summary_format = params.get("summary_format", "detailed").lower()
+        source = str(params.get("source") or "met.no").lower()
+        units = str(params.get("units") or "metric").lower()
+        # Only a real true: the string "false" is truthy.
+        include_marine = params.get("include_marine") is True
+        summary_format = str(params.get("summary_format") or "daily").lower()
+        hourly = summary_format == "hourly"
 
         if days > 3 and source == "wttr.in":
             source = "met.no"
-        elif include_marine and source not in ["marine.weather.gov"]:
+        # Not elif: include_marine must win over the wttr.in fallback above.
+        if include_marine and source not in ["marine.weather.gov"]:
             source = "marine.weather.gov"
 
         try:
             if source == "wttr.in":
-                result = await sources.fetch_wttr(location, days, units, self.ssl_verify)
+                result = await sources.fetch_wttr(location, days, units, self.ssl_verify, hourly)
             elif source == "weather.gov":
                 result = await sources.fetch_weather_gov(location, days, units, self.ssl_verify)
             elif source == "met.no":
-                result = await sources.fetch_met_no(location, days, units, self.ssl_verify)
+                result = await sources.fetch_met_no(location, days, units, self.ssl_verify, hourly)
             elif source == "marine.weather.gov":
                 result = await sources.fetch_marine_weather_gov(location, days, units, self.ssl_verify, include_marine)
             else:
@@ -97,7 +110,7 @@ class WeatherServer(SchemaBasedToolServer):
 
         except Exception as e:
             error_msg = f"Exception during weather fetch: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
+            logger.error(error_msg, exc_info=True)
             await status.error(error_msg)
             return {
                 "status": "error",
@@ -112,7 +125,10 @@ class WeatherServer(SchemaBasedToolServer):
         location = result.get("location", "Unknown location")
         current = result.get("current", {})
         forecast = result.get("forecast", [])
-        
+        # Label with the units the source answered in, not the requested ones:
+        # only wttr.in honours the request.
+        units = result.get("units", units)
+
         # Temperature unit
         temp_unit = "°C" if units == "metric" else "°F"
         
@@ -131,34 +147,38 @@ class WeatherServer(SchemaBasedToolServer):
                 if humidity:
                     current_line += f", humidity {humidity}%"
                 if wind:
-                    wind_unit = "km/h" if units == "metric" else "mph"
+                    if result.get("source") == "met.no":
+                        wind_unit = "m/s"
+                    else:
+                        wind_unit = "km/h" if units == "metric" else "mph"
                     current_line += f", wind {wind} {wind_unit}"
                 if weather_desc:
                     current_line += f" - {weather_desc}"
                 lines.append(current_line)
         
         # Forecast summary
-        if forecast and format_type != "hourly":
+        if forecast:
             lines.append("\nForecast:")
             for day in forecast[:3]:  # Limit to 3 days for brevity
                 date = day.get("date", "")
                 max_temp = day.get("max_temp")
                 min_temp = day.get("min_temp")
+                if max_temp is None and min_temp is None:
+                    # weather.gov: a day and/or a night period instead of min/max
+                    high = (day.get("day") or {}).get("temperature")
+                    low = (day.get("night") or {}).get("temperature")
+                    max_temp = high if high is not None else low
+                    min_temp = low if low is not None else high
                 
-                # Check for precipitation in hourly data
-                hourly = day.get("hourly", [])
-                precipitation = False
-                max_precip = 0.0
-                for hour in hourly:
-                    precip_val = hour.get("precipitation", 0)
-                    if precip_val and precip_val > 0:
-                        precipitation = True
-                        max_precip = max(max_precip, precip_val)
-                
+                precipitation = day.get("precipitation")
+
                 if max_temp is not None and min_temp is not None:
-                    day_line = f"  {date}: {min_temp}{temp_unit} to {max_temp}{temp_unit}"
+                    if max_temp == min_temp:
+                        day_line = f"  {date}: {max_temp}{temp_unit}"
+                    else:
+                        day_line = f"  {date}: {min_temp}{temp_unit} to {max_temp}{temp_unit}"
                     if precipitation:
-                        day_line += f", rain expected (up to {max_precip}mm)"
+                        day_line += f", rain expected ({precipitation} mm)"
                     lines.append(day_line)
         
         return "\n".join(lines)
