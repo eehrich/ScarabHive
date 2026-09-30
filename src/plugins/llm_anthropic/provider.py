@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 
 
 def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) -> "LLMClient":
-    api_key = cfg.api_key or os.getenv("ANTHROPIC_API_KEY")
+    # Whitespace is no key (a stray newline from a secrets file).
+    api_key = (cfg.api_key or "").strip() or (os.getenv("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is required when provider=anthropic")
 
@@ -70,7 +71,7 @@ def build_anthropic(cfg: "LLMModelConfig", ssl_verify: Optional[bool] = None) ->
 def make_batch_backend(cfg: "LLMModelConfig") -> Optional["BatchProviderClient"]:
     """Batch backend for the queue manager; None when no API key is available
     (the caller logs the skip)."""
-    api_key = cfg.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = (cfg.api_key or "").strip() or (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         return None
     from .anthropic_batch import AnthropicBatchClient

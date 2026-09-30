@@ -150,14 +150,15 @@ Host of base_url | Key taken from
 openrouter.ai (and its subdomains) | OPENROUTER_API_KEY
 api.openai.com | OPENAI_API_KEY
 api.typesafe.ai | TYPESAFE_API_KEY
-a local host: loopback or private IP, a name without a dot, host.docker.internal, *.local | OPENAI_API_KEY
+a local host (see @{"llm_common" link "llm_common/apikeys"}) | OPENAI_API_KEY
 anything else | nothing: building the client fails
 @{body}
 
 The failure names the host and the variable; set @{tt}api_key:
 ${YOUR_VARIABLE}@{utt} on the entry. A missing gateway key therefore never
 sends the OpenAI key to a third party. Note that @{tt}${VAR}@{utt} of an
-unset variable expands to an empty string, which counts as "no key".
+unset variable expands to an empty string, which counts as "no key", as
+does a key of only whitespace.
 
 The batch backend is the exception: it always talks to api.openai.com with
 the entry's @{tt}api_key@{utt} or OPENAI_API_KEY, whatever base_url says.
