@@ -312,6 +312,20 @@ class TestUndo:
         assert dropped["had_attachments"] is True
         assert dropped["text"] == "was ist das? [image_url]"
 
+    async def test_a_note_a_hook_wrote_in_front_does_not_go_back_into_the_input(self, api):
+        """simple_prompt_inject task_start writes in front of the task; /retry
+        sends the text again, and the hook writes the note anew."""
+        await _stored(api, messages=[
+            {"role": "user", "content": "Oft gelesen: Akten.\n\n---\n\nschreib die routine",
+             "prefixed_by": {"hint": "Oft gelesen: Akten.\n\n---\n\n"}},
+            {"role": "assistant", "content": "hier ist sie"}])
+
+        async with _client(api.app) as client:
+            response = await client.post("/chat/undo", json={"session_id": "s1"},
+                                         timeout=30.0)
+
+        assert response.json()["dropped"]["text"] == "schreib die routine"
+
 
 class TestContext:
     """What fills the window -- the measurement and the estimate, apart."""

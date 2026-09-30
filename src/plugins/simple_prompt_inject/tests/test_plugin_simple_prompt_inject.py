@@ -995,6 +995,26 @@ class TestTaskStart:
         assert msgs[1].prefixed_by == {"hint": "H.\n\n---\n\n"}
 
     @pytest.mark.asyncio
+    async def test_the_text_inside_the_task_is_the_tasks_own(self):
+        """The v4 tasks join their parts with this very separator: a part that
+        reads like the note is not the note, and a new text leaves it."""
+        registry = await _registry(("hint", _task_start("{{ note }}")))
+        task = "Teil 1\n\n---\n\nAlt.\n\n---\n\nTeil 2"
+        msgs = await _call(registry, _task(task), agent=_agent(note="Alt."))
+        assert msgs[1].content == "Alt.\n\n---\n\n" + task
+
+        msgs = await _call(registry, msgs, agent=_agent(note="Neu."))
+        assert msgs[1].content == "Neu.\n\n---\n\n" + task
+
+    @pytest.mark.asyncio
+    async def test_an_empty_task_is_left_alone(self):
+        # Written in front, the message would be the note and a separator.
+        registry = await _registry(("hint", _task_start("H.")))
+        msgs = await _call(registry, _task("  "))
+
+        assert msgs[1].content == "  " and not msgs[1].prefixed_by
+
+    @pytest.mark.asyncio
     async def test_an_archive_placeholder_is_not_the_task(self):
         import json
 

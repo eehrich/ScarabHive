@@ -161,13 +161,15 @@ wrote is recorded on the message (@{tt}prefixed_by@{utt}, saved with the
 session, never sent): an unchanged text is left alone, a changed one
 replaces the old, an empty one is taken out. Several entries can write in
 front of the same task. A copy the same entry left at another position
-(the setting changed over a restart) is taken out; a task sent back with
-the text already in front (a retry from the web chat) is taken over, not
-written twice; an archive placeholder of @{tt}context_engineer@{utt} is
-never the task. @{tt}tool_preload@{utt} matches its rules on the task
-without the text. On writer agents a list of overused motifs was
-followed a little more here than as a message of its own; the difference
-was not significant.
+(the setting changed over a restart) is taken out; a task sent again with
+the text already in front, but without the record, is taken over, not
+written twice. Only in front counts: the same words further inside the
+task are the task's own. @{tt}/retry@{utt} in the web chat gives back the
+words without the text, and the hook writes it anew. An archive
+placeholder of @{tt}context_engineer@{utt} is never the task.
+@{tt}tool_preload@{utt} matches its rules on the task without the text.
+On writer agents a list of overused motifs was followed a little more
+here than as a message of its own; the difference was not significant.
 
 @{h2}before_last_user
 
@@ -220,7 +222,7 @@ out).
 with the same text at the same place, @{tt}end@{utt} with the same text,
 @{tt}task_start@{utt} with the same text in the task.
 @{bullet}@{tt}task_start@{utt} finds no task (no user message without a
-mark) or no text in it.
+mark), or no text in it, or only blanks.
 
 @{h2}Switching it off for an agent
 

@@ -240,25 +240,31 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
         idx = next((i for i, m in enumerate(messages)
                     if role_of(m) == USER and not m.injected_by
                     and not is_compaction_system_message(m)), None)
-        text = self._task_text(messages[idx].content) if idx is not None else None
-        if idx is not None and text is None:
+        if idx is None:
+            return self._settled(context, messages, dropped)
+        text = self._task_text(messages[idx].content)
+        if not (text or "").strip():
+            # Empty too: the message would be the note and a separator.
             logger.warning("simple_prompt_inject: task_start found no text in the task of "
                            "%s; nothing injected", context.agent_name)
-        if text is None:
             return self._settled(context, messages, dropped)
         task = messages[idx]
         mine = dict(task.prefixed_by or {})
         old = mine.pop(self.injected_by, "")
+        # Only other entries' texts may stand in front of this one's; past
+        # them the task begins, and a match there is the task's own words
+        # (the v4 tasks use this very separator between their parts).
+        head = sum(len(p) for p in mine.values())
         # Stripped: a file ends in a newline, and the task would open on blank lines.
         rendered = rendered.strip()
         prefix = f"{rendered}{_TASK_SEPARATOR}" if rendered else ""
-        # ``in``, not startswith: a second instance may have put its own text in front.
-        if old == prefix and (not prefix or prefix in text):
+        if old == prefix and (not prefix or self._at_head(text, prefix, head) is not None):
             return self._settled(context, messages, dropped)
-        base = text.replace(old, "", 1) if old and old != prefix else text
-        # A task sent back as written (a retry from the web chat) already
-        # carries the text but no record of it: taken over, not written twice.
-        new_text = base if prefix and prefix in base else prefix + base
+        at = self._at_head(text, old, head) if old and old != prefix else None
+        base = text if at is None else text[:at] + text[at + len(old):]
+        # A task sent again as the chat showed it carries the text but no
+        # record of it: taken over, not written twice.
+        new_text = base if prefix and self._at_head(base, prefix, head) is not None else prefix + base
         if prefix:
             mine[self.injected_by] = prefix
         messages[idx] = task.model_copy(update={
@@ -266,6 +272,13 @@ class SimplePromptInjectPlugin(SchemaBasedPluginHook):
             "prefixed_by": mine or None})
         context.messages = messages
         return HookResult(success=True, modified=True, context=context)
+
+    @staticmethod
+    def _at_head(text: str, prefix: str, head: int) -> int | None:
+        """Where ``prefix`` stands in front of the task -- at most behind
+        ``head`` characters of other entries' texts -- or None."""
+        at = text.find(prefix)
+        return at if 0 <= at <= head else None
 
     @staticmethod
     def _settled(context: HookContext, messages: list[ChatMessage], dropped: bool) -> HookResult:

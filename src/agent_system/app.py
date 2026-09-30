@@ -3735,11 +3735,17 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
         if dropped is None:
             return {"session_id": session_id, "dropped": None, "files": None}
         content = getattr(dropped, "content", None)
+        # The person's words go back into the input, not what a hook wrote in
+        # front of them (simple_prompt_inject task_start): sent again, the
+        # hook writes it anew.
+        text = message_text(dropped)
+        for prefix in (getattr(dropped, "prefixed_by", None) or {}).values():
+            text = text.replace(prefix, "", 1)
         return {
             "session_id": session_id,
             "dropped": {
                 "role": message_role(dropped),
-                "text": message_text(dropped),
+                "text": text,
                 "had_attachments": isinstance(content, list) and len(content) > 1,
             },
             "files": report,
