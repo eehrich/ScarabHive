@@ -1,9 +1,28 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from plugins.twitter_search.server import TwitterSearchServer
+
+
+def _tweet(tweet_id: str) -> MagicMock:
+    tweet = MagicMock()
+    tweet.id = tweet_id
+    tweet.text = f"tweet {tweet_id}"
+    tweet.created_at = None
+    tweet.lang = "en"
+    tweet.source = None
+    tweet.author_id = "user123"
+    tweet.public_metrics = {"like_count": 10, "retweet_count": 5, "reply_count": 2, "quote_count": 1}
+    return tweet
+
+
+def _server_with_tweets(system_config, server_config, tweets) -> TwitterSearchServer:
+    server = TwitterSearchServer("twitter", system_config, server_config)
+    server.client = MagicMock()
+    server.client.search_recent_tweets.return_value = MagicMock(data=tweets, includes=None)
+    return server
 
 
 @pytest.mark.asyncio
@@ -31,19 +50,16 @@ class TestTwitterSearchServer:
         """Test Twitter Search server initialization."""
         server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
         assert server.name == "twitter"
-        assert server.ssl_verify is True
 
     def test_twitter_server_initialization_with_config(self, mock_system_config, mock_server_config):
         """Test Twitter Search server initialization with config."""
         from agent_system.config.models import ToolServerConfig, AgentConfig
         
-        mock_system_config.ssl_verify = False
         server_config = ToolServerConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
         server_config.timeout = 30
         
         server = TwitterSearchServer("twitter", mock_system_config, server_config)
         assert server.name == "twitter"
-        assert server.ssl_verify is False
 
     def test_twitter_server_schema(self, mock_system_config, mock_server_config):
         """Test Twitter Search server tools structure."""
@@ -84,9 +100,6 @@ class TestTwitterSearchServer:
             assert result["status"] == "setup_required"
             assert "message" in result
             assert "setup_instructions" in result
-            assert "free_tier_limits" in result
-            assert "alternatives" in result
-            assert isinstance(result["alternatives"], list)
 
     @pytest.mark.asyncio
     async def test_twitter_server_invalid_tool(self, mock_system_config, mock_server_config):
@@ -100,74 +113,27 @@ class TestTwitterSearchServer:
 
     @pytest.mark.asyncio
     async def test_twitter_server_empty_query(self, mock_system_config, mock_server_config):
-        """Test Twitter Search server with empty query (no credentials)."""
-        from unittest.mock import patch
-        
-        # Mock tweepy as available but no credentials
-        with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
-            server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
+        """An empty query is refused before anything is sent."""
+        server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
+        server.client = MagicMock()
 
-            mock_status = AsyncMock()
-            result = await server.call("twitter_tweets", {"query": "", "_status": mock_status})
-            
-            # Should return setup instructions when no credentials
-            assert result["status"] == "setup_required"
-            assert "setup_instructions" in result
+        result = await server.call("twitter_tweets", {"query": "  ", "_status": AsyncMock()})
+
+        assert result == {"status": "error", "query": "", "error": "Empty query"}
+        server.client.search_recent_tweets.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_twitter_server_with_mock_api(self, mock_system_config, mock_server_config):
-        """Test Twitter Search server with mocked tweepy module."""
-        from unittest.mock import patch, MagicMock
-        
-        # Create a fake tweepy module
-        fake_tweepy = MagicMock()
-        fake_client_instance = MagicMock()
-        fake_tweepy.Client = MagicMock(return_value=fake_client_instance)
-        
-        # Mock the module import
-        with patch.dict('sys.modules', {'tweepy': fake_tweepy}):
-            # Mock TWEEPY_AVAILABLE
-            with patch('plugins.twitter_search.server.TWEEPY_AVAILABLE', True):
-                with patch.dict('os.environ', {'TWITTER_BEARER_TOKEN': 'fake_token'}):
-                    # Re-import with mocked tweepy
-                    import plugins.twitter_search.server as server_module
-                    server_module.tweepy = fake_tweepy
-                    
-                    # Create server
-                    server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
-                    server.client = fake_client_instance
-                    
-                    # Create mock tweet
-                    mock_tweet = MagicMock()
-                    mock_tweet.id = "123456"
-                    mock_tweet.text = "This is a test tweet about bitcoin"
-                    mock_tweet.created_at = None
-                    mock_tweet.lang = "en"
-                    mock_tweet.source = "Twitter Web App"
-                    mock_tweet.author_id = "user123"
-                    mock_tweet.public_metrics = {
-                        'like_count': 10,
-                        'retweet_count': 5,
-                        'reply_count': 2,
-                        'quote_count': 1
-                    }
-                    
-                    # Create mock response
-                    mock_response = MagicMock()
-                    mock_response.data = [mock_tweet]
-                    mock_response.includes = None
-                    fake_client_instance.search_recent_tweets.return_value = mock_response
-                    
-                    mock_status = AsyncMock()
-                    result = await server.call("twitter_tweets", {"query": "bitcoin", "_status": mock_status})
-                    
-                    # Should return successful result with tweets
-                    assert result["status"] == "success"
-                    assert result["query"] == "bitcoin"
-                    assert result["total_results"] == 1
-                    assert len(result["tweets"]) == 1
-                    assert result["tweets"][0]["text"] == "This is a test tweet about bitcoin"
-                    assert result["tweets"][0]["metrics"]["likes"] == 10
+        """A stubbed client's answer is formatted into tweets."""
+        server = _server_with_tweets(mock_system_config, mock_server_config, [_tweet("123456")])
+
+        result = await server.call("twitter_tweets", {"query": "bitcoin", "_status": AsyncMock()})
+
+        assert result["status"] == "success"
+        assert result["query"] == "bitcoin"
+        assert result["total_results"] == 1
+        assert result["tweets"][0]["text"] == "tweet 123456"
+        assert result["tweets"][0]["metrics"]["likes"] == 10
 
     @pytest.mark.asyncio
     async def test_twitter_server_cancellation(self, mock_system_config, mock_server_config):
@@ -218,20 +184,17 @@ class TestTwitterSearchPluginFactory:
 
         server = PLUGIN_FACTORY("twitter", mock_system_config, mock_server_config)
         assert server.name == "twitter"
-        assert server.ssl_verify is True
 
     def test_plugin_factory_with_config(self, mock_system_config, mock_server_config):
         """Test plugin factory with configuration."""
         from plugins.twitter_search.plugin import PLUGIN_FACTORY
         from agent_system.config.models import ToolServerConfig, AgentConfig
 
-        mock_system_config.ssl_verify = False
         server_config = ToolServerConfig(type="twitter_search", enabled=True, agent_config=AgentConfig())
         server_config.timeout = 60
         
         server = PLUGIN_FACTORY("twitter", mock_system_config, server_config)
         assert server.name == "twitter"
-        assert server.ssl_verify is False
 
     def test_plugin_factory_name_parameter(self, mock_system_config, mock_server_config):
         """Test plugin factory with custom name."""
@@ -239,3 +202,145 @@ class TestTwitterSearchPluginFactory:
 
         server = PLUGIN_FACTORY("custom_twitter", mock_system_config, mock_server_config)
         assert server.name == "custom_twitter"
+
+
+def _http_error(cls, status_code: int, headers: dict | None = None):
+    response = MagicMock(status_code=status_code, reason="reason", headers=headers or {})
+    response.json.return_value = {"detail": "detail from X"}
+    return cls(response)
+
+
+class TestTwitterSearchRequest:
+    """What the tool sends to X and how it answers X's errors."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit,sent,kept", [(None, 10, 10), (3, 10, 3), (0, 10, 1), ("20", 20, 12), (500, 50, 12)])
+    async def test_limit_is_clamped_and_the_api_minimum_is_met(self, mock_system_config, mock_server_config,
+                                                               limit, sent, kept):
+        tweets = [_tweet(str(i)) for i in range(12)]
+        server = _server_with_tweets(mock_system_config, mock_server_config, tweets)
+        params = {"query": "godot", "_status": AsyncMock()}
+        if limit is not None:
+            params["limit"] = limit
+
+        result = await server.call("twitter_tweets", params)
+
+        assert server.client.search_recent_tweets.call_args.kwargs["max_results"] == sent
+        assert result["total_results"] == kept
+
+    @pytest.mark.asyncio
+    async def test_a_limit_that_is_not_a_number_is_refused(self, mock_system_config, mock_server_config):
+        server = _server_with_tweets(mock_system_config, mock_server_config, [])
+
+        result = await server.call("twitter_tweets", {"query": "godot", "limit": "many", "_status": AsyncMock()})
+
+        assert result["status"] == "error"
+        assert result["error"] == "limit must be a whole number from 1 to 50, got 'many'"
+        server.client.search_recent_tweets.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_request_runs_off_the_event_loop(self, mock_system_config, mock_server_config):
+        import threading
+        server = _server_with_tweets(mock_system_config, mock_server_config, [])
+        threads = []
+        server.client.search_recent_tweets.side_effect = lambda **kw: threads.append(
+            threading.get_ident()) or MagicMock(data=[], includes=None)
+
+        await server.call("twitter_tweets", {"query": "godot", "_status": AsyncMock()})
+
+        assert threads and threads[0] != threading.get_ident()
+
+    @pytest.mark.asyncio
+    async def test_a_request_without_answer_times_out(self, mock_system_config, mock_server_config, monkeypatch):
+        import time
+        import plugins.twitter_search.server as server_module
+        monkeypatch.setattr(server_module, "REQUEST_TIMEOUT", 0.05)
+        server = _server_with_tweets(mock_system_config, mock_server_config, [])
+        server.client.search_recent_tweets.side_effect = lambda **kw: time.sleep(0.5)
+
+        result = await server.call("twitter_tweets", {"query": "godot", "_status": AsyncMock()})
+
+        assert result["error_type"] == "TimeoutError"
+        assert result["error"] == "X API did not answer within 0.05 seconds"
+
+    def test_the_client_does_not_sleep_on_a_rate_limit(self, mock_system_config, mock_server_config, monkeypatch):
+        import plugins.twitter_search.server as server_module
+        client_class = MagicMock()
+        monkeypatch.setattr(server_module.tweepy, "Client", client_class)
+        monkeypatch.setenv("TWITTER_BEARER_TOKEN", "token")
+
+        TwitterSearchServer("twitter", mock_system_config, mock_server_config)
+
+        assert client_class.call_args.kwargs.get("wait_on_rate_limit", False) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error,message", [
+        (lambda t: _http_error(t.TooManyRequests, 429, {"x-rate-limit-reset": "9999999999"}), "rate limit reached; it resets in"),
+        (lambda t: _http_error(t.TooManyRequests, 429), "rate limit reached; try again later"),
+        (lambda t: _http_error(t.Unauthorized, 401), "bearer token"),
+        (lambda t: _http_error(t.Forbidden, 403), "refused access"),
+        (lambda t: _http_error(t.BadRequest, 400), "query syntax"),
+        (lambda t: _http_error(t.TwitterServerError, 503), "server error"),
+    ])
+    async def test_the_hint_follows_the_error_class(self, mock_system_config, mock_server_config, error, message):
+        import tweepy
+        server = _server_with_tweets(mock_system_config, mock_server_config, [])
+        exc = error(tweepy)
+        server.client.search_recent_tweets.side_effect = exc
+
+        result = await server.call("twitter_tweets", {"query": "godot", "_status": AsyncMock()})
+
+        assert result["error_type"] == type(exc).__name__
+        assert message in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_cli_calls_the_tool_by_its_name(monkeypatch, capsys):
+    import sys
+    import plugins.twitter_search.__main__ as cli
+    call = AsyncMock(return_value={"tweets": [{"id": 7, "text": "hi", "author": {"username": "someone"}}]})
+    monkeypatch.setattr(TwitterSearchServer, "call", call)
+    monkeypatch.setattr(cli, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["twitter_search", "--query", "godot", "--max-results", "5", "--lang", "de"])
+
+    await cli.async_main()
+
+    tool, params = call.call_args.args
+    assert tool == "twitter_search_tweets"
+    assert params["query"] == "godot lang:de" and params["limit"] == 5
+    assert "https://x.com/someone/status/7" in capsys.readouterr().out
+
+
+def test_the_client_session_carries_the_request_timeout(mock_system_config, mock_server_config, monkeypatch):
+    """tweepy's session has no timeout of its own: a stalled connection would
+    block its worker thread forever. The request X gets must carry one."""
+    import requests
+    import plugins.twitter_search.server as server_module
+    seen = {}
+
+    class Sent(Exception):
+        pass
+
+    def spy(self, method, url, **kwargs):
+        seen.update(kwargs)
+        raise Sent()
+
+    monkeypatch.setattr(requests.Session, "request", spy)
+    monkeypatch.setenv("TWITTER_BEARER_TOKEN", "token")
+    server = TwitterSearchServer("twitter", mock_system_config, mock_server_config)
+
+    with pytest.raises(Sent):
+        server.client.search_recent_tweets(query="godot", max_results=10)
+
+    assert seen["timeout"] == server_module.REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_a_transport_timeout_answers_as_a_timeout(mock_system_config, mock_server_config):
+    import requests
+    server = _server_with_tweets(mock_system_config, mock_server_config, [])
+    server.client.search_recent_tweets.side_effect = requests.ReadTimeout("read timed out")
+
+    result = await server.call("twitter_tweets", {"query": "godot", "_status": AsyncMock()})
+
+    assert result["error_type"] == "TimeoutError"
