@@ -1094,7 +1094,7 @@ class SafeExecutor:
                     raise exc_value
             
         else:
-            # Use a specific exception type to trigger fallback to sandboxed_python
+            # Answered as an unsupported_feature error
             raise UnsupportedFeatureError(f"Unsupported AST node type: {type(node).__name__}")
     
     def eval_expression(self, node):
@@ -1804,7 +1804,7 @@ class SafeExecutor:
                 raise RuntimeError(f"Attribute access not allowed on {type(obj).__name__}")
             
         else:
-            # Use UnsupportedFeatureError to trigger fallback for other unsupported expressions
+            # Answered as an unsupported_feature error
             raise UnsupportedFeatureError(f"Unsupported expression type: {type(node).__name__}")
     
     def execute(self, code):
@@ -1840,9 +1840,6 @@ class SafeExecutor:
                 "error": None
             }
             
-        except UnsupportedFeatureError:
-            # Re-raise to trigger fallback to sandboxed_python
-            raise
         except (Exception, OutputLimitExceeded, MemoryLimitExceeded) as e:
             from .errors import format_error_for_llm, SyntaxError as ScriptSyntaxError
 
@@ -1852,11 +1849,10 @@ class SafeExecutor:
             if estimate_text_size(e.args, self._max_seq_len) > self._max_seq_len:
                 e = ValueError(self._exception_text(e)).with_traceback(e.__traceback__)
             
-            # Determine error type and format appropriately
-            error_str = str(e).lower()
-            if ("expected" in error_str or "invalid syntax" in error_str or 
-                "unexpected eof" in error_str or "incomplete" in error_str or
-                isinstance(e, (SyntaxError, ScriptSyntaxError))):
+            # By type only: matching words in the message ("expected",
+            # "incomplete") made `raise ValueError("expected a number")` and
+            # an unpacking error syntax errors without a line.
+            if isinstance(e, (SyntaxError, ScriptSyntaxError)):
                 error_info = format_error_for_llm(ScriptSyntaxError(str(e)), code)
             else:
                 error_info = format_error_for_llm(e, code)

@@ -1,0 +1,329 @@
+@database "script_interpreter"
+@author "Enrico Ehrich"
+@$VER: script_interpreter.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "Script Interpreter"
+@{h1}Script Interpreter
+
+Language models are unreliable at arithmetic and at counting. With this
+plugin an agent computes instead of guessing: it sends a few lines of
+Python -- sum a column of figures, work out a percentage, count words, sort
+a list -- and gets back what they printed. The code runs in a sandbox
+inside the server: a subset of Python that cannot reach files, the network
+or the server itself. What a script assigns stays there for the next one,
+so an agent can work on a result step by step.
+
+The plugin has no panel. You see a run in the chat's status line: how much
+it printed, how many variables the session holds, and how long it took.
+
+The same sandbox runs the scripts of the @{" tool_script " link tool_script/main}
+plugin; there a script can also call the agent's tools.
+
+@{code}
+For agents and developers
+  @{"  The tools  " link tool}
+  @{"  The script language  " link language}
+  @{"  Limits  " link limits}
+  @{"  What the model sees  " link model}
+  @{"  Setting it up  " link setup}
+@{body}
+@endnode
+
+@node tool "The tools"
+@{h1}The tools
+
+The plugin gives an agent two tools, named after the plugin instance:
+@{tt}script_interpreter_execute@{utt} and
+@{tt}script_interpreter_reset@{utt} in the default setup.
+
+@{h2}One sandbox per session
+
+Each chat session has a sandbox of its own. Variables, and functions made
+with @{tt}def@{utt}, stay in it from one call to the next until the agent
+resets it; another session never sees them. A sub-agent runs in a session
+of its own, and so in a sandbox of its own. A call without a session shares
+one sandbox, "default", with every other such call.
+
+The server keeps at most 100 sandboxes; one that has not been used for an
+hour, or the least recently used beyond the 100, is dropped when another
+session's call comes in -- its variables are gone, and the next call starts
+empty. Two calls in the same session run one after the other.
+
+@{h2}execute
+
+@{table}
+Parameter | Meaning
+code | the Python source; required, an empty one answers @{tt}{"error": "Missing required parameter 'code'"}@{utt}
+@{body}
+
+The code runs statement by statement. What it prints is the output. Only
+code that is one lone expression is shown without @{tt}print@{utt}:
+@{tt}2 + 3@{utt} answers 5, but @{tt}x = 5@{utt} followed by
+@{tt}x * 2@{utt} prints nothing.
+
+A run that ended normally answers one text:
+
+@{code json}
+{"result": "Output: 41.75\nVariables: prices=[12.5, 8.0, 21.25], total=41.75\nExecution time: 0.001s"}
+@{body}
+
+@{bullet}@{tt}Output:@{utt} what was printed; missing when nothing was.
+@{bullet}@{tt}Variables:@{utt} every variable of the session, not only the
+ones this run assigned. A value up to 200 characters is shown as it is;
+a longer one only as type and size (@{tt}notes=<str, 500 chars —
+omitted>@{utt}), a lambda as @{tt}<function>@{utt}. Functions made with
+@{tt}def@{utt} are not listed.
+@{bullet}@{tt}Execution time:@{utt} in seconds.
+
+A run that failed:
+
+@{code json}
+{"error": {"type": "ZeroDivisionError", "message": "float division by zero", "category": "unknown", "line_number": 2, "problematic_line": "share = total / (len(prices) - 3)", "code_context": "    1: print('checking')\n>>> 2: share = total / (len(prices) - 3)"}, "error_message": "Runtime error on line 2: float division by zero\n\nCode context:\n    1: print('checking')\n>>> 2: share = total / (len(prices) - 3)", "output": "checking"}
+@{body}
+
+@{bullet}@{tt}error@{utt}: the exception's type and message, a category
+(@{tt}syntax@{utt}, @{tt}name_error@{utt}, @{tt}unsupported_feature@{utt},
+often @{tt}unknown@{utt}), the script line -- also inside a loop or a
+function --, that line and up to two lines around it, and for some errors a
+@{tt}suggestion@{utt}.
+@{bullet}@{tt}error_message@{utt}: the same as one text, "Runtime error on
+line N: ..." or "Syntax error on line N: ...", with the code context.
+@{bullet}@{tt}output@{utt}: what the script printed before the error, when
+it printed.
+
+Nothing is rolled back: what the lines before the error assigned stays in
+the session. A syntax error runs nothing. Something the sandbox does not
+support -- @{tt}import@{utt}, @{tt}break@{utt}, @{tt}del@{utt} -- fails
+with the type @{tt}UnsupportedFeatureError@{utt} and a message such as
+"Import statements are not allowed in sandbox: import math" or "Unsupported
+AST node type: Break".
+
+@{h2}reset
+
+No parameters. Clears the session's sandbox: variables and functions. It
+always answers @{tt}{"result": "🔄 Python sandbox reset - all variables and
+state cleared"}@{utt}, also when the session had no sandbox yet.
+
+@{h2}An example
+
+@{code json}
+{"code": "prices = [12.5, 8.0, 21.25]\ntotal = sum(prices)\nprint(f'{total:.2f}')"}
+{"code": "print(round(total / len(prices), 2))"}
+@{body}
+
+The second call uses @{tt}prices@{utt} and @{tt}total@{utt} from the
+first.
+@endnode
+
+@node language "The script language"
+@{h1}The script language
+
+Scripts are a subset of Python, run by an interpreter that walks the
+syntax tree and allows only what it knows. There is no way to reach a file,
+the network or the server's own objects: no import, no
+@{tt}open@{utt}, @{tt}eval@{utt} or @{tt}exec@{utt}, and attributes only on
+text, lists, dicts and sets (their listed methods) and a type's
+@{tt}__name__@{utt} (@{tt}type(x).__name__@{utt}) -- anything else,
+@{tt}"".__class__@{utt} for instance, is refused.
+
+@{h2}What works
+
+@{bullet}Assignments, also @{tt}a, *rest = items@{utt} and
+@{tt}+=@{utt}; @{tt}if@{utt}/@{tt}elif@{utt}/@{tt}else@{utt}, @{tt}for@{utt},
+@{tt}while@{utt}, @{tt}x if c else y@{utt}.
+@{bullet}@{tt}def@{utt} with positional parameters and defaults,
+@{tt}return@{utt}, recursion; @{tt}lambda@{utt}.
+@{bullet}@{tt}try@{utt}/@{tt}except@{utt}/@{tt}else@{utt}/@{tt}finally@{utt},
+@{tt}raise ValueError("...")@{utt}.
+@{bullet}Lists, dicts, sets, tuples; list, dict and set comprehensions and
+generator expressions; slicing; f-strings with format specs
+(@{tt}f"{x:.2f}"@{utt}); @{tt}%@{utt} formatting; @{tt}in@{utt},
+@{tt}is@{utt}, chained comparisons.
+@{bullet}Methods: text -- @{tt}split join replace strip lstrip rstrip upper
+lower find rfind index rindex count startswith endswith partition
+rpartition splitlines center ljust rjust zfill title capitalize swapcase
+casefold@{utt} and the @{tt}is...@{utt} tests; lists -- @{tt}append extend
+insert remove pop clear count index reverse sort copy@{utt}; dicts --
+@{tt}get items keys values pop popitem update setdefault clear copy@{utt};
+sets -- @{tt}add remove discard pop clear copy update union intersection
+difference symmetric_difference issubset issuperset isdisjoint@{utt}.
+@{bullet}Functions: @{tt}len range sorted enumerate min max sum abs round
+int float str bool list dict set tuple type isinstance print format hex
+bin oct chr ord@{utt}, math (@{tt}sqrt floor ceil pow log log10 exp sin cos
+tan asin acos atan sinh cosh tanh degrees radians@{utt}) and @{tt}mean
+median mode stdev@{utt}. @{tt}min@{utt} and @{tt}max@{utt} take
+@{tt}key=@{utt} (a @{tt}lambda@{utt}) and @{tt}default=@{utt}.
+
+@{h2}What does not
+
+@{bullet}@{tt}import@{utt} -- nothing can be imported, not even math; the
+math functions above are there without it.
+@{bullet}@{tt}break@{utt} and @{tt}continue@{utt}: use a flag, or a
+function that returns.
+@{bullet}@{tt}del@{utt}, @{tt}with@{utt}, @{tt}class@{utt},
+@{tt}assert@{utt}, @{tt}global@{utt}.
+@{bullet}@{tt}zip any all map filter reversed divmod@{utt},
+@{tt}str.format@{utt} (use f-strings), @{tt}str.encode@{utt}.
+@{bullet}Names starting with @{tt}_@{utt} (@{tt}_@{utt} alone is allowed),
+and the bare name @{tt}__name__@{utt}: call a function directly instead
+of @{tt}if __name__ == "__main__":@{utt}.
+@{bullet}@{tt}while True:@{utt} is refused as written; any other loop is
+bounded (see @{" Limits " link limits}).
+
+@{h2}Surprises
+
+@{bullet}@{tt}pi@{utt} and @{tt}e@{utt} are functions: @{tt}pi()@{utt},
+@{tt}e()@{utt}. @{tt}pow(2, 10)@{utt} gives the float 1024.0; with a third
+argument it stays an integer.
+@{bullet}Your own functions take positional arguments only:
+@{tt}f(1, b=5)@{utt} ignores @{tt}b@{utt} and uses its default.
+@{bullet}A function reads the session's variables, but names it assigns are
+gone when it returns; a list or dict it changes stays changed.
+@{bullet}One exception type per @{tt}except@{utt}: @{tt}except (KeyError,
+ValueError):@{utt} catches neither. @{tt}except ValueError@{utt} also
+catches RuntimeError.
+@{bullet}@{tt}sum()@{utt} adds numbers only: for lists use
+@{tt}extend@{utt}, for text @{tt}join@{utt}.
+@{bullet}A list or dict that contains itself: @{tt}print(a)@{utt} shows
+@{tt}[...]@{utt} where it repeats, but @{tt}str(a)@{utt} and
+@{tt}f"{a}"@{utt} are refused as too large.
+@endnode
+
+@node limits "Limits"
+@{h1}Limits
+
+@{table}
+Limit | Default | What happens
+max_execution_time | 5 s | the whole run. An except may catch the TimeoutError, but the next step raises it again, so the run ends with "Execution exceeded 5.0 seconds"
+loop_timeout_seconds | 2 s | one loop, counted from its start, nested loops included: "Loop exceeded 2.0 seconds". A script can catch that one and go on -- but not inside an enclosing loop, whose own next check raises it too
+max_loop_iterations | 100000 | passes of one loop, and the numbers one @{tt}range()@{utt} may give; past it the loop fails with an error a script can catch
+max_output_length | 10000 | characters of @{tt}print@{utt} output in one run; past it the run ends ("Output exceeds maximum allowed length"), and no except catches that
+max_memory_mb | 50 | not a memory limit: it sets how long a text or list may grow, 131072 items per MB -- 6553600 at the default
+@{body}
+
+Fixed in the sandbox:
+
+@{bullet}Arithmetic that would take the server more than milliseconds is
+refused at once: numbers over 200000 bits (about 60000 digits) in
+@{tt}**@{utt}, @{tt}*@{utt}, @{tt}//@{utt} and @{tt}%@{utt}; a
+three-argument @{tt}pow@{utt} with an exponent or modulus over 2048 bits;
+sorting more than a million items; @{tt}round(n, -d)@{utt} with
+@{tt}d@{utt} over 60000; @{tt}int(text, base)@{utt} over 200000 bits;
+@{tt}sum min max set sorted mean median mode stdev@{utt} over about 30
+million characters of content -- a thousand copies of a 60000-digit number,
+say; plain floats and small numbers never reach it.
+@{bullet}A text or list may not grow past the length cap above -- by
+@{tt}*@{utt}, @{tt}+@{utt}, @{tt}extend@{utt}, @{tt}ljust@{utt},
+@{tt}rjust@{utt}, @{tt}center@{utt}, @{tt}zfill@{utt}, @{tt}replace@{utt},
+@{tt}join@{utt}, a format or @{tt}%@{utt} width or precision
+(@{tt}f"{x:>200000000}"@{utt}, @{tt}"%*d" % (n, 1)@{utt}), or turning a
+big container into text (@{tt}str@{utt}, @{tt}print@{utt}, f-strings,
+@{tt}format@{utt}, @{tt}%@{utt}, an error message) -- the size is estimated
+before the text is built.
+@{bullet}A function can call itself a few hundred levels deep (roughly 200
+to 300, depending on the function); deeper ends in a RecursionError.
+@{bullet}A memory fuse: when the server process grows by more than 1 GB
+while the script runs, the script ends ("Memory grew by more than 1024 MB
+during the script; aborted"), and no except catches that. It is read every
+50 ms.
+
+A cancel of the agent's run is checked once, before the script starts
+(@{tt}{"error": "Python execution cancelled by user", "cancelled":
+true}@{utt}); a script already running goes on to its end or its time
+limit.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tools
+
+The tool descriptions come from the plugin's @{tt}schema.yaml@{utt}: what
+the sandbox supports, no imports and no @{tt}break@{utt}/@{tt}continue@{utt},
+that variables and functions stay until a reset, and that a value needs
+@{tt}print()@{utt}. The error answer is made for the model to correct the
+next call from: the line, the code around it, what was printed before.
+
+In the chat, the status line shows "Python execution started" and ends
+with "Executed: 5 chars output, 2 variable(s), 0.001s", or "Execution
+failed: Runtime error on line 2: ..." (cut at 120 characters). A reset
+ends with "Sandbox reset for session <id>".
+
+@{h2}Tokens and cache
+
+Each answer is an ordinary tool result: appended, nothing earlier changes,
+the cached prompt stays as it was. Every successful answer lists all the
+session's variables again -- a value over 200 characters replaced by
+@{tt}<type, N chars — omitted>@{utt}: a session that
+keeps many values pays for them on every call -- reset when a task is
+done. Output is capped at 10000 characters; an error answer is its
+message, a few lines of the script, and what was printed.
+
+@{h2}Known gaps
+
+@{bullet}The memory fuse measures the whole server process: other work
+growing at the same time counts against the script, and a loop that
+allocates fast can pass the 1 GB by a few hundred MB before the next
+reading. Without psutil there is no fuse.
+@{bullet}A running script cannot be cancelled; it holds a worker thread up
+to its time limit.
+@{bullet}Functions made with @{tt}def@{utt} are kept but never listed; the
+agent has to remember them.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is on in the default configuration:
+
+@{code yaml}
+plugins:
+  servers:
+    script_interpreter:
+      type: script_interpreter
+      enabled: true
+@{body}
+
+An agent sees the tools when its allowlist names them:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+script_interpreter/*"
+@{body}
+
+The plugin needs nothing beyond the framework; psutil, which the memory
+fuse reads, is one of its core dependencies. It keeps no data on disk; the sandboxes live in the server's
+memory and are gone when it restarts.
+
+@{h2}Server settings
+
+The settings go in a @{tt}script_interpreter:@{utt} block inside the
+server entry:
+
+@{code yaml}
+    script_interpreter:
+      type: script_interpreter
+      enabled: true
+      script_interpreter:
+        max_execution_time: 10
+        max_output_length: 20000
+@{body}
+
+@{table}
+Key | Default | Meaning
+max_execution_time | 5.0 | seconds for one run
+loop_timeout_seconds | 2.0 | seconds for one loop
+max_loop_iterations | 100000 | passes of one loop, and the largest range()
+max_output_length | 10000 | characters of print output per run
+max_memory_mb | 50 | sets the length cap of texts and lists, 131072 items per MB
+allowed_functions | the functions in @{" The script language " link language} | replaces the list; it can only narrow it, and int, str, float, bool, list, dict, tuple and set always work
+enable_variables | true | false refuses plain assignments (@{tt}x = ...@{utt})
+session_ttl_seconds | 3600 | seconds an unused sandbox is kept; 0 keeps it until the limit below
+max_tracked_sessions | 100 | sandboxes kept; beyond it the least recently used is dropped
+@{body}
+
+Keys the plugin does not know are ignored.
+@endnode

@@ -6,12 +6,7 @@ from typing import Any, Dict, Optional
 
 from .config import ScriptInterpreterConfig
 from .safe_executor import SafeExecutor
-from .errors import (
-    RuntimeError,
-    UnsupportedFeatureError,
-    format_error_for_llm,
-    script_line_from_traceback,
-)
+from .errors import RuntimeError, format_error_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -44,63 +39,21 @@ class ScriptExecutor:
             return self._execute_locked(code, reset_sandbox)
 
     def _execute_locked(self, code: str, reset_sandbox: bool) -> Dict[str, Any]:
-        # Use SafeExecutor (supports loops, if statements, functions, etc.)
-        if self.safe_executor:
-            if reset_sandbox:
-                self.safe_executor.reset()
-            try:
-                return self.safe_executor.execute(code)
-            except UnsupportedFeatureError as e:
-                # UnsupportedFeatureError should be returned as an error
-                return self._format_unsupported_error(e, code)
-            except Exception as e:
-                # Log unexpected errors
-                logger.error(f"SafeExecutor error: {e}")
-                error_info = format_error_for_llm(RuntimeError(str(e), e), code)
-                return {
-                    "success": False,
-                    "output": "",
-                    "variables": {},
-                    "execution_time": 0,
-                    "error": error_info
-                }
-        
-        # Fallback: No SafeExecutor available
-        error_info = format_error_for_llm(
-            RuntimeError("Script execution not available"),
-            code
-        )
-        return {
-            "success": False,
-            "output": "",
-            "variables": {},
-            "execution_time": 0,
-            "error": error_info
-        }
-
-    def get_sandbox_state(self) -> Dict[str, Any]:
-        """Get current sandbox state (variables, etc.)."""
-        return {
-            "variables": dict(self.safe_executor.variables),
-            "config": self.config.to_dict()
-        }
-
-    def _format_unsupported_error(self, error: Exception, code: str) -> Dict[str, Any]:
-        """Format UnsupportedFeatureError as proper error result."""
-        return {
-            "success": False,
-            "output": "",
-            "variables": {},
-            "execution_time": 0,
-            "error": {
-                "type": type(error).__name__,
-                "message": str(error),
-                "category": "unsupported_feature",
-                "line_number": script_line_from_traceback(error.__traceback__) or 1,
-                "stack_trace": "",
-                "code": code
+        if reset_sandbox:
+            self.safe_executor.reset()
+        try:
+            return self.safe_executor.execute(code)
+        except Exception as e:
+            # SafeExecutor answers the script's errors itself; this is a bug
+            # in the interpreter.
+            logger.error(f"SafeExecutor error: {e}")
+            return {
+                "success": False,
+                "output": "",
+                "variables": {},
+                "execution_time": 0,
+                "error": format_error_for_llm(RuntimeError(str(e), e), code),
             }
-        }
 
     def reset_sandbox(self) -> None:
         """Reset sandbox to clean state."""
