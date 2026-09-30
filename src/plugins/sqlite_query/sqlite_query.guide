@@ -1,0 +1,309 @@
+@database "sqlite_query"
+@author "Enrico Ehrich"
+@$VER: sqlite_query.guide 1.0 (30.09.2026)
+@smartwrap
+
+@node main "SQLite query"
+@{h1}SQLite query
+
+Gives an agent raw SQL on one SQLite database file: it can look at the
+tables, count and join, and -- because the plugin exists to repair data as
+well as inspect it -- insert, update, delete and change the schema. Every
+statement the model writes is executed and committed; there is no dry run
+and no backup. What the plugin does guard is the boundary: a statement
+stays inside the one configured file, stops after a time limit or when the
+run is stopped, and returns a bounded number of rows. It has no panel and
+is off in the default configuration.
+
+@{code}
+For users
+  @{"  Setting it up  " link setup}
+
+For agents and developers
+  @{"  Running SQL  " link tool}
+  @{"  Security and limits  " link security}
+  @{"  What the model sees  " link model}
+@{body}
+@endnode
+
+@node tool "Running SQL"
+@{h1}Running SQL
+
+@{tt}sqlite_query_execute_sql@{utt} (the name follows the plugin instance)
+runs one SQL statement on the instance's database and answers with its rows
+or with what it changed.
+
+@{h2}Parameters
+
+@{table}
+Parameter | Meaning
+sql | required; exactly one statement. A second statement after a semicolon is refused, not ignored.
+@{body}
+
+There are no bound parameters: the model writes the values into the SQL.
+
+@{h2}What runs
+
+@{bullet}Every call opens its own connection and closes it at the end. A
+statement that changes data is committed before the answer is sent -- also
+@{tt}INSERT@{utt}, @{tt}UPDATE@{utt} and @{tt}DELETE@{utt} with
+@{tt}RETURNING@{utt}, whose rows come back like a query's.
+@{bullet}A transaction cannot span calls: @{tt}BEGIN@{utt} in one call is
+committed, empty, at its end.
+@{bullet}A statement that fails, runs out of time or is stopped leaves the
+database as it was.
+@{bullet}@{tt}PRAGMA@{utt} works for reading (@{tt}PRAGMA table_info(t)@{utt})
+and for settings of the file (@{tt}journal_mode@{utt} and the like); the
+two pragmas that point SQLite at a directory are refused, see
+@{" Security and limits " link security}.
+
+@{h2}Answers
+
+A statement that returns rows -- @{tt}SELECT@{utt}, most @{tt}PRAGMA@{utt}s,
+anything with @{tt}RETURNING@{utt} -- answers with:
+
+@{table}
+Field | Meaning
+status | success
+columns | the column names in order; a name that occurs twice gets a suffix (id, id_2)
+rows | one object per row, column name to value; long text and BLOBs as in @{" What the model sees " link model}
+row_count | how many rows are in this answer
+truncated | true when the statement had more than max_rows (500) rows; absent otherwise
+hint | with truncated: "only the first 500 rows; use LIMIT/OFFSET for more"
+@{body}
+
+Any other statement answers with @{tt}status@{utt},
+@{tt}rows_affected@{utt} -- the rows the statement itself inserted, changed
+or deleted, not those its triggers touched; 0 for schema changes -- and
+@{tt}last_row_id@{utt}, the rowid of the last row an @{tt}INSERT@{utt} made,
+else null.
+
+@{h2}Errors
+
+Every error answer has @{tt}status@{utt} error and @{tt}error@{utt}:
+
+@{table}
+error | When
+sql parameter is required | sql is missing or empty
+Database not found: <path> | the configured file does not exist; the plugin never creates it
+You can only execute one statement at a time. | more than one statement
+not authorized | ATTACH, VACUUM INTO, a directory pragma, setting a heap limit, or load_extension()
+interrupted after query_timeout (30 s) | the statement ran out of time
+no such table / no such column | a name miss; see below
+string or blob too big | a value larger than max_value_bytes (64 MB) would be made, stored or read
+any other SQLite message | syntax errors, constraints, a locked database ("database is locked" after query_timeout seconds of waiting)
+@{body}
+
+When the run is stopped while a statement is running, the answer is
+@{tt}{"error": "Tool 'execute_sql' was cancelled.", "cancelled": true}@{utt}
+(plus @{tt}forced@{utt}).
+
+@{h2}Name misses
+
+For @{tt}no such table@{utt} and @{tt}no such column@{utt} the error carries
+the query the model would have typed next:
+
+@{bullet}a missing table: @{tt}tables@{utt} (up to 25 tables and views of
+the file), @{tt}did_you_mean@{utt} (the closest name, or null) and a
+@{tt}hint@{utt};
+@{bullet}a missing column: @{tt}columns@{utt}, the columns (up to 30 each)
+of the tables whose names appear as words in the SQL -- of all tables, up
+to 25, when none does -- with @{tt}did_you_mean@{utt} and a @{tt}hint@{utt}.
+
+Other errors carry no guess.
+
+@{h2}An example
+
+@{code json}
+{"sql": "SELECT status, COUNT(*) AS n FROM items GROUP BY status"}
+{"sql": "UPDATE items SET status = 'done' WHERE id = 7"}
+@{body}
+
+@{code json}
+{"status": "success", "rows": [{"status": "done", "n": 12}, {"status": "draft", "n": 3}],
+ "row_count": 2, "columns": ["status", "n"]}
+{"status": "success", "rows_affected": 1, "last_row_id": null}
+@{body}
+@endnode
+
+@node security "Security and limits"
+@{h1}Security and limits
+
+The model writes the SQL, and anything it has read -- a web page, a file, a
+row in this very database -- can suggest what to write. Inside the file the
+plugin trusts it completely; the limits below are about everything outside.
+
+@{h2}Inside the file: everything
+
+There is no read-only mode and no statement classification. The model can
+@{tt}DROP@{utt} a table, run @{tt}UPDATE@{utt} without @{tt}WHERE@{utt},
+rewrite the schema. Give the tool only to an agent that may change this
+data, and point the instance at a copy when it only needs to look.
+
+@{h2}Outside the file: nothing
+
+The database path comes from the server settings, never from the model. An
+authorizer on every connection refuses what would reach another path:
+
+@{bullet}@{tt}ATTACH@{utt} -- it would read any SQLite file the process can
+open, and create a new file anywhere it can write, network shares
+(@{tt}\\\\host\\share\\x.db@{utt}) included.
+@{bullet}@{tt}VACUUM INTO@{utt} -- it writes a copy of the database to any
+path.
+@{bullet}@{tt}PRAGMA temp_store_directory@{utt} and
+@{tt}data_store_directory@{utt} -- they move where SQLite puts files, for
+the whole process.
+@{bullet}Setting @{tt}PRAGMA hard_heap_limit@{utt} or
+@{tt}soft_heap_limit@{utt} -- the limit holds for every SQLite connection
+in the process and can only be lowered, so one call could starve all the
+others. Reading them is allowed.
+
+Also closed, without the authorizer's help: @{tt}load_extension()@{utt}
+answers "not authorized" (Python never enables extension loading), and
+file functions such as @{tt}readfile()@{utt} and @{tt}writefile()@{utt} do
+not exist in the SQLite Python ships ("no such function"). Besides the
+database file, SQLite itself writes only its own journal next to it
+(@{tt}-journal@{utt}, or @{tt}-wal@{utt} and @{tt}-shm@{utt} in WAL mode)
+and temporary files in the system's temp directory.
+
+@{h2}Time
+
+@{tt}query_timeout@{utt} (30 seconds) is two limits at once:
+
+@{bullet}how long the call waits for a lock another connection holds; then
+it answers "database is locked";
+@{bullet}how long the call may take in all, counted from its start: SQLite
+looks at the clock every 10,000 steps and stops the statement -- a
+recursive query that never ends, a cross join of large tables. The answer
+is "interrupted after query_timeout (30 s)", and whatever the statement had
+changed is rolled back.
+
+When the person stops the run, the statement is stopped at the next such
+look too, instead of running on in the background after the tool call is
+abandoned.
+
+@{h2}Size
+
+@{bullet}At most @{tt}max_rows@{utt} (500) rows reach the answer; SQLite
+does not even produce the rest. The answer says @{tt}truncated@{utt}.
+@{bullet}No single value may exceed @{tt}max_value_bytes@{utt} (64 MB).
+SQLite builds a value in one step, out of reach of the time limit:
+without this cap @{tt}SELECT zeroblob(900000000)@{utt} took 13.5 GB of
+memory. The cap holds for everything the call makes, stores or reads: a
+value already in the file above it can no longer be read through this
+tool at all, not even with @{tt}substr()@{utt} or @{tt}length()@{utt} --
+raise the setting for such a file.
+@{bullet}In the answer, a text longer than @{tt}max_value_chars@{utt}
+(10,000) is cut and ends in @{tt}…[<length> chars]@{utt}; ask for
+@{tt}substr(col, 10001, 10000)@{utt} to read on.
+@endnode
+
+@node model "What the model sees"
+@{h1}What the model sees
+
+@{h2}The tool
+
+The tool and its one parameter are described in the plugin's
+@{tt}schema.yaml@{utt}: raw SQL on the configured database, full access, no
+backups, one statement, with three example statements. The description
+does not name the database, its tables or the limits; the model learns the
+tables from a query (@{tt}sqlite_master@{utt}) or from a name miss, and the
+row cap from a truncated answer.
+
+@{h2}The status line
+
+While the statement runs the chat shows "Executing: " and its first 50
+characters. It ends with "Query returned 12 row(s)", "Query returned 500
+row(s), more cut off", "Query affected 1 row(s)", or the error: "SQL error:
+no such column: titel -- did you mean 'title'?", "Database not found:
+<path>", "Stopped on cancel: <sql>".
+
+@{h2}Values
+
+The answer reaches the model as JSON. Text, numbers and NULL arrive as
+they are, text longer than @{tt}max_value_chars@{utt} cut to
+@{tt}abc…[52000 chars]@{utt}. A BLOB has no JSON form; it arrives as an SQL
+hex literal, @{tt}x'00ff'@{utt}, which the model can paste back into a
+statement. One of more than half of @{tt}max_value_chars@{utt} bytes is cut
+the same way: @{tt}x'89504e47'…[40000 bytes]@{utt}.
+
+@{h2}Tokens and cache
+
+Answers are ordinary tool results, appended; nothing earlier changes. A
+query answer is bounded by @{tt}max_rows@{utt} rows of values of at most
+@{tt}max_value_chars@{utt} each -- still 500 rows of several wide text
+columns make a large answer. Select the columns you need.
+
+@{h2}Known gaps
+
+@{bullet}One database per instance. For a second file, configure a second
+instance under another name; its tool is named after it.
+@{bullet}Everything inside the file is allowed; there is no confirmation
+step for destructive statements.
+@{bullet}The column recovery finds the tables of a query by their names as
+words in the SQL; a table name with spaces is not recognised that way, and
+the recovery lists the columns of all tables instead.
+@endnode
+
+@node setup "Setting it up"
+@{h1}Setting it up
+
+The plugin is off in the default configuration: @{tt}config/plugins.yaml@{utt}
+carries its entry commented out, to be switched on for a particular
+investigation. An entry looks like this:
+
+@{code yaml}
+plugins:
+  servers:
+    sqlite_query:
+      type: sqlite_query
+      enabled: true
+      database: "data/app.db"
+      query_timeout: 30
+@{body}
+
+An agent sees the tool when its allowlist names it:
+
+@{code yaml}
+agent_config:
+  tools:
+    allowed:
+      - "+sqlite_query/*"
+@{body}
+
+@{h2}Server settings
+
+@{table}
+Key | Default | Meaning
+database | default.db | the SQLite file; a relative path counts from the folder the server was started in. It must exist.
+query_timeout | 30 | seconds: the lock wait and the time limit of one call
+max_rows | 500 | the most rows one answer carries
+max_value_bytes | 67108864 (64 MB) | the largest value SQLite may make, store or read in a call
+max_value_chars | 10000 | longer text in an answer is cut; BLOBs at half as many bytes
+@{body}
+
+A missing, zero, negative or non-numeric value for the last three means
+the default.
+
+For two databases, add two instances with their own names
+(@{tt}orders_db: {type: sqlite_query, database: ...}@{utt}); each has its
+own tool, @{tt}orders_db_execute_sql@{utt}. The plugin stores nothing of
+its own.
+
+@{h2}From the command line
+
+The same tool runs without the API, as the installed command or as a
+module (with @{tt}src@{utt} on the Python path):
+
+@{code bash}
+tool-sqlite-query --database data/app.db --sql "SELECT COUNT(*) FROM items"
+python -m plugins.sqlite_query -d data/app.db -s "PRAGMA table_info(items)" --json
+@{body}
+
+It prints a table (or the JSON answer with @{tt}--json@{utt}), the
+suggestion on a name miss, and exits with 1 when the statement failed. It
+uses the defaults of all settings except @{tt}database@{utt}, and
+writes to the file like the tool does.
+
+The plugin needs nothing beyond Python's own @{tt}sqlite3@{utt}.
+@endnode
