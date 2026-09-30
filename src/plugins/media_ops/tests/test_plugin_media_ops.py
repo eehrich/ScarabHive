@@ -14,6 +14,7 @@ so a green result cannot come from "file not found".
 from __future__ import annotations
 
 import base64
+import os
 import re
 import wave
 from dataclasses import replace
@@ -32,6 +33,7 @@ from agent_system.llm.models import (
     MultimodalToolContent,
     TextContent,
 )
+from agent_system.utils.multimodal_tool_content import encode_multimodal_item
 from plugins.media_ops.server import MEDIA_TYPES, MediaOpsServer
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -283,6 +285,25 @@ class TestRefusedInput:
                                 {"path": str(media_root / "gone.png")})
         assert res["error_type"] == "FileNotFoundError", res
 
+    async def test_configured_limit_cannot_exceed_what_the_request_attaches(
+            self, media_root):
+        """A limit above the encoder's own let a file through that the request
+        then dropped: 'success', and the model saw nothing."""
+        cfg = ToolServerConfig(type="media_ops", enabled=True, config={
+            "allowed_directories": [str(media_root)], "max_file_size_mb": 50})
+        server = MediaOpsServer("media_ops", SimpleNamespace(), cfg)
+        big = media_root / "big.png"
+        with big.open("wb") as f:
+            f.truncate(21 * 1024 * 1024)
+        item = MultimodalToolContent(type="image", path=str(big), mime_type="image/png")
+        assert encode_multimodal_item(item) is None, "encoder takes 21 MB now: test is vacuous"
+
+        res = await server.call("media_ops_load", {"path": str(big)})
+
+        assert res["status"] == "error", res
+        assert res["error_type"] == "FileTooLarge", res
+        assert "limit 20 MB" in res["error"], res["error"]
+
 
 # ══ Saving ════════════════════════════════════════════════════════════════
 
@@ -324,6 +345,47 @@ class TestListContext:
 
         assert res["status"] == "success", res
         assert res["count"] == 5, res
+
+    async def test_a_stored_data_path_is_sized_in_the_data_directory(
+            self, server, tmp_path, monkeypatch):
+        data_dir = tmp_path / "moved_data"
+        (data_dir / "pics").mkdir(parents=True)
+        (data_dir / "pics" / "x.png").write_bytes(b"\x89PNG" + b"\0" * 100)
+        monkeypatch.setenv("AGENT_DATA_DIR", str(data_dir))
+        messages = [ChatMessage(role="tool", tool_call_id="c", name="t", content="{}",
+                                multimodal_content=[MultimodalToolContent(
+                                    type="image", path="data/pics/x.png",
+                                    mime_type="image/png")])]
+
+        res = await server.call("media_ops_list_context",
+                                {"_agent": _Agent("s1", messages), "_session_id": "s1"})
+
+        assert res["media"][0]["size_bytes"] == 104, res
+
+    async def test_a_host_path_in_the_history_is_never_touched(
+            self, server, monkeypatch):
+        """Stat-ing \\\\host\\share connects to that host and signs in."""
+        touched = []
+        real_stat = os.stat
+
+        def spy(path, *args, **kwargs):
+            if str(path).startswith(("\\\\", "//")):
+                touched.append(str(path))
+                raise FileNotFoundError(2, "blocked by the test")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", spy)
+        messages = [ChatMessage(role="tool", tool_call_id="c", name="t", content="{}",
+                                multimodal_content=[MultimodalToolContent(
+                                    type="image", path=r"\\host.invalid\share\y.png",
+                                    mime_type="image/png")])]
+
+        res = await server.call("media_ops_list_context",
+                                {"_agent": _Agent("s1", messages), "_session_id": "s1"})
+
+        assert res["count"] == 1, res
+        assert res["media"][0]["size_bytes"] is None
+        assert touched == []
 
     async def test_without_session_context_it_errors_instead_of_reporting_nothing(
             self, server):
@@ -429,6 +491,20 @@ class TestConfigArrives:
     def test_the_configured_values_reach_the_plugin(self, server, media_root):
         assert server.allowed_roots == [media_root.resolve()]
         assert server.max_file_size_mb == MAX_MB
+
+    async def test_an_empty_directory_list_allows_nothing(self, tmp_path, monkeypatch):
+        data_dir = tmp_path / "data_dir"
+        data_dir.mkdir()
+        _png(data_dir / "x.png", (1, 1, 1))
+        monkeypatch.setenv("AGENT_DATA_DIR", str(data_dir))
+        cfg = ToolServerConfig(type="media_ops", enabled=True,
+                               config={"allowed_directories": []})
+        srv = MediaOpsServer("media_ops", SimpleNamespace(), cfg)
+
+        res = await srv.call("media_ops_load", {"path": str(data_dir / "x.png")})
+
+        assert srv.allowed_roots == []
+        assert res["error_type"] == "PermissionError", res
 
     @pytest.mark.skipif(not PLUGINS_YAML.exists(), reason="no config/plugins.yaml")
     def test_every_shipped_setting_reaches_the_plugin(self):
