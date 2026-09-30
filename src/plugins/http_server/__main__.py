@@ -3,8 +3,9 @@
 import argparse
 import asyncio
 import sys
-from typing import Dict, Any
 
+from agent_system.config.models import ToolServerConfig
+from agent_system.config.settings import load_settings
 from agent_system.plugins import discover_all_plugins
 from agent_system.utils.logging import setup_logging
 
@@ -18,8 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start HTTP server for a specific tool server
-  python -m plugins.http_server --server-name llm_router --host 0.0.0.0 --port 8000
+  # Serve on the network: needs an API key (HTTP_SERVER_AUTH_KEY)
+  HTTP_SERVER_AUTH_KEY=... python -m plugins.http_server --server-name datetime --host 0.0.0.0 --port 8000
 
   # Start with default settings
   python -m plugins.http_server --server-name web_scraper
@@ -47,7 +48,7 @@ Examples:
 
     parser.add_argument(
         "--config",
-        help="Path to configuration file"
+        help="Path to the main config file (default: AGENT_CONFIG_PATH, else config/config.yaml)"
     )
 
     parser.add_argument(
@@ -73,30 +74,31 @@ def cli_main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # The wrapped server gets its entry from plugins.yaml when there is one,
+    # the way the tool registry builds it; otherwise --server-name is a plugin type.
+    system_config = load_settings(args.config)
+    if args.no_ssl_verify:
+        system_config.network.ssl_verify = False
+    entries = system_config.plugins.servers if system_config.plugins else {}
+    server_config = entries.get(args.server_name) or ToolServerConfig(type=args.server_name, enabled=True)
+    plugin_type = server_config.type or args.server_name
+
     # Discover available plugins
     plugins = discover_all_plugins()
 
-    if args.server_name not in plugins:
+    if plugin_type not in plugins:
         print(f"Error: Server '{args.server_name}' not found in available plugins:", file=sys.stderr)
         print(f"Available servers: {', '.join(sorted(plugins.keys()))}", file=sys.stderr)
         sys.exit(1)
 
-    # Create the target server
-    server_factory = plugins[args.server_name]
-    server_config: Dict[str, Any] = {}  # Could be loaded from config file if provided
-
     try:
-        target_server = server_factory(args.server_name, server_config, ssl_verify=not args.no_ssl_verify)
+        target_server = plugins[plugin_type](args.server_name, system_config, server_config)
     except Exception as e:
         print(f"Error creating server '{args.server_name}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Create HTTP server wrapper
-    http_config = {
-        "host": args.host,
-        "port": args.port
-    }
-    http_server = HTTPServer("http_server", http_config, ssl_verify=not args.no_ssl_verify)
+    http_config = ToolServerConfig(type="http_server", enabled=True, host=args.host, port=args.port)
+    http_server = HTTPServer("http_server", system_config, http_config)
     http_server.wrap_server(target_server)
 
     print(f"Starting HTTP server for tool server '{args.server_name}' on {args.host}:{args.port}")
