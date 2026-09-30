@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from pydantic import ValidationError
 from ruamel.yaml import YAML
@@ -277,9 +277,12 @@ class Snapshot:
 
 
 class Store:
-    def __init__(self, config_path: Path, root: Path):
+    def __init__(self, config_path: Path, root: Path, writable: Iterable[str] = ()):
         self.config_path = Path(config_path)
         self.root = Path(root).resolve()
+        # The folders whose files the editor writes: the master config's by default. An agent a plugin ships sits
+        # in the plugin's folder and is versioned with it -- edited here, it would meet the next pull.
+        self.writable = [(self.root / w).resolve() for w in writable] or [self.config_path.resolve().parent]
         # ponytail: one lock for every read and write of the config tree; per-file locks if saves ever queue up.
         self._lock = threading.RLock()
         self._key: Any = None
@@ -385,7 +388,13 @@ class Store:
             return "not defined in any config file"
         if len(files) > 1:
             return f"defined in {len(files)} files: {', '.join(self.rel(path) for path in files)}"
+        if not self.is_writable(files[0]):
+            return (f"{self.rel(files[0])} is not in a writable folder ({', '.join(map(self.rel, self.writable))}): "
+                    "an agent a plugin ships is read-only here -- Duplicate makes one of your own from it")
         return _file_problem(files[0], self.root, _stamp(files[0]))
+
+    def is_writable(self, path: Path) -> bool:
+        return any(Path(path).resolve().is_relative_to(folder) for folder in self.writable)
 
     def form_reason(self, name: str, snap: Optional[Snapshot] = None) -> Optional[str]:
         """Why the form cannot edit the entry although its file can be written, None when it can: the form carries an
@@ -538,6 +547,8 @@ class Store:
             rel = self.rel(path)
             if not path.is_relative_to(self.root):
                 raise StoreError(400, f"{rel} is outside the repository root, where the editor cannot edit it")
+            if not self.is_writable(path):
+                raise StoreError(400, f"{rel} is not in a writable folder, where the editor puts a new agent")
             if path.exists():
                 raise StoreError(400, f"{rel} already exists")
             entry = copy.deepcopy(entry)

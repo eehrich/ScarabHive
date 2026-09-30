@@ -504,9 +504,12 @@ as text before the path is touched.
 @{h1}Limits and known gaps
 
 @{bullet}@{b}Read-only entries.@{ub} An entry defined in more than one
-file is shown but not editable, and so is one in a read-only file, a file
-outside the repository, a file mixing CRLF and LF line endings, or a file
-the round-trip parser cannot read (a duplicate key, which the loader
+file is shown but not editable, and so is an agent a plugin ships (its
+file lies in the plugin's folder, outside the writable folders: a change
+there would meet the next pull -- @{b}Duplicate@{ub} makes an agent of
+your own from it), one in a read-only file, a file outside the
+repository, a file mixing CRLF and LF line endings, or a file the
+round-trip parser cannot read (a duplicate key, which the loader
 accepts). An entry holding a value JSON cannot carry (a date, a number as
 a key, @{tt}.inf@{utt}) shows it as text and cannot be saved or copied
 from the form; deleting it and the manager switches still work.
@@ -562,9 +565,13 @@ the master config must include that folder (the default includes
 Key | Default | Meaning
 config_path | the app's config, else config/config.yaml | the master config of the tree to edit
 root | the working directory | the repository root: files outside it are read-only, templates resolve against it
+writable_dirs | the master config's folder | folders, relative to the root, whose files the panel writes; new agents go into config/agents, which must be one of them
 @{body}
 
-Both are for tests; the running app needs neither. The plugin depends on
+@{tt}config_path@{utt} and @{tt}root@{utt} are for tests; the running app
+needs neither. @{tt}writable_dirs@{utt} opens a plugin's folder on a
+developer's machine, in @{tt}config/local.yaml@{utt} (list the config
+folder too, or its agents turn read-only). The plugin depends on
 @{tt}ruamel.yaml@{utt}, which renders a file keeping its comments. No data
 of its own: it reads and writes the config files.
 @endnode

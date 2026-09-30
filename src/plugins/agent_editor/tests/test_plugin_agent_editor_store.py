@@ -516,7 +516,8 @@ def test_a_created_file_goes_when_its_agent_goes(store, tmp_path):
     assert deleted["deleted_file"] is True and not path.exists()
 
 
-def test_delete_removes_a_file_that_holds_nothing_else(store, tmp_path):
+def test_delete_removes_a_file_that_holds_nothing_else(tree, tmp_path):
+    store = Store(tree, tmp_path, ["config", "src/plugins/demo"])  # the plugin's folder made writable
     path = tmp_path / "src/plugins/demo/agents/demo.yaml"
     version = version_of(path.read_bytes())
     dry = store.delete("demo_agent", version, dry_run=True)
@@ -525,6 +526,54 @@ def test_delete_removes_a_file_that_holds_nothing_else(store, tmp_path):
     result = store.delete("demo_agent", version, dry_run=False)
     assert result["deleted_file"] is True and not path.exists()
     assert "demo_agent" not in load_settings(str(store.config_path)).plugins.servers
+
+
+def test_an_agent_a_plugin_ships_is_read_only_and_duplicate_makes_one_of_your_own(store, tmp_path):
+    path = tmp_path / "src/plugins/demo/agents/demo.yaml"
+    before = path.read_bytes()
+    version = version_of(before)
+
+    reason = store.readonly_reason("demo_agent")
+    with pytest.raises(StoreError) as saved:
+        store.save("demo_agent", {**store.own("demo_agent"), "enabled": True}, version, dry_run=False)
+    with pytest.raises(StoreError) as deleted:
+        store.delete("demo_agent", version, dry_run=False)
+    copied = store.create("demo_copy", store.own("demo_agent"), "demo_agent", dry_run=False)
+
+    assert reason.startswith("src/plugins/demo/agents/demo.yaml is not in a writable folder (config)"), reason
+    assert saved.value.status == deleted.value.status == 400 and "read-only" in str(saved.value)
+    assert path.read_bytes() == before, "a plugin's agent file was written"
+    assert copied["file"] == "config/agents/demo_copy.yaml" and store.readonly_reason("demo_copy") is None
+    assert store.readonly_reason("writer") is None, "the config's own agents stay editable"
+
+
+def test_writable_dirs_decide_where_the_editor_writes(tree, tmp_path):
+    opened = Store(tree, tmp_path, ["config", "src/plugins/demo"])
+    plugin_only = Store(tree, tmp_path, ["src/plugins/demo"])
+
+    assert opened.readonly_reason("demo_agent") is None and opened.readonly_reason("writer") is None
+    assert plugin_only.readonly_reason("writer").startswith("config/agents/team.yaml is not in a writable folder")
+    with pytest.raises(StoreError) as created:
+        plugin_only.create("scribe", {"type": "basic_agent"}, None, dry_run=False)
+    assert created.value.status == 400 and "not in a writable folder" in str(created.value)
+    assert not (tmp_path / "config" / "agents" / "scribe.yaml").exists()
+
+
+def test_the_endpoints_hand_writable_dirs_to_the_store(tree, tmp_path):
+    from types import SimpleNamespace
+
+    from plugins.agent_editor.endpoints import AgentEditorWebEndpoints
+
+    plugin = SimpleNamespace(server_config=SimpleNamespace(config_path=str(tree), root=str(tmp_path),
+                                                           writable_dirs=["config", "src/plugins/demo"]))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+    store = AgentEditorWebEndpoints(plugin)._store(request)
+    plugin.server_config.writable_dirs = "config"  # one folder, written without a list
+    one = AgentEditorWebEndpoints(plugin)._store(request)
+
+    assert store.readonly_reason("demo_agent") is None
+    assert one.readonly_reason("writer") is None and one.readonly_reason("demo_agent") is not None
 
 
 def spawn(store, name, sam) -> dict:

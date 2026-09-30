@@ -121,8 +121,8 @@
     watchNative();
     await until('the list', () => row('worker') && row('demo'));
     const groups = all('#list details').map((one) => `${one.dataset.group}=${one.querySelector('[data-count]').dataset.count}`).join();
-    // worker runs unbuilt with other max_steps: only a restart applies that
-    const marked = badges('scout') === 'off' && badges('demo') === 'new,restart' && badges('worker') === 'restart'
+    // worker runs unbuilt with other max_steps: only a restart applies that; demo ships with a plugin: read-only
+    const marked = badges('scout') === 'off' && badges('demo') === 'new,restart,read-only' && badges('worker') === 'restart'
       && badges('twin') === 'read-only' && badges('editor') === '';
     const search = (value) => { type($('#search'), value); return listed(); };
     const filter = (value) => { $('#filter').value = value; $('#filter').dispatchEvent(new Event('change')); return listed(); };
@@ -130,7 +130,7 @@
       && text('#list').includes('No agent matches');
     search('');
     const filtered = filter('enabled') === 'editor,twin,worker,demo' && filter('disabled') === 'scout'
-      && filter('restart') === 'worker,demo' && filter('readonly') === 'twin' && filter('problems') === '';
+      && filter('restart') === 'worker,demo' && filter('readonly') === 'twin,demo' && filter('problems') === '';
     filter('all');
     const demo = () => $('#list details[data-group="demo"]');
     demo().querySelector('summary').click();
