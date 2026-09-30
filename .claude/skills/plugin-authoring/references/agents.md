@@ -25,6 +25,7 @@ plugins:
         tools:
           allowed: ["file_ops/*", "my_sam/*"]
           blocked: []
+          deferred: []                   # allowed tools sent as a name until tool_search loads them
         hooks:
           overrides:
             context_engineer.engineer_context: {enabled: true}  # <instance>.<hook>, full name!

@@ -340,7 +340,8 @@ plugins:
     steady:
       type: basic_agent
       agent_config:
-        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"]}
+        tools: {allowed: ["files/*", "web/nothing", "ext_on.*", "ext_off.*", "ext_on", "ext_o*", "ext_off*", "ext_on.ech?", "zzz*", "ext_on.", "[a]*"],
+                blocked: ["web/web_fetch"], deferred: ["files/*", "web/web_fetch", "ext_off.*"]}
     broken:
       type: basic_agent
       agent_config:
@@ -363,6 +364,8 @@ def test_problems_name_what_the_editor_warns_about(db, tree, tmp_path, monkeypat
     assert listed["steady"]["problems"] == [  # the same allowed list, other blocked
         "Matches no tool: web/nothing", "Matches no tool: ext_on", "Matches no tool: ext_on.ech?", "Matches no tool: zzz*",
         "Matches no tool: ext_on.", "Matches no tool: [a]*",
+        # web_fetch exists but steady blocks it; an external pattern is not judged
+        "Deferred matches no allowed tool: web/web_fetch",
         "External server is off: ext_off.*", "External server is off: ext_off*",
     ]
     assert listed["broken"]["problems"] == [f"Does not resolve: {listed_error(answer, 'broken')}"]

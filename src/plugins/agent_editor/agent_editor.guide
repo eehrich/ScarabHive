@@ -76,7 +76,9 @@ instances are agents.
 The problems are read from the files as saved: "Does not resolve"
 (with the loader's reason), "Unknown model profile", "Prompt template not
 found", "Unknown skill", "Matches no tool" (an allowed or blocked pattern
-that names no tool of the running app) and "External server is off" (an
+that names no tool of the running app), "Deferred matches no allowed tool"
+(a @{tt}tools.deferred@{utt} pattern that holds back none of the agent's
+tools) and "External server is off" (an
 allowed pattern for an external MCP server that is disabled). When the
 config defines no model profiles at all, every profile of a chain is
 unknown. When the tool catalogue cannot be built, the patterns are not

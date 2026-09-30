@@ -429,9 +429,12 @@ class TestContext:
 
         asked = []
 
-        async def describe(self, session_id=None):
+        async def describe(self, session_id=None, messages=None):
             asked.append(session_id)
+            handed.append(messages)
             return "ein prompt", []
+
+        handed = []
 
         monkeypatch.setattr(Agent, "describe_context_inputs", describe)
         await _stored(api, messages=[{"role": "user", "content": "frage"}])
@@ -441,6 +444,9 @@ class TestContext:
                              timeout=30.0)
 
         assert asked == ["s1"]
+        # The stored messages go along: the deferred tools they loaded count
+        # although this process's tracker never held the session.
+        assert [m["content"] for m in handed[0]] == ["frage"]
 
     async def test_a_session_with_no_record_gets_no_measurement(self, api):
         """The tracker is keyed by session id ALONE, and a session that is not

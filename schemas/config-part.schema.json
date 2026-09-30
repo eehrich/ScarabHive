@@ -2809,6 +2809,20 @@
             }
           ],
           "title": "Blocked"
+        },
+        "deferred": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deferred"
         }
       },
       "title": "ToolConfig",

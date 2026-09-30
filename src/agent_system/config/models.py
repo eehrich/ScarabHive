@@ -505,13 +505,17 @@ class ToolConfig(BaseModel):
     """Tool access control configuration"""
     allowed: Optional[List[str]] = Field(default_factory=list)  # list of allowed tools (use "*" to allow all tools)
     blocked: Optional[List[str]] = Field(default_factory=list)  # list of blocked tools
+    # Allowed tools whose schema is held back until the model loads it with
+    # tool_search (servers/agent/deferred_tools.py). Read for agents only; an
+    # external MCP server entry (RemoteMCPConfig.tools) ignores it.
+    deferred: Optional[List[str]] = Field(default_factory=list)
 
     def __init__(self, **data):
         # Normalize an explicit None to [] -- but only for keys that were
         # actually given. Injecting absent keys would mark them as "set",
         # so model_dump(exclude_unset=True) in the server-inheritance
         # resolver would export phantom empty lists that wipe parent lists.
-        for key in ("allowed", "blocked"):
+        for key in ("allowed", "blocked", "deferred"):
             if key in data and data[key] is None:
                 data[key] = []
         super().__init__(**data)

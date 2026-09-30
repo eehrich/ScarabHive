@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import copy
 import errno
+import functools
 import json
 import logging
 import time
@@ -48,7 +49,7 @@ from ...tools.status import (
     current_request_id
 )
 from .components.tool_integration import ToolIntegrationManager
-from .components.tool_execution import ToolExecutionManager, tool_message_was_blocked, tool_result_is_error
+from .components.tool_execution import ToolExecutionManager, tool_message_never_ran, tool_result_is_error
 from .components.status_forwarding import StatusEventForwarder, relay_run_event
 from .components.session_tracking import SessionTracker
 from .components.request_manager import AgentRequestManager
@@ -59,6 +60,7 @@ from .reasoning_loop import ReasoningLoopError, build_detectors
 from .escalation import StuckEscalator
 from .tool_discovery import ToolDiscoveryService
 from .tool_schema_builder import ToolSchemaBuilder, server_matches_patterns
+from .deferred_tools import DeferredTools
 
 
 logger = logging.getLogger(__name__)
@@ -256,6 +258,9 @@ class ConversationContext:
     status_forwarder: 'StatusEventForwarder'  # Per-request forwarder instance
     session_id: Optional[str] = None  # Session ID for session-scoped operations
     user_reset_token: Any = None  # Token for resetting current_run_user
+    # Schemas held back until the model loads them (tools.deferred); loading
+    # appends to tools_schema in place. None when the agent defers nothing.
+    deferred_tools: Optional[DeferredTools] = None
 
 
 class Agent(ToolServer):
@@ -1914,7 +1919,7 @@ class Agent(ToolServer):
         return await discovery_service.discover_allowed_tools()
 
     async def describe_context_inputs(
-        self, session_id: Optional[str] = None
+        self, session_id: Optional[str] = None, messages: Optional[list] = None
     ) -> tuple[str, list[Dict[str, Any]]]:
         """(system prompt, tool schemas) as they go into a call of *session_id*.
 
@@ -1928,8 +1933,16 @@ class Agent(ToolServer):
         * One discovery, not two. Both halves need the list of usable tools,
           and asking for it twice means awaiting list_tools() on every
           registered server a second time.
+
+        *messages* is the session's history as stored: the deferred tools it
+        loaded are sent again, so they count. Without it this process's
+        tracker is asked, which knows only the sessions that ran here.
         """
-        tools_schema, usable_tools = await self._schemas_for(*await self.list_usable_tools())
+        if messages is None:
+            messages = (self._session_tracker.get_session_messages(session_id) or []
+                        if session_id and self._session_tracker else [])
+        tools_schema, usable_tools = await self._schemas_for(
+            *await self.list_usable_tools(), history=messages)
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
         system_msg, _ = self._render_prompts(
             usable_tools, max_steps, current_step=0, session_id=session_id)
@@ -1937,25 +1950,37 @@ class Agent(ToolServer):
 
     async def _schemas_for(self, usable_tools: list[str],
                            allowed_patterns: Optional[list[str]],
-                           blocked_patterns: Optional[list[str]]
+                           blocked_patterns: Optional[list[str]],
+                           history: Optional[list] = None,
                            ) -> tuple[list[Dict[str, Any]], list[str]]:
         """The LLM schemas for an ALREADY discovered set of tools, and the
         tool names after expansion and filtering -- what a run renders as
-        ``tools``."""
+        ``tools``.
+
+        Every schema, unless a session's *history* is given (empty for a new
+        one): then the schemas a run of it would send -- the deferred ones held
+        back except those the history already loaded."""
         schema_builder = ToolSchemaBuilder(
             agent_name=self.name,
             tool_integration_manager=self._tool_integration_manager,
             server_getter_func=self._get_server_from_any_registry,
         )
-        tools_schema, _mapping, usable, _display = await schema_builder.build_schemas(
+        tools_schema, mapping, usable, _display = await schema_builder.build_schemas(
             usable_tools,
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns,
         )
-        return list(tools_schema), usable
+        tools_schema = list(tools_schema)
+        if history is not None:
+            deferred = DeferredTools.split(tools_schema, mapping, self._deferred_patterns(), self.name)
+            if deferred is not None:
+                deferred.restore(history, tools_schema)
+        return tools_schema, usable
 
     async def build_llm_tool_schemas(self) -> list[Dict[str, Any]]:
-        """The tool schemas this agent hands the model, exactly as they go out.
+        """The tool schemas of every tool this agent may call. A run sends
+        the deferred ones (tools.deferred) only once loaded; what it sends is
+        describe_context_inputs'.
 
         EXACTLY the pipeline that builds the LLM schema -- discovery (deny-all
         on empty allowed, _tool_visible, externals) plus ToolSchemaBuilder
@@ -2306,6 +2331,7 @@ class Agent(ToolServer):
             allowed_patterns=allowed_patterns,
             blocked_patterns=blocked_patterns
         )
+        deferred_tools = DeferredTools.split(tools_schema, tool_name_mapping, self._deferred_patterns(), self.name)
 
         max_steps = max(1, int(getattr(self.agent_config, "max_steps", 6)))
 
@@ -2366,7 +2392,11 @@ class Agent(ToolServer):
         # Track live messages for this session (request-scoped)
         self._set_live_messages(session_id, messages.copy())
 
-        # Track current tool schemas per-session for token estimation by hooks
+        if deferred_tools is not None:
+            deferred_tools.restore(messages, tools_schema)
+
+        # Track current tool schemas per-session for token estimation by hooks.
+        # The same list the run sends: a tool loaded later is counted too.
         self._set_live_tools_schema(session_id, tools_schema)
 
         # Return initialized context
@@ -2381,7 +2411,12 @@ class Agent(ToolServer):
             status_forwarder=status_forwarder,
             session_id=session_id,
             user_reset_token=user_reset_token,
+            deferred_tools=deferred_tools,
         )
+
+    def _deferred_patterns(self) -> list[str]:
+        tools_config = getattr(self.agent_config, "tools", None)
+        return list(getattr(tools_config, "deferred", None) or [])
 
     def _presence_hold(self, session_id: str, request_id: str) -> None:
         """Session presence (core/session_presence.py): the request holds its
@@ -4208,6 +4243,9 @@ class Agent(ToolServer):
                     # What this run was switched to, for the sub-agents its
                     # tools start (agent_config.inherit_parent_llm).
                     llm_profile=self._profile_to_hand_down(llm_override),
+                    intercept=(functools.partial(context.deferred_tools.intercept,
+                                                 tools_schema=tools_schema)
+                               if context.deferred_tools is not None else None),
                 ):
                     if item.get("type") == "status":
                         # Yield status events in real-time during tool execution
@@ -4229,9 +4267,10 @@ class Agent(ToolServer):
                 # tool retried with slightly varied wrong args). N in a row →
                 # open an escalation window. Only calls that ran count: a call a
                 # hook blocked (a policy, a person saying no) is no sign that a
-                # stronger model is needed -- a step of nothing but blocked calls
-                # neither grows the streak nor breaks it.
-                ran_messages = [m for m in tool_messages if not tool_message_was_blocked(m)]
+                # stronger model is needed, nor is a deferred tool called before
+                # it was loaded -- a step of nothing but such calls neither grows
+                # the streak nor breaks it.
+                ran_messages = [m for m in tool_messages if not tool_message_never_ran(m)]
                 if tool_messages and not ran_messages:
                     prev_step_all_errored = True
                 elif ran_messages and all(self._tool_message_is_error(m) for m in ran_messages):

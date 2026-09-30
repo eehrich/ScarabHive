@@ -10,7 +10,7 @@ import logging
 import time
 from contextlib import aclosing
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator, Tuple
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, AsyncGenerator, Callable, Tuple
 
 if TYPE_CHECKING:
     from ..server import Agent
@@ -22,6 +22,7 @@ from ....core.cancellation import get_cancellation_manager, cancellable_operatio
 from ....core.request_context import register_request_user
 from ....hooks.plugin_hook import HookType
 from .server_resolution import resolve_longest_prefix
+from ..deferred_tools import NOT_LOADED_TYPE
 from ....llm.caller_llm import context_for_tool
 from ....llm.models import ChatMessage
 from ....llm.text_sanitizer import sanitize_for_llm, sanitize_json_content
@@ -35,6 +36,8 @@ FRAMEWORK_REQUEST_ID_KEYS = frozenset({"request_id", "requestId"})
 
 #: "type" of the result the model reads for a call a pre_tool_call hook blocked.
 BLOCKED_CALL_TYPE = "ToolCallBlocked"
+#: Result types of calls that never ran (tool_message_never_ran).
+NEVER_RAN_TYPES = (BLOCKED_CALL_TYPE, NOT_LOADED_TYPE)
 
 
 class ToolDispatchError(Exception):
@@ -69,17 +72,17 @@ def tool_result_is_error(result: Any) -> bool:
     return "status" not in result and bool(result.get("error"))
 
 
-def tool_message_was_blocked(message: Any) -> bool:
-    """Whether a tool-result message stands for a call a pre_tool_call hook
-    blocked -- the call never ran."""
+def tool_message_never_ran(message: Any) -> bool:
+    """Whether a tool-result message stands for a call that never ran: one a
+    pre_tool_call hook blocked, or a deferred tool called before it was loaded."""
     content = getattr(message, "content", None)
-    if not isinstance(content, str) or BLOCKED_CALL_TYPE not in content:
+    if not isinstance(content, str) or not any(kind in content for kind in NEVER_RAN_TYPES):
         return False
     try:
         data = json.loads(content)
     except ValueError:
         return False
-    return isinstance(data, dict) and data.get("type") == BLOCKED_CALL_TYPE
+    return isinstance(data, dict) and data.get("type") in NEVER_RAN_TYPES
 
 
 def inject_runtime_params(params: Dict[str, Any], *,
@@ -235,6 +238,7 @@ class ToolExecutionManager:
         status_forwarder: Optional[StatusEventForwarder] = None,
         assistant_message: Optional[ChatMessage] = None,
         llm_profile: Optional[str] = None,
+        intercept: Optional[Callable[[Optional[str], Any, int], Optional[Dict[str, Any]]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute tools in parallel while streaming status events in real-time.
 
@@ -252,6 +256,9 @@ class ToolExecutionManager:
             llm_profile: The profile the run was switched to, None when it runs its own
                              configuration. Each tool call runs in a context holding it, so a
                              sub-agent the tool starts can follow it (llm/caller_llm.py).
+            intercept: Answers a call itself instead of a tool server (name, arguments, step) ->
+                             result, or None to leave the call alone: the run's deferred tools
+                             (deferred_tools.py). An answered call reaches no hook.
 
         Yields:
             Dict with either:
@@ -319,6 +326,27 @@ class ToolExecutionManager:
                         "Dropping model-supplied runtime param(s) %s from tool call %s",
                         forged, tool_name,
                     )
+
+            # Before the parse check: an unloaded deferred tool is refused (and
+            # loaded) whatever its arguments, a tool_search with broken ones
+            # gets the parse error below (the intercept answers None).
+            answer = (intercept(openai_tool_name, None if json_parse_failed else params, step)
+                      if intercept is not None else None)
+            if answer is not None:
+                indexed_results.append((pos, ChatMessage(
+                    role="tool",
+                    tool_call_id=tc.get("id") or f"{openai_tool_name}-call-{int(time.time()*1000)}",
+                    name=sanitize_for_llm(openai_tool_name),
+                    content=json.dumps(answer, ensure_ascii=False),
+                    timestamp=datetime.now(timezone.utc),
+                ), [], []))
+                events_to_yield.extend([
+                    {"type": "tool_call", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "params": params, "request_id": request_id},
+                    {"type": "tool_result", "step": step + 1, "server": tool_name, "action": openai_tool_name,
+                     "result": answer, "request_id": request_id},
+                ])
+                continue
 
             # If JSON parsing failed, return an error to the LLM so it can retry
             if json_parse_failed:

@@ -3896,7 +3896,9 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
             # With the session id: the prompt this SESSION sends, template
             # vars and all. Rendered without them it is short by the whole
             # var payload, on the one line the command exists to show.
-            prompt, tools = await target_agent.describe_context_inputs(session_id)
+            # And with the stored messages: the deferred tools they loaded are
+            # sent again, and this process's tracker may not hold the session.
+            prompt, tools = await target_agent.describe_context_inputs(session_id, messages)
         except Exception as e:  # noqa: BLE001 - a missing line, not a failed request
             logging.getLogger(__name__).warning("No context inputs for %s: %s",
                                                 session_id, e)

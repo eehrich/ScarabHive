@@ -1577,6 +1577,7 @@ plugins:
         tools:
           allowed: ["file_ops/*", "my_sam/*"]
           blocked: []
+          deferred: []               # schemas sent only once loaded
         hooks:
           overrides:
             context_engineer.engineer_context: {enabled: true}
@@ -1601,6 +1602,12 @@ instance @{tt}coder_fs@{utt} is
 instance of a plugin has its own tool names and needs its own entry. Tools
 of external MCP servers are written @{tt}server.*@{utt}, see
 @{" External MCP servers " link mcp}.
+@{bullet}@{b}Deferred tools@{ub}: @{tt}tools.deferred@{utt} takes the same
+patterns and holds the schemas of those allowed tools back. The model sees
+them as a name and one line in the core tool @{tt}tool_search@{utt} and
+loads what it needs; a call before the load is not run. Worth it for rare
+tools with large schemas, not for ones nearly every run uses. Details in
+@{tt}docs/deferred_tools.md@{utt}.
 @{bullet}@{b}Inherited lists@{ub}: a list without prefixes replaces the
 inherited one; @{tt}+item@{utt} adds to it, @{tt}!pattern@{utt} removes
 from it; mixing both forms is an error.
