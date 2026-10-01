@@ -318,6 +318,32 @@ Wer wirklich eigene Schwellen braucht, nimmt die nativen `gemini-3-*`-Einträge
 Warteschlange. Bei einer 429 auf dem Flex-Tier lässt der Client das Feld einmal
 fallen und wiederholt auf Standard.
 
+### AI Studio vor Vertex
+
+`openrouter-gemini` fragt Google AI Studio zuerst, Vertex danach. Gemessen am
+01.10.2026 mit den ersten 30 Aufrufen eines `shorts_producer`-Laufs. Sie wurden
+je zweimal pro Anbieter nachgespielt, mit einer eigenen Nonce, sodass kein
+Durchgang den Cache eines anderen trifft:
+
+| | Standard | Flex |
+|---|---|---|
+| AI Studio: aus dem Cache | 80–84 % | 82–84 % |
+| AI Studio: Kosten | 0,25–0,27 $ | 0,12–0,14 $ |
+| AI Studio: je Aufruf | 3,5 s | 4,5 s (max. 11 s) |
+| Vertex: aus dem Cache | 59–71 % | 77–83 % |
+| Vertex: Kosten | 0,32–0,40 $ | 0,13–0,14 $ |
+| Vertex: je Aufruf | 7–12 s | 19 s (max. 78 s) |
+
+Der Präfix war in allen Fällen byte-gleich. Vertex (auf OpenRouter nur sein
+`global`-Endpunkt) verfehlt seinen impliziten Cache öfter und ist langsamer. Auf
+Flex braucht Vertex 20–50 s pro Aufruf; die Messung vom 30.09. mit „Flex
+14–315 s“ lag auf Vertex. AI Studio ist mit Flex fast so schnell wie mit Standard,
+kostet aber nur die Hälfte. Ein echter Lauf bestätigt das: dieselbe Produktion
+mit Flex auf AI Studio kostete 0,35 $ bei 89 % Cache-Anteil.
+
+Fällt AI Studio aus (429/5xx), geht der Aufruf an Vertex. Der Pin auf den Anbieter
+(`served_by`) hält den Rest des Laufs dort, wo er angefangen hat.
+
 ## GPT-5.6 via OpenRouter
 
 `prompt_cache_key: "auto"` ist ab GPT-5.6 **Pflicht** für zuverlässiges

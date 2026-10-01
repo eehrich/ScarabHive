@@ -40,9 +40,11 @@ llm_system:
       extends: openrouter-base
       tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
+        # AI Studio first: measured 2026-10-01 replaying 30 calls of one agent
+        # run, 2 runs each (docs/llm_catalog.md, "AI Studio vor Vertex").
         order:
-        - google-vertex
         - google-ai-studio
+        - google-vertex
         # Ohne diesen Riegel darf OpenRouter ueber die Liste hinaus ausweichen
         # — dann greift die definierte Reihenfolge nicht mehr, und der
         # Prompt-Cache des vorherigen Anbieters ist verloren. Faellt die Liste
