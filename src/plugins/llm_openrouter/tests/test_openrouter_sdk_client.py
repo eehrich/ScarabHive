@@ -229,8 +229,8 @@ class TestTheRequestTravelsThroughTheSdk:
         client = _client()
         original = client._build_payload
 
-        def with_extra(messages, tools):
-            payload = original(messages, tools)
+        def with_extra(messages, tools, *rest):
+            payload = original(messages, tools, *rest)
             payload["safety_settings"] = [{"category": "x", "threshold": "y"}]
             return payload
 

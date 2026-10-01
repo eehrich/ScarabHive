@@ -442,7 +442,7 @@ class OpenAIResponsesClient(LLMClient):
             else:
                 item["content"] = as_note(content if isinstance(content, str) else "")
 
-    def _extract_verbatim_items(self, msg: Any) -> Optional[list]:
+    def _extract_verbatim_items(self, msg: Any, model: Optional[str] = None) -> Optional[list]:
         """Return the verbatim output items stored on an assistant message,
         or None if the message carries none (foreign/legacy history).
 
@@ -461,18 +461,36 @@ class OpenAIResponsesClient(LLMClient):
         returning only the first silently dropped the second turn's items
         (reasoning, text AND function_calls), and a tool result answering a
         dropped call is a 400.
+
+        ``model``: where this request goes when it is not ``self.model`` -- the
+        concrete model a run on an alias is pinned to (``_run_model``). A block
+        another model of that alias answered is foreign there as well.
+
+        One foreign block makes the whole message foreign. Replaying a merged
+        message in part dropped the foreign half's function_calls while their
+        outputs stayed in the request -- a 400 that no heal recognised, on every
+        later request of the run.
         """
         collected: list = []
         for block in (_get(msg, "reasoning_details") or []):
             if isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT:
                 if block.get("model") != self.model:
-                    continue
+                    return None
+                if model and model != self.model and block.get("served_model") != model:
+                    return None
                 items = block.get("items")
                 if isinstance(items, list) and items:
                     collected.extend(items)
-        return collected or None
+        if not collected:
+            return None
+        # A merged message whose other half came from another route has no block for that half:
+        # its calls would be missing while their outputs stay.
+        replayed = {i.get("call_id") for i in collected if isinstance(i, dict) and i.get("type") == "function_call"}
+        if any(_get(call, "id") not in replayed for call in (_get(msg, "tool_calls") or [])):
+            return None
+        return collected
 
-    def _messages_to_input(self, messages: list) -> list:
+    def _messages_to_input(self, messages: list, model: Optional[str] = None) -> list:
         """Build the Responses `input` item list from a ChatMessage history.
 
         Assistant turns produced by THIS client replay their output items
@@ -518,7 +536,7 @@ class OpenAIResponsesClient(LLMClient):
                 # a PARTIAL chain, which fails verification. Reconstruct from
                 # content/tool_calls instead (clean chain restart).
                 verbatim = None if (_get(msg, "rd_orphaned") or not may_replay[index]) \
-                    else self._extract_verbatim_items(msg)
+                    else self._extract_verbatim_items(msg, model)
                 if verbatim is not None:
                     # The block keeps the model's RAW arguments string, while
                     # tool_calls on the same message carry the copy
@@ -726,7 +744,33 @@ class OpenAIResponsesClient(LLMClient):
         if anthropic_cache_conversation(self.prompt_cache_mode, has_history):
             payload["cache_control"] = {"type": "ephemeral"}
 
-    def _build_payload(self, messages: list, tools: Optional[list]) -> dict:
+    def _run_model(self, messages: list) -> str:
+        """The model this run's request goes to.
+
+        A gateway alias (``~google/gemini-flash-latest``) is resolved per
+        request, and OpenRouter walks it down to an older model when the newest
+        fails (429/5xx; undocumented, OpenRouterTeam/docs#601). Measured on a
+        shorts_producer run 2026-09-30: 23 of 69 calls went to 3.7 after a 504
+        from 3.8, interleaved -- every switch a cold prompt cache (20 % read on
+        those calls, 74 % on the others), and each one had waited ~25 s for the
+        504 first. So a run stays on the model that answered its latest turn, as
+        it stays on its backend (``routing_pinned_to_last_backend``); a refusal
+        sends the retry to the alias again. A run without a history of its own
+        starts at the alias; a continued session stays on its model until that
+        refuses.
+        """
+        if not (self._is_openrouter and self.model.startswith("~")):
+            return self.model
+        for msg in reversed(messages):
+            for block in reversed(_get(msg, "reasoning_details") or []):
+                if (isinstance(block, dict) and block.get("format") == RESPONSES_ITEMS_FORMAT
+                        and block.get("model") == self.model):
+                    served = block.get("served_model")
+                    return served if isinstance(served, str) else self.model
+        return self.model
+
+    def _build_payload(self, messages: list, tools: Optional[list],
+                       model: Optional[str] = None) -> dict:
         # No `instructions` field. It used to carry the newest volatile note
         # (a developer message with `injected_by`), lifted out of `input` --
         # the one place a text can sit without joining the conversation, since
@@ -739,8 +783,8 @@ class OpenAIResponsesClient(LLMClient):
         # the max-steps request, which only works as the LAST thing the model
         # reads -- was the most likely one to be carried off to the head.
         payload: dict = {
-            "model": self.model,
-            "input": self._messages_to_input(messages),
+            "model": model or self.model,
+            "input": self._messages_to_input(messages, model),
             "store": False,
         }
         if self.thinking_level:
@@ -922,6 +966,9 @@ class OpenAIResponsesClient(LLMClient):
                 # Who produced these items. The encrypted payload only verifies
                 # against this model, so the replay side checks it.
                 "model": self.model,
+                # What an alias resolved to (the run stays on it: _run_model).
+                **({"served_model": response_data["model"]}
+                   if isinstance(response_data.get("model"), str) else {}),
                 "items": output,
             }]
         # Which backend answered: the next request of this run goes back to
@@ -1179,13 +1226,14 @@ class OpenAIResponsesClient(LLMClient):
         # A pin is one backend with no fallbacks, so a refusal reaches us.
         # Local, never on self: one client serves parallel runs.
         pinned = provider is not self.provider_routing
+        model = self._run_model(messages)
 
         # Refused before the first byte: sending the request without the field would hand back
         # free text as if the provider had constrained it.
         self._require_response_format(response_format)
 
         def build_payload() -> dict:
-            payload = self._build_payload(messages, tools)
+            payload = self._build_payload(messages, tools, model)
             if provider:
                 payload["provider"] = provider
             # Here, beside the pin, and not in _build_payload: the heals below rebuild the
@@ -1198,9 +1246,14 @@ class OpenAIResponsesClient(LLMClient):
 
         def release_pin_after_refusal() -> bool:
             """A refusal sends the retry out as the model entry is configured."""
-            nonlocal pinned, provider
+            nonlocal pinned, provider, model
+            released = model != self.model
+            if released:
+                # The input stays as built: the alias most likely answers with the same model.
+                model = payload["model"] = self.model
+                logger.info("Model pin released after a refusal (alias=%s)", self.model)
             if not pinned:
-                return False
+                return released
             pinned = False
             provider = self.provider_routing
             self.forget_backend()
@@ -1337,7 +1390,7 @@ class OpenAIResponsesClient(LLMClient):
                             # costs no retry slot.
                             await self._notify_retry(
                                 self._PROVIDER, self.model, url, stream,
-                                "429, provider pin released", attempt, self.max_retries + 1)
+                                "429, pin released", attempt, self.max_retries + 1)
                             continue
                         retry_after = None
                         try:
@@ -1381,7 +1434,7 @@ class OpenAIResponsesClient(LLMClient):
                         if response.status_code == 404 and release_pin_after_refusal():
                             await self._notify_retry(
                                 self._PROVIDER, self.model, url, stream,
-                                "404, provider pin released", attempt, self.max_retries + 1)
+                                "404, pin released", attempt, self.max_retries + 1)
                             continue
 
                         # Backstop only — the native item round-trip is the fix for

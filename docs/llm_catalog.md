@@ -176,6 +176,40 @@ eines Laufs waren genau das, die übrigen 4 Requests trugen keine `order`).
 Der Speicher lebt im Prozess; nach einem Neustart folgt der erste Aufruf
 jedes Typs wieder der `order`.
 
+**Modell-Pin für Aliase (Responses-Route):** Ein `~author/familie-latest`
+wird pro Request aufgelöst, und OpenRouter steigt still auf ein älteres Modell
+der Familie ab, wenn das neueste scheitert (429/5xx; undokumentiert,
+OpenRouterTeam/docs#601). Gemessen an einem `shorts_producer`-Lauf am
+30.09.2026:
+- 23 von 69 Aufrufen gingen nach einem 504 von gemini-3.8-flash an 3.7.
+- Die Aufrufe wechselten bunt zwischen beiden Modellen, und jeder Wechsel traf
+  auf einen kalten Cache: 20 % gelesen statt 74 %.
+- Jeder dieser Aufrufe wartete vorher rund 25 s auf den 504.
+
+Deshalb bleibt ein Lauf auf dem Modell, das seinen letzten Turn beantwortet
+hat. Das steht als `served_model` im Replay-Block. Der Request nennt den
+konkreten Slug, und den kann OpenRouter nicht mehr abstufen (`available=1`).
+Das gilt für jeden `~`-Alias auf der Responses-Route; DeepSeek stuft genauso
+ab, nach 429ern. Die Claude-Aliase laufen über Chat Completions und sind nicht
+gepinnt, dort wurde kein Abstieg beobachtet.
+
+Eine Ablehnung (429, 5xx, 404) schickt die Wiederholung wieder an den Alias,
+wie beim Anbieter-Pin; der Lauf folgt dann dem Modell, das geantwortet hat,
+bis dieses ablehnt. Ein Lauf ohne eigene Historie beginnt beim Alias, also
+beim neuesten Modell; eine fortgesetzte Session bleibt auf ihrem Modell, bis es
+ablehnt. Der Preis: Scheitert das gepinnte Modell, wartet derselbe
+Aufruf zweimal, weil der Alias es vor dem Abstieg noch einmal versucht.
+Dafür bleibt ein kurzer Aussetzer ohne Modellwechsel.
+
+Der Replay-Block eines anderen Modells desselben Alias gilt dabei als fremd:
+Sein verschlüsseltes Reasoning prüft nur das Modell, das es geschrieben hat.
+Früher trug der Block nur den Alias, und die Prüfung verglich Alias mit Alias.
+Ist ein Block einer Nachricht fremd, oder fehlt einer ihrer Tool-Aufrufe im
+Replay, wird die ganze Nachricht neu aufgebaut.
+Der Message-Validator fasst aufeinanderfolgende Turns zusammen; nur halb
+zurückgespielt, fehlten die Aufrufe der fremden Hälfte, ihre Ergebnisse
+standen aber im Request.
+
 ### `session_id`: Cache-Lokalität ohne harten Pin
 
 OpenRouters Prompt-Cache ist backend-lokal (siehe oben). `session_id` ist der
