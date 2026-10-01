@@ -406,6 +406,136 @@ async def test_the_stored_vars_are_the_last_calls_vars(tmp_path):
     assert stored["context_vars"] == {"genre": "thriller"}
 
 
+async def test_a_calls_llm_params_run_it_on_its_own_model_with_them(harness, tmp_path, monkeypatch):
+    """service_tier: flex for one call: the model the agent runs on -- its advanced one with advanced -- with the
+    params over its own (override_for_profile), in the feedback rounds too; a call without runs the agent's own."""
+    from agent_system.llm import factory
+
+    built = []
+
+    def override(config, agent_config, profile, params):
+        assert agent_config is writer.agent_config, "the agent's own params go under the call's"
+        built.append((profile, params))
+        return f"client-{profile}", f"{profile}:p/m"
+
+    monkeypatch.setattr(factory, "override_for_profile", override)
+    writer = FakeAgent("writer", lambda call: '{"ok": true}' if len(writer.calls) > 1 else "not json")
+    writer.agent_config.advanced_llm_profile = "adv"
+    host = AgentHost(tmp_path / "sessions", writer)
+    _, row = await run(harness, host, machine("""\
+        a:
+          do: {agent: writer, task: rate it, schema: {type: object}, llm_params: {service_tier: "{{ params.tier }}"}}
+          transitions: [{target: b}]
+        b:
+          do: {agent: writer, task: again, advanced: true, llm_params: "{{ {'thinking_level': 'high'} }}"}
+          transitions: [{target: c}]
+        c:
+          do: {agent: writer, task: other, llm_profile: "{{ params.model }}"}
+          transitions: [{target: d}]
+        d:
+          do: {agent: writer, task: plain}
+          transitions: [{target: done}]
+        done: {type: final}
+        """, head="params: {tier: {type: string, default: flex}, model: {type: string, default: cheap, "
+                  "enum: [cheap, normal]}}\n"))
+
+    assert row["status"] == "succeeded", row["error"]
+    assert built == [("normal", {"service_tier": "flex"})] * 2 + [("adv", {"thinking_level": "high"}),
+                                                                  ("cheap", None)]
+    assert [call["llm"] for call in writer.calls] == [("client-normal", "normal:p/m")] * 2 + [
+        ("client-adv", "adv:p/m"), ("client-cheap", "cheap:p/m"), (None, None)]
+    assert [call["advanced"] for call in writer.calls] == [False, False, True, False, False]
+
+
+@pytest.mark.parametrize("case", ["computed", "no enum", "with advanced", "not configured", "literal not configured"])
+def test_llm_profile_is_a_profile_the_configuration_has(case):
+    """Like an agent name: a literal or a parameter with an enum, so the configuration check sees every value."""
+    from plugins.stategraph.tests.stategraph_testkit import errors, validate
+
+    step, head = {"computed": ("llm_profile: \"{{ 'or-' + params.m }}\"", "params: {m: {type: string, default: x}}"),
+                  "no enum": ("llm_profile: \"{{ params.m }}\"", "params: {m: {type: string, default: x}}"),
+                  "with advanced": ("llm_profile: x, advanced: true", ""),
+                  "not configured": ("llm_profile: \"{{ params.m }}\"",
+                                     "params: {m: {type: string, default: x, enum: [x, gone]}}"),
+                  "literal not configured": ("llm_profile: gone", "")}[case]
+    files = machine(f"""\
+        a:
+          do: {{agent: writer, task: t, {step}}}
+          transitions: [{{target: done}}]
+        done: {{type: final}}
+        """, head=head + "\n")
+
+    def configured(what, name, extra):
+        return f"LLM profile {name!r} is not configured" if what == "llm_profile" and name == "gone" else None
+
+    problems = errors(validate(files, config_check=configured))
+    expected = {"computed": ("SG005", "a computed name"), "no enum": ("SG005", "with an enum"),
+                "with advanced": ("SG005", "not both"), "not configured": ("SG007", "'gone' is not configured"),
+                "literal not configured": ("SG007", "'gone' is not configured")}[case]
+    assert [(p.code, expected[1] in p.message) for p in problems] == [(expected[0], True)], problems
+
+
+@pytest.mark.parametrize("params", ["{base_url: 'https://elsewhere.example'}", "{servce_tier: flex}",
+                                    "{provider_routing: {sort: price}}", "\"{{ {'model': 'other/model'} }}\""])
+async def test_llm_params_never_pick_another_model(harness, tmp_path, params):
+    """Which model -- and where its API key goes -- is the agent's configuration, not a machine's: a map is refused
+    by the validator, one template when it rendered, before the agent runs. A typo is no LLM param either."""
+    from plugins.stategraph.tests.stategraph_testkit import errors, validate
+
+    files = machine(f"""\
+        a:
+          do: {{agent: writer, task: t, llm_params: {params}}}
+          transitions: [{{target: done}}]
+        done: {{type: final}}
+        """)
+    problems = errors(validate(files))
+    if params.startswith("{"):
+        assert [p.code for p in problems] == ["SG005"] and "cannot be set for a call" in problems[0].message, problems
+        return
+    assert not problems, problems
+    host = AgentHost(tmp_path / "sessions", FakeAgent("writer"))
+    _, row = await run(harness, host, files)
+    assert row["status"] == "failed" and row["error"]["type"] == "config", row["error"]
+    assert "['model'] cannot be set for a call" in row["error"]["message"] and host.calls() == [], row["error"]
+
+
+def test_llm_params_are_a_map_or_one_template():
+    from plugins.stategraph.tests.stategraph_testkit import errors, validate
+
+    problems = errors(validate(machine("""\
+        a:
+          do: {agent: writer, task: t, llm_params: flex}
+          transitions: [{target: done}]
+        done: {type: final}
+        """)))
+    assert [(p.code, p.message.startswith("llm_params must be a map")) for p in problems] == [("SG005", True)], problems
+
+
+@pytest.mark.parametrize("llm, refusal", [({"llm_profile": "gone"}, "'gone' is not configured"),
+                                         ({"llm_profile": "cheap", "llm_params": {"thinking_level": "hot"}},
+                                          "no LLM for profile 'cheap' with {'thinking_level': 'hot'}")])
+async def test_a_call_the_backend_refuses_leaves_no_instance_behind(tmp_path, llm, refusal):
+    """The call's client is built before its sub-session: an unknown profile (a force-saved machine never met the
+    validator) or a value the model refuses ends the activity without an orphan instance in the run's sessions."""
+    host = AgentHost(tmp_path / "s", FakeAgent("writer"))
+    config = SimpleNamespace(llm_system=SimpleNamespace(profiles={"cheap": object()}))
+    backend = ScarabHiveBackend(runner=host, system_config=config, session_id="sg_r1", user_id="ann")
+    with pytest.raises(ActivityError) as refused:
+        await backend.agent_create(activity(), agent="writer", task="t", advanced=False, vars={}, **llm)
+    assert refused.value.type == "config" and refusal in str(refused.value), refused.value
+    assert await host.sessions.list_sessions("ann") == [] and host.calls() == []
+
+
+def test_the_configuration_check_knows_the_llm_profiles():
+    """SG007's own check, not a stand-in: a profile llm_system does not have is refused."""
+    from plugins.stategraph.engine.backend import make_config_check
+
+    config = SimpleNamespace(llm_system=SimpleNamespace(profiles={"cheap": object()}), plugins=None)
+    check = make_config_check(config, runner="runner", own_instance="stategraph")
+    assert check("llm_profile", "cheap", {}) is None
+    assert check("llm_profile", "gone", {}) == "LLM profile 'gone' is not configured"
+
+
 def test_the_runtime_refuses_what_sg007_refuses(tmp_path):
     """A force-saved machine never met the validator: the backend asks the same check before running."""
     host = AgentHost(tmp_path / "s", FakeAgent("stategraph_author"))

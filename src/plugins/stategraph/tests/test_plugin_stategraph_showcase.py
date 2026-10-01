@@ -37,6 +37,7 @@ ONE_TEMPLATE = ("MachineSpec", "vars", "one template")  # vars: "{{ ... }}" inst
 #: What the showcase leaves out, and why; each must stay unused (else it belongs back in the check).
 LEFT_OUT = {
     ("decide", "profile"): "names a profile of the operator's LLM config, which another installation lacks",
+    ("agent", "llm_profile"): "names a profile of the operator's LLM config, which another installation lacks",
     ("map", "fail", "collect"): "parallel's fail: collect shows it (review)",
     ("MachineAgentSpec", "input", "json"): "one agent: block shows one choice of each",
     ("MachineAgentSpec", "on_wait", "block"): "one agent: block shows one choice of each",

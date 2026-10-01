@@ -55,11 +55,14 @@ def _stop_grace() -> float:
 
 class Backend(Protocol):
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
-                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
-        """Run a new instance of an agent: ``(answer text, instance id)``."""
+                           vars: dict[str, Any], llm_profile: Optional[str] = None,
+                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
+        """Run a new instance of an agent: ``(answer text, instance id)``. ``llm_profile``, ``llm_params``: the
+        model this call runs on, and params over the agent's own for it (passed only when an activity sets them)."""
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
-                             advanced: bool, vars: dict[str, Any]) -> str:
+                             advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
+                             llm_params: Optional[dict[str, Any]] = None) -> str:
         """Follow up an instance of ``agent``: its answer text."""
 
     async def call_tool(self, act: "ActivityRun", *, tool: str, args: dict[str, Any]) -> Any:
@@ -192,8 +195,31 @@ class ScarabHiveBackend:
             raise ActivityError("config", f"continue: instance {instance_id!r} belongs to agent "
                                           f"{data.get('agent_name')!r}, not {agent!r}")
 
+    def _llm_for(self, agent: Any, advanced: bool, profile: Optional[str],
+                 params: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
+        """``(client, label)`` for a call with llm_profile or llm_params: that profile -- else the one the agent
+        runs on, its advanced one with ``advanced`` -- with the params over the agent's own for it
+        (override_for_profile, as --llm builds it). ``(None, None)`` without: the agent's own client. Its
+        fallbacks run as configured."""
+        if not profile and not params:
+            return None, None
+        from agent_system.llm.factory import override_for_profile
+
+        from agent_system.llm.factory import UnknownLLMProfile
+
+        config = agent.agent_config
+        profile = profile or (advanced and config.advanced_llm_profile) or config.default_llm_profile
+        try:
+            return override_for_profile(self.system_config, config, profile, params)
+        except UnknownLLMProfile:
+            raise ActivityError("config", f"{agent.name}: LLM profile {profile!r} is not configured") from None
+        except Exception as exc:  # a value the model's schema refuses
+            raise ActivityError("config", f"{agent.name}: no LLM for profile {profile!r} with {params or {}}: "
+                                          f"{exc}") from exc
+
     async def _run_agent(self, act: "ActivityRun", agent: Any, service: Any, *, instance_id: str, message: str,
-                         advanced: bool, variables: dict[str, Any], new: bool) -> str:
+                         advanced: bool, variables: dict[str, Any], new: bool,
+                         llm: tuple[Any, Optional[str]] = (None, None)) -> str:
         """One run of ``agent`` on its instance session: the run's final answer.
 
         The instance session holds exactly this call's effective vars -- replaced, never accumulated
@@ -229,7 +255,7 @@ class ScarabHiveBackend:
             tracker.clear_session_template_vars(instance_id)
             if variables:
                 tracker.set_session_template_vars(instance_id, dict(variables))
-            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend))
+            work = asyncio.ensure_future(self._answer(agent, instance_id, message, request_id, advanced, spend, *llm))
             text = await self._guarded(act, agent.name, work)
             if not await service.save_session(agent, user, instance_id, agent.name, profile, was_new_session=new):
                 logger.warning("stategraph: instance %s of %s was not saved; a continue after a restart "
@@ -250,13 +276,14 @@ class ScarabHiveBackend:
 
     @staticmethod
     async def _answer(agent: Any, instance_id: str, message: str, request_id: str, advanced: bool,
-                      spend: _Spend) -> str:
+                      spend: _Spend, llm: Any = None, label: Optional[str] = None) -> str:
         """Consume the run's events to its end; the final summary is the answer, an error or cancel a failure.
-        ``spend`` adds up what its calls cost."""
+        ``spend`` adds up what its calls cost. ``llm``: the client of a call with llm_params, ``label`` its name."""
         from contextlib import aclosing
 
         text = ""
         async with aclosing(agent.run_events(task=message, request_id=request_id, session_id=instance_id,
+                                             llm_override=llm, llm_profile_info_override=label,
                                              use_advanced_model=advanced)) as events:
             async for event in events:
                 spend.add(event)
@@ -310,9 +337,11 @@ class ScarabHiveBackend:
             raise ActivityError("agent_failed", f"{agent}: {exc}") from exc
 
     async def agent_create(self, act: "ActivityRun", *, agent: str, task: str, advanced: bool,
-                           vars: dict[str, Any]) -> tuple[str, Optional[str]]:
+                           vars: dict[str, Any], llm_profile: Optional[str] = None,
+                           llm_params: Optional[dict[str, Any]] = None) -> tuple[str, Optional[str]]:
         target = self._agent(agent)
         service = self._sessions(target)
+        llm = self._llm_for(target, advanced, llm_profile, llm_params)  # refused before an instance exists
         budget = (self.nesting or {}).get("depth_budget")
         if budget is not None and budget < 1:  # the SAM above the run granted no level below its caller
             raise ActivityError("config", f"{agent}: the caller of this run has no sub-agent level left below it "
@@ -331,7 +360,7 @@ class ScarabHiveBackend:
             raise ActivityError("agent_failed", f"{agent}: its session could not be created: {exc}") from exc
         instance = created["session_id"]
         text = await self._run_agent(act, target, service, instance_id=instance, message=task, advanced=advanced,
-                                     variables=vars, new=True)
+                                     variables=vars, new=True, llm=llm)
         return text, instance
 
     # ------------------------------------------------------------ the run's own session
@@ -403,12 +432,14 @@ class ScarabHiveBackend:
                            exc_info=True)
 
     async def agent_continue(self, act: "ActivityRun", *, agent: str, instance_id: str, message: str,
-                             advanced: bool, vars: dict[str, Any]) -> str:
+                             advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
+                             llm_params: Optional[dict[str, Any]] = None) -> str:
         target = self._agent(agent)
         service = self._sessions(target)
         await self._instance_of_this_run(service, self.user_id or "anonymous", instance_id, target.name)
+        llm = self._llm_for(target, advanced, llm_profile, llm_params)
         return await self._run_agent(act, target, service, instance_id=instance_id, message=message,
-                                     advanced=advanced, variables=vars, new=False)
+                                     advanced=advanced, variables=vars, new=False, llm=llm)
 
     def agent_template_vars(self, agent: str) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
@@ -690,6 +721,9 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
                 return (f"a config entry holds {name!r} for this machine: its settings run, not this block's -- "
                         "remove the entry or name the agent")
             return f"{name!r} is the name of another server ({final_type(name) or 'unknown type'}); name the agent"
+        if what == "llm_profile":
+            llm = getattr(system_config, "llm_system", None)
+            return None if name in (getattr(llm, "profiles", None) or {}) else f"LLM profile {name!r} is not configured"
         if what == "profile":
             llm = getattr(system_config, "llm_system", None)
             profiles = getattr(llm, "decision_profiles", None) or {}

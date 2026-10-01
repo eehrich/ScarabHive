@@ -117,6 +117,7 @@ machines:                                  # machines inside this file: do: {mac
           agent: stategraph_example_agent
           continue: "{{ ctx.editor }}"     # the same instance: it still knows the text
           task: Give the article a title of at most eight words. Answer with the title only.
+          llm_params: {thinking_level: low}  # this call only, over the agent's own params: a title needs little thought
         transitions:
           - target: done
             effect: ctx.title = out.strip()

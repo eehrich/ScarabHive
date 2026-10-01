@@ -1011,6 +1011,18 @@ class Agent(ToolServer):
         """
         return ToolCallLoopDetector(**self._loop_detection_config)
 
+    def _switches_model(self, llm_override: Optional[LLMClient]) -> bool:
+        """Whether *llm_override* takes the run off the agent's own models -- then stuck escalation stays off.
+        A profile of its own chain is one it runs on anyway: its primary with params only (--llm-params, a
+        machine call's llm_params), or a cheaper member a machine call picks (llm_profile). Its advanced
+        profile, a foreign one (--llm) or a client that does not say which count as a switch."""
+        if llm_override is None:
+            return False
+        cfg = self.agent_config
+        chain = (cfg.llm_profile if isinstance(cfg.llm_profile, list) else [cfg.llm_profile]) if cfg else []
+        profile = getattr(llm_override, "profile_name", None)
+        return profile is None or profile not in chain or profile == cfg.advanced_llm_profile
+
     def _create_stuck_escalator(self, *, already_advanced: bool) -> StuckEscalator:
         """Per-request escalator (window + budget state must not leak across
         requests on this shared Agent singleton). Disabled — a no-op — when the
@@ -3134,7 +3146,7 @@ class Agent(ToolServer):
         # this shared Agent singleton). Disabled unless configured and an advanced
         # profile exists and we're not already running advanced.
         escalator = self._create_stuck_escalator(
-            already_advanced=(use_advanced_model or llm_override is not None))
+            already_advanced=(use_advanced_model or self._switches_model(llm_override)))
         escalate_error_streak = int(
             getattr(self.agent_config, "escalate_error_streak", 2)) if self.agent_config else 2
 

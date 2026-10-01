@@ -60,6 +60,12 @@ def runnable(files: dict[str, str], root: str = ROOT) -> MachineTree:
 
 # ------------------------------------------------------------------ backend
 
+def _passed(**llm: Any) -> dict[str, Any]:
+    """A call's llm_profile/llm_params in its record only when the activity passed them: the records of all
+    others stay as they were."""
+    return {key: value for key, value in llm.items() if value is not None}
+
+
 class FakeBackend:
     """Answers agent/tool/decision calls from per-state-path handlers and records every call.
 
@@ -94,15 +100,18 @@ class FakeBackend:
             raise value
         return value
 
-    async def agent_create(self, act: Any, *, agent: str, task: str, advanced: bool,
-                           vars: dict[str, Any]) -> tuple[Any, Optional[str]]:
-        answer = await self._answer("agent_create", act, agent=agent, task=task, vars=dict(vars))
+    async def agent_create(self, act: Any, *, agent: str, task: str, advanced: bool, vars: dict[str, Any],
+                           llm_profile: Optional[str] = None,
+                           llm_params: Optional[dict[str, Any]] = None) -> tuple[Any, Optional[str]]:
+        answer = await self._answer("agent_create", act, agent=agent, task=task, vars=dict(vars),
+                                    **_passed(llm_profile=llm_profile, llm_params=llm_params))
         return answer, f"inst-{act.path}"
 
     async def agent_continue(self, act: Any, *, agent: str, instance_id: str, message: str,
-                             advanced: bool, vars: dict[str, Any]) -> Any:
+                             advanced: bool, vars: dict[str, Any], llm_profile: Optional[str] = None,
+                             llm_params: Optional[dict[str, Any]] = None) -> Any:
         return await self._answer("agent_continue", act, agent=agent, instance_id=instance_id, message=message,
-                                  vars=dict(vars))
+                                  vars=dict(vars), **_passed(llm_profile=llm_profile, llm_params=llm_params))
 
     async def call_tool(self, act: Any, *, tool: str, args: dict[str, Any]) -> Any:
         return await self._answer("call_tool", act, tool=tool, args=dict(args))
@@ -157,7 +166,8 @@ class FakeAgent:
         manager = get_cancellation_manager()
         token = manager.create_token(request_id)  # as Agent.run_events: registered for the run, gone after it
         call = {"agent": self.name, "task": task, "session": session_id, "request_id": request_id,
-                "advanced": use_advanced_model, "vars": dict(tracker.get_session_template_vars(session_id)),
+                "advanced": use_advanced_model, "llm": (llm_override, llm_profile_info_override),
+                "vars": dict(tracker.get_session_template_vars(session_id)),
                 "history": [message.content for message in history], "token": token}
         self.calls.append(call)
         try:

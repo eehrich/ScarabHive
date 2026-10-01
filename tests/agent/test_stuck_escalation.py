@@ -165,3 +165,18 @@ class TestCreateStuckEscalatorGating:
     def test_disabled_when_flag_off(self):
         esc = self._agent(auto_escalate_on_stuck=False)._create_stuck_escalator(already_advanced=False)
         assert not esc.enabled
+
+    def test_only_an_override_off_the_agents_own_chain_is_a_switch(self):
+        """--llm-params alone, or a machine call's llm_params or cheaper chain member, run one of the agent's own
+        models: escalation stays on. Its advanced profile, a foreign one -- or a client that does not say
+        which -- is a switch."""
+        agent = self._agent(llm_profile=["std", "cheap"])
+        assert not agent._switches_model(None)
+        assert not agent._switches_model(SimpleNamespace(profile_name="std"))
+        assert not agent._switches_model(SimpleNamespace(profile_name="cheap"))
+        assert agent._switches_model(SimpleNamespace(profile_name="advanced"))
+        assert agent._switches_model(SimpleNamespace(profile_name="other"))
+        assert agent._switches_model(object())
+        assert not self._agent(llm_profile="std")._switches_model(SimpleNamespace(profile_name="std"))
+        # its advanced profile is a switch also where the chain has it as a fallback
+        assert self._agent(llm_profile=["std", "advanced"])._switches_model(SimpleNamespace(profile_name="advanced"))

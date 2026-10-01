@@ -59,6 +59,32 @@
           "description": "may a resumed run start it again if it was in flight at the crash? default: true, tool: false",
           "title": "Idempotent"
         },
+        "llm_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "LLM params for this call (service_tier, thinking_level, ...) over the agent's own for the model it runs on: a map of templates, or one template that renders to an object; not which model (provider, model, ...)",
+          "title": "Llm Params"
+        },
+        "llm_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the LLM profile this call runs on instead of the agent's own, as --llm does: a literal, or {{ params.x }} with an enum; the agent's chain stays its fallback. Not with advanced",
+          "title": "Llm Profile"
+        },
         "parse": {
           "anyOf": [
             {

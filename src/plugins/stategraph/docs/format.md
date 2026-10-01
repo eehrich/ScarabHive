@@ -61,7 +61,7 @@ states:
 
 | Kind (`do:`) | Keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text or parsed value |
+| `agent: <name>` | `task`, `schema`, `parse`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text or parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile` -- or `by` (an agent decides), `advanced`, `parse_retries` | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input`, `profile` or `by` | `{name: {...}}` |

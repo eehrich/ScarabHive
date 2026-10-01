@@ -143,7 +143,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
 
 | kind | keys | `out` |
 |---|---|---|
-| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `advanced`, `continue` | answer text, or the parsed value |
+| `agent: <name>` | `task`; `schema`, `parse`, `parse_retries`, `vars`, `llm_profile`, `llm_params`, `advanced`, `continue` | answer text, or the parsed value |
 | `tool: <flat tool name>` | `args`, `error_if` | the tool's result; an error result raises `tool_failed` |
 | `decide: noul\|choice\|score` | `question`, `input`, `criteria`, `profile`, or `by: <agent>` (an agent decides) | `{value, confidence, probabilities}` |
 | `decide: questions` | `questions: {name: {type, question, criteria}}`, `input` | `{name: {value, confidence, probabilities}}` |

@@ -54,6 +54,13 @@ class AgentSpec(KindSpec):
     vars: Union[dict[str, Any], str] = Field(
         default_factory=dict, description="agent template vars for this call, over the machine's: a map of "
                                           "templates, or one template that renders to an object of names")
+    llm_profile: Optional[str] = Field(
+        None, description="the LLM profile this call runs on instead of the agent's own, as --llm does: a literal, or "
+                          "{{ params.x }} with an enum; the agent's chain stays its fallback. Not with advanced")
+    llm_params: Union[dict[str, Any], str] = Field(
+        default_factory=dict, description="LLM params for this call (service_tier, thinking_level, ...) over the "
+                                          "agent's own for the model it runs on: a map of templates, or one "
+                                          "template that renders to an object; not which model (provider, model, ...)")
     advanced: bool = Field(False, description="use the agent's advanced model profile")
     continue_: Optional[str] = Field(
         None, alias="continue", description="instance id (template) of this agent to follow up instead of spawning")
@@ -63,13 +70,43 @@ class AgentSpec(KindSpec):
     def _parse(cls, value: Optional[str], info: Any) -> Optional[str]:
         return None if value is None else check_callable_ref(value, info.field_name)
 
+    @field_validator("llm_params")
+    @classmethod
+    def _llm_params(cls, value: Union[dict[str, Any], str]) -> Union[dict[str, Any], str]:
+        problem = llm_params_problem(value) if isinstance(value, dict) else None
+        if problem:
+            raise ValueError(problem)
+        return value
+
+    @model_validator(mode="after")
+    def _one_model_choice(self) -> "AgentSpec":
+        if self.llm_profile is not None and self.advanced:
+            raise ValueError("llm_profile or advanced, not both: each picks the model the call runs on")
+        if self.llm_profile is not None and "{{" in self.llm_profile and not param_ref(self.llm_profile):
+            raise ValueError("llm_profile: a literal or {{ params.<name> }} with an enum -- a computed name would "
+                             "bypass the configuration check")
+        return self
+
+
+#: What a machine may set for one call: how the model answers, not which model, where the request goes (base_url,
+#: provider_routing: an agent's API key, its provider pin) or what it may do (plugins).
+CALL_LLM_PARAMS = frozenset({"service_tier", "thinking_level", "thinking_budget", "include_thoughts", "max_tokens",
+                             "temperature"})
+
+
+def llm_params_problem(params: dict[str, Any]) -> Optional[str]:
+    """Why ``params`` cannot be a call's llm_params: a key not in CALL_LLM_PARAMS."""
+    wrong = set(params) - CALL_LLM_PARAMS
+    return (f"llm_params: {sorted(wrong)} cannot be set for a call, only {sorted(CALL_LLM_PARAMS)}; which model and "
+            "where it runs is the agent's configuration") if wrong else None
+
 
 @register
 class AgentKind(ActivityKind):
     key = "agent"
     external = True
     spec_model = AgentSpec
-    template_fields = ("agent", "task", "vars", "continue")
+    template_fields = ("agent", "task", "vars", "llm_profile", "llm_params", "continue")
     title = "Agent"
     icon = "brain"
     summary = ("Run an agent (a new instance, or continue one) with a task; out = its answer (parsed with "
@@ -81,6 +118,11 @@ class AgentKind(ActivityKind):
             refs["agent"] = spec.agent
         elif param_ref(spec.agent):
             refs["agent_param"] = param_ref(spec.agent) or ""
+        if spec.llm_profile is not None:
+            if "{{" not in spec.llm_profile:
+                refs["llm_profile"] = spec.llm_profile
+            elif param_ref(spec.llm_profile):
+                refs["llm_profile_param"] = param_ref(spec.llm_profile) or ""
         return refs
 
     def extra_inputs(self, spec: AgentSpec, act: "ActivityRun") -> dict[str, Any]:
@@ -90,14 +132,21 @@ class AgentKind(ActivityKind):
         agent = str(act.render(spec.agent, "agent"))
         task = act.text(act.render(spec.task, "task"))
         variables = {**act.frame_vars(), **vars_object(act.render(spec.vars, "vars"), f"{act.path}.vars")}
+        llm_params = vars_object(act.render(spec.llm_params, "llm_params"), f"{act.path}.llm_params")
+        problem = llm_params_problem(llm_params)  # one template renders its keys only now
+        if problem:
+            raise ActivityError("config", problem)
+        profile = str(act.render(spec.llm_profile, "llm_profile")) if spec.llm_profile else None
+        # passed only when set: a backend written before them runs every other machine as it did
+        tuned = {key: value for key, value in (("llm_profile", profile), ("llm_params", llm_params)) if value}
         act.meta["agent"] = agent
         if spec.continue_:
             instance: Optional[str] = str(act.render(spec.continue_, "continue"))
             text = await act.backend.agent_continue(act, agent=agent, instance_id=instance, message=task,
-                                                    advanced=spec.advanced, vars=variables)
+                                                    advanced=spec.advanced, vars=variables, **tuned)
         else:
             text, instance = await act.backend.agent_create(act, agent=agent, task=task,
-                                                            advanced=spec.advanced, vars=variables)
+                                                            advanced=spec.advanced, vars=variables, **tuned)
         act.meta["instance_id"] = instance
         if spec.schema_ is None and spec.parse is None and spec.check is None:
             return text
@@ -105,15 +154,16 @@ class AgentKind(ActivityKind):
         checker = resolve_callable(spec.check, act, "check") if spec.check else None
         return await usable_answer(act, agent=agent, instance=instance, text=text, parser=parser,
                                    schema=spec.schema_, retries=spec.parse_retries, advanced=spec.advanced,
-                                   variables=variables, checker=checker)
+                                   variables=variables, checker=checker, tuned=tuned)
 
 
 async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[str], text: str, parser: Any,
                         schema: Optional[dict[str, Any]], retries: int, advanced: bool,
-                        variables: dict[str, Any], checker: Any = None) -> Any:
+                        variables: dict[str, Any], checker: Any = None,
+                        tuned: Optional[dict[str, Any]] = None) -> Any:
     """An agent's answer parsed (``parser``, else JSON -- the text as it is when neither is asked for), checked
-    against ``schema``, then by ``checker``; what fails goes back to the same instance as feedback, ``retries``
-    times, then fails the activity."""
+    against ``schema``, then by ``checker``; what fails goes back to the same instance as feedback (on the call's
+    ``tuned`` llm_profile/llm_params), ``retries`` times, then fails the activity."""
     for round_ in range(retries + 1):
         value, problem = (text, None) if parser is None and schema is None else parse_answer(text, parser, schema)
         if problem is None and checker is not None:
@@ -126,7 +176,8 @@ async def usable_answer(act: "ActivityRun", *, agent: str, instance: Optional[st
         act.meta["feedback_rounds"] = round_ + 1
         text = await act.backend.agent_continue(
             act, agent=agent, instance_id=instance, advanced=advanced, vars=variables,
-            message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.")
+            message=f"Your answer could not be used: {problem}\nAnswer again, correcting exactly this.",
+            **(tuned or {}))
     raise AssertionError("unreachable")
 
 
