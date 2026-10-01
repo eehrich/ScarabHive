@@ -1000,10 +1000,10 @@ plugins:
         # and what arrived since the model's last answer (parallel previews: each seen once).
         # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
         # cover_feedback_judge) set their own value in their agent YAML.
-        always_compact_media_keep_last: 2
+        always_compact_media_keep_last: 12
         # Past keep_last, evict down to keep_last - headroom (at least 1): one
         # cache break per headroom+1 new media messages instead of one per message.
-        always_compact_media_headroom: 1
+        always_compact_media_headroom: 10
 
     context_usage_tracker:
       type: context_usage_tracker
