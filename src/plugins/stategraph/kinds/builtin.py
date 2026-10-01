@@ -88,10 +88,11 @@ class AgentSpec(KindSpec):
         return self
 
 
-#: What a machine may set for one call: how the model answers, not which model, where the request goes (base_url,
-#: provider_routing: an agent's API key, its provider pin) or what it may do (plugins).
+#: What a machine may set for one call: how the model answers, and whether its first call follows the configured
+#: provider order or the backend the agent's last run ended on -- not which model, where the request goes
+#: (base_url, provider_routing: an agent's API key, its provider pin) or what it may do (plugins).
 CALL_LLM_PARAMS = frozenset({"service_tier", "thinking_level", "thinking_budget", "include_thoughts", "max_tokens",
-                             "temperature"})
+                             "temperature", "provider_affinity_minutes"})
 
 
 def llm_params_problem(params: dict[str, Any]) -> Optional[str]:
