@@ -997,6 +997,7 @@ plugins:
         
         # Always compact media - runs regardless of token count
         # Removes ALL media items except those in the last N messages that contain media
+        # and what arrived since the model's last answer (parallel previews: each seen once).
         # Set to 0 to disable, >0 to enable. Agents that need more (cover_artist,
         # cover_feedback_judge) set their own value in their agent YAML.
         always_compact_media_keep_last: 2

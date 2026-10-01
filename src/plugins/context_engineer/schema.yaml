@@ -298,13 +298,13 @@ config:
     type: integer
     default: 0
     minimum: 0
-    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media. Set to 0 to disable, 5 to keep last 5 messages with media."
+    description: "Always compact media regardless of token count. Keeps only the last N messages that contain media, plus what arrived since the model's last answer (a round of parallel tool calls may bring several images; the model sees each of them once). Set to 0 to disable, 5 to keep last 5 messages with media."
 
   always_compact_media_headroom:
     type: integer
     default: 0
     minimum: 0
-    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries. 0 = evict down to keep_last on every new media message."
+    description: "How far below always_compact_media_keep_last an eviction goes. Nothing is evicted while at most keep_last messages carry media; once more do, only the newest max(1, keep_last - headroom) keep theirs. Each eviction rewrites an old message and breaks the provider prompt cache from there; with headroom that many new media messages arrive without a break after each one (one break per headroom+1 while keep_last - headroom >= 1), at the cost of fewer visible media right after it. keep_last stays the most the context carries, except for media the model has not seen yet. 0 = evict down to keep_last on every new media message."
 
   # Pre-Layer P: message limit
   max_messages:

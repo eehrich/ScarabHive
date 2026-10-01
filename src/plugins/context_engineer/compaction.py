@@ -147,7 +147,8 @@ class CompactionConfig:
     # call: an old message rewritten and the prompt cache broken from there,
     # every call. With it `headroom` new media messages arrive without a break
     # after each one (while keep_last - headroom >= 1), and keep_last
-    # stays the most the context carries. 0 = evict down to keep_last.
+    # stays the most the context carries -- except for media the model has not
+    # seen yet, which always stays for one call. 0 = evict down to keep_last.
     always_compact_media_headroom: int = 0
 
     # Media store settings (for storing inline base64 before compaction)
@@ -1555,7 +1556,8 @@ class LayeredCompactionStrategy:
         self,
         result: CompactionResult
     ) -> None:
-        """Always compact media items, keeping only the last N messages with media.
+        """Always compact media items, keeping only the last N messages with media
+        and whatever arrived since the model's last answer.
         
         This runs regardless of token count and is controlled by
         config.always_compact_media_keep_last (0 = disabled).
@@ -1589,7 +1591,10 @@ class LayeredCompactionStrategy:
 
         # Past the limit, down to below it (always_compact_media_headroom).
         headroom = max(0, self.config.always_compact_media_headroom)
-        protected = set(with_media[-max(1, keep_count - headroom):])
+        # And whatever the model has not seen yet: parallel calls bring several images in one
+        # round, and the pass kept only the newest -- shorts_producer on Sonnet (01.10.2026) asked
+        # for five previews at once and saw one of them.
+        protected = set(with_media[-max(1, keep_count - headroom):]) | set(_arrival_indices(messages))
         picks = [
             _MediaPick(msg_idx, item_idx, item, in_mm,
                        self._media_subject(item), "compacted.")
@@ -1604,7 +1609,7 @@ class LayeredCompactionStrategy:
             result.final_tokens = self._estimate_messages_tokens(messages)
             logger.info(
                 f"Always-compact media: {compacted_count} items compacted, "
-                f"{len(protected)} of {len(with_media)} messages with media kept "
+                f"{len(protected & set(with_media))} of {len(with_media)} messages with media kept "
                 f"(keep_last={keep_count}, headroom={headroom})"
             )
 

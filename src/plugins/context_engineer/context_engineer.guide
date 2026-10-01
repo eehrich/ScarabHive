@@ -394,6 +394,9 @@ in all and how to find them.
 @{bullet}@{b}M@{ub} (@{tt}always_compact_media_keep_last@{utt} N, 0 off):
 when more than N messages carry images, audio or video, only the newest
 N minus @{tt}always_compact_media_headroom@{utt} (at least 1) keep theirs.
+What arrived since the model's last answer always stays for that call: a
+round of parallel tool calls may bring several images, and the model sees
+each of them once.
 @{bullet}@{b}Duplicates@{ub} (@{tt}deduplicate_media@{utt}, on): the same
 file or the same bytes twice -- every copy but the newest goes.
 @{bullet}@{b}After a new message from a person@{ub}
