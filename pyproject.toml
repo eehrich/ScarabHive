@@ -65,7 +65,7 @@ dev = [
     "ruff>=0.12",
     "mypy>=1.7",
     "smithery>=0.1.0",
-    "mcp==1.14.1",  # Pin exact version - requires pydantic>=2.11
+    "mcp>=2.2,<3",  # 2.x: MCPError, snake_case fields, httpx2 (src/plugins/mcp_client)
     "uv>=0.8.0",
     "types-PyYAML>=6.0",
     "types-pytz>=2024.1",

@@ -246,7 +246,7 @@ Authorization) or @{tt}basic@{utt}. HTTPS certificates are checked when
 @{tt}network.ssl_verify@{utt} is true, as the shipped
 @{tt}config/config.yaml@{utt} sets it. A configuration without that key
 checks NO certificates -- the setting's default is false. Redirects are
-followed.
+followed within the server's origin only (the SDK's rule).
 
 @{h2}What a server can put in front of the model
 
@@ -340,7 +340,7 @@ plugins:
       enabled: true
 @{body}
 
-It needs the @{tt}mcp@{utt} package (1.14.1 or newer). The management tools
+It needs the @{tt}mcp@{utt} package (2.2 or newer, below 3). The management tools
 need @{tt}"+mcp_client/*"@{utt} in an agent's allowlist; external tools
 need their dotted names, see @{" External tools " link external}.
 

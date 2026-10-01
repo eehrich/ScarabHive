@@ -50,6 +50,8 @@ _STDIO_ALIASES = {"stdio", "local"}
 #: Seconds a new connection gets for its handshake at least, whatever the
 #: server's answer timeout. Tests lower it.
 _HANDSHAKE_FLOOR = 60.0
+#: How long the tool list after the handshake may take before the connection goes on without it.
+_WARM_UP_SECONDS = 10.0
 
 
 class MCPConnectionError(RuntimeError):
@@ -77,12 +79,36 @@ def _transport_closed(error: BaseException) -> Optional[bool]:
         return True                                      # the write stream was already gone
     if isinstance(error, anyio.EndOfStream):
         return False
-    from mcp.shared.exceptions import McpError
-    from mcp.types import CONNECTION_CLOSED
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import CONNECTION_CLOSED, INTERNAL_ERROR
 
-    if isinstance(error, McpError) and getattr(error.error, "code", None) == CONNECTION_CLOSED:
+    if not isinstance(error, MCPError):
+        return None
+    if (error.code, error.message) in _SESSION_LOST:
+        # An HTTP server that restarted forgot our session and rejects every call
+        # before running it: only a new session is answered again. Before the code
+        # test below: the TypeScript texts come with -32000, CONNECTION_CLOSED's code.
+        return True
+    if error.code == CONNECTION_CLOSED:
         return False                                     # sent, and the answer never came
+    if (error.code, error.message) == (INTERNAL_ERROR, "Server returned an error response"):
+        # The SDK's stand-in for an HTTP error without a JSON-RPC body -- also what a
+        # TypeScript server's "no valid session" 400 becomes (it carries no id). A 5xx
+        # may come after the tool ran: the call is not repeated, the next one reconnects.
+        return False
     return None
+
+
+#: What an HTTP server's answer to an unknown session arrives as: the SDK's own
+#: 404 stand-in, the Python SDK's body, and the TypeScript SDK's (its transport,
+#: and the session-map pattern of its examples and server-everything).
+_SESSION_LOST = {
+    (-32600, "Session terminated"),
+    (-32600, "Session not found"),
+    (-32001, "Session not found"),
+    (-32000, "Bad Request: No valid session ID provided"),
+    (-32000, "Bad Request: Server not initialized"),
+}
 
 
 @dataclass
@@ -118,6 +144,7 @@ class ServerConnection:
 
         self._commands: asyncio.Queue[Optional[_Command]] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
+        self._dispatcher: Any = None    # the session's; ours, to see whether its stream ended
         self._closing = False           # the stop sentinel is queued: a new call would wait behind it
         self._stopping = False          # ... by stop(): this client closes, the server did nothing wrong
         self._ready: Optional[asyncio.Future] = None
@@ -168,7 +195,7 @@ class ServerConnection:
             # Bounded: a server that never answers initialize (a stdio
             # process that reads and stays silent) held start() -- and the
             # pool lock, and with it every other connect and close_all --
-            # forever. The HTTP transports were bounded by httpx; stdio not.
+            # forever. The HTTP transports were bounded by httpx2; stdio not.
             # The floor: a stdio program has to start first (npx may download
             # its package), and self.timeout is sized for answers, not that.
             limit = max(self.timeout, _HANDSHAKE_FLOOR)
@@ -234,10 +261,22 @@ class ServerConnection:
         try:
             async with self._open_streams() as (read_stream, write_stream):
                 from mcp import ClientSession
+                from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 
-                async with ClientSession(read_stream, write_stream) as session:
+                self._dispatcher = JSONRPCDispatcher(read_stream, write_stream)
+                async with ClientSession(dispatcher=self._dispatcher) as session:
                     init = await session.initialize()
                     self._record_handshake(init)
+                    if init.capabilities.tools is not None:
+                        # The SDK lists the tools inside a call_tool whose tool it has not
+                        # seen yet: a session lost at that point would count as unsent,
+                        # and the pool would run the tool a second time. Failing or hanging
+                        # here is no failed connect -- the SDK lists lazily again.
+                        try:
+                            await asyncio.wait_for(session.list_tools(), _WARM_UP_SECONDS)
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("MCP server '%s': listing its tools failed: %s", self.name,
+                                           _describe(e) or type(e).__name__)
                     if self._ready is not None and not self._ready.done():
                         self._ready.set_result(None)
                     await self._serve(session)
@@ -315,6 +354,15 @@ class ServerConnection:
 
     async def _run_command(self, session: Any, command: _Command) -> None:
         try:
+            if getattr(self._dispatcher, "_closed", False):
+                # The server's stream ended (it died while idle). mcp 2 would fail this send
+                # as MCPError(CONNECTION_CLOSED) -- as if an answer got lost in flight -- but
+                # nothing left: said so, the pool starts the server again and sends it once more.
+                # ponytail: a private flag (mcp has no public one); if it goes, the idle-death
+                # test fails at the upgrade instead of calls silently not being repeated.
+                import anyio
+
+                raise anyio.ClosedResourceError
             result = await command.run(session)
             if not command.future.done():
                 command.future.set_result(result)
@@ -322,6 +370,10 @@ class ServerConnection:
             # The caller gave up (its future is cancelled already), or the session closes under
             # the call: a crash in several calls at once ends up here, not in the branch below.
             if not command.future.done():
+                if not self._stopping:
+                    # The session went down under a call that still waits for it (an HTTP
+                    # transport crashed): nothing gets through it any more.
+                    self._closing = True
                 command.future.set_exception(MCPConnectionError(
                     f"The connection to MCP server '{self.name}' was closed by this client (stop, disconnect) "
                     f"while the call ran; whether it took effect is unknown.") if self._stopping else MCPServerGone(
@@ -354,7 +406,7 @@ class ServerConnection:
                 return
             if command is not None and not command.future.done():
                 command.future.set_exception(
-                    MCPConnectionError(f"MCP server '{self.name}' disconnected: {error}")
+                    MCPConnectionError(f"MCP server '{self.name}' disconnected: {_describe(error)}")
                 )
 
     async def _submit(self, run: Callable[[Any], Awaitable[Any]], *, timeout: Optional[float] = None) -> Any:
@@ -424,38 +476,38 @@ class ServerConnection:
                 yield streams[0], streams[1]
             return
 
-        from mcp.client.streamable_http import streamablehttp_client
+        import httpx2
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT
 
-        # httpx_client_factory is how the SDK lets us keep the ssl_verify
-        # switch the old client had; without it the setting would silently
-        # stop working.
-        async with streamablehttp_client(
-            url,
-            headers=headers or None,
-            timeout=self.timeout,
-            httpx_client_factory=self._httpx_factory(),
-        ) as (read_stream, write_stream, _get_session_id):
-            yield read_stream, write_stream
+        # The SDK takes a ready client here (mcp 2) and leaves closing it to
+        # us. Ours carries the headers, the timeout and the ssl_verify switch;
+        # without it the setting would silently stop working.
+        # read: a server answering with plain JSON sends nothing until the tool is
+        # done, so no shorter than the server's own timeout (scarab: 900 s)
+        client = self._httpx_factory()(headers=headers or None, timeout=httpx2.Timeout(
+            self.timeout, read=max(self.timeout, MCP_DEFAULT_SSE_READ_TIMEOUT)))
+        async with client, streamable_http_client(url, http_client=client) as streams:
+            yield streams[0], streams[1]
 
     def _httpx_factory(self):
-        import httpx
+        import httpx2
         from mcp.shared._httpx_utils import create_mcp_http_client
 
         ssl_verify = self.ssl_verify
 
-        def factory(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+        def factory(headers=None, timeout=None, auth=None) -> httpx2.AsyncClient:
             if ssl_verify is not False:
                 return create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-            # Build instead of mutate: httpx resolves verify when it constructs
-            # the transport, so assigning it afterwards does nothing. Building
-            # it here rather than fixing up the SDK's client also avoids
-            # creating one just to throw it away.
-            return httpx.AsyncClient(
+            # Build instead of mutate: httpx2 resolves verify when it constructs
+            # the transport, so assigning it afterwards does nothing. Redirects
+            # stay off as in the SDK's own client: its transports follow them
+            # within the endpoint's origin themselves.
+            return httpx2.AsyncClient(
                 headers=headers,
-                timeout=timeout if timeout is not None else httpx.Timeout(self.timeout),
+                timeout=timeout if timeout is not None else httpx2.Timeout(self.timeout),
                 auth=auth,
                 verify=False,
-                follow_redirects=True,
             )
 
         return factory
@@ -477,14 +529,15 @@ class ServerConnection:
         return headers
 
     def _record_handshake(self, init: Any) -> None:
-        info = getattr(init, "serverInfo", None)
+        info = getattr(init, "server_info", None)
         self._server_info = {
             "name": getattr(info, "name", None),
             "version": getattr(info, "version", None),
         }
-        self._protocol_version = getattr(init, "protocolVersion", None)
+        self._protocol_version = getattr(init, "protocol_version", None)
         caps = getattr(init, "capabilities", None)
-        self._capabilities = caps.model_dump(exclude_none=True) if hasattr(caps, "model_dump") else {}
+        # by_alias: the protocol's own names (listChanged), as the status tools always showed them
+        self._capabilities = caps.model_dump(exclude_none=True, by_alias=True) if hasattr(caps, "model_dump") else {}
         logger.info(
             "MCP server '%s' connected (%s, protocol %s)",
             self.name, self._server_info.get("name") or "unknown", self._protocol_version,
@@ -500,7 +553,7 @@ class ServerConnection:
                 ToolDef(
                     name=t.name,
                     description=t.description or "",
-                    input_schema=t.inputSchema or {},
+                    input_schema=t.input_schema or {},
                 )
                 for t in (result.tools or [])
             ]
@@ -532,7 +585,7 @@ class ServerConnection:
             )
             raise
 
-        if getattr(result, "isError", False):
+        if getattr(result, "is_error", False):
             message = _text(result) or "unknown error"
             await self._publish(
                 f"Tool call failed: {name}", StatusPhase.ERROR, request_id,
@@ -642,7 +695,7 @@ def _persist_media_blocks(result: Any, server: str, tool: str) -> List[Dict[str,
         if btype not in _MEDIA_BLOCK_TYPES:
             continue
         data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None) or (
+        mime = getattr(block, "mime_type", None) or (
             "image/png" if btype == "image" else "application/octet-stream")
         if not data:
             continue
@@ -687,7 +740,7 @@ def _text(result: Any) -> Optional[str]:
 
 def _structured(result: Any) -> Any:
     """Fall back to whatever the server sent when there is no text block."""
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if structured is not None:
         # _multimodal_content is OUR key: tool_execution reads the files it
         # names and sends them to the model provider. A server that sets it
@@ -700,9 +753,10 @@ def _structured(result: Any) -> Any:
             logger.warning("MCP server result carried the reserved key _multimodal_content; renamed")
         return structured
     if hasattr(result, "model_dump"):
-        # mode="json": a resource block carries its URL as a pydantic AnyUrl,
-        # which the tool message's json.dumps cannot serialize.
-        return result.model_dump(mode="json", exclude_none=True)
+        # mode="json": JSON-safe values for the tool message's json.dumps;
+        # by_alias: the protocol's field names (mimeType, isError) the model
+        # always saw, not the SDK's Python names (mcp 2).
+        return result.model_dump(mode="json", exclude_none=True, by_alias=True, exclude={"result_type"})
     return result
 
 

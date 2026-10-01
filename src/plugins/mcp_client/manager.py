@@ -337,7 +337,7 @@ class ExternalServerPool:
         except Exception as e:
             # A server's error text reaches the model as str(e): same cap.
             # The type is kept where it can be built from the text alone
-            # (McpError needs ErrorData, others more arguments).
+            # (MCPError needs a code and a message, others more arguments).
             text = str(e)
             if len(text) <= self.max_result_chars:
                 raise

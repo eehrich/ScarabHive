@@ -99,13 +99,13 @@ async def test_configured_auth_reaches_the_transport():
     seen = {}
 
     @asynccontextmanager
-    async def fake_streamable(url, headers=None, **kwargs):
+    async def fake_streamable(url, http_client=None, **kwargs):
         seen["url"] = url
-        seen["headers"] = headers
+        seen["headers"] = http_client.headers           # mcp 2: they travel in the client we hand over
         raise RuntimeError("stop here -- the handover is all we need to see")
         yield  # pragma: no cover
 
-    with patch("mcp.client.streamable_http.streamablehttp_client", fake_streamable):
+    with patch("mcp.client.streamable_http.streamable_http_client", fake_streamable):
         with pytest.raises(RuntimeError, match="stop here"):
             async with connection._open_streams():
                 pass

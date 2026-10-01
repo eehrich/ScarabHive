@@ -9,6 +9,7 @@ Mocks would have kept saying yes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -42,6 +43,37 @@ def make_config(**overrides):
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
+
+
+@contextlib.contextmanager
+def http_probe(mode, port=None):
+    """The probe server over HTTP (mode: streamable-http | sse) on a free or the given port;
+    yields the port once it listens."""
+    import socket
+    import subprocess
+
+    if port is None:
+        with socket.socket() as spare:
+            spare.bind(("127.0.0.1", 0))
+            port = spare.getsockname()[1]
+    code = (f"import sys; sys.path.insert(0, {str(Path(PROBE).parent)!r}); import probe_server; "
+            f"probe_server.mcp.run(transport={mode!r}, host='127.0.0.1', port={port})")
+    server = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if server.poll() is not None:
+                raise RuntimeError(f"the probe server ended with {server.returncode}")
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError(f"the probe server does not listen on {port}")
+        yield port
+    finally:
+        server.kill()
+        server.wait()
 
 
 def _live_children():
@@ -125,7 +157,7 @@ class TestImageResults:
 
 
     async def test_audio_blocks_take_the_same_path(self):
-        """MCP AudioContent carries the same data/mimeType pair as images.
+        """MCP AudioContent carries the same data/mime_type pair as images.
         Unit-level against the helper: the wire path is pinned by the image
         tests, and the probe server has no audio tool to speak of."""
         import base64
@@ -133,7 +165,7 @@ class TestImageResults:
         block = types.SimpleNamespace(
             type="audio",
             data=base64.b64encode(b"RIFFxxxxWAVE").decode(),
-            mimeType="audio/wav")
+            mime_type="audio/wav")
         result = types.SimpleNamespace(content=[block])
         items = conn_mod._persist_media_blocks(result, "probe", "speak")
         assert len(items) == 1 and items[0]["type"] == "audio"
@@ -145,7 +177,7 @@ class TestImageResults:
         import base64
         from plugins.mcp_client import connection as conn_mod
         block = types.SimpleNamespace(
-            type="image", data=base64.b64encode(b"\x89PNG").decode(), mimeType="image/png")
+            type="image", data=base64.b64encode(b"\x89PNG").decode(), mime_type="image/png")
         items = conn_mod._persist_media_blocks(
             types.SimpleNamespace(content=[block]), "probe", "../../escape")
         saved = Path(items[0]["path"]).resolve()
@@ -160,7 +192,7 @@ class TestImageResults:
         paths = []
         for tool, payload in (("a/b", b"one"), ("a_b", b"two"), ("a_b", b"three")):
             block = types.SimpleNamespace(type="image", data=base64.b64encode(payload).decode(),
-                                          mimeType="image/png")
+                                          mime_type="image/png")
             paths.append(conn_mod._persist_media_blocks(types.SimpleNamespace(content=[block]), "probe", tool)[0]["path"])
         assert len(set(paths)) == 3
         assert [Path(p).read_bytes() for p in paths] == [b"one", b"two", b"three"]
@@ -224,6 +256,23 @@ class TestHandshake:
             await conn.stop()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("ssl_verify", [True, False])
+    @pytest.mark.parametrize("transport,path", [("streaming", "/mcp"), ("sse", "/sse")])
+    async def test_a_real_http_round_trip(self, transport, path, ssl_verify):
+        """The HTTP transports against a real server, not only against a refused port: mcp 2
+        takes a ready httpx2 client for streamable HTTP, which we build (headers, timeout,
+        ssl_verify) and close ourselves."""
+        with http_probe("streamable-http" if transport == "streaming" else "sse") as port:
+            conn = ServerConnection("http", make_config(transport=transport, url=f"http://127.0.0.1:{port}{path}"),
+                                    timeout=20.0)
+            conn.ssl_verify = ssl_verify
+            await conn.start()
+            try:
+                assert await conn.call_tool("add", {"a": 2, "b": 3}) == "5"
+            finally:
+                await conn.stop()
+
+    @pytest.mark.asyncio
     async def test_connect_errors_name_the_actual_cause(self):
         """An operator must learn WHY, not that a task group was unhappy.
 
@@ -280,18 +329,18 @@ class TestHandshake:
         verification silently stayed on there -- the setting looked applied and
         was not.
         """
-        import httpx
+        import httpx2
 
         for transport, url in (("streaming", "http://127.0.0.1:9/mcp"),
                                ("sse", "http://127.0.0.1:9/sse")):
             seen = []
-            original = httpx.AsyncClient.__init__
+            original = httpx2.AsyncClient.__init__
 
             def spy(self, *args, **kwargs):
                 seen.append(kwargs.get("verify", "unset"))
                 return original(self, *args, **kwargs)
 
-            httpx.AsyncClient.__init__ = spy
+            httpx2.AsyncClient.__init__ = spy
             try:
                 conn = ServerConnection(
                     transport, make_config(transport=transport, url=url), timeout=3.0,
@@ -303,7 +352,7 @@ class TestHandshake:
                 except BaseException:  # noqa: BLE001 - connecting is not the point
                     pass
             finally:
-                httpx.AsyncClient.__init__ = original
+                httpx2.AsyncClient.__init__ = original
 
             assert False in seen, f"{transport}: ssl_verify never reached httpx ({seen})"
 
@@ -607,16 +656,15 @@ class TestPool:
 
     @pytest.mark.asyncio
     async def test_every_long_error_is_capped_and_keeps_its_type_where_it_can(self):
-        """McpError is no RuntimeError and needs ErrorData; an error with a
+        """MCPError is no RuntimeError and needs a code and a message; an error with a
         required second argument turned into a TypeError when rebuilt."""
-        from mcp.shared.exceptions import McpError
-        from mcp.types import ErrorData
+        from mcp.shared.exceptions import MCPError
 
         class Needy(RuntimeError):
             def __init__(self, message, code):
                 super().__init__(message)
 
-        errors = {"mcp": McpError(ErrorData(code=-1, message="x" * 100)),
+        errors = {"mcp": MCPError(-1, "x" * 100),
                   "needy": Needy("y" * 100, 7),
                   "plain": MCPConnectionError("z" * 100)}
 
@@ -830,17 +878,167 @@ class TestPool:
             await pool.close_all()
 
     @pytest.mark.asyncio
+    async def test_a_server_that_died_while_idle_is_started_again_for_the_call(self):
+        """Nothing left for this call: mcp 2 reports the send after the stream ended as a lost
+        answer (CONNECTION_CLOSED), so the call was not repeated on a fresh server."""
+        pool = ExternalServerPool(timeout=30.0)
+        pool.configure({"probe": make_config()})
+        await pool.connect("probe")
+        try:
+            probes = [p for p in _live_children() if PROBE in " ".join(p.cmdline())]
+            assert probes, "the probe server runs"
+            for child in probes:                     # the venv launcher and the interpreter it starts
+                child.kill()
+            psutil.wait_procs(probes, timeout=10)
+            await asyncio.sleep(0.5)                 # the client reads the end of the stream
+            assert await asyncio.wait_for(pool.call_tool("probe", "echo", {"text": "wieder da"}), 30) == "wieder da"
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_an_http_server_gone_is_named_on_the_next_call(self):
+        """A failed POST takes the whole mcp 2 HTTP transport down: the connection counted as
+        connected, and the next call got "unhandled errors in a TaskGroup"."""
+        with http_probe("streamable-http") as port:
+            pool = ExternalServerPool(timeout=10.0)
+            pool.configure({"web": make_config(transport="streaming", url=f"http://127.0.0.1:{port}/mcp")})
+            await pool.connect("web")
+        connection = pool._connections["web"]
+        try:
+            with pytest.raises(MCPConnectionError):
+                await pool.call_tool("web", "echo", {"text": "x"})
+            assert not connection.connected, "at once, not when the worker has finished dying"
+            with pytest.raises(MCPConnectionError) as second:
+                await pool.call_tool("web", "echo", {"text": "x"})
+            assert "TaskGroup" not in str(second.value) and "connect" in str(second.value).lower(), second.value
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_session_torn_down_under_a_call_closes_the_connection(self):
+        """Which way a crash reaches a call depends on timing. When the session's teardown
+        cancels it, `connected` must turn false at once as well -- else the next call queued
+        behind the dying worker and got "unhandled errors in a TaskGroup"."""
+        from plugins.mcp_client.connection import _Command
+
+        conn = ServerConnection("unit", make_config(), timeout=5.0)
+        conn._dispatcher = types.SimpleNamespace(_closed=False)
+        future = asyncio.get_running_loop().create_future()
+
+        async def torn_down(session):
+            raise asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await conn._run_command(None, _Command(run=torn_down, future=future))
+        assert conn._closing and isinstance(future.exception(), MCPServerGone)
+
+    @pytest.mark.parametrize("code,message,unsent", [
+        (-32600, "Session terminated", True),                           # the SDK's 404 stand-in
+        (-32600, "Session not found", True),                            # Python SDK server
+        (-32001, "Session not found", True),                            # TypeScript SDK transport
+        (-32000, "Bad Request: No valid session ID provided", True),    # TS session-map pattern
+        (-32000, "Bad Request: Server not initialized", True),          # TS transport, new process
+        (-32603, "Server returned an error response", False),           # HTTP error without a body
+        # The SDK's own CONNECTION_CLOSED texts vary: closes, never repeats.
+        (-32000, "Bad Request: something else", False),
+        (-32600, "Invalid arguments", None),
+    ])
+    def test_what_a_restarted_http_server_answers_is_told_apart(self, code, message, unsent):
+        """A restarted TypeScript server answered with none of the Python texts: every later
+        call failed with -32603 and the connection still counted as connected."""
+        from mcp.shared.exceptions import MCPError
+        from plugins.mcp_client.connection import _transport_closed
+
+        assert _transport_closed(MCPError(code, message)) is unsent
+
+    @pytest.mark.asyncio
+    async def test_a_call_on_a_new_session_does_not_list_the_tools_behind_it(self, monkeypatch):
+        """The SDK lists the tools inside call_tool when it has not seen them: a session lost
+        on that list, after the tool ran, counted as unsent and the pool ran the tool twice."""
+        from mcp import ClientSession
+        from mcp.shared.exceptions import MCPError
+
+        conn = ServerConnection("probe", make_config(), timeout=20.0)
+        await conn.start()
+        try:
+            async def lost(self, **kwargs):
+                raise MCPError(-32600, "Session terminated")
+            monkeypatch.setattr(ClientSession, "list_tools", lost)
+            assert await conn.call_tool("echo", {"text": "einmal"}) == "einmal"
+        finally:
+            await conn.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_tool_list_that_fails_at_connect_does_not_fail_the_connect(self, monkeypatch):
+        """The warm-up list is a convenience: before it, such a server connected."""
+        from mcp import ClientSession
+        from mcp.shared.exceptions import MCPError
+
+        original = ClientSession.list_tools
+        failures = []
+
+        async def once(self, **kwargs):
+            if not failures:
+                failures.append(True)
+                raise MCPError(-32603, "tools/list temporarily broken")
+            return await original(self, **kwargs)
+        monkeypatch.setattr(ClientSession, "list_tools", once)
+        conn = ServerConnection("probe", make_config(), timeout=20.0)
+        await conn.start()
+        try:
+            assert failures and await conn.call_tool("echo", {"text": "trotzdem"}) == "trotzdem"
+        finally:
+            await conn.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_tool_list_that_hangs_at_connect_does_not_fail_the_connect(self, monkeypatch):
+        from mcp import ClientSession
+        from plugins.mcp_client import connection as conn_mod
+
+        original = ClientSession.list_tools
+        hung = []
+
+        async def once(self, **kwargs):
+            if not hung:
+                hung.append(True)
+                await asyncio.sleep(60)
+            return await original(self, **kwargs)
+        monkeypatch.setattr(ClientSession, "list_tools", once)
+        monkeypatch.setattr(conn_mod, "_WARM_UP_SECONDS", 0.5)
+        conn = ServerConnection("probe", make_config(), timeout=20.0)
+        await asyncio.wait_for(conn.start(), 15)
+        try:
+            assert hung and await conn.call_tool("echo", {"text": "weiter"}) == "weiter"
+        finally:
+            await conn.stop()
+
+    @pytest.mark.asyncio
+    async def test_an_http_server_that_restarted_gets_a_new_session(self):
+        """It forgot our session and answers every call with 404 "Session not found": nothing
+        ran, and the call goes through on a new session instead of failing for ever."""
+        with http_probe("streamable-http") as port:
+            pool = ExternalServerPool(timeout=10.0)
+            pool.configure({"web": make_config(transport="streaming", url=f"http://127.0.0.1:{port}/mcp")})
+            await pool.connect("web")
+        try:
+            with http_probe("streamable-http", port):
+                assert await pool.call_tool("web", "echo", {"text": "neu"}) == "neu"
+        finally:
+            await pool.close_all()
+
+    @pytest.mark.asyncio
     async def test_a_restart_that_fails_is_shared_and_not_repeated(self, monkeypatch):
         """Parallel calls to a dead server wait for one restart, not one each behind the connect
         lock; and once it failed, calls say so at once instead of waiting out the handshake."""
         from plugins.mcp_client import connection as conn_mod
-        monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
-        pool = ExternalServerPool(timeout=1.0)
+        pool = ExternalServerPool(timeout=3.0)
         pool.configure({"probe": make_config()})
         await pool.connect("probe")
         try:
             with pytest.raises(MCPConnectionError):
                 await pool.call_tool("probe", "die", {})
+            # Only the server that never answers gets the short handshake: the probe's own cold
+            # start (an `import mcp` alone takes 0.7 s) keeps the usual floor.
+            monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 0.0)
             pool.configured_servers["probe"] = make_config(args=["-c", "import time; time.sleep(60)"])
             started = time.monotonic()
             calls = [pool.call_tool("probe", "echo", {"text": "x"}) for _ in range(3)]
@@ -852,6 +1050,7 @@ class TestPool:
                 await pool.call_tool("probe", "echo", {"text": "x"})
             assert time.monotonic() - started < 1
             # the operator fixes it and connects by hand: a later crash restarts at once again
+            monkeypatch.setattr(conn_mod, "_HANDSHAKE_FLOOR", 60.0)
             pool.configured_servers["probe"] = make_config()
             await pool.connect("probe")
             with pytest.raises(MCPConnectionError):
@@ -1183,7 +1382,7 @@ class TestImageReachesTheModel:
 
         secret = tmp_path / "secret.png"
         secret.write_bytes(b"\x89PNG private")
-        result = CallToolResult(content=[], structuredContent={"_multimodal_content": [
+        result = CallToolResult(content=[], structured_content={"_multimodal_content": [
             {"type": "image", "path": str(secret), "mime_type": "image/png"}]})
 
         payload = _structured(result)

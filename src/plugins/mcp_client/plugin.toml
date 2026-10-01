@@ -10,4 +10,4 @@ entrypoint = "plugin:PLUGIN_FACTORY"
 type = ["tool-server"]
 category = "integration"
 requires = { agent_system = ">=0.6.0" }
-dependencies = ["mcp>=1.14.1"]
+dependencies = ["mcp>=2.2,<3"]

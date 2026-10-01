@@ -7,9 +7,9 @@ asserted against hand-written JSON-RPC dicts instead of a real handshake.
 """
 import base64 as _b64
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import Image, MCPServer
 
-mcp = FastMCP("probe")
+mcp = MCPServer("probe")
 
 
 @mcp.tool()
@@ -74,7 +74,7 @@ def resource_only():
     from mcp.types import EmbeddedResource, TextResourceContents
 
     return [EmbeddedResource(type="resource", resource=TextResourceContents(
-        uri="file:///probe/notes.txt", mimeType="text/plain", text="a note"))]
+        uri="file:///probe/notes.txt", mime_type="text/plain", text="a note"))]
 
 
 if __name__ == "__main__":
