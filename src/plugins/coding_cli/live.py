@@ -145,8 +145,12 @@ class LiveRun:
         line = cli.tool_line(name, block.get("input"), self._root)[:CAP_LINE]
         self._open[str(block.get("id"))] = (request_id, name, line)
         await publish_status(AGENT, line, request_id=request_id, phase=StatusPhase.START)
+        args = block.get("input")
+        # _capped recurses: arguments nested past what it takes would cost the rest of the batch.
+        params = (_capped(args) if cli.nesting(args) <= cli.MAX_NESTING
+                  else f"(arguments nested deeper than {cli.MAX_NESTING}, not shown)")
         self._relay({"type": "tool_call", "request_id": request_id, "action": name, "step": self._step,
-                     "params": _capped(block.get("input"))})
+                     "params": params})
         self._names.append(name)
         # The step's header names what it called, as an agent's step does.
         self._relay({"type": "thinking", "step": self._step, "assistant": {

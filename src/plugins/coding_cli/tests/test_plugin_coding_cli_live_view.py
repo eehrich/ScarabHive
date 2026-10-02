@@ -268,3 +268,19 @@ async def test_a_tool_call_the_view_shows_is_not_repeated_as_progress(tmp_path, 
         assert progress == ["Checking the parser."], progress
     else:
         assert progress == ["Checking the parser. (+1)"], progress
+
+
+async def test_arguments_nested_deeper_than_the_view_walks_cost_nothing_else(parent, tmp_path):
+    """1,500 levels parse, but the view's capping recursed out: the rest of the batch was lost, the tool's
+    row never ended."""
+    view = await LiveRun.open("run1_001", "deep", tmp_path)
+    deep = json.loads("[" * 1_500 + "]" * 1_500)
+    await view.feed([
+        _assistant("m1", {"type": "tool_use", "id": "t1", "name": "mcp__s__x", "input": {"a": deep}}),
+        _tool_result("t1", "ok"),
+    ])
+    await view.close({"state": "done", "result": "done"})
+    events = [e["event"] for e in _envelopes(parent)]
+    tool_call = next(e for e in events if e["type"] == "tool_call")
+    assert "nested deeper" in tool_call["params"]
+    assert [e["result"] for e in events if e["type"] == "tool_result"] == [{"content": "ok"}]

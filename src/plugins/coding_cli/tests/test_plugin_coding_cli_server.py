@@ -6,6 +6,7 @@ down is the plugin's side: what it starts, what it refuses, what a run leaves.
 """
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -17,7 +18,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from agent_system.config.models import AgentSystemConfig, ToolServerConfig
+from agent_system.config.models import (AgentSystemConfig, MCPAuthConfig, MCPServersConfig, RemoteMCPConfig,
+                                         ToolConfig, ToolServerConfig)
 from agent_system.core.session_presence import alive
 from plugins.coding_cli import run as cli
 from plugins.coding_cli import server as server_module
@@ -89,7 +91,7 @@ def log(tmp_path, monkeypatch):
     return lambda: json.loads(path.read_text(encoding="utf-8"))
 
 
-def make_server(repo, **config):
+def make_server(repo, system=None, name="coding_cli", **config):
     cfg = ToolServerConfig()
     cfg.workdirs = {"repo": {"path": str(repo), "exclude": ["config/secrets.env"]}}
     cfg.allowed_users = ["admin"]
@@ -99,7 +101,7 @@ def make_server(repo, **config):
     cfg.wait_s = 30
     for key, value in config.items():
         setattr(cfg, key, value)
-    server = CodingCliServer("coding_cli", AgentSystemConfig(), cfg)
+    server = CodingCliServer(name, system or AgentSystemConfig(), cfg)
     server.command = [sys.executable, str(FAKE)]
     return server
 
@@ -145,10 +147,12 @@ def ring_recorder(monkeypatch):
     return rings
 
 
-async def unwatched(repo, task, **config):
+async def unwatched(repo, task, max_run_s=None, **config):
     """A run whose starting process is gone (an API restart): started, its
     watch stopped, the process left to itself."""
     first = make_server(repo, wait_s=0.2, **config)
+    if max_run_s is not None:
+        first.max_run_s = max_run_s
     started, _ = await call(first, "run_task", task=task)
     await first.stop_plugin()
     return first._load(started["run_id"])
@@ -263,7 +267,7 @@ async def test_the_command_line_locks_claude_code_down(repo, log):
     assert "--allowedTools" not in argv and "--resume" not in argv
     assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
     assert Path(argv[argv.index("--append-system-prompt-file") + 1]).name == "CLAUDE.md"
-    assert log()["task"] == "WRITE b.txt x" and "WRITE" not in " ".join(argv)
+    assert log()["task"] == "WRITE b.txt x" and "WRITE" not in " ".join(argv) and "--json-schema" not in argv
 
 
 async def test_plan_mode_only_reads(repo, log):
@@ -717,10 +721,10 @@ async def test_the_sweep_takes_over_a_run_whose_owner_left_later(repo, monkeypat
     """The API started before the one-shot process that started the run."""
     monkeypatch.setattr(server_module, "SWEEP_S", 0.2)
     api = make_server(repo)
-    api.max_run_s = 1
     await api.start_plugin()
     try:
-        record = await unwatched(repo, "SLEEP 30")
+        # The run's own limit, set where it started: the instance taking it over applies that one.
+        record = await unwatched(repo, "SLEEP 30", max_run_s=1)
         for _ in range(600):        # a sweep, a kill and a commit take seconds under load
             if api._load(record["run_id"])["state"] != "running":
                 break
@@ -1113,3 +1117,578 @@ def test_a_git_timeout_ends_what_git_started_too(tmp_path):
         cli.git(repo, "slow", timeout=1.5, pinned=["-c", alias])
     assert time.monotonic() - started < 10
     assert not alive(int(pidfile.read_text()))
+
+
+# ── MCP servers per workdir, structured output (M-CC-10) ──
+
+TOKEN = "mcp-token-3f9a1c0b7e21"
+SCHEMA = {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}
+
+
+def mcp_server(repo, servers, names, **config):
+    """A server whose workdir names MCP servers of the system config."""
+    system = AgentSystemConfig(external_servers=MCPServersConfig(remote_servers=servers))
+    workdirs = {"repo": {"path": str(repo), "exclude": ["config/secrets.env"], "mcp_servers": names},
+                "plain": {"path": str(repo)}}
+    return make_server(repo, system, workdirs=workdirs, **config)
+
+
+async def test_a_workdirs_mcp_servers_load_and_their_auth_is_only_in_the_childs_environment(repo, data_root, log):
+    servers = {"scarab4": RemoteMCPConfig(url="http://192.0.2.6:8768/mcp", enabled=True,
+                                          auth=MCPAuthConfig(type="bearer", bearer_token=TOKEN)),
+               "events": RemoteMCPConfig(url="http://events.example/sse", enabled=True, transport="sse")}
+    server = mcp_server(repo, servers, ["scarab4", "events"], wait_s=0.2, allowed_commands=["pytest:*"])
+    started, _ = await call(server, "run_task", task="SLEEP 30", workdir="repo")
+    try:
+        proc = psutil.Process(server._load(started["run_id"])["pid"])
+        argv, env = proc.cmdline(), proc.environ()
+        mcp = Path(argv[argv.index("--mcp-config") + 1])
+        config = json.loads(mcp.read_text(encoding="utf-8"))
+        for _ in range(100):        # its log, before the run is stopped
+            if Path(os.environ["FAKE_CLAUDE_LOG"]).exists():
+                break
+            await asyncio.sleep(0.1)
+    finally:
+        answer, _ = await call(server, "cancel_run", run_id=started["run_id"])
+    assert env["CODING_CLI_MCP_0"] == f"Bearer {TOKEN}" and "CODING_CLI_MCP_1" not in env
+    # Read at the start; once the run ended, a key in a url's path is no longer on disk.
+    assert mcp == server._file(started["run_id"], "mcp.json") and not mcp.exists()
+    assert config == {"mcpServers": {
+        "scarab4": {"type": "http", "url": "http://192.0.2.6:8768/mcp",
+                    "headers": {"Authorization": "${CODING_CLI_MCP_0}"}},
+        "events": {"type": "sse", "url": "http://events.example/sse", "headers": {}}}}
+    # One list, ended by the next flag: the shell's commands and the servers' tools.
+    shell = cli.shell_tool()
+    assert argv.count("--allowedTools") == 1 and "--strict-mcp-config" in argv and "--restricted" in argv
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == [
+        f"{shell}(pytest:*)", "mcp__scarab4", "mcp__events"]
+    # Not on disk, not in argv, not in the answer.
+    assert TOKEN not in " ".join(argv) and TOKEN not in json.dumps(answer)
+    for path in [*(data_root / "runs").iterdir(), Path(os.environ["FAKE_CLAUDE_LOG"])]:
+        assert TOKEN not in path.read_text(encoding="utf-8", errors="replace"), path
+    # A workdir without servers stays as it was.
+    await call(server, "run_task", task="x", workdir="plain")
+    argv = log()["argv"]
+    assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
+    assert "mcp__scarab4" not in argv and not any(n.startswith("CODING_CLI_MCP") for n in log()["env"])
+
+
+async def test_plan_mode_loads_no_mcp_server(repo, log):
+    """Plan only reads; a server's tools could write."""
+    server = mcp_server(repo, {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["scarab4"])
+    await call(server, "run_task", task="look", mode="plan", workdir="repo")
+    argv = log()["argv"]
+    assert json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text()) == {"mcpServers": {}}
+    assert "--allowedTools" not in argv
+
+
+@pytest.mark.parametrize("name, cfg", [
+    ("scarab4", None), ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=False)),
+    ("scarab4", RemoteMCPConfig(url="", enabled=True)),
+    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="stdio", command="x")),
+    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="local", command="x")),
+    ("scarab4", RemoteMCPConfig(url="http://h/mcp", enabled=True, transport="htpp")),
+    ("scarab4", RemoteMCPConfig(url="http://user:pw@h/mcp", enabled=True)),
+    ("scarab4", RemoteMCPConfig(url="http://h/mcp?api_key=k3y", enabled=True)),
+    ("a,Bash", RemoteMCPConfig(url="http://h/mcp", enabled=True))])
+def test_a_workdir_naming_an_unusable_mcp_server_is_skipped(repo, name, cfg):
+    server = mcp_server(repo, {name: cfg} if cfg else {}, [name])
+    assert set(server.workdirs) == {"plain"}
+
+
+async def test_a_json_schema_brings_a_structured_output_and_the_cost(repo, log):
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task='OUTPUT {"n": 3}', json_schema=SCHEMA)
+    argv = log()["argv"]
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == SCHEMA
+    assert result["output"] == {"untrusted": True, "content": {"n": 3}} and result["cost_usd"] == 0.07
+    assert server._load(result["run_id"])["json_schema"] == SCHEMA
+    # Cut, it would match the schema no more: dropped, and the note says so.
+    big, _ = await call(server, "run_task", task=f'OUTPUT {{"n": "{"x" * 13_000}"}}', json_schema=SCHEMA)
+    assert big["state"] == "done" and "output" not in big and "dropped" in big["note"]
+    # Counted in characters: 7,000 umlauts are 42,000 as \u escapes.
+    umlauts, _ = await call(server, "run_task", task=f'OUTPUT {{"n": "{"ä" * 7_000}"}}', json_schema=SCHEMA)
+    assert umlauts["output"]["content"] == {"n": "ä" * 7_000} and not umlauts.get("note")
+
+
+async def test_a_resume_keeps_the_schema_unless_it_gives_one(repo, log):
+    server = make_server(repo)
+    first, _ = await call(server, "run_task", task="x", json_schema=SCHEMA)
+    second, _ = await call(server, "run_task", task="y", resume=first["run_id"])
+    argv = log()["argv"]
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == SCHEMA and second["output"]["content"] == {"done": True}
+    third, _ = await call(server, "run_task", task="z", resume=second["run_id"], json_schema={"type": "object"})
+    argv = log()["argv"]
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == {"type": "object"}
+    # What a resume inherits is checked as what it is given: a record holding NaN (no JSON) is refused.
+    server._save({**server._load(third["run_id"]), "json_schema": {"maximum": float("nan")}})
+    refused, _ = await call(server, "run_task", task="w", resume=third["run_id"])
+    assert refused["error"].startswith("json_schema:")
+
+
+def test_nan_never_reaches_the_command_line():
+    with pytest.raises(ValueError):
+        cli.build_command(["claude"], mode="edit", mcp_config=Path("m.json"), json_schema={"maximum": float("inf")})
+
+
+# Under 20,000 as JSON, but its escaped quotes take 36,000 on a Windows command line.
+def nested(depth):
+    value = {}
+    for _ in range(depth - 1):
+        value = {"a": value}
+    return value
+
+
+@pytest.mark.parametrize("schema", ["{}", [SCHEMA], {"description": "x" * 20_000}, {"d": '"' * 9_000},
+                                    {"maximum": float("nan")}, nested(101)])
+async def test_a_schema_that_is_no_object_or_too_long_is_refused(repo, data_root, schema):
+    result, status = await call(make_server(repo), "run_task", task="x", json_schema=schema)
+    assert result["error"].startswith("json_schema:") and status.closing[0][0] == "error"
+    assert not (data_root / "worktrees").exists()
+
+
+async def test_max_task_chars_bounds_the_task(repo):
+    result, _ = await call(make_server(repo, max_task_chars=1_500), "run_task", task="x" * 1_501)
+    assert result["error"] == "task: at most 1500 characters"
+    assert [make_server(repo, max_task_chars=v).max_task_chars for v in (None, 10, 10**9)] == [20_000, 1_000, 100_000]
+
+
+def test_shell_commands_beside_mcp_servers_are_warned_of(repo, caplog):
+    """Every allowed command inherits the environment that holds the servers' tokens."""
+    servers = {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}
+    with caplog.at_level(logging.WARNING, logger=server_module.__name__):
+        mcp_server(repo, servers, ["scarab4"])
+        assert "inherits the environment" not in caplog.text
+        mcp_server(repo, servers, ["scarab4"], allowed_commands=["pytest:*"])
+    assert "inherits the environment" in caplog.text
+
+
+async def test_a_broken_escape_ends_the_run_and_reaches_nobody(repo):
+    """A lone surrogate from the stream failed the record's save -- the run stayed "running" for good -- and,
+    passed on, the framework's UTF-8 stream of the answer. Replaced as a decoder replaces a broken byte."""
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task='OUTPUT {"n": "\\ud83d"}', json_schema=SCHEMA)
+    assert result["state"] == "done" and result["output"]["content"] == {"n": "\ufffd"}
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+    # The model's schema is no stream: its record is saved all the same.
+    schema, _ = await call(server, "run_task", task="x", json_schema={"description": "broken \ud83d"})
+    assert schema["state"] == "done"
+
+
+# ── instances, and runs whose call never answered ──
+
+async def test_each_instance_counts_and_reaches_only_its_own_runs(repo):
+    """All instances share the data folder: a production run (scarab_code, max_parallel 6) took the chat
+    instance's only slot, and a chat run one of production's."""
+    chat, producer = make_server(repo), make_server(repo, name="scarab_code", wait_s=0.2)
+    started, _ = await call(producer, "run_task", task="SLEEP 30")
+    try:
+        assert producer._load(started["run_id"])["instance_name"] == "scarab_code"
+        own, _ = await call(chat, "run_task", task="x")
+        assert own["state"] == "done", own
+        refused, _ = await call(producer, "run_task", task="x")
+        assert started["run_id"] in refused["error"]
+        for tool in ("get_run", "cancel_run"):
+            other, _ = await call(chat, tool, run_id=started["run_id"])
+            assert "no run" in other["error"], tool
+    finally:
+        await call(producer, "cancel_run", run_id=started["run_id"])
+    # A record from before the name was kept counts for every instance.
+    legacy = "a1b2c3d4e5f6"
+    chat._save({"run_id": legacy, "user_id": "admin", "workdir": "repo", "mode": "edit", "state": "running",
+                "started_at": time.time(), "owner": chat._me})
+    chat._starting.add(legacy)
+    for server in (chat, producer):
+        refused, _ = await call(server, "run_task", task="x")
+        assert legacy in refused.get("error", ""), refused
+
+
+@pytest.mark.parametrize("answered, how", [(True, "sweep"), (False, "sweep"), (False, "get_run"),
+                                           ("legacy", "sweep")])
+async def test_a_run_whose_call_never_answered_is_stopped_once_taken_over(repo, answered, how):
+    """A restart while run_task waited: its caller got no run id and went on without it -- a stategraph
+    hands the job to an agent on the same Scarab server, two producers on one server. A run that answered
+    with its id goes on, and so does one recorded before answers were marked."""
+    record = await unwatched(repo, "SLEEP 30")
+    run_id, other = record["run_id"], make_server(repo)
+    assert other._file(run_id, "answered").exists()
+    if answered is not True:
+        other._file(run_id, "answered").unlink()
+    if answered == "legacy":
+        other._save({k: v for k, v in other._load(run_id).items() if k != "instance_name"})
+    try:
+        if how == "sweep":
+            await other._sweep()
+        else:
+            await call(other, "get_run", run_id=run_id)
+        if answered is False:
+            await gone(record["pid"])
+            final = other._load(run_id)
+            assert final["state"] == "cancelled" and "never answered" in final["note"], final
+        else:
+            assert run_id in other._monitors and alive(record["pid"], record["pid_started"])
+    finally:
+        await call(other, "cancel_run", run_id=run_id)
+        await other.stop_plugin()
+
+
+# ── second review ──
+
+async def test_a_tool_the_servers_entry_blocks_stays_refused(repo, log):
+    """mcp_servers.yaml blocks a tool whatever an allowlist says: approving the server must not reach it. In
+    Claude Code a deny rule wins over every allow rule; a name is written as Claude Code writes it."""
+    servers = {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True,
+                                          tools=ToolConfig(blocked=["delete_project", "odd.name x"]))}
+    await call(mcp_server(repo, servers, ["scarab4"]), "run_task", task="x", workdir="repo")
+    argv = log()["argv"]
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")] == ["mcp__scarab4"]
+    assert argv[argv.index("--disallowedTools") + 1:argv.index("--tools")] == [
+        "mcp__scarab4__delete_project", "mcp__scarab4__odd_name_x"]
+
+
+class BrokenStatus(Status):
+    """A status channel that breaks after its first line (a closed stream): the run's watch ends early."""
+
+    async def progress(self, message, meta=None):
+        await super().progress(message, meta)
+        if len(self.progress_lines) > 1:
+            raise RuntimeError("status channel gone")
+
+
+@pytest.mark.parametrize("how", ["broken status", "plugin stopped"])
+async def test_a_run_whose_call_answered_early_goes_on_when_taken_over(repo, monkeypatch, how):
+    """The call answered with the run id although the run's watch had ended -- the next sweep must watch it
+    on, not stop it as one whose call never answered."""
+    params = {"task": "WRITE b.txt x\nSLEEP 30", "_user_id": "admin", "_session_id": "s1"}
+    if how == "broken status":
+        # A sub-agent's session: a run going is answered as such, its watch dead or not -- never with a wake.
+        monkeypatch.setattr(server_module, "wake_blocked", lambda *a: "")
+        monkeypatch.setattr(server_module, "presence_for", lambda cfg: SubAgentPresence())
+        server = taker = make_server(repo, wait_s=5)
+        answer = await server.run_task({**params, "_status": BrokenStatus()})
+        assert answer["wake"] is False and "sub-agent" in answer["wake_note"], answer
+    else:
+        server, taker = make_server(repo, wait_s=0.2), make_server(repo)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def held(session_id, user_id):
+            entered.set()
+            await release.wait()
+            return False
+
+        server._is_sub_agent = held
+        answering = asyncio.create_task(server.run_task({**params, "_status": Status()}))
+        await entered.wait()
+        await server.stop_plugin()
+        release.set()
+        answer = await answering
+    run_id = answer["run_id"]
+    record = server._load(run_id)
+    try:
+        assert answer["state"] == "running" and "wake" in answer and alive(record["pid"], record["pid_started"]), answer
+        await taker._sweep()
+        assert run_id in taker._monitors and alive(record["pid"], record["pid_started"])
+    finally:
+        await call(taker, "cancel_run", run_id=run_id)
+        await taker.stop_plugin()
+
+
+async def test_every_hint_names_the_instances_own_get_run(repo, monkeypatch):
+    """An instance's tools reach only its own runs: coding_cli_get_run refuses a scarab_code run."""
+    monkeypatch.setattr(server_module, "CLAIM_WAIT_S", 0)
+    owner = make_server(repo, name="scarab_code", wait_s=0.2)
+    started, _ = await call(owner, "run_task", task="SLEEP 30")
+    notes = [started["wake_note"]]
+    ring_recorder(monkeypatch)
+    notes.append(owner._arm_wake(started["run_id"], "s1", "admin", False)["wake_note"])
+    stopping, _ = await call(make_server(repo, name="scarab_code"), "cancel_run", run_id=started["run_id"])
+    notes.append(stopping["note"])
+    await ended(owner, started["run_id"])
+    assert all("scarab_code_get_run" in n and "coding_cli_get_run" not in n for n in notes), notes
+
+
+async def test_a_run_taken_over_keeps_the_time_limit_it_started_with(repo):
+    """Two hours into a 240-minute run, an instance with 60 minutes took it over and stopped it."""
+    record = await unwatched(repo, "SLEEP 30", name="long", max_run_minutes=240)
+    short = make_server(repo, name="short", max_run_minutes=60)
+    short._save({**short._load(record["run_id"]), "started_at": time.time() - 120 * 60})
+    try:
+        await short._sweep()
+        await asyncio.sleep(0.5)        # a monitor with the wrong limit stops it at its first look
+        assert record["run_id"] in short._monitors and alive(record["pid"], record["pid_started"])
+    finally:
+        await call(make_server(repo, name="long"), "cancel_run", run_id=record["run_id"])
+        await short.stop_plugin()
+
+
+async def test_a_worktree_is_busy_for_every_instance(repo):
+    """A record from before instances were told apart is every instance's: two of them resumed it into one
+    worktree at once."""
+    chat, producer = make_server(repo, wait_s=0.2), make_server(repo, name="scarab_code")
+    first, _ = await call(chat, "run_task", task="x")
+    await call(chat, "get_run", run_id=first["run_id"], wait_s=20)
+    chat._save({k: v for k, v in chat._load(first["run_id"]).items() if k != "instance_name"})
+    going, _ = await call(chat, "run_task", task="SLEEP 30", resume=first["run_id"])
+    try:
+        assert going["state"] == "running", going
+        refused, _ = await call(producer, "run_task", task="y", resume=first["run_id"])
+        assert "another run works in that worktree" in refused.get("error", ""), refused
+    finally:
+        await call(chat, "cancel_run", run_id=going["run_id"])
+
+
+# ── third review ──
+
+async def test_a_line_nested_past_the_parser_costs_the_run_nothing(repo):
+    """json.loads gives up at about 3,000 levels with a RecursionError: the watch, get_run and the finalize
+    broke, and what the run had written stayed uncommitted."""
+    server = make_server(repo)
+    result, _ = await call(server, "run_task", task="WRITE b.txt x\nDEEP 5000")
+    assert result["state"] == "done" and result["commit"] and "A\tb.txt" in result["changes"]["content"], result
+
+
+async def test_objects_nested_past_the_records_encoder_are_kept_out(repo):
+    """The record is written with indent, by Python's own encoder: 1,500 levels the parser takes broke the
+    save, and the run stayed "running". The model's schema is refused (test above), its output dropped."""
+    deep = "[" * 1_500 + "]" * 1_500
+    result, _ = await call(make_server(repo), "run_task", task=f"OUTPUT {deep}", json_schema=SCHEMA)
+    assert result["state"] == "done" and "output" not in result and "nests deeper" in result["note"], result
+
+
+class HeldEnd(Status):
+    """A status whose closing line hangs: the turn is stopped while the answer goes out."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = asyncio.Event()
+
+    async def end(self, message, meta=None):
+        self.entered.set()
+        await asyncio.sleep(30)
+
+
+async def test_a_turn_stopped_while_the_answer_goes_out_stops_the_run(repo, monkeypatch):
+    """The caller never got the run id: no marker, no wake, and the run goes with the turn."""
+    rings = ring_recorder(monkeypatch)
+    server, status = make_server(repo, wait_s=0.2), HeldEnd()
+    answering = asyncio.create_task(server.run_task({"task": "SLEEP 30", "_status": status, "_user_id": "admin",
+                                                     "_session_id": "s1"}))
+    await asyncio.wait_for(status.entered.wait(), 60)
+    run_id = server._records()[0]["run_id"]
+    answering.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await answering
+    result, _ = await call(server, "get_run", session="s2", run_id=run_id, wait_s=20)
+    await ended(server, run_id)
+    assert result["state"] == "cancelled" and "stopped with the turn" in result["note"], result
+    assert not server._file(run_id, "answered").exists() and rings == []
+
+
+class BrokenEnd(Status):
+    """A status channel that breaks on the closing line."""
+
+    async def end(self, message, meta=None):
+        raise RuntimeError("channel gone")
+
+
+async def test_an_answer_that_cannot_go_out_stops_the_run(repo, monkeypatch):
+    """The caller never got the run id: as with a stopped turn, the run goes and no wake rings for it."""
+    rings = ring_recorder(monkeypatch)
+    server = make_server(repo, wait_s=0.2)
+    with pytest.raises(RuntimeError):
+        await server.run_task({"task": "SLEEP 30", "_status": BrokenEnd(), "_user_id": "admin", "_session_id": "s1"})
+    run_id = server._records()[0]["run_id"]
+    result, _ = await call(server, "get_run", session="s2", run_id=run_id, wait_s=20)
+    await ended(server, run_id)
+    assert result["state"] == "cancelled" and "could not be sent (RuntimeError)" in result["note"], result
+    assert not server._file(run_id, "answered").exists() and rings == []
+
+
+class EndAfterTheProcess(Status):
+    """The status channel breaks only once the run's process has ended."""
+
+    def __init__(self, server):
+        super().__init__()
+        self.server = server
+
+    async def end(self, message, meta=None):
+        record = self.server._records()[0]
+        while alive(record["pid"], record["pid_started"]):
+            await asyncio.sleep(0.05)
+        raise RuntimeError("channel gone")
+
+
+async def test_an_answer_that_cannot_go_out_leaves_an_ended_run_its_own_end(repo):
+    """The process failed on its own before the answer broke: no stop -- a late cancel file would make its
+    finalize call the failure a cancel."""
+    server = make_server(repo, wait_s=0.2)
+
+    async def no_watch(record, proc):           # the watch has not got to the finalize yet
+        await asyncio.sleep(3600)
+
+    server._monitor = no_watch
+    with pytest.raises(RuntimeError):
+        await server.run_task({"task": "SLEEP 1\nERROR", "_status": EndAfterTheProcess(server), "_user_id": "admin",
+                               "_session_id": "s1"})
+    final = await asyncio.to_thread(server._finalize, server._records()[0]["run_id"])
+    assert final["state"] == "failed", final
+
+
+@pytest.mark.parametrize("how", ["taken back", "race", "twice", "handed back", "seen, then taken back"])
+async def test_a_plugin_started_again_holds_its_runs(repo, how):
+    """Stopped and started again (the registry keeps plugins startable): its calls no longer release their
+    runs to whoever sweeps; a run it released at the stop and took back is no longer up for taking; and when
+    another instance took it first, a sweep that read the record a moment before does not take it as well
+    (the claim settles it, as for any orphan) -- two watches on one run each time."""
+    server, other = make_server(repo, wait_s=0.2), make_server(repo)
+    before, _ = await call(server, "run_task", task="SLEEP 30")
+    run_id = before["run_id"]
+    await server.stop_plugin()
+    try:
+        if how == "seen, then taken back":     # another's sweep saw the release; the owner took it back first
+            stale = server._load(run_id)
+            await server.start_plugin()
+            await other._adopt(stale)
+            assert run_id in server._monitors and run_id not in other._monitors
+            await call(server, "cancel_run", run_id=run_id)
+            await ended(server, run_id)
+            return
+        if how == "race":
+            stale = server._load(run_id)
+            await other._sweep()
+            await server._adopt(stale)
+            assert run_id in other._monitors and run_id not in server._monitors
+            await call(server, "cancel_run", run_id=run_id)
+            await ended(other, run_id)
+            return
+        if how == "twice":                      # each release names its own claim: not used up by the first
+            await server.start_plugin()
+            await server.stop_plugin()
+        if how == "handed back":                # another took it, stopped, and it came back
+            await other._sweep()
+            assert run_id in other._monitors
+            await other.stop_plugin()
+        await server.start_plugin()
+        if how == "handed back":
+            assert run_id in server._monitors
+            server._monitors.pop(run_id).cancel()             # its watch fails
+            await server._sweep()
+            assert run_id in server._monitors, "its own again, not stuck behind an earlier release"
+        assert run_id in server._monitors, "its own sweep took its run back"
+        assert not server._file(run_id, f"released-{server._instance}").exists(), "its own again"
+        await other._sweep()
+        assert run_id not in other._monitors, "taken back, not up for taking"
+        await call(server, "cancel_run", run_id=run_id)
+        await ended(server, run_id)
+        after, _ = await call(server, "run_task", task="SLEEP 30")       # one run at a time on the workdir
+        assert after["state"] == "running" and not server._file(after["run_id"], f"released-{server._instance}").exists()
+        await call(server, "cancel_run", run_id=after["run_id"])
+        await ended(server, after["run_id"])
+    finally:
+        await server.stop_plugin()
+        await other.stop_plugin()
+
+
+async def test_a_plugin_stopped_while_the_call_waits_answers_how_the_run_ended(repo):
+    """No turn was stopped: the call answers, the cancel of the plugin's watch is not passed on as the turn's."""
+    server = make_server(repo)
+    answering = asyncio.create_task(call(server, "run_task", task="SLEEP 30"))
+    records = []
+    for _ in range(300):        # the worktree takes seconds under load
+        records = server._records()
+        if records and records[0].get("pid") and records[0]["run_id"] in server._monitors:
+            break
+        await asyncio.sleep(0.1)
+    await server.stop_plugin()
+    result, _ = await answering
+    assert result["state"] == "cancelled" and "stopped with the plugin" in result["note"], result
+    await gone(records[0]["pid"])
+
+
+async def test_a_run_that_did_not_start_leaves_no_mcp_file(repo, data_root, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("broken on purpose")
+
+    monkeypatch.setattr(cli, "launch", broken)
+    server = mcp_server(repo, {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}, ["scarab4"])
+    result, _ = await call(server, "run_task", task="x", workdir="repo")
+    assert "not started" in result["error"] and not list((data_root / "runs").glob("*.mcp.json"))
+
+
+# ── fourth review ──
+
+@pytest.mark.parametrize("how", ["finalizing", "failed on its own"])
+async def test_a_plugin_stopped_once_the_process_ended_answers_the_runs_own_end(repo, monkeypatch, how):
+    """The plugin stopped after the process had ended: the cancelled watch's finalize still ran in its thread
+    (the call read the record as running and answered so, without a wake), and a late stop made the run's
+    own failure a cancel."""
+    server = make_server(repo)
+    if how == "finalizing":
+        commit_all = cli.commit_all
+
+        def slow_commit(*args):
+            time.sleep(4)
+            return commit_all(*args)
+
+        monkeypatch.setattr(cli, "commit_all", slow_commit)
+        task = "WRITE b.txt x"
+    else:
+        async def no_watch(record, proc):       # a watch that never gets to the end
+            await asyncio.sleep(3600)
+
+        server._monitor = no_watch
+        task = "ERROR"
+    answering = asyncio.create_task(call(server, "run_task", task=task))
+    for _ in range(600):                        # the worktree takes seconds under load
+        records = server._records()
+        if records and records[0].get("pid") and not alive(records[0]["pid"], records[0]["pid_started"]) and (
+                how != "finalizing" or server._file(records[0]["run_id"], "final").exists()):
+            break
+        await asyncio.sleep(0.1)
+    await server.stop_plugin()
+    result, _ = await answering
+    if how == "finalizing":
+        assert result["state"] == "done" and result["commit"], result
+    else:
+        assert result["state"] == "failed" and "stopped with the plugin" not in (result.get("note") or ""), result
+
+
+@pytest.mark.parametrize("how", ["own sweep, watch dead", "reload, fresh sweep"])
+async def test_a_call_still_answering_holds_its_run(repo, how):
+    """The call has not answered yet: its instance's own sweep (the watch dead) or a fresh instance after a
+    reload stopped the run as one whose call never answered -- and the call then answered "still going"."""
+    own = how.startswith("own")
+    server = make_server(repo, wait_s=5 if own else 0.2)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held(session_id, user_id):
+        entered.set()
+        await release.wait()
+        return False
+
+    server._is_sub_agent = held
+    taker = server if own else make_server(repo)
+    answering = asyncio.create_task(server.run_task({"task": "WRITE b.txt x\nSLEEP 30", "_user_id": "admin",
+                                                     "_session_id": "s1", "_status": BrokenStatus() if own else Status()}))
+    run_id = None
+    try:
+        await asyncio.wait_for(entered.wait(), 60)
+        run_id = server._records()[0]["run_id"]
+        record = server._load(run_id)
+        if own:
+            assert run_id not in server._monitors
+        else:
+            await server.stop_plugin()
+        await taker._sweep()
+        assert alive(record["pid"], record["pid_started"]) and taker._load(run_id)["state"] == "running"
+        release.set()
+        answer = await answering
+        assert answer["state"] == "running" and taker._file(run_id, "answered").exists(), answer
+        # Answered -- and released by the call itself after a stop: taken over, watched on.
+        await taker._sweep()
+        assert run_id in taker._monitors and alive(record["pid"], record["pid_started"])
+    finally:
+        release.set()
+        if run_id:
+            await call(taker, "cancel_run", run_id=run_id)
+        await taker.stop_plugin()

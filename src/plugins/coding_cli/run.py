@@ -1,7 +1,8 @@
 """Claude Code as a child process: its command line, its environment, its
 stream, and the git worktree it works in (docs/coding_cli_plugin_konzept.md).
 
-Every flag here was measured on Claude Code 2.1.257 (concept §2, M-CC-*). The
+Every flag here was measured on Claude Code 2.1.257, the MCP servers and
+--json-schema on 2.1.285 (concept §2, M-CC-*). The
 process runs detached and writes its stream into a file, so a run outlives
 the ScarabHive process that started it -- an API restart, a one-shot
 agent-cli run -- and whoever looks next finds its end on disk.
@@ -16,7 +17,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 import psutil
 import yaml
@@ -72,22 +73,41 @@ def shell_tool() -> str:
 
 
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
-                  model: str = "", resume: str = "", rules: Optional[Path] = None) -> list[str]:
+                  mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
+                  rules: Optional[Path] = None, json_schema: Optional[dict] = None) -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
-    wrote ever becomes an argument; resume is a session id this plugin read."""
+    wrote becomes an argument but json_schema; resume is a session id this
+    plugin read, mcp_servers the operator's names, each with the tools its
+    entry blocks."""
     tools = list(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS)
     cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted",
            "--strict-mcp-config", "--mcp-config", str(mcp_config),
            "--permission-mode", "plan" if mode == "plan" else "acceptEdits"]
     commands = [c for c in allowed_commands if c] if mode != "plan" else []
+    servers = (mcp_servers or {}) if mode != "plan" else {}
+    shell = shell_tool()
+    # Headless, a command nobody approved is refused (M-CC-9): the shell runs
+    # exactly these, never the denied ones. An MCP server's tools need the same
+    # approval (M-CC-10). --tools does not limit them; plan mode loads no server.
+    allowed = [*(f"{shell}({c})" for c in commands), *(f"mcp__{s}" for s in servers)]
+    # A tool the server's entry blocks stays refused, as the MCP client refuses it: a deny rule wins over
+    # every allow rule. Claude Code names it mcp__<server>__<tool>, any other character than A-Z a-z 0-9 _ -
+    # replaced by _ (its MCP docs) -- so the name is one value, too.
+    denied = [*(f"{shell}({c}:*)" for c in DENIED_COMMANDS if commands),
+              *(f"mcp__{s}__{re.sub(r'[^A-Za-z0-9_-]', '_', str(t))}"
+                for s, blocked in servers.items() for t in blocked)]
+    # Variadic: each value list runs to the next flag, and one always follows.
+    if allowed:
+        cmd += ["--allowedTools", *allowed]
+    if denied:
+        cmd += ["--disallowedTools", *denied]
     if commands:
-        # Headless, a command nobody approved is refused (M-CC-9): the shell
-        # runs exactly these, never the denied ones.
-        shell = shell_tool()
         tools.append(shell)
-        cmd += ["--allowedTools", *(f"{shell}({c})" for c in commands),
-                "--disallowedTools", *(f"{shell}({c}:*)" for c in DENIED_COMMANDS)]
     cmd += ["--tools", ",".join(tools)]
+    if isinstance(json_schema, dict):
+        # The model's schema, as one value: the JSON of a dict starts with "{",
+        # so it is never read as a flag. NaN is no JSON.
+        cmd += ["--json-schema", json.dumps(json_schema, allow_nan=False)]
     if model:
         cmd += ["--model", model]
     if resume:
@@ -159,11 +179,43 @@ def events_from(path: Path, offset: int) -> tuple[list[dict], int]:
     for line in chunk[:end].decode("utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
-        except ValueError:
+            if isinstance(event, dict) and _SURROGATE_ESCAPE.search(line):
+                event = _text(event)
+        except (ValueError, RecursionError):
+            # No JSON, or nested past what the parser takes (the model's deep tool arguments): no event.
             continue
         if isinstance(event, dict):
             found.append(event)
     return found, offset + end
+
+
+# How deep the model's objects (json_schema, the structured output, a tool call's arguments) may nest where
+# Python's own code walks them -- the record's encoder (indent=...), the live view -- which recursed out at
+# about 1,000 levels; the parser takes about 3,000.
+MAX_NESTING = 100
+
+
+def nesting(value: Any) -> int:
+    """How deep lists and objects nest in value, counted without recursion: a
+    model can nest them deeper than Python's own encoder (indent=...) recurses."""
+    depth, level = 0, [value]
+    while True:
+        level = [x for x in level if isinstance(x, (dict, list))]
+        if not level:
+            return depth
+        depth += 1
+        level = [v for x in level for v in (x.values() if isinstance(x, dict) else x)]
+
+
+# A \ud800-\udfff escape: alone (a broken emoji the model wrote) json.loads makes it a lone surrogate, which no
+# UTF-8 writer takes -- the record, the live view, the framework's stream of the answer.
+_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
+
+
+def _text(value: Any) -> Any:
+    """value with every lone surrogate replaced by U+FFFD, as a decoder replaces a broken byte."""
+    return json.loads(json.dumps(value, ensure_ascii=False).encode("utf-16", "surrogatepass")
+                      .decode("utf-16", "replace"))
 
 
 def actions(event: dict, root: Path, tools: bool = True) -> list[str]:
