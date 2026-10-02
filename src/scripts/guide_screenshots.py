@@ -147,7 +147,7 @@ SHOTS = {
                                                    await new Promise((done) => setTimeout(done, 50)); } };
         const key = (name, state, named_in, from_environment = false) => ({name, state, named_in, from_environment});
         await fetch('/__stub/set', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-          keys: [key('ANTHROPIC_API_KEY', 'placeholder', ['llm_system.models.claude-opus-5-thinking']),
+          keys: [key('ANTHROPIC_API_KEY', 'placeholder', ['llm_system.models.claude-opus-thinking']),
                  key('DEEPSEEK_API_KEY', 'missing', ['llm_system.models.deepseek-pro']),
                  key('FORGE_GITLAB_TOKEN', 'set', ['plugins.servers.forge'], true),
                  key('OPENROUTER_API_KEY', 'set', ['llm_system.models.openrouter-base',

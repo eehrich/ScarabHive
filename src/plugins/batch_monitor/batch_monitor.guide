@@ -180,10 +180,10 @@ llm_system:
         collection_window_seconds: 10
         max_requests_per_batch: 100
   models:
-    gpt-5-batch:
+    gpt-sol-batch:
       provider: batch
       batch_provider: openai_httpx
-      model: gpt-5.4
+      model: gpt-6-sol
       api_key: ${OPENAI_API_KEY}
 @{body}
 
