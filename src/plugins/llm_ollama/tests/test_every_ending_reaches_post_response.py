@@ -20,7 +20,7 @@ from plugins.llm_ollama.ollama_client import OllamaNativeAsyncClient
 
 MESSAGES = [ChatMessage(role="user", content="hi")]
 DONE = {"done": True, "done_reason": "stop", "prompt_eval_count": 7, "eval_count": 3}
-USAGE = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+USAGE = {"cost": 0.0, "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}  # Ollama bills nothing
 
 
 def _line(obj: dict) -> bytes:

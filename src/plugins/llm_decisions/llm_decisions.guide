@@ -21,7 +21,8 @@ conversation, so this plugin serves no chat provider at all: its models live
 in their own section of the configuration, beside the chat models, and are
 reached by decision profile. Laya and Ollama speak the same wire as Jev, so
 one client serves all of them; what differs per host is its endpoint, whether it takes a
-session id, and the provider name its calls are booked under.
+session id, the provider name its calls are booked under, and whether it
+bills (Ollama does not: its calls cost 0).
 
 @{table}
 Provider name | Default endpoint | Key from the environment | Session id sent
@@ -236,7 +237,7 @@ model | the model that answered, as the host names it; the configured name when 
 provider | the backend the gateway routed to (OpenRouter sends it), else None
 id | the host's call id, else None
 input_tokens, output_tokens | from the answer's usage; 0 when absent
-cost | the cost the answer reports; None when it reports none -- unknown, not free
+cost | the cost the answer reports; 0 on Ollama; otherwise None when it reports none -- unknown, not free
 duration_ms | from the first attempt to the answer
 @{body}
 
@@ -308,8 +309,9 @@ is logged as a warning, later ones only at debug level.
 
 The usage tracker books agent-less reports that carry a usage
 (@{" What it records " link context_usage_tracker/hooks}), under the
-provider name. The cost the answer reports wins. When there is none -- a
-local Laya or Ollama, TypeSafe's own endpoint -- the tracker prices the call from
+provider name. The cost the answer reports wins. An Ollama call costs 0:
+Ollama bills nothing, so no model needs a price row. A call of another host
+that reports none -- a local Laya, TypeSafe's own endpoint -- the tracker prices from
 @{tt}config/llm_pricing.yaml@{utt} by the entry's @{tt}model@{utt}; without
 a row there, the cost stays unknown. The message debugger records every
 report (@{" The capture hooks " link message_debugger/hooks}), the served
@@ -335,9 +337,9 @@ A decisions request needs a state | an empty state
 @{body}
 
 Everything the endpoint does wrong is a @{tt}DecisionsError@{utt}. Its
-@{tt}usage@{utt} is set when an answer came back, said what it cost, and was
-refused: the call was billed, and the @{" decision " link decision/main}
-tool counts it in its totals.
+@{tt}usage@{utt} is set when an answer came back with a usage and was
+refused: the call was billed (its cost as in the result), and the
+@{" decision " link decision/main} tool counts it in its totals.
 
 @{table}
 Message begins | When | usage

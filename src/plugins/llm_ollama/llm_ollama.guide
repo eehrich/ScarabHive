@@ -291,8 +291,10 @@ their sum @{tt}total_tokens@{utt}. Ollama reports no cached tokens. A stream
 carries its counts only on its last line, so a cancelled or abandoned stream
 is reported without usage.
 
-The core prices the tokens from @{tt}config/llm_pricing.yaml@{utt}; a local
-model without a price entry is reported as unknown, not as free.
+Ollama bills nothing, so the usage carries @{tt}cost: 0@{utt}, and no model
+needs a row in @{tt}config/llm_pricing.yaml@{utt}. In openai_compat mode
+the openai client reports the usage, without a cost: the core prices the
+tokens from that file, and a model without a row is reported as unknown.
 @endnode
 
 @node errors "Errors"

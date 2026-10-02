@@ -30,8 +30,8 @@ reference -- there was no key here to call it::
                 output_tokens}; no id, provider or cost; bodies up to 64 KiB
 
 So one client, and what differs per host is data (``Host``): the provider name
-the hooks and the tracker book a call under, the default endpoint, and whether
-the host takes OpenRouter's ``session_id``.
+the hooks and the tracker book a call under, the default endpoint, whether
+the host takes OpenRouter's ``session_id``, and whether it bills at all.
 
 Three question types, and their ``criteria`` differ in SHAPE -- the one thing
 that turns into an HTTP 400 at runtime, so ``check_questions`` refuses it here:
@@ -47,7 +47,8 @@ pinned in one place here.
 
 Where the answer carries a ``cost`` it is the price -- no entry in
 llm_pricing.yaml is needed or would be used. Where it carries none, the cost is
-None: unknown, not free.
+None: unknown, not free -- except on a host that never bills (Ollama), where
+it is 0.
 """
 
 from __future__ import annotations
@@ -99,11 +100,14 @@ class Host:
     ``takes_session_id``: OpenRouter documents ``session_id`` for grouping its
     logs; TypeSafe's reference lists model, state and questions only, and a
     field a host does not document is not sent there.
+    ``free``: the host never bills a call, so an answer without a cost costs
+    0 -- no row in llm_pricing.yaml for each model pulled.
     """
 
     provider: str
     url: str
     takes_session_id: bool
+    free: bool = False
 
 
 OPENROUTER = Host("openrouter_decisions", "https://openrouter.ai/api/alpha/decisions", True)
@@ -112,8 +116,8 @@ OPENROUTER = Host("openrouter_decisions", "https://openrouter.ai/api/alpha/decis
 SYSTEM_ONE = Host("systemone_decisions", "https://api.typesafe.ai/v1/systemone", False)
 #: Ollama 0.35+ serves its decision models (nimble, tev1) on this wire; the
 #: default port and address are llm_ollama's. Its reference lists model, state,
-#: questions and keep_alive -- no session_id.
-OLLAMA = Host("ollama_decisions", "http://127.0.0.1:11434/v1/systemone", False)
+#: questions and keep_alive -- no session_id. Free: Ollama runs on our own machines.
+OLLAMA = Host("ollama_decisions", "http://127.0.0.1:11434/v1/systemone", False, free=True)
 
 
 @dataclass(frozen=True)
@@ -143,8 +147,9 @@ class DecisionsResult:
     id: Optional[str]
     input_tokens: int
     output_tokens: int
-    #: What the call cost, as the API reports it. None when the answer carried no
-    #: cost at all -- which is not the same as free, and must not be added up as 0.
+    #: What the call cost, as the API reports it; 0 on a host that never bills.
+    #: None when the answer carried no cost at all -- which is not the same as
+    #: free, and must not be added up as 0.
     cost: Optional[float]
     duration_ms: float
 
@@ -158,7 +163,7 @@ class DecisionsError(RuntimeError):
 
     ``usage`` is set in that last case when the answer carried one -- the call
     was billed all the same, and a caller adding up spend must count it:
-    ``{"input_tokens", "output_tokens", "cost"}``, cost None when unreported.
+    ``{"input_tokens", "output_tokens", "cost"}``, cost as in the result.
     """
 
     def __init__(self, message: str, usage: Optional[dict] = None) -> None:
@@ -368,6 +373,8 @@ class DecisionsClient:
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
             cost = None if usage.get("cost") is None else float(usage["cost"])
+            if cost is None and self.host.free:
+                cost = 0.0
         except (AttributeError, TypeError, ValueError) as e:
             raise DecisionsError(f"Decisions API answered a usage this client cannot read "
                                  f"({str(usage)[:200]}) -- model={self.model}") from e

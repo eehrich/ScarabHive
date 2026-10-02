@@ -251,7 +251,7 @@ OLLAMA_ANSWER = {
 }
 
 
-async def test_a_local_ollama_gets_no_key_and_no_session_and_its_calls_are_booked_as_ollama(monkeypatch):
+async def test_a_local_ollama_gets_no_key_and_no_session_and_its_calls_are_booked_as_ollama_at_no_cost(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
     sent = []
     registry, watching = _watching_hooks()
@@ -263,7 +263,8 @@ async def test_a_local_ollama_gets_no_key_and_no_session_and_its_calls_are_booke
     assert "Authorization" not in sent[0]["headers"] and "session_id" not in sent[0]["json"]
     assert [c.llm_provider for _, c in registry.seen] == ["ollama_decisions"] * 2
     assert result["label"].value == "bug" and result["label"].probabilities["bug"] == 0.9781
-    assert result.cost is None and result.model == "nimble" and result.input_tokens == 174
+    # Ollama bills nothing: 0, not unknown -- no price row for every model pulled.
+    assert result.cost == 0.0 and result.model == "nimble" and result.input_tokens == 174
 
 
 async def test_a_state_of_nothing_is_refused():

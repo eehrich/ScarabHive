@@ -256,12 +256,14 @@ class OllamaNativeAsyncClient(LLMClient):
                 request=e.request, response=e.response) from e
 
     @staticmethod
-    def _usage(data: dict[str, Any]) -> Optional[dict[str, int]]:
+    def _usage(data: dict[str, Any]) -> Optional[dict[str, float]]:
         # prompt_eval_count = prompt tokens, eval_count = completion tokens
-        # (thinking included -- Ollama has no separate count for it).
+        # (thinking included -- Ollama has no separate count for it). Ollama
+        # bills nothing: the cost is 0, not unknown, without a row per model
+        # in llm_pricing.yaml.
         if "eval_count" not in data and "prompt_eval_count" not in data:
             return None
-        usage: dict[str, int] = {}
+        usage: dict[str, float] = {"cost": 0.0}
         if "prompt_eval_count" in data:
             usage["prompt_tokens"] = data["prompt_eval_count"]
         if "eval_count" in data:

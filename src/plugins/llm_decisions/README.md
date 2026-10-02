@@ -7,7 +7,8 @@ a position on a scale; it writes no text. Nothing here can serve `chat()`: the p
 `decision` plugin gives agents tools on top of it.
 
 - **Providers** `openrouter_decisions`, `systemone_decisions` and `ollama_decisions` -- one client for the one wire; they differ in the
-  default endpoint, whether OpenRouter's `session_id` is sent, and the name a call is booked under.
+  default endpoint, whether OpenRouter's `session_id` is sent, the name a call is booked under, and whether it bills
+  (an Ollama call costs 0).
 - **No tools, hooks or panel.** Every call reports itself to `pre_llm_request` / `post_llm_response`, so the usage
   tracker and the message debugger see it.
 
