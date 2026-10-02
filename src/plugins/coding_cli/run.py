@@ -218,13 +218,26 @@ def _text(value: Any) -> Any:
                       .decode("utf-16", "replace"))
 
 
+def message(event: dict) -> dict:
+    """A stream event's message -- {} where it has none that is an object: Claude Code's system
+    and error events carry text there."""
+    found = event.get("message")
+    return found if isinstance(found, dict) else {}
+
+
+def content(event: dict) -> list:
+    """The content blocks of a stream event's message; [] where they are no list."""
+    found = message(event).get("content")
+    return found if isinstance(found, list) else []
+
+
 def actions(event: dict, root: Path, tools: bool = True) -> list[str]:
     """What an assistant event did, one short line per tool call or text --
     the text only with tools=False."""
     if event.get("type") != "assistant":
         return []
     lines = []
-    for block in (event.get("message") or {}).get("content") or []:
+    for block in content(event):
         if not isinstance(block, dict):
             continue
         if block.get("type") == "tool_use" and tools:

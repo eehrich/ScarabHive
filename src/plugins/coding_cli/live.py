@@ -109,16 +109,15 @@ class LiveRun:
         """Relay what the stream said since the last feed."""
         if self._closed:
             return
-        try:
-            for event in events:
+        for event in events:                         # one that breaks costs itself, not the rest
+            try:
                 kind = event.get("type")
-                content = (event.get("message") or {}).get("content") or []
                 if kind == "assistant":
-                    await self._assistant(event.get("message") or {}, content)
+                    await self._assistant(cli.message(event), cli.content(event))
                 elif kind == "user":
-                    await self._results(content)
-        except Exception:  # noqa: BLE001 - see the module docstring
-            logger.exception("coding_cli: relaying a run's stream failed")
+                    await self._results(cli.content(event))
+            except Exception:  # noqa: BLE001 - see the module docstring
+                logger.exception("coding_cli: relaying a run's stream failed")
 
     async def _assistant(self, message: dict, content: list) -> None:
         # Claude Code sends one event per content block of a model turn, all
