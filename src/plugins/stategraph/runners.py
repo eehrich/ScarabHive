@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 RUNS_KEY = "runs_machines_in"
+#: The runner of an instance that names none (its ``runner_agent``).
+DEFAULT_RUNNER = "stategraph_runner"
 logger = logging.getLogger(__name__)
 
 

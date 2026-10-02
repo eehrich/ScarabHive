@@ -194,15 +194,20 @@ you see its journal; Pause, Continue, Step and Terminate reach it within a
 second, Run to and breakpoints only in its own process.
 @{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
 with breakpoints.
-@{bullet}@{b}Submachines@{ub}: a machine's runs list also the runs it ran
-in as a submachine ("in <machine>"). With one of them picked, the graph
-shows that run's frame of this machine: the one picked in the debug bar
-("under <state> #2 · running", "· ended in <state>"), else a live one,
-else the last; a frame that has ended is drawn from its journal. The
-layers button of a frame (Debug tab, Result card) shows it on its
-machine's graph -- not for a machine of a file's @{tt}machines:@{utt},
-which has no graph of its own --, the arrow in the debug bar goes back to
-the run's machine. Breakpoints and Run to set there are this machine's.
+@{bullet}@{b}Submachines@{ub}: with a run selected, a state that started
+submachine runs in it carries a badge ("2 runs"). Click it: the
+inspector's last section, folded, lists its @{b}Submachine runs@{ub}
+("critique_round #2", "ended in done"); @{b}Show@{ub} opens the submachine's
+graph with that run on it -- where it stands, what it visited, its last
+transition. The frames of the Debug tab and the end states of the Result
+card have the same button (not for a machine of a file's
+@{tt}machines:@{utt}, which has no graph of its own). On the submachine's
+graph the debug bar picks among its frames in the run ("under review
+#2", "running") and its arrow goes back to the run's machine; breakpoints and
+Run to set there are the submachine's. Its runs list also holds the runs
+it ran in ("in scene_review"): one picked shows the frame picked, else a
+live one, else the last. A fork shows the frames it ran itself; those
+before its fork point are in the run it was forked from.
 @{bullet}The @{b}Result@{ub} card: output or error, the final state of each
 frame, and every finished activity folded -- open one for its full answer,
 its input, failed attempts, the agent's session (@{b}Open@{ub} shows the
@@ -217,8 +222,8 @@ output and error; watches (a watch pauses the run when its value
 changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub} while paused
 (Set writes into @{tt}ctx@{utt} -- or, at an exit or error breakpoint,
 sets the activity's answer); @{b}Send event@{ub} with data; and every
-frame with its state, step and @{tt}ctx@{utt} (the layers button shows it
-on its machine's graph).
+frame with its state, step and @{tt}ctx@{utt} (@{b}Show@{ub} shows it on
+its machine's graph).
 
 Watches and breakpoints set while no run is live belong to the next run
 of this machine and are kept in the browser; set during a run they change
@@ -561,7 +566,10 @@ Refused with the first three errors when validation finds errors
 (@{tt}http_422@{utt}); refused when a file changed since you read it, or
 when you change a file of the machine without its version
 (@{tt}http_409@{utt}, "pass its version from get_machine in
-expected_versions"); refused for a machine outside the writable folder
+expected_versions"), or when a file of the save would hide another
+machine: a @{tt}<x>.yaml@{utt} written into a machine folder searched
+before the one machine x lies in (@{tt}http_409@{utt}, "would hide
+machine"); refused for a machine outside the writable folder
 (@{tt}http_403@{utt}: save a copy under a new id). Answer:
 @{tt}machine_id@{utt}, the new @{tt}versions@{utt}, @{tt}problems@{utt}
 (warnings). No tool deletes a machine; the panel does.
@@ -1002,6 +1010,10 @@ named folder that holds a machine wins. Two runners naming the same
 folder: no machine there can be started until one of them lets go --
 validation says which two (SG007). A run started before keeps the runner
 it started with.
+@{bullet}The whole tree runs with its root's runner: a file of it that lies
+in a writable folder another runner (or none) has -- an import by
+machine id finds the writable folder first -- is SG007 for a machine with
+a runner of its own. Import such machines from the machine's folder.
 @{bullet}@{tt}runs_machines_in@{utt} is not inherited: a runner derived
 from another claims no folder by accident.
 @{bullet}A runner's @{tt}inject_params@{utt} come after the instance's and

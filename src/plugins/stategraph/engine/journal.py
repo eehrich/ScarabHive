@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -101,15 +102,40 @@ CREATE TABLE IF NOT EXISTS scheduler_leases (
 );
 """
 
-#: A runs.db from before ``frames``: the submachine frames its runs ended, from their journal's end rows (the path
-#: they ran under is not in those: the panel names them by prefix).
-_FRAMES_FROM_JOURNAL = """
-INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path)
-SELECT run_id, json_extract(data, '$.frame'), json_extract(data, '$.machine'), NULL FROM journal
-WHERE kind = 'trace' AND status = 'end' AND json_valid(data) AND json_extract(data, '$.frame') <> ''
-  AND json_extract(data, '$.machine') IS NOT NULL
-ORDER BY run_id, seq
-"""
+#: The key of the activity that started a submachine frame: its prefix without "/m/" (and a retry's "/a<n>").
+_STARTED_BY = re.compile(r"(/a\d+)?/m/$")
+
+
+def _frames_from_journal(conn: sqlite3.Connection) -> None:
+    """A runs.db from before ``frames``: the submachine frames its runs ended, from their journal's end rows, each
+    with the path of the activity that started it and in the order they started (that activity's seq)."""
+    found = []
+    for row in conn.execute("SELECT run_id, seq, data FROM journal WHERE kind = 'trace' AND status = 'end'"):
+        try:
+            end = json.loads(row["data"] or "{}")
+        except ValueError:  # a row it cannot read names no frame
+            continue
+        prefix, machine = (end.get("frame"), end.get("machine")) if isinstance(end, dict) else (None, None)
+        if not isinstance(prefix, str) or not prefix or not isinstance(machine, str):  # the root's own end, or none
+            continue
+        started = conn.execute("SELECT seq, data FROM journal WHERE run_id = ? AND kind = 'activity' AND key = ?",
+                               (row["run_id"], _STARTED_BY.sub("", prefix))).fetchone()
+        try:
+            data = json.loads(started["data"] or "{}") if started else None
+        except ValueError:
+            data = None
+        path = data.get("path") if isinstance(data, dict) and isinstance(data.get("path"), str) else None
+        found.append((row["run_id"], started["seq"] if started else row["seq"], prefix, machine, path))
+    found.sort(key=lambda frame: (frame[0], frame[1]))
+    conn.execute("BEGIN")  # one write, not one per frame
+    try:
+        conn.executemany("INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path) VALUES (?, ?, ?, ?)",
+                         [(run_id, prefix, machine, path) for run_id, _, prefix, machine, path in found])
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        conn.execute("ROLLBACK")
+        raise
+
 
 _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control")
 #: Columns a runs.db from before them lacks: added when it is opened.
@@ -148,7 +174,7 @@ class RunStore:
             conn.executescript(_SCHEMA)
             if not had_frames:
                 try:  # for the panel only: a journal it cannot read must not keep the runs from opening
-                    conn.execute(_FRAMES_FROM_JOURNAL)
+                    _frames_from_journal(conn)
                 except sqlite3.Error:
                     logger.warning("stategraph: frames of the runs before %s not filled from the journal", self.path,
                                    exc_info=True)

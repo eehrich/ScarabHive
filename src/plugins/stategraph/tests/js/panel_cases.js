@@ -2350,6 +2350,37 @@ const CASES = {
     check(!$('side-inspect').innerHTML.includes('data-form="note"'), 'the note the undo took stayed chosen, and the redo showed it again');
   },
 
+  async a_note_is_added_once_and_asked_about_only_as_it_is() {
+    await boot('?machine=review');
+    await choose('write');
+    const form = element('form', { 'data-form': 'set-state' });
+    await $('side-inspect').fire('input', { target: form.appendChild(element('textarea', { name: 'yaml' })) });  // not applied
+    editAnswer = { ...MACHINE, graph: { ...MACHINE.graph, notes: [{ name: 'note_1', text: 'New note' }] } };
+    ANSWERS.confirm = false;  // keep the state's text
+    const click = () => $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await Promise.all([click(), click()]);  // a double click
+    await release();
+    await settle();
+    const sent = CALLS.filter(([, path, json]) => path.endsWith('/edit') && json.op?.op === 'set_note');
+    check(sent.length === 1, `a double click sent ${sent.length} notes`);
+    check(!ASKED.some(([, message]) => String(message).includes('this edit changes the state')),
+      `a note's edit asked about the state: ${JSON.stringify(ASKED)}`);
+  },
+
+  async a_shared_notes_block_is_read_only_in_the_inspector() {
+    reviewAnswer = { ...WITH_NOTE, graph: { ...WITH_NOTE.graph, locked: ['notes'] } };
+    await boot('?machine=review');
+    const note = $('canvas').querySelectorAll('.sg-note').find((n) => n.dataset.note === 'why');
+    await $('canvas').fire('keydown', { key: 'Enter', target: note, preventDefault() {} });
+    await settle();
+    const shown = $('side-inspect').innerHTML;
+    check(shown.includes('YAML anchor') && /sg-note-input"[^>]*readonly/.test(shown) && !shown.includes('remove-note'), shown);
+    await $('palette').fire('click', { target: element('button', { 'data-add-note': '' }) });
+    await settle();
+    check(!CALLS.some(([, path]) => path.endsWith('/edit')) && TOASTS.some(([, message]) => String(message).startsWith('Notes:')),
+      `a note was added to a shared block: ${JSON.stringify(TOASTS)}`);
+  },
+
   async a_note_s_text_is_applied_and_an_emptied_note_is_removed_after_asking() {
     reviewAnswer = WITH_NOTE;
     editAnswer = WITH_NOTE;
@@ -2471,12 +2502,93 @@ const CASES = {
     await release();
     await settle();
     check(JSON.stringify(current()) === '["done"]', `after a control the frame picked is lost: ${current()}`);
+    check(bar().includes('under read #2'), `the recorded frames are lost with a control's answer: ${bar()}`);
+    const nowhere = element('button', { 'data-open-frame': 'zz/m/', 'data-machine': 'gone' });  // its GET fails
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: nowhere })));
+    await release();
+    await settle();
+    POLLERS.find((p) => p.ms === 1000).fn();  // drawn again: the frame shown is the one picked still
+    await release();
+    await settle();
+    check(headName() === 'other' && JSON.stringify(current()) === '["done"]', `a switch that failed moved the frame: ${current()}`);
+    // a pick while a switch is out: the switch that fails does not take it back
+    HOLD = (method, path) => path.endsWith('/machines/gone');
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: nowhere })));
+    await settle();
+    const picker2 = element('select', { 'data-frame-choice': '' });
+    picker2.value = 's3/m/';
+    await $('debugBar').fire('change', { target: picker2 });
+    HOLD = () => false;
+    await release();
+    await settle();
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(JSON.stringify(current()) === '["write"]', `the pick made meanwhile was taken back: ${current()}`);
     const back =element('button', { 'data-open-frame': '', 'data-machine': 'review' });
     await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: back })));
     await release();
     await settle();
     check(headName() === 'review' && JSON.stringify(current()) === '["read"]', `back on review: ${headName()}, ${current()}`);
     check(!bar().includes('data-frame-choice') && bar().includes('r1'), 'the run is not kept on its own machine');
+  },
+
+  async a_state_that_ran_a_submachine_lists_its_runs_in_the_inspector() {
+    // review's state read ran other twice (s3 ended, s5 runs); other's own child (s3/m/s1/m/) ran under it, not under read
+    const live = { machine: 'other', prefix: 's5/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's3/m/s1/m/', machine: 'other', path: 'read/write' },
+        { prefix: 's5/m/', machine: 'other', path: 'read' }] };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 50, kind: 'trace', key: 's3/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's3/m/', status: 'succeeded' } }] };
+    await boot('?machine=review&run=r1');
+    const badges = (name) => $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === name)
+      .querySelectorAll('.sg-badge-text').map((text) => text.textContent);
+    check(badges('read').includes('2 runs') && !badges('write').some((text) => / runs?$/.test(text)),
+      `the canvas does not say where submachines ran: read ${badges('read')}, write ${badges('write')}`);
+    await choose('read');
+    await settle();
+    const box = () => $('stateFrames').innerHTML;
+    check(!$('stateFrames').hidden && box().includes('other #1') && box().includes('other #2'), box());
+    const pane = $('side-inspect').innerHTML;
+    check(pane.indexOf('id="stateFrames"') > pane.indexOf('sg-fragment'), 'the list is not last in the inspector');
+    check(box().includes('Submachine runs (2)') && !/data-state-frames\s+open/.test(box()), `not folded: ${box()}`);
+    const fold = element('details', { 'data-state-frames': '' });
+    fold.open = true;
+    await $('side-inspect').fire('toggle', { target: fold });
+    check(box().includes('ended in done') && box().includes('running'), `how they stand: ${box()}`);
+    check(box().includes('data-open-frame="s3/m/"') && box().includes('data-open-frame="s5/m/"')
+      && !box().includes('data-open-frame="s3/m/s1/m/"'), `a grandchild is listed under read: ${box()}`);
+    // s5 ends while the list is open: the next poll's journal says how
+    journalOf.r1.push({ seq: 60, kind: 'trace', key: 's5/m/s2:final:failed', state: 'failed', status: 'final',
+      data: { machine: 'other', frame: 's5/m/', status: 'failed' } });
+    runAnswer = { ...runAnswer, view: { ...runAnswer.view, frames: [RUN.view.frames[0]] }, journal: journalOf.r1.slice(-5) };
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(box().includes('ended in failed') && !box().includes('running'), `the ended frame is not followed: ${box()}`);
+    check(/data-state-frames\s+open/.test(box()), 'opened, the list folds again on a poll');
+    const third = { machine: 'other', prefix: 's7/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...runAnswer, view: { ...runAnswer.view, frames: [RUN.view.frames[0], third] } };  // no new result row
+    POLLERS.find((p) => p.ms === 1000).fn();
+    await release();
+    await settle();
+    check(box().includes('other #3') && box().includes('running'), `a frame started meanwhile is not listed: ${box()}`);
+    await choose('write');
+    await settle();
+    check($('stateFrames').hidden && !box().includes('other'), 'a state that ran none lists runs');
+    // on other's graph, its frame s3/m/: the child its state write started, by the path past the frame's own
+    const show = element('button', { 'data-open-frame': 's3/m/', 'data-machine': 'other' });
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: show })));
+    await release();
+    await settle();
+    await choose('write');
+    await settle();
+    check(headName() === 'other' && box().includes('data-open-frame="s3/m/s1/m/"') && !box().includes('data-open-frame="s5/m/"'), box());
+    check(badges('write').includes('1 run'), `on other's graph: write ${badges('write')}`);
+    check(!/data-state-frames\s+open/.test(box()), `opened for read, the list of another state starts open: ${box()}`);
   },
 
   async a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again() {
@@ -2499,17 +2611,42 @@ const CASES = {
     runAnswer = { ...RUN, view: { ...RUN.view, frames: RUN.view.frames } };
     const trace = (seq, frame, state, status, data = {}) => ({ seq, kind: 'trace', key: `${frame}s1:${status}:${state}`, state, status,
       data: { machine: 'other', frame, ...data } });
-    journalOf = { ...journalOf, r1: [...RUN.journal, trace(50, 's7/m/', 'write', 'enter', { visit: 1 }),
-      trace(51, 's7/m/', 'write', 'end', { reason: 'failed' }), trace(60, 's9/m/', 'done', 'enter', { visit: 1 }),
+    // s7's second attempt ran it (s7/a2/m/), s9 once; their paths are their activities'
+    const started = (seq, key) => ({ seq, kind: 'activity', key, state: 'read', status: 'done', data: { kind: 'machine', path: 'read' } });
+    journalOf = { ...journalOf, r1: [...RUN.journal, started(49, 's7'), trace(50, 's7/a2/m/', 'write', 'enter', { visit: 1 }),
+      trace(51, 's7/a2/m/', 'write', 'end', { reason: 'failed' }), started(59, 's9'), trace(60, 's9/m/', 'done', 'enter', { visit: 1 }),
       trace(61, 's9/m/', 'done', 'final', { status: 'succeeded' })] };
     await boot('?machine=other&run=r1');
     const current = () => $('canvas').querySelectorAll('.sg-node').filter((n) => n.classList.contains('is-current')).map((n) => n.dataset.state);
     const bar = $('debugBar').innerHTML;
-    check(bar.includes('under s7/m/ · ended in write') && bar.includes('under s9/m/ · ended in done'), bar);
+    check(bar.includes('under read #1 · failed in write') && bar.includes('under read #2 · ended in done'), bar);
     check(JSON.stringify(current()) === '["done"]', `none live, none picked: the last frame, not ${current()}`);
     const frames = $('dbgFrames').innerHTML;
     check(frames.includes('data-machine="review"') && !frames.includes('data-machine="critique"'),
       'a machine without a graph of its own (not in the list) is offered to be shown');
+  },
+
+  async the_run_s_own_graph_counts_the_frames_only_its_journal_names() {
+    // a run from before the record: no frames_started, no live frame of other -- its journal names one under read
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0]] } };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 40, kind: 'activity', key: 's3', state: 'read', status: 'done', data: { kind: 'machine', path: 'read' } },
+      { seq: 41, kind: 'trace', key: 's3/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's3/m/', status: 'succeeded' } }] };
+    await boot('?machine=review&run=r1');
+    const badges = $('canvas').querySelectorAll('.sg-node').find((n) => n.dataset.state === 'read')
+      .querySelectorAll('.sg-badge-text').map((text) => text.textContent);
+    check(badges.includes('1 run'), `read's badge: ${badges}`);
+  },
+
+  async the_frames_of_an_interrupted_run_run_no_more() {
+    runsAnswer = () => [{ ...RUNS[0], machine_id: 'review' }];
+    const left = { machine: 'other', prefix: 's3/m/', path: 'read', step: 1, state: 'write', config: ['write'], visits: {},
+      ctx: {}, params: {}, accepts: [] };  // the view the crash left
+    runAnswer = { ...RUN, status: 'interrupted', active: false, debug: { ...RUN.debug, paused: null },
+      view: { ...RUN.view, frames: [RUN.view.frames[0], left] }, frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }] };
+    await boot('?machine=other&run=r1');
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('under read · interrupted') && !bar.includes('running'), bar);
   },
 };
 

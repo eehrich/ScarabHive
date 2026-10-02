@@ -50,6 +50,8 @@ const S = {
   evaluation: null,     // {expr, value} | {expr, error}
   result: null,         // loadResult: {runId, rows, after, complete, frames}
   framePrefix: null,    // the frame of the selected run the author picked to see on another machine's canvas
+  stateFramesOpen: false,  // the inspector's folded list of a state's submachine runs is open ...
+  stateFramesFor: null,    // ... for this state
   resultOpen: new Set(),  // indexes of the result's activities the author opened
   nextBreakpoints: [],  // [{state, at, machine}] for the next run of this machine
   nextWatch: [],        // [expr] for the next run, watched in this machine's frames
@@ -135,20 +137,94 @@ const patched = (map, changes) => {
   return next;
 };
 
-/** The frames `machine` ran as a submachine in the run, in the order they started: those the run recorded
- * (frames_started, the first 500), those its journal names (a run from before the record, or past those 500), and
+/** The submachine frames of the run by prefix, in the order they started: those the run recorded (frames_started,
+ * the first 500), those its journal names (a run from before the record, or past those 500; their path unknown), and
  * the live ones of its view. */
-function framesOf(run, machine) {
-  const found = new Map((run?.frames_started || []).filter((f) => f.machine === machine)
-    .map((f) => [f.prefix, { ...f, live: false }]));
+function runFrames(run) {
+  const found = new Map((run?.frames_started || []).map((f) => [f.prefix, { ...f, live: false }]));
   for (const [prefix, traced] of S.result?.runId === run?.id ? S.result.frames : []) {
-    if (prefix && traced.machine === machine && !found.has(prefix)) found.set(prefix, { prefix, machine, path: null, live: false });
+    if (prefix && !found.has(prefix)) found.set(prefix, { prefix, machine: traced.machine, path: startedUnder(prefix), live: false });
   }
+  // the view of a run that ended or was interrupted keeps its last frames: they run no more
+  const alive = run && !TERMINAL.has(run.status) && run.status !== 'interrupted';
   for (const f of run?.view?.frames || []) {
-    if (f.prefix && f.machine === machine) found.set(f.prefix, { prefix: f.prefix, machine, path: f.path, live: true });
+    if (f.prefix) found.set(f.prefix, { prefix: f.prefix, machine: f.machine, path: f.path, live: alive });
   }
-  return [...found.values()];
+  return found;
 }
+
+/** The path a frame only the journal names ran under: its starting activity's (key: the prefix without `/m/`, and
+ * without a retry's `/a<n>`), from the result's rows -- kept by key on the result once read. */
+function startedUnder(prefix) {
+  const result = S.result;
+  if (!result) return null;
+  result.paths ||= new Map(result.rows.filter((row) => row.kind === 'activity').map((row) => [row.key, row.data?.path]));
+  return result.paths.get(prefix.replace(/(\/a\d+)?\/m\/$/, '')) ?? null;
+}
+
+/** The frames `machine` ran as a submachine in the run. */
+const framesOf = (run, machine) => [...runFrames(run).values()].filter((f) => f.machine === machine);
+
+/** The submachine frames the shown frame started, each with the `state` of it they ran under: its children (one
+ * `/m/` past its prefix) whose path goes on from its own with that state's name. */
+function shownChildren() {
+  const shown = shownFrame();
+  if (!shown) return [];
+  const frames = runFrames(S.run);
+  const base = shown.prefix ? frames.get(shown.prefix)?.path : '';
+  if (base == null) return [];  // the shown frame's own path is not known: neither is what runs under its states
+  const found = [];
+  for (const f of frames.values()) {
+    const rest = f.prefix.slice(shown.prefix.length);
+    if (!f.prefix.startsWith(shown.prefix) || rest.indexOf('/m/') !== rest.length - 3 || f.path == null) continue;
+    const inner = !base ? f.path : f.path.startsWith(`${base}/`) ? f.path.slice(base.length + 1) : null;
+    if (inner) found.push({ ...f, state: inner.split('/')[0] });
+  }
+  return found;
+}
+
+/** The submachine frames the shown frame started from its state `name`. */
+const framesUnder = (name) => shownChildren().filter((f) => f.state === name);
+
+/** How a frame of the selected run stands: running, or the state it ended in (from its trace). */
+const frameStatus = (f) => {
+  const traced = tracedFrame(f.prefix);
+  if (f.live) return 'running';
+  // failed, cancelled; one an interrupted run left behind has not ended: a resume goes on with it
+  const how = traced?.ended ? (traced.ended !== 'finished' ? traced.ended : 'ended')
+    : S.run?.status === 'interrupted' ? 'interrupted' : 'ended';
+  return traced?.state ? `${how} in ${traced.state}` : how;
+};
+
+/** The inspector's list of the submachine runs the selected state started in the selected run. */
+function drawStateFrames() {
+  const box = $('stateFrames');
+  if (!box) return;
+  const name = S.selection?.kind === 'state' ? S.selection.id : null;
+  const frames = S.run && name ? framesUnder(name) : [];
+  box.hidden = !frames.length;
+  if (S.stateFramesFor !== name) {  // another state: its list starts folded
+    S.stateFramesFor = name;
+    S.stateFramesOpen = false;
+  }
+  const count = Object.create(null);  // by machine id
+  for (const f of frames) count[f.machine] = (count[f.machine] || 0) + 1;
+  const seen = Object.create(null);
+  const shown = shownFrame()?.prefix;
+  // last in the inspector and folded (a map runs one per item); open stays open through the polls
+  update(box, frames.length ? html`<details class="pk-details" data-state-frames ${S.stateFramesOpen ? 'open' : ''}>
+    <summary data-key="state-frames">Submachine runs (${frames.length}) <span class="pk-badge pk-badge--info">run ${shorten(S.run.id, 12)}</span></summary>
+    <ul class="sg-plain-list">${frames.map((f) => {
+      seen[f.machine] = (seen[f.machine] || 0) + 1;
+      return html`<li class="sg-watch"><span class="pk-mono">${f.machine}${count[f.machine] > 1 ? ` #${seen[f.machine]}` : ''}</span>
+        <span class="pk-muted">${frameStatus(f)}</span><span class="pk-grow"></span>${showFrameButton(f.machine, f.prefix, shown,
+          `${f.machine}${count[f.machine] > 1 ? ` #${seen[f.machine]}` : ''}`)}</li>`;
+    })}</ul></details>` : '');
+}
+
+$('side-inspect').addEventListener('toggle', (event) => {
+  if (event.target.dataset?.stateFrames !== undefined) S.stateFramesOpen = event.target.open;
+}, true);
 
 /** The frame of the selected run the canvas shows: the root on the run's own machine; on another, the frame of the
  * open machine picked, else a live one, else the last it ran in. null: the open machine did not run in it. */
@@ -164,9 +240,15 @@ const tracedFrame = (prefix) => (S.result?.runId === S.run?.id ? S.result.frames
 
 /** A frame of the selected run on the canvas: its machine opened, the run kept. */
 async function openFrame(machine, prefix) {
+  const before = S.framePrefix;
   S.framePrefix = prefix || null;
-  if (machine !== S.machine?.id) await openMachine(machine, { keepRun: true });
-  else drawRun();
+  if (machine === S.machine?.id) {
+    drawRun();
+    return;
+  }
+  await openMachine(machine, { keepRun: true });
+  // not opened (the author kept the drafts, or it failed) -- unless a later pick or another run changed it meanwhile
+  if (S.machine?.id !== machine && S.framePrefix === (prefix || null)) S.framePrefix = before;
 }
 
 document.addEventListener('click', (event) => {
@@ -176,9 +258,14 @@ document.addEventListener('click', (event) => {
 
 function redrawOverlay() {
   const frame = shownFrame();
+  const run = frame ? runOverlay(S.run, frame.prefix, tracedFrame(frame.prefix)) : null;
+  if (run) {  // the states that started submachine runs: a badge says how many (the inspector lists them)
+    run.subruns = Object.create(null);
+    for (const f of shownChildren()) run.subruns[f.state] = (run.subruns[f.state] || 0) + 1;
+  }
   canvas.setOverlay({
     problems: S.problems,
-    run: frame ? runOverlay(S.run, frame.prefix, tracedFrame(frame.prefix)) : null,
+    run,
     breakpoints: new Set(shownBreakpoints().filter((p) => p.enabled !== false && ofThisMachine(p)).map((p) => p.state)),
   });
 }
@@ -512,8 +599,10 @@ async function edit(op, { from = null, places = null, keys = null } = {}) {
     return null;
   }
   // the edit redraws the inspector: what the other forms hold comes back into them (keepTyped) -- but the state's
-  // YAML box is the whole state, which the edit changes: its text would undo the edit when applied
-  if (from !== 'state' && S.inspectorDrafts.has('state') && !await confirm('The state\'s YAML box has text that is not applied, and this edit changes the state. Discard the text?',
+  // YAML box is the whole state, which the edit changes: its text would undo the edit when applied. A note's edit
+  // changes no state: the box keeps its text
+  const touchesStates = op.op !== 'set_note';
+  if (touchesStates && from !== 'state' && S.inspectorDrafts.has('state') && !await confirm('The state\'s YAML box has text that is not applied, and this edit changes the state. Discard the text?',
     { danger: true, confirmLabel: 'Discard' })) {
     return null;
   }
@@ -547,7 +636,7 @@ async function edit(op, { from = null, places = null, keys = null } = {}) {
       version: next.versions?.[m.root_file], ...(spots && { spots }), ...(styles && { styles }) }].slice(-UNDO_DEPTH);
     S.redo = [];  // a new edit: what was undone before it is not redone over it
     // read now, not before the request: what was typed meanwhile counts, what was discarded meanwhile does not
-    const others = new Set([...S.inspectorDrafts].filter((key) => key !== from && key !== 'state'));
+    const others = new Set([...S.inspectorDrafts].filter((key) => key !== from && (key !== 'state' || !touchesStates)));
     let typed = typedIn($('side-inspect'), others, draftKey);
     if (op.op === 'rename_state' && S.selection?.kind === 'state' && S.selection.id === op.old) {
       S.selection = { kind: 'state', id: op.new };  // the renamed state stays the one shown, its forms under its name
@@ -944,18 +1033,31 @@ async function moveState(name, into, { spot = null, here = null } = {}) {
 }
 
 /** A new note in the middle of the view, its text chosen to be typed over. */
+/** The notes: block is shared with another place (an anchor, a merge): its notes are edited in the YAML tab. */
+function notesShared() {
+  if (!S.machine?.graph?.locked?.includes('notes')) return false;
+  toast(`Notes: ${SHARED_HINT}`, { kind: 'warn' });
+  return true;
+}
+
+let addingNote = false;  // a second click while the first note is being added would name the same note again
 async function addNote() {
-  if (readOnly()) return;
-  const taken = new Set((S.machine.graph.notes || []).map((note) => note.name));
-  let n = 1;
-  while (taken.has(`note_${n}`)) n += 1;
-  const name = `note_${n}`;
-  const key = noteKey(name);
-  const middle = canvas.viewCenter();
-  if (!await edit({ op: 'set_note', name, text: 'New note' }, { places: [key] })) return;
-  if (middle) await savePositions({ [key]: { x: middle.x - NOTE.w / 2, y: middle.y - 30 } });
-  await choose({ kind: 'note', id: name });
-  focusNote(name, true);
+  if (readOnly() || notesShared() || addingNote) return;
+  addingNote = true;
+  try {
+    const taken = new Set((S.machine.graph.notes || []).map((note) => note.name));
+    let n = 1;
+    while (taken.has(`note_${n}`)) n += 1;
+    const name = `note_${n}`;
+    const key = noteKey(name);
+    const middle = canvas.viewCenter();
+    if (!await edit({ op: 'set_note', name, text: 'New note' }, { places: [key] })) return;
+    if (middle) await savePositions({ [key]: { x: middle.x - NOTE.w / 2, y: middle.y - 30 } });
+    await choose({ kind: 'note', id: name });
+    focusNote(name, true);
+  } finally {
+    addingNote = false;
+  }
 }
 
 async function openNote(name) {
@@ -974,7 +1076,7 @@ function focusNote(name, all) {
 }
 
 async function removeNote(name) {
-  if (readOnly() || !noteOf(name)) return;
+  if (readOnly() || !noteOf(name) || notesShared()) return;
   if (!await confirm(`Remove the note ${name}?`, { title: 'Remove note', danger: true, confirmLabel: 'Remove' })) return;
   const key = noteKey(name);
   const placed = Object.hasOwn(positions(), key);
@@ -1108,14 +1210,17 @@ function drawInspector() {
   }
   const note = sel?.kind === 'note' ? noteOf(sel.id) : null;
   if (note) {
+    const shared = m.graph.locked?.includes('notes');
+    const editable = m.writable && !shared;
     render(pane, html`<div class="sg-section">
       <div class="sg-inspect-head">${icon('notebook-pen')}<h3 class="sg-inspect-name">Note</h3><span class="pk-mono pk-muted">${note.name}</span></div>
       <form data-form="note" class="pk-stack">
         <textarea class="pk-textarea sg-note-input" name="text" rows="10" aria-label="The note's text" data-orig="${note.text}"
-          placeholder="Free text: what the machine is for, what to watch, what is left to do" ${m.writable ? '' : 'readonly'}>
+          placeholder="Free text: what the machine is for, what to watch, what is left to do" ${editable ? '' : 'readonly'}>
 ${note.text}</textarea>
+        ${shared ? html`<p class="pk-help">${SHARED_HINT}</p>` : ''}
         <p class="pk-help">Kept in the file under notes: and drawn on the canvas; the engine never reads it. Drag the note to move it.</p>
-        ${m.writable ? html`<div class="pk-form-actions">
+        ${editable ? html`<div class="pk-form-actions">
           <button type="button" class="pk-btn pk-btn--sm pk-btn--danger" data-act="remove-note">${icon('trash-2', { size: 'sm' })} Remove</button>
           <button type="submit" class="pk-btn pk-btn--sm pk-btn--primary">${icon('save', { size: 'sm' })} Apply</button></div>` : ''}
       </form></div>`);
@@ -1235,7 +1340,9 @@ ${note.text}</textarea>
         ${lock ? html`<p class="pk-help">${lock}: edit it in the YAML tab.</p>` : ''}
         <div class="pk-form-actions"><button type="submit" class="pk-btn pk-btn--sm pk-btn--primary" ${applies ? '' : 'disabled'}>${icon('save', { size: 'sm' })} Apply</button></div>
       </form>
-    </div>`);
+    </div>
+    <div class="sg-section" id="stateFrames" hidden></div>`);
+  drawStateFrames();
 }
 
 /** The machine agents that run this machine (a SAM, the chat, agent-cli --agent reach it through them), and the
@@ -2167,6 +2274,7 @@ function drawRun() {
   drawDebugPane();
   drawHistory();
   redrawOverlay();
+  drawStateFrames();
   if (S.selection?.kind === 'state') {
     // the breakpoint boxes follow the run; the rest of the inspector stays as the author left it
     const points = breakpointsFor(S.selection.id);
@@ -2234,10 +2342,9 @@ function frameChoice(run) {
   const seen = Object.create(null);
   for (const f of mine) total[where(f)] = (total[where(f)] || 0) + 1;
   const label = (f) => {
-    const traced = tracedFrame(f.prefix);
     seen[where(f)] = (seen[where(f)] || 0) + 1;
     const nth = total[where(f)] > 1 ? ` #${seen[where(f)]}` : '';
-    return `under ${where(f)}${nth} · ${f.live ? 'running' : traced?.state ? `ended in ${traced.state}` : 'ended'}`;
+    return `under ${where(f)}${nth} · ${frameStatus(f)}`;
   };
   return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="" data-machine="${run.machine_id}"
       title="Open the run's own machine">${icon('arrow-up', { size: 'sm' })} ${run.machine_id}</button>
@@ -2248,11 +2355,11 @@ function frameChoice(run) {
 
 /** A frame of the selected run: a button that shows it on the canvas, unless the canvas shows it already, or its
  * machine has no graph of its own (one of a file's `machines:`, `<id>.<name>`). */
-function showFrameButton(machine, prefix) {
-  if (machine === S.machine?.id && shownFrame()?.prefix === prefix) return '';
+function showFrameButton(machine, prefix, shown = shownFrame()?.prefix, name = machine) {
+  if (machine === S.machine?.id && shown === prefix) return '';
   if (!S.machines.some((m) => m.id === machine)) return '';
-  return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-open-frame="${prefix}"
-    data-machine="${machine}" title="${`Show this frame on ${machine}'s graph`}" aria-label="Show this frame">${icon('layers', { size: 'sm' })}</button>`;
+  return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="${prefix}" data-key="${`frame:${prefix}`}"
+    data-machine="${machine}" title="${`Show this run on ${machine}'s graph`}" aria-label="${`Show ${name} (${prefix || 'top'})`}">${icon('layers', { size: 'sm' })} Show</button>`;
 }
 
 // the picker has no id: keepingChoices must not keep a frame picked by default -- it shows the one the canvas shows
@@ -2351,6 +2458,7 @@ function drawDebugPane() {
   const debug = run?.debug || {};
   const paused = Boolean(live && debug.paused);
   const frames = run?.view?.frames || [];
+  const shown = shownFrame()?.prefix;  // once: each frame's button asks it
   update($('dbgRun'), run ? html`<div class="sg-section">
       <div class="sg-inspect-head"><h3 class="sg-inspect-name">Run</h3>${statusBadge(run.status)}
         <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-act="copy-run" title="Copy the run id" aria-label="Copy the run id">${icon('copy', { size: 'sm' })}</button></div>
@@ -2410,7 +2518,7 @@ function drawDebugPane() {
       <div class="sg-frame-head">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
         ${f.path ? html`<span class="pk-muted">under ${f.path}</span>` : ''}<span class="pk-grow"></span>
         <span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
-        ${showFrameButton(f.machine, f.prefix || '')}</div>
+        ${showFrameButton(f.machine, f.prefix || '', shown)}</div>
       ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
       <details class="pk-details" ${i === 0 ? 'open' : ''}><summary>ctx</summary>${jsonView(f.ctx ?? {})}</details>
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
@@ -2648,7 +2756,8 @@ async function loadResult({ ended = [], more = true } = {}) {
   if (id !== S.runId) return;
   S.result = { runId: id, rows: [...rows.values()].sort((a, b) => a.seq - b.seq), after, running, complete, frames };
   drawResult();
-  if (shownFrame()?.prefix) {  // a submachine's frame on the canvas: one that has ended is drawn from its trace
+  drawStateFrames();  // the frames a state started: also those only the journal names, and how they ended
+  if (shownFrame()) {  // an ended submachine frame is drawn from its trace; the badges count what only it names
     redrawOverlay();
     drawDebugBar();
   }
@@ -2688,6 +2797,7 @@ function drawResult() {
   const rows = S.result?.runId === run.id ? S.result.rows : [];
   const activities = rows.filter((row) => row.kind === 'activity');
   const finals = rows.filter((row) => row.kind === 'trace');
+  const shown = shownFrame()?.prefix;  // once: each row's button asks it
   const reason = run.error?.type || (TERMINAL.has(run.status) ? run.status : '');
   update($('runResult'), html`<div class="pk-card sg-result">
     <div class="pk-card-head"><h3 class="pk-card-title">Result of ${shorten(run.id, 16)}</h3>${statusBadge(run.status)}
@@ -2705,7 +2815,7 @@ function drawResult() {
       ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
       <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>
       ${statusBadge(row.data?.status || 'succeeded')}
-      ${row.data?.machine ? showFrameButton(row.data.machine, row.data.frame || '') : ''}</li>`)}</ul>` : ''}
+      ${row.data?.machine ? showFrameButton(row.data.machine, row.data.frame || '', shown) : ''}</li>`)}</ul>` : ''}
     <h4 class="sg-section-title">Activities <span class="pk-muted">${activities.length}${S.result?.complete === false ? ', the first ones' : ''}</span></h4>
     ${activities.length ? html`<div class="sg-results">${activities.map(resultActivity)}</div>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No activity finished.' : 'None finished yet.'}</p>`}

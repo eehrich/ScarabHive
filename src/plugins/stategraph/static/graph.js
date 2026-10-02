@@ -967,7 +967,8 @@ export class Canvas {
         'data-handle': state.name }, group);
     }
     // overlay slots, filled by decorate()
-    el('g', { class: 'sg-badges', 'data-x': box.x + box.w, 'data-y': box.y, 'data-left': box.x }, group);
+    el('g', { class: 'sg-badges', 'data-x': box.x + box.w, 'data-y': box.y, 'data-left': box.x, 'data-bottom': box.y + box.h },
+      group);
   }
 
   drawNote(note, box) {
@@ -1036,6 +1037,14 @@ export class Canvas {
       else if (pinned?.warnings) badge(`${pinned.warnings} warn`, 'sg-badge--warn');
       const visits = run && Object.hasOwn(run.visits, name) ? run.visits[name] : 0;
       if (visits) badge(`×${visits}`, 'sg-badge--info');
+      const subruns = run?.subruns && Object.hasOwn(run.subruns, name) ? run.subruns[name] : 0;
+      if (subruns) {  // on the bottom edge, right: the top row holds the problems and the visits already
+        const value = subruns === 1 ? '1 run' : `${subruns} runs`;
+        const width = textWidth(value, 10) + 10;
+        const bottom = Number(badges.dataset.bottom);
+        el('rect', { x: right - 4 - width, y: bottom - 8, width, height: 16, rx: 8, class: 'sg-badge sg-badge--sub' }, badges);
+        text(badges, value, { x: right - 4 - width / 2, y: bottom + 3.5, class: 'sg-badge-text', 'text-anchor': 'middle' });
+      }
       if (breakpoints.has(name)) el('circle', { cx: Number(badges.dataset.left), cy: top, r: 5, class: 'sg-breakpoint' }, badges);
     }
     for (const group of this.noteLayer.querySelectorAll('.sg-note')) {

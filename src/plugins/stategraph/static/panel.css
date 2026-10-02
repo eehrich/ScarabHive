@@ -176,6 +176,7 @@
 .sg-badge--danger { fill: var(--danger); }
 .sg-badge--warn { fill: var(--warn); }
 .sg-badge--info { fill: var(--info); }
+.sg-badge--sub { fill: var(--accent); }
 .sg-badge-text { font-family: var(--font-ui); font-size: 10px; font-weight: 600; fill: var(--text-on-accent); pointer-events: none; }
 .sg-breakpoint { fill: var(--danger); stroke: var(--surface-0); stroke-width: 1.5; }
 

@@ -106,10 +106,44 @@ class StateGraphService:
         checked = validate_tree(tree, self.config_check())
         config = getattr(self.server, "system_config", None)
         if config is not None and getattr(config, "plugins", None) is not None:
-            claimed_twice = runner_of(config, tree.root, self.server.runner_agent)[1]
+            default = self.server.runner_agent
+            name, claimed_twice = runner_of(config, tree.root, default)
             if claimed_twice:  # no runner can be told: nothing there runs, with or without tool activities
                 checked.add("error", "SG007", claimed_twice, file=tree.root)
+            elif name != default:
+                # the whole tree runs with the root's runner: a file anyone may write (an import by machine id finds
+                # the writable root first) must not get its tools and its params -- unless its folder is that
+                # runner's too
+                for path in sorted({getattr(loaded, "local_of", None) or path for path, loaded in tree.files.items()}):
+                    if self.store.is_writable(Path(path)) and runner_of(config, path, default)[0] != name:
+                        checked.add("error", "SG007", f"{path} lies in a writable folder, and this machine runs with "
+                                    f"{name}, the runner of its folder: import the machines of its tree from that "
+                                    "folder (./x.yaml)", file=tree.root)
+                        break
         return checked
+
+    def _hides_a_machine(self, machine_id: str, files: dict[str, str]) -> Optional[str]:
+        """Why a file of a save would hide another machine: an ``<x>.yaml`` written into a machine root is machine x
+        there, found before the one of that id that lies elsewhere -- its own runs, and every import of it by id,
+        would take the new file."""
+        base = self.store.base_dir(machine_id)
+        # find() takes the first root that has the id: a file hides one only in a root searched before that one's
+        order = [os.path.realpath(str(directory)) for _, directory in self.store.root_dirs()]
+        for rel in files:
+            target = Path(os.path.normpath(str(base / rel)))
+            here = os.path.realpath(str(target.parent))
+            if target.suffix.lower() != ".yaml" or target.stem == machine_id or here not in order:  # glob is caseless
+                continue
+            found = self.store.find(target.stem)
+            there = os.path.realpath(str(found.path.parent)) if found is not None else None
+            if there in order and order.index(here) < order.index(there):
+                return (f"{rel} would hide machine {target.stem!r} ({found.path}): a file of this name in a machine "
+                        "folder is that machine -- give it another name")
+        return None
+
+    def _runner_of(self, tree: MachineTree) -> str:
+        """The runner a validated tree runs with: its root file's folder's."""
+        return runner_of(self.server.system_config, tree.root, self.server.runner_agent)[0]
 
     def _graph(self, tree: MachineTree) -> dict[str, Any]:
         try:
@@ -303,6 +337,9 @@ class StateGraphService:
         if errors and not force:
             first = "; ".join(f"{p.file.rsplit('/', 1)[-1]}:{p.line or '?'} {p.code} {p.message}" for p in errors[:3])
             raise ServiceError(422, f"{len(errors)} error(s), not saved: {first}")
+        hidden = self._hides_a_machine(machine_id, files)
+        if hidden:
+            raise ServiceError(409, hidden)
         try:
             versions = self.store.write_files(machine_id, files, expected_versions)
         except FileInTheWay as exc:
@@ -373,8 +410,9 @@ class StateGraphService:
             # allowlist bounds the tool activities, its inject_params go into them over the instance's
             name = row.get("runner") or self.server.runner_for(row.get("machine_id"))[0]
             runner = self.server.resolve_runner(name)
-            if runner is None:
-                return NoBackend()
+            if runner is None:  # gone since the run started (renamed, disabled): it fails, not runs with another
+                return NoBackend(f"its runner {name!r} is not there (renamed, disabled or its plugin off) -- "
+                                 "restore it, or fork the run onto the current definition")
             inject = merged_inject_params(self.server.inject_params,
                                           runner_inject_params(self.server.system_config, name))
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
@@ -439,7 +477,7 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
-                run_key=run_key, run_id=run_id, nesting=nesting, runner=self.server.runner_for(machine_id)[0])
+                run_key=run_key, run_id=run_id, nesting=nesting, runner=self._runner_of(checked))
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
@@ -643,7 +681,7 @@ class StateGraphService:
                                           else self.backend_factory(), user_id=user_id or row.get("user_id"),
                                           pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"),
                                           # the snapshot keeps the source's runner; the current file its folder's
-                                          runner=self.server.runner_for(row["machine_id"])[0] if tree else None)
+                                          runner=self._runner_of(checked) if tree else None)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}

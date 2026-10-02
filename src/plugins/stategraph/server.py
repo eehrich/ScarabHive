@@ -26,8 +26,9 @@ from .engine.journal import RunStore
 from .engine.runner import RunManager, row_event_due as _event_due
 from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
+from .model.spec import NAME_PATTERN
 from .model.validate import agent_params_problems
-from .runners import runner_of
+from .runners import DEFAULT_RUNNER, runner_of
 from .store import MachineStore, machine_dirs
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class StateGraphServer(SchemaBasedToolServer):
         # flat keys, defaults in code: the framework does not validate plugin config
         self.machine_dirs, self.writable_dirs = machine_dirs(server_config)
         self.runs_db = str(getattr(server_config, "runs_db", None) or data_path("stategraph", "runs.db"))
-        self.runner_agent = str(getattr(server_config, "runner_agent", None) or "stategraph_runner")
+        self.runner_agent = str(getattr(server_config, "runner_agent", None) or DEFAULT_RUNNER)
         self.allowed_users = [str(u) for u in (getattr(server_config, "allowed_users", None) or [])]
         raw_inject = getattr(server_config, "inject_params", None) or {}
         self.inject_params = {str(k): dict(v) for k, v in raw_inject.items() if isinstance(v, dict)}
@@ -99,6 +100,8 @@ class StateGraphServer(SchemaBasedToolServer):
     def runner_for(self, machine_id: Optional[str]) -> tuple[str, Optional[str]]:
         """The runner of a machine, by the folder its file lies in (runners.py) -- a machine not saved yet by the
         folder it will be saved in -- and why none can be told, when two runners claim that folder."""
+        if machine_id and not re.fullmatch(NAME_PATTERN, machine_id):  # no id: no path of it to resolve ("../x")
+            return self.runner_agent, None
         found = self.machines.find(machine_id) if machine_id else None
         path = found.path if found is not None else (
             Path(self.machines.writable[0]) / f"{machine_id or 'new'}.yaml" if self.machines.writable else None)

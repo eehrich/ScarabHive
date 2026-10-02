@@ -204,3 +204,127 @@ def test_the_runner_s_params_win_whichever_instance_pattern_sets_them_too():
                                           {"vault_*": {"key": "runner"}})
 
     assert inject("vault_put", {}, merged) == {"key": "runner", "zone": "z"}
+
+
+async def test_a_file_anyone_may_write_does_not_run_with_a_richer_runner(server):
+    shipped = Path(server.machines.find("kept").path).parent
+    own = Path(server.machines.find("mine").path).parent
+    # boss (shipped) imports helper by machine id: the writable root is searched first
+    (own / "helper.yaml").write_text(MACHINE.format(id="helper"), encoding="utf-8")
+    (shipped / "boss.yaml").write_text("stategraph: 1\nid: boss\nimports: {sub: helper}\ninitial: go\nstates:\n"
+                                       "  go:\n    do: {machine: sub}\n    transitions: [{target: done}]\n"
+                                       "  done: {type: final}\n", encoding="utf-8")
+
+    problems = sg007(server.service.get_machine("boss"))
+
+    assert any("lies in a writable folder" in p and "helper.yaml" in p for p in problems), problems
+    assert sg007(server.service.get_machine("kept")) == [], "a tree of its own folder only"
+
+
+async def test_a_save_does_not_hide_a_machine_of_another_folder(server):
+    from plugins.stategraph.service import ServiceError
+
+    version = server.service.get_machine("mine")["versions"]["mine.yaml"]
+    with pytest.raises(ServiceError, match="would hide machine 'kept'"):
+        server.service.save_machine("mine", {"mine.yaml": MACHINE.format(id="mine"), "kept.yaml": MACHINE.format(id="kept")},
+                                    {"mine.yaml": version}, force=True)
+    assert server.machines.find("kept").path.parent.name == "shipped"
+
+
+async def test_an_id_that_is_no_machine_id_names_no_folder(server):
+    assert server.runner_for("../shipped/x") == ("stategraph_runner", None)
+    assert server.runner_for("kept") == ("shipped_runner", None)
+
+
+async def test_a_run_whose_runner_is_gone_fails_naming_it(server, monkeypatch):
+    monkeypatch.setattr(server, "resolve_runner", lambda name=None: None if name == "gone_runner" else SimpleNamespace(name=name))
+    monkeypatch.setattr(server.service.run_store, "get_run", lambda run_id: {"machine_id": "kept", "runner": "gone_runner"})
+
+    backend = server.service.backend_factory()("r1")
+
+    assert "'gone_runner' is not there" in backend.reason
+
+
+def test_every_stategraph_instance_s_runner_is_no_agent_to_call():
+    from agent_system.config.models import AgentSystemConfig
+
+    from plugins.stategraph.engine.backend import make_config_check
+
+    config = AgentSystemConfig.model_validate({"plugins": {"servers": {
+        "stategraph": {"type": "stategraph", "enabled": True, "runner_agent": "mine_runner"},
+        "second": {"type": "stategraph", "enabled": True, "runner_agent": "second_runner"},
+        "third": {"type": "stategraph", "enabled": True},  # names none: the default
+        "second_runner": {"type": "basic_agent", "enabled": True},
+        "stategraph_runner": {"type": "basic_agent", "enabled": True},
+        "writer": {"type": "basic_agent", "enabled": True}}}})
+    check = make_config_check(config, runner="mine_runner", own_instance="stategraph")
+
+    assert "is a runner" in (check("agent", "second_runner", {}) or "")
+    assert "is a runner" in (check("agent", "stategraph_runner", {}) or ""), "the default of an instance naming none"
+    assert "is a runner" not in (check("agent", "writer", {}) or "")
+
+
+def test_a_runner_derived_from_one_that_claims_a_folder_claims_none(tmp_path):
+    from agent_system.config.models import AgentSystemConfig
+
+    config = AgentSystemConfig.model_validate({"plugins": {"servers": {
+        "claimer": {"type": "basic_agent", "enabled": True, "runs_machines_in": [str(tmp_path)]},
+        "derived": {"type": "claimer", "enabled": True}}}})
+
+    assert list(runner_folders(config)) == ["claimer"]
+    assert runner_of(config, str(tmp_path / "m.yaml"), "default") == ("claimer", None)
+
+
+@pytest.fixture
+async def three_roots(tmp_path):
+    """own (writable, searched first), shipped (its runner's, the operator made it writable too), lib (neither)."""
+    from agent_system.config.models import AgentSystemConfig
+
+    from plugins.stategraph.server import StateGraphServer
+    from plugins.stategraph.tests.stategraph_testkit import tool_config
+
+    folders = {name: tmp_path / name for name in ("own", "shipped", "lib")}
+    for folder in folders.values():
+        folder.mkdir()
+    config = AgentSystemConfig.model_validate({"plugins": {"servers": {
+        "stategraph_runner": {"type": "basic_agent", "enabled": True, "agent_config": {"tools": {"allowed": ["vault/*"]}}},
+        "shipped_runner": {"type": "stategraph_runner", "enabled": True, "runs_machines_in": [str(folders["shipped"])]},
+        "vault": {"type": "json_store", "enabled": True}}}})
+    srv = StateGraphServer("stategraph", config, tool_config(
+        tmp_path, machine_dirs=[str(folders[name]) for name in ("own", "shipped", "lib")],
+        writable_machine_dirs=[str(folders["own"]), str(folders["shipped"])]))
+    yield srv, folders
+    await srv.stop_plugin()
+
+
+BOSS = ("stategraph: 1\nid: boss\nimports: {sub: helper}\ninitial: go\nstates:\n"
+        "  go:\n    do: {machine: sub}\n    transitions: [{target: done}]\n  done: {type: final}\n")
+
+
+async def test_a_file_no_one_may_write_runs_with_the_root_s_runner_from_any_folder(three_roots):
+    server, folders = three_roots
+    (folders["lib"] / "helper.yaml").write_text(MACHINE.format(id="helper"), encoding="utf-8")
+    (folders["shipped"] / "boss.yaml").write_text(BOSS, encoding="utf-8")
+
+    assert not any("writable folder" in p for p in sg007(server.service.get_machine("boss")))
+
+
+async def test_a_save_into_a_root_searched_later_hides_nothing(three_roots):
+    server, folders = three_roots
+    (folders["own"] / "helper.yaml").write_text(MACHINE.format(id="helper"), encoding="utf-8")
+    (folders["shipped"] / "boss.yaml").write_text(BOSS.replace("{sub: helper}", "{sub: ./helper.yaml}"), encoding="utf-8")
+    version = server.service.get_machine("boss")["versions"]["boss.yaml"]
+
+    # shipped/helper.yaml is not found before own/helper.yaml: writing it hides no machine
+    server.service.save_machine("boss", {"boss.yaml": BOSS.replace("{sub: helper}", "{sub: ./helper.yaml}"),
+                                         "helper.yaml": MACHINE.format(id="helper")}, {"boss.yaml": version}, force=True)
+    assert server.machines.find("helper").path.parent == folders["own"]
+
+
+async def test_a_save_does_not_hide_a_machine_with_an_upper_case_suffix(server):
+    from plugins.stategraph.service import ServiceError
+
+    version = server.service.get_machine("mine")["versions"]["mine.yaml"]
+    with pytest.raises(ServiceError, match="would hide machine 'kept'"):
+        server.service.save_machine("mine", {"mine.yaml": MACHINE.format(id="mine"), "kept.YAML": MACHINE.format(id="kept")},
+                                    {"mine.yaml": version}, force=True)

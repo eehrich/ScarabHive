@@ -78,6 +78,10 @@ class NoBackend:
 
     reason = "this run has no backend (mock the activity or start the run through the stategraph plugin)"
 
+    def __init__(self, reason: Optional[str] = None) -> None:
+        if reason:
+            self.reason = reason
+
     async def agent_create(self, act: "ActivityRun", **_: Any) -> tuple[str, Optional[str]]:
         raise ActivityError("no_backend", f"{act.path}: {self.reason}")
 
@@ -619,7 +623,7 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
     from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
-    from ..runners import runner_names, runner_of
+    from ..runners import DEFAULT_RUNNER, runner_names, runner_of
 
     servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
     runners = runner_names(system_config, runner) | ({default_runner} if default_runner else set())
@@ -642,7 +646,8 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
 
     def own_reason(name: str) -> Optional[str]:
         """Why agent ``name`` itself would save, start or control machines; None when it would not."""
-        if name in runners:
+        if name in runners or any((getattr(server(sg), "runner_agent", None) or DEFAULT_RUNNER) == name
+                                  for sg in stategraphs if server(sg) is not None):
             return f"{name!r} is a runner: it hosts runs' tool activities and is no agent to call"
         if final_type(name) == "stategraph_machine":
             return (f"{name!r} runs a machine as an agent: a machine may not start machines -- import that "

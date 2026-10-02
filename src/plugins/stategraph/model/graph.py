@@ -53,6 +53,8 @@ def graph_view(tree: MachineTree) -> dict[str, Any]:
     for key in ("group", "python", "vars_from"):
         graph[key] = _text(doc.get(key))
     graph["yaml"], graph["locked"] = _texts({key: doc[key] for key in MACHINE_OBJECTS if key in doc})
+    if "notes" in doc and _tied(doc["notes"]):  # shared through an anchor or a merge: edited in the YAML tab
+        graph["locked"] = sorted({*graph["locked"], "notes"})
     _walk(doc, _mapping(doc.get("states")), None, ["states"], graph)
     return graph
 

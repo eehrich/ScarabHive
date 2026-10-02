@@ -727,7 +727,8 @@ store.py   machine roots, versions   server.py  web_endpoints.py
   replay starts it again: kept once). A machine's runs list the runs it ran in by it
   (`GET /api/runs?nested=true`), and the panel's frame picker reads it (`frames_started`, the first
   500; the panel adds the frames the run's journal names). A runs.db from before the table gets it
-  filled once from its journal's `end` rows (path unknown: the panel names those by prefix).
+  filled once from its journal's `end` rows, each with the path of the activity that started it (its
+  prefix without `/m/` and a retry's `/a<n>`), in the order they started.
 
 **Key grammar**
 
@@ -1101,9 +1102,11 @@ asked again with what was typed. A waiting run has a button per event it takes i
 event with data, or one several frames wait for, opens the event form, which picks the event the
 wait takes and says what it is). The runs list scrolls, filters by status and loads older runs;
 **Run again** on the Result card starts the run's params and mocks anew, and the start form keeps a
-machine's last params. A submachine's runs list holds the runs it ran in too; picked, its graph
-shows that run's frame of it (a live one or the one picked in the debug bar, an ended one from
-its journal), with a way back to the run's machine.
+machine's last params. With a run selected, a state that started submachine runs carries a badge
+("2 runs") and its inspector ends with the folded list of them, each with **Show**: the
+submachine's graph with that frame on it (an ended one drawn from its journal); the debug bar
+picks among its frames and goes back to the run's machine. A submachine's runs list holds the
+runs it ran in too.
 
 **Graph edits and YAML anchors.** An edit changes only the state's own text. It is refused where
 another place would see the change: a transitions list the state inherits through its own `<<:`
@@ -1155,7 +1158,10 @@ Machines contain Python and run agents and tools.
   in its own `agents/*.yaml` (`type: stategraph_runner` and `+` entries); its `inject_params` go
   over the instance's, param by param. Validation asks each tool question with the tree's root
   file (`extra["root"]`); the backend asks without one and gets its own runner. Every runner,
-  the instance's default included, is refused as an agent (SG007).
+  every instance's default included, is refused as an agent (SG007). The whole tree runs with the
+  root's runner: a tree file in a writable folder whose runner is not the root's (an import by
+  machine id finds the writable root first) is SG007 when that runner is not the default; and a
+  save refuses (409) a `<x>.yaml` that would hide machine x of a root searched later.
 - **Recursion.** No runner's allowlist may contain stategraph's own tools (SG007
   refuses them), so a machine cannot rewrite or start machines.
 - **Agents.** A machine runs the agents its file names (`agent:` and `decide`'s `by:`) -- literal

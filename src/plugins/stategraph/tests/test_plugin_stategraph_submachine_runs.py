@@ -62,15 +62,26 @@ def test_a_runs_db_from_before_the_record_gets_its_ended_frames_from_the_journal
 
     store = RunStore(tmp_path / "runs.db")
     store.create_run("r1", "m", {})
-    store.record("r1", "trace", "s1/m/end", state="done", status="end", data={"reason": "finished", "frame": "s1/m/", "machine": "sub"})
-    store.record("r1", "trace", "end", state="done", status="end", data={"reason": "finished", "frame": "", "machine": "m"})
+    for key, path in (("s1", "a"), ("s3", "c"), ("s5", "e"), ("s5/m/s1", "e/w")):  # the activities, as they started
+        store.record("r1", "activity", key, state=path.split("/")[-1], status="done", data={"kind": "machine", "path": path})
+    for frame, machine in (("s1/m/", "sub"), ("s3/a2/m/", "sub"),  # a retry's second attempt: its activity is s3
+                           ("s5/m/s1/m/", "inner"), ("s5/m/", "sub"),  # a child ends before its parent
+                           ("", "m")):  # the root: no submachine
+        store.record("r1", "trace", f"{frame}end", state="done", status="end",
+                     data={"reason": "finished", "frame": frame, "machine": machine})
     store.record("r1", "trace", "s1/m/s1:enter:w", state="w", status="enter", data={"frame": "s1/m/", "machine": "sub"})
+    for seq, data in ((97, '[1]'), (98, '{"frame": 3, "machine": "sub"}'), (99, '{"frame": NaN')):  # rows it cannot read
+        store._db().execute("INSERT INTO journal (run_id, seq, ts, kind, key, status, data)"
+                            f" VALUES ('r1', {seq}, 't', 'trace', 'x{seq}/m/end', 'end', ?)", (data,))
     store._db().execute("DROP TABLE frames")  # as it was before the table
     store.close()
 
     reopened = RunStore(tmp_path / "runs.db")
 
-    assert reopened.frames("r1") == [{"prefix": "s1/m/", "machine": "sub", "path": None}], "the root is no submachine"
+    assert reopened.frames("r1") == [{"prefix": "s1/m/", "machine": "sub", "path": "a"},
+                                     {"prefix": "s3/a2/m/", "machine": "sub", "path": "c"},
+                                     {"prefix": "s5/m/", "machine": "sub", "path": "e"},
+                                     {"prefix": "s5/m/s1/m/", "machine": "inner", "path": "e/w"}], "in the order they started"
     assert [r["id"] for r in reopened.list_runs("sub", nested=True)] == ["r1"]
     reopened._db().execute("DELETE FROM frames")
     reopened.close()
@@ -80,9 +91,14 @@ def test_a_runs_db_from_before_the_record_gets_its_ended_frames_from_the_journal
 
 
 def test_a_journal_the_fill_cannot_read_does_not_keep_the_runs_from_opening(tmp_path, monkeypatch, caplog):
+    import sqlite3
+
     from plugins.stategraph.engine import journal
 
-    monkeypatch.setattr(journal, "_FRAMES_FROM_JOURNAL", "SELECT no_such_function()")  # as an older SQLite might fail
+    def broken(conn):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(journal, "_frames_from_journal", broken)
     store = journal.RunStore(tmp_path / "runs.db")
     store.create_run("r1", "m", {})
 

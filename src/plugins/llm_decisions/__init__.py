@@ -13,7 +13,7 @@ One wire, several hosts: TypeSafe's "System One" API, which OpenRouter serves
 under ``/api/alpha/decisions`` (and ``/api/v1/systemone``), TypeSafe under
 ``https://api.typesafe.ai/v1/systemone``, ``laya-serve`` on a machine that
 runs the open Laya weights, and Ollama from 0.35 on. One questionnaire against OpenRouter (both paths)
-and laya-serve, and TypeSafe's reference for its own host (2026-09-25): the
+and laya-serve, TypeSafe's reference for its own host (2026-09-25) and Ollama's for its own (2026-09-30): the
 same request, the same answer fields. So there is one client
 (``system_one.py``), and what a host needs of its own is data -- a ``Host``
 with the provider name its calls are booked under, its default endpoint, and

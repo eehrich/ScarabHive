@@ -155,7 +155,12 @@ Ollama serves decision models from version 0.35 on, at
       model_ref: nimble
 @{body}
 
-No key is sent. Ollama's own limits, from its documentation: a request
+No key is sent to this computer or the local network; an address that is
+not local (a Tailscale 100.64/10 address, a name with a dot other than
+@{tt}host.docker.internal@{utt} or one ending in @{tt}.local@{utt}) needs
+@{tt}api_key:@{utt} like every host (see "The key") -- any value: Ollama
+ignores it, a proxy in front of it may not. Ollama's own limits, from its
+documentation: a request
 body of at most 64 KiB (HTTP 413 beyond), at most 64 questions, 2 to 26
 options or levels, and the whole prompt within the model's context -- 8,192
 tokens for Nimble, about 2,000 for Tev1 -- with the state and every question
@@ -163,7 +168,11 @@ in it. The @{" decision " link decision/main} tool lets an item run to
 50,000 characters by default: with these models keep items short. How long the model stays loaded after a call is Ollama's
 setting (@{tt}OLLAMA_KEEP_ALIVE@{utt}, 5 minutes by default); the client
 sends no @{tt}keep_alive@{utt}. A model name Ollama does not have is HTTP
-404, a chat model HTTP 400; neither is tried again.
+404 -- and so is every call to an Ollama older than 0.35, which has no
+@{tt}/v1/systemone@{utt} (@{tt}404 page not found@{utt}): update Ollama, not
+the model. A chat model is HTTP 400, as is a prompt beyond the loaded
+context window; the @{tt}error@{utt} in the answer names which. Neither is
+tried again.
 
 @{h2}Dependencies and data
 
@@ -244,7 +253,8 @@ Jev sends a noul answer as the probability alone; confidence and
 probabilities come with choice and score. Answers to names that were not
 asked are kept; fields a host adds of its own (laya-serve's
 @{tt}answer_confidence@{utt}, @{tt}action@{utt}, @{tt}routing@{utt}) are
-not read. The recorded answers of both hosts are in the plugin's tests.
+not read. The recorded answers of OpenRouter and laya-serve are in the
+plugin's tests; Ollama's answer there is the one of its documentation.
 @endnode
 
 @node retries "Retries, timeouts and cancelling"
