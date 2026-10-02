@@ -70,7 +70,9 @@ The head shows title, id and file, the problems (a click lists them all in
 the inspector), @{b}Save@{ub} and @{b}Auto-save@{ub}, and buttons to copy
 the id, @{b}Duplicate@{ub} the machine
 (a copy under a new id in the folder new machines are saved to, its Python module copied
-as @{tt}<id>.py@{utt}, even of a shipped machine) and delete it (writable
+as @{tt}<id>.py@{utt}, even of a shipped machine -- the copy runs with that
+folder's runner, so tools only the shipped machine's runner may call are
+refused there: see @{" Runners " link setup}) and delete it (writable
 machines only: its file, its layout and its Python module unless another
 machine uses it; refused while another machine imports it; its runs stay
 readable).
@@ -192,6 +194,15 @@ you see its journal; Pause, Continue, Step and Terminate reach it within a
 second, Run to and breakpoints only in its own process.
 @{bullet}The @{b}graph@{ub} marks the states the run is in, and the states
 with breakpoints.
+@{bullet}@{b}Submachines@{ub}: a machine's runs list also the runs it ran
+in as a submachine ("in <machine>"). With one of them picked, the graph
+shows that run's frame of this machine: the one picked in the debug bar
+("under <state> #2 · running", "· ended in <state>"), else a live one,
+else the last; a frame that has ended is drawn from its journal. The
+layers button of a frame (Debug tab, Result card) shows it on its
+machine's graph -- not for a machine of a file's @{tt}machines:@{utt},
+which has no graph of its own --, the arrow in the debug bar goes back to
+the run's machine. Breakpoints and Run to set there are this machine's.
 @{bullet}The @{b}Result@{ub} card: output or error, the final state of each
 frame, and every finished activity folded -- open one for its full answer,
 its input, failed attempts, the agent's session (@{b}Open@{ub} shows the
@@ -206,7 +217,8 @@ output and error; watches (a watch pauses the run when its value
 changes); breakpoints; @{b}Evaluate@{ub} and @{b}Set@{ub} while paused
 (Set writes into @{tt}ctx@{utt} -- or, at an exit or error breakpoint,
 sets the activity's answer); @{b}Send event@{ub} with data; and every
-frame with its state, step and @{tt}ctx@{utt}.
+frame with its state, step and @{tt}ctx@{utt} (the layers button shows it
+on its machine's graph).
 
 Watches and breakpoints set while no run is live belong to the next run
 of this machine and are kept in the browser; set during a run they change
@@ -491,11 +503,12 @@ What a machine may use.
 Parameter | Meaning
 agents | fnmatch pattern on the agent names; default every agent
 tools | fnmatch pattern on the flat tool name; default every tool
+machine_id | the machine whose runner names the tools (its folder decides); default a new machine's
 @{body}
 
 Answer: @{tt}kinds@{utt} (key, summary, and each field with its
 description), @{tt}agents@{utt} (name, description: every enabled agent a
-machine may run -- not the runner, not a machine agent, not an agent that
+machine may run -- not a runner, not a machine agent, not an agent that
 can use a stategraph tool beyond the read-only ones), @{tt}runner@{utt}, @{tt}tools@{utt} (every
 tool the runner's allowlist lets through: flat name, description,
 parameters, required), @{tt}decision_profiles@{utt} and
@@ -513,8 +526,10 @@ warnings.
 @{tt}machine_id@{utt} (required). Answer: @{tt}files@{utt} (relative path
 to text: the YAML, its Python module, the machines it imports), @{tt}versions@{utt} (relative path to version -- pass them back
 when you save), @{tt}problems@{utt}, @{tt}writable@{utt},
-@{tt}agents@{utt} (the machine agents that run it) and @{tt}offer@{utt}
-(its @{tt}agent:@{utt} block's name, and whether it is declared).
+@{tt}agents@{utt} (the machine agents that run it), @{tt}offer@{utt}
+(its @{tt}agent:@{utt} block's name, and whether it is declared) and
+@{tt}runner@{utt} (the runner its runs get; @{tt}runner_problem@{utt} when
+two claim its folder).
 
 @{h2}stategraph_validate_machine
 
@@ -869,8 +884,9 @@ is on for it.
 They see their task and the template vars the machine gives them, nothing
 about the plugin. An agent that decides (@{tt}decide@{utt} with
 @{tt}by@{utt}) gets the question, the form of the answer and the input, and
-answers in JSON. The runner agent, @{tt}stategraph_runner@{utt}, is never
-talked to; its prompt only tells a stray visitor where to go.
+answers in JSON. A runner agent (@{tt}stategraph_runner@{utt} or a
+plugin's own) is never talked to; its prompt only tells a stray visitor
+where to go.
 
 @{h2}Tokens and cache
 
@@ -927,8 +943,8 @@ plugins:
       default_max_wait: 600
 @{body}
 
-It comes with @{tt}stategraph_runner@{utt} (hosts the runs; its tool
-allowlist is what a @{tt}tool@{utt} activity may call),
+It comes with @{tt}stategraph_runner@{utt} (the default runner: hosts the
+runs; its tool allowlist is what a @{tt}tool@{utt} activity may call),
 @{tt}stategraph_json@{utt} (a JSON store for machines' documents, kept
 without expiry so a resumed run finds them), @{tt}stategraph_author@{utt}
 and @{tt}stategraph_example_agent@{utt} (the plain agent of the example
@@ -938,22 +954,62 @@ machines).
 
 @{bullet}An @{tt}agent@{utt} activity runs any configured, enabled agent the
 machine names -- no entry anywhere. A new agent needs a restart.
-@{bullet}A tool goes into @{tt}stategraph_runner@{utt}'s
-@{tt}tools.allowed@{utt} -- never a stategraph tool: validation refuses
-them (SG007), so a machine cannot save, start or control machines.
+@{bullet}A tool goes into the allowlist of the machine's @{b}runner@{ub} --
+never a stategraph tool: validation refuses them (SG007), so a machine
+cannot save, start or control machines.
 @{bullet}A secret a tool needs goes into @{tt}inject_params@{utt}, never
 into the machine: @{tt}{tool pattern: {param: value}}@{utt}, fnmatch on
 the flat tool name, applied after the templates; the config's value wins,
 and a tool result that echoes it is redacted.
 
+@{h2}Runners
+
+Every run is hosted by a runner agent, and its tool allowlist is all a
+@{tt}tool@{utt} activity (or @{tt}sg.tool()@{utt}) may call. Which runner a
+machine gets depends on its @{b}folder@{ub}: the runner whose
+@{tt}runs_machines_in@{utt} names the folder, else
+@{tt}stategraph_runner@{utt}. So the machines you make in the panel
+(@{tt}data/stategraph/machines@{utt}) run with the default runner and its
+few tools, and a plugin that ships machines ships their runner next to
+them, in its own @{tt}agents/*.yaml@{utt} -- nothing of it goes into
+stategraph's files:
+
 @{code yaml}
-stategraph_runner:
-  agent_config:
-    tools:
-      allowed:
-        - "stategraph_json/*"
-        - "ticket_store/*"          # now a machine may call it
+plugins:
+  servers:
+    tickets_machine_runner:
+      type: stategraph_runner       # inherits the default runner
+      enabled: true
+      runs_machines_in:
+        - src/plugins/tickets/machines
+      inject_params:                # added to its tool activities' arguments
+        "ticket_store_*": {api_key: "${TICKET_KEY}"}
+      agent_config:
+        tools:
+          allowed:
+            - "+ticket_store/*"     # + adds to the inherited list
 @{body}
+
+@{bullet}The folder decides, never the machine: a machine anyone may write
+cannot pick the runner with the most tools. A whole run -- its
+submachines included -- runs with its root machine's runner, and
+validation checks every file of it against that runner. The run keeps
+the runner it started with: a resume and a fork of its snapshot run with
+it again, a fork onto the current definition gets the runner of where the
+machine is now.
+@{bullet}Folders are relative to the project, globs allowed; the deepest
+named folder that holds a machine wins. Two runners naming the same
+folder: no machine there can be started until one of them lets go --
+validation says which two (SG007). A run started before keeps the runner
+it started with.
+@{bullet}@{tt}runs_machines_in@{utt} is not inherited: a runner derived
+from another claims no folder by accident.
+@{bullet}A runner's @{tt}inject_params@{utt} come after the instance's and
+win where both set a param; the instance's other params stay.
+@{bullet}The panel shows a machine's runner in its overview, and the tool
+fields offer that runner's tools; @{tt}stategraph_catalog@{utt} takes the
+machine as @{tt}machine_id@{utt}.
+@{bullet}A new runner needs a restart, like every new agent.
 
 An agent that should use the tools gets them in its allowlist, one by one
 or all: @{tt}"+stategraph/*"@{utt}.
@@ -965,9 +1021,9 @@ Key | Default in code | Meaning
 machine_dirs | stategraph/machines in the data folder, src/plugins*/*/machines | machine folders in search order; the first with an id wins
 writable_machine_dirs | stategraph/machines in the data folder | folders whose machines may be edited, no globs; new ones go into the first
 runs_db | stategraph/runs.db in the data folder | runs and their journals (SQLite)
-runner_agent | stategraph_runner | host of runs; its allowlist bounds tool activities
+runner_agent | stategraph_runner | the default runner: of every machine whose folder no runner claims
 allowed_users | [] | fnmatch patterns of users who may validate, save, run and control besides admins
-inject_params | {} | secrets for tool activities, see above
+inject_params | {} | secrets for every tool activity, see above; one plugin's go into its runner
 default_max_wait | 600 | seconds run_machine and get_run wait with wait finish
 public_url | "" | the app's URL as the outside reaches it: the base of callback URLs
 schedules | [] | see @{" Schedules " link schedules}
@@ -993,7 +1049,7 @@ and saving never run a machine's Python module; only a run does.
 @{bullet}Runs belong to their user (see @{" Runs " link runs}).
 @{bullet}An @{tt}agent@{utt} activity runs only agents the file names --
 literally, or as a param with an enum -- and none that reaches machines:
-not the runner, not a machine agent, not one whose tools include a
+not a runner, not a machine agent, not one whose tools include a
 stategraph tool beyond the read-only ones (catalog, list, get), nor one
 that can start such an agent through its SAM. Checked when validating and again at run time; the same holds
 for the tool of a @{tt}tool@{utt} activity.

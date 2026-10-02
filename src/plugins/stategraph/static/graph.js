@@ -590,24 +590,49 @@ export function problemIndex(graph, problems, rootFile) {
 }
 
 /**
- * What a run shows on the canvas: the root frame's active states and visit counts, where it is paused, the root
- * states that submachine frames run under, and the last transition the root frame fired.
+ * What one frame of a run shows on the canvas -- the root's ('') or a submachine's (its prefix): its active states
+ * and visit counts, where it is paused, its states that submachine frames run under, and the last transition it
+ * fired. A frame that has ended is gone from the run's view: `traced` (foldTrace over its journal) stands in.
  */
-export function runOverlay(run) {
+export function runOverlay(run, prefix = '', traced = null) {
   const frames = run?.view?.frames || [];
-  const root = frames.find((frame) => !frame.prefix) || null;
+  const frame = frames.find((f) => (f.prefix || '') === prefix) || null;
   const paused = run?.debug?.paused || null;
   const lastTransition = [...(run?.journal || [])].reverse()
-    .find((row) => row.kind === 'trace' && row.status === 'transition' && !(row.data?.frame));
+    .find((row) => row.kind === 'trace' && row.status === 'transition' && (row.data?.frame || '') === prefix);
+  const below = frame ? frames.filter((f) => f.prefix && f.prefix !== prefix && f.prefix.startsWith(prefix) && f.path) : [];
+  const ended = frame ? null : traced;
   return {
-    active: new Set(root?.config || []),
-    current: root?.state || null,
-    visits: Object.assign(Object.create(null), root?.visits || {}),  // by state name: see problemIndex
-    paused: paused && !paused.frame ? paused.state : null,
-    submachines: new Set(frames.filter((frame) => frame.prefix && frame.path).map((frame) => frame.path.split('/')[0])),
+    active: new Set(frame?.config || (ended?.state ? [ended.state] : [])),
+    current: frame?.state || ended?.state || null,
+    visits: Object.assign(Object.create(null), frame?.visits || ended?.visits || {}),  // by state name: see problemIndex
+    paused: paused && (paused.frame || '') === prefix ? paused.state : null,
+    // a child's path goes on from this frame's: its next segment is the state of this frame it runs under
+    submachines: new Set(below.map((f) => (frame.path ? f.path.slice(frame.path.length + 1) : f.path).split('/')[0])),
     lastEdge: lastTransition && Number.isInteger(lastTransition.data?.index)
-      ? `${lastTransition.data.from}#${lastTransition.data.index}` : null,
+      ? `${lastTransition.data.from}#${lastTransition.data.index}` : traced?.lastEdge || null,
   };
+}
+
+/** One journal row folded into `frames` (prefix -> what the trace says of that frame: its machine, the visits of its
+ * states, the state it is in or ended in, its last transition and how it ended); rows in seq order. */
+export function foldTrace(frames, row) {
+  if (row?.kind !== 'trace' || !row.data?.machine) return frames;
+  const prefix = row.data.frame || '';
+  const seen = frames.get(prefix)
+    || { machine: row.data.machine, visits: Object.create(null), state: null, lastEdge: null, ended: null };
+  if (row.status === 'enter') {
+    seen.visits[row.state] = Math.max(seen.visits[row.state] || 0, row.data.visit || 1);
+    seen.state = row.state;
+  } else if (row.status === 'transition' && Number.isInteger(row.data.index)) {
+    seen.lastEdge = `${row.data.from}#${row.data.index}`;
+  } else if (row.status === 'final') {
+    seen.state = row.state;
+  } else if (row.status === 'end') {
+    seen.ended = row.data.reason || 'finished';
+  }
+  frames.set(prefix, seen);
+  return frames;
 }
 
 /** `a: &base` or `a: !tag` (maybe with a comment): the value itself is on the lines below the key. */

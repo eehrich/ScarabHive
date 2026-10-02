@@ -24,7 +24,8 @@ the format, with comments on the ones that are not obvious from their names.
 ## The loop
 
 1. `stategraph_catalog` -- the activity kinds and their fields, the agents a machine may
-   run (`agents: "review_*"` narrows the list), the tools the runner may call, the decision
+   run (`agents: "review_*"` narrows the list), the tools the machine's runner may call
+   (pass `machine_id` for a machine that exists: its folder decides the runner), the decision
    profiles. Use nothing else.
 2. Write the tree: `<id>.yaml`, its companion `.py` if it has one, any imported machine.
 3. `stategraph_validate_machine(files={...})` until it reports no error. Fix warnings
@@ -134,7 +135,7 @@ third entry raises `loop_limit`, and the error transition leads to `failed`.
   `guard: error.type == "tool_failed"`), on the state or on an enclosing composite.
   An unhandled error fails the machine.
 - **Only what the catalog lists:** agents, tools (flat names with
-  their instance prefix, e.g. `stategraph_json_manage_json`) the runner may call,
+  their instance prefix, e.g. `stategraph_json_manage_json`) the machine's runner may call,
   decision profiles. The validator refuses anything else (SG007).
 - **Finals** have only `type`, `status` (`succeeded`/`failed`, root region only),
   `output` and `description`.

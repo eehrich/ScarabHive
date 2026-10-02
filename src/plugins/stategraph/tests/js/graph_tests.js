@@ -7,7 +7,7 @@ import {
   applyPositions, clipToBox, compositeTitleWidth, dropInto, edgeRoute, edgeText, elkInput, gridLayout, layoutFrom, nodeSize, PAD,
   posixPath, problemIndex, runOverlay, fragmentLock, stateFragment, stateId, outermost, sameSelection, selectedStates,
   groupedSpots, labelSpot, lanes, lineKeys, orthogonalRoute, renamedLines, selectedTransitions, transitionRoute, selectionOf, statesWithin, toggled,
-  NOTE, noteKey, noteLines, notePlaces,
+  NOTE, noteKey, noteLines, notePlaces, foldTrace,
 } from '../../static/graph.js';
 
 const results = [];
@@ -441,6 +441,44 @@ test('runOverlay reads the root frame, the pause, submachine frames and the last
   assert(overlay.submachines.has('read'), 'the state a submachine runs under');
   equal(overlay.lastEdge, 'write#0', 'the last transition of the root frame');
   equal(runOverlay(null).active.size, 0, 'no run, no overlay');
+});
+
+test('runOverlay of a submachine frame: its own states, pause and edge; a child under its state; an ended one from its trace', () => {
+  const run = {
+    view: { frames: [
+      { prefix: '', path: '', state: 'read', config: ['review', 'read'], visits: { write: 2 } },
+      { prefix: 's3/m/', path: 'read', state: 'judge', config: ['judge'], visits: { judge: 3 } },
+      { prefix: 's3/m/s2/m/', path: 'read/judge', state: 'x', config: ['x'], visits: {} },
+    ] },
+    debug: { paused: { frame: 's3/m/', state: 'judge', hook: 'enter' } },
+    journal: [
+      { kind: 'trace', status: 'transition', data: { frame: 's3/m/', from: 'judge', to: 'judge', index: 2 } },
+      { kind: 'trace', status: 'transition', data: { frame: '', from: 'write', to: 'review', index: 0 } },
+    ],
+  };
+  const sub = runOverlay(run, 's3/m/');
+  equal([[...sub.active], sub.current, sub.visits.judge, sub.paused], [['judge'], 'judge', 3, 'judge'], 'the frame of that prefix');
+  equal([...sub.submachines], ['judge'], 'the child runs under judge (its path past the frame\'s), not under read');
+  equal(sub.lastEdge, 'judge#2', 'its own last transition, not the root\'s');
+  equal(runOverlay(run).paused, null, 'the pause is the submachine\'s');
+
+  const traced = foldTrace(new Map(), { kind: 'trace', status: 'enter', state: 'a', data: { machine: 'crit', frame: 's7/m/', visit: 1 } });
+  for (const row of [
+    { kind: 'trace', status: 'transition', state: 'a', data: { machine: 'crit', frame: 's7/m/', from: 'a', index: 0 } },
+    { kind: 'trace', status: 'enter', state: 'a', data: { machine: 'crit', frame: 's7/m/', visit: 2 } },
+    { kind: 'trace', status: 'enter', state: 'done', data: { machine: 'crit', frame: 's7/m/', visit: 1 } },
+    { kind: 'trace', status: 'final', state: 'done', data: { machine: 'crit', frame: 's7/m/', status: 'succeeded' } },
+    { kind: 'trace', status: 'end', state: 'done', data: { machine: 'crit', frame: 's7/m/', reason: 'finished' } },
+    { kind: 'trace', status: 'enter', state: 'write', data: { machine: 'review', frame: '', visit: 1 } },
+    { kind: 'activity', status: 'done', state: 'a', data: {} },
+  ]) foldTrace(traced, row);
+  const seen = traced.get('s7/m/');
+  equal([seen.machine, seen.visits.a, seen.visits.done, seen.state, seen.lastEdge, seen.ended],
+    ['crit', 2, 1, 'done', 'a#0', 'finished'], 'the trace of one frame, not of the root');
+  const ended = runOverlay(run, 's7/m/', seen);
+  equal([[...ended.active], ended.current, ended.visits.a, ended.lastEdge, ended.submachines.size],
+    [['done'], 'done', 2, 'a#0', 0], 'gone from the view: drawn from its trace');
+  equal(runOverlay(run, 's3/m/', seen).current, 'judge', 'a live frame says itself where it is');
 });
 
 // ------------------------------------------------------------------ fragments

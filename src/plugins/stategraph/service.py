@@ -25,6 +25,7 @@ from .kinds import describe_kinds
 from .model.loader import MachineTree, load_snapshot
 from .model.spec import agent_entry
 from .model.validate import validate_tree
+from .runners import merged_inject_params, runner_inject_params, runner_of
 from .store import FileInTheWay, MachineStore, VersionConflict, version_of
 
 if TYPE_CHECKING:
@@ -91,15 +92,24 @@ class StateGraphService:
         self.run_store: RunStore = server.run_store
 
     # ------------------------------------------------------------ helpers
-    def config_check(self) -> Optional[Callable[..., Optional[str]]]:
+    def config_check(self, runner: Optional[str] = None) -> Optional[Callable[..., Optional[str]]]:
+        """SG007 against the configuration. The validator's tool questions name the run's root file and get its
+        runner (runners.py); ``runner`` answers the others -- a run's backend passes its own."""
         config = getattr(self.server, "system_config", None)
         if config is None or getattr(config, "plugins", None) is None:
             return None
-        return make_config_check(config, runner=self.server.runner_agent, own_instance=self.server.name,
+        return make_config_check(config, runner=runner or self.server.runner_agent, own_instance=self.server.name,
+                                 default_runner=self.server.runner_agent,
                                  is_agent=getattr(self.server, "is_agent", None))
 
     def _validate(self, tree: MachineTree) -> MachineTree:
-        return validate_tree(tree, self.config_check())
+        checked = validate_tree(tree, self.config_check())
+        config = getattr(self.server, "system_config", None)
+        if config is not None and getattr(config, "plugins", None) is not None:
+            claimed_twice = runner_of(config, tree.root, self.server.runner_agent)[1]
+            if claimed_twice:  # no runner can be told: nothing there runs, with or without tool activities
+                checked.add("error", "SG007", claimed_twice, file=tree.root)
+        return checked
 
     def _graph(self, tree: MachineTree) -> dict[str, Any]:
         try:
@@ -185,7 +195,12 @@ class StateGraphService:
         return {"id": machine_id, "file": str(found.path), "writable": found.writable,
                 "root_file": f"{machine_id}.yaml", "files": files, "versions": versions,
                 "problems": self._problems(tree), "graph": self._graph(tree), "layout": self.store.layout(machine_id),
-                "agents": agents, "offer": offer}
+                "agents": agents, "offer": offer, **self._runner(machine_id)}
+
+    def _runner(self, machine_id: str) -> dict[str, Any]:
+        """The runner a run of the machine gets: its name, and why it is not the folder's when two claim it."""
+        name, problem = self.server.runner_for(machine_id)
+        return {"runner": name, **({"runner_problem": problem} if problem else {})}
 
     def create_machine(self, machine_id: str, title: Optional[str] = None) -> dict[str, Any]:
         from .model.spec import check_name
@@ -353,14 +368,19 @@ class StateGraphService:
         its agents run, and their instance sessions are found, as the run's user -- and its caller's place in a
         sub-agent tree."""
         def make(run_id: str) -> Any:
-            runner = self.server.resolve_runner()
+            row = self.run_store.get_run(run_id) or {}
+            # the runner the run started with (its row; one from before the column: its machine's folder now): its
+            # allowlist bounds the tool activities, its inject_params go into them over the instance's
+            name = row.get("runner") or self.server.runner_for(row.get("machine_id"))[0]
+            runner = self.server.resolve_runner(name)
             if runner is None:
                 return NoBackend()
-            row = self.run_store.get_run(run_id) or {}
+            inject = merged_inject_params(self.server.inject_params,
+                                          runner_inject_params(self.server.system_config, name))
             return ScarabHiveBackend(runner=runner, system_config=self.server.system_config,
                                      session_id=f"sg_{run_id}", user_id=row.get("user_id"),
                                      token=self.server.cancel_token(run_id), nesting=row.get("nesting"),
-                                     inject_params=self.server.inject_params, config_check=self.config_check())
+                                     inject_params=inject, config_check=self.config_check(name))
         return make
 
     async def start_run(self, machine_id: str, params: Optional[dict[str, Any]] = None,
@@ -419,7 +439,7 @@ class StateGraphService:
                 tree, params=params, mocks=mocks, mock_only=mock_only, breakpoints=breakpoints,
                 watchpoints=watchpoints, pause_at_start=pause_at_start,
                 backend_factory=None if mock_only else self.backend_factory(), user_id=user_id,
-                run_key=run_key, run_id=run_id, nesting=nesting)
+                run_key=run_key, run_id=run_id, nesting=nesting, runner=self.server.runner_for(machine_id)[0])
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": run_id}
@@ -514,17 +534,20 @@ class StateGraphService:
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
-                  before: Optional[str] = None) -> list[dict[str, Any]]:
-        """A page of the newest runs; ``before``: the last run id of the page before."""
+                  before: Optional[str] = None, nested: bool = False) -> list[dict[str, Any]]:
+        """A page of the newest runs; ``before``: the last run id of the page before; ``nested``: also the runs the
+        machine ran in as a submachine."""
         if status is not None and status not in RUN_STATUSES:
             raise ServiceError(422, f"status must be one of {', '.join(RUN_STATUSES)}, not {status!r}")
         return self.run_store.list_runs(machine_id, limit=max(1, min(int(limit), 500)), status=status,
-                                        user_id=user_id, all_users=all_users, before=before)
+                                        user_id=user_id, all_users=all_users, before=before, nested=nested)
 
     def get_run(self, run_id: str, steps: int = 50, *, user_id: Optional[str] = None, after: Optional[int] = None,
-                kinds: Optional[list[str]] = None, state: Optional[str] = None) -> dict[str, Any]:
+                kinds: Optional[list[str]] = None, state: Optional[str] = None,
+                frames: bool = False) -> dict[str, Any]:
         """A run and its journal rows: the last ``steps`` -- or, with ``after``, the first ``steps`` after that seq;
-        only rows of ``kinds`` and of ``state`` when given."""
+        only rows of ``kinds`` and of ``state`` when given. ``frames``: with the submachine frames it started
+        (``frames_started``: prefix, machine, path)."""
         self._run(run_id, user_id)
         _check_steps(steps)
         if after is not None and not (_is_int(after) and after >= 0):
@@ -544,6 +567,8 @@ class StateGraphService:
         wanted = kinds or JOURNAL_KINDS
         row["journal"] = (self.run_store.tail(run_id, limit=steps, kinds=wanted, state=state) if after is None
                           else self.run_store.page(run_id, after=after, limit=steps, kinds=wanted, state=state))
+        if frames:
+            row["frames_started"] = self.run_store.frames(run_id)
         return row
 
     def journal(self, run_id: str, after: int = 0, limit: int = 200, kinds: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -616,7 +641,9 @@ class StateGraphService:
             new_id = await self.runs.fork(run_id, at_step=kwargs.get("at_step"), tree=tree,
                                           backend_factory=None if options.get("mock_only")
                                           else self.backend_factory(), user_id=user_id or row.get("user_id"),
-                                          pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"))
+                                          pause_at_start=bool(kwargs.get("pause")), mocks=kwargs.get("mocks"),
+                                          # the snapshot keeps the source's runner; the current file its folder's
+                                          runner=self.server.runner_for(row["machine_id"])[0] if tree else None)
         except (ValueError, CompileError) as exc:
             raise ServiceError(422, str(exc)) from None
         return {"run_id": new_id, "forked_from": run_id}

@@ -617,6 +617,11 @@ class RunContext:
 
     def frame_started(self, frame: Frame) -> None:
         self.frames.append(frame)
+        if frame.prefix and not self.lost:
+            try:  # what the panel lists a submachine's runs by: for display, like the view
+                self.store.add_frame(self.id, frame.prefix, frame.machine.id, frame.path)
+            except Exception:
+                logger.warning("stategraph: could not record frame %s of run %s", frame.prefix, self.id, exc_info=True)
         self.persist()
 
     def frame_ended(self, frame: Frame) -> None:
@@ -783,9 +788,11 @@ class RunManager:
                     parent_run: Optional[str] = None, fork_step: Optional[int] = None,
                     copy_rows: Optional[list[dict[str, Any]]] = None,
                     fork_resources: Optional[dict[str, Any]] = None,
-                    nesting: Optional[dict[str, Any]] = None, strict_points: bool = True) -> str:
+                    nesting: Optional[dict[str, Any]] = None, strict_points: bool = True,
+                    runner: Optional[str] = None) -> str:
         """``nesting``: the caller's place in a sub-agent tree (``depth``, ``depth_budget`` of its session), kept
         with the run so its agent instances count as one level below the caller (backend.agent_create).
+        ``runner``: the runner agent the run is hosted by (runners.py), kept with it for every resume.
         ``strict_points``: a breakpoint naming no state is refused; else (a fork's inherited points) it is dropped."""
         self._refuse_while_stopping()
         machine = compile_tree(tree)
@@ -809,7 +816,7 @@ class RunManager:
                               mocks={"mocks": mocks or {}, "mock_only": mock_only}, debug=debugger.state(),
                               user_id=user_id, session_id=f"sg_{run_id}", parent_run=parent_run,
                               fork_step=fork_step, run_key=run_key, owner=self.owner, lease_until=_utc(LEASE_SECONDS),
-                              journal_format=JOURNAL_FORMAT, nesting=nesting)
+                              journal_format=JOURNAL_FORMAT, nesting=nesting, runner=runner)
         if copy_rows:
             self.store.copy_rows(parent_run or "", run_id, copy_rows)
         if fork_resources is not None:  # journaled, so a resume of the fork runs its fork hooks where it did
@@ -885,7 +892,7 @@ class RunManager:
                    backend: Any = None, backend_factory: Optional[Callable[[str], Any]] = None,
                    token_factory: Optional[Callable[[str], Any]] = None, breakpoints: Any = None,
                    watchpoints: Any = None, pause_at_start: bool = False, user_id: Optional[str] = None,
-                   mocks: Optional[dict[str, Any]] = None) -> str:
+                   mocks: Optional[dict[str, Any]] = None, runner: Optional[str] = None) -> str:
         """A new run that replays ``run_id``'s journal before top-level step ``at_step`` and continues live.
 
         ``mocks`` go over the source's (an activity replayed from the journal keeps its outcome); ``pause_at_start``
@@ -893,7 +900,8 @@ class RunManager:
 
         ``tree`` is the definition to use (``definition: current``); default: the source run's snapshot. The fork
         is ``user_id``'s run, and its own: no caller's place in a sub-agent tree (``nesting``) comes with it -- the
-        forking user started it, not the agent that started the source.
+        forking user started it, not the agent that started the source. ``runner``: default the source's -- its
+        snapshot ran with it; a fork onto the current definition passes the runner of where the machine is now.
         """
         row = self.store.get_run(run_id)
         if row is None:
@@ -936,7 +944,8 @@ class RunManager:
             watchpoints=debug.get("watchpoints") if watchpoints is None else watchpoints,
             pause_at_start=pause_at_start, backend=backend, backend_factory=backend_factory,
             token_factory=token_factory, user_id=user_id or row.get("user_id"), parent_run=run_id,
-            fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step})
+            fork_step=at_step, copy_rows=keep, fork_resources={"sources": sources, "chain": chain, "at": at_step},
+            runner=runner if runner is not None else row.get("runner"))
 
     def _launch(self, run_id: str, machine: Machine, params: Optional[dict[str, Any]],
                 mocks: Optional[dict[str, Any]], mock_only: bool, debugger: Debugger, backend: Any,

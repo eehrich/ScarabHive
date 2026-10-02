@@ -48,10 +48,11 @@ let layoutsKept = false;  // a layout PUT to review changes what its GET answers
 let runAnswer = RUN;
 let controlAnswer = null;  // r1's control answer, when it is not runAnswer
 let runsAnswer = null;  // (query) -> the runs list, when not the two runs
+let catalogDown = null;  // (path) -> true: the catalog answers 503
 globalThis.SERVER = (method, path, json) => {
   const p = path.replace('/plugins/stategraph/api', '');
   if (p === '/kinds') return KINDS;
-  if (p === '/catalog') return CATALOG;
+  if (p.split('?')[0] === '/catalog') return catalogDown?.(p) ? new ApiError(503, 'restarting') : CATALOG;
   if (p === '/machines' && method === 'GET') {
     const groups = { review: 'Writer/v6', other: 'Writer', ro: 'stategraph' };
     return ['review', 'other', 'hooks', 'ro', 'empty', 'plain', 'fields'].map((id) => ({ id, title: id, errors: 0, warnings: 0, writable: id !== 'ro',
@@ -2424,6 +2425,91 @@ const CASES = {
     await settle();
     check(JSON.stringify(lastEdit()) === JSON.stringify({ op: 'update_state', name: 'judge', fields: { description: 'Judges\nthe draft.' } }),
       `sent: ${JSON.stringify(lastEdit())}`);
+  },
+  async the_overview_names_the_machine_s_runner_and_the_catalog_is_its() {
+    reviewAnswer = { ...MACHINE, runner: 'v6_machine_runner', runner_problem: 'runners a, b both claim /m in runs_machines_in' };
+    await boot('?machine=review');
+    const shown = $('side-inspect').innerHTML;
+    check(/<dt>runner<\/dt><dd[^>]*>v6_machine_runner<\/dd>/.test(shown), 'the runner is not shown');
+    check(shown.includes('both claim /m'), 'the runner problem is not shown');
+    const asked = () => CALLS.filter(([, path]) => path.includes('/catalog')).map(([, path]) => path.split('/api')[1]);
+    check(JSON.stringify(asked()) === JSON.stringify(['/catalog?machine_id=review']), `catalog asked: ${JSON.stringify(asked())}`);
+    await clickMachine('other');
+    await settle();
+    check(asked().pop() === '/catalog?machine_id=other', `another machine keeps the first one's tools: ${JSON.stringify(asked())}`);
+  },
+
+  async a_submachine_lists_the_runs_it_ran_in_and_its_canvas_shows_the_frame_picked() {
+    const asked = [];
+    runsAnswer = (query) => {
+      asked.push(`${query.get('machine_id')}:${query.get('nested')}`);
+      return query.get('machine_id') === 'other' ? [{ ...RUNS[0], machine_id: 'review' }] : RUNS;
+    };
+    // r1 is a run of review; other ran in it twice: s3/m/ runs now, s5/m/ has ended -- only its trace says where
+    const live = { machine: 'other', prefix: 's3/m/', path: 'read', step: 2, state: 'write', config: ['write'],
+      visits: { write: 4 }, ctx: {}, params: {}, accepts: [] };
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: [RUN.view.frames[0], live] },
+      frames_started: [{ prefix: 's3/m/', machine: 'other', path: 'read' }, { prefix: 's5/m/', machine: 'other', path: 'read' }] };
+    journalOf = { ...journalOf, r1: [...RUN.journal,
+      { seq: 50, kind: 'trace', key: 's5/m/s1:enter:done', state: 'done', status: 'enter', data: { machine: 'other', frame: 's5/m/', visit: 1 } },
+      { seq: 51, kind: 'trace', key: 's5/m/s1:final:done', state: 'done', status: 'final', data: { machine: 'other', frame: 's5/m/', status: 'succeeded' } }] };
+    await boot('?machine=other&run=r1');
+    const current = () => $('canvas').querySelectorAll('.sg-node').filter((n) => n.classList.contains('is-current')).map((n) => n.dataset.state);
+    const bar = () => $('debugBar').innerHTML;
+    check(asked.includes('other:true'), `the submachine's list did not ask for the runs it ran in: ${asked}`);
+    check($('runList').innerHTML.includes('in review'), 'the run is not named as one of review');
+    check(JSON.stringify(current()) === '["write"]', `the canvas shows ${current()}, not the live frame's state`);
+    check(!$('canvas').querySelectorAll('.sg-node').some((n) => n.classList.contains('is-paused')), 'the pause of the root is drawn on the submachine');
+    check(bar().includes('data-frame-choice') && bar().includes('under read #1 · running') && bar().includes('under read #2 · ended in done'), bar());
+    const picker = element('select', { 'data-frame-choice': '' });
+    picker.value = 's5/m/';
+    await $('debugBar').fire('change', { target: picker });
+    await settle();
+    check(JSON.stringify(current()) === '["done"]', `the ended frame picked: the canvas shows ${current()}`);
+    controlAnswer = { ...runAnswer, frames_started: undefined };  // a control's answer lists no frames
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'step' }) });
+    await release();
+    await settle();
+    check(JSON.stringify(current()) === '["done"]', `after a control the frame picked is lost: ${current()}`);
+    const back =element('button', { 'data-open-frame': '', 'data-machine': 'review' });
+    await Promise.all(DOC_LISTENERS.click.map((fn) => fn({ target: back })));
+    await release();
+    await settle();
+    check(headName() === 'review' && JSON.stringify(current()) === '["read"]', `back on review: ${headName()}, ${current()}`);
+    check(!bar().includes('data-frame-choice') && bar().includes('r1'), 'the run is not kept on its own machine');
+  },
+
+  async a_catalog_that_fails_leaves_no_other_machine_s_tools_and_is_asked_again() {
+    await boot('?machine=review');
+    check($('sgTools').innerHTML.includes('store_put'), 'the catalog of review is not offered');
+    catalogDown = (path) => path.includes('machine_id=other');
+    await clickMachine('other');
+    await settle();
+    check(!$('sgTools').innerHTML.includes('store_put'), 'the tools of review are offered for other');
+    catalogDown = null;
+    await clickMachine('other');
+    await settle();
+    const asked = CALLS.filter(([, path]) => path.includes('/catalog?machine_id=other')).length;
+    check(asked === 2 && $('sgTools').innerHTML.includes('store_put'), `the catalog of other is not asked again (${asked})`);
+  },
+
+  async a_run_from_before_the_frame_record_finds_its_frames_in_the_journal_and_shows_the_last() {
+    runsAnswer = () => [{ ...RUNS[0], machine_id: 'review' }];
+    // no frames_started (a run from before the record), no live frame of other: only the journal names them
+    runAnswer = { ...RUN, view: { ...RUN.view, frames: RUN.view.frames } };
+    const trace = (seq, frame, state, status, data = {}) => ({ seq, kind: 'trace', key: `${frame}s1:${status}:${state}`, state, status,
+      data: { machine: 'other', frame, ...data } });
+    journalOf = { ...journalOf, r1: [...RUN.journal, trace(50, 's7/m/', 'write', 'enter', { visit: 1 }),
+      trace(51, 's7/m/', 'write', 'end', { reason: 'failed' }), trace(60, 's9/m/', 'done', 'enter', { visit: 1 }),
+      trace(61, 's9/m/', 'done', 'final', { status: 'succeeded' })] };
+    await boot('?machine=other&run=r1');
+    const current = () => $('canvas').querySelectorAll('.sg-node').filter((n) => n.classList.contains('is-current')).map((n) => n.dataset.state);
+    const bar = $('debugBar').innerHTML;
+    check(bar.includes('under s7/m/ · ended in write') && bar.includes('under s9/m/ · ended in done'), bar);
+    check(JSON.stringify(current()) === '["done"]', `none live, none picked: the last frame, not ${current()}`);
+    const frames = $('dbgFrames').innerHTML;
+    check(frames.includes('data-machine="review"') && !frames.includes('data-machine="critique"'),
+      'a machine without a graph of its own (not in the list) is offered to be shown');
   },
 };
 

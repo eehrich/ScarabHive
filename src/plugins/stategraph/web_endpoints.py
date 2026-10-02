@@ -192,12 +192,12 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
             data = parsed.get("data")
         return await self._call("use_callback", token, data)
 
-    async def api_catalog(self, request: Request):
-        """What the inspector's fields offer: the agents a machine may run, the tools its runner may call, the
-        decision profiles."""
+    async def api_catalog(self, request: Request, machine_id: Optional[str] = None):
+        """What the inspector's fields offer: the agents a machine may run, the tools its runner may call (the
+        open machine's -- runners.py), the decision profiles."""
         await self._user(request)
-        found = self.server._catalog()
-        tools = await self.server._runner_tools("*")
+        found = self.server._catalog("*", machine_id)
+        tools = await self.server._runner_tools("*", machine_id)
         return {"agents": found["agents"], "profiles": found["decision_profiles"],
                 "tools": [{"name": tool["name"], "description": tool["description"]} for tool in tools]}
 
@@ -205,10 +205,10 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
 
     async def api_list_runs(self, request: Request, machine_id: Optional[str] = None,
                             limit: int = Query(50, ge=1, le=500), status: Optional[str] = None,
-                            before: Optional[str] = None):
+                            before: Optional[str] = None, nested: bool = False):
         await self._user(request)
         return await self._call("list_runs", machine_id=machine_id, limit=limit, status=status or None,
-                                before=before or None)
+                                before=before or None, nested=nested)
 
     async def api_start_run(self, request: Request):
         user = await self._user(request)
@@ -222,7 +222,7 @@ document.getElementById('send').onclick = async (e) => {{ e.target.disabled = tr
 
     async def api_get_run(self, request: Request, run_id: str, steps: int = Query(50, ge=1, le=500)):
         user = await self._user(request)
-        return await self._call("get_run", run_id, steps=steps, user_id=user)
+        return await self._call("get_run", run_id, steps=steps, user_id=user, frames=True)  # the panel's frame picker
 
     async def api_run_journal(self, request: Request, run_id: str, after: int = Query(0, ge=0),
                               limit: int = Query(200, ge=1, le=2000), kinds: Optional[str] = None):

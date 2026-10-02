@@ -27,6 +27,7 @@ from .engine.runner import RunManager, row_event_due as _event_due
 from .schedules import Scheduler, parse_schedules
 from .service import ServiceError, StateGraphService
 from .model.validate import agent_params_problems
+from .runners import runner_of
 from .store import MachineStore, machine_dirs
 
 logger = logging.getLogger(__name__)
@@ -83,16 +84,25 @@ class StateGraphServer(SchemaBasedToolServer):
         self._web: Any = None
 
     # ------------------------------------------------------------ plumbing
-    def resolve_runner(self) -> Any:
-        """The runner agent: the host of tool activities (its allowlist is their boundary) and the way to the
-        registry agent activities run in."""
+    def resolve_runner(self, name: Optional[str] = None) -> Any:
+        """A runner agent (default: this instance's): the host of tool activities (its allowlist is their boundary)
+        and the way to the registry agent activities run in."""
+        name = name or self.runner_agent
         for registry in self._registries():
             try:
-                return registry.get(self.runner_agent)
+                return registry.get(name)
             except Exception:
                 continue
-        logger.warning("stategraph: runner agent %r not found; runs have no backend", self.runner_agent)
+        logger.warning("stategraph: runner agent %r not found; runs have no backend", name)
         return None
+
+    def runner_for(self, machine_id: Optional[str]) -> tuple[str, Optional[str]]:
+        """The runner of a machine, by the folder its file lies in (runners.py) -- a machine not saved yet by the
+        folder it will be saved in -- and why none can be told, when two runners claim that folder."""
+        found = self.machines.find(machine_id) if machine_id else None
+        path = found.path if found is not None else (
+            Path(self.machines.writable[0]) / f"{machine_id or 'new'}.yaml" if self.machines.writable else None)
+        return runner_of(self.system_config, str(path) if path else None, self.runner_agent)
 
     def _registries(self) -> list[Any]:
         found = []
@@ -244,14 +254,15 @@ class StateGraphServer(SchemaBasedToolServer):
     # ------------------------------------------------------------ tools: "{name}_x" -> x(params)
     async def catalog(self, params: dict[str, Any]) -> dict[str, Any]:
         async def body() -> dict[str, Any]:
-            found = self._catalog(str(params.get("agents") or "*"))
-            found["tools"] = await self._runner_tools(str(params.get("tools") or "*"))
+            machine = str(params.get("machine_id") or "") or None
+            found = self._catalog(str(params.get("agents") or "*"), machine)
+            found["tools"] = await self._runner_tools(str(params.get("tools") or "*"), machine)
             return found
         return await self._run_tool(params, "catalog", body,
                                     lambda r: f"catalog: {len(r['kinds'])} kinds, {len(r['agents'])} agents, "
                                               f"{len(r['tools'])} tools")
 
-    def _catalog(self, agent_pattern: str = "*") -> dict[str, Any]:
+    def _catalog(self, agent_pattern: str = "*", machine_id: Optional[str] = None) -> dict[str, Any]:
         from agent_system.config.settings import get_tool_server_config
 
         kinds = []
@@ -263,23 +274,25 @@ class StateGraphServer(SchemaBasedToolServer):
         agents = [{"name": name, "description": getattr(get_tool_server_config(name, self.system_config),
                                                         "description", "") or ""}
                   for name in self._agent_names() if fnmatch.fnmatchcase(name, agent_pattern)]
-        runner = get_tool_server_config(self.runner_agent, self.system_config)
+        name = self.runner_for(machine_id)[0]
+        runner = get_tool_server_config(name, self.system_config)
         tools_cfg = getattr(getattr(runner, "agent_config", None), "tools", None)
         patterns = list(getattr(tools_cfg, "allowed", None) or [])
         llm = getattr(self.system_config, "llm_system", None)
-        return {"kinds": kinds, "agents": agents, "runner": self.runner_agent,
+        return {"kinds": kinds, "agents": agents, "runner": name,
                 "tools": patterns, "decision_profiles": sorted((getattr(llm, "decision_profiles", None) or {})),
                 "examples": [m.id for m in self.machines.list() if not m.own]}
 
-    async def _runner_tools(self, pattern: str) -> list[dict[str, Any]]:
-        """The tools a machine's tool activity may call: every registered tool the runner's allowlist lets through
-        (the matcher dispatch uses), flat name, what it does and its parameters -- not the allowlist's patterns."""
+    async def _runner_tools(self, pattern: str, machine_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """The tools a machine's tool activity may call: every registered tool its runner's allowlist lets through
+        (the matcher dispatch uses), flat name, what it does and its parameters -- not the allowlist's patterns.
+        No machine: those of a new machine's runner."""
         from agent_system.config.settings import get_tool_server_config
         from agent_system.plugins.tool_adapter import plugin_tool_registry
         from agent_system.servers.agent.server import Agent
         from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
-        runner = get_tool_server_config(self.runner_agent, self.system_config)
+        runner = get_tool_server_config(self.runner_for(machine_id)[0], self.system_config)
         tools_cfg = getattr(getattr(runner, "agent_config", None), "tools", None)
         allowed = list(getattr(tools_cfg, "allowed", None) or [])
         blocked = list(getattr(tools_cfg, "blocked", None) or [])

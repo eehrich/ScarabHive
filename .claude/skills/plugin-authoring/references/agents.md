@@ -157,6 +157,16 @@ the caller's `use_advanced_model`), `advanced_create_only_agents`.
 `allowed_agents`, limits, `allow_advanced_model` and the injector options reload via `agent-cli reload`; a
 **new** agent needs a restart (the user does restarts).
 
+## Plugin with stategraph machines (`machines/`)
+
+`src/plugins*/*/machines` is found by stategraph's default roots. What its `tool` activities
+may call is bounded by their **runner**, chosen by the folder: ship one in the plugin's own
+`agents/*.yaml` — `type: stategraph_runner`, `enabled: true`,
+`runs_machines_in: [src/plugins/<name>/machines]`, the tools as `"+server/*"` entries,
+secrets as `inject_params`. **Never** add them to `src/plugins/stategraph/agents/stategraph.yaml`
+(a config test refuses another plugin's server there). Example and details: the stategraph
+guide, "Runners".
+
 ## Config-only plugin (`type = ["library"]`)
 
 ```

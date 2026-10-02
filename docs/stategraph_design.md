@@ -723,6 +723,11 @@ store.py   machine roots, versions   server.py  web_endpoints.py
   that (absolute host paths, e.g. Windows keys) is rewritten the same way when it is read.
 - `journal`: rows `(run_id, seq, kind, key, state, status, data)`, unique on
   `(run_id, kind, key)`. `seq` is append order, for display only.
+- `frames`: `(run_id, prefix, machine_id, path)`, a row per submachine frame a run started (a
+  replay starts it again: kept once). A machine's runs list the runs it ran in by it
+  (`GET /api/runs?nested=true`), and the panel's frame picker reads it (`frames_started`, the first
+  500; the panel adds the frames the run's journal names). A runs.db from before the table gets it
+  filled once from its journal's `end` rows (path unknown: the panel names those by prefix).
 
 **Key grammar**
 
@@ -908,7 +913,7 @@ A run executes as an asyncio task in the process that started it (usually the AP
 | Need | Primitive |
 |---|---|
 | agent call | The registered agent (`runner.registry.get(name)`), run with `run_events(task, request_id=<run>_NNN, session_id=<instance>)` per attempt (`NNN` counts on across resumes, §5.2); the answer is the final event's summary, an `error` event or an empty answer is `agent_failed`. A create first makes the instance session with `session_manager.create_session(parent_session_id=sg_<run>)` (a sub-session of the run's own session, shown below it); with a `nesting` (an agent started the run: the facade, a tool call) the instance sits at the caller's `depth` + 1 with its `depth_budget` - 1, where the caller's SAM would have put it, and a budget below 1 fails the activity with `config`. A continue checks that the instance's parent is this run's session and its agent the one named. `open_for_run` before and `save_session` after the run keep the instance's conversation on disk, so a continue after a resume sees it. One run per instance at a time. The run is awaited as a task of its own: a timeout or terminate cancels the run's request (its token) before the task -- a cancel that lands in one of the agent's tool calls becomes a "cancelled" tool result and the agent would run on -- and the run gets until the CancellationManager would force-cancel it (its cleanup timeout plus one monitor round, and a second: 12 s by default; `AGENT_STOP_GRACE`) to stop -- also when a terminate follows a timeout meanwhile. A run that outlives it keeps its instance busy until it ends. |
-| tool call | `runner.dispatch_tool_call(tool, args, …)`. Configured `inject_params` (fnmatch pattern → params, as in tool_script) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
+| tool call | `runner.dispatch_tool_call(tool, args, …)` of the run's runner (§8.3). Configured `inject_params` (fnmatch pattern → params, as in tool_script; the instance's, then the runner's) are applied after rendering, so secrets never live in machine files. A `ToolDispatchError` becomes `tool_denied`. |
 | decision | `create_decisions_from_profile(system_config, profile).decide(input, questions)` |
 | vars | `session_manager.replace_session_context_vars(user, <instance>, vars)` (a save merges into the stored vars, and a sub-agent of the instance inherits them) and `agent._session_tracker.set_session_template_vars(<instance>, vars)` after clearing, both before the run |
 | cancellation | `get_cancellation_manager()`: the run's backend holds a token under the run id. Terminate calls `cancel_sub_requests(<run id>)`, which reaches every `<run>_NNN` sub-run in flight -- not the run's own token: a cancelled token has the platform force-cancel its whole request tree after the cleanup timeout, and the `finally` activities start sub-runs after the terminate. They call agents and decisions without the token (§2.8). A cancel from outside that reaches the run's token -- a caller whose request id prefixes the run id, e.g. a book cancel above the agent facade -- terminates the run the same way, so its `finally` activities run; but that cancel is the caller's own, so the platform force-cancels every task under the caller's request id prefix after the cleanup timeout (10 s), the `finally` activities' tool calls and agent runs included: on this path a `finally` has 10 s, not 60. An activity that ends because the run was cancelled is not journaled as an error, and no error transition fires. The run's cancel is: its task being cancelled (terminate, halt, `limits.timeout`, a timeout above the activity, a fail-fast sibling), the run ending, or its token cancelled from outside. Any other `CancelledError` out of an attempt -- a future some library cancelled -- fails the activity (`agent_failed`, `tool_failed`, `decision_failed`, `call_failed`, else `activity_failed`), and its error transition fires. |
@@ -1013,9 +1018,9 @@ src/plugins/stategraph/
 
 | Tool | Parameters | Result |
 |---|---|---|
-| `catalog` | `agents?`, `tools?` (fnmatch patterns) | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the tools the runner may call (flat name, description, parameters, required); decision profiles; example machine ids |
+| `catalog` | `agents?`, `tools?` (fnmatch patterns), `machine_id?` | Activity kinds with their fields; the agents a machine may run (every agent of the registry that SG007 accepts); the runner of the machine (default: a new machine's) and the tools it may call (flat name, description, parameters, required); decision profiles; example machine ids |
 | `list_machines` | | id, title, file, writable, and whether it validates |
-| `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems |
+| `get_machine` | `machine_id` | the tree: `files {relative path: text}`, `versions {path: sha}`, problems; `runner` (and `runner_problem`) |
 | `validate_machine` | `files` (or `yaml`), `machine_id?` | problems |
 | `save_machine` | `files`, `expected_versions?` | versions; refused with errors or on a version conflict |
 | `run_machine` | `machine_id` (or `request`: `<id> {json}`), `params`, `mocks` (`{state path: out}`, `{"$visits": [...]}`, `{"$error": {...}}`, `{"$timeout": true}` for a wait state), `mock_only`, `breakpoints`, `watchpoints`, `pause_at_start`, `run_key`, `wait: finish\|background`, `max_wait` | `{run_id, run_status, state, output, error, paused, accepts}` (`mocks_unused` when a mock path went unused), with a `run_key` also `attached`, `resumed` or `ended` (§5.7). `wait: finish` also returns when the run pauses or waits for an event. |
@@ -1034,7 +1039,8 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
 ### 8.2 REST (`/plugins/stategraph/…`, JSON)
 
 - `GET /` is the panel. `GET /api/catalog` gives its fields the agents, the runner's tools and the
-  decision profiles; `GET /api/runs` takes `status` and `before` (the last run id of the page before).
+  decision profiles (`machine_id`: the tools of that machine's runner); `GET /api/runs` takes `status`, `before` (the last run id of the page before) and
+  `nested` (with `machine_id`: also the runs it ran in as a submachine).
 - **Machines.** `GET /api/machines`; `GET|PUT /api/machines/{id}` (tree and versions,
   409 on conflict); `POST /api/machines` (new from template); `POST /api/validate`;
   `POST /api/machines/{id}/edit` (graph operations; `{op: batch, ops: [...]}` applies several as one, all or none; `{op: group_states, names, name}` puts states side by side into a new composite; `{op: set_note, name, text}` sets a note of `notes:` (text empty or null removes it, the last one takes `notes:` along); `{op: move_state, name, into}` puts a state last into a composite, or a simple state without do, which becomes one (`into` null: the top level), the region it leaves taking the first state left there as initial; a composite's last state is neither removed nor moved out; with `expected_version` written at once, with `drafts` -- the caller's unsaved files -- applied to the root file's draft and written nowhere, answering `{graph, problems, draft}`); `PUT /api/machines/{id}/layout`;
@@ -1045,7 +1051,8 @@ background`; a `key=value` value reads as the param's declared type, quotes grou
   writable roots is refused (403); one that another machine imports is refused (409) until
   those imports are gone. Its runs keep their definition snapshot and stay readable.
 - **Palette.** `GET /api/kinds`.
-- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`); `GET /api/runs/{id}/journal`;
+- **Runs.** `GET|POST /api/runs`; `GET /api/runs/{id}` (`?steps=`; with `frames_started`, the submachine
+  frames the run started -- the tool's `get_run` leaves them out); `GET /api/runs/{id}/journal`;
   `POST /api/runs/{id}/control` (`steps`: the journal rows of the answer);
   `POST /api/runs/{id}/events`. `GET /api/runs/{id}`, control and events follow the owner rule
   (§8.3); the run list and the journal endpoint do not filter.
@@ -1094,7 +1101,9 @@ asked again with what was typed. A waiting run has a button per event it takes i
 event with data, or one several frames wait for, opens the event form, which picks the event the
 wait takes and says what it is). The runs list scrolls, filters by status and loads older runs;
 **Run again** on the Result card starts the run's params and mocks anew, and the start form keeps a
-machine's last params.
+machine's last params. A submachine's runs list holds the runs it ran in too; picked, its graph
+shows that run's frame of it (a live one or the one picked in the debug bar, an ended one from
+its journal), with a way back to the run's machine.
 
 **Graph edits and YAML anchors.** An edit changes only the state's own text. It is refused where
 another place would see the change: a transitions list the state inherits through its own `<<:`
@@ -1134,7 +1143,20 @@ Machines contain Python and run agents and tools.
   of nobody (no `user_id`) is visible to all (`server.sees_run`). Whoever resumes or terminates
   a run only triggers it: it runs as its row's user (§5.8). A fork is a new run of the forking
   user and never continues the source's instances (§5.6).
-- **Recursion.** The runner's allowlist must never contain stategraph's own tools (SG007
+- **Runners.** A run is hosted by a runner agent, and its tool allowlist bounds every `tool`
+  activity and `sg.tool()` of the run. The runner is chosen by the root machine's folder
+  (`runners.py`): the enabled server entry whose own `runs_machines_in` (not inherited; project-
+  relative, globs allowed) names the deepest folder holding the file, else the instance's
+  `runner_agent`. Never by the machine file: a writable machine cannot pick the runner with the
+  most tools. Two runners naming one folder leave it without one: every machine there has SG007
+  and cannot be started (a run started before keeps its runner). The run row keeps the runner (`runs.runner`) from the start: a resume and a
+  snapshot fork use it, a fork onto the current definition takes the folder's now; a row from
+  before the column falls back to the folder's. A plugin that ships machines ships their runner
+  in its own `agents/*.yaml` (`type: stategraph_runner` and `+` entries); its `inject_params` go
+  over the instance's, param by param. Validation asks each tool question with the tree's root
+  file (`extra["root"]`); the backend asks without one and gets its own runner. Every runner,
+  the instance's default included, is refused as an agent (SG007).
+- **Recursion.** No runner's allowlist may contain stategraph's own tools (SG007
   refuses them), so a machine cannot rewrite or start machines.
 - **Agents.** A machine runs the agents its file names (`agent:` and `decide`'s `by:`) -- literal
   names, or a parameter with an enum, so validation sees every one (SG005); SG007 checks that each

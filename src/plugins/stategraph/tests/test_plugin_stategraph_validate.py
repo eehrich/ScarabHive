@@ -671,7 +671,7 @@ def test_sg007_production_check_runner_allowlist_agents_and_profile():
 @pytest.mark.parametrize("agent,refused", [
     ("author", "may call stategraph_run_machine: a machine may not save, run or control machines"),
     ("copy_author", "may call sg_copy_"),
-    ("stategraph_runner", "is the runner"),
+    ("stategraph_runner", "is a runner"),
     ("story_machine", "use it as a submachine"),
     ("json_store", "is not an agent"),
     ("reader", None),

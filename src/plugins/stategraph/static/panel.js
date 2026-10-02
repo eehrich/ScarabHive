@@ -10,6 +10,7 @@ import {
 import {
   Canvas, fragmentLock, groupedSpots, keepingChoices, LINE_STYLES, lineKeys, NOTE, noteKey, outermost, posixPath,
   problemIndex, putTyped, renamedLines, runOverlay, sameSelection, selectionOf, shorten, stateFragment, typedIn,
+  foldTrace,
 } from './graph.js';
 
 const API = `${pluginBase(import.meta.url)}/api`;
@@ -47,11 +48,13 @@ const S = {
   runId: null,
   run: null,            // get_run of the selected run
   evaluation: null,     // {expr, value} | {expr, error}
-  result: null,         // loadResult: {runId, rows, after, complete}
+  result: null,         // loadResult: {runId, rows, after, complete, frames}
+  framePrefix: null,    // the frame of the selected run the author picked to see on another machine's canvas
   resultOpen: new Set(),  // indexes of the result's activities the author opened
   nextBreakpoints: [],  // [{state, at, machine}] for the next run of this machine
   nextWatch: [],        // [expr] for the next run, watched in this machine's frames
   catalog: null,        // /catalog: agents, tools and decision profiles the fields offer
+  catalogFor: undefined,  // the machine whose runner's tools the catalog holds (null: a new machine's)
   runStatus: '',        // the runs list shows runs of this status only ('': every run)
   runsMore: false,      // the list's last page was full: older runs may follow
   acceptedSeen: '',     // the events the run waited for when the event form last chose one for the viewer
@@ -132,10 +135,50 @@ const patched = (map, changes) => {
   return next;
 };
 
+/** The frames `machine` ran as a submachine in the run, in the order they started: those the run recorded
+ * (frames_started, the first 500), those its journal names (a run from before the record, or past those 500), and
+ * the live ones of its view. */
+function framesOf(run, machine) {
+  const found = new Map((run?.frames_started || []).filter((f) => f.machine === machine)
+    .map((f) => [f.prefix, { ...f, live: false }]));
+  for (const [prefix, traced] of S.result?.runId === run?.id ? S.result.frames : []) {
+    if (prefix && traced.machine === machine && !found.has(prefix)) found.set(prefix, { prefix, machine, path: null, live: false });
+  }
+  for (const f of run?.view?.frames || []) {
+    if (f.prefix && f.machine === machine) found.set(f.prefix, { prefix: f.prefix, machine, path: f.path, live: true });
+  }
+  return [...found.values()];
+}
+
+/** The frame of the selected run the canvas shows: the root on the run's own machine; on another, the frame of the
+ * open machine picked, else a live one, else the last it ran in. null: the open machine did not run in it. */
+function shownFrame() {
+  if (!S.run || !S.machine) return null;
+  if (S.run.machine_id === S.machine.id) return { prefix: '' };
+  const mine = framesOf(S.run, S.machine.id);
+  return mine.find((f) => f.prefix === S.framePrefix) || mine.find((f) => f.live) || mine[mine.length - 1] || null;
+}
+
+/** What the journal says of a frame of the selected run (foldTrace): stands in for a frame that has ended. */
+const tracedFrame = (prefix) => (S.result?.runId === S.run?.id ? S.result.frames.get(prefix) : null) || null;
+
+/** A frame of the selected run on the canvas: its machine opened, the run kept. */
+async function openFrame(machine, prefix) {
+  S.framePrefix = prefix || null;
+  if (machine !== S.machine?.id) await openMachine(machine, { keepRun: true });
+  else drawRun();
+}
+
+document.addEventListener('click', (event) => {
+  const open = event.target.closest?.('[data-open-frame]');
+  if (open) withBusy(open, () => openFrame(open.dataset.machine, open.dataset.openFrame));
+});
+
 function redrawOverlay() {
+  const frame = shownFrame();
   canvas.setOverlay({
     problems: S.problems,
-    run: S.run && S.run.machine_id === S.machine?.id ? runOverlay(S.run) : null,
+    run: frame ? runOverlay(S.run, frame.prefix, tracedFrame(frame.prefix)) : null,
     breakpoints: new Set(shownBreakpoints().filter((p) => p.enabled !== false && ofThisMachine(p)).map((p) => p.state)),
   });
 }
@@ -333,6 +376,7 @@ async function openMachine(id, { keepRun = false, discard = false } = {}) {
     if (!keepRun) selectRun(null);
   }
   showMachine(machine);
+  if (switched && S.run) drawRun();  // the run kept: its bar, frames and breakpoints as this machine sees them
   setTitle(`State Graph · ${machine.id}`);
   setQuery(S.runId ? { machine: machine.id, run: S.runId } : { machine: machine.id });
   loadRuns();
@@ -367,6 +411,7 @@ function showMachine(machine) {
   }
   $('placeholder').hidden = true;
   $('machineView').hidden = false;
+  if (S.catalogFor !== machine.id) loadCatalog(machine.id);  // not awaited: the fields offer its lists once they come
   drawHead();
   drawPalette();
   drawGraph();
@@ -1238,7 +1283,9 @@ function machineOverview() {
       <h3 class="sg-inspect-name">${g.title || m.id}</h3>
       ${g.description ? html`<p class="pk-help">${g.description}</p>` : ''}
       <dl class="pk-kv"><dt>initial</dt><dd class="pk-mono">${g.initial ?? '—'}</dd>
-        <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd></dl>
+        <dt>states</dt><dd>${g.states.length}</dd><dt>transitions</dt><dd>${g.transitions.length}</dd>
+        ${m.runner ? html`<dt>runner</dt><dd class="pk-mono" title="Hosts its runs: its tool allowlist is what the machine's tool activities may call. Chosen by the machine's folder (runs_machines_in).">${m.runner}</dd>` : ''}</dl>
+      ${m.runner_problem ? html`<div class="pk-callout pk-callout--warn">${m.runner_problem}</div>` : ''}
       <div class="sg-fields"><label for="machine-line">Lines</label>
         <select class="pk-select pk-select--sm" id="machine-line" data-line-default title="How the canvas draws the transitions that have no style of their own: kept in the layout, set at once">${lineChoices(lineStyle(m.layout?.line))}</select></div>
       <p class="pk-help">Click a state or a transition to edit it. New states from the bar above the graph go into the selected composite.
@@ -1362,12 +1409,22 @@ const NEW_EVENT = '+new-event';  // the trigger select's "New event…": no even
 
 const fieldHelp = (p) => (p.description ? html`<span class="pk-help sg-field-help">${p.description}</span>` : '');
 
-async function loadCatalog() {
+/** The catalog for a machine: its runner (by its folder) decides the tools a tool activity may call. */
+async function loadCatalog(machineId = null) {
+  S.catalogFor = machineId;
+  let catalog;
   try {
-    S.catalog = await api(`${API}/catalog`, { quiet: true });
+    catalog = await api(`${API}/catalog${machineId ? `?machine_id=${enc(machineId)}` : ''}`, { quiet: true });
   } catch (error) {
-    return;  // the fields stay plain inputs
+    if (S.catalogFor === machineId) {  // the fields stay plain inputs: not with the last machine's names
+      S.catalogFor = undefined;  // the next showMachine asks again
+      S.catalog = null;
+      for (const list of ['sgAgents', 'sgTools', 'sgProfiles']) render($(list), []);
+    }
+    return;
   }
+  if (S.catalogFor !== machineId) return;  // another machine opened meanwhile: its catalog is on its way
+  S.catalog = catalog;
   const options = (items) => items.map((item) => html`<option value="${item.name}">${shorten(item.description || '', 80)}</option>`);
   render($('sgAgents'), options(S.catalog.agents || []));
   render($('sgTools'), options(S.catalog.tools || []));
@@ -1475,7 +1532,7 @@ $('side-inspect').addEventListener('click', async (event) => {
   if (target.dataset.selectState) return choose({ kind: 'state', id: target.dataset.selectState });
   if (target.dataset.selectTransition) return choose({ kind: 'transition', id: target.dataset.selectTransition });
   if (target.dataset.problem !== undefined && !S.selection) return goToProblem(S.machine.problems[Number(target.dataset.problem)]);
-  if (target.dataset.openMachine) return openMachine(target.dataset.openMachine);
+  if (target.dataset.openMachine) return openMachine(target.dataset.openMachine, { keepRun: true });  // a run of this one shows its frame
   if (act === 'remove-selection' && S.selection?.kind === 'many') return removeSelection(S.selection.states, S.selection.transitions);
   if (act === 'group' && S.selection?.kind === 'many') return groupStates(S.selection.states);
   if (act === 'rename' && name) return renameState(name);
@@ -1982,13 +2039,13 @@ async function rerun(run) {
 
 const RUN_PAGE = 50;
 
-/** The machine's newest runs of the status chosen -- as many as are shown already (older pages stay through a
- * refresh); `older`: the page after the last one shown. */
+/** The machine's newest runs of the status chosen, and those of other machines it ran in as a submachine -- as many
+ * as are shown already (older pages stay through a refresh); `older`: the page after the last one shown. */
 async function loadRuns({ older = false } = {}) {
   if (!S.machine) return;
   const last = S.runs[S.runs.length - 1];
   const limit = older ? RUN_PAGE : Math.min(500, Math.max(RUN_PAGE, S.runs.length));
-  const query = `machine_id=${enc(S.machine.id)}&limit=${limit}${S.runStatus ? `&status=${enc(S.runStatus)}` : ''}`
+  const query = `machine_id=${enc(S.machine.id)}&nested=true&limit=${limit}${S.runStatus ? `&status=${enc(S.runStatus)}` : ''}`
     + (older && last ? `&before=${enc(last.id)}` : '');
   let page;
   try {
@@ -2015,7 +2072,7 @@ function drawRunList() {
   update($('runList'), S.runs.length ? html`<div class="pk-table-wrap"><table class="pk-table" data-pk-sort="runs" data-pk-select>
     <thead><tr><th>Run</th><th>Status</th><th>State</th><th aria-sort="descending">Started</th><th>Ended</th><th>By</th></tr></thead>
     <tbody>${S.runs.map((r) => html`<tr data-id="${r.id}" tabindex="0" aria-selected="${String(r.id === S.runId)}">
-      <td class="pk-mono">${shorten(r.id, 14)}${r.parent_run ? html` <span class="pk-muted" title="${`forked from ${r.parent_run} at step ${r.fork_step}`}">fork</span>` : ''}</td>
+      <td class="pk-mono">${shorten(r.id, 14)}${r.parent_run ? html` <span class="pk-muted" title="${`forked from ${r.parent_run} at step ${r.fork_step}`}">fork</span>` : ''}${r.machine_id !== S.machine?.id ? html` <span class="pk-muted" title="${`a run of ${r.machine_id} this machine ran in as a submachine`}">in ${r.machine_id}</span>` : ''}</td>
       <td data-sort-value="${r.status}">${statusBadge(r.status)}</td>
       <td class="pk-mono">${r.final_state || ''}</td>
       <td data-sort-value="${r.created_at || ''}">${localTime(r.created_at, { seconds: true })}</td>
@@ -2035,6 +2092,7 @@ const HISTORY_STEPS = 200;
 function selectRun(id) {
   S.runId = id || null;
   S.run = null;
+  S.framePrefix = null;
   S.evaluation = null;
   S.pollError = null;
   S.result = null;
@@ -2084,6 +2142,8 @@ async function loadRun({ tick = false } = {}) {
 
 /** A run answer (a poll, a control) for the selected run: shown, polled while alive, and its row in the list kept. */
 function showRun(run) {
+  // a control's answer does not list the frames a run started: the last poll's stand until the next
+  if (!run.frames_started && S.run?.id === run.id) run.frames_started = S.run.frames_started;
   S.run = run;
   if (!TERMINAL.has(run.status) && run.status !== 'interrupted') poller.start();
   else poller.stop();
@@ -2144,7 +2204,7 @@ function drawDebugBar() {
     <strong class="pk-mono" title="${run.id}">${shorten(run.id, 16)}</strong> ${statusBadge(run.status)}
     ${answers.length ? html`<span class="sg-answers" role="group" aria-label="Answer the wait">${answers.map(({ name, frames }) => html`<button type="button"
       class="pk-btn pk-btn--sm pk-btn--primary" data-send-event="${name}" title="${eventHelp(name) || `Send ${name}`}${frames.length > 1 ? ` (${frames.length} frames wait for it: pick one)` : ''}">${icon('send-horizontal', { size: 'sm' })} ${name}</button>`)}</span>` : ''}
-    ${run.machine_id !== S.machine?.id ? badge(`machine ${run.machine_id}`, 'warn') : ''}
+    ${run.machine_id !== S.machine?.id ? frameChoice(run) : ''}
     ${paused ? html`<span title="${paused.reason}">paused at <span class="pk-mono">${paused.state ?? '—'}</span> (${paused.hook}${paused.frame ? `, frame ${paused.frame}` : ''})</span>` : ''}
     ${!paused && run.final_state ? html`<span>ended in <span class="pk-mono">${run.final_state}</span></span>` : ''}
     ${elsewhere ? html`<span class="pk-muted" title="Shown from its journal; pause, continue, step and terminate reach it within a second -- run to, breakpoints and edits only in its own process">in another process</span>` : ''}
@@ -2162,6 +2222,45 @@ function drawDebugBar() {
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from this top-level step (current definition with Shift)">${icon('git-branch', { size: 'sm' })} Fork</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
 }
+
+/** The run's own machine is not the open one: the way back to it, and which frame of the open machine the canvas
+ * shows. */
+function frameChoice(run) {
+  const mine = framesOf(run, S.machine?.id);
+  const shown = shownFrame();
+  // a state run again (a loop, a retry) has several frames under it: they get their number
+  const where = (f) => f.path || f.prefix;
+  const total = Object.create(null);  // by state name: a state may be called constructor
+  const seen = Object.create(null);
+  for (const f of mine) total[where(f)] = (total[where(f)] || 0) + 1;
+  const label = (f) => {
+    const traced = tracedFrame(f.prefix);
+    seen[where(f)] = (seen[where(f)] || 0) + 1;
+    const nth = total[where(f)] > 1 ? ` #${seen[where(f)]}` : '';
+    return `under ${where(f)}${nth} · ${f.live ? 'running' : traced?.state ? `ended in ${traced.state}` : 'ended'}`;
+  };
+  return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost" data-open-frame="" data-machine="${run.machine_id}"
+      title="Open the run's own machine">${icon('arrow-up', { size: 'sm' })} ${run.machine_id}</button>
+    ${mine.length ? html`<select class="pk-select pk-select--sm" data-frame-choice aria-label="The frame of this machine the canvas shows">${mine.map((f) => html`<option
+      value="${f.prefix}" ${f.prefix === shown?.prefix ? 'selected' : ''}>${label(f)}</option>`)}</select>`
+    : badge(`${S.machine?.id} has not run in it`, 'warn')}`;
+}
+
+/** A frame of the selected run: a button that shows it on the canvas, unless the canvas shows it already, or its
+ * machine has no graph of its own (one of a file's `machines:`, `<id>.<name>`). */
+function showFrameButton(machine, prefix) {
+  if (machine === S.machine?.id && shownFrame()?.prefix === prefix) return '';
+  if (!S.machines.some((m) => m.id === machine)) return '';
+  return html`<button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-open-frame="${prefix}"
+    data-machine="${machine}" title="${`Show this frame on ${machine}'s graph`}" aria-label="Show this frame">${icon('layers', { size: 'sm' })}</button>`;
+}
+
+// the picker has no id: keepingChoices must not keep a frame picked by default -- it shows the one the canvas shows
+$('debugBar').addEventListener('change', (event) => {
+  if (event.target.dataset?.frameChoice === undefined) return;
+  S.framePrefix = event.target.value;
+  drawRun();
+});
 
 /** The events a run takes now, each with the frames that take it. */
 function acceptedEvents(run) {
@@ -2310,7 +2409,8 @@ function drawDebugPane() {
   update($('dbgFrames'), frames.length ? frames.map((f, i) => html`<div class="sg-frame">
       <div class="sg-frame-head">${badge(f.prefix ? 'submachine' : 'top', f.prefix ? 'info' : '')}<span class="pk-mono">${f.machine}</span>
         ${f.path ? html`<span class="pk-muted">under ${f.path}</span>` : ''}<span class="pk-grow"></span>
-        <span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span></div>
+        <span class="pk-mono">${f.state ?? '—'}</span><span class="pk-muted">step ${f.step}</span>
+        ${showFrameButton(f.machine, f.prefix || '')}</div>
       ${f.waiting_since ? html`<div class="pk-help">waits for ${(f.accepts || []).join(', ') || 'an event'} since ${localTime(f.waiting_since, { seconds: true })}${f.deadline ? `, until ${localTime(f.deadline, { seconds: true })}` : ''}</div>` : ''}
       <details class="pk-details" ${i === 0 ? 'open' : ''}><summary>ctx</summary>${jsonView(f.ctx ?? {})}</details>
       ${f.visits && Object.keys(f.visits).length ? html`<div class="pk-help">visits: ${Object.entries(f.visits).map(([n, v]) => `${n} ×${v}`).join(', ')}</div>` : ''}
@@ -2505,12 +2605,15 @@ let resultAgain = null;  // ... and asks for another look once it is done
 async function loadResult({ ended = [], more = true } = {}) {
   const id = S.runId;
   if (!id) return;
-  const kept = S.result?.runId === id ? S.result : { runId: id, rows: [], after: 0, running: new Set(), complete: true };
+  const kept = S.result?.runId === id ? S.result
+    : { runId: id, rows: [], after: 0, running: new Set(), complete: true, frames: new Map() };
   let { after } = kept;
+  const { frames } = kept;  // folded in seq order: a page read again after an aborted read folds to the same
   let complete = true;
   const rows = new Map(kept.rows.map((row) => [row.seq, row]));
   const running = new Set(kept.running);
   const take = (row) => {
+    foldTrace(frames, row);
     if (resultRow(row)) {
       rows.set(row.seq, row);
       running.delete(row.seq);
@@ -2543,8 +2646,12 @@ async function loadResult({ ended = [], more = true } = {}) {
     if (resultLoad === id) resultLoad = null;
   }
   if (id !== S.runId) return;
-  S.result = { runId: id, rows: [...rows.values()].sort((a, b) => a.seq - b.seq), after, running, complete };
+  S.result = { runId: id, rows: [...rows.values()].sort((a, b) => a.seq - b.seq), after, running, complete, frames };
   drawResult();
+  if (shownFrame()?.prefix) {  // a submachine's frame on the canvas: one that has ended is drawn from its trace
+    redrawOverlay();
+    drawDebugBar();
+  }
   if (resultAgain === id) {  // a poll came meanwhile: what it brought (the run's end, say) is read now
     resultAgain = null;
     if (S.run?.id === id) followResult(S.run);
@@ -2597,7 +2704,8 @@ function drawResult() {
     ${finals.length ? html`<h4 class="sg-section-title">End states</h4><ul class="sg-plain-list">${finals.map((row) => html`<li class="sg-watch">
       ${badge(row.data?.frame ? 'submachine' : 'top', row.data?.frame ? 'info' : '')}
       <span class="pk-mono">${row.data?.frame ? `${row.data.machine || row.data.frame} · ` : ''}${row.state}</span>
-      ${statusBadge(row.data?.status || 'succeeded')}</li>`)}</ul>` : ''}
+      ${statusBadge(row.data?.status || 'succeeded')}
+      ${row.data?.machine ? showFrameButton(row.data.machine, row.data.frame || '') : ''}</li>`)}</ul>` : ''}
     <h4 class="sg-section-title">Activities <span class="pk-muted">${activities.length}${S.result?.complete === false ? ', the first ones' : ''}</span></h4>
     ${activities.length ? html`<div class="sg-results">${activities.map(resultActivity)}</div>`
     : html`<p class="pk-help">${TERMINAL.has(run.status) ? 'No activity finished.' : 'None finished yet.'}</p>`}
@@ -2922,8 +3030,7 @@ async function start() {
   } catch (error) {
     S.kinds = [];  // the palette then offers the pseudostates only
   }
-  loadCatalog();  // not awaited: the fields offer its lists once they come
-  await loadMachines();
+  await loadMachines();  // the catalog comes with the machine shown: its runner names the tools
   const query = new URLSearchParams(location.search);
   const wanted = query.get('machine');
   if (wanted && S.machines.some((m) => m.id === wanted)) {

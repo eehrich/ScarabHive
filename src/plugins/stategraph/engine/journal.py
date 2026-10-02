@@ -15,11 +15,14 @@ display. Kinds (docs/stategraph_design.md §4.3):
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ("running", "paused", "waiting")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
@@ -49,7 +52,8 @@ CREATE TABLE IF NOT EXISTS runs (
     lease_until TEXT,
     journal_format INTEGER,
     nesting TEXT,
-    control TEXT
+    control TEXT,
+    runner TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_key ON runs(run_key);
 CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine_id, created_at);
@@ -79,6 +83,16 @@ CREATE TABLE IF NOT EXISTS callbacks (
     expires_at REAL NOT NULL,
     used_at TEXT
 );
+-- the submachine frames each run started (prefix: its journal keys' start, path: the activity it runs under) -- a
+-- machine's runs list the runs it ran in as a submachine too
+CREATE TABLE IF NOT EXISTS frames (
+    run_id TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    path TEXT,
+    PRIMARY KEY (run_id, prefix)
+);
+CREATE INDEX IF NOT EXISTS frames_machine ON frames(machine_id, run_id);
 -- schedules.py: per stategraph instance, the one process that starts the slots of its schedules
 CREATE TABLE IF NOT EXISTS scheduler_leases (
     instance TEXT PRIMARY KEY,
@@ -87,9 +101,19 @@ CREATE TABLE IF NOT EXISTS scheduler_leases (
 );
 """
 
+#: A runs.db from before ``frames``: the submachine frames its runs ended, from their journal's end rows (the path
+#: they ran under is not in those: the panel names them by prefix).
+_FRAMES_FROM_JOURNAL = """
+INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path)
+SELECT run_id, json_extract(data, '$.frame'), json_extract(data, '$.machine'), NULL FROM journal
+WHERE kind = 'trace' AND status = 'end' AND json_valid(data) AND json_extract(data, '$.frame') <> ''
+  AND json_extract(data, '$.machine') IS NOT NULL
+ORDER BY run_id, seq
+"""
+
 _JSON_COLUMNS = ("params", "mocks", "output", "error", "definition", "view", "debug", "nesting", "control")
 #: Columns a runs.db from before them lacks: added when it is opened.
-_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT"}
+_ADDED_COLUMNS = {"nesting": "TEXT", "control": "TEXT", "runner": "TEXT"}
 
 
 def utc_now() -> str:
@@ -120,7 +144,14 @@ class RunStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            had_frames = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frames'").fetchone()
             conn.executescript(_SCHEMA)
+            if not had_frames:
+                try:  # for the panel only: a journal it cannot read must not keep the runs from opening
+                    conn.execute(_FRAMES_FROM_JOURNAL)
+                except sqlite3.Error:
+                    logger.warning("stategraph: frames of the runs before %s not filled from the journal", self.path,
+                                   exc_info=True)
             present = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
             for column, kind in _ADDED_COLUMNS.items():
                 if column not in present:
@@ -160,16 +191,16 @@ class RunStore:
                    session_id: Optional[str] = None, parent_run: Optional[str] = None,
                    fork_step: Optional[int] = None, run_key: Optional[str] = None, owner: Optional[str] = None,
                    lease_until: Optional[str] = None, journal_format: int = 1, status: str = "running",
-                   nesting: Any = None) -> None:
+                   nesting: Any = None, runner: Optional[str] = None) -> None:
         now = utc_now()
         with self._lock:
             self._db().execute(
                 "INSERT INTO runs (id, machine_id, status, created_at, updated_at, params, mocks, definition, debug,"
-                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format, nesting)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " user_id, session_id, parent_run, fork_step, run_key, owner, lease_until, journal_format, nesting,"
+                " runner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, machine_id, status, now, now, _dumps(params), _dumps(mocks), _dumps(definition),
                  _dumps(debug), user_id, session_id, parent_run, fork_step, run_key, owner, lease_until,
-                 journal_format, _dumps(nesting)))
+                 journal_format, _dumps(nesting), runner))
 
     def update_run(self, run_id: str, *, fence: Optional[str] = None, **fields: Any) -> int:
         """Update a run; with ``fence`` only while that owner still holds it. Returns the rows changed."""
@@ -202,14 +233,18 @@ class RunStore:
 
     def list_runs(self, machine_id: Optional[str] = None, limit: int = 50, *, status: Optional[str] = None,
                   user_id: Optional[str] = None, all_users: bool = True,
-                  before: Optional[str] = None) -> list[dict[str, Any]]:
+                  before: Optional[str] = None, nested: bool = False) -> list[dict[str, Any]]:
         """The newest runs; ``all_users=False``: only ``user_id``'s and runs of nobody (what that user may see);
-        ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id)."""
+        ``before``: a run id -- the runs listed after it (older, or as old and of a smaller id); ``nested``: with
+        ``machine_id``, also the runs of other machines it ran in as a submachine."""
         sql = ("SELECT id, machine_id, status, created_at, updated_at, finished_at, final_state, error, user_id,"
                " parent_run, fork_step, run_key FROM runs")
         where: list[str] = []
         args: list[Any] = []
-        if machine_id:
+        if machine_id and nested:
+            where.append("(machine_id = ? OR id IN (SELECT run_id FROM frames WHERE machine_id = ?))")
+            args += [machine_id, machine_id]
+        elif machine_id:
             where.append("machine_id = ?")
             args.append(machine_id)
         if status:
@@ -478,6 +513,19 @@ class RunStore:
         with self._lock:
             rows = self._db().execute(sql + " ORDER BY seq DESC LIMIT ?", (*args, int(limit))).fetchall()
         return [self._journal_row(r) for r in reversed(rows)]
+
+    def add_frame(self, run_id: str, prefix: str, machine_id: str, path: Optional[str]) -> None:
+        """A submachine frame the run started -- again on a replay: kept once."""
+        with self._lock:
+            self._db().execute("INSERT OR IGNORE INTO frames (run_id, prefix, machine_id, path) VALUES (?, ?, ?, ?)",
+                               (run_id, prefix, machine_id, path))
+
+    def frames(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """The submachine frames the run started, the first ``limit`` in the order they started."""
+        with self._lock:
+            rows = self._db().execute("SELECT prefix, machine_id AS machine, path FROM frames WHERE run_id = ?"
+                                      " ORDER BY rowid LIMIT ?", (run_id, int(limit))).fetchall()
+        return [dict(row) for row in rows]
 
     def copy_rows(self, source_run: str, target_run: str, rows: Iterable[dict[str, Any]]) -> None:
         for row in rows:

@@ -11,13 +11,14 @@ shows a machine as a graph to edit, run and debug it; the agent `stategraph_auth
   `/stategraph-runs`, `/stategraph-stop`.
 - **Panel** State Graph (admins) -- machine list, graph editor with inspector, YAML, runs with result, history and
   debugger.
-- **Agents** `stategraph_author` (writes, validates, saves and test-runs machines), `stategraph_runner` (hosts runs;
-  its tool allowlist is what a machine may call).
+- **Agents** `stategraph_author` (writes, validates, saves and test-runs machines), `stategraph_runner` (the default
+  runner: hosts runs; its tool allowlist is what a machine may call).
 - No hook.
 
 Nothing to enable: `agents/stategraph.yaml` and `agents/stategraph_author.yaml` ship the instances and are included
-by `config/config.yaml`. A tool a machine should call goes into `stategraph_runner`'s allowlist; an agent that should
-use the tools allows `+stategraph/*`.
+by `config/config.yaml`. A tool a machine should call goes into its runner's allowlist: a plugin that ships machines
+ships a runner of its own that names their folder in `runs_machines_in` (guide, "Runners"); the rest run with
+`stategraph_runner`. An agent that should use the tools allows `+stategraph/*`.
 
 The full manual -- the panel, the machine format in short, runs, every tool with its parameters and answers,
 schedules, callback URLs, the server settings and security -- is the plugin's guide, `stategraph.guide`, in the Help

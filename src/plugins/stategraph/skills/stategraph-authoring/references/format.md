@@ -415,8 +415,9 @@ Following up the same instance:
 
 ### tool
 
-Calls a tool directly, without an LLM, through the plugin's runner agent. Only tools
-in the runner's allowlist can be called, and never stategraph's own tools.
+Calls a tool directly, without an LLM, through the runner agent of the machine's folder
+(`stategraph_catalog` with `machine_id` names it and its tools). Only tools in that
+runner's allowlist can be called, and never stategraph's own tools.
 
 | Key | Meaning |
 |---|---|

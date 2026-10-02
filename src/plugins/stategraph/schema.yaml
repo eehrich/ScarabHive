@@ -12,6 +12,7 @@ tools:
         properties:
           agents: {type: string, description: "fnmatch pattern that narrows the agent list, e.g. review_*; default: every agent"}
           tools: {type: string, description: "fnmatch pattern on the flat tool name that narrows the tool list, e.g. *json*; default: every tool the runner may call"}
+          machine_id: {type: string, description: "the machine whose runner's tools to list (its folder decides); default: a new machine's"}
         additionalProperties: false
 
   - type: function

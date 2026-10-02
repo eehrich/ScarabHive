@@ -11,7 +11,7 @@ Mutation checks run (each turned the named test red, then was restored from a co
 - stategraph.yaml: ``runner_agent: stategraph_runnr``              -> test_the_plugin_names_an_enabled_runner_agent
 - author yaml: send_event entry removed / ``+stategraph/*`` / ``+skills/*`` removed
                                                                     -> test_the_author_may_call_exactly_the_tools_its_loop_needs
-- stategraph.yaml: runner allows ``stategraph/stategraph_run_machine`` -> test_the_runner_may_call_no_stategraph_tool
+- stategraph.yaml: runner allows ``stategraph/stategraph_run_machine`` -> test_no_runner_may_call_a_stategraph_tool
 - stategraph.yaml: runner allows ``no_such_server/*``               -> test_every_runner_pattern_names_an_enabled_server
 - author yaml ``always: []``; SKILL.md ``name`` changed; a reference renamed; a same-named skill
   in .claude/skills                                                -> test_the_author_loads_the_skill_from_the_plugin
@@ -38,6 +38,7 @@ from agent_system.utils.prompt_renderer import render_prompts
 from plugins.stategraph.engine.backend import make_config_check
 from plugins.stategraph.model.loader import load_tree
 from plugins.stategraph.model.validate import validate_tree
+from plugins.stategraph.runners import runner_folders, runner_names
 from plugins.stategraph.store import FileSources, MachineStore
 from plugins.stategraph.tests.stategraph_testkit import FASTAPI_PY314
 
@@ -121,24 +122,52 @@ def test_the_author_may_call_exactly_the_tools_its_loop_needs(config):
         "the author cannot read its skill's references"
 
 
-def test_the_runner_may_call_no_stategraph_tool(config):
-    """Design §8.3: a machine must not save, start or control machines."""
-    runner = resolved(config, resolved(config, INSTANCE).runner_agent)
-    assert allowed_stategraph_tools(runner) == set()
-    assert not tool_matches_patterns(f"{INSTANCE}_tool_added_later", INSTANCE, runner.agent_config.tools.allowed)
+def runners(config) -> list[str]:
+    """The default runner and every one that claims a machine folder (runners.py)."""
+    return sorted(runner_names(config, resolved(config, INSTANCE).runner_agent))
+
+
+def test_no_runner_may_call_a_stategraph_tool(config):
+    """Design §8.3: a machine must not save, start or control machines -- whichever runner hosts it."""
+    for name in runners(config):
+        runner = resolved(config, name)
+        assert allowed_stategraph_tools(runner) == set(), name
+        assert not tool_matches_patterns(f"{INSTANCE}_tool_added_later", INSTANCE, runner.agent_config.tools.allowed)
 
 
 def test_every_runner_pattern_names_an_enabled_server(config):
     """A pattern for a server that does not exist is a dead entry nobody notices."""
-    runner = resolved(config, resolved(config, INSTANCE).runner_agent)
-    patterns = runner.agent_config.tools.allowed
-    assert patterns, "the runner may call nothing: tool activities would all be denied"
-    for pattern in patterns:
-        server = pattern.split("/", 1)[0]
-        assert "*" not in server, f"{pattern}: name the server explicitly"
-        assert resolved(config, server).enabled, f"{pattern}: {server} is not enabled"
-    assert tool_matches_patterns("stategraph_json_manage_json", "stategraph_json", patterns), \
-        "the store the docs and examples use is not callable"
+    for name in runners(config):
+        runner = resolved(config, name)
+        patterns = runner.agent_config.tools.allowed
+        assert patterns, f"{name} may call nothing: tool activities would all be denied"
+        for pattern in patterns:
+            server = pattern.split("/", 1)[0]
+            assert "*" not in server, f"{name}: {pattern}: name the server explicitly"
+            assert resolved(config, server).enabled, f"{name}: {pattern}: {server} is not enabled"
+        assert tool_matches_patterns("stategraph_json_manage_json", "stategraph_json", patterns), \
+            f"{name}: the store the docs and examples use is not callable"
+
+
+def test_this_plugin_s_file_reaches_no_other_plugin_s_servers():
+    """What another plugin's machines may call, and the params they get, belong in that plugin's runner: the
+    default runner's tools and the instance's inject_params name only servers this file defines."""
+    servers = yaml.safe_load((PLUGIN / "agents" / "stategraph.yaml").read_text(encoding="utf-8"))["plugins"]["servers"]
+    own = set(servers)
+    for pattern in servers["stategraph_runner"]["agent_config"]["tools"]["allowed"]:
+        assert pattern.split("/", 1)[0] in own, f"stategraph_runner: {pattern} is another plugin's server"
+    for pattern in servers[INSTANCE].get("inject_params") or {}:
+        assert any(pattern.startswith(f"{name}_") for name in own), f"inject_params: {pattern} is another plugin's tool"
+
+
+def test_every_runner_claims_a_machine_folder_the_instance_searches(config):
+    """A folder no root holds, or a typo, would leave its machines on the default runner, with every tool of
+    theirs refused."""
+    roots = {str(path.resolve()) for _, path in machine_store(config).root_dirs()}
+    for name, folders in runner_folders(config).items():
+        assert folders, f"{name}: runs_machines_in names no folder that exists"
+        for folder in folders:
+            assert folder in roots, f"{name}: {folder} is no machine root of {INSTANCE}"
 
 
 # ---------------------------------------------------------------- skill and prompts

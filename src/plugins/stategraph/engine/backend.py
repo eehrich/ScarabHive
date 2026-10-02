@@ -603,8 +603,13 @@ def _unprotect(act: "ActivityRun", request_id: str) -> None:
 
 
 def make_config_check(system_config: Any, *, runner: str, own_instance: str,
-                      is_agent: Optional[Callable[[str], Optional[bool]]] = None):
+                      is_agent: Optional[Callable[[str], Optional[bool]]] = None, default_runner: Optional[str] = None):
     """SG007: can the configuration run what a machine names? Same matchers as the runtime.
+
+    ``runner`` is the runner of a machine whose folder no runner claims (runners.py): a tool question that carries
+    the run's root file (``extra["root"]``, as the validator asks it) is checked against the root's runner, one
+    without it -- the run time's, whose backend knows its runner -- against ``runner``. ``default_runner``: the
+    instance's, when ``runner`` is another: it is a runner too, and no agent to call.
 
     ``is_agent(name)`` answers from the running registry whether a server is an agent (None: it does not
     know); without it the configuration alone is checked, and a tool server named as an agent fails at run
@@ -614,7 +619,10 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
     from agent_system.servers.agent.components.server_resolution import resolve_longest_prefix
     from agent_system.servers.agent.tool_schema_builder import tool_matches_patterns
 
+    from ..runners import runner_names, runner_of
+
     servers = getattr(getattr(system_config, "plugins", None), "servers", None) or {}
+    runners = runner_names(system_config, runner) | ({default_runner} if default_runner else set())
     @functools.cache
     def final_type(name: str) -> str:
         try:
@@ -634,8 +642,8 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
 
     def own_reason(name: str) -> Optional[str]:
         """Why agent ``name`` itself would save, start or control machines; None when it would not."""
-        if name == runner:
-            return f"{name!r} is the runner: it hosts the run's tool activities and is no agent to call"
+        if name in runners:
+            return f"{name!r} is a runner: it hosts runs' tool activities and is no agent to call"
         if final_type(name) == "stategraph_machine":
             return (f"{name!r} runs a machine as an agent: a machine may not start machines -- import that "
                     "machine and use it as a submachine (machine:)")
@@ -676,16 +684,16 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             return None
         return config if config is not None and getattr(config, "enabled", False) else None
 
-    def runner_refuses(tool: str, prefix: str) -> Optional[str]:
-        """Why the runner may not call ``tool`` (None: it may): tool activities go through its allowlist."""
-        host = server(runner)
+    def runner_refuses(tool: str, prefix: str, name: str) -> Optional[str]:
+        """Why runner ``name`` may not call ``tool`` (None: it may): tool activities go through its allowlist."""
+        host = server(name)
         if host is None:
-            return f"runner agent {runner!r} is not configured or not enabled"
+            return f"runner agent {name!r} is not configured or not enabled"
         tools = getattr(getattr(host, "agent_config", None), "tools", None)
         allowed = list(getattr(tools, "allowed", None) or [])
         blocked = list(getattr(tools, "blocked", None) or [])
         if not tool_matches_patterns(tool, prefix, allowed) or tool_matches_patterns(tool, prefix, blocked):
-            return f"{tool!r} is not in {runner}'s tool allowlist"
+            return f"{tool!r} is not in {name}'s tool allowlist"
         return None
 
     def check(what: str, name: str, extra: dict[str, Any]) -> Optional[str]:
@@ -707,10 +715,13 @@ def make_config_check(system_config: Any, *, runner: str, own_instance: str,
             if server(prefix) is not None and final_type(prefix) == "sub_agent_manager":
                 return (f"tool {name!r} belongs to the SAM {prefix}: a machine starts agents with an agent activity, "
                         "which the run journals and cancels with itself")
-            refused = runner_refuses(name, prefix)
+            host, claimed_twice = runner_of(system_config, extra.get("root"), runner)
+            if claimed_twice:
+                return f"tool {name!r}: {claimed_twice}"
+            refused = runner_refuses(name, prefix, host)
             if refused is None:
                 return None
-            return refused if server(runner) is None else f"tool {refused} (the runner is the boundary)"
+            return refused if server(host) is None else f"tool {refused} (the runner is the boundary)"
         if what == "offer":  # an agent: block's name: free -- or this machine's own offer, declared at the start
             held = servers.get(name)  # the offer is the machine's, whichever instance (sharing its folder) made it
             same = final_type(name) == "stategraph_machine" and str(getattr(held, "machine", None) or "") == extra.get(

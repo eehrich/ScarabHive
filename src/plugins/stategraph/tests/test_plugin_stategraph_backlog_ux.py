@@ -32,11 +32,14 @@ def web(server: SimpleNamespace):
 # ------------------------------------------------------------------ U2: what the fields offer
 
 def test_the_catalog_route_offers_agents_tools_and_decision_profiles():
-    async def runner_tools(pattern):
+    asked = []
+
+    async def runner_tools(pattern, machine_id=None):
+        asked.append(machine_id)
         return [{"name": "store_put", "description": "Store a value", "parameters": {}, "required": []}]
 
     server = SimpleNamespace(name="stategraph", get_schema_data=lambda: SCHEMA, service=RecordingService(),
-                             _catalog=lambda: {"agents": [{"name": "scene_writer", "description": "Writes"}],
+                             _catalog=lambda pattern, machine_id: {"agents": [{"name": "scene_writer", "description": "Writes"}],
                                                "decision_profiles": ["fast"], "kinds": [], "tools": ["store/*"]},
                              _runner_tools=runner_tools)
 
@@ -45,6 +48,8 @@ def test_the_catalog_route_offers_agents_tools_and_decision_profiles():
     assert answer.status_code == 200 and answer.json() == {
         "agents": [{"name": "scene_writer", "description": "Writes"}], "profiles": ["fast"],
         "tools": [{"name": "store_put", "description": "Store a value"}]}, answer.text
+    web(server).get("/plugins/stategraph/api/catalog?machine_id=v6_story")
+    assert asked == [None, "v6_story"], "the open machine's runner names the tools"
 
 
 # ------------------------------------------------------------------ U5: runs page by page, by status
@@ -54,9 +59,11 @@ def test_the_runs_route_passes_the_status_and_the_page_it_continues():
     server = SimpleNamespace(name="stategraph", get_schema_data=lambda: SCHEMA, service=service)
 
     web(server).get("/plugins/stategraph/api/runs?machine_id=m&status=failed&before=r7&limit=20")
+    web(server).get("/plugins/stategraph/api/runs?machine_id=m&nested=true")
 
-    assert service.calls[-1] == ("list_runs", (), {"machine_id": "m", "limit": 20, "status": "failed",
-                                                   "before": "r7"})
+    assert service.calls[-2] == ("list_runs", (), {"machine_id": "m", "limit": 20, "status": "failed",
+                                                   "before": "r7", "nested": False})
+    assert service.calls[-1][2]["nested"] is True, "a submachine's list: the runs it ran in too"
 
 
 def test_pages_of_runs_follow_each_other_without_a_gap_or_a_repeat_also_at_one_created_at(tmp_path):

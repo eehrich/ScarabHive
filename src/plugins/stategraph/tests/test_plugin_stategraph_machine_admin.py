@@ -81,7 +81,8 @@ def service_over(tmp_path: Path, *files: tuple[str, str], writable: tuple[str, .
                                    machines=MachineStore([str(own), str(shipped)],
                                                          [str({"own": own, "shipped": shipped}[w]) for w in writable],
                                                          base=tmp_path),
-                                   run_store=runs, run_manager=RunManager(runs), agents_of=lambda machine_id: [])
+                                   run_store=runs, run_manager=RunManager(runs), agents_of=lambda machine_id: [],
+                                   runner_for=lambda machine_id: ("r", None))
     return StateGraphService(server), own, shipped
 
 

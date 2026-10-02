@@ -550,10 +550,11 @@ def _check_references(fc: _FileContext, kind: ActivityKind, spec: KindSpec, path
         checks.append(("agent", refs["agent"], {}))
     if "agent_param" in refs and (param := fc.spec.params.get(refs["agent_param"])) and param.enum:
         checks.extend(("agent", str(value), {}) for value in param.enum)
+    root = {"root": fc.tree.root}  # a tool goes through the runner of the run's root machine (runners.py)
     if "tool" in refs:
-        checks.append(("tool", refs["tool"], {}))
+        checks.append(("tool", refs["tool"], root))
     if "tool_param" in refs and (param := fc.spec.params.get(refs["tool_param"])) and param.enum:
-        checks.extend(("tool", str(value), {}) for value in param.enum)
+        checks.extend(("tool", str(value), root) for value in param.enum)
     if "profile" in refs:
         checks.append(("profile", refs["profile"], {}))
     if "llm_profile" in refs:
