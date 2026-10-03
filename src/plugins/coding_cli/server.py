@@ -182,13 +182,18 @@ class CodingCliServer(SchemaBasedToolServer):
             names = entry.get("mcp_servers") or []
             # `mcp_servers: scarab4` is one server, not seven letters.
             names = [str(n) for n in ([names] if isinstance(names, str) else names)]
+            if names and entry.get("web") is True:
+                # A page can tell the model what to do; a server's tools would do it with its token.
+                logger.warning("coding_cli: workdir %r skipped -- web and mcp_servers together: a page the run "
+                               "reads could steer the servers' tools; give research a workdir of its own", wname)
+                continue
             unusable = [n for n in names if not _usable_mcp(n, remote.get(n))]
             if unusable:
                 logger.warning("coding_cli: workdir %r skipped -- MCP server(s) %s unknown, disabled, stdio, without "
                                "a url or not a plain name (external_servers.remote_servers)", wname, unusable)
                 continue
             self.workdirs[str(wname)] = {"path": path, "exclude": [str(e) for e in entry.get("exclude") or []],
-                                         "mcp_servers": {n: remote[n] for n in names}}
+                                         "mcp_servers": {n: remote[n] for n in names}, "web": entry.get("web") is True}
         # The subscription belongs to one person (concept §7).
         users = getattr(server_config, "allowed_users", None) or ()
         # `allowed_users: admin` is one user, not five letters.
@@ -725,7 +730,8 @@ class CodingCliServer(SchemaBasedToolServer):
         cmd = cli.build_command(self.command, mode=mode, mcp_config=mcp, allowed_commands=self.allowed_commands,
                                 mcp_servers={n: (getattr(c, "tools", None) and c.tools.blocked) or []
                                              for n, c in servers.items()}, model=self.model, resume=resume,
-                                rules=rules if rules.is_file() else None, json_schema=schema)
+                                rules=rules if rules.is_file() else None, json_schema=schema,
+                                web=self.workdirs[workdir]["web"])
         record = {"run_id": run_id, "instance_name": self.name, "max_run_s": self.max_run_s, "user_id": user_id,
                   "session_id": session_id, "workdir": workdir,
                   "mode": mode, "task": task[:300], "worktree": str(worktree), "branch": branch, "base": made.base,

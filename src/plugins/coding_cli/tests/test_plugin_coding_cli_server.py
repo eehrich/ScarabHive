@@ -279,6 +279,32 @@ async def test_plan_mode_only_reads(repo, log):
     assert result["state"] == "done" and result["commit"] is None
 
 
+@pytest.mark.parametrize("mode", ["edit", "plan"])
+async def test_a_web_workdir_searches_and_reads_the_web_and_no_other_does(repo, log, mode):
+    """Research and fact checks on the subscription (scarab_videos, engine claude_code): Claude Code's
+    own search and page reader, named and approved -- headless, a tool nobody approved is refused."""
+    server = make_server(repo, workdirs={"web": {"path": str(repo), "web": True}, "repo": {"path": str(repo)},
+                                         "said": {"path": str(repo), "web": "yes"}}, allowed_commands=["pytest:*"])
+    assert {w: d["web"] for w, d in server.workdirs.items()} == {"web": True, "repo": False, "said": False}
+    await call(server, "run_task", task="look", workdir="web", mode=mode)
+    argv = log()["argv"]
+    # never the shell: a page can steer the model, and a file it wrote and an allowed command would run it
+    assert argv[argv.index("--tools") + 1].split(",")[-2:] == ["WebSearch", "WebFetch"], argv
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--tools")] == ["WebSearch", "WebFetch"], argv
+    await call(server, "run_task", task="look", workdir="repo", mode=mode)
+    argv = log()["argv"]
+    assert "Web" not in argv[argv.index("--tools") + 1] and "WebSearch" not in argv, argv
+
+
+def test_a_web_workdir_with_mcp_servers_is_skipped(repo, caplog):
+    """A page the run reads could steer the servers' tools, with their tokens."""
+    servers = {"scarab4": RemoteMCPConfig(url="http://192.0.2.6:8768/mcp", enabled=True)}
+    system = AgentSystemConfig(external_servers=MCPServersConfig(remote_servers=servers))
+    server = make_server(repo, system, workdirs={"both": {"path": str(repo), "web": True, "mcp_servers": ["scarab4"]},
+                                                 "web": {"path": str(repo), "web": True}})
+    assert sorted(server.workdirs) == ["web"] and "web and mcp_servers together" in caplog.text, caplog.text
+
+
 async def test_allowed_commands_bring_the_shell_and_git_push_stays_refused(repo, log):
     server = make_server(repo, allowed_commands=["pytest:*"])
     await call(server, "run_task", task="test it")

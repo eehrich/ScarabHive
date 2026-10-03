@@ -17,10 +17,13 @@ background and wakes the session that started it.
   values go only into Claude Code's environment. The user's own connectors never load (`--strict-mcp-config`).
   Measured on Claude Code 2.1.285: the header is expanded from the environment, the server's tools appear as
   `mcp__<server>__*` and run headless once `--allowedTools mcp__<server>` approves them.
+- **Web** -- a workdir with `web: true` gives its runs Claude Code's `WebSearch` and `WebFetch`, approved, in
+  either mode (research and fact checks on the subscription), and never the shell; one with `mcp_servers` as
+  well is skipped. A page can steer the model, and a URL it fetches can carry what the worktree shows.
 - **Agent** -- `claude_code_agent`, which only relays work to Claude Code; the coder agent has the tools too.
 - **Hooks / panel** -- none.
 
-Configured in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude` and `mcp_servers`,
+Configured in the plugin's own `agents/coding_cli.yaml` (workdirs with `exclude`, `mcp_servers` and `web`,
 `allowed_users`, `allowed_commands`, limits such as `max_task_chars`); an agent gets the tools with
 `+coding_cli/*`. Concept and measurements: `docs/coding_cli_plugin_konzept.md`.
 

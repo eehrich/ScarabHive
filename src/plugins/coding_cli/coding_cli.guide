@@ -165,9 +165,10 @@ claude -p --output-format stream-json --verbose --restricted
        --strict-mcp-config --mcp-config data/coding_cli/no_mcp.json
                                        (a workdir with servers: runs/<id>.mcp.json)
        --permission-mode acceptEdits          (plan mode: plan)
-       [--allowedTools <Shell>(<cmd>) ... mcp__<server> ...]
+       [--allowedTools <Shell>(<cmd>) ... mcp__<server> ... WebSearch WebFetch]
        [--disallowedTools <Shell>(git push:*) ... mcp__<server>__<blocked tool> ...]
-       --tools Read,Edit,Write,Glob,Grep[,<Shell>]   (plan mode: Read,Glob,Grep)
+       --tools Read,Edit,Write,Glob,Grep[,WebSearch,WebFetch][,<Shell>]
+                                       (plan mode: Read,Glob,Grep[,WebSearch,WebFetch])
        [--json-schema <schema>] [--model <model>] [--resume <session>]
        [--append-system-prompt-file CLAUDE.md]
 @{body}
@@ -180,10 +181,17 @@ reported, and only if it has the form of one.
 @{bullet}No MCP server but the workdir's @{tt}mcp_servers@{utt} (see below);
 for any other workdir the MCP config is empty. Nothing else is read: the
 user's own connectors never load.
+@{bullet}The web only for a workdir with @{tt}web: true@{utt}: Claude
+Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, named in
+@{tt}--tools@{utt} and approved in @{tt}--allowedTools@{utt}. Everything a
+page says reaches the model, so such a workdir's runs never get the shell,
+and a workdir with both @{tt}web@{utt} and @{tt}mcp_servers@{utt} is
+skipped with a warning. Every URL WebFetch calls carries what the model put
+in it: what the worktree shows can leave.
 @{bullet}The file tools write only inside the worktree; a write elsewhere
 is refused and shows up under @{tt}denials@{utt}.
 @{bullet}The shell exists only when @{tt}allowed_commands@{utt} is set, and
-only in edit mode. It is PowerShell on Windows and Bash elsewhere, and it
+only in edit mode, never for a @{tt}web@{utt} workdir. It is PowerShell on Windows and Bash elsewhere, and it
 runs exactly the listed commands (Claude Code permission patterns such as
 @{tt}pytest:*@{utt}). @{tt}git push@{utt}, @{tt}git remote@{utt},
 @{tt}git config@{utt} and @{tt}git worktree@{utt} are refused to the shell
@@ -535,6 +543,7 @@ Key | Default | Meaning
 command | claude | the Claude Code executable, a name on the PATH or a path
 workdirs | none | name -> @{tt}{path, exclude}@{utt} or just a path; name of letters, digits, _ and -, at most 40; path relative to the project, must hold @{tt}.git@{utt} -- otherwise skipped with a warning
 workdirs.<name>.exclude | none | tracked files a run never sees (see @{" What a run may do " link lockdown})
+workdirs.<name>.web | false | true: the workdir's runs search and read the web with Claude Code's @{tt}WebSearch@{utt} and @{tt}WebFetch@{utt}, approved, in either mode, and never get the shell; with @{tt}mcp_servers@{utt} as well the workdir is skipped with a warning; anything else than true: neither
 workdirs.<name>.mcp_servers | none | names in @{tt}external_servers.remote_servers@{utt} whose servers the workdir's edit runs load -- enabled, with a url without user, password or query, an HTTP or SSE transport, a plain name; otherwise the workdir is skipped with a warning. The server's @{tt}tools.blocked@{utt} stay refused
 allowed_users | none | user ids that may start runs; empty: nobody
 allowed_commands | none | shell commands as Claude Code permission patterns; empty: no shell

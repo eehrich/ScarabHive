@@ -31,6 +31,9 @@ from agent_system.utils import yaml_io
 # more (M-CC-6), and naming exactly these left exactly these (M-CC-9).
 PLAN_TOOLS = ("Read", "Glob", "Grep")
 EDIT_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep")
+# A workdir with web: Claude Code's own search and page reader. Headless, each needs approval like
+# an MCP server's tools; measured on 2.1.285 under --restricted: searched and read, nothing refused.
+WEB_TOOLS = ("WebSearch", "WebFetch")
 # The shell tool may not run these itself, whatever allowed_commands says. A
 # program an allowed command starts is no tool call and is not checked.
 DENIED_COMMANDS = ("git push", "git remote", "git config", "git worktree")
@@ -74,22 +77,24 @@ def shell_tool() -> str:
 
 def build_command(exe: list[str], *, mode: str, mcp_config: Path, allowed_commands: Iterable[str] = (),
                   mcp_servers: Optional[Mapping[str, Iterable[str]]] = None, model: str = "", resume: str = "",
-                  rules: Optional[Path] = None, json_schema: Optional[dict] = None) -> list[str]:
+                  rules: Optional[Path] = None, json_schema: Optional[dict] = None, web: bool = False) -> list[str]:
     """The whole command line. The task goes in on stdin, so nothing the model
     wrote becomes an argument but json_schema; resume is a session id this
     plugin read, mcp_servers the operator's names, each with the tools its
-    entry blocks."""
-    tools = list(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS)
+    entry blocks. web: the workdir's runs search and read the web (WEB_TOOLS), in either mode, and
+    never get the shell: a page can tell the model what to do, and a file it wrote and an allowed
+    command would run it. What the worktree shows can still leave in a URL WebFetch calls."""
+    tools = [*(PLAN_TOOLS if mode == "plan" else EDIT_TOOLS), *(WEB_TOOLS if web else ())]
     cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--restricted",
            "--strict-mcp-config", "--mcp-config", str(mcp_config),
            "--permission-mode", "plan" if mode == "plan" else "acceptEdits"]
-    commands = [c for c in allowed_commands if c] if mode != "plan" else []
+    commands = [c for c in allowed_commands if c] if mode != "plan" and not web else []
     servers = (mcp_servers or {}) if mode != "plan" else {}
     shell = shell_tool()
     # Headless, a command nobody approved is refused (M-CC-9): the shell runs
     # exactly these, never the denied ones. An MCP server's tools need the same
     # approval (M-CC-10). --tools does not limit them; plan mode loads no server.
-    allowed = [*(f"{shell}({c})" for c in commands), *(f"mcp__{s}" for s in servers)]
+    allowed = [*(f"{shell}({c})" for c in commands), *(f"mcp__{s}" for s in servers), *(WEB_TOOLS if web else ())]
     # A tool the server's entry blocks stays refused, as the MCP client refuses it: a deny rule wins over
     # every allow rule. Claude Code names it mcp__<server>__<tool>, any other character than A-Z a-z 0-9 _ -
     # replaced by _ (its MCP docs) -- so the name is one value, too.
