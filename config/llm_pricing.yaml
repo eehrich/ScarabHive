@@ -68,6 +68,14 @@ gemini-3-flash-preview:
   cached_input: 0.05
   batch_discount: 0.5
 
+# llm.yaml gemini-3-flash since 2026-10-04. Regular price; Google bills 50 %
+# of it until 2026-12-31 (as on OpenRouter, see google/gemini-3.8-flash).
+gemini-3.8-flash:
+  input: 1.50
+  output: 7.50
+  cached_input: 0.15
+  batch_discount: 0.5
+
 gemini-3.1-pro-preview:
   input: 2.00
   output: 12.00
