@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import queue
 import re
 import sys
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
@@ -373,6 +377,75 @@ def setup_logging(
         pass
 
     return file_path
+
+
+class _UnblockedConsole:
+    """A console stream the server never waits on. A console that stopped reading -- a VS Code terminal
+    holding its output -- held the API's one event loop in a log line for 40 minutes (2026-10-03): every
+    run and every request stood still. Here the text goes out from a thread of its own; while the console
+    does not read, it piles up to `limit` writes, then new ones are dropped -- the log file keeps them, and
+    the console is told how many once it reads again."""
+
+    def __init__(self, stream: Any, limit: int = 20000):
+        self._stream, self._pending, self._dropped = stream, queue.Queue(limit), 0
+        threading.Thread(target=self._drain, name="console-writer", daemon=True).start()
+        atexit.register(self._settle)
+
+    def write(self, text: str) -> int:
+        try:
+            self._pending.put_nowait(text)
+        except queue.Full:
+            self._dropped += 1
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def _drain(self) -> None:
+        while True:
+            text = self._pending.get()
+            try:
+                self._stream.write(text)
+                if self._dropped and self._pending.empty():
+                    dropped, self._dropped = self._dropped, 0
+                    self._stream.write(f"[console] {dropped} Ausgaben ausgelassen, die Konsole las nicht -- "
+                                       f"die Logdatei hat sie\n")
+                self._stream.flush()
+            except Exception:  # a closed or broken console: there is no one to tell
+                pass
+            finally:
+                self._pending.task_done()
+
+    def _settle(self, wait: float = 1.0) -> None:
+        """At exit, the last lines (a shutdown's) for a moment -- not for a console that does not read."""
+        deadline = time.monotonic() + wait
+        while self._pending.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def __getattr__(self, name: str) -> Any:  # isatty, encoding, fileno, reconfigure: the console's own
+        return getattr(self._stream, name)
+
+
+_unblocked = False
+
+
+def unblock_console() -> None:
+    """The server's stdout and stderr, and every logging handler writing to them -- uvicorn's own as well --
+    through _UnblockedConsole. Once per process, after logging is set up: a flag, not sys.stdout's type --
+    pytest puts its own back after every test."""
+    global _unblocked
+    if _unblocked or sys.stdout is None or sys.stderr is None:
+        return
+    out, err = _UnblockedConsole(sys.stdout), _UnblockedConsole(sys.stderr)
+    streams = {id(sys.stdout): out, id(sys.__stdout__): out, id(sys.stderr): err, id(sys.__stderr__): err}
+    loggers = [logging.getLogger(), *(lg for lg in list(logging.Logger.manager.loggerDict.values())
+                                      if isinstance(lg, logging.Logger))]
+    for handler in {h for lg in loggers for h in lg.handlers}:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler) \
+                and id(handler.stream) in streams:
+            handler.setStream(streams[id(handler.stream)])
+    sys.stdout, sys.stderr = out, err
+    _unblocked = True
 
 
 def setup_role_logging(logging_config: Any, role: str) -> Optional[str]:

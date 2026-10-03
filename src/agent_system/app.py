@@ -32,7 +32,7 @@ from .tools.base import ToolServerRegistry
 # skips the server -- an import cycle would then empty the UI dropdown
 # in silence instead of failing loud at start.
 from .runtime import ServerView
-from .utils.logging import setup_role_logging
+from .utils.logging import setup_role_logging, unblock_console
 from .services.initialization_service import apply_ssl_verify_to_environment
 from .tools.status import get_status_metrics
 from .tools.integration import initialize_tools, shutdown_tools
@@ -380,6 +380,7 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
 
     # Setup full logging via ConfigService (may reconfigure handlers)
     _config_service.setup_logging()
+    unblock_console()  # a console that stops reading must not stop the server
     
     # Get logger AFTER logging is configured
     logger = logging.getLogger(__name__)
