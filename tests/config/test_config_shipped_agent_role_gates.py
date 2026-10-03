@@ -40,8 +40,8 @@ SRC = REPO / "src"
 #: The agents the shipped configuration grants such a tool, all gated at admin.
 EXPECTED_ADMIN = frozenset({
     "amiga_coder", "blender_agent", "claude_code_agent", "coder", "coder_explorer", "coder_reviewer",
-    "coder_tester", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent", "skills_agent",
-    "skills_agent_multimodal", "sysadmin_agent",
+    "coder_tester", "file_ops_test_agent", "gamedev", "gamedev_tester", "godot_agent", "scarab_machine_runner",
+    "skills_agent", "skills_agent_multimodal", "sysadmin_agent",
 })
 
 #: Granted a terminal, and still below admin: theirs (state_graph_terminal) runs one analysis script and
