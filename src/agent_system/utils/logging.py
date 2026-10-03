@@ -379,48 +379,92 @@ def setup_logging(
     return file_path
 
 
-class _UnblockedConsole:
-    """A console stream the server never waits on. A console that stopped reading -- a VS Code terminal
-    holding its output -- held the API's one event loop in a log line for 40 minutes (2026-10-03): every
-    run and every request stood still. Here the text goes out from a thread of its own; while the console
-    does not read, it piles up to `limit` writes, then new ones are dropped -- the log file keeps them, and
-    the console is told how many once it reads again."""
+class _ConsoleQueue:
+    """What the server's stdout and stderr write, sent on from one thread of its own -- one for both,
+    so a traceback and a log line arrive in the order they were written. A console that stopped
+    reading -- a VS Code terminal holding its output -- held the API's one event loop in a log line
+    for 40 minutes (2026-10-03): every run and every request stood still. While the console does not
+    read, the writes pile up to `limit`, then new ones are dropped; the console is told how many (and
+    why, when writing failed) once it reads again, at the latest every 10 s. At exit, a drained queue
+    gives way to writing straight on: what the last exit handlers say is not lost."""
 
-    def __init__(self, stream: Any, limit: int = 20000):
-        self._stream, self._pending, self._dropped = stream, queue.Queue(limit), 0
+    def __init__(self, limit: int = 20000):
+        self._queue: queue.Queue = queue.Queue(limit)
+        self.dropped, self.failure, self.direct, self._told = 0, "", False, time.monotonic()
         threading.Thread(target=self._drain, name="console-writer", daemon=True).start()
-        atexit.register(self._settle)
+        atexit.register(self.settle)
 
-    def write(self, text: str) -> int:
+    def put(self, stream: Any, text: str) -> None:
         try:
-            self._pending.put_nowait(text)
+            self._queue.put_nowait((stream, text))
         except queue.Full:
-            self._dropped += 1
-        return len(text)
-
-    def flush(self) -> None:
-        pass
+            self.dropped += 1
 
     def _drain(self) -> None:
         while True:
-            text = self._pending.get()
-            try:
-                self._stream.write(text)
-                if self._dropped and self._pending.empty():
-                    dropped, self._dropped = self._dropped, 0
-                    self._stream.write(f"[console] {dropped} Ausgaben ausgelassen, die Konsole las nicht -- "
-                                       f"die Logdatei hat sie\n")
-                self._stream.flush()
-            except Exception:  # a closed or broken console: there is no one to tell
-                pass
-            finally:
-                self._pending.task_done()
+            batch = [self._queue.get()]                     # what is there, up to 1000 writes at once:
+            while len(batch) < 1000:                        # one write and flush each kept up with the
+                try:                                        # server's thousands of lines a second (one
+                    batch.append(self._queue.get_nowait())  # by one: some 200)
+                except queue.Empty:
+                    break
+            runs: list[tuple[Any, list[str]]] = []          # one stream's writes in a row as one
+            for stream, text in batch:
+                if runs and runs[-1][0] is stream:
+                    runs[-1][1].append(text)
+                else:
+                    runs.append((stream, [text]))
+            for stream, texts in runs:
+                try:
+                    stream.write("".join(texts))
+                except Exception:                           # one text the console cannot encode costs
+                    for text in texts:                      # only itself: the others one by one
+                        self._write(stream, text)
+                if self.dropped and (self._queue.empty() or time.monotonic() - self._told > 10):
+                    dropped, self._told = self.dropped, time.monotonic()
+                    why = self.failure or "die Konsole las nicht"
+                    if self._write(stream, f"[console] {dropped} Ausgaben ausgelassen ({why});"
+                                           f" die Log-Zeilen stehen in der Logdatei unter logs/\n", lost=0):
+                        self.dropped, self.failure = self.dropped - dropped, ""
+                try:
+                    stream.flush()
+                except Exception:
+                    pass                                    # a broken console: its next write says so
+            for _ in batch:
+                self._queue.task_done()
 
-    def _settle(self, wait: float = 1.0) -> None:
+    def _write(self, stream: Any, text: str, lost: int = 1) -> bool:
+        try:
+            stream.write(text)
+            return True
+        except Exception as exc:  # a broken console, or text it cannot encode: counted, named
+            self.dropped += lost
+            self.failure = f"{type(exc).__name__}: {exc}"[:200]
+            return False
+
+    def settle(self, wait: float = 1.0) -> None:
         """At exit, the last lines (a shutdown's) for a moment -- not for a console that does not read."""
         deadline = time.monotonic() + wait
-        while self._pending.unfinished_tasks and time.monotonic() < deadline:
+        while self._queue.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.01)
+        self.direct = not self._queue.unfinished_tasks
+
+
+class _UnblockedConsole:
+    """A console stream the server never waits on (_ConsoleQueue)."""
+
+    def __init__(self, stream: Any, pending: _ConsoleQueue):
+        self._stream, self._pending = stream, pending
+
+    def write(self, text: str) -> int:
+        if self._pending.direct:
+            return self._stream.write(text)
+        self._pending.put(self._stream, text)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._pending.direct:
+            self._stream.flush()
 
     def __getattr__(self, name: str) -> Any:  # isatty, encoding, fileno, reconfigure: the console's own
         return getattr(self._stream, name)
@@ -431,12 +475,15 @@ _unblocked = False
 
 def unblock_console() -> None:
     """The server's stdout and stderr, and every logging handler writing to them -- uvicorn's own as well --
-    through _UnblockedConsole. Once per process, after logging is set up: a flag, not sys.stdout's type --
-    pytest puts its own back after every test."""
+    through one _ConsoleQueue. What only ever reached stderr -- an uncaught exception, one in a thread, a
+    warning -- goes through logging now, so the log file has it too: a console that drops it loses no
+    crash. Once per process, after logging is set up: a flag, not sys.stdout's type -- pytest puts its
+    own back after every test."""
     global _unblocked
     if _unblocked or sys.stdout is None or sys.stderr is None:
         return
-    out, err = _UnblockedConsole(sys.stdout), _UnblockedConsole(sys.stderr)
+    pending = _ConsoleQueue()
+    out, err = _UnblockedConsole(sys.stdout, pending), _UnblockedConsole(sys.stderr, pending)
     streams = {id(sys.stdout): out, id(sys.__stdout__): out, id(sys.stderr): err, id(sys.__stderr__): err}
     loggers = [logging.getLogger(), *(lg for lg in list(logging.Logger.manager.loggerDict.values())
                                       if isinstance(lg, logging.Logger))]
@@ -445,6 +492,24 @@ def unblock_console() -> None:
                 and id(handler.stream) in streams:
             handler.setStream(streams[id(handler.stream)])
     sys.stdout, sys.stderr = out, err
+    log = logging.getLogger("agent_system.uncaught")
+
+    def uncaught(kind, value, tb):
+        if issubclass(kind, KeyboardInterrupt):
+            sys.__excepthook__(kind, value, tb)
+        else:
+            log.critical("Uncaught exception", exc_info=(kind, value, tb))
+
+    def uncaught_in_thread(a):
+        if not issubclass(a.exc_type, SystemExit):  # as threading's own: a thread's exit is no crash
+            log.critical("Uncaught exception in thread %s", getattr(a.thread, "name", "?"),
+                         exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+
+    if sys.excepthook is sys.__excepthook__:         # a hook of someone's own -- pytest's, which fails
+        sys.excepthook = uncaught                    # a test whose thread crashed -- is left alone
+    if threading.excepthook is threading.__excepthook__:
+        threading.excepthook = uncaught_in_thread
+    logging.captureWarnings(True)
     _unblocked = True
 
 
