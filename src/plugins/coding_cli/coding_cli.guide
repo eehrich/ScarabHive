@@ -340,7 +340,7 @@ abo | subscription usage per window, e.g. @{tt}{"five_hour": 0.34, "seven_day": 
 changes | untrusted: @{tt}M<TAB>path@{utt} per file against base, plus @{tt}uncommitted ...@{utt} lines; at most 100 lines and a "... N more"
 denials | untrusted: tool calls Claude Code was refused, e.g. @{tt}Write /elsewhere/x.txt@{utt}; at most 20, 120 characters each
 result | untrusted: Claude Code's final report, at most 12,000 characters (@{tt}result_cut: true@{utt} when cut)
-output | untrusted, only with a @{tt}json_schema@{utt}: the object Claude Code returned for it (@{tt}structured_output@{utt}); dropped, with a note, when its JSON is over 12,000 characters (characters, not escapes) -- cut, it would match the schema no more -- or nests deeper than 100: Python's own encoder, which writes the record and prints an answer in the agent-cli, gives up at about 1,000. A broken character escape in it, as in every part of the stream, arrives as U+FFFD
+output | untrusted, only with a @{tt}json_schema@{utt}: the object Claude Code returned for it (@{tt}structured_output@{utt}); dropped, with a note, when its JSON is over @{tt}max_output_chars@{utt} (12,000) characters (characters, not escapes) -- cut, it would match the schema no more -- or nests deeper than 100: Python's own encoder, which writes the record and prints an answer in the agent-cli, gives up at about 1,000. A broken character escape in it, as in every part of the stream, arrives as U+FFFD
 hidden | files kept out of the worktree for their secrets; at most 50 and a "... N more"
 note | the plugin's own words: why it was stopped, "not committed, the changes are in the worktree", "Claude Code ended without a result, its stderr is in details", ...
 details | untrusted: git's error output, the last 600 characters of Claude Code's stderr
@@ -479,8 +479,8 @@ characters.
 @{h2}Tokens and cache
 
 Append-only: each call returns one tool result and nothing earlier is
-rewritten. The result is bounded -- the report and the structured output at
-12,000 characters, the change list at 100 lines, denials at 20, hidden files at 50, the running
+rewritten. The result is bounded -- the report at 12,000 characters, the structured output at
+@{tt}max_output_chars@{utt}, the change list at 100 lines, denials at 20, hidden files at 50, the running
 report at 12 lines. Claude Code's own tokens are spent on the subscription,
 not on the calling agent's model; @{tt}resume@{utt} continues its
 conversation instead of starting a fresh one.
@@ -554,6 +554,7 @@ wait_s | 300 | how long @{tt}run_task@{utt} waits before answering with a run id
 max_run_minutes | 60 | a run still going after this is stopped (1 to 1440)
 max_parallel | 1 | this instance's runs going at the same time, counted over the data folder (1 to 8)
 max_task_chars | 20000 | longest task @{tt}run_task@{utt} takes, in characters (1000 to 100000)
+max_output_chars | 12000 | longest structured output a run returns, in characters as JSON (1000 to 100000); a longer one is dropped
 @{body}
 
 Numbers outside the range are clamped; a value that is no number falls back

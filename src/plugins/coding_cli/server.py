@@ -211,6 +211,8 @@ class CodingCliServer(SchemaBasedToolServer):
         self.max_parallel = int(_bounded(getattr(server_config, "max_parallel", None), 1, 1, 8) or 1)
         self.max_task_chars = int(_bounded(getattr(server_config, "max_task_chars", None), MAX_TASK_CHARS, 1_000,
                                            100_000) or MAX_TASK_CHARS)
+        self.max_output_chars = int(_bounded(getattr(server_config, "max_output_chars", None), CAP_RESULT, 1_000,
+                                             100_000) or CAP_RESULT)
         self._monitors: dict[str, asyncio.Task] = {}
         self._listeners: dict[str, Any] = {}
         # run id -> its live view (live.py), for the life of the run, not only
@@ -978,9 +980,10 @@ class CodingCliServer(SchemaBasedToolServer):
                 output = result.get("structured_output")
                 if output is not None:
                     size = len(json.dumps(output, ensure_ascii=False))
-                    if size > CAP_RESULT:
+                    if size > self.max_output_chars:
                         # Cut, it would be no object of the schema any more.
-                        notes.append(f"the structured output ({size} characters as JSON) is over {CAP_RESULT} and "
+                        notes.append(f"the structured output ({size} characters as JSON) is over "
+                                     f"{self.max_output_chars} and "
                                      f"was dropped")
                     elif cli.nesting(output) > cli.MAX_NESTING:
                         notes.append(f"the structured output nests deeper than {cli.MAX_NESTING} and was dropped")

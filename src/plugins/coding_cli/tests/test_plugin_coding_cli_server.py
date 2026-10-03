@@ -1279,6 +1279,15 @@ async def test_max_task_chars_bounds_the_task(repo):
     assert [make_server(repo, max_task_chars=v).max_task_chars for v in (None, 10, 10**9)] == [20_000, 1_000, 100_000]
 
 
+async def test_max_output_chars_bounds_the_structured_output(repo):
+    server = make_server(repo, max_output_chars=14_000)
+    kept, _ = await call(server, "run_task", task=f'OUTPUT {{"n": "{"x" * 13_000}"}}', json_schema=SCHEMA)
+    assert kept["output"]["content"] == {"n": "x" * 13_000} and not kept.get("note")
+    big, _ = await call(server, "run_task", task=f'OUTPUT {{"n": "{"x" * 15_000}"}}', json_schema=SCHEMA)
+    assert "output" not in big and "is over 14000 and was dropped" in big["note"]
+    assert [make_server(repo, max_output_chars=v).max_output_chars for v in (None, 10, 10**9)] == [12_000, 1_000, 100_000]
+
+
 def test_shell_commands_beside_mcp_servers_are_warned_of(repo, caplog):
     """Every allowed command inherits the environment that holds the servers' tokens."""
     servers = {"scarab4": RemoteMCPConfig(url="http://h/mcp", enabled=True)}
