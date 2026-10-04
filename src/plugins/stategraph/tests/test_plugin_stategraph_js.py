@@ -357,6 +357,8 @@ PANEL_CASES = [
     "the_inspector_offers_only_hooks_that_can_stop",
     "a_state_the_inspector_cannot_stand_in_for_is_shown_not_applied",
     "a_poll_tick_waits_for_the_answer_that_is_out",
+    "runs_live_at_once_are_all_offered_in_the_bar_and_picked_there",
+    "a_run_shown_the_list_does_not_hold_is_offered_beside_the_live_ones_by_their_ends",
     "a_refresh_neither_drops_a_machine_click_nor_draws_the_machine_left",
     "opening_a_machine_abandons_the_refresh_in_flight",
     "a_control_answer_for_a_run_left_does_not_take_the_view",

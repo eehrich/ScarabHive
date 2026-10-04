@@ -2148,24 +2148,41 @@ const RUN_PAGE = 50;
 
 /** The machine's newest runs of the status chosen, and those of other machines it ran in as a submachine -- as many
  * as are shown already (older pages stay through a refresh); `older`: the page after the last one shown. */
-async function loadRuns({ older = false } = {}) {
-  if (!S.machine) return;
+async function loadRuns({ older = false, tick = false } = {}) {
+  if (!S.machine) {
+    runsPoller.stop();
+    return;
+  }
+  if (tick && runsRequests) return;  // a tick never aborts a load the author started
   const last = S.runs[S.runs.length - 1];
   const limit = older ? RUN_PAGE : Math.min(500, Math.max(RUN_PAGE, S.runs.length));
   const query = `machine_id=${enc(S.machine.id)}&nested=true&limit=${limit}${S.runStatus ? `&status=${enc(S.runStatus)}` : ''}`
     + (older && last ? `&before=${enc(last.id)}` : '');
   let page;
+  runsRequests += 1;
   try {
     page = await api(`${API}/runs?${query}`, { latest: 'runs', quiet: true });
   } catch (error) {
-    if (!isAborted(error)) update($('runList'), emptyState('circle-alert', 'Runs could not be loaded', errorText(error)));
+    if (!isAborted(error) && !tick) update($('runList'), emptyState('circle-alert', 'Runs could not be loaded', errorText(error)));
     return;
+  } finally {
+    runsRequests -= 1;
   }
   S.runs = older ? [...S.runs, ...page] : page;
   S.runsMore = page.length === limit;
   $('runCount').textContent = S.runs.length ? `${S.runs.length}${S.runsMore ? '+' : ''}` : '';
   $('olderRuns').hidden = !S.runsMore;
   drawRunList();
+  if (S.run) drawDebugBar();
+  followRuns();
+}
+
+const isLive = (r) => !TERMINAL.has(r.status) && r.status !== 'interrupted';
+
+/** The list is asked again while a run is shown and another one is live: the bar offers it, with its status. */
+function followRuns() {
+  if (S.runId && S.runs.some((r) => r.id !== S.runId && isLive(r))) runsPoller.start();
+  else runsPoller.stop();
 }
 
 $('olderRuns').addEventListener('click', () => withBusy($('olderRuns'), () => loadRuns({ older: true })));
@@ -2193,6 +2210,8 @@ $('runList').addEventListener('rowselect', (event) => selectRun(event.detail.id)
 
 const poller = autoRefresh(() => loadRun({ tick: true }), 1000);
 let runRequests = 0;  // GETs of the selected run that are out
+const runsPoller = autoRefresh(() => loadRuns({ tick: true }), 3000);
+let runsRequests = 0;  // GETs of the run list that are out
 /** Journal rows a run answer carries: the poll's and every control's alike, so the history does not jump. */
 const HISTORY_STEPS = 200;
 
@@ -2205,6 +2224,7 @@ function selectRun(id) {
   S.result = null;
   S.resultOpen = new Set();
   poller.stop();
+  followRuns();
   if (S.machine) setQuery(S.runId ? { machine: S.machine.id, run: S.runId } : { machine: S.machine.id });
   drawRunList();
   drawResult();  // the run left takes its result along at once: a read of the next one may fail
@@ -2266,6 +2286,8 @@ function keepListed(run) {
   if (listed && (listed.status !== run.status || listed.final_state !== run.final_state)) {
     Object.assign(listed, { status: run.status, final_state: run.final_state, finished_at: run.finished_at });
     drawRunList();
+    if (S.run) drawDebugBar();  // the runs it offers
+    followRuns();
   }
 }
 
@@ -2308,8 +2330,14 @@ function drawDebugBar() {
     restart: run.status === 'interrupted',
   };
   const answers = run.status === 'waiting' ? acceptedEvents(run) : [];
+  const choices = runChoices(run);
   keepingChoices(bar, () => update(bar, html`
-    <strong class="pk-mono" title="${run.id}">${shorten(run.id, 16)}</strong> ${statusBadge(run.status)}
+    ${choices.length > 1 ? html`<span class="sg-runpick" role="group" aria-label="Live runs: the one to show">${choices.map((r) => html`<button
+      type="button" class="pk-btn pk-btn--sm${r.id === run.id ? ' pk-btn--primary' : ''}" data-pick-run="${r.id}" data-key="pick:${r.id}"
+      aria-pressed="${String(r.id === run.id)}" title="${r.id}${r.machine_id && r.machine_id !== S.machine?.id ? ` (a run of ${r.machine_id})` : ''}"><span
+      class="pk-mono">${runTail(r.id)}</span>
+      ${statusBadge(r.id === run.id ? run.status : r.status)}</button>`)}</span>`
+    : html`<strong class="pk-mono" title="${run.id}">${shorten(run.id, 16)}</strong> ${statusBadge(run.status)}`}
     ${answers.length ? html`<span class="sg-answers" role="group" aria-label="Answer the wait">${answers.map(({ name, frames }) => html`<button type="button"
       class="pk-btn pk-btn--sm pk-btn--primary" data-send-event="${name}" title="${eventHelp(name) || `Send ${name}`}${frames.length > 1 ? ` (${frames.length} frames wait for it: pick one)` : ''}">${icon('send-horizontal', { size: 'sm' })} ${name}</button>`)}</span>` : ''}
     ${run.machine_id !== S.machine?.id ? frameChoice(run) : ''}
@@ -2329,6 +2357,16 @@ function drawDebugBar() {
     <label class="pk-check" title="Hold the fork at the fork point, to look at or set ctx before it goes on"><input type="checkbox" id="forkPause"> paused</label>
     <button type="button" class="pk-btn pk-btn--sm" data-control="fork" title="A new run from this top-level step (current definition with Shift)">${icon('git-branch', { size: 'sm' })} Fork</button>
     <button type="button" class="pk-btn pk-btn--sm pk-btn--ghost pk-btn--icon" data-control="close" title="Stop showing this run" aria-label="Stop showing this run">${icon('x', { size: 'sm' })}</button>`));
+}
+
+/** A run id by its end: the runs a machine tool starts share their caller's prefix (`<request id>_sg<6>`). */
+const runTail = (id) => (id.length > 10 ? `…${id.slice(-9)}` : id);
+
+/** The runs the bar offers: the one shown and every live one listed, in the order they started (the list is newest
+ * first). */
+function runChoices(run) {
+  const listed = [...S.runs].reverse().filter((r) => r.id === run.id || isLive(r));
+  return listed.some((r) => r.id === run.id) ? listed : [run, ...listed];
 }
 
 /** The run's own machine is not the open one: the way back to it, and which frame of the open machine the canvas
@@ -2386,6 +2424,11 @@ function eventHelp(name) {
 }
 
 $('debugBar').addEventListener('click', async (event) => {
+  const pick = event.target.closest('[data-pick-run]');
+  if (pick) {
+    if (pick.dataset.pickRun !== S.runId) selectRun(pick.dataset.pickRun);
+    return;
+  }
   const answer = event.target.closest('[data-send-event]');
   if (answer && S.run) {
     const name = answer.dataset.sendEvent;

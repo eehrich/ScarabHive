@@ -180,10 +180,13 @@ before the run go with it. @{b}Start@{ub} shows the new run.
 
 Pick a run in the list (filter by status; @{b}Older runs@{ub} loads
 more). While it is alive the panel reads it every second; everything else
-reloads every 10 seconds (the menu next to the reload button changes it).
+reloads every 10 seconds (the menu next to the reload button changes it),
+the run list every 3 seconds while another of its runs is alive.
 
 @{bullet}The @{b}debug bar@{ub} above the tabs: status, where it is paused
-or ended; @{b}Continue@{ub}, @{b}Step@{ub} (to the next hook),
+or ended. Other runs alive in the run list (as filtered and loaded) stand
+beside the one shown, each with its status; a click shows another.
+@{b}Continue@{ub}, @{b}Step@{ub} (to the next hook),
 @{b}Pause@{ub}, @{b}Run to@{ub} a state, @{b}Terminate@{ub} (its finally
 activities still run), @{b}Resume@{ub} for an interrupted run, and
 @{b}Fork@{ub}: a new run that replays this one up to a top-level step and

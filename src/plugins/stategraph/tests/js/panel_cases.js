@@ -33,7 +33,9 @@ const JOURNAL2 = [
   { seq: 8, kind: 'trace', key: 's3:final:verdict', state: 'verdict', status: 'final', data: { frame: 's2/m/', machine: 'critique', status: 'failed' } },
   { seq: 9, kind: 'trace', key: 's4:final:done', state: 'done', status: 'final', data: { frame: '', status: 'succeeded' } },
 ];
-let journalOf = { r1: RUN.journal, r2: JOURNAL2 };
+let journalOf = { r1: RUN.journal, r2: JOURNAL2, r3: [] };
+// a third run of the machine, running beside r1
+const RUN3 = { ...RUN, id: 'r3', status: 'running', debug: { ...RUN.debug, paused: null } };
 const CATALOG = { agents: [{ name: 'scene_writer', description: 'Writes one scene' }], tools: [{ name: 'store_put', description: 'Store a value' }],
   profiles: ['fast'] };
 let editAnswer = null;
@@ -87,6 +89,7 @@ globalThis.SERVER = (method, path, json) => {
   if (p.startsWith('/runs/r1?')) return runAnswer;
   if (p === '/runs/r1/control') return controlAnswer || runAnswer;
   if (p.startsWith('/runs/r2?')) return RUN2;
+  if (p.startsWith('/runs/r3?')) return RUN3;
   const journal = p.match(/^\/runs\/(r\d)\/journal\?(.*)$/);
   if (journal) {
     const query = new URLSearchParams(journal[2]);
@@ -315,6 +318,60 @@ const CASES = {
     await release();
   },
 
+  async runs_live_at_once_are_all_offered_in_the_bar_and_picked_there() {
+    let r1 = 'paused';
+    runsAnswer = () => [{ ...RUNS[0], id: 'r3', status: 'running' }, { ...RUNS[0], id: 'r2', status: 'succeeded', final_state: 'done' },
+      { ...RUNS[0], status: r1 }];
+    await boot('?machine=review&run=r1');
+    const picks = () => [...$('debugBar').innerHTML.matchAll(/data-pick-run="(r\d)" data-key="[^"]+"\s+aria-pressed="(true|false)"/g)]
+      .map(([, id, on]) => (on === 'true' ? `[${id}]` : id)).join(',');
+    check(picks() === '[r1],r3', `offered: ${picks()}`);  // in the order they started; the ended r2 is not
+    const lists = POLLERS.find((p) => p.ms === 3000);
+    check(lists?.running, 'the list is not asked again while another run is live');
+    HOLD = (method, path) => path.includes('/runs?');
+    const asked = () => CALLS.filter(([, path]) => path.includes('/runs?')).length;
+    const before = asked();
+    lists.fn();
+    await settle();
+    lists.fn();
+    await settle();
+    check(asked() === before + 1 && !ABORTED.length, `ticks while the list was out: ${asked() - before}, aborted: ${ABORTED}`);
+    HOLD = () => false;
+    await release();
+    await $('debugBar').fire('click', { target: element('button', { 'data-pick-run': 'r3' }) });
+    await settle();
+    await release();
+    check(picks() === 'r1,[r3]', `after the pick: ${picks()}`);
+    check(CALLS.some(([, path]) => path.includes('/runs/r3?')), 'the run picked is not asked for');
+    r1 = 'succeeded';
+    lists.fn();
+    await settle();
+    await release();
+    const bar = $('debugBar').innerHTML;
+    check(!bar.includes('data-pick-run') && bar.includes('title="r3"'), `a run that ended is still offered: ${picks()}`);
+    check(!lists.running, 'the list is still asked with no other run live');
+    await $('runList').fire('rowselect', { detail: { id: 'r2' } });
+    await settle();
+    check(picks() === '[r2],r3' && lists.running, `an ended run shown beside a live one: ${picks()}, followed: ${lists.running}`);
+    const listed = $('runList').innerHTML;
+    runsAnswer = () => new ApiError(503, 'restarting');
+    lists.fn();
+    await settle();
+    check($('runList').innerHTML === listed && !TOASTS.length && lists.running, `a failed tick: ${TOASTS}`);
+    await $('debugBar').fire('click', { target: element('button', { 'data-control': 'close' }) });
+    await settle();
+    check(!lists.running, 'the list is still asked with no run shown');
+  },
+
+  async a_run_shown_the_list_does_not_hold_is_offered_beside_the_live_ones_by_their_ends() {
+    runsAnswer = () => [{ ...RUNS[0], id: 'k3j9x0p2qa_m01x9z_sgzz98yy', status: 'running' }];
+    await boot('?machine=review&run=r1');
+    const bar = $('debugBar').innerHTML;
+    const picks = [...bar.matchAll(/data-pick-run="([^"]+)" data-key="[^"]+"\s+aria-pressed="true"/g)].map(([, id]) => id);
+    check(bar.includes('data-pick-run="k3j9x0p2qa_m01x9z_sgzz98yy"') && picks.join() === 'r1', `pressed: ${picks}`);
+    check(bar.includes('…_sgzz98yy</span>'), 'a run a machine tool started is not told by its end');
+  },
+
   async a_refresh_neither_drops_a_machine_click_nor_draws_the_machine_left() {
     await boot('?machine=review');
     HOLD = (method, path) => /\/machines(\/other|\/review)?$/.test(path);
@@ -347,6 +404,7 @@ const CASES = {
     check(bar.includes('title="r2"') && !bar.includes('title="r1"'), `the bar shows ${(bar.match(/title="(r\d)"/) || [])[1]}`);
     const row = $('runList').innerHTML.match(/data-id="r1"[\s\S]*?<\/tr>/)?.[0] || '';
     check(row.includes('cancelled'), `the list does not know r1 ended: ${row}`);
+    check(!POLLERS.find((p) => p.ms === 3000).running, 'the list is still asked though no other run is live');
   },
 
   async the_run_list_follows_a_terminate() {
