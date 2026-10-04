@@ -1495,6 +1495,19 @@
           "default": null,
           "title": "Provider Affinity Minutes"
         },
+        "prompt_cache_ttl_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Cache Ttl Minutes"
+        },
         "reasoning_details_mode": {
           "anyOf": [
             {

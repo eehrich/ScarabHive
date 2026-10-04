@@ -38,6 +38,7 @@ llm_system:
 
     openrouter-gemini:
       extends: openrouter-base
+      prompt_cache_ttl_minutes: 5   # implicit cache, about 3-5 min, set by Google (not configurable); from 4096 prompt tokens
       context_window: 1048576     # Flash and Lite: full window, no long-context tier (Pro: below)
       tool_schema_dialect: gemini_function_declarations   # sonst MALFORMED_FUNCTION_CALL
       provider_routing: # make a defined order to avoid reasoning breaks
@@ -98,6 +99,7 @@ llm_system:
     #
     openrouter-gpt:
       extends: openrouter-base
+      prompt_cache_ttl_minutes: 30  # fixed for GPT-5.6+/6 ("30m" is the only ttl OpenAI accepts); every hit renews it
       context_window: 272000      # window 1.05M, but above 272K prompt tokens input costs double
       provider_routing:
         order:
@@ -152,6 +154,10 @@ llm_system:
 
     openrouter-claude:
       extends: openrouter-base
+      # Anthropic's default cache ttl, what our cache_control sends; every hit
+      # renews it. 1 h (2x input per write) is not wired -- and on the Responses
+      # route OpenRouter drops a cache_control that carries a ttl.
+      prompt_cache_ttl_minutes: 5
       # Claude spricht cache_control, nicht die OpenAI-Breakpoints — und
       # OpenRouter reicht die nur ueber Chat Completions durch, nicht ueber
       # die Responses-API der Basis. Ohne beides laeuft Claude ohne Cache.

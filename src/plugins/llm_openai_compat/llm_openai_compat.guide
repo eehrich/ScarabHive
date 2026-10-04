@@ -110,7 +110,7 @@ tool_schema_dialect | both | json_schema | gemini_function_declarations strips w
 assistant_reasoning_field | httpx | omit | reasoning_content: every assistant message carries its thinking back (DeepSeek thinking mode needs it on tool turns)
 reasoning_details_mode | both | httpx keep_last, Responses keep_all | how many stored reasoning blocks travel back (see @{" Reasoning " link reasoning})
 prompt_cache_key, prompt_cache_mode, prompt_cache_marker_style, prompt_cache_options | both | none | see @{" Prompt caching " link caching}
-provider_routing, provider_affinity_minutes, plugins | both | none; affinity 30 min | OpenRouter only, see @{" OpenRouter routing " link openrouter}
+provider_routing, provider_affinity_minutes, plugins | both | none; affinity: prompt_cache_ttl_minutes, else 30 min | OpenRouter only, see @{" OpenRouter routing " link openrouter}
 safety_identifier | Responses | none | sent as is
 request_timeout, httpx_timeouts, stream_silence_timeout | both | see @{" Timeouts and streaming " link timeouts} |
 @{body}
@@ -394,7 +394,8 @@ winning per key.
 @{bullet}@{b}The pin.@{ub} A request goes to the backend that answered the
 run's latest turn, or -- for a run without one -- the backend that answered
 this agent on this model within @{tt}provider_affinity_minutes@{utt}
-(default 30, 0 turns this off), as @{tt}order: [that one],
+(default: the model's @{tt}prompt_cache_ttl_minutes@{utt}, how long its
+prompt cache lives, else 30; 0 turns this off), as @{tt}order: [that one],
 allow_fallbacks: false@{utt}. That backend holds the prompt cache and is the
 only one that can verify the reasoning the run replays. A configured
 @{tt}order@{utt} that does not list the backend is left alone. When the

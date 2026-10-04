@@ -157,8 +157,10 @@ auf dem Backend, das den **Agent-Typ** zuletzt bedient hat — gleich welche
 Instanz, welcher Lauf, welcher Client (`agent_system/llm/backend_affinity.py`,
 Schlüssel Agent-Name + Modell, gesetzt über `set_app_title`). Dort liegt der
 Prompt, den alle Läufe des Typs teilen. Das gilt nur innerhalb von
-`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default 30,
-`0` = aus, pro Modelleintrag oder per `llm_params` pro Agent). Danach ist
+`provider_affinity_minutes` nach dem letzten Aufruf des Typs (Default: die
+Cache-Dauer des Modells `prompt_cache_ttl_minutes` — Claude und Gemini 5,
+GPT 30 —, ohne die 30; `0` = aus, pro Modelleintrag oder per `llm_params`
+pro Agent). Danach ist
 der Cache kalt, und es gilt wieder die konfigurierte `order`. Gemessen am
 22.09.2026 an den ersten Aufrufen von v4/v6-Läufen (72 h):
 

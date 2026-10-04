@@ -10,7 +10,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from plugins.llm_common.api_keys import resolve_api_key
-from plugins.llm_common.model_dialects import warn_unwired
+from plugins.llm_common.model_dialects import affinity_minutes, warn_unwired
 # Deliberately the sibling's helper, not a copy: a second timeout default
 # would make an A/B measure the config instead of the SDK. The two plugins
 # are coupled anyway — the client subclasses the sibling's client.
@@ -65,7 +65,7 @@ def build_openrouter_sdk(cfg: "LLMModelConfig",
         max_tokens=cfg.max_tokens,
         service_tier=cfg.service_tier,
         provider_routing=cfg.provider_routing,
-        provider_affinity_minutes=cfg.provider_affinity_minutes,
+        provider_affinity_minutes=affinity_minutes(cfg),
         prompt_cache_key=cfg.prompt_cache_key,
         prompt_cache_mode=cfg.prompt_cache_mode,
         temperature=cfg.temperature,
