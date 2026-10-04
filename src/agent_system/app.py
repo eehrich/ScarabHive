@@ -317,9 +317,9 @@ def _build_entry_agent(entry_name: str, config, registry, session_service):
 def _default_config_path() -> str:
     """The config the API loads when none is passed: AGENT_CONFIG_PATH, else the
     project's config/config.yaml -- the variable agent-cli and agent-run honour too."""
-    from .paths import PROJECT_ROOT
+    from .paths import default_config_path
 
-    return os.environ.get("AGENT_CONFIG_PATH") or str(PROJECT_ROOT / "config" / "config.yaml")
+    return str(default_config_path())
 
 
 def _gated_agent_names(config) -> list[str]:
@@ -1047,35 +1047,21 @@ def build_app(config_path: Optional[str] = None) -> FastAPI:
                     is_active=True
                 )
                 db.create_user(default_admin)
-                logger.warning(
-                    "╔═══════════════════════════════════════════════════════════════╗"
-                )
-                logger.warning(
-                    "║  DEFAULT ADMIN USER CREATED - SAVE THESE CREDENTIALS!        ║"
-                )
-                logger.warning(
-                    "╠═══════════════════════════════════════════════════════════════╣"
-                )
-                logger.warning(
-                    f"║  Username: {config.auth.default_admin_username:<50}║"
-                )
-                logger.warning(
-                    f"║  Password: {admin_password:<50}║"
-                )
-                logger.warning(
-                    f"║  Email:    {config.auth.default_admin_email:<50}║"
-                )
-                logger.warning(
-                    "╠═══════════════════════════════════════════════════════════════╣"
-                )
-                logger.warning(
-                    "║  ⚠️  CHANGE PASSWORD IMMEDIATELY AFTER FIRST LOGIN!          ║"
-                )
-                logger.warning(
-                    "╚═══════════════════════════════════════════════════════════════╝"
-                )
+                # The password goes to the console (docker compose logs) only, never through the logger:
+                # logs/api.log kept it readable for as long as the file lived, and a log level above
+                # WARNING dropped it before anyone saw it.
+                logger.warning("Default admin %r created; its password is shown on the console, once",
+                               config.auth.default_admin_username)
+                import sys
+                print(f"\nDefault admin created -- save these credentials, the log file does not hold them:\n"
+                      f"  Username: {config.auth.default_admin_username}\n"
+                      f"  Password: {admin_password}\n", file=sys.stderr, flush=True)
             except Exception as e:
-                logger.error(f"Failed to create default admin user: {e}")
+                from pydantic import ValidationError
+                from .auth.models import validation_reasons
+                # a configured password the model refuses would stand in pydantic's own text
+                reason = validation_reasons(e) if isinstance(e, ValidationError) else e
+                logger.error(f"Failed to create default admin user: {reason}")
 
         # Configure security middleware
         configure_security_middleware(

@@ -626,7 +626,7 @@ development:
 | **Input Validation** | ✅ Pydantic models | All API inputs validated |
 | **Rate Limiting** | ✅ Sliding 1-minute window | Per client IP (`auth.requests_per_minute`); only with `auth.enabled` and `auth.rate_limit_enabled` (off in the shipped config) |
 | **CORS** | ✅ Configurable | `auth.cors_origins` (default and shipped value `*`); applied only with `auth.enabled` and `auth.cors_enabled` (on by default) |
-| **Secrets Management** | ✅ Env vars / `config/secrets.env` | Provider keys referenced as `${VAR}` in the YAML; `auth.secret_key` and `auth.default_admin_password` are literals in the shipped config and must be changed |
+| **Secrets Management** | ✅ Env vars / `config/secrets.env` | Provider keys referenced as `${VAR}` in the YAML; `auth.secret_key` is a literal in the shipped config and must be replaced (install scripts: own key in `config/local.env`); no admin password is shipped -- the install scripts ask for one, else the API generates one |
 
 ### 8.4 Maintainability
 

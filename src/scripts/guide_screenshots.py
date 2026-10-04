@@ -142,7 +142,7 @@ SHOTS = {
         await new Promise((done) => setTimeout(done, 800));""")],
     "setup": [("panel.png", "plugins.setup.tests.test_plugin_setup_panel", "panel_app",
                "/plugins/setup/", (900, 900), """
-        // a first start, seeded: the stub's state is read from this machine's configuration and environment
+        // everything still to do, seeded: the stub's state is read from this machine's configuration and environment
         const until = async (find) => { for (;;) { const found = find(); if (found) return found;
                                                    await new Promise((done) => setTimeout(done, 50)); } };
         const key = (name, state, named_in, from_environment = false) => ({name, state, named_in, from_environment});

@@ -138,9 +138,10 @@ auth:
   #   - "127.0.0.1"
   #   - "*.yourdomain.com"
 
-  # Default admin user (created on first startup if no users exist)
+  # Default admin user (created on first startup if no users exist). No default_admin_password: a shipped
+  # one is everyone's. The install scripts ask for one before that start (python -m agent_system.auth.first_admin);
+  # without them the API generates one and shows it on the console, never in the log file.
   default_admin_username: "admin"
-  default_admin_password: "admin123"  # CHANGE THIS IMMEDIATELY IN PRODUCTION
   default_admin_email: "admin@example.com"
 
   # Self-registration (POST /auth/register, reachable without login): a new

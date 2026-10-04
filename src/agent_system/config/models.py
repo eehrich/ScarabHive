@@ -1416,7 +1416,7 @@ class AuthConfig(BaseModel):
     # Default admin user (created on first startup if no users exist)
     default_admin_username: str = "admin"
     default_admin_password: Optional[str] = None  # Generated randomly if not set
-    default_admin_email: str = "admin@localhost"
+    default_admin_email: str = "admin@example.com"  # an EmailStr: "admin@localhost" failed it, and no admin was created
     
     # NEW: Anonymous access configuration
     anonymous_access: AnonymousAccessConfig = Field(default_factory=AnonymousAccessConfig)

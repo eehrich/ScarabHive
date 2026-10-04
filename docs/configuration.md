@@ -208,7 +208,7 @@ agent-api
 
 # Via uvicorn directly - single worker: run state (cancellation, mid-run messages, status streams) is per process
 uvicorn agent_system.app:build_app --factory --host 127.0.0.1 --port 8000
-# (bind 0.0.0.0 only after changing auth.secret_key and auth.default_admin_password)
+# (bind 0.0.0.0 only once auth.secret_key is your own and the admin has its own password)
 
 # With specific log level
 AGENT_LOG_LEVEL=debug agent-api
@@ -292,14 +292,14 @@ error. Set `auth.reject_default_secret_key: true` to refuse starting with one.
 
 ### 3. Create Admin User
 
-On first startup with auth enabled (and no users in the database), a default admin user is created:
-
-```
-Username: admin
-Password: admin123
-```
-
-**Important**: Change the default password immediately! The default credentials are set in `config/config.yaml` under `auth.default_admin_username` and `auth.default_admin_password`. Without `default_admin_password`, a random password is generated and printed in the startup log.
+The install scripts give the admin a password of its own before the first start
+(`python -m agent_system.auth.first_admin`, see INSTALLATION.md). Without them, the first startup
+with auth enabled (and no users in the database) creates `auth.default_admin_username` with
+`auth.default_admin_password`. The shipped configuration sets no password there on purpose: the
+API then generates one and shows it on the console, not in the log file. A password set in the config is
+known to everyone who can read it: the Setup panel flags an admin still on it, and the install scripts never
+create the admin with it. An admin already on it they leave alone (its API key may be in use): change it in
+the panel or the user menu, *Settings*.
 
 ### 4. User Management
 

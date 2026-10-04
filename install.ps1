@@ -1,4 +1,5 @@
-# ScarabHive: install into .venv, give this installation its own signing key, start the API, open the browser.
+# ScarabHive: install into .venv, give this installation its own signing key and its admin a password of its own,
+# start the API, open the browser.
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # Running it again installs what a git pull added and starts the API (stop a running one first).
 # INSTALLATION.md has the steps by hand.
@@ -39,13 +40,19 @@ Invoke-Checked $python @("-m", "pip", "install", "-e", ".")
 
 & $python -m agent_system.config.local_layer signing-key
 if ($LASTEXITCODE -ne 0) { Write-Host "Going on: the Setup panel shows the signing key." -ForegroundColor Yellow }
+# Not past a failed or aborted step: an admin of an older install may still open with admin123.
+& $python -m agent_system.auth.first_admin
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "The admin password was not set (see above), so the API is not started. Run this script again." -ForegroundColor Red
+    exit 1
+}
 
 $port = if ($env:PORT) { $env:PORT } else { "8000" }
 $url = "http://127.0.0.1:$port"
 Write-Host ""
 Write-Host "Starting ScarabHive at $url -- the browser opens when it answers."
-Write-Host "First login: admin / admin123. Then open the Setup panel (grid icon, type 'setup'),"
-Write-Host "enter your OpenRouter key and change the password. Stop the API with Ctrl+C;"
+Write-Host "Log in with the admin account. Then open the Setup panel (grid icon, type 'setup')"
+Write-Host "and enter your OpenRouter key. Stop the API with Ctrl+C;"
 Write-Host "start it again with: .venv\Scripts\agent-api.exe"
 Write-Host ""
 

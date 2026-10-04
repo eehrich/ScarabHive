@@ -7,10 +7,11 @@
 #   docker compose up -d --build
 #   docker compose logs -f scarabhive
 #
-# The web UI is then at http://127.0.0.1:8000. The port is published on the
-# loopback interface only: put a reverse proxy with TLS in front of it before
-# you expose it, and change the admin's password (Setup panel) and
-# auth.cors_origins first.
+# The web UI is then at http://127.0.0.1:8000. The first start creates the
+# admin with a generated password and shows it in that output (it stays in the
+# container's log: change it after the first login, user menu, Settings). The port is
+# published on the loopback interface only: put a reverse proxy with TLS in
+# front of it before you expose it, and set auth.cors_origins first.
 # INSTALLATION.md, section Docker, has the steps.
 #
 # Admin commands run inside the container, e.g.

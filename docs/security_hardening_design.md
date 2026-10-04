@@ -415,7 +415,7 @@ auth:
   
   # Admin user - change immediately after first login
   default_admin_username: "admin"
-  default_admin_password: null  # Will be auto-generated, check logs
+  default_admin_password: null  # generated on first start, shown on the console (not in the log file)
   
   # Disable anonymous access for maximum security
   anonymous_access:

@@ -42,7 +42,14 @@ The script:
 2. Gives this installation its own signing key for logins. The key goes into
    `config/local.env`, and `config/local.yaml` points to it. Both files belong to this machine
    and never go into the repository.
-3. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers.
+3. Asks for a password for the `admin` account, twice; Enter generates one. Where it cannot ask
+   (an unattended run; Git Bash's own window unless its pseudo console is on) it generates one and
+   shows it once. A publicly known password is refused. Only its hash
+   goes into the user database. Run again, it leaves an admin with a password of its own alone;
+   an admin still on a password the repository has printed (`admin123` of older versions) is
+   asked for a new one, which also revokes that account's API key. If you aborted this step, the script stops
+   and does not start the API.
+4. Starts the API and opens `http://127.0.0.1:8000` in the browser as soon as it answers.
 
 Running the script again installs what a `git pull` added and starts the API; stop a running
 API first. To start the API later without the script, run `.venv\Scripts\agent-api.exe` (Windows) or `.venv/bin/agent-api`
@@ -50,8 +57,10 @@ API first. To start the API later without the script, run `.venv\Scripts\agent-a
 
 ## 3. Log in and enter your key
 
-Log in as `admin` with the password `admin123`. The API creates this account on the very first
-start, while the user database (`data/users.db`) is still empty.
+Log in as `admin` with the password the script asked for or showed. Installed without the
+script, the API creates `admin` on its very first start, while the user database
+(`data/users.db`) is still empty, with a generated password it shows once on the console;
+run `python -m agent_system.auth.first_admin` before that start to choose one instead.
 
 Then open the **Setup** panel: click the grid icon in the top bar (tooltip *Panels*) and type
 `setup`.
@@ -63,7 +72,9 @@ Then open the **Setup** panel: click the grid icon in the top bar (tooltip *Pane
   *placeholder*. You only need the keys for the services you use.
 - **Test the chat:** Sends one short request through the default chat model and shows the
   answer or the provider's error.
-- **Admin password:** Change `admin123` right there.
+- **Admin password:** Shows whether the admin still opens with a publicly known password such
+  as `admin123` (an installation from before 10/2026); while it does, that admin can change it
+  right there. Any other password change: user menu, *Settings*.
 - **Signing key:** Shows whether logins are signed with this installation's own key. If you
   installed without the script, *Make an own signing key* creates one, and the next restart
   applies it.
@@ -88,6 +99,7 @@ source .venv/Scripts/activate      # Windows, Git Bash
 pip install -U pip
 pip install -e .
 python -m agent_system.config.local_layer signing-key
+python -m agent_system.auth.first_admin
 agent-api
 ```
 
@@ -132,6 +144,9 @@ docker compose up -d --build
 docker compose logs -f scarabhive
 ```
 
+The first start creates `admin` with a generated password and shows it in that output, not in
+`logs/api.log`. It stays in the container's log, so change it after the first login (user menu,
+*Settings*).
 Log in and open the Setup panel as in section 3. The web UI is at `http://127.0.0.1:8000`,
 published on the loopback interface only.
 
@@ -161,8 +176,9 @@ network:
 ```
 
 Then restart the API. Do this only once logins use this installation's own signing key and the
-admin password is changed. Until then, anyone on the network can log in with `admin123` or sign
-their own login.
+admin has a password of its own (the Setup panel shows both). Until then, anyone on the network
+can sign their own login, or log in with a publicly known password such as the `admin123` of
+older versions.
 
 - **Registration:** Anyone who reaches the login page can register an account. With the
   shipped `auth.registration` settings, a new account stays inactive until an admin activates
@@ -190,6 +206,7 @@ downloaded once, on first use, into `~/.cache/chroma`, so that first use needs n
 | `Config references N unset variable(s): ...` at every start | Normal for the services you do not use. Only `OPENROUTER_API_KEY` must not be in the list. |
 | `Refusing to start: auth.secret_key is empty ...` or `... has N characters, at least 32 are needed` | The signing key is missing or too short: run `python -m agent_system.config.local_layer signing-key` in the activated virtual environment. |
 | `auth.secret_key is a published default ...` in the log | The installation still signs logins with the key from the repository: use *Make an own signing key* in the Setup panel, then restart. |
+| The admin password is lost | In the activated virtual environment: `agent-cli users update admin -p <new password>`. That also ends the admin's logins and revokes its API key; whatever used the key needs a new one (`agent-cli users generate-api-key admin`). Running the install script again does not reset the password. |
 | The chat test fails with 401, or the provider says the user is unknown | The API key is missing or wrong, or it is still the template value. Enter it again in the Setup panel. |
 | `address already in use`, or on Windows `[Errno 10048] ... only one usage of each socket address` | Another program uses port 8000, or an API is still running: start with another `PORT` (see above). `network.port` in `config/local.yaml` works too, but the install scripts only see `PORT`. |
 | `The embedding model all-MiniLM-L6-v2 could not be readied ...` | Its first use had no network access, or `~/.cache/chroma` is not writable. |

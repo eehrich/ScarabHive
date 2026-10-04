@@ -16,7 +16,7 @@ plugins:
       # Repositories by name; each run gets a fresh worktree of the repo's HEAD
       # on its own branch. exclude: tracked files the run never sees, here the
       # ones that hold secrets -- secrets.env the keys, config.yaml the JWT
-      # signing key and the default admin password. Every other file holding
+      # signing key. Every other file holding
       # one of their values (a .env value, a YAML value under a key named like
       # a secret) is kept out as well; the answer lists them under `hidden`.
       workdirs:

@@ -365,6 +365,14 @@ class TestTheAdminsPassword:
 
         assert (result["admin"], result["default_admin_password"]) == ("admin", True), result
 
+    def test_an_admin_on_the_configured_password_is_flagged(self, users):
+        """The config holds it in clear text: the panel says so, though the install scripts leave that admin alone."""
+        self.add(users, "root", "MyPrivate-Secret-77")
+
+        result = self.status_of(users, username="root", password="MyPrivate-Secret-77")
+
+        assert (result["admin"], result["default_admin_password"]) == ("root", True), result
+
     def test_a_changed_password_is_seen(self, users):
         self.add(users, "admin", "a-long-own-password")
 

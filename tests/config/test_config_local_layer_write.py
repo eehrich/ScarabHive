@@ -193,6 +193,19 @@ class TestEnsureSigningKey:
         assert (master.parent / "local.yaml").read_text(encoding="utf-8") == broken
 
 
+def test_without_a_path_it_takes_the_config_the_api_takes(master, tmp_path, monkeypatch):
+    """No path: the config agent-api loads (paths.default_config_path), not config/config.yaml where the shell
+    stands -- run from elsewhere, the key went beside another file or nowhere."""
+    monkeypatch.setenv("AGENT_CONFIG_PATH", str(master))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert main(["signing-key"]) == 0
+
+    assert local(master)["auth"]["secret_key"] == local_layer.SIGNING_KEY_REFERENCE
+
+
 def test_the_install_scripts_command(master, capsys):
     assert main(["signing-key", str(master)]) == 0
     assert main(["signing-key", str(master)]) == 0

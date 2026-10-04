@@ -152,7 +152,9 @@ auth:
   
   # Default admin user (created on first startup if no users exist)
   default_admin_username: "admin"
-  default_admin_password: "CHANGE_THIS_PASSWORD"  # WARNING: Change immediately
+  # default_admin_password: unset on purpose -- the install scripts ask for one
+  # (python -m agent_system.auth.first_admin); unset, the first start generates one
+  # and shows it on the console
   default_admin_email: "admin@example.com"
   
   # Self-registration through POST /auth/register (reachable without login)
@@ -621,7 +623,6 @@ agent-cli users revoke-api-key johndoe
    - Edit `config/config.yaml`
    - Set `auth.enabled: true`
    - Configure `auth.secret_key` (generate new secret)
-   - Update `auth.default_admin` credentials
 
 3. **Start the API**
    ```bash

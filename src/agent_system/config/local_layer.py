@@ -167,7 +167,8 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] != "signing-key" or len(argv) > 2:
         print("usage: python -m agent_system.config.local_layer signing-key [config/config.yaml]", file=sys.stderr)
         return 2
-    cfg_path = Path(argv[1] if len(argv) > 1 else "config/config.yaml")
+    from agent_system.paths import default_config_path
+    cfg_path = Path(argv[1]) if len(argv) > 1 else default_config_path()  # the one the API loads
     if not cfg_path.is_file():
         print(f"no configuration at {cfg_path}", file=sys.stderr)
         return 1

@@ -41,10 +41,6 @@ class ReadOnlyUsers(database.UserDatabase):
             connection.close()
 
 
-#: The admin account config/config.yaml ships. A password changed in the config after the
-#: first start changes nothing: the admin is created once, while there are no users.
-SHIPPED_ADMINS = (("admin", "admin123"),)
-
 #: Every signing key the repository has printed -- config.yaml's, the examples in the docs,
 #: reviews and templates, the tests' -- found in its history on 28.09.2026. The history keeps
 #: them known for good, whatever the files say today; the model's own default and an empty key
@@ -192,24 +188,16 @@ def auth_status(config: Any, signing_key: Optional[str] = None) -> dict[str, Any
 def _admin_with_a_known_password(auth: Any) -> tuple[Optional[str], Optional[bool]]:
     """(the admin a known password opens, True), else (None, False); (None, None) where
     no user database can be asked."""
-    from agent_system.auth.models import UserRole
-    from agent_system.auth.security import verify_password
+    from agent_system.auth.first_admin import admins_opened_by, known_admin_logins
     users = user_database(auth) if auth.enabled else None
     if users is None:
         return None, None
-    candidates = list(SHIPPED_ADMINS)
-    if auth.default_admin_username and auth.default_admin_password:
-        candidates.insert(0, (auth.default_admin_username, auth.default_admin_password))
-    for username, password in candidates:
-        try:
-            user = users.get_user_by_username(username)
-        except sqlite3.Error as error:  # locked, no users table: cannot be told -- a bug stays loud
-            logger.warning("setup status: the user database could not be read: %s", error)
-            return None, None
-        # a deactivated account cannot log in, whatever its password
-        if user and user.is_active and user.role == UserRole.ADMIN and verify_password(password, user.hashed_password):
-            return username, True
-    return None, False
+    try:
+        admins = admins_opened_by(known_admin_logins(auth), users)
+    except sqlite3.Error as error:  # locked, no users table: cannot be told -- a bug stays loud
+        logger.warning("setup status: the user database could not be read: %s", error)
+        return None, None
+    return (admins[0], True) if admins else (None, False)
 
 
 def configured_signing_key(config: Any) -> Optional[str]:

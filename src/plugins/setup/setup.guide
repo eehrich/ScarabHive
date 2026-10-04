@@ -19,7 +19,7 @@ never passed through a tool or the chat: it is entered in the panel and
 saved on this machine, in @{tt}config/local.env@{utt}, never in the
 repository.
 
-@{image docs/panel.png "The Setup panel on a first start"}
+@{image docs/panel.png "The Setup panel with everything still to do"}
 
 @{code}
 For users
@@ -70,8 +70,12 @@ Signing key | the key logins are signed with is a known one | this installation'
 @{body}
 
 A @{i}publicly known password@{ui} is the configured default admin's
-password, and @{tt}admin@{utt} / @{tt}admin123@{utt}, which the shipped
-configuration creates. The admin is created once, while there are no
+password, which stands in the config file in clear text, and the ones the
+repository has printed: @{tt}admin123@{utt}, which the shipped configuration
+created until October 2026, and the documentation's example
+@{tt}CHANGE_THIS_PASSWORD@{utt}, under @{tt}admin@{utt} or the configured
+name. The install scripts replace only the printed ones: the configured
+password is the operator's own. The admin is created once, while there are no
 users; changing the default in the config later does not change the
 account. A deactivated account does not count.
 

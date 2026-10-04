@@ -160,9 +160,9 @@ sh install.sh                                           # Linux, macOS, Git Bash
 powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
 ```
 
-The script installs everything into `.venv`, creates a signing key for this installation and
-opens `http://127.0.0.1:8000`. Log in as `admin` / `admin123`, open the **Setup** panel, enter
-your key and change the password.
+The script installs everything into `.venv`, creates a signing key for this installation, asks
+for a password for the `admin` account (Enter generates one) and opens `http://127.0.0.1:8000`.
+Log in as `admin`, open the **Setup** panel and enter your key.
 
 Docker, a manual installation and troubleshooting: [INSTALLATION.md](INSTALLATION.md).
 

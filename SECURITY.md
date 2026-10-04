@@ -142,9 +142,12 @@ Remaining limits:
 
 ## Hardening a deployment
 
-- Change `auth.secret_key` and `auth.default_admin_password` in
-  `config/config.yaml` before the first start; the shipped values are for
-  development. The config loader expands `${VAR}` placeholders from the
+- Give the installation its own `auth.secret_key` and the admin its own
+  password before the first start: the install scripts do both
+  (`python -m agent_system.config.local_layer signing-key`,
+  `python -m agent_system.auth.first_admin`). The shipped signing key is for
+  development; the shipped config sets no admin password, so the API generates
+  one on its first start and shows it on the console once. The config loader expands `${VAR}` placeholders from the
   environment and `config/secrets.env`, e.g. `secret_key: "${AUTH_SECRET_KEY}"`.
   The server does not start with an empty or short (under 32 characters) key,
   and logs an error for a published one, such as the shipped development key;

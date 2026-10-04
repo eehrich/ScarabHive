@@ -146,10 +146,11 @@ authentication switched on, so the browser is sent to the login page. On its
 very first start, with an empty user database, the server creates one admin
 account from @{tt}auth.default_admin_username@{utt},
 @{tt}auth.default_admin_password@{utt} and
-@{tt}auth.default_admin_email@{utt} in @{tt}config/config.yaml@{utt} (a
-random password if none is set) and writes the credentials once into the
-console and the API log. Change that password at once: user menu,
-@{b}Settings@{ub}.
+@{tt}auth.default_admin_email@{utt} in @{tt}config/config.yaml@{utt}. The
+install scripts give it a password before that start (they ask for one, or
+generate one and show it). Without them the server generates one and writes
+it to the console, not into the API log. Change a generated password at once:
+user menu, @{b}Settings@{ub}.
 
 Then open the @{b}Setup@{ub} panel (admin only; panel starter or Ctrl+K). It
 lists every @{tt}${NAME}@{utt} the configuration uses as @{i}set@{ui},
