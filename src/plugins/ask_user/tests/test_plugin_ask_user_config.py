@@ -31,12 +31,13 @@ def config():
     return load_settings()
 
 
-def _writer_agents():
-    """Every server the writer declares in its agent files."""
+def _private_agents():
+    """Every server a plugin root besides src/plugins declares in its agent files."""
     names = set()
-    for path in (ROOT / "src" / "plugins_writer").rglob("agents/*.yaml"):
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        names.update(((data.get("plugins") or {}).get("servers") or {}).keys())
+    for root in (ROOT / "src").glob("plugins_*"):
+        for path in root.rglob("agents/*.yaml"):
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            names.update(((data.get("plugins") or {}).get("servers") or {}).keys())
     return names
 
 
@@ -58,8 +59,9 @@ def test_the_instance_is_on_and_reads_its_config(config):
 
 
 def test_only_the_chosen_chat_agents_may_ask(config):
-    writer = _writer_agents()
-    assert len(writer) > 20, "fixture: the writer's agents were not found"
+    private = _private_agents()
+    if any(d.is_dir() and d.name.isidentifier() for d in (ROOT / "src").glob("plugins_*")):  # none in the open-source checkout
+        assert len(private) > 20, "fixture: the further plugin roots' agents were not found"
     asking = {}
     for name in config.plugins.servers:
         cfg = get_tool_server_config(name, config)
@@ -68,7 +70,7 @@ def test_only_the_chosen_chat_agents_may_ask(config):
 
     assert set(asking) == ASKING
     for name, cfg in asking.items():
-        assert name not in writer, f"writer agent {name} may ask"
+        assert name not in private, f"{name}, an agent of a further plugin root, may ask"
         visibility = getattr(cfg.metadata, "visibility", None) if cfg.metadata else None
         assert visibility in ("ui", "both"), f"{name} is no agent a person chats with ({visibility})"
 

@@ -29,7 +29,7 @@ from typing import Any
 import yaml
 # jsonschema is imported where it is used (_validate_manifest_schema), not here:
 # it is not in requirements/core.txt -- it arrives with a plugin's own deps --
-# and validate_all_tool_schemas.py imports this module only for PLUGIN_ROOTS.
+# and validate_all_tool_schemas.py imports this module only for plugin_roots.
 # A module-level import would make that script need a package it never calls.
 
 # Import config analyzer (only used with --extract-config)
@@ -53,11 +53,6 @@ logger = logging.getLogger(__name__)
 #: passed on an empty list.
 MANIFEST_NAME = "plugin.toml"
 
-#: Every root that actually holds plugins. Measured 2026-09-20: 62 + 12 + 2
-#: manifests. ``--all`` and ``--plugin`` used to name only the first two, so
-#: plugins_trading was unreachable by either; the LLM providers had their own
-#: root as well until they moved into ``plugins``.
-PLUGIN_ROOTS = ("plugins", "plugins_writer", "plugins_trading", "plugins_priv")
 
 
 def has_manifest(path: Path) -> bool:
@@ -66,8 +61,12 @@ def has_manifest(path: Path) -> bool:
 
 
 def plugin_roots(project_root: Path) -> list[Path]:
-    """The plugin roots under a checkout, in a fixed order."""
-    return [project_root / "src" / name for name in PLUGIN_ROOTS]
+    """Every plugin root under a checkout: src/plugins and each further
+    src/plugins_<name>/, sorted -- the rule config/plugins.yaml states as
+    ``src/plugins*``. A fixed list of names once left a root unreachable for
+    --all and --plugin alike."""
+    return sorted(d for d in (project_root / "src").glob("plugins*")
+                  if d.is_dir() and d.name.isidentifier())
 
 
 class PluginValidator:
@@ -746,7 +745,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Validate every plugin under the roots in PLUGIN_ROOTS"
+        help="Validate every plugin under every plugin root (src/plugins*)"
     )
     parser.add_argument(
         "--plugin",

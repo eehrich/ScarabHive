@@ -29,7 +29,7 @@ tmp/
 .backups/
 .journal
 external/
-src/plugins_writer/**/batch_logs/
+src/plugins*/**/batch_logs/
 
 # --- VCS, environments, caches, build output ------------------------------
 .git

@@ -15,13 +15,13 @@ Arguments:
 
 Examples:
     # Validate all agent configs (using shell glob)
-    python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml
+    python src/scripts/validate_agent_configs.py src/plugins/*/agents/*.yaml
 
     # Validate specific files
-    python src/scripts/validate_agent_configs.py src/plugins_writer/writer_core/agents/book_launcher.yaml
+    python src/scripts/validate_agent_configs.py src/plugins/coder/agents/coder.yaml
 
     # Use in CI/CD
-    python src/scripts/validate_agent_configs.py src/plugins_writer/*/agents/*.yaml || exit 1
+    python src/scripts/validate_agent_configs.py src/plugins/*/agents/*.yaml || exit 1
 """
 
 import sys
@@ -105,8 +105,8 @@ def main() -> int:
         print("\nUsage:")
         print("  validate-agents <yaml_file1> [yaml_file2] ...")
         print("\nExamples:")
-        print("  validate-agents src/plugins_writer/*/agents/*.yaml")
-        print("  validate-agents src/plugins_writer/writer_core/agents/book_launcher.yaml")
+        print("  validate-agents src/plugins/*/agents/*.yaml")
+        print("  validate-agents src/plugins/coder/agents/coder.yaml")
         return 1
 
     # Get all YAML files from arguments

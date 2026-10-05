@@ -35,19 +35,6 @@ class TestToolServerCLI:
         assert "--query" in result.stdout
         assert "--max-results" in result.stdout
     
-    def test_yahoo_finance_cli_help(self):
-        """Test Yahoo Finance server CLI help."""
-        result = subprocess.run([
-            sys.executable, "-m", "plugins_trading.yahoo_finance",
-            "--help"
-    ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=Path(__file__).parent.parent)
-        
-        assert result.returncode == 0
-        assert "Yahoo Finance Tool Server" in result.stdout
-        assert "--symbol" in result.stdout
-        assert "--period" in result.stdout
-        assert "--interval" in result.stdout
-    
     def test_twitter_search_cli_help(self):
         """Test Twitter search server CLI help."""
         result = subprocess.run([
@@ -120,7 +107,6 @@ class TestToolServerCLI:
             "weather",
             "duckduckgo_search",
             "web_scraper",
-            "yahoo_finance",
             "twitter_search",
             "llm_router",
             "datetime"
@@ -128,8 +114,7 @@ class TestToolServerCLI:
         # Note: google_search plugin not implemented yet
         
         for server in servers:
-            # All servers have been migrated to plugins (except yahoo_finance in plugins_trading)
-            module_name = f"plugins_trading.{server}" if server == "yahoo_finance" else f"plugins.{server}"
+            module_name = f"plugins.{server}"
             py = (
                 "import importlib\n"
                 f"try:\n"

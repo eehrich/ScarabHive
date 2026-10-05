@@ -174,6 +174,8 @@ def panel():
     written as a method is deprecated in pytest 9 (its instance attributes never reach the tests)."""
     from agent_system.config.settings import get_tool_server_config, load_settings
     cfg = get_tool_server_config("v6_story_panel", load_settings())
+    if cfg is None and not any(d.is_dir() and d.name.isidentifier() for d in Path(__file__).resolve().parents[4].joinpath("src").glob("plugins_*")):
+        pytest.skip("v6_story_panel comes from a plugin root this checkout does not carry")
     assert cfg is not None, "v6_story_panel not in the loaded config"
     return cfg.agent_config
 
